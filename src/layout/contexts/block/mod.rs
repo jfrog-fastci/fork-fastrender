@@ -95,6 +95,7 @@ use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentationInfo;
 use margin_collapse::establishes_bfc;
+use margin_collapse::is_margin_collapsible_through;
 use margin_collapse::should_collapse_with_first_child;
 use margin_collapse::should_collapse_with_last_child;
 use margin_collapse::CollapsibleMargin;
@@ -116,6 +117,15 @@ struct PositionedCandidate {
 enum ContainingBlockSource {
   ParentPadding,
   Explicit(ContainingBlock),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CollapsedBlockMargins {
+  top: CollapsibleMargin,
+  bottom: CollapsibleMargin,
+  /// True when the box is empty for margin collapsing and its own block-start/block-end margins
+  /// collapse together (CSS 2.1 §8.3.1).
+  collapsible_through: bool,
 }
 
 fn axis_sides(horizontal: bool, positive: bool) -> (PhysicalSide, PhysicalSide) {
@@ -418,14 +428,13 @@ impl BlockFormattingContext {
     child: &BoxNode,
     containing_width: f32,
     constraints: &LayoutConstraints,
-    margin_ctx: &mut MarginCollapseContext,
-    current_y: f32,
+    box_y: f32,
     nearest_positioned_cb: &ContainingBlock,
     nearest_fixed_cb: &ContainingBlock,
     external_float_ctx: Option<&mut FloatContext>,
     external_float_base_y: f32,
     paint_viewport: Rect,
-  ) -> Result<(FragmentNode, f32), LayoutError> {
+  ) -> Result<FragmentNode, LayoutError> {
     let toggles = crate::debug::runtime::runtime_toggles();
     let dump_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
     let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
@@ -435,8 +444,7 @@ impl BlockFormattingContext {
         replaced_box,
         containing_width,
         constraints,
-        margin_ctx,
-        current_y,
+        box_y,
         nearest_positioned_cb,
       );
     }
@@ -461,17 +469,10 @@ impl BlockFormattingContext {
       &self.font_context,
       self.viewport_size,
     );
-
-    // Add top margin to pending collapse set
-    margin_ctx.push_margin(margin_top);
-
-    // Resolve collapsed margin and get Y position
-    let collapsed_margin = margin_ctx.resolve();
-    let box_y = current_y + collapsed_margin;
     if dump_child_y && matches!(child.style.display, Display::Table) {
       eprintln!(
-                "block child margins: display={:?} current_y={:.2} margin_top={:.2} collapsed={:.2} box_y={:.2}",
-                child.style.display, current_y, margin_top, collapsed_margin, box_y
+                "block child margins: display={:?} margin_top={:.2} box_y={:.2}",
+                child.style.display, margin_top, box_y
             );
     }
 
@@ -1239,9 +1240,7 @@ impl BlockFormattingContext {
             ..BlockFragmentMetadata::default()
           });
 
-          margin_ctx.push_margin(margin_bottom);
-          let next_y = box_y + fragment.bounds.height();
-          return Ok((fragment, next_y));
+          return Ok(fragment);
         }
       }
     }
@@ -1830,13 +1829,7 @@ impl BlockFormattingContext {
       remembered_size_cache_store(child, remembered);
     }
 
-    // Push bottom margin for next collapse
-    margin_ctx.push_margin(margin_bottom);
-
-    // Return fragment and the Y position after this box (before margin)
-    let next_y = box_y + box_height;
-
-    Ok((fragment, next_y))
+    Ok(fragment)
   }
 
   fn can_parallelize_block_children(parent: &BoxNode) -> bool {
@@ -1899,20 +1892,18 @@ impl BlockFormattingContext {
         with_deadline(deadline.as_ref(), || {
           let _stage_guard = StageGuard::install(stage);
           crate::layout::engine::debug_record_parallel_work();
-          let mut margin_ctx = MarginCollapseContext::new();
-           let (fragment, _) = self.layout_block_child(
-             parent,
-             child,
-             containing_width,
-             constraints,
-             &mut margin_ctx,
-             0.0,
-             nearest_positioned_cb,
-             nearest_fixed_cb,
-             None,
-             0.0,
-             paint_viewport,
-           )?;
+          let fragment = self.layout_block_child(
+            parent,
+            child,
+            containing_width,
+            constraints,
+            0.0,
+            nearest_positioned_cb,
+            nearest_fixed_cb,
+            None,
+            0.0,
+            paint_viewport,
+          )?;
           let meta = fragment.block_metadata.clone().ok_or_else(|| {
             LayoutError::MissingContext(
               "Block fragment missing metadata for parallel layout".into(),
@@ -1953,18 +1944,34 @@ impl BlockFormattingContext {
     let mut current_y = 0.0;
     let mut margin_ctx = margin_ctx;
 
-    for (idx, mut fragment, meta) in parallel_results {
-      margin_ctx.push_margin(meta.margin_top);
-      let box_y = current_y + margin_ctx.resolve();
+    for (idx, mut fragment, _meta) in parallel_results {
+      let child = &parent.children[idx];
+      let child_margins = self.collapsed_block_margins(child, containing_width, false);
+
+      let box_y = if margin_ctx.is_at_start() && !child_margins.collapsible_through {
+        // Parent/first-child margin collapsing is represented by the parent’s own collapsed
+        // margins. Discard any leading collapsible-through margins and place the first
+        // non-empty child at the block start.
+        margin_ctx.consume_pending();
+        margin_ctx.push_collapsible_margin(child_margins.bottom);
+        current_y
+      } else {
+        let (offset, _) = margin_ctx.process_child_margins(
+          child_margins.top,
+          child_margins.bottom,
+          child_margins.collapsible_through,
+        );
+        current_y + offset
+      };
+
       let delta = box_y - fragment.bounds.y();
       Self::translate_fragment_tree(&mut fragment, Point::new(0.0, delta));
       content_height = content_height.max(fragment.bounds.max_y());
       current_y = box_y + fragment.bounds.height();
-      margin_ctx.push_margin(meta.margin_bottom);
 
-      if matches!(parent.children[idx].style.position, Position::Relative) {
+      if matches!(child.style.position, Position::Relative) {
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
-          &parent.children[idx].style,
+          &child.style,
           relative_cb,
           self.viewport_size,
           &self.font_context,
@@ -1981,7 +1988,7 @@ impl BlockFormattingContext {
     }
 
     let trailing_margin = margin_ctx.pending_margin();
-    let allow_collapse_last = should_collapse_with_last_child(&parent.style);
+    let allow_collapse_last = parent.id != 1 && should_collapse_with_last_child(&parent.style);
     let parent_has_bottom_separation = resolve_length_for_width(
       parent.style.used_border_bottom_width(),
       containing_width,
@@ -2010,10 +2017,9 @@ impl BlockFormattingContext {
     replaced_box: &ReplacedBox,
     containing_width: f32,
     constraints: &LayoutConstraints,
-    margin_ctx: &mut MarginCollapseContext,
-    current_y: f32,
+    box_y: f32,
     _nearest_positioned_cb: &ContainingBlock,
-  ) -> Result<(FragmentNode, f32), LayoutError> {
+  ) -> Result<FragmentNode, LayoutError> {
     let style = &child.style;
     let toggles = crate::debug::runtime::runtime_toggles();
     let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
@@ -2097,9 +2103,6 @@ impl BlockFormattingContext {
         )
       })
       .unwrap_or(0.0);
-    margin_ctx.push_margin(margin_top);
-    let collapsed_margin = margin_ctx.resolve();
-    let box_y = current_y + collapsed_margin;
 
     // Resolve padding and borders
     let mut padding_top = resolve_length_for_width(
@@ -2176,10 +2179,160 @@ impl BlockFormattingContext {
       ..BlockFragmentMetadata::default()
     });
 
-    margin_ctx.push_margin(margin_bottom);
-    let next_y = box_y + box_height;
+    Ok(fragment)
+  }
 
-    Ok((fragment, next_y))
+  fn collapsed_block_margins(
+    &self,
+    node: &BoxNode,
+    containing_width: f32,
+    is_root: bool,
+  ) -> CollapsedBlockMargins {
+    let style = &node.style;
+    let block_sides = block_axis_sides(style);
+    let margin_top = resolve_margin_side(
+      style,
+      block_sides.0,
+      containing_width,
+      &self.font_context,
+      self.viewport_size,
+    );
+    let margin_bottom = resolve_margin_side(
+      style,
+      block_sides.1,
+      containing_width,
+      &self.font_context,
+      self.viewport_size,
+    );
+    let mut top = CollapsibleMargin::from_margin(margin_top);
+    let mut bottom = CollapsibleMargin::from_margin(margin_bottom);
+
+    // Root element margins never collapse with children (CSS 2.1 §8.3.1).
+    let mut collapse_first = !is_root && should_collapse_with_first_child(style);
+    let mut collapse_last = !is_root && should_collapse_with_last_child(style);
+
+    let is_ignorable_whitespace = |child: &BoxNode| -> bool {
+      matches!(&child.box_type, BoxType::Text(text_box)
+        if text_box.text.trim().is_empty()
+          && !matches!(
+            child.style.white_space,
+            crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
+          ))
+    };
+
+    let is_out_of_flow_or_float = |child: &BoxNode| -> bool {
+      child.style.running_position.is_some()
+        || matches!(child.style.position, Position::Absolute | Position::Fixed)
+        || child.style.float.is_floating()
+    };
+
+    let is_in_flow_block = |child: &BoxNode| -> bool {
+      if is_out_of_flow_or_float(child) || is_ignorable_whitespace(child) {
+        return false;
+      }
+      child.is_block_level()
+        || matches!(child.box_type, BoxType::Replaced(_) if !child.style.display.is_inline_level())
+    };
+
+    // If the first/last in-flow content is not a block-level box (i.e., line boxes would be
+    // generated first/last), parent/child margin collapsing cannot occur.
+    if collapse_first {
+      if let Some(first) = node
+        .children
+        .iter()
+        .find(|c| !is_out_of_flow_or_float(c) && !is_ignorable_whitespace(c))
+      {
+        if !is_in_flow_block(first) {
+          collapse_first = false;
+        }
+      }
+    }
+    if collapse_last {
+      if let Some(last) = node
+        .children
+        .iter()
+        .rev()
+        .find(|c| !is_out_of_flow_or_float(c) && !is_ignorable_whitespace(c))
+      {
+        if !is_in_flow_block(last) {
+          collapse_last = false;
+        }
+      }
+    }
+
+    if collapse_first {
+      let mut chain = CollapsibleMargin::ZERO;
+      for child in &node.children {
+        if is_out_of_flow_or_float(child) || is_ignorable_whitespace(child) {
+          continue;
+        }
+        if !is_in_flow_block(child) {
+          break;
+        }
+        let child_margins = self.collapsed_block_margins(child, containing_width, false);
+        if child_margins.collapsible_through {
+          chain = chain.collapse_with(child_margins.top.collapse_with(child_margins.bottom));
+          continue;
+        }
+        chain = chain.collapse_with(child_margins.top);
+        break;
+      }
+      top = top.collapse_with(chain);
+    }
+
+    if collapse_last {
+      let mut chain = CollapsibleMargin::ZERO;
+      for child in node.children.iter().rev() {
+        if is_out_of_flow_or_float(child) || is_ignorable_whitespace(child) {
+          continue;
+        }
+        if !is_in_flow_block(child) {
+          break;
+        }
+        let child_margins = self.collapsed_block_margins(child, containing_width, false);
+        if child_margins.collapsible_through {
+          chain = chain.collapse_with(child_margins.top.collapse_with(child_margins.bottom));
+          continue;
+        }
+        chain = chain.collapse_with(child_margins.bottom);
+        break;
+      }
+      bottom = bottom.collapse_with(chain);
+    }
+
+    // Collapsing through an empty block (CSS 2.1 §8.3.1).
+    let mut has_in_flow_content = matches!(node.box_type, BoxType::Replaced(_));
+    if !has_in_flow_content {
+      for child in &node.children {
+        if is_out_of_flow_or_float(child) || is_ignorable_whitespace(child) {
+          continue;
+        }
+        if is_in_flow_block(child) {
+          let child_margins = self.collapsed_block_margins(child, containing_width, false);
+          if !child_margins.collapsible_through {
+            has_in_flow_content = true;
+            break;
+          }
+          continue;
+        }
+        // Inline-level in-flow content generates line boxes and prevents collapsing-through.
+        has_in_flow_content = true;
+        break;
+      }
+    }
+
+    let collapsible_through = !has_in_flow_content && is_margin_collapsible_through(style);
+    if collapsible_through {
+      let combined = top.collapse_with(bottom);
+      top = combined;
+      bottom = combined;
+    }
+
+    CollapsedBlockMargins {
+      top,
+      bottom,
+      collapsible_through,
+    }
   }
 
   /// Lays out all children of a box
@@ -2255,7 +2408,10 @@ impl BlockFormattingContext {
     let mut margin_ctx = MarginCollapseContext::new();
     let mut inline_buffer: Vec<BoxNode> = Vec::new();
     let mut positioned_children: Vec<PositionedCandidate> = Vec::new();
-    let collapse_with_parent_top = should_collapse_with_first_child(&parent.style);
+    // Root element margins never collapse with their children (CSS 2.1 §8.3.1).
+    let parent_is_root = parent.id == 1;
+    let mut collapse_with_parent_top =
+      !parent_is_root && should_collapse_with_first_child(&parent.style);
     let establishes_absolute_cb = parent.style.establishes_abs_containing_block();
     let establishes_fixed_cb = parent.style.establishes_fixed_containing_block();
     if !collapse_with_parent_top {
@@ -2433,6 +2589,7 @@ impl BlockFormattingContext {
       ) > 0.0;
 
     if parent_has_top_separation {
+      collapse_with_parent_top = false;
       margin_ctx.mark_content_encountered();
     }
 
@@ -2467,6 +2624,63 @@ impl BlockFormattingContext {
       .as_ref()
       .unwrap_or_else(|| self.intrinsic_inline_fc.as_ref());
 
+    let layout_in_flow_block_child =
+      |child: &BoxNode,
+       margin_ctx: &mut MarginCollapseContext,
+       current_y: f32,
+       float_ctx_ref: &mut FloatContext|
+       -> Result<(FragmentNode, f32), LayoutError> {
+        let child_margins = self.collapsed_block_margins(child, containing_width, false);
+        let pending_margin = margin_ctx.pending_collapsible_margin();
+        let margin_edge_y = current_y + pending_margin.resolve();
+        let cleared_margin_edge_y =
+          float_ctx_ref.compute_clearance(float_base_y + margin_edge_y, child.style.clear)
+            - float_base_y;
+        let clearance = (cleared_margin_edge_y - margin_edge_y).max(0.0);
+
+        let box_y = if clearance > 0.0 {
+          // Clearance is added above the top margin edge and breaks margin adjoining.
+          margin_ctx.mark_content_encountered();
+          let (offset, _) = margin_ctx.process_child_with_clearance(
+            clearance,
+            child_margins.top,
+            child_margins.bottom,
+            child_margins.collapsible_through,
+          );
+          current_y + offset
+        } else if collapse_with_parent_top && margin_ctx.is_at_start() && !child_margins.collapsible_through
+        {
+          // Parent/first-child margin collapsing is represented by the parent's own collapsed
+          // margins. Discard any leading collapsible-through margins and place the first
+          // non-empty child at the block start.
+          margin_ctx.consume_pending();
+          margin_ctx.push_collapsible_margin(child_margins.bottom);
+          current_y
+        } else {
+          let (offset, _) = margin_ctx.process_child_margins(
+            child_margins.top,
+            child_margins.bottom,
+            child_margins.collapsible_through,
+          );
+          current_y + offset
+        };
+
+        let fragment = self.layout_block_child(
+          parent,
+          child,
+          containing_width,
+          constraints,
+          box_y,
+          nearest_positioned_cb,
+          nearest_fixed_cb,
+          Some(&mut *float_ctx_ref),
+          float_base_y,
+          paint_viewport,
+        )?;
+        let next_y = box_y + fragment.bounds.height();
+        Ok((fragment, next_y))
+      };
+
     let flush_inline_buffer = |buffer: &mut Vec<BoxNode>,
                                fragments: &mut Vec<FragmentNode>,
                                current_y: &mut f32,
@@ -2494,21 +2708,33 @@ impl BlockFormattingContext {
           {
             return Err(LayoutError::Timeout { elapsed });
           }
-          let pending_margin = margin_ctx.consume_pending();
-          *current_y += pending_margin;
-          let (fragment, next_y) = self.layout_block_child(
-            parent,
-            &child,
-            containing_width,
-            constraints,
-            margin_ctx,
-            *current_y,
-            nearest_positioned_cb,
-            nearest_fixed_cb,
-            Some(&mut *float_ctx_ref),
-            float_base_y,
-            paint_viewport,
-          )?;
+          let treated_as_block = child.is_block_level()
+            || matches!(
+              child.box_type,
+              BoxType::Replaced(_) if !child.style.display.is_inline_level()
+            );
+
+          let (fragment, next_y) = if treated_as_block {
+            layout_in_flow_block_child(&child, margin_ctx, *current_y, float_ctx_ref)?
+          } else {
+            let pending_margin = margin_ctx.consume_pending();
+            *current_y += pending_margin;
+            let box_y = *current_y;
+            let fragment = self.layout_block_child(
+              parent,
+              &child,
+              containing_width,
+              constraints,
+              box_y,
+              nearest_positioned_cb,
+              nearest_fixed_cb,
+              Some(&mut *float_ctx_ref),
+              float_base_y,
+              paint_viewport,
+            )?;
+            let next_y = box_y + fragment.bounds.height();
+            (fragment, next_y)
+          };
           *content_height = content_height.max(fragment.bounds.max_y());
           *current_y = next_y;
           let mut fragment = fragment;
@@ -2962,8 +3188,10 @@ impl BlockFormattingContext {
           &mut deadline_counter,
         )?;
 
-        // Apply any pending collapsed margin before placing the float
-        let pending_margin = margin_ctx.consume_pending();
+        // Apply any pending collapsed margin before placing the float. Floats are out of flow, so
+        // they should not disable parent/first-child margin collapsing when they appear before the
+        // first in-flow block in this BFC.
+        let pending_margin = margin_ctx.consume_pending_without_marking_content();
         current_y += pending_margin;
 
         // Honor clearance against existing floats
@@ -3282,14 +3510,6 @@ impl BlockFormattingContext {
           &mut deadline_counter,
         )?;
 
-        // Apply clearance for in-flow blocks against floats
-        let cleared_y =
-          float_ctx.compute_clearance(float_base_y + current_y, child.style.clear) - float_base_y;
-        if cleared_y > current_y {
-          margin_ctx.mark_content_encountered();
-          current_y = cleared_y;
-        }
-
         if dump_cell_child_y && matches!(parent.style.display, Display::TableCell) {
           eprintln!(
             "cell child layout: parent_id={} child_idx={} child_display={:?} current_y={:.2}",
@@ -3307,23 +3527,12 @@ impl BlockFormattingContext {
                     child.style.max_width,
                     child.style.max_height,
                     child.style.margin_left,
-                    child.style.margin_right,
+                     child.style.margin_right,
           );
         }
 
-        let (fragment, next_y) = self.layout_block_child(
-          parent,
-          child,
-          containing_width,
-          constraints,
-          &mut margin_ctx,
-          current_y,
-          nearest_positioned_cb,
-          nearest_fixed_cb,
-          Some(&mut *float_ctx),
-          float_base_y,
-          paint_viewport,
-        )?;
+        let (fragment, next_y) =
+          layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
 
         if dump_cell_child_y && matches!(parent.style.display, Display::TableCell) {
           let b = fragment.bounds;
@@ -3384,19 +3593,8 @@ impl BlockFormattingContext {
             float_ctx,
             &mut deadline_counter,
           )?;
-          let (fragment, next_y) = self.layout_block_child(
-            parent,
-            child,
-            containing_width,
-            constraints,
-            &mut margin_ctx,
-            current_y,
-            nearest_positioned_cb,
-            nearest_fixed_cb,
-            Some(&mut *float_ctx),
-            float_base_y,
-            paint_viewport,
-          )?;
+          let (fragment, next_y) =
+            layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
           content_height = content_height.max(fragment.bounds.max_y());
           current_y = next_y;
           let mut fragment = fragment;
@@ -3429,7 +3627,7 @@ impl BlockFormattingContext {
 
     // Resolve any trailing margins
     let trailing_margin = margin_ctx.pending_margin();
-    let allow_collapse_last = should_collapse_with_last_child(&parent.style);
+    let allow_collapse_last = !parent_is_root && should_collapse_with_last_child(&parent.style);
 
     // Check for bottom separation
     let parent_has_bottom_separation = resolve_length_for_width(
@@ -9036,7 +9234,6 @@ mod tests {
       vec![leaf],
     );
 
-    let mut margin_ctx = MarginCollapseContext::new();
     let containing_width = viewport.height;
     let constraints = LayoutConstraints::new(
       AvailableSpace::Definite(containing_width),
@@ -9046,13 +9243,12 @@ mod tests {
     let current_y = viewport.width + 10.0;
     let nearest_cb = ContainingBlock::viewport(viewport);
 
-    let (fragment, _) = fc
+    let fragment = fc
       .layout_block_child(
         &parent,
         &auto_box,
         containing_width,
         &constraints,
-        &mut margin_ctx,
         current_y,
         &nearest_cb,
         &nearest_cb,

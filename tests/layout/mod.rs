@@ -7,6 +7,7 @@ mod abspos_static_position_subgrid;
 mod aria_hidden_has_no_effect;
 mod aria_hidden_layout;
 mod br_linebreak;
+mod block_margin_collapse;
 mod content_visibility_auto_skip;
 mod first_line_first_letter_integration_test;
 mod flex_alignment_order_test;

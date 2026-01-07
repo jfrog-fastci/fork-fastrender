@@ -152,7 +152,12 @@ impl MarginCollapseContext {
 
   /// Adds a margin to the pending set
   pub fn push_margin(&mut self, margin: f32) {
-    self.pending_margin = self.pending_margin.add_margin(margin);
+    self.push_collapsible_margin(CollapsibleMargin::from_margin(margin));
+  }
+
+  /// Adds a pre-collapsed margin to the pending set.
+  pub fn push_collapsible_margin(&mut self, margin: CollapsibleMargin) {
+    self.pending_margin = self.pending_margin.collapse_with(margin);
   }
 
   /// Resolves and returns the collapsed margin, resetting pending state
@@ -183,23 +188,20 @@ impl MarginCollapseContext {
   /// 3. Return 0 offset (empty block takes no space)
   pub fn process_child_margins(
     &mut self,
-    margin_top: f32,
-    margin_bottom: f32,
+    margin_top: CollapsibleMargin,
+    margin_bottom: CollapsibleMargin,
     is_empty: bool,
   ) -> (f32, CollapsibleMargin) {
-    let top_margin = CollapsibleMargin::from_margin(margin_top);
-    let bottom_margin = CollapsibleMargin::from_margin(margin_bottom);
-
     if is_empty {
       // Empty block: top and bottom margins collapse with each other
-      let self_collapsed = top_margin.collapse_with(bottom_margin);
+      let self_collapsed = margin_top.collapse_with(margin_bottom);
       self.pending_margin = self.pending_margin.collapse_with(self_collapsed);
       (0.0, self.pending_margin)
     } else {
       // Non-empty block
-      let collapsed_top = self.pending_margin.collapse_with(top_margin);
+      let collapsed_top = self.pending_margin.collapse_with(margin_top);
       let offset = collapsed_top.resolve();
-      self.pending_margin = bottom_margin;
+      self.pending_margin = margin_bottom;
       self.at_start = false;
       (offset, self.pending_margin)
     }
@@ -209,22 +211,21 @@ impl MarginCollapseContext {
   pub fn process_child_with_clearance(
     &mut self,
     clearance: f32,
-    margin_top: f32,
-    margin_bottom: f32,
+    margin_top: CollapsibleMargin,
+    margin_bottom: CollapsibleMargin,
     is_empty: bool,
   ) -> (f32, CollapsibleMargin) {
     let pending_offset = self.pending_margin.resolve();
     self.pending_margin = CollapsibleMargin::ZERO;
 
     if is_empty {
-      let self_collapsed = CollapsibleMargin::from_margin(margin_top)
-        .collapse_with(CollapsibleMargin::from_margin(margin_bottom));
+      let self_collapsed = margin_top.collapse_with(margin_bottom);
       self.pending_margin = self_collapsed;
       (pending_offset + clearance, self.pending_margin)
     } else {
-      self.pending_margin = CollapsibleMargin::from_margin(margin_bottom);
+      self.pending_margin = margin_bottom;
       self.at_start = false;
-      (pending_offset + clearance + margin_top, self.pending_margin)
+      (pending_offset + clearance + margin_top.resolve(), self.pending_margin)
     }
   }
 
@@ -253,6 +254,17 @@ impl MarginCollapseContext {
     let value = self.pending_margin.resolve();
     self.pending_margin = CollapsibleMargin::ZERO;
     self.at_start = false;
+    value
+  }
+
+  /// Consumes the pending margin without treating it as in-flow content.
+  ///
+  /// This is useful when a box (e.g. a float) must be positioned after the
+  /// accumulated margin chain, but should not prevent parent/first-child
+  /// margin collapsing later in the same BFC.
+  pub fn consume_pending_without_marking_content(&mut self) -> f32 {
+    let value = self.pending_margin.resolve();
+    self.pending_margin = CollapsibleMargin::ZERO;
     value
   }
 }
@@ -315,7 +327,7 @@ pub fn should_collapse_with_first_child(parent_style: &ComputedStyle) -> bool {
 }
 
 /// Determines if margins should collapse between parent and last child
-pub fn should_collapse_with_last_child(parent_style: &ComputedStyle) -> bool {
+  pub fn should_collapse_with_last_child(parent_style: &ComputedStyle) -> bool {
   if parent_style.used_border_bottom_width().to_px() > 0.0 {
     return false;
   }
@@ -334,9 +346,13 @@ pub fn should_collapse_with_last_child(parent_style: &ComputedStyle) -> bool {
 /// Determines if a box establishes a new block formatting context
 pub fn establishes_bfc(style: &ComputedStyle) -> bool {
   use crate::style::display::Display;
+  use crate::style::float::Float;
   use crate::style::types::Overflow;
 
   if style.containment.size || style.containment.inline_size || style.containment.layout {
+    return true;
+  }
+  if style.float != Float::None {
     return true;
   }
   if style.position == Position::Absolute || style.position == Position::Fixed {
@@ -365,6 +381,7 @@ pub fn establishes_bfc(style: &ComputedStyle) -> bool {
 mod tests {
   use super::*;
   use crate::style::display::Display;
+  use crate::style::float::Float;
   use crate::style::types::BorderStyle;
   use crate::style::values::Length;
 
@@ -477,18 +494,30 @@ mod tests {
     let mut ctx = MarginCollapseContext::new();
 
     // First child
-    let (offset, _) = ctx.process_child_margins(20.0, 10.0, false);
+    let (offset, _) = ctx.process_child_margins(
+      CollapsibleMargin::from_margin(20.0),
+      CollapsibleMargin::from_margin(10.0),
+      false,
+    );
     assert_eq!(offset, 20.0);
 
     // Second child - margins collapse
-    let (offset2, _) = ctx.process_child_margins(30.0, 15.0, false);
+    let (offset2, _) = ctx.process_child_margins(
+      CollapsibleMargin::from_margin(30.0),
+      CollapsibleMargin::from_margin(15.0),
+      false,
+    );
     assert_eq!(offset2, 30.0); // max(10, 30)
   }
 
   #[test]
   fn test_context_empty_block() {
     let mut ctx = MarginCollapseContext::new();
-    let (offset, pending) = ctx.process_child_margins(20.0, 30.0, true);
+    let (offset, pending) = ctx.process_child_margins(
+      CollapsibleMargin::from_margin(20.0),
+      CollapsibleMargin::from_margin(30.0),
+      true,
+    );
     assert_eq!(offset, 0.0);
     assert_eq!(pending.resolve(), 30.0);
   }
@@ -496,7 +525,11 @@ mod tests {
   #[test]
   fn test_context_with_initial_margin() {
     let mut ctx = MarginCollapseContext::with_initial_margin(15.0);
-    let (offset, _) = ctx.process_child_margins(25.0, 0.0, false);
+    let (offset, _) = ctx.process_child_margins(
+      CollapsibleMargin::from_margin(25.0),
+      CollapsibleMargin::from_margin(0.0),
+      false,
+    );
     assert_eq!(offset, 25.0); // max(15, 25)
   }
 
@@ -616,6 +649,13 @@ mod tests {
   fn test_establishes_bfc_static() {
     let style = ComputedStyle::default();
     assert!(!establishes_bfc(&style));
+  }
+
+  #[test]
+  fn test_establishes_bfc_float() {
+    let mut style = ComputedStyle::default();
+    style.float = Float::Left;
+    assert!(establishes_bfc(&style));
   }
 
   #[test]

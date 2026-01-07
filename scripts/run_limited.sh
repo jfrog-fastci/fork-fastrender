@@ -60,6 +60,11 @@ to_kib() {
   return 1
 }
 
+# Convert human-friendly sizes to bytes for `prlimit`.
+#
+# Unlike `ulimit`, `prlimit` expects byte counts, and its CLI treats bare
+# numbers as bytes. Normalize suffix inputs (e.g. `12G`) to a byte count so
+# callers can use a consistent size syntax across both modes.
 to_bytes() {
   local raw="${1:-}"
   raw="${raw//[[:space:]]/}"
