@@ -8422,8 +8422,20 @@ impl FlexFormattingContext {
           taffy::style::AlignItems::Start
         }
       }
-      AlignItems::FlexStart => taffy::style::AlignItems::FlexStart,
-      AlignItems::FlexEnd => taffy::style::AlignItems::FlexEnd,
+      AlignItems::FlexStart => {
+        if axis_positive {
+          taffy::style::AlignItems::FlexStart
+        } else {
+          taffy::style::AlignItems::FlexEnd
+        }
+      }
+      AlignItems::FlexEnd => {
+        if axis_positive {
+          taffy::style::AlignItems::FlexEnd
+        } else {
+          taffy::style::AlignItems::FlexStart
+        }
+      }
       AlignItems::Center => taffy::style::AlignItems::Center,
       AlignItems::Baseline => taffy::style::AlignItems::Baseline,
       AlignItems::Stretch => taffy::style::AlignItems::Stretch,
@@ -11904,6 +11916,74 @@ mod tests {
     assert_eq!(fragment.children[0].bounds.x(), 80.0);
   }
 
+  #[test]
+  fn writing_mode_vertical_align_flex_start_and_end_map_to_block_edges() {
+    let fc = FlexFormattingContext::new();
+ 
+    let mut style = ComputedStyle::default();
+    style.display = Display::Flex;
+    style.flex_direction = FlexDirection::Row;
+    style.writing_mode = crate::style::types::WritingMode::VerticalRl;
+    style.align_items = AlignItems::FlexStart;
+    style.width = Some(Length::px(100.0));
+    style.width_keyword = None;
+ 
+    let child1 = BoxNode::new_block(
+      create_item_style(20.0, 10.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+ 
+    let mut child2_style = (*create_item_style(20.0, 10.0)).clone();
+    child2_style.align_self = Some(AlignItems::FlexEnd);
+    let child2 = BoxNode::new_block(Arc::new(child2_style), FormattingContextType::Block, vec![]);
+ 
+    let container = BoxNode::new_block(
+      Arc::new(style),
+      FormattingContextType::Flex,
+      vec![child1, child2],
+    );
+    let constraints = LayoutConstraints::definite(100.0, 100.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+ 
+    assert_eq!(fragment.children[0].bounds.x(), 80.0);
+    assert_eq!(fragment.children[1].bounds.x(), 0.0);
+  }
+ 
+  #[test]
+  fn rtl_column_align_flex_start_and_end_follow_inline_axis() {
+    let fc = FlexFormattingContext::new();
+ 
+    let mut style = ComputedStyle::default();
+    style.display = Display::Flex;
+    style.flex_direction = FlexDirection::Column;
+    style.direction = Direction::Rtl;
+    style.align_items = AlignItems::FlexStart;
+    style.width = Some(Length::px(100.0));
+    style.width_keyword = None;
+ 
+    let child1 = BoxNode::new_block(
+      create_item_style(20.0, 10.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+ 
+    let mut child2_style = (*create_item_style(20.0, 10.0)).clone();
+    child2_style.align_self = Some(AlignItems::FlexEnd);
+    let child2 = BoxNode::new_block(Arc::new(child2_style), FormattingContextType::Block, vec![]);
+ 
+    let container = BoxNode::new_block(
+      Arc::new(style),
+      FormattingContextType::Flex,
+      vec![child1, child2],
+    );
+    let constraints = LayoutConstraints::definite(100.0, 100.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+ 
+    assert_eq!(fragment.children[0].bounds.x(), 80.0);
+    assert_eq!(fragment.children[1].bounds.x(), 0.0);
+  }
+ 
   #[test]
   fn writing_mode_vertical_row_justify_start_and_end_follow_inline_axis() {
     let fc = FlexFormattingContext::new();
