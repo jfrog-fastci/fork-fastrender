@@ -8370,6 +8370,78 @@ mod tests {
   }
 
   #[test]
+  fn bloom_summary_pruning_handles_is_breakouts_in_next_sibling_subtree() {
+    // Breakouts also apply when the relative selector traverses into a sibling subtree: inner
+    // selectors can require ancestors that live outside the sibling subtree (for example, on the
+    // common parent of the anchor + sibling).
+    reset_has_counters();
+    set_selector_bloom_enabled(true);
+
+    let dom = element_with_attrs(
+      "div",
+      vec![("class", "a")],
+      vec![
+        element_with_attrs("div", vec![("class", "anchor")], vec![]),
+        element_with_attrs(
+          "div",
+          vec![("class", "b")],
+          vec![element_with_attrs("div", vec![("class", "c")], vec![])],
+        ),
+      ],
+    );
+
+    let id_map = enumerate_dom_ids(&dom);
+    let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
+
+    let selector = parse_selector(".anchor:has(+ :is(.a .b) .c)");
+    let anchor_node = dom.children.first().expect("anchor exists");
+    let anchor_id = *id_map
+      .get(&(anchor_node as *const DomNode))
+      .expect("anchor id exists");
+    let anchor_ancestors = [&dom];
+    let anchor = ElementRef::with_ancestors(anchor_node, &anchor_ancestors).with_node_id(anchor_id);
+
+    // Verify semantics without bloom-summary pruning (but with other pruning/caching enabled).
+    let matched_without_summary = {
+      let mut caches = SelectorCaches::default();
+      caches.set_epoch(next_selector_cache_epoch());
+      let mut context = MatchingContext::new(
+        MatchingMode::Normal,
+        None,
+        &mut caches,
+        QuirksMode::NoQuirks,
+        NeedsSelectorFlags::No,
+        MatchingForInvalidation::No,
+      );
+      context.extra_data = ShadowMatchData::for_document();
+      matches_selector(&selector, 0, None, &anchor, &mut context)
+    };
+    assert!(
+      matched_without_summary,
+      "expected selector semantics to match when bloom-summary pruning is disabled"
+    );
+
+    let mut caches = SelectorCaches::default();
+    caches.set_epoch(next_selector_cache_epoch());
+    let mut context = MatchingContext::new(
+      MatchingMode::Normal,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document()
+      .with_selector_blooms(Some(&bloom_store))
+      .with_node_to_id(Some(&id_map));
+
+    assert!(
+      matches_selector(&selector, 0, None, &anchor, &mut context),
+      "expected :has(+ ...) selector to match even though `.a` is outside the sibling subtree"
+    );
+  }
+
+  #[test]
   fn bloom_pruning_next_sibling_prunes_when_absent() {
     reset_has_counters();
     set_selector_bloom_enabled(true);
