@@ -723,88 +723,6 @@ impl DisplayListBuilder {
     }
   }
 
-  fn outline_bounds(style: &ComputedStyle, rect: Rect) -> Option<Rect> {
-    let width = style.outline_width.to_px();
-    let outline_style = style.outline_style.to_border_style();
-    if width <= 0.0
-      || matches!(
-        outline_style,
-        crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden
-      )
-    {
-      return None;
-    }
-    let offset = style.outline_offset.to_px();
-    let expand = width.abs() + offset.abs();
-    Some(rect.inflate(expand))
-  }
-
-  fn box_shadow_bounds(&self, rect: Rect, style: &ComputedStyle, inset: bool) -> Option<Rect> {
-    if style.box_shadow.is_empty() {
-      return None;
-    }
-    let rects = Self::background_rects(rect, style, self.viewport);
-    let base_rect = if inset { rects.padding } else { rects.border };
-    let mut min_x = base_rect.min_x();
-    let mut min_y = base_rect.min_y();
-    let mut max_x = base_rect.max_x();
-    let mut max_y = base_rect.max_y();
-    let mut changed = false;
-
-    for shadow in &style.box_shadow {
-      if shadow.inset != inset {
-        continue;
-      }
-      let offset_x = Self::resolve_length_for_paint(
-        &shadow.offset_x,
-        style.font_size,
-        style.root_font_size,
-        rect.width(),
-        self.viewport,
-      );
-      let offset_y = Self::resolve_length_for_paint(
-        &shadow.offset_y,
-        style.font_size,
-        style.root_font_size,
-        rect.width(),
-        self.viewport,
-      );
-      let blur = Self::resolve_length_for_paint(
-        &shadow.blur_radius,
-        style.font_size,
-        style.root_font_size,
-        rect.width(),
-        self.viewport,
-      )
-      .max(0.0);
-      let spread = Self::resolve_length_for_paint(
-        &shadow.spread_radius,
-        style.font_size,
-        style.root_font_size,
-        rect.width(),
-        self.viewport,
-      )
-      .max(-1e6);
-      let blur_pad = blur * 3.0;
-      let left = blur_pad + spread - offset_x.min(0.0);
-      let right = blur_pad + spread + offset_x.max(0.0);
-      let top = blur_pad + spread - offset_y.min(0.0);
-      let bottom = blur_pad + spread + offset_y.max(0.0);
-
-      min_x = min_x.min(base_rect.min_x() - left);
-      min_y = min_y.min(base_rect.min_y() - top);
-      max_x = max_x.max(base_rect.max_x() + right);
-      max_y = max_y.max(base_rect.max_y() + bottom);
-      changed = true;
-    }
-
-    if changed {
-      Some(Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y))
-    } else {
-      None
-    }
-  }
-
   fn fragment_paint_bounds(
     &self,
     fragment: &FragmentNode,
@@ -812,57 +730,12 @@ impl DisplayListBuilder {
     style: Option<&ComputedStyle>,
   ) -> Rect {
     let paint_bounds_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let mut bounds = absolute_rect;
-    if let Some(style) = style {
-      if let Some(outline) = Self::outline_bounds(style, absolute_rect) {
-        bounds = bounds.union(outline);
-      }
-      if let Some(shadows) = self.box_shadow_bounds(absolute_rect, style, false) {
-        bounds = bounds.union(shadows);
-      }
-      if let Some(inset) = self.box_shadow_bounds(absolute_rect, style, true) {
-        bounds = bounds.union(inset);
-      }
-      if !style.text_shadow.is_empty() {
-        let mut min_x = absolute_rect.min_x();
-        let mut min_y = absolute_rect.min_y();
-        let mut max_x = absolute_rect.max_x();
-        let mut max_y = absolute_rect.max_y();
-        for shadow in style.text_shadow.iter() {
-          let offset_x = Self::resolve_length_for_paint(
-            &shadow.offset_x,
-            style.font_size,
-            style.root_font_size,
-            absolute_rect.width(),
-            self.viewport,
-          );
-          let offset_y = Self::resolve_length_for_paint(
-            &shadow.offset_y,
-            style.font_size,
-            style.root_font_size,
-            absolute_rect.width(),
-            self.viewport,
-          );
-          let blur = Self::resolve_length_for_paint(
-            &shadow.blur_radius,
-            style.font_size,
-            style.root_font_size,
-            absolute_rect.width(),
-            self.viewport,
-          )
-          .max(0.0)
-            * 3.0;
-          min_x = min_x.min(absolute_rect.min_x() + offset_x - blur);
-          min_y = min_y.min(absolute_rect.min_y() + offset_y - blur);
-          max_x = max_x.max(absolute_rect.max_x() + offset_x + blur);
-          max_y = max_y.max(absolute_rect.max_y() + offset_y + blur);
-        }
-        bounds = bounds.union(Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y));
-      }
-      if fragment.table_borders.is_some() {
-        bounds = bounds.union(fragment.bounds.translate(absolute_rect.origin));
-      }
-    }
+    let bounds = crate::paint::paint_bounds::fragment_paint_bounds(
+      fragment,
+      absolute_rect,
+      style,
+      self.viewport,
+    );
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), paint_bounds_timer) {
       breakdown.record_fragment_paint_bounds(start.elapsed());
     }
@@ -4051,68 +3924,13 @@ impl DisplayListBuilder {
     percentage_base: f32,
     viewport: Option<(f32, f32)>,
   ) -> f32 {
-    if len.is_zero() {
-      return 0.0;
-    }
-
-    if len.calc.is_some() {
-      let needs_viewport = len.unit.is_viewport_relative()
-        || len
-          .calc
-          .as_ref()
-          .map(|c| c.has_viewport_relative())
-          .unwrap_or(false);
-      let (vw, vh) = match viewport {
-        Some(vp) => vp,
-        None if needs_viewport => (f32::NAN, f32::NAN),
-        None => (percentage_base, percentage_base),
-      };
-      let resolved = len
-        .resolve_with_context(Some(percentage_base), vw, vh, font_size, root_font_size)
-        .unwrap_or_else(|| {
-          if len.unit.is_absolute() {
-            len.to_px()
-          } else {
-            len.value * font_size
-          }
-        });
-      return if resolved.is_finite() { resolved } else { 0.0 };
-    }
-
-    let resolved = if len.unit.is_absolute() {
-      len.to_px()
-    } else if len.unit.is_percentage() {
-      if percentage_base.is_finite() {
-        (len.value / 100.0) * percentage_base
-      } else {
-        len.value * font_size
-      }
-    } else if len.unit.is_viewport_relative() {
-      if let Some((vw, vh)) = viewport {
-        len
-          .resolve_with_viewport(vw, vh)
-          .unwrap_or(len.value * font_size)
-      } else {
-        len.value * font_size
-      }
-    } else if len.unit.is_font_relative() {
-      let px = if matches!(len.unit, LengthUnit::Rem) {
-        root_font_size
-      } else {
-        font_size
-      };
-      len
-        .resolve_with_font_size(px)
-        .unwrap_or(len.value * font_size)
-    } else {
-      len.value
-    };
-
-    if resolved.is_finite() {
-      resolved
-    } else {
-      0.0
-    }
+    crate::paint::paint_bounds::resolve_length_for_paint(
+      len,
+      font_size,
+      root_font_size,
+      percentage_base,
+      viewport,
+    )
   }
 
   #[inline]
@@ -10699,6 +10517,41 @@ mod tests {
       sc_bounds,
       Some(Rect::from_xywh(32.0, 32.0, 36.0, 36.0)),
       "stacking context bounds should include outline paint overflow"
+    );
+  }
+
+  #[test]
+  fn stacking_context_bounds_include_text_shadow_paint_overflow() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.isolation = crate::style::types::Isolation::Isolate;
+    style.text_shadow = Arc::from([crate::css::types::TextShadow {
+      offset_x: Length::px(-20.0),
+      offset_y: Length::px(0.0),
+      blur_radius: Length::px(5.0),
+      color: Some(Rgba::BLACK),
+    }]);
+
+    let child = FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 40.0, 20.0, 20.0),
+      vec![],
+      Arc::new(style),
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![child]);
+
+    let list = DisplayListBuilder::new()
+      .with_viewport_size(200.0, 200.0)
+      .build_with_stacking_tree(&root);
+    let items = list.items();
+
+    let sc_bounds = items.iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(sc) if sc.is_isolated => Some(sc.bounds),
+      _ => None,
+    });
+    assert_eq!(
+      sc_bounds,
+      Some(Rect::from_xywh(5.0, 25.0, 55.0, 50.0)),
+      "stacking context bounds should include text-shadow paint overflow"
     );
   }
 

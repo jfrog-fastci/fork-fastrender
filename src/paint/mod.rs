@@ -103,6 +103,7 @@ pub mod iframe;
 pub mod motion_path;
 pub mod object_fit;
 pub mod optimize;
+pub(crate) mod paint_bounds;
 mod paint_thread_pool;
 pub mod painter;
 pub mod pixmap;
