@@ -12,10 +12,11 @@ use fastrender::css::loader::{infer_base_url, resolve_href};
 use fastrender::dom::DomCompatibilityMode;
 use fastrender::html::encoding::decode_html_bytes;
 use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
+use fastrender::html::referrer_policy::extract_referrer_policy_from_html;
 use fastrender::render_control::{with_deadline, RenderDeadline};
 use fastrender::resource::{
   parse_cached_html_meta, FetchRequest, FetchedResource, HttpFetcher, HttpRetryPolicy,
-  ResourceFetcher,
+  ReferrerPolicy, ResourceFetcher,
 };
 use fastrender::style::media::MediaType;
 use fastrender::text::font_db::FontConfig;
@@ -254,6 +255,7 @@ pub struct PreparedDocument {
   pub html: String,
   pub base_hint: String,
   pub base_url: String,
+  pub referrer_policy: ReferrerPolicy,
 }
 
 fn derive_base_url(html: &str, base_hint: &str) -> String {
@@ -262,11 +264,22 @@ fn derive_base_url(html: &str, base_hint: &str) -> String {
 
 impl PreparedDocument {
   pub fn new(html: String, base_hint: String) -> Self {
+    Self::new_with_response_referrer_policy(html, base_hint, None)
+  }
+
+  pub fn new_with_response_referrer_policy(
+    html: String,
+    base_hint: String,
+    response_referrer_policy: Option<ReferrerPolicy>,
+  ) -> Self {
     let base_url = derive_base_url(&html, &base_hint);
+    let meta_policy = extract_referrer_policy_from_html(&html);
+    let referrer_policy = meta_policy.or(response_referrer_policy).unwrap_or_default();
     Self {
       html,
       base_hint,
       base_url,
+      referrer_policy,
     }
   }
 
@@ -296,7 +309,11 @@ const MAX_CACHED_HTML_META_BYTES: usize = 256 * 1024;
 /// Decode a fetched HTML resource using the provided base URL hint.
 pub fn decode_html_resource(resource: &FetchedResource, base_hint: &str) -> PreparedDocument {
   let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
-  PreparedDocument::new(html, base_hint.to_string())
+  PreparedDocument::new_with_response_referrer_policy(
+    html,
+    base_hint.to_string(),
+    resource.response_referrer_policy,
+  )
 }
 
 /// Load cached HTML from disk, honoring optional sidecar metadata.
@@ -488,7 +505,9 @@ fn follow_client_redirects_state(
       ));
 
       match fetcher.fetch_with_request(
-        FetchRequest::document_no_user(&target).with_referrer_url(state.doc.base_hint.as_str()),
+        FetchRequest::document_no_user(&target)
+          .with_referrer_url(state.doc.base_hint.as_str())
+          .with_referrer_policy(state.doc.referrer_policy),
       ) {
         Ok(mut res) => {
           if is_error_status(res.status) {
@@ -757,6 +776,60 @@ mod tests {
     let base_hint = "https://good.example/page.html";
     let doc = PreparedDocument::new(html.to_string(), base_hint.to_string());
     assert_eq!(doc.base_url, base_hint);
+  }
+
+  #[test]
+  fn prepared_document_extracts_meta_referrer_policy() {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="refresh" content="0; url=https://example.com/next">
+  </head>
+  <body>start</body>
+</html>"#;
+    let doc = PreparedDocument::new(html.to_string(), "https://origin.example/".to_string());
+    assert_eq!(doc.referrer_policy, ReferrerPolicy::NoReferrer);
+
+    #[derive(Default)]
+    struct PolicyFetcher {
+      last_policy: Mutex<Option<ReferrerPolicy>>,
+    }
+
+    impl ResourceFetcher for PolicyFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("follow_client_redirects should use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        *self.last_policy.lock().unwrap() = Some(req.referrer_policy);
+        let mut res = FetchedResource::new(
+          b"<!doctype html><html><body>done</body></html>".to_vec(),
+          Some("text/html".to_string()),
+        );
+        res.status = Some(200);
+        Ok(res)
+      }
+    }
+
+    let fetcher = PolicyFetcher::default();
+    let _ = follow_client_redirects(&fetcher, doc, |_| {});
+    assert_eq!(
+      *fetcher.last_policy.lock().unwrap(),
+      Some(ReferrerPolicy::NoReferrer),
+    );
+  }
+
+  #[test]
+  fn decode_html_resource_meta_referrer_policy_overrides_response_header() {
+    let html = r#"<!doctype html><html><head>
+      <meta name="referrer" content="origin">
+    </head><body></body></html>"#;
+    let mut resource =
+      FetchedResource::new(html.as_bytes().to_vec(), Some("text/html".to_string()));
+    resource.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+    let doc = decode_html_resource(&resource, "https://example.com/");
+    assert_eq!(doc.referrer_policy, ReferrerPolicy::Origin);
   }
 }
 

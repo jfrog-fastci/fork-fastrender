@@ -1371,7 +1371,9 @@ fn fetch_document(
       eprintln!("Following meta refresh to: {target}");
       let referrer = doc.base_hint.clone();
       match fetcher.fetch_with_request(
-        FetchRequest::document_no_user(&target).with_referrer_url(&referrer),
+        FetchRequest::document_no_user(&target)
+          .with_referrer_url(&referrer)
+          .with_referrer_policy(doc.referrer_policy),
       ) {
         Ok(res) => {
           resource = res;
@@ -1389,7 +1391,9 @@ fn fetch_document(
         eprintln!("Following JS redirect to: {target}");
         let referrer = doc.base_hint.clone();
         match fetcher.fetch_with_request(
-          FetchRequest::document_no_user(&target).with_referrer_url(&referrer),
+          FetchRequest::document_no_user(&target)
+            .with_referrer_url(&referrer)
+            .with_referrer_policy(doc.referrer_policy),
         ) {
           Ok(res) => {
             resource = res;
