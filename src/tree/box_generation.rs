@@ -2148,6 +2148,49 @@ fn serialize_svg_subtree(
     Some(SvgViewportSize { width, height })
   }
 
+  fn svg_uses_xlink_prefix(node: &StyledNode) -> bool {
+    fn attr_name_uses_xlink_prefix(name: &str) -> bool {
+      const NEEDLE: &[u8] = b"xlink:";
+      let bytes = name.as_bytes();
+      if bytes.len() < NEEDLE.len() {
+        return false;
+      }
+      for idx in 0..=bytes.len() - NEEDLE.len() {
+        if bytes[idx].to_ascii_lowercase() != b'x' {
+          continue;
+        }
+        if bytes[idx..idx + NEEDLE.len()]
+          .iter()
+          .zip(NEEDLE)
+          .all(|(a, b)| a.to_ascii_lowercase() == *b)
+        {
+          return true;
+        }
+      }
+      false
+    }
+
+    if let crate::dom::DomNodeType::Element { attributes, .. } = &node.node.node_type {
+      if attributes
+        .iter()
+        .any(|(name, _)| attr_name_uses_xlink_prefix(name))
+      {
+        return true;
+      }
+    }
+
+    node.children.iter().any(svg_uses_xlink_prefix)
+  }
+
+  let needs_xmlns_xlink = svg_uses_xlink_prefix(styled)
+    && matches!(
+      &styled.node.node_type,
+      crate::dom::DomNodeType::Element { attributes, .. }
+        if !attributes
+          .iter()
+          .any(|(name, _)| name.eq_ignore_ascii_case("xmlns:xlink"))
+    );
+
   fn serialize_foreign_object_placeholder(
     styled: &StyledNode,
     attrs: &[(String, String)],
@@ -2325,6 +2368,7 @@ fn serialize_svg_subtree(
     parent_ns: Option<&str>,
     parent_svg_styles: Option<&ComputedStyle>,
     svg_viewport: Option<SvgViewportSize>,
+    needs_xmlns_xlink: bool,
     is_root: bool,
     out: &mut String,
     fallback_out: &mut Option<String>,
@@ -2341,6 +2385,7 @@ fn serialize_svg_subtree(
             parent_ns,
             parent_svg_styles,
             svg_viewport,
+            needs_xmlns_xlink,
             false,
             out,
             fallback_out,
@@ -2358,6 +2403,7 @@ fn serialize_svg_subtree(
             parent_ns,
             parent_svg_styles,
             svg_viewport,
+            needs_xmlns_xlink,
             false,
             out,
             fallback_out,
@@ -2401,6 +2447,16 @@ fn serialize_svg_subtree(
             .any(|(name, _)| name.eq_ignore_ascii_case("xmlns"));
           if !has_xmlns {
             attrs.push(("xmlns".to_string(), current_ns.to_string()));
+          }
+          if needs_xmlns_xlink
+            && !attrs
+              .iter()
+              .any(|(name, _)| name.eq_ignore_ascii_case("xmlns:xlink"))
+          {
+            attrs.push((
+              "xmlns:xlink".to_string(),
+              "http://www.w3.org/1999/xlink".to_string(),
+            ));
           }
 
           let style_attr = root_style(&styled.styles);
@@ -2505,6 +2561,7 @@ fn serialize_svg_subtree(
             Some(current_ns),
             next_parent_svg_styles,
             next_svg_viewport,
+            needs_xmlns_xlink,
             false,
             out,
             fallback_out,
@@ -2540,6 +2597,7 @@ fn serialize_svg_subtree(
     None,
     None,
     None,
+    needs_xmlns_xlink,
     true,
     &mut out,
     &mut fallback_out,

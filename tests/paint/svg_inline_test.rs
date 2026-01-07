@@ -492,6 +492,30 @@ fn foreign_object_html_percent_sizing_fills_viewport() {
 }
 
 #[test]
+fn inline_svg_renders_use_xlink_href_without_explicit_xmlns_xlink() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r##"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <defs>
+          <rect id="shape" width="20" height="20" fill="rgb(0, 128, 0)" />
+        </defs>
+        <use xlink:href="#shape"></use>
+      </svg>
+      "##;
+
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
+      assert_eq!(pixel(&pixmap, 10, 10), [0, 128, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn display_list_backend_renders_foreign_object_html_not_placeholder() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
