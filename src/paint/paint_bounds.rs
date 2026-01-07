@@ -330,27 +330,7 @@ fn resolve_length_for_border_image(
   root_font_size: f32,
   viewport: Option<(f32, f32)>,
 ) -> f32 {
-  let needs_viewport = len.unit.is_viewport_relative()
-    || len
-      .calc
-      .as_ref()
-      .map(|c| c.has_viewport_relative())
-      .unwrap_or(false);
-  let (vw, vh) = match viewport {
-    Some(vp) => vp,
-    None if needs_viewport => (f32::NAN, f32::NAN),
-    None => (0.0, 0.0),
-  };
-
-  len
-    .resolve_with_context(Some(percentage_base), vw, vh, font_size, root_font_size)
-    .unwrap_or_else(|| {
-      if len.unit.is_absolute() {
-        len.to_px()
-      } else {
-        len.value * font_size
-      }
-    })
+  resolve_length_for_paint(len, font_size, root_font_size, percentage_base, viewport)
 }
 
 fn resolve_border_image_widths(
@@ -510,4 +490,20 @@ pub(crate) fn border_image_paint_bounds(
   }
 
   Some(expanded)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn border_image_viewport_units_require_viewport() {
+    let len = Length::new(10.0, LengthUnit::Vw);
+    let resolved =
+      resolve_length_for_border_image(&len, 100.0, 16.0, 16.0, Some((200.0, 100.0)));
+    assert!((resolved - 20.0).abs() < 1e-6);
+
+    let unresolved = resolve_length_for_border_image(&len, 100.0, 16.0, 16.0, None);
+    assert_eq!(unresolved, 0.0);
+  }
 }
