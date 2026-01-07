@@ -8,25 +8,29 @@ fn select_listbox_emits_rows_and_selection_highlight() {
     <!doctype html>
     <style>
       body { margin: 0; }
-      select { display: block; margin: 0; }
+      select { margin: 0; }
     </style>
-    <select id="multi" multiple size="4">
-      <optgroup label="Enabled group">
-        <option>One</option>
-        <option selected>Two</option>
-      </optgroup>
-      <optgroup label="Disabled group" disabled>
-        <option selected>Three</option>
-        <option>Four</option>
-      </optgroup>
-      <option>Outside</option>
-    </select>
-    <select id="size3" size="3">
-      <option>Alpha</option>
-      <option selected>Beta</option>
-      <option>Gamma</option>
-      <option>Delta</option>
-    </select>
+    <div>
+      <select id="multi" multiple size="4">
+        <optgroup label="Enabled group">
+          <option>One</option>
+          <option selected>Two</option>
+        </optgroup>
+        <optgroup label="Disabled group" disabled>
+          <option selected>Three</option>
+          <option>Four</option>
+        </optgroup>
+        <option>Outside</option>
+      </select>
+    </div>
+    <div>
+      <select id="size3" size="3">
+        <option>Alpha</option>
+        <option selected>Beta</option>
+        <option>Gamma</option>
+        <option>Delta</option>
+      </select>
+    </div>
   "#;
 
   let mut renderer = FastRender::new().expect("renderer");
