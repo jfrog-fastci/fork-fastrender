@@ -8353,6 +8353,7 @@ impl FastRender {
       let mut include_background_color = false;
       let mut include_display = false;
       let mut include_opacity = false;
+      let mut include_z_index = false;
       let mut include_font_size = false;
       for name in container_style_query_properties.iter() {
         match name.to_ascii_lowercase().as_str() {
@@ -8360,6 +8361,7 @@ impl FastRender {
           "background-color" => include_background_color = true,
           "display" => include_display = true,
           "opacity" => include_opacity = true,
+          "z-index" => include_z_index = true,
           "font-size" => include_font_size = true,
           _ => {}
         }
@@ -8370,6 +8372,7 @@ impl FastRender {
         && !include_background_color
         && !include_display
         && !include_opacity
+        && !include_z_index
         && !include_font_size
       {
         None
@@ -8380,6 +8383,7 @@ impl FastRender {
           include_background_color,
           include_display,
           include_opacity,
+          include_z_index,
           include_font_size,
         })
       };
@@ -12424,6 +12428,7 @@ struct ContainerQueryFingerprintConfig {
   include_background_color: bool,
   include_display: bool,
   include_opacity: bool,
+  include_z_index: bool,
   include_font_size: bool,
 }
 
@@ -12515,6 +12520,9 @@ fn container_query_context_fingerprint(
       }
       if config.include_opacity {
         info.styles.opacity.to_bits().hash(&mut hasher);
+      }
+      if config.include_z_index {
+        info.styles.z_index.hash(&mut hasher);
       }
       if config.include_font_size {
         info.styles.font_size.to_bits().hash(&mut hasher);
@@ -16460,6 +16468,7 @@ mod tests {
       include_background_color: false,
       include_display: false,
       include_opacity: false,
+      include_z_index: false,
       include_font_size: false,
     };
 
@@ -16539,6 +16548,7 @@ mod tests {
       include_background_color: false,
       include_display: false,
       include_opacity: false,
+      include_z_index: false,
       include_font_size: false,
     };
 
@@ -16609,6 +16619,7 @@ mod tests {
       include_background_color: false,
       include_display: false,
       include_opacity: true,
+      include_z_index: false,
       include_font_size: false,
     };
 
@@ -16637,6 +16648,78 @@ mod tests {
 
     let ctx_a = ctx_with_opacity(&media_ctx, 0.25);
     let ctx_b = ctx_with_opacity(&media_ctx, 0.75);
+    let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
+    let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
+    assert_ne!(
+      fp_a, fp_b,
+      "fingerprint should change when tracked style-query properties change"
+    );
+
+    // Without a config, style-query properties should not affect the fingerprint.
+    let fp_a_untracked = container_query_context_fingerprint(&ctx_a, None);
+    let fp_b_untracked = container_query_context_fingerprint(&ctx_b, None);
+    assert_eq!(
+      fp_a_untracked, fp_b_untracked,
+      "untracked style-query properties should not affect the fingerprint"
+    );
+  }
+
+  #[test]
+  fn container_query_fingerprint_tracks_z_index_used_by_style_queries() {
+    let stylesheet = crate::css::parser::parse_stylesheet(
+      "@container style(z-index > 0) { .a { color: red; } }",
+    )
+    .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
+
+    assert!(
+      metadata.container_style_query_properties.contains("z-index"),
+      "metadata should track style-query property"
+    );
+
+    let mut custom_properties: Vec<String> = metadata
+      .container_style_query_custom_properties
+      .into_iter()
+      .chain(metadata.container_size_query_custom_properties.into_iter())
+      .collect();
+    custom_properties.sort();
+    custom_properties.dedup();
+    let cfg = ContainerQueryFingerprintConfig {
+      custom_properties,
+      include_color: false,
+      include_background_color: false,
+      include_display: false,
+      include_opacity: false,
+      include_z_index: true,
+      include_font_size: false,
+    };
+
+    fn ctx_with_z_index(media_ctx: &MediaContext, z_index: Option<i32>) -> ContainerQueryContext {
+      let mut style = ComputedStyle::default();
+      style.z_index = z_index;
+      let mut containers = HashMap::new();
+      containers.insert(
+        1usize,
+        crate::style::cascade::ContainerQueryInfo {
+          width: 100.0,
+          height: 200.0,
+          inline_size: 100.0,
+          block_size: 200.0,
+          container_type: crate::style::types::ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(style),
+        },
+      );
+      ContainerQueryContext {
+        base_media: media_ctx.clone(),
+        containers,
+      }
+    }
+
+    let ctx_a = ctx_with_z_index(&media_ctx, Some(1));
+    let ctx_b = ctx_with_z_index(&media_ctx, Some(2));
     let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
     let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
     assert_ne!(
@@ -16685,6 +16768,7 @@ mod tests {
       include_background_color: false,
       include_display: false,
       include_opacity: false,
+      include_z_index: false,
       include_font_size: false,
     };
 
@@ -16756,6 +16840,7 @@ mod tests {
       include_background_color: false,
       include_display: false,
       include_opacity: false,
+      include_z_index: false,
       include_font_size: false,
     };
 

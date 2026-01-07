@@ -1408,6 +1408,17 @@ fn eval_plain_style_feature(
     "display" => Display::parse(resolved_value)
       .map(|display| display == styles.display)
       .unwrap_or(false),
+    "z-index" => {
+      if resolved_value.eq_ignore_ascii_case("auto") {
+        styles.z_index.is_none()
+      } else {
+        resolved_value
+          .parse::<f32>()
+          .ok()
+          .filter(|v| v.is_finite())
+          .is_some_and(|v| styles.z_index == Some(v as i32))
+      }
+    }
     "opacity" => resolved_value
       .parse::<f32>()
       .ok()
@@ -1466,6 +1477,7 @@ fn eval_boolean_style_feature(name: &str, container: &ContainerQueryInfo) -> boo
       "display" => styles.display != initial.display,
       "color" => styles.color != initial.color,
       "background-color" => styles.background_color != initial.background_color,
+      "z-index" => styles.z_index != initial.z_index,
       "opacity" => (styles.opacity - initial.opacity).abs() > 1e-6,
       "font-size" => (styles.font_size - initial.font_size).abs() > 1e-6,
       _ => false,
@@ -1571,6 +1583,10 @@ fn eval_style_range_value(
       "font-size" => Some(NumericValue {
         ty: NumericType::LengthPx,
         value: styles.font_size,
+      }),
+      "z-index" => styles.z_index.map(|z| NumericValue {
+        ty: NumericType::Number,
+        value: z as f32,
       }),
       "opacity" => Some(NumericValue {
         ty: NumericType::Number,

@@ -137,6 +137,46 @@ fn container_style_query_resolves_var_in_opacity_value() {
 }
 
 #[test]
+fn container_style_query_matches_z_index() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; z-index: 5; }
+      .child { color: rgb(0 0 255); }
+      @container style(z-index: 5) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_resolves_var_in_z_index_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; z-index: 5; --z: 5; }
+      .child { color: rgb(0 0 255); }
+      @container style(z-index: var(--z)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_resolves_var_fallback_in_property_value() {
   let html = r#"
     <style>
@@ -320,6 +360,32 @@ fn container_style_query_boolean_opacity_matches_when_non_initial() {
 }
 
 #[test]
+fn container_style_query_boolean_z_index_matches_when_non_initial() {
+  let html = r#"
+    <style>
+      .container-default { container-type: inline-size; }
+      .container-raised { container-type: inline-size; z-index: 1; }
+      .child { color: rgb(0 0 255); }
+      @container style(z-index) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-default">
+      <div id="default" class="child">hello</div>
+    </div>
+    <div class="container-raised">
+      <div id="raised" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let default = find_by_id(&styled, "default").expect("default element");
+  let raised = find_by_id(&styled, "raised").expect("raised element");
+  assert_eq!(default.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(raised.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches() {
   let html = r#"
      <style>
@@ -369,6 +435,32 @@ fn container_style_query_range_feature_matches_opacity() {
   let high = find_by_id(&styled, "high").expect("high element");
   assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_z_index() {
+  let html = r#"
+    <style>
+      .container-below { container-type: inline-size; z-index: -1; }
+      .container-above { container-type: inline-size; z-index: 2; }
+      .child { color: rgb(0 0 255); }
+      @container style(z-index > 0) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-below">
+      <div id="below" class="child">hello</div>
+    </div>
+    <div class="container-above">
+      <div id="above" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let below = find_by_id(&styled, "below").expect("below element");
+  let above = find_by_id(&styled, "above").expect("above element");
+  assert_eq!(below.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(above.styles.color, Rgba::rgb(255, 0, 0));
 }
 
 #[test]
