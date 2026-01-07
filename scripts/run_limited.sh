@@ -139,19 +139,10 @@ fi
 
 cmd=("$@")
 
-if command -v prlimit >/dev/null 2>&1; then
+# Note: some environments ship a `prlimit` build that segfaults when setting `--as` (RLIMIT_AS).
+# Prefer `ulimit` for address-space limits, and only use `prlimit` when `--as` is disabled.
+if command -v prlimit >/dev/null 2>&1 && [[ -z "${AS}" || "${AS}" == "0" ]]; then
   pl=(prlimit)
-  if [[ -n "${AS}" && "${AS}" != "0" ]]; then
-    if [[ "${AS}" == "unlimited" ]]; then
-      pl+=(--as=unlimited)
-    else
-      as_bytes="$(to_bytes "${AS}")" || {
-        echo "invalid --as size: ${AS}" >&2
-        exit 2
-      }
-      pl+=(--as="${as_bytes}")
-    fi
-  fi
   if [[ -n "${RSS}" && "${RSS}" != "0" ]]; then
     if [[ "${RSS}" == "unlimited" ]]; then
       pl+=(--rss=unlimited)
@@ -182,18 +173,26 @@ fi
 
 # Fallback: ulimit. (Not all resources are enforceable; RSS is typically ignored.)
 if [[ -n "${AS}" && "${AS}" != "0" ]]; then
-  as_kib="$(to_kib "${AS}")" || {
-    echo "invalid --as size: ${AS}" >&2
-    exit 2
-  }
-  ulimit -v "${as_kib}"
+  if [[ "${AS}" == "unlimited" ]]; then
+    ulimit -v unlimited
+  else
+    as_kib="$(to_kib "${AS}")" || {
+      echo "invalid --as size: ${AS}" >&2
+      exit 2
+    }
+    ulimit -v "${as_kib}"
+  fi
 fi
 if [[ -n "${STACK}" && "${STACK}" != "0" ]]; then
-  stack_kib="$(to_kib "${STACK}")" || {
-    echo "invalid --stack size: ${STACK}" >&2
-    exit 2
-  }
-  ulimit -s "${stack_kib}"
+  if [[ "${STACK}" == "unlimited" ]]; then
+    ulimit -s unlimited
+  else
+    stack_kib="$(to_kib "${STACK}")" || {
+      echo "invalid --stack size: ${STACK}" >&2
+      exit 2
+    }
+    ulimit -s "${stack_kib}"
+  fi
 fi
 if [[ -n "${CPU}" && "${CPU}" != "0" ]]; then
   if ! [[ "${CPU}" =~ ^[0-9]+$ ]]; then

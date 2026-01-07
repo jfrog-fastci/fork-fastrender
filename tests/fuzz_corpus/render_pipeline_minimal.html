@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>render_pipeline_minimal</title>
+<style>
+  :root { --c: #08f; --pad: 4px; }
+  body { margin: 0; font: 14px/1.2 sans-serif; }
+  #root { display: flex; gap: var(--pad); padding: var(--pad); align-items: flex-start; }
+  #root::before { content: "before"; color: var(--c); }
+  .box {
+    width: calc(40px + var(--pad));
+    height: 24px;
+    background: var(--c);
+    transform: rotate(1deg);
+    filter: blur(0.2px);
+  }
+  table { border-collapse: collapse; }
+  td { border: 1px solid #ccc; padding: 2px; }
+</style>
+<body>
+  <div id="root">
+    <div class="box"></div>
+    <table>
+      <tr><td>A</td><td>B</td></tr>
+    </table>
+  </div>
+</body>
+

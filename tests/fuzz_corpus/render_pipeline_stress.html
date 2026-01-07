@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>render_pipeline_stress</title>
+<style>
+  @font-face {
+    font-family: "FuzzFont";
+    src: url(data:font/woff2;base64,AA==) format("woff2");
+    font-style: normal;
+    font-weight: 400;
+  }
+
+  :root {
+    --gap: 6px;
+    --pad: 3px;
+    --rot: 5deg;
+    --a: 12px;
+  }
+
+  body {
+    margin: 0;
+    font: 13px/1.3 "FuzzFont", system-ui, sans-serif;
+    counter-reset: sec;
+    background: linear-gradient(90deg, #fff, #f6f6ff);
+  }
+
+  section { counter-increment: sec; }
+  section::before { content: "S" counter(sec) ": "; color: #246; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    gap: calc(var(--gap) + var(--pad));
+    padding: var(--pad);
+  }
+
+  .flex {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--gap);
+    transform: rotate(var(--rot));
+    filter: blur(0.4px) drop-shadow(1px 1px 1px rgba(0, 0, 0, 0.2));
+  }
+
+  .card {
+    width: calc(50% - var(--gap));
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    background: conic-gradient(from 180deg at 50% 50%, #fdd, #ddf, #dfd, #fdd);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+    padding: var(--pad);
+  }
+  .card::after { content: " [" attr(data-k) "]"; color: #444; }
+
+  table { border-collapse: collapse; width: 100%; }
+  td, th { border: 1px solid #aaa; padding: 2px; }
+  .nested { display: table; }
+
+  #host { border: 1px dashed #999; padding: var(--pad); }
+</style>
+<body>
+  <div class="grid">
+    <div class="flex">
+      <section class="card" data-k="a"><b>bold</b> <i>italic</i> <span style="font-size: calc(var(--a) * 1);">calc</span></section>
+      <section class="card" data-k="b"><span style="display:inline-block; transform: translate(2px, 1px) scale(1.1);">transform</span></section>
+      <section class="card" data-k="c">
+        <ul>
+          <li>one</li>
+          <li>two</li>
+        </ul>
+      </section>
+    </div>
+
+    <div class="nested">
+      <table>
+        <tr><th>h1</th><th>h2</th></tr>
+        <tr>
+          <td>
+            <table>
+              <tr><td>inner</td><td>table</td></tr>
+            </table>
+          </td>
+          <td style="display:flex; gap: 2px;">
+            <div style="width: 10px; height: 10px; background: #cfc;"></div>
+            <div style="width: 10px; height: 10px; background: #ccf;"></div>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div id="host">
+    <template shadowrootmode="open">
+      <style>
+        :host { display: block; }
+        .shadow { color: #900; }
+        .shadow::before { content: "shadow:"; }
+      </style>
+      <div class="shadow"><slot></slot></div>
+    </template>
+    light-dom
+  </div>
+</body>
+

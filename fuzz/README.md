@@ -24,6 +24,9 @@ cargo install cargo-fuzz
   samples them against a styled DOM tree.
 - `color_fonts`: Builds fonts from arbitrary bytes and exercises color glyph
   rendering (bitmaps, SVG-in-OT, COLR).
+- `render_pipeline`: Runs the full HTML+CSS → pixels pipeline (DOM parse →
+  cascade → box tree → layout → paint) under strict timeouts with network
+  fetching disabled.
 
 ## Running
 
@@ -32,6 +35,7 @@ Quick smoke runs:
 ```
 cargo fuzz run css_parser -- -runs=1000
 cargo fuzz run selectors tests/fuzz_corpus -- -max_total_time=10
+cargo fuzz run render_pipeline tests/fuzz_corpus -- -runs=1000
 ```
 
 You can point any target at additional corpora (e.g. `tests/fuzz_corpus/` which
