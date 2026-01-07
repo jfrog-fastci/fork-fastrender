@@ -47,6 +47,7 @@ mod sideways_lr_regressions;
 mod sticky_nested;
 mod subgrid;
 mod subgrid_auto_span;
+mod subgrid_autorepeat_named_lines;
 mod table_anonymous_inheritance;
 mod table_cell_placement;
 mod table_collapsed_borders;

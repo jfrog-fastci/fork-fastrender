@@ -17,6 +17,9 @@ static SET_BUNDLED_FONTS: Once = Once::new();
 fn ensure_bundled_fonts() {
   SET_BUNDLED_FONTS.call_once(|| {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+    if std::env::var("RAYON_NUM_THREADS").is_err() {
+      std::env::set_var("RAYON_NUM_THREADS", "4");
+    }
   });
 }
 

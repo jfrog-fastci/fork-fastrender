@@ -461,6 +461,53 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
   pub(crate) fn set_explicit_row_count(&mut self, count: u16) {
     self.explicit_row_count = count;
   }
+
+  pub(crate) fn expanded_row_line_names(&self) -> Vec<Vec<S>> {
+    self.expanded_line_names(GridAreaAxis::Row)
+  }
+
+  pub(crate) fn expanded_column_line_names(&self) -> Vec<Vec<S>> {
+    self.expanded_line_names(GridAreaAxis::Column)
+  }
+
+  fn expanded_line_names(&self, axis: GridAreaAxis) -> Vec<Vec<S>> {
+    let (map, explicit_track_count) = match axis {
+      GridAreaAxis::Row => (&self.row_lines, self.explicit_row_count),
+      GridAreaAxis::Column => (&self.column_lines, self.explicit_column_count),
+    };
+
+    let mut line_count_including_end = explicit_track_count.saturating_add(1);
+    for lines in map.values() {
+      if let Some(max_line) = lines.iter().copied().max() {
+        line_count_including_end = line_count_including_end.max(max_line);
+      }
+    }
+
+    let line_count = line_count_including_end as usize;
+    let mut result: Vec<Vec<S>> = Vec::with_capacity(line_count);
+    for _ in 0..line_count {
+      result.push(Vec::new());
+    }
+
+    for (name, lines) in map.iter() {
+      for &line in lines.iter() {
+        if line == 0 {
+          continue;
+        }
+        let idx = (line - 1) as usize;
+        if idx < result.len() {
+          result[idx].push(name.0.clone());
+        }
+      }
+    }
+
+    for names in result.iter_mut() {
+      names.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+      names.dedup_by(|a, b| a.as_ref() == b.as_ref());
+    }
+
+    result
+  }
 }
 
 impl<S: CheapCloneStr> Debug for NamedLineResolver<S> {

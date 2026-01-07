@@ -282,15 +282,14 @@ fn collect_subgrid_virtual_items<
 >(
   tree: &mut Tree,
   items: &[GridItem],
-  parent_style: &Style,
+  parent_row_names: &[Vec<Ident>],
+  parent_col_names: &[Vec<Ident>],
   final_col_counts: TrackCounts,
   final_row_counts: TrackCounts,
 ) -> Vec<GridItem> {
   // Track/line-name storage is already transposed into physical space by the wrapper. Treat the
   // Taffy inline axis as physical X (columns vector) and the Taffy block axis as physical Y (rows
   // vector), independent of `axes_swapped`.
-  let parent_row_names = to_ident_line_names(&parent_style.grid_template_row_names);
-  let parent_col_names = to_ident_line_names(&parent_style.grid_template_column_names);
   let mut virtuals = Vec::new();
 
   for item in items.iter() {
@@ -324,12 +323,12 @@ fn collect_subgrid_virtual_items<
     };
 
     let row_line_names = if subgrid_rows {
-      inherited_line_names(row_span, row_start, &parent_row_names, &child_row_extra)
+      inherited_line_names(row_span, row_start, parent_row_names, &child_row_extra)
     } else {
       to_ident_line_names(&child_style_ref.grid_template_row_names)
     };
     let col_line_names = if subgrid_columns {
-      inherited_line_names(col_span, col_start, &parent_col_names, &child_col_extra)
+      inherited_line_names(col_span, col_start, parent_col_names, &child_col_extra)
     } else {
       to_ident_line_names(&child_style_ref.grid_template_column_names)
     };
@@ -484,7 +483,8 @@ fn record_subgrid_overrides<
 >(
   tree: &mut Tree,
   items: &[GridItem],
-  parent_style: &Style,
+  parent_row_names: &[Vec<Ident>],
+  parent_col_names: &[Vec<Ident>],
   rows: &[GridTrack],
   columns: &[GridTrack],
   record_rows: bool,
@@ -498,8 +498,6 @@ fn record_subgrid_overrides<
   // always treat:
   // - `rows` + `grid_template_row_names` as the physical vertical axis
   // - `columns` + `grid_template_column_names` as the physical horizontal axis
-  let parent_row_names = to_ident_line_names(&parent_style.grid_template_row_names);
-  let parent_col_names = to_ident_line_names(&parent_style.grid_template_column_names);
 
   for item in items.iter().filter(|item| !item.is_virtual) {
     let child_style_owned = tree.clone_grid_container_style(item.node);
@@ -525,7 +523,7 @@ fn record_subgrid_overrides<
         }
       }
       let child_extra = collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Block);
-      let line_names = inherited_line_names(row_span, span_start, &parent_row_names, &child_extra);
+      let line_names = inherited_line_names(row_span, span_start, parent_row_names, &child_extra);
       let override_data = SubgridAxisOverride {
         track_sizes,
         line_names,
@@ -547,7 +545,7 @@ fn record_subgrid_overrides<
         }
       }
       let child_extra = collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Inline);
-      let line_names = inherited_line_names(col_span, span_start, &parent_col_names, &child_extra);
+      let line_names = inherited_line_names(col_span, span_start, parent_col_names, &child_extra);
       let override_data = SubgridAxisOverride {
         track_sizes,
         line_names,
@@ -773,6 +771,8 @@ where
 
   name_resolver.set_explicit_column_count(explicit_col_count);
   name_resolver.set_explicit_row_count(explicit_row_count);
+  let parent_row_line_names = name_resolver.expanded_row_line_names();
+  let parent_col_line_names = name_resolver.expanded_column_line_names();
 
   // 3. Implicit Grid: Estimate Track Counts
   // Estimate the number of rows and columns in the implicit grid (= the entire grid)
@@ -838,7 +838,14 @@ where
   let final_row_counts = *cell_occupancy_matrix.track_counts(AbsoluteAxis::Vertical);
 
   let mut virtual_items =
-    collect_subgrid_virtual_items(tree, &items, style, final_col_counts, final_row_counts);
+    collect_subgrid_virtual_items(
+      tree,
+      &items,
+      &parent_row_line_names,
+      &parent_col_line_names,
+      final_col_counts,
+      final_row_counts,
+    );
   items.append(&mut virtual_items);
 
   // 5. Initialize Tracks
@@ -921,7 +928,8 @@ where
   record_subgrid_overrides(
     tree,
     &items,
-    style,
+    &parent_row_line_names,
+    &parent_col_line_names,
     &rows,
     &columns,
     record_rows,
@@ -1092,7 +1100,8 @@ where
     record_subgrid_overrides(
       tree,
       &items,
-      style,
+      &parent_row_line_names,
+      &parent_col_line_names,
       &rows,
       &columns,
       record_rows,
@@ -1169,7 +1178,16 @@ where
   }
 
   // Capture subgrid overrides now that track sizes are resolved and drop virtual contributions
-  record_subgrid_overrides(tree, &items, style, &rows, &columns, true, true);
+  record_subgrid_overrides(
+    tree,
+    &items,
+    &parent_row_line_names,
+    &parent_col_line_names,
+    &rows,
+    &columns,
+    true,
+    true,
+  );
   items.retain(|item| !item.is_virtual);
 
   // 8. Track Alignment
