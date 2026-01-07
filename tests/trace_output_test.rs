@@ -48,3 +48,33 @@ fn trace_file_includes_pipeline_events() {
     .join()
     .expect("render thread panicked");
 }
+
+#[test]
+fn trace_file_includes_prepare_events() {
+  const STACK_SIZE: usize = 64 * 1024 * 1024;
+
+  std::thread::Builder::new()
+    .name("trace_file_includes_prepare_events".to_string())
+    .stack_size(STACK_SIZE)
+    .spawn(|| {
+      let dir = tempfile::tempdir().expect("tempdir");
+      let trace_path = dir.path().join("prepare_trace.json");
+
+      let mut renderer = FastRender::new().expect("renderer");
+      let options = RenderOptions::new()
+        .with_viewport(64, 64)
+        .with_trace_output(trace_path.clone());
+
+      renderer
+        .prepare_html("<div>trace me</div>", options)
+        .expect("prepare");
+
+      let data = std::fs::read_to_string(&trace_path).expect("trace output exists");
+      assert!(data.contains("\"dom_parse\""), "dom parse span missing");
+      assert!(data.contains("\"css_parse\""), "css parse span missing");
+      assert!(data.contains("\"layout_tree\""), "layout_tree span missing");
+    })
+    .expect("spawn prepare thread")
+    .join()
+    .expect("prepare thread panicked");
+}

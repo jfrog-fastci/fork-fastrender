@@ -5606,13 +5606,22 @@ impl FastRender {
   ) -> Result<PreparedDocument> {
     let toggles = self.resolve_runtime_toggles(&options);
     let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
-    runtime::with_runtime_toggles(toggles, || self.prepare_html_internal_inner(html, options))
+    runtime::with_runtime_toggles(toggles, || {
+      let trace = TraceSession::from_options(Some(&options));
+      let trace_handle = trace.handle();
+      let _root_span = trace_handle.span("prepare", "pipeline");
+
+      let result = self.prepare_html_internal_inner(html, options, trace_handle);
+      drop(_root_span);
+      trace.finalize(result)
+    })
   }
 
   fn prepare_html_internal_inner(
     &mut self,
     html: &str,
     options: RenderOptions,
+    trace: &TraceHandle,
   ) -> Result<PreparedDocument> {
     let (width, height) = options
       .viewport
@@ -5629,7 +5638,10 @@ impl FastRender {
     let timings_enabled = std::env::var_os("FASTR_RENDER_TIMINGS").is_some();
     let mut stage_start = timings_enabled.then(Instant::now);
 
-    let dom = self.parse_html(html)?;
+    let dom = {
+      let _span = trace.span("dom_parse", "parse");
+      self.parse_html(html)?
+    };
     self.update_base_url_from_dom(&dom);
 
     if let Some(start) = stage_start.as_mut() {
@@ -5657,7 +5669,6 @@ impl FastRender {
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
       self.pending_device_size = Some(resolved_viewport.visual_viewport);
-      let trace = TraceHandle::disabled();
       self.layout_document_for_media_with_artifacts(
         &dom,
         layout_width,
@@ -5670,7 +5681,7 @@ impl FastRender {
         Point::new(options.scroll_x, options.scroll_y),
         Some(&deadline),
         options.stage_mem_budget_bytes,
-        &trace,
+        trace,
         layout_parallelism,
         None,
       )
