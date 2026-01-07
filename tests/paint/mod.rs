@@ -44,6 +44,7 @@ mod marker_text_shadow_vertical;
 mod marker_underline_order;
 mod mask_parallel_translation_golden;
 mod math_render;
+mod mix_blend_mode_isolation_test;
 mod multi_root_display_list;
 mod offscreen_culling_stress;
 mod optimize_test;
