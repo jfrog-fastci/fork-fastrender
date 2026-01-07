@@ -5,7 +5,7 @@
 //! and self contained so it can be reused by layout/paint and tests without
 //! wiring a full animation engine.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::css::types::{
@@ -4524,14 +4524,6 @@ fn merge_timeline_candidates(into: &mut TimelineCandidates, mut other: TimelineC
   }
 }
 
-fn timeline_scope_blocks_name(scope: Option<&TimelineScopeProperty>, name: &str) -> bool {
-  match scope {
-    Some(TimelineScopeProperty::All) => true,
-    Some(TimelineScopeProperty::Names(names)) => names.iter().any(|n| n == name),
-    _ => false,
-  }
-}
-
 fn named_timeline_states_for_export(
   node: &FragmentNode,
   origin: Point,
@@ -4717,6 +4709,17 @@ fn build_timeline_scope_plan(
       _ => {}
     }
 
+    let mut blocked_names: HashSet<String> = HashSet::new();
+    match scope_prop {
+      Some(TimelineScopeProperty::Names(names)) => {
+        blocked_names.extend(names.iter().cloned());
+      }
+      Some(TimelineScopeProperty::All) => {
+        blocked_names.extend(promotions.iter().map(|(name, _)| name.clone()));
+      }
+      _ => {}
+    }
+
     let mut exported = descendant_candidates;
     let own = named_timeline_states_for_export(
       node,
@@ -4727,7 +4730,7 @@ fn build_timeline_scope_plan(
       scroll_state,
     );
     for (name, state) in own {
-      if timeline_scope_blocks_name(scope_prop, &name) {
+      if blocked_names.contains(&name) {
         continue;
       }
       exported.entry(name).or_default().push(state);

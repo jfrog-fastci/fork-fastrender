@@ -337,3 +337,62 @@ fn timeline_scope_all_marks_duplicate_names_inactive() {
   // The duplicate `--dup` name results in an inactive binding, so the animation stays inactive.
   assert_eq!(pixel(&pixmap, 10, 10), (0, 0, 0, 255));
 }
+
+#[test]
+fn timeline_scope_all_does_not_block_export_of_own_timeline() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(100, 100);
+
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #container { timeline-scope: --scroller; }
+      #anim {
+        width: 100px;
+        height: 50px;
+        background: rgb(255, 0, 0);
+        opacity: 0;
+        animation-timeline: --scroller;
+        animation: fade auto linear;
+      }
+      #scroller {
+        overflow-y: scroll;
+        height: 50px;
+        width: 100px;
+        scroll-timeline: --scroller block;
+        timeline-scope: all;
+      }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="container">
+      <div id="anim"></div>
+      <div id="scroller"><div style="height: 150px;"></div></div>
+    </div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let scroller_id = find_box_id_by_dom_id(&prepared.box_tree().root, "scroller").expect("box_id");
+  let scroller_frag =
+    find_fragment_by_box_id(prepared.fragment_tree(), scroller_id).expect("fragment");
+  let scroller_style = scroller_frag.style.as_deref().expect("style");
+  assert_eq!(scroller_style.timeline_scope, TimelineScopeProperty::All);
+
+  let max_scroll = (scroller_frag.scroll_overflow.height() - scroller_frag.bounds.height()).max(0.0);
+  assert!(max_scroll > 0.0, "expected scroll range for scroller");
+
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(scroller_id, Point::new(0.0, max_scroll))]),
+  );
+  let pixmap = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_scroll_state(scroll_state)
+        .with_background(Rgba::new(0, 0, 0, 1.0)),
+    )
+    .expect("paint");
+
+  // The scroller's `timeline-scope: all` should not prevent its own `--scroller` timeline from
+  // being promoted by the ancestor `#container` scope.
+  assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
+}
