@@ -28,12 +28,16 @@ FastRender treats native form controls as replaced elements so they participate 
 
 - Author `background`/`border`/`padding` styling applies normally (the element is still a normal CSS box; only the *inside* is painted by the form-control code). This applies whether you set `appearance:none` or `-webkit-appearance:none`.
 - Native chrome suppression is currently selective and implemented directly in the painters:
-  - Select caret (“▾”) is skipped when `control.appearance == Appearance::None` (gated inside `emit_form_control` / `paint_form_control`).
-  - Checkbox/radio marks are skipped when `control.appearance == Appearance::None` (early-return in `emit_form_control` / `paint_form_control`).
+  - Select caret (“▾”) is skipped when `control.appearance == Appearance::None`:
+    - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Select`)
+    - `src/paint/painter.rs::paint_form_control` (`FormControlKind::Select`)
+  - Checkbox/radio marks are skipped when `control.appearance == Appearance::None`:
+    - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Checkbox`)
+    - `src/paint/painter.rs::paint_form_control` (`FormControlKind::Checkbox`)
 - Current limitations:
   - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
-  - `appearance:none` does **not** currently suppress range painting (`FormControlKind::Range` still draws a track + thumb in both painters).
-  - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today).
+  - `appearance:none` does **not** currently suppress range painting (`FormControlKind::Range` still draws a track + thumb in both painters; see `emit_form_control` / `paint_form_control` range branches).
+  - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today; see `TextControlKind::{Number,Date}` handling in both painters).
   - Vendor pseudo-elements like `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`, etc. are not implemented yet, so fully custom range styling isn’t available.
 
 The offline page regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
