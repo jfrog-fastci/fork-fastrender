@@ -58,10 +58,8 @@ fn grid_pagination_pushes_next_row_to_next_page() {
   item_b_style.grid_row_end = 3;
   let item_b_style = Arc::new(item_b_style);
 
-  let mut item_a = BoxNode::new_block(item_a_style, FormattingContextType::Block, vec![]);
-  item_a.id = 1;
-  let mut item_b = BoxNode::new_block(item_b_style, FormattingContextType::Block, vec![]);
-  item_b.id = 2;
+  let item_a = BoxNode::new_block(item_a_style, FormattingContextType::Block, vec![]);
+  let item_b = BoxNode::new_block(item_b_style, FormattingContextType::Block, vec![]);
 
   let grid = BoxNode::new_block(
     grid_style,
@@ -76,6 +74,9 @@ fn grid_pagination_pushes_next_row_to_next_page() {
   );
   let box_tree = BoxTree::new(root);
 
+  let item_a_id = box_tree.root.children[0].children[0].id;
+  let item_b_id = box_tree.root.children[0].children[1].id;
+
   let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 50.0), 0.0));
   let tree = engine.layout_tree(&box_tree).expect("layout");
 
@@ -87,22 +88,22 @@ fn grid_pagination_pushes_next_row_to_next_page() {
   let second_page = &tree.additional_fragments[0];
 
   assert_eq!(
-    fragments_with_id(first_page, 1).len(),
+    fragments_with_id(first_page, item_a_id).len(),
     1,
     "expected item A to live entirely on the first page"
   );
   assert!(
-    fragments_with_id(first_page, 2).is_empty(),
+    fragments_with_id(first_page, item_b_id).is_empty(),
     "expected the second row to be pushed to the next page instead of slicing within the row"
   );
   assert_eq!(
-    fragments_with_id(second_page, 2).len(),
+    fragments_with_id(second_page, item_b_id).len(),
     1,
     "expected item B to live entirely on the second page"
   );
 
   let pages = paginated_pages(&tree);
-  for id in [1, 2] {
+  for id in [item_a_id, item_b_id] {
     let count: usize = pages
       .iter()
       .map(|page| fragments_with_id(page, id).len())
@@ -137,8 +138,7 @@ fn grid_pagination_splits_spanning_item_on_row_boundaries() {
   item_style.height = Some(Length::px(60.0));
   let item_style = Arc::new(item_style);
 
-  let mut item = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
-  item.id = 3;
+  let item = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
 
   let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
   let root = BoxNode::new_block(
@@ -147,6 +147,7 @@ fn grid_pagination_splits_spanning_item_on_row_boundaries() {
     vec![grid],
   );
   let box_tree = BoxTree::new(root);
+  let item_id = box_tree.root.children[0].children[0].id;
 
   let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 35.0), 0.0));
   let tree = engine.layout_tree(&box_tree).expect("layout");
@@ -162,7 +163,7 @@ fn grid_pagination_splits_spanning_item_on_row_boundaries() {
 
   let mut slices = Vec::new();
   for (page_idx, page) in pages.iter().enumerate() {
-    let fragments = fragments_with_id(page, 3);
+    let fragments = fragments_with_id(page, item_id);
     assert_eq!(
       fragments.len(),
       1,
