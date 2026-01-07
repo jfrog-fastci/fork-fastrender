@@ -1430,7 +1430,7 @@ fn placeholder_resource(
       Some("text/css".to_string()),
       Some(url.to_string()),
     ),
-    FetchDestination::Document => FetchedResource::with_final_url(
+    FetchDestination::Document | FetchDestination::Iframe => FetchedResource::with_final_url(
       b"<!doctype html><html></html>".to_vec(),
       Some("text/html; charset=utf-8".to_string()),
       Some(url.to_string()),
@@ -1786,7 +1786,9 @@ fn crawl_document(
 
     let policy_for_request = policy.for_origin(document_origin.clone());
     let allowed = match destination {
-      FetchDestination::Document => policy_for_request.allows_document(&url),
+      FetchDestination::Document | FetchDestination::Iframe => {
+        policy_for_request.allows_document(&url)
+      }
       _ => policy_for_request.allows(&url),
     };
     if let Err(err) = allowed {
@@ -1815,7 +1817,7 @@ fn crawl_document(
     };
 
     let allowed = match destination {
-      FetchDestination::Document => {
+      FetchDestination::Document | FetchDestination::Iframe => {
         policy_for_request.allows_document_with_final(&url, res.final_url.as_deref())
       }
       _ => policy_for_request.allows_with_final(&url, res.final_url.as_deref()),
@@ -1845,21 +1847,22 @@ fn crawl_document(
       FetchDestination::ImageCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_image_mime_sane(&res, &url))
       }
-      FetchDestination::Document => ensure_http_success(&res, &url).and_then(|_| {
-        if document_response_looks_like_html(&res, &url) {
-          Ok(())
-        } else {
-          let content_type = res.content_type.as_deref().unwrap_or("<missing>");
-          let status = res
-            .status
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "<missing>".to_string());
-          let final_url = res.final_url.as_deref().unwrap_or(&url);
-          Err(fastrender::Error::Other(format!(
-            "unexpected content-type {content_type} (status {status}, final_url {final_url})"
-          )))
-        }
-      }),
+      FetchDestination::Document | FetchDestination::Iframe => ensure_http_success(&res, &url)
+        .and_then(|_| {
+          if document_response_looks_like_html(&res, &url) {
+            Ok(())
+          } else {
+            let content_type = res.content_type.as_deref().unwrap_or("<missing>");
+            let status = res
+              .status
+              .map(|s| s.to_string())
+              .unwrap_or_else(|| "<missing>".to_string());
+            let final_url = res.final_url.as_deref().unwrap_or(&url);
+            Err(fastrender::Error::Other(format!(
+              "unexpected content-type {content_type} (status {status}, final_url {final_url})"
+            )))
+          }
+        }),
       FetchDestination::Other => Ok(()),
     };
     if let Err(err) = validation {
@@ -1907,7 +1910,7 @@ fn crawl_document(
           );
         }
       }
-      FetchDestination::Document => {
+      FetchDestination::Document | FetchDestination::Iframe => {
         // Iframes/objects/embeds are rendered as nested documents, so crawl their HTML for the
         // same kinds of subresources we discover in the root document (CSS links, inline `url()`,
         // and responsive image candidates aligned with the renderer).

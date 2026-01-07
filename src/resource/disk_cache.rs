@@ -2240,7 +2240,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             FetchContextKind::Image | FetchContextKind::ImageCors => {
               ensure_http_success(&res, url).and_then(|_| ensure_image_mime_sane(&res, url))
             }
-            FetchContextKind::Other | FetchContextKind::Document => Ok(()),
+            FetchContextKind::Other | FetchContextKind::Document | FetchContextKind::Iframe => {
+              Ok(())
+            }
           };
 
           if let Err(err) = sanity_check {

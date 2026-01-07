@@ -624,7 +624,7 @@ pub(crate) fn render_iframe_src(
     .as_ref()
     .and_then(|ctx| ctx.document_url.as_deref())
     .or(base_url.as_deref());
-  let mut request = FetchRequest::new(&resolved, FetchDestination::Document);
+  let mut request = FetchRequest::new(&resolved, FetchDestination::Iframe);
   if let Some(referrer) = referrer {
     request = request.with_referrer(referrer);
   }

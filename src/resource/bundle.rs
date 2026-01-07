@@ -34,6 +34,7 @@ pub fn request_partitioned_resource_key(
 ) -> String {
   let kind_tag = match kind {
     FetchContextKind::Document => "document",
+    FetchContextKind::Iframe => "iframe",
     FetchContextKind::Stylesheet => "stylesheet",
     FetchContextKind::Image => "image",
     FetchContextKind::ImageCors => "image-cors",

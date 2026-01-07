@@ -707,6 +707,11 @@ fn http_browser_schemeful_same_site_from_origins(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchDestination {
   Document,
+  /// Subframe document navigation (e.g. `<iframe src=...>`).
+  ///
+  /// Uses the same `Accept` header as top-level documents, but sends `Sec-Fetch-Dest: iframe`
+  /// without `Sec-Fetch-User` (subframe navigations are not user-activated).
+  Iframe,
   Style,
   Image,
   /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
@@ -721,7 +726,7 @@ pub enum FetchDestination {
 impl FetchDestination {
   fn accept(self) -> &'static str {
     match self {
-      Self::Document => DEFAULT_ACCEPT,
+      Self::Document | Self::Iframe => DEFAULT_ACCEPT,
       Self::Style => BROWSER_ACCEPT_STYLESHEET,
       Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
       Self::Font | Self::Other => BROWSER_ACCEPT_ALL,
@@ -731,6 +736,7 @@ impl FetchDestination {
   fn sec_fetch_dest(self) -> &'static str {
     match self {
       Self::Document => "document",
+      Self::Iframe => "iframe",
       Self::Style => "style",
       Self::Image | Self::ImageCors => "image",
       Self::Font => "font",
@@ -740,7 +746,7 @@ impl FetchDestination {
 
   fn sec_fetch_mode(self) -> &'static str {
     match self {
-      Self::Document => "navigate",
+      Self::Document | Self::Iframe => "navigate",
       Self::Font | Self::ImageCors => "cors",
       Self::Style | Self::Image | Self::Other => "no-cors",
     }
@@ -748,7 +754,7 @@ impl FetchDestination {
 
   fn sec_fetch_site(self) -> &'static str {
     match self {
-      Self::Document => "none",
+      Self::Document | Self::Iframe => "none",
       Self::Style | Self::Image | Self::ImageCors | Self::Font | Self::Other => "same-origin",
     }
   }
@@ -1211,7 +1217,10 @@ fn rewrite_url_host_with_www_prefix(
     return None;
   }
   let profile = destination.unwrap_or_else(|| http_browser_request_profile_for_url(url));
-  if profile != FetchDestination::Document {
+  if !matches!(
+    profile,
+    FetchDestination::Document | FetchDestination::Iframe
+  ) {
     return None;
   }
 
@@ -2374,6 +2383,8 @@ pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FetchContextKind {
   Document,
+  /// Subframe document navigation (e.g. `<iframe src=...>`).
+  Iframe,
   Stylesheet,
   Image,
   /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
@@ -2391,12 +2402,14 @@ impl FetchContextKind {
       Self::Font => 3,
       Self::Other => 4,
       Self::ImageCors => 5,
+      Self::Iframe => 6,
     }
   }
 
   const fn as_str(self) -> &'static str {
     match self {
       Self::Document => "document",
+      Self::Iframe => "iframe",
       Self::Stylesheet => "stylesheet",
       Self::Image => "image",
       Self::ImageCors => "image-cors",
@@ -2424,6 +2437,7 @@ impl From<FetchDestination> for FetchContextKind {
   fn from(value: FetchDestination) -> Self {
     match value {
       FetchDestination::Document => Self::Document,
+      FetchDestination::Iframe => Self::Iframe,
       FetchDestination::Style => Self::Stylesheet,
       FetchDestination::Image => Self::Image,
       FetchDestination::ImageCors => Self::ImageCors,
@@ -2437,6 +2451,7 @@ impl From<FetchContextKind> for FetchDestination {
   fn from(value: FetchContextKind) -> Self {
     match value {
       FetchContextKind::Document => Self::Document,
+      FetchContextKind::Iframe => Self::Iframe,
       FetchContextKind::Stylesheet => Self::Style,
       FetchContextKind::Image => Self::Image,
       FetchContextKind::ImageCors => Self::ImageCors,
@@ -6601,7 +6616,7 @@ fn render_stage_hint_for_context(kind: FetchContextKind, url: &str) -> RenderSta
     return stage;
   }
   match kind {
-    FetchContextKind::Document => RenderStage::DomParse,
+    FetchContextKind::Document | FetchContextKind::Iframe => RenderStage::DomParse,
     FetchContextKind::Stylesheet | FetchContextKind::Font => RenderStage::Css,
     FetchContextKind::Image | FetchContextKind::ImageCors => RenderStage::Paint,
     FetchContextKind::Other => render_stage_hint_from_url(url),
@@ -8376,6 +8391,25 @@ mod tests {
       .iter()
       .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
       .map(|(_, value)| value.as_str())
+  }
+
+  #[test]
+  fn http_headers_iframe_navigation_profile_sets_iframe_dest_and_omits_user() {
+    let req = FetchRequest::new("https://www.example.com/frame", FetchDestination::Iframe)
+      .with_referrer("https://www.example.com/page");
+    let headers = build_http_header_pairs(
+      req.url,
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      req.destination.into(),
+      req.referrer,
+    );
+    assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("iframe"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("navigate"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-User"), None);
+    assert_eq!(header_value(&headers, "Upgrade-Insecure-Requests"), None);
   }
 
   #[test]
