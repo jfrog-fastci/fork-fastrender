@@ -8709,59 +8709,13 @@ mod tests {
   }
 
   #[test]
-  fn nested_has_uses_bloom_summary_pruning() {
-    reset_has_counters();
-    set_selector_bloom_enabled(true);
-    let dom = element_with_attrs(
-      "div",
-      vec![("class", "a")],
-      vec![
-        element_with_attrs("div", vec![("class", "b")], vec![]),
-        element_with_attrs("div", vec![("class", "c")], vec![]),
-      ],
-    );
-    let id_map = enumerate_dom_ids(&dom);
-    let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
-
-    let mut caches = SelectorCaches::default();
-    caches.set_epoch(next_selector_cache_epoch());
-    let mut context = MatchingContext::new(
-      MatchingMode::Normal,
-      None,
-      &mut caches,
-      QuirksMode::NoQuirks,
-      NeedsSelectorFlags::No,
-      MatchingForInvalidation::No,
-    );
-    context.extra_data = ShadowMatchData::for_document()
-      .with_selector_blooms(Some(&bloom_store))
-      .with_node_to_id(Some(&id_map));
-
-    let selector = parse_selector(".a:has(.b:has(.c))");
-    let anchor_id = *id_map
-      .get(&(&dom as *const DomNode))
-      .expect("anchor node id");
-    let anchor = ElementRef::with_ancestors(&dom, &[]).with_node_id(anchor_id);
-
+  fn nested_has_is_invalid() {
+    // Selectors Level 4 disallows nested `:has()`.
+    let mut input = ParserInput::new(".a:has(.b:has(.c))");
+    let mut parser = Parser::new(&mut input);
     assert!(
-      !matches_selector(&selector, 0, None, &anchor, &mut context),
-      "expected selector to fail because .b subtree does not contain .c"
-    );
-
-    let counters = capture_has_counters();
-    assert_eq!(counters.evals, 2, "expected nested :has() to be evaluated");
-    assert_eq!(
-      counters.summary_prunes(),
-      1,
-      "expected inner :has() to prune via bloom summary"
-    );
-    assert_eq!(
-      counters.filter_prunes, 0,
-      "expected nested pruning to use the precomputed bloom summary, not the per-anchor filter"
-    );
-    assert_eq!(
-      counters.evaluated, 1,
-      "expected only the outer :has() to run a relative selector evaluation"
+      SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_err(),
+      "nested :has() should be rejected"
     );
   }
 

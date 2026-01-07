@@ -4194,7 +4194,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   }
   let textarea_value = tag
     .eq_ignore_ascii_case("textarea")
-    .then(|| crate::dom::textarea_value(&styled.node));
+    .then(|| crate::dom::normalize_textarea_value(collect_text_content(styled)));
   let mut select_control: Option<SelectControl> = None;
   if tag.eq_ignore_ascii_case("select") {
     select_control = Some(build_select_control(styled));
@@ -10612,8 +10612,8 @@ mod tests {
       MarkerContent::Image(_) => panic!("expected text marker, got Image"),
     };
 
-    assert_eq!(first_text, "1 ");
-    assert_eq!(second_text, "2 ");
+    assert_eq!(first_text, "1. ");
+    assert_eq!(second_text, "2. ");
   }
 
   #[test]

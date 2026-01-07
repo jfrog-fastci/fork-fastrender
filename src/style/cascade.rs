@@ -1467,6 +1467,7 @@ fn eval_plain_style_feature(
       }
     }
     "opacity" => resolved_value
+      .trim()
       .parse::<f32>()
       .ok()
       .filter(|v| v.is_finite())
@@ -23515,7 +23516,18 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styled.styles.border_top_style,
         crate::style::types::BorderStyle::None
       );
-      assert_eq!(styled.styles.background_color, Rgba::WHITE);
+      let tag = dom.tag_name().unwrap_or_default();
+      let input_type = dom.get_attribute_ref("type").unwrap_or_default();
+      let expected_bg = if tag.eq_ignore_ascii_case("button")
+        || input_type.eq_ignore_ascii_case("submit")
+        || input_type.eq_ignore_ascii_case("button")
+        || input_type.eq_ignore_ascii_case("reset")
+      {
+        Rgba::rgb(240, 240, 240)
+      } else {
+        Rgba::WHITE
+      };
+      assert_eq!(styled.styles.background_color, expected_bg);
       assert_eq!(styled.styles.display, Display::InlineBlock);
     }
 

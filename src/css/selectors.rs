@@ -1671,9 +1671,9 @@ mod tests {
     //
     // Attribute selector names are case-insensitive in HTML, and the DOM stores attribute names
     // lowercased (via html5ever). Match the bloom-pruning behavior by hashing the lowercase form.
-    // Only include hashes from the selector's rightmost compound selector to avoid
-    // false-negative pruning when relative selectors can match ancestors outside the
-    // :has() anchor's subtree (e.g. via `:is()` breakouts).
+    // Only include hashes from the selector's rightmost compound selector to avoid false-negative
+    // pruning when relative selectors can match ancestors outside the :has() anchor subtree
+    // (e.g. via `:is()` breakouts like `:is(.a .b) .c`).
     let mut expected_no_quirks = vec![hash("bar"), hash("data-thing")];
     expected_no_quirks.sort_unstable();
     let mut actual_no_quirks = selector

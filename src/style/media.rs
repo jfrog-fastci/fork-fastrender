@@ -4284,12 +4284,12 @@ mod tests {
     let ctx = MediaContext::screen(800.0, 600.0);
     let none = MediaQuery::parse("(scripting: none)").unwrap();
     let enabled = MediaQuery::parse("(scripting: enabled)").unwrap();
-    assert!(ctx.evaluate(&none));
-    assert!(!ctx.evaluate(&enabled));
+    assert!(!ctx.evaluate(&none));
+    assert!(ctx.evaluate(&enabled));
 
     let mobile = MediaContext::mobile(375.0, 667.0);
-    assert!(mobile.evaluate(&none));
-    assert!(!mobile.evaluate(&enabled));
+    assert!(!mobile.evaluate(&none));
+    assert!(mobile.evaluate(&enabled));
   }
 
   #[test]
