@@ -591,11 +591,11 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         super::parse_cors_response_headers(&response.headers);
       let timing_allow_origin =
         super::header_values_joined(&response.headers, "timing-allow-origin");
-      let vary = super::header_values_joined(&response.headers, "vary");
       let response_referrer_policy = super::header_values_joined(&response.headers, "referrer-policy")
         .as_deref()
         .and_then(super::ReferrerPolicy::parse_value_list);
       let cache_policy = super::parse_http_cache_policy(&response.headers);
+      let vary = super::parse_vary_headers(&response.headers);
 
       let substitute_empty_image_body =
         super::should_substitute_empty_image_body(kind, status_code, &response.headers)

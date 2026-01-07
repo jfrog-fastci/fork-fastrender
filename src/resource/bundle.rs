@@ -161,12 +161,16 @@ impl BundledResource {
     res.status = self.info.status;
     res.etag = self.info.etag.clone();
     res.last_modified = self.info.last_modified.clone();
+    res.vary = self.info.vary.clone();
     res.access_control_allow_origin = self.info.access_control_allow_origin.clone();
     res.timing_allow_origin = self.info.timing_allow_origin.clone();
-    res.vary = self.info.vary.clone();
     res.access_control_allow_credentials = self.info.access_control_allow_credentials;
     res
   }
+}
+
+fn bundle_key_is_request_partitioned(key: &str) -> bool {
+  key.contains("@@fastr:bundle:req_v1@@")
 }
 
 /// In-memory representation of a bundle.
@@ -366,14 +370,37 @@ impl ResourceFetcher for BundledFetcher {
       res.status = doc_meta.status;
       res.etag = doc_meta.etag.clone();
       res.last_modified = doc_meta.last_modified.clone();
+      res.vary = doc_meta.vary.clone();
       res.access_control_allow_origin = doc_meta.access_control_allow_origin.clone();
       res.timing_allow_origin = doc_meta.timing_allow_origin.clone();
-      res.vary = doc_meta.vary.clone();
+      if let Some(vary) = res.vary.as_deref() {
+        if super::vary_contains_star(vary)
+          || (!super::allow_unhandled_vary_env()
+            && !super::vary_is_cacheable(vary, FetchContextKind::Document, None))
+        {
+          return Err(Error::Other(format!(
+            "Bundle document has unhandled Vary and cannot be replayed safely: {}",
+            doc_meta.final_url
+          )));
+        }
+      }
       return Ok(res);
     }
 
     if let Some(resource) = self.bundle.resource_for_url(url) {
-      return Ok(resource.as_fetched());
+      let res = resource.as_fetched();
+      let kind: FetchContextKind = super::http_browser_request_profile_for_url(url).into();
+      let origin_key = bundle_key_is_request_partitioned(url).then_some("bundled");
+      if let Some(vary) = res.vary.as_deref() {
+        if super::vary_contains_star(vary)
+          || (!super::allow_unhandled_vary_env() && !super::vary_is_cacheable(vary, kind, origin_key))
+        {
+          return Err(Error::Other(format!(
+            "Bundle entry has unhandled Vary and cannot be replayed safely: {url}"
+          )));
+        }
+      }
+      return Ok(res);
     }
 
     // Bundles are meant to be replayable without network access, but data: URLs encode their
@@ -407,13 +434,37 @@ impl ResourceFetcher for BundledFetcher {
         let key =
           request_partitioned_resource_key_with_credentials(kind, req.url, origin, req.credentials_mode);
         if let Some(resource) = self.bundle.resource_for_url(&key) {
-          return Ok(resource.as_fetched());
+          let res = resource.as_fetched();
+          if let Some(vary) = res.vary.as_deref() {
+            if super::vary_contains_star(vary)
+              || (!super::allow_unhandled_vary_env()
+                && !super::vary_is_cacheable(vary, kind, Some("bundled")))
+            {
+              return Err(Error::Other(format!(
+                "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
+                req.url
+              )));
+            }
+          }
+          return Ok(res);
         }
 
         if req.credentials_mode != FetchCredentialsMode::Omit {
           let key = request_partitioned_resource_key(kind, req.url, origin);
           if let Some(resource) = self.bundle.resource_for_url(&key) {
-            return Ok(resource.as_fetched());
+            let res = resource.as_fetched();
+            if let Some(vary) = res.vary.as_deref() {
+              if super::vary_contains_star(vary)
+                || (!super::allow_unhandled_vary_env()
+                  && !super::vary_is_cacheable(vary, kind, Some("bundled")))
+              {
+                return Err(Error::Other(format!(
+                  "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
+                  req.url
+                )));
+              }
+            }
+            return Ok(res);
           }
         }
       }
@@ -455,9 +506,9 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
+        vary: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
-        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -511,7 +562,7 @@ mod tests {
         last_modified: None,
         access_control_allow_origin: Some("*".to_string()),
         timing_allow_origin: Some("https://timing.example".to_string()),
-        vary: Some("Accept-Encoding".to_string()),
+        vary: Some("accept-encoding".to_string()),
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -536,7 +587,7 @@ mod tests {
           last_modified: None,
           access_control_allow_origin: Some("https://example.com".to_string()),
           timing_allow_origin: Some("*".to_string()),
-          vary: Some("Origin".to_string()),
+          vary: Some("origin".to_string()),
           access_control_allow_credentials: true,
         },
       )]),
@@ -556,7 +607,7 @@ mod tests {
       doc.timing_allow_origin.as_deref(),
       Some("https://timing.example")
     );
-    assert_eq!(doc.vary.as_deref(), Some("Accept-Encoding"));
+    assert_eq!(doc.vary.as_deref(), Some("accept-encoding"));
 
     let css = fetcher
       .fetch("https://example.com/style.css")
@@ -566,7 +617,7 @@ mod tests {
       Some("https://example.com")
     );
     assert_eq!(css.timing_allow_origin.as_deref(), Some("*"));
-    assert_eq!(css.vary.as_deref(), Some("Origin"));
+    assert_eq!(css.vary.as_deref(), Some("origin"));
     assert!(css.access_control_allow_credentials);
   }
 
@@ -617,9 +668,9 @@ mod tests {
           final_url: Some(css_url.to_string()),
           etag: None,
           last_modified: None,
+          vary: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
-          vary: None,
           access_control_allow_credentials: false,
         },
       )]),
@@ -761,9 +812,9 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
+        vary: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
-        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -787,9 +838,9 @@ mod tests {
             final_url: Some(url.to_string()),
             etag: None,
             last_modified: None,
+            vary: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
-            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -803,9 +854,9 @@ mod tests {
             final_url: Some(url.to_string()),
             etag: None,
             last_modified: None,
+            vary: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
-            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -819,9 +870,9 @@ mod tests {
             final_url: Some(url.to_string()),
             etag: None,
             last_modified: None,
+            vary: None,
             access_control_allow_origin: Some("https://b.test".to_string()),
             timing_allow_origin: None,
-            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -902,9 +953,9 @@ mod tests {
       final_url: Some(url.to_string()),
       etag: None,
       last_modified: None,
+      vary: None,
       access_control_allow_origin: Some(allow_origin.to_string()),
       timing_allow_origin: None,
-      vary: None,
       access_control_allow_credentials: false,
     };
 
@@ -919,9 +970,9 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
+        vary: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
-        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -984,6 +1035,170 @@ mod tests {
         b.access_control_allow_origin.as_deref(),
         Some("https://b.test")
       );
+    });
+  }
+
+  #[test]
+  fn bundled_fetcher_rejects_unhandled_vary_entries() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("asset.bin"), b"ok").expect("write asset");
+
+    let url = "https://example.com/asset.bin";
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        vary: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(
+        url.to_string(),
+        BundledResourceInfo {
+          path: "asset.bin".to_string(),
+          content_type: Some("application/octet-stream".to_string()),
+          nosniff: false,
+          status: Some(200),
+          final_url: Some(url.to_string()),
+          etag: None,
+          last_modified: None,
+          vary: Some("x-foo".to_string()),
+          access_control_allow_origin: None,
+          timing_allow_origin: None,
+          access_control_allow_credentials: false,
+        },
+      )]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let err = fetcher.fetch(url).unwrap_err();
+    match err {
+      Error::Other(message) => assert!(
+        message.contains("unhandled Vary"),
+        "unexpected error message: {message}"
+      ),
+      other => panic!("expected Error::Other, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn bundled_fetcher_allows_vary_origin_only_when_request_partitioned() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("font.woff2"), b"ok").expect("write font");
+
+    let url = "https://cdn.example/font.woff2";
+    let origin = origin_from_url("https://a.test/page.html").expect("origin");
+    let key = request_partitioned_resource_key(FetchContextKind::Font, url, &origin);
+
+    let info = BundledResourceInfo {
+      path: "font.woff2".to_string(),
+      content_type: Some("font/woff2".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(url.to_string()),
+      etag: None,
+      last_modified: None,
+      vary: Some("origin".to_string()),
+      access_control_allow_origin: Some("https://a.test".to_string()),
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        vary: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(url.to_string(), info.clone()), (key, info)]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let err = fetcher.fetch(url).unwrap_err();
+    match err {
+      Error::Other(message) => assert!(
+        message.contains("unhandled Vary"),
+        "unexpected error message: {message}"
+      ),
+      other => panic!("expected Error::Other, got {other:?}"),
+    }
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+      "1".to_string(),
+    )])));
+    with_thread_runtime_toggles(toggles, || {
+      let res = fetcher
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Font)
+            .with_referrer_url("https://a.test/page.html"),
+        )
+        .expect("fetch request-partitioned entry");
+      assert_eq!(res.bytes, b"ok");
     });
   }
 }

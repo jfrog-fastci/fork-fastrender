@@ -2097,7 +2097,8 @@ pub struct FetchedResource {
   pub timing_allow_origin: Option<String>,
   /// Raw `Vary` response header value when fetched over HTTP(S).
   ///
-  /// When the header appears multiple times, values are joined with `", "` (after trimming).
+  /// Multiple `Vary` headers and comma-separated values are combined, lowercased, sorted, and
+  /// de-duplicated. `Vary: *` is stored as `"*"`.
   ///
   /// Stored for diagnostics and caching safety checks; see [`vary_is_cacheable`].
   pub vary: Option<String>,
@@ -4152,11 +4153,11 @@ impl HttpFetcher {
         let (access_control_allow_origin, access_control_allow_credentials) =
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
-        let vary = header_values_joined(response.headers(), "vary");
         let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
           .as_deref()
           .and_then(ReferrerPolicy::parse_value_list);
         let cache_policy = parse_http_cache_policy(response.headers());
+        let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
         let allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
@@ -4651,11 +4652,11 @@ impl HttpFetcher {
         let (access_control_allow_origin, access_control_allow_credentials) =
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
-        let vary = header_values_joined(response.headers(), "vary");
         let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
           .as_deref()
           .and_then(ReferrerPolicy::parse_value_list);
         let cache_policy = parse_http_cache_policy(response.headers());
+        let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();
         let allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
@@ -5155,11 +5156,11 @@ impl HttpFetcher {
         let (access_control_allow_origin, access_control_allow_credentials) =
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
-        let vary = header_values_joined(response.headers(), "vary");
         let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
           .as_deref()
           .and_then(ReferrerPolicy::parse_value_list);
         let cache_policy = parse_http_cache_policy(response.headers());
+        let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
         let allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
@@ -5712,11 +5713,11 @@ impl HttpFetcher {
         let (access_control_allow_origin, access_control_allow_credentials) =
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
-        let vary = header_values_joined(response.headers(), "vary");
         let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
           .as_deref()
           .and_then(ReferrerPolicy::parse_value_list);
         let cache_policy = parse_http_cache_policy(response.headers());
+        let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();
         let allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
@@ -6524,6 +6525,14 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
   } else {
     Some(policy)
   }
+}
+
+fn allow_unhandled_vary_env() -> bool {
+  runtime::runtime_toggles().truthy_with_default("FASTR_CACHE_ALLOW_VARY_UNHANDLED", false)
+}
+
+fn vary_contains_star(vary: &str) -> bool {
+  vary.split(',').any(|part| part.trim() == "*")
 }
 
 fn vary_is_cacheable(vary: &str, kind: FetchContextKind, origin_key: Option<&str>) -> bool {
@@ -7655,11 +7664,13 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
       return None;
     }
 
-    if !self.config.allow_unhandled_vary {
-      if let Some(vary) = resource.vary.as_deref() {
-        if !vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()) {
-          return None;
-        }
+    if let Some(vary) = resource.vary.as_deref() {
+      if vary_contains_star(vary) {
+        return None;
+      }
+      let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
+      if !allow_unhandled && !vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()) {
+        return None;
       }
     }
 
@@ -7919,63 +7930,77 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     };
 
     let (mut result, charge_budget) = match fetch_result {
-      Ok(res) => {
-        if res.is_not_modified() {
-          if let Some(snapshot) = plan.cached.as_ref() {
-            let value = snapshot.value.as_result();
-            if let Ok(ref ok) = value {
-              let stored_at = SystemTime::now();
-              let should_store = self.config.allow_no_store
-                || !res
-                  .cache_policy
-                  .as_ref()
-                  .map(|p| p.no_store)
-                  .unwrap_or(false);
-              let updated_meta = snapshot
-                .http_cache
-                .as_ref()
-                .and_then(|meta| meta.with_updated_policy(res.cache_policy.as_ref(), stored_at))
-                .or_else(|| {
-                  res
-                    .cache_policy
+          Ok(res) => {
+            if res.is_not_modified() {
+              if let Some(snapshot) = plan.cached.as_ref() {
+                let value = snapshot.value.as_result();
+                if let Ok(ref ok) = value {
+                  let mut stored_resource = ok.clone();
+                  if res.vary.is_some() {
+                    stored_resource.vary = res.vary.clone();
+                  }
+                  let stored_at = SystemTime::now();
+                  let should_store = self.config.allow_no_store
+                    || !res
+                      .cache_policy
+                      .as_ref()
+                      .map(|p| p.no_store)
+                      .unwrap_or(false);
+                  let updated_meta = snapshot
+                    .http_cache
                     .as_ref()
-                    .and_then(|policy| CachedHttpMetadata::from_policy(policy, stored_at))
-                });
+                    .and_then(|meta| meta.with_updated_policy(res.cache_policy.as_ref(), stored_at))
+                    .or_else(|| {
+                      res
+                        .cache_policy
+                        .as_ref()
+                        .and_then(|policy| CachedHttpMetadata::from_policy(policy, stored_at))
+                    });
 
-              if should_store {
-                let _ = self.cache_entry(
-                  &key,
-                  CacheEntry {
-                    value: CacheValue::Resource(ok.clone()),
-                    etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
-                    last_modified: res
-                      .last_modified
-                      .clone()
-                      .or_else(|| snapshot.last_modified.clone()),
-                    http_cache: updated_meta,
-                  },
-                  ok.final_url.as_deref(),
-                );
+                  let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
+                  let vary_cacheable = match stored_resource.vary.as_deref() {
+                    Some(vary) => {
+                      !vary_contains_star(vary)
+                        && (allow_unhandled
+                          || vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()))
+                    }
+                    None => true,
+                  };
+
+                  if should_store && vary_cacheable {
+                    let _ = self.cache_entry(
+                      &key,
+                      CacheEntry {
+                        value: CacheValue::Resource(stored_resource),
+                        etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
+                        last_modified: res
+                          .last_modified
+                          .clone()
+                          .or_else(|| snapshot.last_modified.clone()),
+                        http_cache: updated_meta,
+                      },
+                      ok.final_url.as_deref(),
+                    );
+                  } else {
+                    self.remove_cached(&key);
+                  }
+                }
+                record_cache_revalidated_hit();
+                if let Ok(ref ok) = value {
+                  record_resource_cache_bytes(ok.bytes.len());
+                }
+                let is_ok = value.is_ok();
+                (value, is_ok)
               } else {
-                self.remove_cached(&key);
+                (
+                  Err(Error::Resource(
+                    ResourceError::new(url.to_string(), "received 304 without cached entry")
+                      .with_final_url(url.to_string()),
+                  )),
+                  false,
+                )
               }
-            }
-            record_cache_revalidated_hit();
-            if let Ok(ref ok) = value {
-              record_resource_cache_bytes(ok.bytes.len());
-            }
-            let is_ok = value.is_ok();
-            (value, is_ok)
-          } else {
-            (
-              Err(Error::Resource(
-                ResourceError::new(url.to_string(), "received 304 without cached entry")
-                  .with_final_url(url.to_string()),
-              )),
-              false,
-            )
-          }
-        } else if res.status.is_some_and(|code| code >= 400)
+            } else if res.status.is_some_and(|code| code >= 400)
           && plan
             .cached
             .as_ref()
@@ -8008,12 +8033,15 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             // repeatedly hammering blocked endpoints during warm-cache runs while still allowing
             // non-deadline fetches to attempt a refresh.
             if self.config.allow_no_store && res.status.is_some_and(|code| code >= 400) {
-              let should_cache = self.config.allow_unhandled_vary
-                || res
-                  .vary
-                  .as_deref()
-                  .map(|vary| vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()))
-                  .unwrap_or(true);
+              let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
+              let should_cache = match res.vary.as_deref() {
+                Some(vary) => {
+                  !vary_contains_star(vary)
+                    && (allow_unhandled
+                      || vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()))
+                }
+                None => true,
+              };
               if should_cache {
                 let stored_at = SystemTime::now();
                 let _ = self.cache_entry(
@@ -8166,6 +8194,10 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
           if let Some(snapshot) = plan.cached.as_ref() {
             let value = snapshot.value.as_result();
             if let Ok(ref ok) = value {
+              let mut stored_resource = ok.clone();
+              if res.vary.is_some() {
+                stored_resource.vary = res.vary.clone();
+              }
               let stored_at = SystemTime::now();
               let should_store = self.config.allow_no_store
                 || !res
@@ -8184,11 +8216,21 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                     .and_then(|policy| CachedHttpMetadata::from_policy(policy, stored_at))
                 });
 
-              if should_store {
+              let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
+              let vary_cacheable = match stored_resource.vary.as_deref() {
+                Some(vary) => {
+                  !vary_contains_star(vary)
+                    && (allow_unhandled
+                      || vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()))
+                }
+                None => true,
+              };
+
+              if should_store && vary_cacheable {
                 let _ = self.cache_entry(
                   &key,
                   CacheEntry {
-                    value: CacheValue::Resource(ok.clone()),
+                    value: CacheValue::Resource(stored_resource),
                     etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
                     last_modified: res
                       .last_modified
@@ -8396,6 +8438,32 @@ fn header_has_nosniff(headers: &HeaderMap) -> bool {
   header_values_joined(headers, "x-content-type-options")
     .map(|value| value.to_ascii_lowercase().contains("nosniff"))
     .unwrap_or(false)
+}
+
+fn parse_vary_headers(headers: &HeaderMap) -> Option<String> {
+  let mut out: Vec<String> = Vec::new();
+  for value in headers.get_all("vary").iter() {
+    let Ok(value) = value.to_str() else {
+      continue;
+    };
+    for token in value.split(',') {
+      let token = token.trim();
+      if token.is_empty() {
+        continue;
+      }
+      if token == "*" {
+        return Some("*".to_string());
+      }
+      out.push(token.to_ascii_lowercase());
+    }
+  }
+  out.sort();
+  out.dedup();
+  if out.is_empty() {
+    None
+  } else {
+    Some(out.join(", "))
+  }
 }
 
 fn parse_content_encodings(headers: &HeaderMap) -> Vec<String> {
@@ -11636,9 +11704,9 @@ mod tests {
     let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
     let url = format!("http://{addr}/vary.txt");
     let first = fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("Accept-Language"));
+    assert_eq!(first.vary.as_deref(), Some("accept-language"));
     let second = fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("Accept-Language"));
+    assert_eq!(second.vary.as_deref(), Some("accept-language"));
 
     handle.join().unwrap();
 
@@ -11713,9 +11781,9 @@ mod tests {
     let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
     let url = format!("http://{addr}/vary_origin.txt");
     let first = fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("Origin"));
+    assert_eq!(first.vary.as_deref(), Some("origin"));
     let second = fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("Origin"));
+    assert_eq!(second.vary.as_deref(), Some("origin"));
 
     handle.join().unwrap();
 
@@ -11787,9 +11855,9 @@ mod tests {
     let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
     let url = format!("http://{addr}/vary_accept.txt");
     let first = fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("Accept"));
+    assert_eq!(first.vary.as_deref(), Some("accept"));
     let second = fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("Accept"));
+    assert_eq!(second.vary.as_deref(), Some("accept"));
 
     handle.join().unwrap();
 
@@ -11861,9 +11929,9 @@ mod tests {
     let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
     let url = format!("http://{addr}/vary_sec_fetch_mode.txt");
     let first = fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("Sec-Fetch-Mode"));
+    assert_eq!(first.vary.as_deref(), Some("sec-fetch-mode"));
     let second = fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("Sec-Fetch-Mode"));
+    assert_eq!(second.vary.as_deref(), Some("sec-fetch-mode"));
 
     handle.join().unwrap();
 
@@ -11892,7 +11960,7 @@ mod tests {
     }
 
     let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
-      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
       "0".to_string(),
     )])));
 
@@ -11957,9 +12025,9 @@ mod tests {
         FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://b.test/page");
 
       let first = fetcher.fetch_with_request(req_a).expect("first fetch");
-      assert_eq!(first.vary.as_deref(), Some("Origin"));
+      assert_eq!(first.vary.as_deref(), Some("origin"));
       let second = fetcher.fetch_with_request(req_b).expect("second fetch");
-      assert_eq!(second.vary.as_deref(), Some("Origin"));
+      assert_eq!(second.vary.as_deref(), Some("origin"));
 
       handle.join().unwrap();
 
@@ -11992,7 +12060,7 @@ mod tests {
     }
 
     let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
-      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
       "1".to_string(),
     )])));
 
@@ -12057,14 +12125,14 @@ mod tests {
         FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://b.test/page");
 
       let first_a = fetcher.fetch_with_request(req_a).expect("first A fetch");
-      assert_eq!(first_a.vary.as_deref(), Some("Origin"));
+      assert_eq!(first_a.vary.as_deref(), Some("origin"));
 
       let second_a = fetcher.fetch_with_request(req_a).expect("second A fetch");
-      assert_eq!(second_a.vary.as_deref(), Some("Origin"));
+      assert_eq!(second_a.vary.as_deref(), Some("origin"));
       assert_eq!(second_a.bytes, first_a.bytes, "expected A to hit cache");
 
       let first_b = fetcher.fetch_with_request(req_b).expect("first B fetch");
-      assert_eq!(first_b.vary.as_deref(), Some("Origin"));
+      assert_eq!(first_b.vary.as_deref(), Some("origin"));
 
       handle.join().unwrap();
 
@@ -12575,6 +12643,145 @@ mod tests {
       calls.load(Ordering::SeqCst),
       1,
       "no-store entries should be served from cache under deadline"
+    );
+  }
+
+  #[test]
+  fn parse_vary_headers_normalizes_and_deduplicates() {
+    let mut headers = HeaderMap::new();
+    headers.append("vary", http::HeaderValue::from_static("Origin, Accept-Encoding"));
+    headers.append("vary", http::HeaderValue::from_static("ACCEPT-encoding, User-Agent"));
+    assert_eq!(
+      parse_vary_headers(&headers).as_deref(),
+      Some("accept-encoding, origin, user-agent")
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_does_not_cache_vary_star() {
+    #[derive(Clone)]
+    struct VaryFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for VaryFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+        res.final_url = Some(url.to_string());
+        res.vary = Some("*".to_string());
+        Ok(res)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::new(VaryFetcher {
+      calls: Arc::clone(&calls),
+    });
+    let url = "https://example.com/vary-star";
+    assert_eq!(fetcher.fetch(url).expect("first").bytes, b"ok");
+    assert_eq!(fetcher.fetch(url).expect("second").bytes, b"ok");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected Vary: * responses to be treated as uncacheable"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_does_not_cache_unhandled_vary_by_default() {
+    #[derive(Clone)]
+    struct VaryFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for VaryFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+        res.final_url = Some(url.to_string());
+        res.vary = Some("x-foo".to_string());
+        Ok(res)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::new(VaryFetcher {
+      calls: Arc::clone(&calls),
+    });
+    let url = "https://example.com/vary-unknown";
+    assert_eq!(fetcher.fetch(url).expect("first").bytes, b"ok");
+    assert_eq!(fetcher.fetch(url).expect("second").bytes, b"ok");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected unknown Vary headers to disable caching by default"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_caches_vary_origin_only_when_partitioned() {
+    #[derive(Clone)]
+    struct OriginVaryFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for OriginVaryFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected request-aware fetch");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        res.vary = Some("origin".to_string());
+        Ok(res)
+      }
+    }
+
+    let url = "https://example.com/vary-origin";
+    let req =
+      FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://a.test/page");
+
+    let calls_unpartitioned = Arc::new(AtomicUsize::new(0));
+    let fetcher_unpartitioned = CachingFetcher::new(OriginVaryFetcher {
+      calls: Arc::clone(&calls_unpartitioned),
+    });
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "0".to_string(),
+      )]))),
+      || {
+        assert!(fetcher_unpartitioned.fetch_with_request(req).is_ok());
+        assert!(fetcher_unpartitioned.fetch_with_request(req).is_ok());
+      },
+    );
+    assert_eq!(
+      calls_unpartitioned.load(Ordering::SeqCst),
+      2,
+      "expected Vary: Origin to disable caching without origin partitioning"
+    );
+
+    let calls_partitioned = Arc::new(AtomicUsize::new(0));
+    let fetcher_partitioned = CachingFetcher::new(OriginVaryFetcher {
+      calls: Arc::clone(&calls_partitioned),
+    });
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        assert!(fetcher_partitioned.fetch_with_request(req).is_ok());
+        assert!(fetcher_partitioned.fetch_with_request(req).is_ok());
+      },
+    );
+    assert_eq!(
+      calls_partitioned.load(Ordering::SeqCst),
+      1,
+      "expected Vary: Origin to be cacheable when origin partitioning is enabled"
     );
   }
 

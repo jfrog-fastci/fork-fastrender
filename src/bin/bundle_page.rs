@@ -1138,9 +1138,9 @@ fn build_manifest(
     status: document_resource.status,
     etag: document_resource.etag.clone(),
     last_modified: document_resource.last_modified.clone(),
+    vary: document_resource.vary.clone(),
     access_control_allow_origin: document_resource.access_control_allow_origin.clone(),
     timing_allow_origin: document_resource.timing_allow_origin.clone(),
-    vary: document_resource.vary.clone(),
   };
 
   let mut resources: Vec<ResourceEntry> = Vec::new();
@@ -1177,9 +1177,9 @@ fn build_manifest(
       final_url: Some(res.final_url.clone().unwrap_or_else(|| url.clone())),
       etag: res.etag.clone(),
       last_modified: res.last_modified.clone(),
+      vary: res.vary.clone(),
       access_control_allow_origin: res.access_control_allow_origin.clone(),
       timing_allow_origin: res.timing_allow_origin.clone(),
-      vary: res.vary.clone(),
       access_control_allow_credentials: res.access_control_allow_credentials,
     };
     manifest_resources.insert(url.clone(), info);
