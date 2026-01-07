@@ -20,7 +20,8 @@ use fastrender::html::images::ImageSelectionContext;
 use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
 use fastrender::image_output::encode_image;
 use fastrender::resource::bundle::{
-  request_partitioned_resource_key_for_request, request_partitioned_resource_key_v2, Bundle,
+  request_partitioned_resource_key_for_request, request_partitioned_resource_key_v2,
+  vary_partitioned_resource_key, Bundle,
   BundleManifest, BundleRenderConfig, BundledDocument, BundledFetcher, BundledResourceInfo,
   BUNDLE_MANIFEST, BUNDLE_VERSION,
 };
@@ -97,6 +98,47 @@ fn credentials_mode_for_stylesheet_crossorigin(mode: CorsMode) -> FetchCredentia
     CorsMode::Anonymous => FetchCredentialsMode::SameOrigin,
     CorsMode::UseCredentials => FetchCredentialsMode::Include,
   }
+}
+
+fn compute_vary_key_for_recording(
+  fetcher: &dyn ResourceFetcher,
+  req: FetchRequest<'_>,
+  vary: Option<&str>,
+) -> Option<String> {
+  let Some(vary) = vary.filter(|v| !v.trim().is_empty()) else {
+    return Some(String::new());
+  };
+  if vary.trim() == "*" {
+    return None;
+  }
+
+  let mut hasher = Sha256::new();
+  let mut saw_field = false;
+  for field in vary.split(',') {
+    let name = field.trim();
+    if name.is_empty() {
+      continue;
+    }
+    saw_field = true;
+    let value = fetcher.request_header_value(req, name)?;
+    hasher.update(name.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(value.as_bytes());
+    hasher.update(b"\n");
+  }
+
+  if !saw_field {
+    return Some(String::new());
+  }
+
+  let digest: [u8; 32] = hasher.finalize().into();
+  const HEX: &[u8; 16] = b"0123456789abcdef";
+  let mut out = String::with_capacity(64);
+  for &b in digest.iter() {
+    out.push(HEX[(b >> 4) as usize] as char);
+    out.push(HEX[(b & 0x0f) as usize] as char);
+  }
+  Some(out)
 }
 
 #[derive(Parser, Debug)]
@@ -364,6 +406,10 @@ impl ResourceFetcher for CacheOfflineNetworkFetcher {
     self.inner.fetch_with_request(req)
   }
 
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    self.inner.request_header_value(req, header_name)
+  }
+
   fn fetch_with_request_and_validation(
     &self,
     req: FetchRequest<'_>,
@@ -437,6 +483,10 @@ impl CacheKindMismatchFallbackFetcher {
 impl ResourceFetcher for CacheKindMismatchFallbackFetcher {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
     self.inner.fetch(url)
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    self.inner.request_header_value(req, header_name)
   }
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
@@ -634,6 +684,11 @@ impl ResourceFetcher for RecordingFetcher {
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     let url = req.url.to_string();
+    let destination = req.destination;
+    let referrer_url = req.referrer_url;
+    let client_origin = req.client_origin;
+    let referrer_policy = req.referrer_policy;
+    let credentials_mode = req.credentials_mode;
 
     if cors_cache_partitioning_enabled()
       && matches!(
@@ -656,11 +711,7 @@ impl ResourceFetcher for RecordingFetcher {
           }
 
           let result = self.inner.fetch_with_request(req)?;
-          if !url
-            .get(..5)
-            .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
-            .unwrap_or(false)
-          {
+          if !is_data_url(&url) {
             if let Ok(mut map) = self.recorded.lock() {
               match map.entry(url.clone()) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -670,6 +721,25 @@ impl ResourceFetcher for RecordingFetcher {
                   }
                 }
                 std::collections::hash_map::Entry::Occupied(_) => {}
+              }
+
+              if let Some(vary) = result.vary.as_deref().filter(|v| *v != "*") {
+                let canonical_url = result.final_url.as_deref().unwrap_or(url.as_str());
+                let request = FetchRequest {
+                  url: canonical_url,
+                  destination,
+                  referrer_url,
+                  client_origin,
+                  referrer_policy,
+                  credentials_mode,
+                };
+                if let Some(vary_key) =
+                  compute_vary_key_for_recording(&*self.inner, request, Some(vary))
+                    .filter(|key| !key.is_empty())
+                {
+                  let manifest_key = vary_partitioned_resource_key(&url, &vary_key);
+                  map.entry(manifest_key).or_insert_with(|| result.clone());
+                }
               }
             }
             if let Ok(mut map) = self.recorded_by_request.lock() {
@@ -685,15 +755,35 @@ impl ResourceFetcher for RecordingFetcher {
       && matches!(req.destination, FetchDestination::Image | FetchDestination::Style);
     if let Ok(map) = self.recorded.lock() {
       if let Some(existing) = map.get(req.url) {
-        if !check_cors_poisoned_url_cache {
-          return Ok(existing.clone());
-        }
-        let is_cors_entry = self
-          .recorded_url_is_cors
-          .lock()
-          .map(|set| set.contains(&url))
-          .unwrap_or(false);
-        if !is_cors_entry {
+        if check_cors_poisoned_url_cache {
+          let is_cors_entry = self
+            .recorded_url_is_cors
+            .lock()
+            .map(|set| set.contains(&url))
+            .unwrap_or(false);
+          if !is_cors_entry {
+            return Ok(existing.clone());
+          }
+        } else if let Some(vary) = existing.vary.as_deref().filter(|v| *v != "*") {
+          let canonical_url = existing.final_url.as_deref().unwrap_or(req.url);
+          let request = FetchRequest {
+            url: canonical_url,
+            destination,
+            referrer_url,
+            client_origin,
+            referrer_policy,
+            credentials_mode,
+          };
+          if let Some(vary_key) =
+            compute_vary_key_for_recording(&*self.inner, request, Some(vary))
+              .filter(|key| !key.is_empty())
+          {
+            let manifest_key = vary_partitioned_resource_key(req.url, &vary_key);
+            if let Some(existing) = map.get(&manifest_key) {
+              return Ok(existing.clone());
+            }
+          }
+        } else if existing.vary.is_none() {
           return Ok(existing.clone());
         }
       }
@@ -703,14 +793,36 @@ impl ResourceFetcher for RecordingFetcher {
     if !is_data_url(&url) {
       if let Ok(mut map) = self.recorded.lock() {
         map.insert(url.clone(), result.clone());
+        if let Some(vary) = result.vary.as_deref().filter(|v| *v != "*") {
+          let canonical_url = result.final_url.as_deref().unwrap_or(url.as_str());
+          let request = FetchRequest {
+            url: canonical_url,
+            destination,
+            referrer_url,
+            client_origin,
+            referrer_policy,
+            credentials_mode,
+          };
+          if let Some(vary_key) =
+            compute_vary_key_for_recording(&*self.inner, request, Some(vary))
+              .filter(|key| !key.is_empty())
+          {
+            let manifest_key = vary_partitioned_resource_key(&url, &vary_key);
+            map.entry(manifest_key).or_insert_with(|| result.clone());
+          }
+        }
         if let Ok(mut set) = self.recorded_url_is_cors.lock() {
-          set.remove(req.url);
+          set.remove(url.as_str());
         }
       } else if let Ok(mut set) = self.recorded_url_is_cors.lock() {
-        set.remove(req.url);
+        set.remove(url.as_str());
       }
     }
     Ok(result)
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    self.inner.request_header_value(req, header_name)
   }
 
   fn fetch_with_validation(
@@ -1186,9 +1298,9 @@ fn build_manifest(
       response_referrer_policy: res
         .response_referrer_policy
         .map(|policy| policy.as_str().to_string()),
+      vary: res.vary.clone(),
       access_control_allow_origin: res.access_control_allow_origin.clone(),
       timing_allow_origin: res.timing_allow_origin.clone(),
-      vary: res.vary.clone(),
       access_control_allow_credentials: res.access_control_allow_credentials,
     };
     manifest_resources.insert(url.clone(), info);

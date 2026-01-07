@@ -33,6 +33,7 @@ use lru::LruCache;
 use publicsuffix::{List, Psl};
 use reqwest::blocking as reqwest_blocking;
 use reqwest::cookie::{CookieStore, Jar as ReqwestCookieJar};
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -2119,12 +2120,11 @@ pub struct FetchedResource {
   pub access_control_allow_origin: Option<String>,
   /// Timing-Allow-Origin response header value when fetched over HTTP(S).
   pub timing_allow_origin: Option<String>,
-  /// Raw `Vary` response header value when fetched over HTTP(S).
+  /// Normalized `Vary` response header value when fetched over HTTP(S).
   ///
-  /// Multiple `Vary` headers and comma-separated values are combined, lowercased, sorted, and
-  /// de-duplicated. `Vary: *` is stored as `"*"`.
-  ///
-  /// Stored for diagnostics and caching safety checks; see [`vary_is_cacheable`].
+  /// - Header names are lowercased, sorted, and de-duplicated.
+  /// - Multiple `Vary` headers and comma-separated values are coalesced.
+  /// - `Some("*")` represents `Vary: *` which must be treated as uncacheable.
   pub vary: Option<String>,
   /// Parsed referrer policy from the `Referrer-Policy` response header, when present.
   ///
@@ -2829,6 +2829,22 @@ pub trait ResourceFetcher: Send + Sync {
     self.fetch(req.url)
   }
 
+  /// Returns the value of a request header for the given fetch request, if known.
+  ///
+  /// This is used by caching layers to compute a deterministic variant key for `Vary`-aware cache
+  /// indexing.
+  ///
+  /// Implementations that can deterministically construct their outbound HTTP request headers
+  /// should return `Some(value)` (using an empty string to represent a header that would not be
+  /// sent). Implementations that cannot determine the header value must return `None`; caching
+  /// layers will treat responses that `Vary` on unknown headers as uncacheable to avoid poisoning.
+  ///
+  /// The default implementation returns `None`.
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    let _ = (req, header_name);
+    None
+  }
+
   /// Fetch a resource with contextual request metadata and optional validators.
   ///
   /// This is primarily used by caching wrappers so they can issue conditional
@@ -3042,6 +3058,10 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     (**self).fetch_with_request(req)
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    (**self).request_header_value(req, header_name)
   }
 
   fn fetch_with_request_and_validation(
@@ -6380,6 +6400,42 @@ impl ResourceFetcher for HttpFetcher {
     }
   }
 
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    // Use the same header construction logic as the HTTP backend so cache variant keys match the
+    // actual request header values (including browser-like `Origin`/`Referer` handling).
+    let headers = build_http_header_pairs(
+      req.url,
+      &self.user_agent,
+      &self.accept_language,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      req.destination,
+      req.client_origin,
+      req.referrer_url,
+      req.referrer_policy,
+    );
+    for (name, value) in headers {
+      if name.eq_ignore_ascii_case(header_name) {
+        return Some(value);
+      }
+    }
+    // Some commonly varied headers (notably `Origin`/`Referer`) are only emitted for certain
+    // destinations. Treat their absence deterministically as an empty string so callers can still
+    // compute a stable variant key.
+    if header_name.eq_ignore_ascii_case("origin")
+      || header_name.eq_ignore_ascii_case("accept-encoding")
+      || header_name.eq_ignore_ascii_case("accept-language")
+      || header_name.eq_ignore_ascii_case("user-agent")
+      || header_name.eq_ignore_ascii_case("referer")
+    {
+      return Some(String::new());
+    }
+
+    // We cannot reliably determine the value for other headers (e.g. `Cookie` supplied by the
+    // backend cookie jar). Treat such `Vary` responses as uncacheable to avoid poisoning.
+    None
+  }
+
   fn fetch_with_request_and_validation(
     &self,
     req: FetchRequest<'_>,
@@ -6583,7 +6639,7 @@ fn vary_contains_star(vary: &str) -> bool {
   vary.split(',').any(|part| part.trim() == "*")
 }
 
-fn vary_is_cacheable(vary: &str, kind: FetchContextKind, origin_key: Option<&str>) -> bool {
+fn vary_is_cacheable(vary: &str, _kind: FetchContextKind, _origin_key: Option<&str>) -> bool {
   for part in vary.split(',') {
     let part = part.trim();
     if part.is_empty() {
@@ -6596,6 +6652,11 @@ fn vary_is_cacheable(vary: &str, kind: FetchContextKind, origin_key: Option<&str
       // We always decode supported content-encodings, so the cached bytes are the decoded
       // representation.
       "accept-encoding" => {}
+      // `Accept-Language` and `User-Agent` are stable within a render process and are included in
+      // the computed `Vary` key when servers opt into varying on them.
+      "accept-language" | "user-agent" => {}
+      // `Referer` is derived from the request referrer URL and is included in the `Vary` key.
+      "referer" => {}
       // The browser-like request profile derives `Accept` solely from the fetch destination, which
       // is already part of the cache key (`FetchContextKind`). When browser headers are disabled
       // we use a single default `Accept` value for all requests.
@@ -6603,24 +6664,9 @@ fn vary_is_cacheable(vary: &str, kind: FetchContextKind, origin_key: Option<&str
       // `Sec-Fetch-*` headers and `Upgrade-Insecure-Requests` are derived solely from the fetch
       // destination, which is already part of the cache key (`FetchContextKind`).
       "sec-fetch-dest" | "sec-fetch-mode" | "sec-fetch-user" | "upgrade-insecure-requests" => {}
-      "origin" => {
-        // `Origin` is only safe to ignore when the cache key already accounts for it (CORS-mode
-        // partitioning) *or* when our request profile does not send an Origin header at all.
-        //
-        // When browser-like request headers are enabled, we send `Origin` for CORS-mode subresource
-        // requests (fonts and `<img crossorigin>`). If those requests are not partitioned, a
-        // response that declares `Vary: Origin` must not be cached because subsequent requests may
-        // carry different Origin values.
-        if origin_key.is_none()
-          && http_browser_headers_enabled()
-          && matches!(
-            kind,
-            FetchContextKind::Font | FetchContextKind::ImageCors | FetchContextKind::StylesheetCors
-          )
-        {
-          return false;
-        }
-      }
+      // `Origin` is also safe because we include it in the computed `Vary` key (or treat the
+      // response as uncacheable if we cannot determine the `Origin` request header value).
+      "origin" => {}
       _ => return false,
     }
   }
@@ -7223,12 +7269,108 @@ fn reserve_policy_bytes(policy: &Option<ResourcePolicy>, resource: &FetchedResou
   Ok(())
 }
 
+const VARY_KEY_EMPTY: &str = "";
+// Conservative header set used to avoid single-flight de-duplication across requests that may
+// produce different `Vary` variants before we know the server-provided `Vary` list.
+const INFLIGHT_VARY_SIGNATURE_HEADERS: &str =
+  "accept-encoding, accept-language, origin, referer, user-agent";
+
+fn inflight_signature_for_request<F: ResourceFetcher>(fetcher: &F, request: FetchRequest<'_>) -> String {
+  compute_vary_key_for_request(fetcher, request, Some(INFLIGHT_VARY_SIGNATURE_HEADERS))
+    .unwrap_or_else(|| format!("fallback:{:?}:{:?}", request.destination, request.referrer_url))
+}
+
+/// Compute a deterministic `Vary` variant key for a request.
+///
+/// Returns `None` when the response is uncacheable (`Vary: *`) or when the fetcher cannot
+/// determine the value of a required request header.
+fn compute_vary_key_for_request<F: ResourceFetcher>(
+  fetcher: &F,
+  req: FetchRequest<'_>,
+  vary: Option<&str>,
+) -> Option<String> {
+  let Some(vary) = vary.filter(|v| !v.trim().is_empty()) else {
+    return Some(VARY_KEY_EMPTY.to_string());
+  };
+  if vary.trim() == "*" {
+    return None;
+  }
+
+  let mut hasher = Sha256::new();
+  let mut saw_field = false;
+  for field in vary.split(',') {
+    let name = field.trim();
+    if name.is_empty() {
+      continue;
+    }
+    saw_field = true;
+    let value = fetcher.request_header_value(req, name)?;
+    hasher.update(name.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(value.as_bytes());
+    hasher.update(b"\n");
+  }
+
+  if !saw_field {
+    return Some(VARY_KEY_EMPTY.to_string());
+  }
+
+  let digest = hasher.finalize();
+  const HEX: &[u8; 16] = b"0123456789abcdef";
+  let mut out = String::with_capacity(64);
+  for &b in digest.iter() {
+    out.push(HEX[(b >> 4) as usize] as char);
+    out.push(HEX[(b & 0x0f) as usize] as char);
+  }
+  Some(out)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CacheKey {
   kind: FetchContextKind,
   url: String,
   origin_key: Option<String>,
   credentials_mode: FetchCredentialsMode,
+}
+
+#[derive(Clone)]
+struct CacheVariants {
+  vary: Option<String>,
+  entries: HashMap<String, CacheEntry>,
+}
+
+impl CacheVariants {
+  fn new(vary: Option<String>) -> Self {
+    Self {
+      vary,
+      entries: HashMap::new(),
+    }
+  }
+
+  fn weight(&self) -> usize {
+    self.entries.values().map(|entry| entry.weight()).sum()
+  }
+
+  fn snapshot_for(&self, vary_key: &str) -> Option<CachedSnapshot> {
+    self.entries.get(vary_key).cloned().map(|entry| CachedSnapshot {
+      value: entry.value,
+      etag: entry.etag,
+      last_modified: entry.last_modified,
+      http_cache: entry.http_cache,
+    })
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct InFlightKey {
+  cache: CacheKey,
+  request_sig: String,
+}
+
+impl InFlightKey {
+  fn new(cache: CacheKey, request_sig: String) -> Self {
+    Self { cache, request_sig }
+  }
 }
 
 impl CacheKey {
@@ -7268,7 +7410,7 @@ impl CacheKey {
 }
 
 struct CacheState {
-  lru: LruCache<CacheKey, CacheEntry>,
+  lru: LruCache<CacheKey, CacheVariants>,
   current_bytes: usize,
   aliases: HashMap<CacheKey, CacheKey>,
 }
@@ -7400,7 +7542,7 @@ fn render_stage_hint_for_context(kind: FetchContextKind, url: &str) -> RenderSta
 pub struct CachingFetcher<F: ResourceFetcher> {
   inner: F,
   state: Arc<Mutex<CacheState>>,
-  in_flight: Arc<Mutex<HashMap<CacheKey, Arc<InFlight>>>>,
+  in_flight: Arc<Mutex<HashMap<InFlightKey, Arc<InFlight>>>>,
   config: CachingFetcherConfig,
   policy: Option<ResourcePolicy>,
 }
@@ -7657,13 +7799,13 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     }
   }
 
-  fn insert_canonical_locked(&self, state: &mut CacheState, key: &CacheKey, entry: CacheEntry) {
+  fn insert_canonical_locked(&self, state: &mut CacheState, key: &CacheKey, bucket: CacheVariants) {
     if let Some(existing) = state.lru.peek(key) {
       state.current_bytes = state.current_bytes.saturating_sub(existing.weight());
     }
-    state.current_bytes = state.current_bytes.saturating_add(entry.weight());
+    state.current_bytes = state.current_bytes.saturating_add(bucket.weight());
     state.aliases.remove(key);
-    state.lru.put(key.clone(), entry);
+    state.lru.put(key.clone(), bucket);
     self.evict_locked(state);
   }
 
@@ -7700,6 +7842,8 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
   fn cache_entry(
     &self,
     requested: &CacheKey,
+    vary: Option<String>,
+    vary_key: String,
     entry: CacheEntry,
     final_url: Option<&str>,
   ) -> CacheKey {
@@ -7711,7 +7855,24 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     }
 
     if let Ok(mut state) = self.state.lock() {
-      self.insert_canonical_locked(&mut state, &canonical, entry);
+      let mut bucket = state
+        .lru
+        .pop(&canonical)
+        .unwrap_or_else(|| CacheVariants::new(vary.clone()));
+      let old_weight = bucket.weight();
+      state.current_bytes = state.current_bytes.saturating_sub(old_weight);
+
+      if bucket.vary != vary {
+        bucket = CacheVariants::new(vary.clone());
+      }
+      bucket.entries.insert(vary_key, entry);
+
+      let new_weight = bucket.weight();
+      state.current_bytes = state.current_bytes.saturating_add(new_weight);
+      state.aliases.remove(&canonical);
+      state.lru.put(canonical.clone(), bucket);
+      self.evict_locked(&mut state);
+
       if requested.url != canonical_url {
         self.set_alias_locked(&mut state, requested, &canonical);
       }
@@ -7723,8 +7884,8 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
   fn remove_cached(&self, key: &CacheKey) {
     if let Ok(mut state) = self.state.lock() {
       let canonical = self.resolve_alias_locked(&mut state, key);
-      if let Some((_k, entry)) = state.lru.pop_entry(&canonical) {
-        state.current_bytes = state.current_bytes.saturating_sub(entry.weight());
+      if let Some((_k, bucket)) = state.lru.pop_entry(&canonical) {
+        state.current_bytes = state.current_bytes.saturating_sub(bucket.weight());
       }
       self.remove_aliases_targeting(&mut state, &canonical);
       if &canonical != key {
@@ -7739,6 +7900,9 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     resource: &FetchedResource,
     stored_at: SystemTime,
   ) -> Option<CacheEntry> {
+    if resource.vary.as_deref() == Some("*") {
+      return None;
+    }
     if !self.config.allow_no_store
       && resource
         .cache_policy
@@ -7809,25 +7973,35 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     current
   }
 
-  fn cached_entry(&self, key: &CacheKey) -> Option<CachedSnapshot> {
-    self
-      .state
-      .lock()
-      .ok()
-      .and_then(|mut state| {
-        let canonical = self.resolve_alias_locked(&mut state, key);
-        let snapshot = state.lru.get(&canonical).cloned();
-        if snapshot.is_none() && &canonical != key {
-          state.aliases.remove(key);
+  fn cached_entry(&self, key: &CacheKey, request: Option<FetchRequest<'_>>) -> Option<CachedSnapshot> {
+    self.state.lock().ok().and_then(|mut state| {
+      let canonical = self.resolve_alias_locked(&mut state, key);
+      let bucket = match state.lru.get(&canonical) {
+        Some(bucket) => bucket,
+        None => {
+          if &canonical != key {
+            state.aliases.remove(key);
+          }
+          return None;
         }
-        snapshot
-      })
-      .map(|entry| CachedSnapshot {
-        value: entry.value,
-        etag: entry.etag,
-        last_modified: entry.last_modified,
-        http_cache: entry.http_cache,
-      })
+      };
+
+      let request = if let Some(request) = request {
+        FetchRequest {
+          url: &canonical.url,
+          destination: request.destination,
+          referrer_url: request.referrer_url,
+          client_origin: request.client_origin,
+          referrer_policy: request.referrer_policy,
+          credentials_mode: request.credentials_mode,
+        }
+      } else {
+        FetchRequest::new(&canonical.url, canonical.kind.into())
+      };
+
+      let vary_key = compute_vary_key_for_request(&self.inner, request, bucket.vary.as_deref())?;
+      bucket.snapshot_for(&vary_key)
+    })
   }
 
   #[cfg(feature = "disk_cache")]
@@ -7836,7 +8010,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
   ) -> Option<CachedSnapshot> {
-    self.cached_entry(&CacheKey::new(kind, url.to_string()))
+    self.cached_entry(&CacheKey::new(kind, url.to_string()), None)
   }
 
   #[cfg(feature = "disk_cache")]
@@ -7850,9 +8024,21 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
       CacheValue::Resource(res) => res.final_url.clone(),
       CacheValue::Error(_) => None,
     };
+    let vary = match &snapshot.value {
+      CacheValue::Resource(res) => res.vary.clone(),
+      CacheValue::Error(_) => None,
+    };
+    let request = FetchRequest::new(url, kind.into());
+    let Some(vary_key) =
+      compute_vary_key_for_request(&self.inner, request, vary.as_deref())
+    else {
+      return url.to_string();
+    };
     self
       .cache_entry(
         &CacheKey::new(kind, url.to_string()),
+        vary,
+        vary_key,
         CacheEntry {
           etag: snapshot.etag.clone(),
           last_modified: snapshot.last_modified.clone(),
@@ -7872,18 +8058,26 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     resource: FetchedResource,
   ) {
     let stored_at = SystemTime::now();
-    if let Some(entry) =
-      self.build_cache_entry(&CacheKey::new(kind, url.to_string()), &resource, stored_at)
-    {
+    let vary = resource.vary.clone();
+    let request = FetchRequest::new(url, kind.into());
+    let Some(vary_key) =
+      compute_vary_key_for_request(&self.inner, request, vary.as_deref())
+    else {
+      return;
+    };
+    let key = CacheKey::new(kind, url.to_string());
+    if let Some(entry) = self.build_cache_entry(&key, &resource, stored_at) {
       self.cache_entry(
-        &CacheKey::new(kind, url.to_string()),
+        &key,
+        vary,
+        vary_key,
         entry,
         resource.final_url.as_deref(),
       );
     }
   }
 
-  fn join_inflight(&self, key: &CacheKey) -> (Arc<InFlight>, bool) {
+  fn join_inflight(&self, key: &InFlightKey) -> (Arc<InFlight>, bool) {
     let mut map = match self.in_flight.lock() {
       Ok(map) => map,
       Err(poisoned) => {
@@ -7901,7 +8095,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     (flight, true)
   }
 
-  fn finish_inflight(&self, key: &CacheKey, flight: &Arc<InFlight>, result: SharedResult) {
+  fn finish_inflight(&self, key: &InFlightKey, flight: &Arc<InFlight>, result: SharedResult) {
     flight.set(result);
     let mut map = self
       .in_flight
@@ -7912,13 +8106,13 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
 }
 struct InFlightOwnerGuard<'a, F: ResourceFetcher> {
   fetcher: &'a CachingFetcher<F>,
-  key: CacheKey,
+  key: InFlightKey,
   flight: Arc<InFlight>,
   finished: bool,
 }
 
 impl<'a, F: ResourceFetcher> InFlightOwnerGuard<'a, F> {
-  fn new(fetcher: &'a CachingFetcher<F>, key: CacheKey, flight: Arc<InFlight>) -> Self {
+  fn new(fetcher: &'a CachingFetcher<F>, key: InFlightKey, flight: Arc<InFlight>) -> Self {
     Self {
       fetcher,
       key,
@@ -7946,7 +8140,7 @@ impl<'a, F: ResourceFetcher> Drop for InFlightOwnerGuard<'a, F> {
 
     self.finished = true;
     let err = Error::Resource(ResourceError::new(
-      self.key.url.to_string(),
+      self.key.cache.url.to_string(),
       "in-flight fetch owner dropped without resolving",
     ));
     self
@@ -7966,7 +8160,8 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     }
 
     let key = CacheKey::new(kind, url.to_string());
-    let cached = self.cached_entry(&key);
+    let request = FetchRequest::new(url, kind.into());
+    let cached = self.cached_entry(&key, Some(request));
     let plan = self.plan_cache_use(url, cached.clone(), None);
     if let CacheAction::UseCached = plan.action {
       if let Some(snapshot) = plan.cached.as_ref() {
@@ -7984,7 +8179,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       }
     }
 
-    let (flight, is_owner) = self.join_inflight(&key);
+    let request_sig = inflight_signature_for_request(&self.inner, request);
+    let inflight_key = InFlightKey::new(key.clone(), request_sig);
+    let (flight, is_owner) = self.join_inflight(&inflight_key);
     if !is_owner {
       let inflight_timer = start_fetch_inflight_wait_diagnostics();
       let result = flight.wait(&key);
@@ -7995,7 +8192,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       return result;
     }
 
-    let mut inflight_guard = InFlightOwnerGuard::new(self, key.clone(), flight);
+    let mut inflight_guard = InFlightOwnerGuard::new(self, inflight_key, flight);
 
     let validators = match &plan.action {
       CacheAction::Validate {
@@ -8015,77 +8212,98 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     };
 
     let (mut result, charge_budget) = match fetch_result {
-          Ok(res) => {
-            if res.is_not_modified() {
-              if let Some(snapshot) = plan.cached.as_ref() {
-                let value = snapshot.value.as_result();
-                if let Ok(ref ok) = value {
-                  let mut stored_resource = ok.clone();
-                  if res.vary.is_some() {
-                    stored_resource.vary = res.vary.clone();
-                  }
-                  let stored_at = SystemTime::now();
-                  let should_store = self.config.allow_no_store
-                    || !res
-                      .cache_policy
-                      .as_ref()
-                      .map(|p| p.no_store)
-                      .unwrap_or(false);
-                  let updated_meta = snapshot
-                    .http_cache
-                    .as_ref()
-                    .and_then(|meta| meta.with_updated_policy(res.cache_policy.as_ref(), stored_at))
-                    .or_else(|| {
-                      res
-                        .cache_policy
-                        .as_ref()
-                        .and_then(|policy| CachedHttpMetadata::from_policy(policy, stored_at))
-                    });
-
-                  let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
-                  let vary_cacheable = match stored_resource.vary.as_deref() {
-                    Some(vary) => {
-                      !vary_contains_star(vary)
-                        && (allow_unhandled
-                          || vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()))
-                    }
-                    None => true,
-                  };
-
-                  if should_store && vary_cacheable {
-                    let _ = self.cache_entry(
-                      &key,
-                      CacheEntry {
-                        value: CacheValue::Resource(stored_resource),
-                        etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
-                        last_modified: res
-                          .last_modified
-                          .clone()
-                          .or_else(|| snapshot.last_modified.clone()),
-                        http_cache: updated_meta,
-                      },
-                      ok.final_url.as_deref(),
-                    );
-                  } else {
-                    self.remove_cached(&key);
-                  }
-                }
-                record_cache_revalidated_hit();
-                if let Ok(ref ok) = value {
-                  record_resource_cache_bytes(ok.bytes.len());
-                }
-                let is_ok = value.is_ok();
-                (value, is_ok)
-              } else {
-                (
-                  Err(Error::Resource(
-                    ResourceError::new(url.to_string(), "received 304 without cached entry")
-                      .with_final_url(url.to_string()),
-                  )),
-                  false,
-                )
+      Ok(res) => {
+        if res.is_not_modified() {
+          if let Some(snapshot) = plan.cached.as_ref() {
+            let value = snapshot.value.as_result();
+            if let Ok(ref ok) = value {
+              let mut stored_resource = ok.clone();
+              if res.vary.is_some() {
+                stored_resource.vary = res.vary.clone();
               }
-            } else if res.status.is_some_and(|code| code >= 400)
+
+              let stored_at = SystemTime::now();
+              let should_store = self.config.allow_no_store
+                || !res
+                  .cache_policy
+                  .as_ref()
+                  .map(|p| p.no_store)
+                  .unwrap_or(false);
+              let http_cache = snapshot
+                .http_cache
+                .as_ref()
+                .and_then(|meta| meta.with_updated_policy(res.cache_policy.as_ref(), stored_at))
+                .or_else(|| {
+                  res
+                    .cache_policy
+                    .as_ref()
+                    .and_then(|policy| CachedHttpMetadata::from_policy(policy, stored_at))
+                });
+
+              let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
+              let memory_cacheable = match stored_resource.vary.as_deref() {
+                Some(vary) => {
+                  !vary_contains_star(vary)
+                    && (allow_unhandled
+                      || vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()))
+                }
+                None => true,
+              };
+
+              if should_store && memory_cacheable {
+                let canonical_url = self.canonical_url(url, ok.final_url.as_deref());
+                let canonical_request = FetchRequest {
+                  url: &canonical_url,
+                  destination: request.destination,
+                  referrer_url: request.referrer_url,
+                  client_origin: request.client_origin,
+                  referrer_policy: request.referrer_policy,
+                  credentials_mode: request.credentials_mode,
+                };
+
+                if let Some(vary_key) = compute_vary_key_for_request(
+                  &self.inner,
+                  canonical_request,
+                  stored_resource.vary.as_deref(),
+                ) {
+                  let _ = self.cache_entry(
+                    &key,
+                    stored_resource.vary.clone(),
+                    vary_key,
+                    CacheEntry {
+                      value: CacheValue::Resource(stored_resource),
+                      etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
+                      last_modified: res
+                        .last_modified
+                        .clone()
+                        .or_else(|| snapshot.last_modified.clone()),
+                      http_cache,
+                    },
+                    ok.final_url.as_deref(),
+                  );
+                } else {
+                  self.remove_cached(&key);
+                }
+              } else {
+                self.remove_cached(&key);
+              }
+            }
+            record_cache_revalidated_hit();
+            if let Ok(ref ok) = value {
+              record_resource_cache_bytes(ok.bytes.len());
+            }
+            let is_ok = value.is_ok();
+            (value, is_ok)
+          } else {
+            (
+              Err(Error::Resource(
+                ResourceError::new(url.to_string(), "received 304 without cached entry")
+                  .with_final_url(url.to_string()),
+              )),
+              false,
+            )
+          }
+        } else if res.status.is_some_and(|code| code >= 400)
           && plan
             .cached
             .as_ref()
@@ -8119,7 +8337,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             // non-deadline fetches to attempt a refresh.
             if self.config.allow_no_store && res.status.is_some_and(|code| code >= 400) {
               let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
-              let should_cache = match res.vary.as_deref() {
+              let memory_cacheable = match res.vary.as_deref() {
                 Some(vary) => {
                   !vary_contains_star(vary)
                     && (allow_unhandled
@@ -8127,25 +8345,41 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 }
                 None => true,
               };
-              if should_cache {
+              if memory_cacheable {
                 let stored_at = SystemTime::now();
-                let _ = self.cache_entry(
-                  &key,
-                  CacheEntry {
-                    value: CacheValue::Resource(res.clone()),
-                    etag: res.etag.clone(),
-                    last_modified: res.last_modified.clone(),
-                    http_cache: Some(CachedHttpMetadata {
-                      stored_at,
-                      max_age: None,
-                      expires: None,
-                      no_cache: false,
-                      no_store: true,
-                      must_revalidate: false,
-                    }),
-                  },
-                  res.final_url.as_deref(),
-                );
+                let canonical_url = self.canonical_url(url, res.final_url.as_deref());
+                let canonical_request = FetchRequest {
+                  url: &canonical_url,
+                  destination: request.destination,
+                  referrer_url: request.referrer_url,
+                  client_origin: request.client_origin,
+                  referrer_policy: request.referrer_policy,
+                  credentials_mode: request.credentials_mode,
+                };
+                let vary = res.vary.clone();
+                if let Some(vary_key) =
+                  compute_vary_key_for_request(&self.inner, canonical_request, vary.as_deref())
+                {
+                  let _ = self.cache_entry(
+                    &key,
+                    vary,
+                    vary_key,
+                    CacheEntry {
+                      value: CacheValue::Resource(res.clone()),
+                      etag: res.etag.clone(),
+                      last_modified: res.last_modified.clone(),
+                      http_cache: Some(CachedHttpMetadata {
+                        stored_at,
+                        max_age: None,
+                        expires: None,
+                        no_cache: false,
+                        no_store: true,
+                        must_revalidate: false,
+                      }),
+                    },
+                    res.final_url.as_deref(),
+                  );
+                }
               }
             }
             record_cache_miss();
@@ -8154,7 +8388,21 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
         } else {
           let stored_at = SystemTime::now();
           if let Some(entry) = self.build_cache_entry(&key, &res, stored_at) {
-            let _ = self.cache_entry(&key, entry, res.final_url.as_deref());
+            let canonical_url = self.canonical_url(url, res.final_url.as_deref());
+            let request = FetchRequest {
+              url: &canonical_url,
+              destination: request.destination,
+              referrer_url: request.referrer_url,
+              client_origin: request.client_origin,
+              referrer_policy: request.referrer_policy,
+              credentials_mode: request.credentials_mode,
+            };
+            let vary = res.vary.clone();
+            if let Some(vary_key) =
+              compute_vary_key_for_request(&self.inner, request, vary.as_deref())
+            {
+              let _ = self.cache_entry(&key, vary, vary_key, entry, res.final_url.as_deref());
+            }
           } else if !self.config.allow_no_store
             && res
               .cache_policy
@@ -8178,9 +8426,21 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
           let is_ok = fallback.is_ok();
           (fallback, is_ok)
         } else {
-          if self.config.cache_errors {
+          let has_bucket = self
+            .state
+            .lock()
+            .ok()
+            .map(|mut state| {
+              let canonical = self.resolve_alias_locked(&mut state, &key);
+              state.lru.peek(&canonical).is_some()
+            })
+            .unwrap_or(false);
+
+          if self.config.cache_errors && !has_bucket {
             let _ = self.cache_entry(
               &key,
+              None,
+              VARY_KEY_EMPTY.to_string(),
               CacheEntry {
                 value: CacheValue::Error(err.clone()),
                 etag: None,
@@ -8225,7 +8485,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       cors_cache_partition_key(&req),
       req.credentials_mode,
     );
-    let cached = self.cached_entry(&key);
+    let cached = self.cached_entry(&key, Some(req));
     let plan = self.plan_cache_use(url, cached.clone(), None);
     if let CacheAction::UseCached = plan.action {
       if let Some(snapshot) = plan.cached.as_ref() {
@@ -8243,7 +8503,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       }
     }
 
-    let (flight, is_owner) = self.join_inflight(&key);
+    let request_sig = inflight_signature_for_request(&self.inner, req);
+    let inflight_key = InFlightKey::new(key.clone(), request_sig);
+    let (flight, is_owner) = self.join_inflight(&inflight_key);
     if !is_owner {
       let inflight_timer = start_fetch_inflight_wait_diagnostics();
       let result = flight.wait(&key);
@@ -8254,7 +8516,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       return result;
     }
 
-    let mut inflight_guard = InFlightOwnerGuard::new(self, key.clone(), flight);
+    let mut inflight_guard = InFlightOwnerGuard::new(self, inflight_key, flight);
 
     let validators = match &plan.action {
       CacheAction::Validate {
@@ -8284,6 +8546,15 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 stored_resource.vary = res.vary.clone();
               }
               let stored_at = SystemTime::now();
+              let canonical_url = self.canonical_url(url, ok.final_url.as_deref());
+              let request = FetchRequest {
+                url: &canonical_url,
+                destination: req.destination,
+                referrer_url: req.referrer_url,
+                client_origin: req.client_origin,
+                referrer_policy: req.referrer_policy,
+                credentials_mode: req.credentials_mode,
+              };
               let should_store = self.config.allow_no_store
                 || !res
                   .cache_policy
@@ -8300,9 +8571,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                     .as_ref()
                     .and_then(|policy| CachedHttpMetadata::from_policy(policy, stored_at))
                 });
-
+ 
               let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
-              let vary_cacheable = match stored_resource.vary.as_deref() {
+              let memory_cacheable = match stored_resource.vary.as_deref() {
                 Some(vary) => {
                   !vary_contains_star(vary)
                     && (allow_unhandled
@@ -8310,21 +8581,31 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 }
                 None => true,
               };
-
-              if should_store && vary_cacheable {
-                let _ = self.cache_entry(
-                  &key,
-                  CacheEntry {
-                    value: CacheValue::Resource(stored_resource),
-                    etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
-                    last_modified: res
-                      .last_modified
-                      .clone()
-                      .or_else(|| snapshot.last_modified.clone()),
-                    http_cache: updated_meta,
-                  },
-                  ok.final_url.as_deref(),
-                );
+ 
+              if should_store && memory_cacheable {
+                if let Some(vary_key) = compute_vary_key_for_request(
+                  &self.inner,
+                  request,
+                  stored_resource.vary.as_deref(),
+                ) {
+                  let _ = self.cache_entry(
+                    &key,
+                    stored_resource.vary.clone(),
+                    vary_key,
+                    CacheEntry {
+                      value: CacheValue::Resource(stored_resource),
+                      etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
+                      last_modified: res
+                        .last_modified
+                        .clone()
+                        .or_else(|| snapshot.last_modified.clone()),
+                      http_cache: updated_meta,
+                    },
+                    ok.final_url.as_deref(),
+                  );
+                } else {
+                  self.remove_cached(&key);
+                }
               } else {
                 self.remove_cached(&key);
               }
@@ -8379,7 +8660,21 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
           } else {
             let stored_at = SystemTime::now();
             if let Some(entry) = self.build_cache_entry(&key, &res, stored_at) {
-              let _ = self.cache_entry(&key, entry, res.final_url.as_deref());
+              let canonical_url = self.canonical_url(url, res.final_url.as_deref());
+              let request = FetchRequest {
+                url: &canonical_url,
+                destination: req.destination,
+                referrer_url: req.referrer_url,
+                client_origin: req.client_origin,
+                referrer_policy: req.referrer_policy,
+                credentials_mode: req.credentials_mode,
+              };
+              let vary = res.vary.clone();
+              if let Some(vary_key) =
+                compute_vary_key_for_request(&self.inner, request, vary.as_deref())
+              {
+                let _ = self.cache_entry(&key, vary, vary_key, entry, res.final_url.as_deref());
+              }
             } else if !self.config.allow_no_store
               && res
                 .cache_policy
@@ -8404,9 +8699,21 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
           let is_ok = fallback.is_ok();
           (fallback, is_ok)
         } else {
-          if self.config.cache_errors {
+          let has_bucket = self
+            .state
+            .lock()
+            .ok()
+            .map(|mut state| {
+              let canonical = self.resolve_alias_locked(&mut state, &key);
+              state.lru.peek(&canonical).is_some()
+            })
+            .unwrap_or(false);
+
+          if self.config.cache_errors && !has_bucket {
             let _ = self.cache_entry(
               &key,
+              None,
+              VARY_KEY_EMPTY.to_string(),
               CacheEntry {
                 value: CacheValue::Error(err.clone()),
                 etag: None,
@@ -8438,6 +8745,10 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     result
   }
 
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    self.inner.request_header_value(req, header_name)
+  }
+
   fn fetch_partial(&self, url: &str, max_bytes: usize) -> Result<FetchedResource> {
     self.fetch_partial_with_context(FetchContextKind::Other, url, max_bytes)
   }
@@ -8453,7 +8764,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     }
 
     let key = CacheKey::new(kind, url.to_string());
-    if let Some(snapshot) = self.cached_entry(&key) {
+    if let Some(snapshot) = self.cached_entry(&key, None) {
       if let CacheValue::Resource(mut res) = snapshot.value {
         if res.bytes.len() > max_bytes {
           res.bytes.truncate(max_bytes);
@@ -8485,7 +8796,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       cors_cache_partition_key(&req),
       req.credentials_mode,
     );
-    if let Some(snapshot) = self.cached_entry(&key) {
+    if let Some(snapshot) = self.cached_entry(&key, Some(req)) {
       if let CacheValue::Resource(mut res) = snapshot.value {
         if res.bytes.len() > max_bytes {
           res.bytes.truncate(max_bytes);
@@ -8525,6 +8836,11 @@ fn header_has_nosniff(headers: &HeaderMap) -> bool {
     .unwrap_or(false)
 }
 
+/// Returns a normalized `Vary` header value from response headers.
+///
+/// - Header names are lowercased and sorted lexicographically.
+/// - Multiple `Vary` headers and comma-separated values are coalesced.
+/// - Returns `Some("*")` when `Vary: *` is present.
 fn parse_vary_headers(headers: &HeaderMap) -> Option<String> {
   let mut out: Vec<String> = Vec::new();
   for value in headers.get_all("vary").iter() {
@@ -11899,7 +12215,7 @@ mod tests {
 
             let body = n.to_string();
             let headers = format!(
-              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nVary: Accept-Language\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nVary: Sec-Fetch-Site\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
               body.len()
             );
             let _ = stream.write_all(headers.as_bytes());
@@ -11925,9 +12241,9 @@ mod tests {
     let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
     let url = format!("http://{addr}/vary.txt");
     let first = fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("accept-language"));
+    assert_eq!(first.vary.as_deref(), Some("sec-fetch-site"));
     let second = fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("accept-language"));
+    assert_eq!(second.vary.as_deref(), Some("sec-fetch-site"));
 
     handle.join().unwrap();
 
@@ -13218,7 +13534,7 @@ mod tests {
   }
 
   #[test]
-  fn caching_fetcher_caches_vary_origin_only_when_partitioned() {
+  fn caching_fetcher_caches_vary_origin_without_origin_partitioning() {
     #[derive(Clone)]
     struct OriginVaryFetcher {
       calls: Arc<AtomicUsize>,
@@ -13235,6 +13551,13 @@ mod tests {
         res.final_url = Some(req.url.to_string());
         res.vary = Some("origin".to_string());
         Ok(res)
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("origin") {
+          return cors_origin_key_for_request(&req).or_else(|| Some(String::new()));
+        }
+        None
       }
     }
 
@@ -13258,8 +13581,8 @@ mod tests {
     );
     assert_eq!(
       calls_unpartitioned.load(Ordering::SeqCst),
-      2,
-      "expected Vary: Origin to disable caching without origin partitioning"
+      1,
+      "expected Vary: Origin response to be cached without origin partitioning"
     );
 
     let calls_partitioned = Arc::new(AtomicUsize::new(0));
@@ -13279,7 +13602,7 @@ mod tests {
     assert_eq!(
       calls_partitioned.load(Ordering::SeqCst),
       1,
-      "expected Vary: Origin to be cacheable when origin partitioning is enabled"
+      "expected Vary: Origin response to be cached when origin partitioning is enabled"
     );
   }
 
@@ -17204,7 +17527,7 @@ mod tests {
     );
 
     let cached = cache
-      .cached_entry(&CacheKey::new(FetchContextKind::Other, url.to_string()))
+      .cached_entry(&CacheKey::new(FetchContextKind::Other, url.to_string()), None)
       .expect("cache entry should remain after fallback");
     let cached_res = cached
       .value
@@ -17773,10 +18096,10 @@ mod tests {
     );
 
     let cached = cache
-      .cached_entry(&CacheKey::new(
-        FetchContextKind::Stylesheet,
-        url.to_string(),
-      ))
+      .cached_entry(
+        &CacheKey::new(FetchContextKind::Stylesheet, url.to_string()),
+        None,
+      )
       .expect("cache entry should remain after fallback");
     let cached_res = cached
       .value
@@ -17993,5 +18316,148 @@ mod tests {
     let second = cache.fetch(&target).expect("aliased fetch");
     assert_eq!(second.bytes, initial.bytes);
     assert_eq!(calls.lock().unwrap().len(), 1, "alias should hit cache");
+  }
+
+  #[test]
+  fn parse_vary_headers_coalesces_sort_and_lowercases() {
+    use http::header;
+
+    let mut headers = HeaderMap::new();
+    headers.append(header::VARY, http::HeaderValue::from_static("Origin"));
+    headers.append(
+      header::VARY,
+      http::HeaderValue::from_static("Accept-Encoding, origin"),
+    );
+    headers.append(header::VARY, http::HeaderValue::from_static("ACCEPT-LANGUAGE"));
+
+    let normalized = parse_vary_headers(&headers);
+    assert_eq!(
+      normalized.as_deref(),
+      Some("accept-encoding, accept-language, origin")
+    );
+  }
+
+  #[test]
+  fn parse_vary_headers_returns_star() {
+    use http::header;
+
+    let mut headers = HeaderMap::new();
+    headers.append(header::VARY, http::HeaderValue::from_static("Origin"));
+    headers.append(header::VARY, http::HeaderValue::from_static("*"));
+    assert_eq!(parse_vary_headers(&headers).as_deref(), Some("*"));
+  }
+
+  #[test]
+  fn caching_fetcher_tracks_multiple_vary_variants_for_one_url() {
+    #[derive(Clone)]
+    struct VaryOriginFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for VaryOriginFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_for_request(&req).unwrap_or_default();
+        let mut resource =
+          FetchedResource::new(origin.as_bytes().to_vec(), Some("text/plain".to_string()));
+        resource.status = Some(200);
+        resource.final_url = Some(req.url.to_string());
+        resource.vary = Some("origin".to_string());
+        resource.cache_policy = Some(HttpCachePolicy {
+          max_age: Some(60),
+          ..Default::default()
+        });
+        Ok(resource)
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("origin") {
+          return cors_origin_key_for_request(&req);
+        }
+        None
+      }
+    }
+
+    // Disable CORS cache partitioning so the cache key remains stable across differing Origin
+    // values. This ensures the test exercises the `Vary` variant machinery rather than partition
+    // keys.
+    let _toggles_guard = runtime::set_runtime_toggles(Arc::new(runtime::RuntimeToggles::from_map(
+      HashMap::from([(
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "0".to_string(),
+      )]),
+    )));
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::new(VaryOriginFetcher {
+      calls: Arc::clone(&calls),
+    });
+    let url = "https://example.com/font.woff2";
+
+    let first_a = fetcher
+      .fetch_with_request(
+        FetchRequest::new(url, FetchDestination::Font)
+          .with_referrer_url("https://a.test/page.html"),
+      )
+      .expect("fetch origin A");
+    assert_eq!(first_a.bytes, b"https://a.test");
+
+    let first_b = fetcher
+      .fetch_with_request(
+        FetchRequest::new(url, FetchDestination::Font)
+          .with_referrer_url("https://b.test/page.html"),
+      )
+      .expect("fetch origin B");
+    assert_eq!(first_b.bytes, b"https://b.test");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    let second_a = fetcher
+      .fetch_with_request(
+        FetchRequest::new(url, FetchDestination::Font)
+          .with_referrer_url("https://a.test/page.html"),
+      )
+      .expect("cached origin A");
+    assert_eq!(second_a.bytes, b"https://a.test");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "cached fetch should not re-fetch the network"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_skips_vary_star_entries() {
+    #[derive(Clone)]
+    struct VaryStarFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for VaryStarFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+        res.status = Some(200);
+        res.final_url = Some(url.to_string());
+        res.vary = Some("*".to_string());
+        Ok(res)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(VaryStarFetcher {
+      calls: Arc::clone(&calls),
+    });
+    let url = "https://example.com/vary-star";
+    let _ = cache.fetch(url).expect("first");
+    let _ = cache.fetch(url).expect("second");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "Vary:* responses must not be cached"
+    );
   }
 }

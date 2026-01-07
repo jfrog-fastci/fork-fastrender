@@ -631,6 +631,53 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     out
   }
 
+  fn vary_metadata_path_for_base_key(&self, base_key: &str) -> PathBuf {
+    self.cache_dir.join(format!("{base_key}.vary"))
+  }
+
+  fn variant_key_for_base_key(&self, base_key: &str, vary_key: &str) -> String {
+    if vary_key.is_empty() {
+      base_key.to_string()
+    } else {
+      format!("{base_key}.v{vary_key}")
+    }
+  }
+
+  fn read_vary_for_base_key(&self, base_key: &str) -> Option<String> {
+    let path = self.vary_metadata_path_for_base_key(base_key);
+    let contents = fs::read_to_string(path).ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+      None
+    } else {
+      Some(trimmed.to_string())
+    }
+  }
+
+  fn persist_vary_for_base_key(&self, base_key: &str, vary: Option<&str>) {
+    if self.disk_writeback_disabled_for_len(0) {
+      return;
+    }
+
+    let path = self.vary_metadata_path_for_base_key(base_key);
+    let tmp = tmp_path(&path);
+    let value = vary.unwrap_or("");
+    if fs::write(&tmp, value.as_bytes()).is_ok() {
+      let _ = fs::rename(&tmp, &path);
+    } else {
+      let _ = fs::remove_file(&tmp);
+    }
+  }
+
+  fn remove_vary_for_base_key(&self, base_key: &str) {
+    if self.disk_writeback_disabled() {
+      return;
+    }
+    let path = self.vary_metadata_path_for_base_key(base_key);
+    let _ = fs::remove_file(tmp_path(&path));
+    let _ = fs::remove_file(&path);
+  }
+
   fn artifact_key(&self, kind: FetchContextKind, url: &str, artifact: CacheArtifactKind) -> String {
     self.artifact_key_with_partition(
       kind,
@@ -667,10 +714,23 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     origin_key: Option<&str>,
     credentials_mode: super::FetchCredentialsMode,
   ) -> Option<u64> {
-    let key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let vary = self.read_vary_for_base_key(&base_key);
+    let request = FetchRequest {
+      url,
+      destination: request.destination,
+      referrer_url: request.referrer_url,
+      client_origin: request.client_origin,
+      referrer_policy: request.referrer_policy,
+      credentials_mode,
+    };
+    let vary_key =
+      super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())?;
+    let key = self.variant_key_for_base_key(&base_key, &vary_key);
     let data_path = self.data_path_for_key(&key);
     let meta_path = self.meta_path_for_data(&data_path);
     let meta_bytes = fs::read(meta_path).ok()?;
@@ -925,12 +985,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     origin_key: Option<&str>,
     credentials_mode: super::FetchCredentialsMode,
   ) -> Result<Option<(String, CachedSnapshot)>> {
     let mut disk_timer = super::start_disk_cache_diagnostics();
     let mut current = url.to_string();
     let mut hops = 0usize;
+    let base_request = request;
 
     loop {
       if let Err(err) = render_control::check_active(DISK_META_READ_STAGE) {
@@ -938,7 +1000,42 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         return Err(Error::Render(err));
       }
 
-      let key = self.cache_key_with_partition(kind, &current, origin_key, credentials_mode);
+      let base_key = self.cache_key_with_partition(kind, &current, origin_key, credentials_mode);
+      let vary = self.read_vary_for_base_key(&base_key);
+      let request = FetchRequest {
+        url: &current,
+        destination: base_request.destination,
+        referrer_url: base_request.referrer_url,
+        client_origin: base_request.client_origin,
+        referrer_policy: base_request.referrer_policy,
+        credentials_mode,
+      };
+      let Some(vary_key) =
+        super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
+      else {
+        // If we can't compute the vary key (e.g. unknown header values or Vary:*), treat as a miss
+        // rather than risking a poisoned reuse.
+        let Some(next) =
+          self.read_alias_target(kind, &current, origin_key, credentials_mode)
+        else {
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        };
+
+        if hops >= MAX_ALIAS_HOPS || next == current {
+          self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        }
+
+        current = next;
+        hops += 1;
+        continue;
+      };
+
+      let key = self.variant_key_for_base_key(&base_key, &vary_key);
       let data_path = self.data_path_for_key(&key);
       let meta_path = self.meta_path_for_data(&data_path);
 
@@ -956,6 +1053,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 super::record_disk_cache_miss();
                 super::finish_disk_cache_diagnostics(disk_timer.take());
                 return Ok(None);
+ 
               }
             }
           }
@@ -996,6 +1094,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                         super::record_disk_cache_miss();
                         super::finish_disk_cache_diagnostics(disk_timer.take());
                         return Ok(None);
+ 
                       }
                     }
                   }
@@ -1043,6 +1142,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     max_bytes: usize,
     origin_key: Option<&str>,
     credentials_mode: super::FetchCredentialsMode,
@@ -1050,6 +1150,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let mut disk_timer = super::start_disk_cache_diagnostics();
     let mut current = url.to_string();
     let mut hops = 0usize;
+    let base_request = request;
 
     loop {
       if let Err(err) = render_control::check_active(DISK_META_READ_STAGE) {
@@ -1057,7 +1158,40 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         return Err(Error::Render(err));
       }
 
-      let key = self.cache_key_with_partition(kind, &current, origin_key, credentials_mode);
+      let base_key = self.cache_key_with_partition(kind, &current, origin_key, credentials_mode);
+      let vary = self.read_vary_for_base_key(&base_key);
+      let request = FetchRequest {
+        url: &current,
+        destination: base_request.destination,
+        referrer_url: base_request.referrer_url,
+        client_origin: base_request.client_origin,
+        referrer_policy: base_request.referrer_policy,
+        credentials_mode,
+      };
+      let Some(vary_key) =
+        super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
+      else {
+        let Some(next) =
+          self.read_alias_target(kind, &current, origin_key, credentials_mode)
+        else {
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        };
+
+        if hops >= MAX_ALIAS_HOPS || next == current {
+          self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        }
+
+        current = next;
+        hops += 1;
+        continue;
+      };
+
+      let key = self.variant_key_for_base_key(&base_key, &vary_key);
       let data_path = self.data_path_for_key(&key);
       let meta_path = self.meta_path_for_data(&data_path);
 
@@ -1482,6 +1616,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     snapshot: &CachedSnapshot,
     origin_key: Option<&str>,
     credentials_mode: super::FetchCredentialsMode,
@@ -1490,6 +1625,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       self.persist_resource_with_partition(
         kind,
         url,
+        request,
         &resource,
         snapshot.etag.as_deref(),
         snapshot.last_modified.as_deref(),
@@ -1504,6 +1640,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     resource: &FetchedResource,
     etag: Option<&str>,
     last_modified: Option<&str>,
@@ -1512,6 +1649,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     self.persist_resource_with_partition(
       kind,
       url,
+      request,
       resource,
       etag,
       last_modified,
@@ -1525,6 +1663,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     resource: &FetchedResource,
     etag: Option<&str>,
     last_modified: Option<&str>,
@@ -1559,7 +1698,26 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
     self.remove_alias_for(kind, url, origin_key, credentials_mode);
 
-    let key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    if resource.vary.as_deref() == Some("*") {
+      self.remove_entry_family_for_base_key(&base_key);
+      return;
+    }
+    let request = FetchRequest {
+      url,
+      destination: request.destination,
+      referrer_url: request.referrer_url,
+      client_origin: request.client_origin,
+      referrer_policy: request.referrer_policy,
+      credentials_mode,
+    };
+    let Some(vary_key) =
+      super::compute_vary_key_for_request(&self.memory.inner, request, resource.vary.as_deref())
+    else {
+      self.remove_entry_family_for_base_key(&base_key);
+      return;
+    };
+    let key = self.variant_key_for_base_key(&base_key, &vary_key);
     let data_path = self.data_path_for_key(&key);
     if let Some(parent) = data_path.parent() {
       let _ = fs::create_dir_all(parent);
@@ -1688,6 +1846,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       &data_path,
       &meta_path,
     );
+
+    self.persist_vary_for_base_key(&base_key, resource.vary.as_deref());
 
     // Now that the entry is journaled, release the per-entry lock before running eviction to keep
     // lock hold times small and allow oversized entries to self-evict.
@@ -1841,6 +2001,41 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     Ok(())
   }
 
+  fn remove_entry_family_for_base_key(&self, base_key: &str) {
+    if self.disk_writeback_disabled() {
+      return;
+    }
+
+    self.remove_vary_for_base_key(base_key);
+
+    let data_path = self.data_path_for_key(base_key);
+    let meta_path = self.meta_path_for_data(&data_path);
+    let _ = self.remove_entry(base_key, &data_path, &meta_path);
+
+    let prefix = format!("{base_key}.v");
+    let Ok(dir) = fs::read_dir(&self.cache_dir) else {
+      return;
+    };
+    for entry in dir.flatten() {
+      let path = entry.path();
+      if path.extension().and_then(|ext| ext.to_str()) != Some("bin") {
+        continue;
+      }
+      let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+        continue;
+      };
+      if !name.starts_with(&prefix) {
+        continue;
+      }
+      let Some(key) = name.strip_suffix(".bin") else {
+        continue;
+      };
+      let data_path = self.cache_dir.join(&name);
+      let meta_path = self.meta_path_for_data(&data_path);
+      let _ = self.remove_entry(key, &data_path, &meta_path);
+    }
+  }
+
   fn remove_entry_for_url(
     &self,
     kind: FetchContextKind,
@@ -1851,10 +2046,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     if self.disk_writeback_disabled() {
       return;
     }
-    let key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
-    let data_path = self.data_path_for_key(&key);
-    let meta_path = self.meta_path_for_data(&data_path);
-    let _ = self.remove_entry(&key, &data_path, &meta_path);
+    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    self.remove_entry_family_for_base_key(&base_key);
     self.remove_alias_for(kind, url, origin_key, credentials_mode);
   }
 
@@ -1869,10 +2062,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     if self.disk_writeback_disabled() {
       return;
     }
-    let key = self.artifact_key_with_partition(kind, url, artifact, origin_key, credentials_mode);
-    let data_path = self.data_path_for_key(&key);
-    let meta_path = self.meta_path_for_data(&data_path);
-    let _ = self.remove_entry(&key, &data_path, &meta_path);
+    let base_key = self.artifact_key_with_partition(kind, url, artifact, origin_key, credentials_mode);
+    self.remove_entry_family_for_base_key(&base_key);
   }
 
   #[cfg(test)]
@@ -1884,6 +2075,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     artifact: CacheArtifactKind,
     origin_key: Option<&str>,
     credentials_mode: super::FetchCredentialsMode,
@@ -1898,6 +2090,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let mut disk_timer = super::start_disk_cache_diagnostics();
     let mut current = url.to_string();
     let mut hops = 0usize;
+    let base_request = request;
 
     loop {
       if let Err(err) = render_control::check_active(DISK_META_READ_STAGE) {
@@ -1905,13 +2098,41 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         return Err(Error::Render(err));
       }
 
-      let key = self.artifact_key_with_partition(
-        kind,
-        &current,
-        artifact,
-        origin_key,
+      let base_key =
+        self.artifact_key_with_partition(kind, &current, artifact, origin_key, credentials_mode);
+      let vary = self.read_vary_for_base_key(&base_key);
+      let request = FetchRequest {
+        url: &current,
+        destination: base_request.destination,
+        referrer_url: base_request.referrer_url,
+        client_origin: base_request.client_origin,
+        referrer_policy: base_request.referrer_policy,
         credentials_mode,
-      );
+      };
+      let Some(vary_key) =
+        super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
+      else {
+        let Some(next) =
+          self.read_alias_target(kind, &current, origin_key, credentials_mode)
+        else {
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        };
+
+        if hops >= MAX_ALIAS_HOPS || next == current {
+          self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        }
+
+        current = next;
+        hops += 1;
+        continue;
+      };
+
+      let key = self.variant_key_for_base_key(&base_key, &vary_key);
       let data_path = self.data_path_for_key(&key);
       let meta_path = self.meta_path_for_data(&data_path);
 
@@ -1934,6 +2155,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 super::record_disk_cache_miss();
                 super::finish_disk_cache_diagnostics(disk_timer.take());
                 return Ok(None);
+ 
               }
             }
           }
@@ -1975,6 +2197,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                         super::record_disk_cache_miss();
                         super::finish_disk_cache_diagnostics(disk_timer.take());
                         return Ok(None);
+ 
                       }
                     }
                   }
@@ -2018,6 +2241,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     artifact: CacheArtifactKind,
     bytes: &[u8],
     source: Option<&FetchedResource>,
@@ -2054,6 +2278,30 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
 
     let canonical = self.canonical_url(url, resource.final_url.as_deref());
+    let base_key =
+      self.artifact_key_with_partition(kind, &canonical, artifact, origin_key, credentials_mode);
+    if resource.vary.as_deref() == Some("*") {
+      self.remove_entry_family_for_base_key(&base_key);
+      return;
+    }
+    let canonical_request = FetchRequest {
+      url: &canonical,
+      destination: request.destination,
+      referrer_url: request.referrer_url,
+      client_origin: request.client_origin,
+      referrer_policy: request.referrer_policy,
+      credentials_mode,
+    };
+    let Some(vary_key) = super::compute_vary_key_for_request(
+      &self.memory.inner,
+      canonical_request,
+      resource.vary.as_deref(),
+    ) else {
+      self.remove_entry_family_for_base_key(&base_key);
+      return;
+    };
+    let key = self.variant_key_for_base_key(&base_key, &vary_key);
+
     // Persist derived metadata with the same freshness window as the underlying cached resource.
     //
     // If we build an artifact from bytes served out of the disk cache, we should not "refresh" its
@@ -2064,11 +2312,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     // Best-effort: if the primary resource is not cached (e.g. probe performed via a network range
     // request that bypasses disk persistence), fall back to using `now` as the stored-at timestamp.
     let stored_at = self
-      .stored_at_for_cached_entry(kind, &canonical, origin_key, credentials_mode)
+      .stored_at_for_cached_entry(kind, &canonical, canonical_request, origin_key, credentials_mode)
       .unwrap_or_else(now_seconds);
-    let canonical_key =
-      self.artifact_key_with_partition(kind, &canonical, artifact, origin_key, credentials_mode);
-    let data_path = self.data_path_for_key(&canonical_key);
+    let data_path = self.data_path_for_key(&key);
     if let Some(parent) = data_path.parent() {
       let _ = fs::create_dir_all(parent);
     }
@@ -2097,7 +2343,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           .unwrap_or(false))
     {
       let meta_path = self.meta_path_for_data(&data_path);
-      let _ = self.remove_entry(&canonical_key, &data_path, &meta_path);
+      let _ = self.remove_entry(&key, &data_path, &meta_path);
       return;
     }
 
@@ -2108,7 +2354,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
       {
         let meta_path = self.meta_path_for_data(&data_path);
-        let _ = self.remove_entry(&canonical_key, &data_path, &meta_path);
+        let _ = self.remove_entry(&key, &data_path, &meta_path);
         return;
       }
     }
@@ -2184,17 +2430,19 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
     if fs::rename(&meta_tmp, &meta_path).is_err() {
       let _ = fs::remove_file(&meta_tmp);
-      let _ = self.remove_entry(&canonical_key, &data_path, &meta_path);
+      let _ = self.remove_entry(&key, &data_path, &meta_path);
       return;
     }
 
     self.index.record_insert(
-      &canonical_key,
+      &key,
       stored_at,
       resource.bytes.len() as u64,
       &data_path,
       &meta_path,
     );
+
+    self.persist_vary_for_base_key(&base_key, resource.vary.as_deref());
 
     drop(entry_lock);
 
@@ -2219,18 +2467,17 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       policy.ensure_url_allowed(url)?;
     }
 
-    let origin_key = request
+    let request_opt = request;
+    let request = request_opt.unwrap_or_else(|| FetchRequest::new(url, kind.into()));
+    let has_request_context = request_opt.is_some();
+    let origin_key = request_opt
       .as_ref()
       .and_then(|req| super::cors_cache_partition_key(req));
-    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
-    let credentials_mode = request
-      .as_ref()
-      .map(|req| req.credentials_mode)
-      .unwrap_or(default_credentials_mode);
-    let key = CacheKey::new_with_origin(kind, url.to_string(), origin_key, credentials_mode);
+    let key =
+      CacheKey::new_with_origin(kind, url.to_string(), origin_key, request.credentials_mode);
 
     let mut disk_snapshot: Option<(String, CachedSnapshot)> = None;
-    let mut cached = self.memory.cached_entry(&key);
+    let mut cached = self.memory.cached_entry(&key, Some(request));
     let should_read_disk = match cached.as_ref() {
       Some(snapshot) => matches!(snapshot.value, super::CacheValue::Error(_)),
       None => true,
@@ -2239,24 +2486,42 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       disk_snapshot = self.read_disk_entry(
         kind,
         url,
+        request,
         key.origin_key.as_deref(),
         key.credentials_mode,
       )?;
       if let Some((ref canonical, ref snapshot)) = disk_snapshot {
-        let final_url = match &snapshot.value {
-          super::CacheValue::Resource(res) => res.final_url.clone(),
-          super::CacheValue::Error(_) => None,
-        };
-        self.memory.cache_entry(
-          &key,
-          super::CacheEntry {
-            value: snapshot.value.clone(),
-            etag: snapshot.etag.clone(),
-            last_modified: snapshot.last_modified.clone(),
-            http_cache: snapshot.http_cache.clone(),
-          },
-          final_url.as_deref(),
-        );
+        // Only prime the in-memory cache for successful resources. Error snapshots are treated as
+        // best-effort fallbacks and should not replace existing successful variants.
+        if let super::CacheValue::Resource(res) = &snapshot.value {
+          let canonical_request = FetchRequest {
+            url: canonical,
+            destination: request.destination,
+            referrer_url: request.referrer_url,
+            client_origin: request.client_origin,
+            referrer_policy: request.referrer_policy,
+            credentials_mode: request.credentials_mode,
+          };
+          if let Some(vary_key) = super::compute_vary_key_for_request(
+            &self.memory.inner,
+            canonical_request,
+            res.vary.as_deref(),
+          ) {
+            self.memory.cache_entry(
+              &key,
+              res.vary.clone(),
+              vary_key,
+              super::CacheEntry {
+                value: snapshot.value.clone(),
+                etag: snapshot.etag.clone(),
+                last_modified: snapshot.last_modified.clone(),
+                http_cache: snapshot.http_cache.clone(),
+              },
+              res.final_url.as_deref(),
+            );
+            cached = self.memory.cached_entry(&key, Some(request));
+          }
+        }
         if canonical != url {
           self.persist_alias(
             kind,
@@ -2266,14 +2531,11 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             key.credentials_mode,
           );
         }
-        cached = self.memory.cached_entry(&key);
       }
     }
 
     let cached = cached.or_else(|| disk_snapshot.map(|(_, snapshot)| snapshot));
-    let plan = self
-      .memory
-      .plan_cache_use(url, cached.clone(), self.disk_config.max_age);
+    let plan = self.memory.plan_cache_use(url, cached.clone(), self.disk_config.max_age);
 
     if let CacheAction::UseCached = plan.action {
       if let Some(snapshot) = plan.cached.as_ref() {
@@ -2291,7 +2553,11 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       }
     }
 
-    let (flight, is_owner) = self.memory.join_inflight(&key);
+    let inflight_key = super::InFlightKey::new(
+      key.clone(),
+      super::inflight_signature_for_request(&self.memory.inner, request),
+    );
+    let (flight, is_owner) = self.memory.join_inflight(&inflight_key);
     if !is_owner {
       let inflight_timer = super::start_fetch_inflight_wait_diagnostics();
       let result = flight.wait(&key);
@@ -2302,7 +2568,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       return result;
     }
 
-    let mut inflight_guard = super::InFlightOwnerGuard::new(&self.memory, key.clone(), flight);
+    let mut inflight_guard =
+      super::InFlightOwnerGuard::new(&self.memory, inflight_key, flight);
 
     let validators = match &plan.action {
       CacheAction::Validate {
@@ -2312,17 +2579,18 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       _ => None,
     };
 
-    let fetch_result = match request {
-      Some(req) => match validators {
+    let fetch_result = if has_request_context {
+      match validators {
         Some((etag, last_modified)) => {
           self
             .memory
             .inner
-            .fetch_with_request_and_validation(req, etag, last_modified)
+            .fetch_with_request_and_validation(request, etag, last_modified)
         }
-        None => self.memory.inner.fetch_with_request(req),
-      },
-      None => match validators {
+        None => self.memory.inner.fetch_with_request(request),
+      }
+    } else {
+      match validators {
         Some((etag, last_modified)) => {
           self
             .memory
@@ -2330,7 +2598,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             .fetch_with_validation_and_context(kind, url, etag, last_modified)
         }
         None => self.memory.inner.fetch_with_context(kind, url),
-      },
+      }
     };
 
     let (mut result, charge_budget) = match fetch_result {
@@ -2373,62 +2641,96 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               };
 
               if should_store && memory_cacheable {
-                let allow_unhandled_disk =
-                  self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-                let disk_cacheable = match stored_resource.vary.as_deref() {
-                  Some(vary) => {
-                    !super::vary_contains_star(vary)
-                      && (allow_unhandled_disk
-                        || super::vary_is_cacheable(vary, kind, key.origin_key.as_deref()))
-                  }
-                  None => true,
+                let canonical_url = self.canonical_url(url, ok.final_url.as_deref());
+                let canonical_request = FetchRequest {
+                  url: &canonical_url,
+                  destination: request.destination,
+                  referrer_url: request.referrer_url,
+                  client_origin: request.client_origin,
+                  referrer_policy: request.referrer_policy,
+                  credentials_mode: request.credentials_mode,
                 };
-                let canonical = self.memory.cache_entry(
-                  &key,
-                  super::CacheEntry {
-                    value: super::CacheValue::Resource(stored_resource),
-                    etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
-                    last_modified: res
-                      .last_modified
-                      .clone()
-                      .or_else(|| snapshot.last_modified.clone()),
-                    http_cache,
-                  },
-                  ok.final_url.as_deref(),
-                );
-                if disk_cacheable {
-                  if let Some(snapshot) = self.memory.cached_entry(&canonical) {
-                    self.persist_snapshot(
+
+                if let Some(vary_key) = super::compute_vary_key_for_request(
+                  &self.memory.inner,
+                  canonical_request,
+                  stored_resource.vary.as_deref(),
+                ) {
+                  let allow_unhandled_disk =
+                    self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
+                  let disk_cacheable = match stored_resource.vary.as_deref() {
+                    Some(vary) => {
+                      !super::vary_contains_star(vary)
+                        && (allow_unhandled_disk
+                          || super::vary_is_cacheable(vary, kind, key.origin_key.as_deref()))
+                    }
+                    None => true,
+                  };
+
+                  let canonical = self.memory.cache_entry(
+                    &key,
+                    stored_resource.vary.clone(),
+                    vary_key,
+                    super::CacheEntry {
+                      value: super::CacheValue::Resource(stored_resource),
+                      etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
+                      last_modified: res
+                        .last_modified
+                        .clone()
+                        .or_else(|| snapshot.last_modified.clone()),
+                      http_cache,
+                    },
+                    ok.final_url.as_deref(),
+                  );
+
+                  if disk_cacheable {
+                    if let Some(snapshot) = self.memory.cached_entry(&canonical, Some(request)) {
+                      self.persist_snapshot(
+                        kind,
+                        &canonical.url,
+                        request,
+                        &snapshot,
+                        canonical.origin_key.as_deref(),
+                        canonical.credentials_mode,
+                      );
+                      if canonical.url != url {
+                        self.persist_alias(
+                          kind,
+                          url,
+                          &canonical.url,
+                          canonical.origin_key.as_deref(),
+                          canonical.credentials_mode,
+                        );
+                      }
+                    }
+                  } else {
+                    self.remove_entry_for_url(
                       kind,
                       &canonical.url,
-                      &snapshot,
                       canonical.origin_key.as_deref(),
                       canonical.credentials_mode,
                     );
                     if canonical.url != url {
-                      self.persist_alias(
+                      self.remove_alias_for(
                         kind,
                         url,
-                        &canonical.url,
                         canonical.origin_key.as_deref(),
                         canonical.credentials_mode,
                       );
                     }
                   }
                 } else {
+                  // If we can't compute the vary key (unknown request header values), treat as
+                  // uncacheable to avoid poisoned reuse.
+                  self.memory.remove_cached(&key);
                   self.remove_entry_for_url(
                     kind,
-                    &canonical.url,
-                    canonical.origin_key.as_deref(),
-                    canonical.credentials_mode,
+                    &canonical_url,
+                    key.origin_key.as_deref(),
+                    key.credentials_mode,
                   );
-                  if canonical.url != url {
-                    self.remove_alias_for(
-                      kind,
-                      url,
-                      canonical.origin_key.as_deref(),
-                      canonical.credentials_mode,
-                    );
+                  if canonical_url != url {
+                    self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_mode);
                   }
                 }
               } else {
@@ -2508,52 +2810,83 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               };
               if memory_cacheable {
                 let stored_at = SystemTime::now();
-                let canonical = self.memory.cache_entry(
-                  &key,
-                  super::CacheEntry {
-                    value: super::CacheValue::Resource(res.clone()),
-                    etag: res.etag.clone(),
-                    last_modified: res.last_modified.clone(),
-                    http_cache: Some(CachedHttpMetadata {
-                      stored_at,
-                      max_age: None,
-                      expires: None,
-                      no_cache: false,
-                      no_store: true,
-                      must_revalidate: false,
-                    }),
-                  },
-                  res.final_url.as_deref(),
-                );
-
-                let allow_unhandled_disk =
-                  self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-                let disk_cacheable = match res.vary.as_deref() {
-                  Some(vary) => {
-                    !super::vary_contains_star(vary)
-                      && (allow_unhandled_disk
-                        || super::vary_is_cacheable(
-                          vary,
-                          kind,
-                          canonical.origin_key.as_deref(),
-                        ))
-                  }
-                  None => true,
+                let canonical_url = self.canonical_url(url, res.final_url.as_deref());
+                let canonical_request = FetchRequest {
+                  url: &canonical_url,
+                  destination: request.destination,
+                  referrer_url: request.referrer_url,
+                  client_origin: request.client_origin,
+                  referrer_policy: request.referrer_policy,
+                  credentials_mode: request.credentials_mode,
                 };
-                if disk_cacheable {
-                  if let Some(snapshot) = self.memory.cached_entry(&canonical) {
-                    self.persist_snapshot(
+
+                if let Some(vary_key) = super::compute_vary_key_for_request(
+                  &self.memory.inner,
+                  canonical_request,
+                  res.vary.as_deref(),
+                ) {
+                  let allow_unhandled_disk =
+                    self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
+                  let disk_cacheable = match res.vary.as_deref() {
+                    Some(vary) => {
+                      !super::vary_contains_star(vary)
+                        && (allow_unhandled_disk
+                          || super::vary_is_cacheable(vary, kind, key.origin_key.as_deref()))
+                    }
+                    None => true,
+                  };
+
+                  let canonical = self.memory.cache_entry(
+                    &key,
+                    res.vary.clone(),
+                    vary_key,
+                    super::CacheEntry {
+                      value: super::CacheValue::Resource(res.clone()),
+                      etag: res.etag.clone(),
+                      last_modified: res.last_modified.clone(),
+                      http_cache: Some(CachedHttpMetadata {
+                        stored_at,
+                        max_age: None,
+                        expires: None,
+                        no_cache: false,
+                        no_store: true,
+                        must_revalidate: false,
+                      }),
+                    },
+                    res.final_url.as_deref(),
+                  );
+
+                  if disk_cacheable {
+                    if let Some(snapshot) = self.memory.cached_entry(&canonical, Some(request)) {
+                      self.persist_snapshot(
+                        kind,
+                        &canonical.url,
+                        request,
+                        &snapshot,
+                        canonical.origin_key.as_deref(),
+                        canonical.credentials_mode,
+                      );
+                      if canonical.url != url {
+                        self.persist_alias(
+                          kind,
+                          url,
+                          &canonical.url,
+                          canonical.origin_key.as_deref(),
+                          canonical.credentials_mode,
+                        );
+                      }
+                    }
+                  } else {
+                    self.remove_entry_for_url(
                       kind,
                       &canonical.url,
-                      &snapshot,
                       canonical.origin_key.as_deref(),
                       canonical.credentials_mode,
                     );
                     if canonical.url != url {
-                      self.persist_alias(
+                      self.remove_alias_for(
                         kind,
                         url,
-                        &canonical.url,
                         canonical.origin_key.as_deref(),
                         canonical.credentials_mode,
                       );
@@ -2562,17 +2895,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 } else {
                   self.remove_entry_for_url(
                     kind,
-                    &canonical.url,
-                    canonical.origin_key.as_deref(),
-                    canonical.credentials_mode,
+                    &canonical_url,
+                    key.origin_key.as_deref(),
+                    key.credentials_mode,
                   );
-                  if canonical.url != url {
-                    self.remove_alias_for(
-                      kind,
-                      url,
-                      canonical.origin_key.as_deref(),
-                      canonical.credentials_mode,
-                    );
+                  if canonical_url != url {
+                    self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_mode);
                   }
                 }
               }
@@ -2626,57 +2954,90 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               None => true,
             };
             if let Some(entry) = self.memory.build_cache_entry(&key, &res, stored_at) {
-              let canonical = self
-                .memory
-                .cache_entry(&key, entry, res.final_url.as_deref());
-              if disk_cacheable {
-                if let Some(snapshot) = self.memory.cached_entry(&canonical) {
-                  self.persist_snapshot(
-                    kind,
-                    &canonical.url,
-                    &snapshot,
-                    canonical.origin_key.as_deref(),
-                    canonical.credentials_mode,
-                  );
+              let canonical_url = self.canonical_url(url, res.final_url.as_deref());
+              let canonical_request = FetchRequest {
+                url: &canonical_url,
+                destination: request.destination,
+                referrer_url: request.referrer_url,
+                client_origin: request.client_origin,
+                referrer_policy: request.referrer_policy,
+                credentials_mode: request.credentials_mode,
+              };
+
+              if let Some(vary_key) = super::compute_vary_key_for_request(
+                &self.memory.inner,
+                canonical_request,
+                res.vary.as_deref(),
+              ) {
+                let canonical = self.memory.cache_entry(
+                  &key,
+                  res.vary.clone(),
+                  vary_key,
+                  entry,
+                  res.final_url.as_deref(),
+                );
+                if disk_cacheable {
+                  if let Some(snapshot) = self.memory.cached_entry(&canonical, Some(request)) {
+                    self.persist_snapshot(
+                      kind,
+                      &canonical.url,
+                      request,
+                      &snapshot,
+                      canonical.origin_key.as_deref(),
+                      canonical.credentials_mode,
+                    );
+                  } else {
+                    let http_cache = res
+                      .cache_policy
+                      .as_ref()
+                      .and_then(|p| CachedHttpMetadata::from_policy(p, stored_at));
+                    self.persist_resource_with_partition(
+                      kind,
+                      &canonical.url,
+                      request,
+                      &res,
+                      res.etag.as_deref(),
+                      res.last_modified.as_deref(),
+                      http_cache.as_ref(),
+                      canonical.origin_key.as_deref(),
+                      canonical.credentials_mode,
+                    );
+                  }
+                  if canonical.url != url {
+                    self.persist_alias(
+                      kind,
+                      url,
+                      &canonical.url,
+                      canonical.origin_key.as_deref(),
+                      canonical.credentials_mode,
+                    );
+                  }
                 } else {
-                  let http_cache = res
-                    .cache_policy
-                    .as_ref()
-                    .and_then(|p| CachedHttpMetadata::from_policy(p, stored_at));
-                  self.persist_resource_with_partition(
+                  self.remove_entry_for_url(
                     kind,
-                    &canonical.url,
-                    &res,
-                    res.etag.as_deref(),
-                    res.last_modified.as_deref(),
-                    http_cache.as_ref(),
-                    canonical.origin_key.as_deref(),
-                    canonical.credentials_mode,
-                  );
-                }
-                if canonical.url != url {
-                  self.persist_alias(
-                    kind,
-                    url,
                     &canonical.url,
                     canonical.origin_key.as_deref(),
                     canonical.credentials_mode,
                   );
+                  if canonical.url != url {
+                    self.remove_alias_for(
+                      kind,
+                      url,
+                      canonical.origin_key.as_deref(),
+                      canonical.credentials_mode,
+                    );
+                  }
                 }
               } else {
+                self.memory.remove_cached(&key);
                 self.remove_entry_for_url(
                   kind,
-                  &canonical.url,
-                  canonical.origin_key.as_deref(),
-                  canonical.credentials_mode,
+                  &canonical_url,
+                  key.origin_key.as_deref(),
+                  key.credentials_mode,
                 );
-                if canonical.url != url {
-                  self.remove_alias_for(
-                    kind,
-                    url,
-                    canonical.origin_key.as_deref(),
-                    canonical.credentials_mode,
-                  );
+                if canonical_url != url {
+                  self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_mode);
                 }
               }
             } else if res
@@ -2714,16 +3075,30 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           (fallback, is_ok)
         } else {
           if self.memory.config.cache_errors {
-            self.memory.cache_entry(
-              &key,
-              super::CacheEntry {
-                value: super::CacheValue::Error(err.clone()),
-                etag: None,
-                last_modified: None,
-                http_cache: None,
-              },
-              None,
-            );
+            let has_bucket = self
+              .memory
+              .state
+              .lock()
+              .ok()
+              .map(|mut state| {
+                let canonical = self.memory.resolve_alias_locked(&mut state, &key);
+                state.lru.peek(&canonical).is_some()
+              })
+              .unwrap_or(false);
+            if !has_bucket {
+              self.memory.cache_entry(
+                &key,
+                None,
+                super::VARY_KEY_EMPTY.to_string(),
+                super::CacheEntry {
+                  value: super::CacheValue::Error(err.clone()),
+                  etag: None,
+                  last_modified: None,
+                  http_cache: None,
+                },
+                None,
+              );
+            }
             if self.disk_config.allow_no_store {
               if let Error::Resource(resource_err) = &err {
                 self.persist_error(
@@ -2773,6 +3148,10 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     self.fetch_cached(kind, url, None)
   }
 
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    self.memory.inner.request_header_value(req, header_name)
+  }
+
   fn fetch_partial(&self, url: &str, max_bytes: usize) -> Result<FetchedResource> {
     self.fetch_partial_with_context(FetchContextKind::Other, url, max_bytes)
   }
@@ -2801,10 +3180,12 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       return result;
     }
 
-    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
+    let request = FetchRequest::new(url, kind.into());
+    let default_credentials_mode = request.credentials_mode;
     if let Some((_canonical, mut res)) = self.read_disk_entry_prefix(
       kind,
       url,
+      request,
       max_bytes,
       None,
       default_credentials_mode,
@@ -2838,7 +3219,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     let origin_key = super::cors_cache_partition_key(&req);
     let key = CacheKey::new_with_origin(kind, url.to_string(), origin_key, req.credentials_mode);
 
-    if let Some(snapshot) = self.memory.cached_entry(&key) {
+    if let Some(snapshot) = self.memory.cached_entry(&key, Some(req)) {
       let result = snapshot.value.as_result();
       if let Ok(mut res) = result {
         if res.bytes.len() > max_bytes {
@@ -2852,15 +3233,14 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       return result;
     }
 
-    if let Some((_canonical, mut res)) =
-      self.read_disk_entry_prefix(
-        kind,
-        url,
-        max_bytes,
-        key.origin_key.as_deref(),
-        key.credentials_mode,
-      )?
-    {
+    if let Some((_canonical, mut res)) = self.read_disk_entry_prefix(
+      kind,
+      url,
+      req,
+      max_bytes,
+      key.origin_key.as_deref(),
+      key.credentials_mode,
+    )? {
       if res.bytes.len() > max_bytes {
         res.bytes.truncate(max_bytes);
       }
@@ -2879,11 +3259,13 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     url: &str,
     artifact: CacheArtifactKind,
   ) -> Option<FetchedResource> {
-    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
+    let request = FetchRequest::new(url, kind.into());
+    let default_credentials_mode = request.credentials_mode;
     let snapshot = self
       .read_disk_artifact(
         kind,
         url,
+        request,
         artifact,
         None,
         default_credentials_mode,
@@ -2913,6 +3295,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       .read_disk_artifact(
         kind,
         req.url,
+        req,
         artifact,
         origin_key.as_deref(),
         req.credentials_mode,
@@ -2940,10 +3323,12 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     bytes: &[u8],
     source: Option<&FetchedResource>,
   ) {
-    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
+    let request = FetchRequest::new(url, kind.into());
+    let default_credentials_mode = request.credentials_mode;
     self.persist_artifact(
       kind,
       url,
+      request,
       artifact,
       bytes,
       source,
@@ -2964,6 +3349,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     self.persist_artifact(
       kind,
       req.url,
+      req,
       artifact,
       bytes,
       source,
@@ -3006,11 +3392,11 @@ pub(super) struct StoredMetadata {
   response_referrer_policy: Option<String>,
   final_url: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
+  vary: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   access_control_allow_origin: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   timing_allow_origin: Option<String>,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  vary: Option<String>,
   #[serde(default, skip_serializing_if = "bool_is_false")]
   access_control_allow_credentials: bool,
   stored_at: u64,
@@ -3277,7 +3663,7 @@ mod tests {
 
             let body = n.to_string();
             let response = format!(
-              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Accept-Language\r\nConnection: close\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Sec-Fetch-Site\r\nConnection: close\r\n\r\n",
               body.len()
             );
             let _ = stream.write_all(response.as_bytes());
@@ -3308,9 +3694,9 @@ mod tests {
     let url = format!("http://{addr}/vary.txt");
 
     let first = fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("accept-language"));
+    assert_eq!(first.vary.as_deref(), Some("sec-fetch-site"));
     let second = fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("accept-language"));
+    assert_eq!(second.vary.as_deref(), Some("sec-fetch-site"));
 
     handle.join().unwrap();
 
@@ -3444,7 +3830,7 @@ mod tests {
 
             let body = n.to_string();
             let response = format!(
-              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Accept-Language\r\nConnection: close\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Sec-Fetch-Site\r\nConnection: close\r\n\r\n",
               body.len()
             );
             let _ = stream.write_all(response.as_bytes());
@@ -3487,7 +3873,7 @@ mod tests {
       allow_config,
     );
     let first = allow_fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("accept-language"));
+    assert_eq!(first.vary.as_deref(), Some("sec-fetch-site"));
 
     // A subsequent fetcher instance (with the default strict Vary policy) must not reuse the
     // persisted entry even though it exists on disk.
@@ -3496,7 +3882,7 @@ mod tests {
       cache_dir,
     );
     let second = strict_fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("accept-language"));
+    assert_eq!(second.vary.as_deref(), Some("sec-fetch-site"));
 
     handle.join().unwrap();
 
@@ -3692,7 +4078,7 @@ mod tests {
   }
 
   #[test]
-  fn disk_caching_fetcher_caches_vary_origin_only_when_partitioned() {
+  fn disk_caching_fetcher_caches_vary_origin_without_origin_partitioning() {
     #[derive(Clone)]
     struct OriginVaryFetcher {
       calls: Arc<AtomicUsize>,
@@ -3709,6 +4095,13 @@ mod tests {
         res.final_url = Some(req.url.to_string());
         res.vary = Some("origin".to_string());
         Ok(res)
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("origin") {
+          return super::super::cors_origin_key_for_request(&req).or_else(|| Some(String::new()));
+        }
+        None
       }
     }
 
@@ -3746,8 +4139,8 @@ mod tests {
     );
     assert_eq!(
       calls_unpartitioned.load(Ordering::SeqCst),
-      2,
-      "expected Vary: Origin to disable disk caching without origin partitioning"
+      1,
+      "expected Vary: Origin response to be cached without origin partitioning"
     );
 
     let tmp_partitioned = tempfile::tempdir().unwrap();
@@ -3781,7 +4174,7 @@ mod tests {
     assert_eq!(
       calls_partitioned.load(Ordering::SeqCst),
       1,
-      "expected Vary: Origin to be cacheable when origin partitioning is enabled"
+      "expected Vary: Origin response to be cached when origin partitioning is enabled"
     );
   }
 
@@ -4415,6 +4808,74 @@ mod tests {
   }
 
   #[test]
+  fn disk_cache_tracks_multiple_vary_variants_for_one_url() {
+    #[derive(Clone)]
+    struct VaryOriginFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for VaryOriginFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let origin = super::super::cors_origin_key_for_request(&req).unwrap_or_default();
+        let mut resource =
+          FetchedResource::new(origin.into_bytes(), Some("text/plain".to_string()));
+        resource.status = Some(200);
+        resource.final_url = Some(req.url.to_string());
+        resource.vary = Some("origin".to_string());
+        resource.cache_policy = Some(HttpCachePolicy {
+          max_age: Some(60),
+          ..Default::default()
+        });
+        Ok(resource)
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("origin") {
+          return super::super::cors_origin_key_for_request(&req);
+        }
+        None
+      }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let url = "https://example.com/font.woff2";
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = VaryOriginFetcher {
+      calls: Arc::clone(&calls),
+    };
+
+    let req_a =
+      FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://a.test/page.html");
+    let req_b =
+      FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://b.test/page.html");
+
+    let disk = DiskCachingFetcher::new(fetcher.clone(), tmp.path());
+    let first_a = disk.fetch_with_request(req_a).expect("fetch A");
+    assert_eq!(first_a.bytes, b"https://a.test");
+    let first_b = disk.fetch_with_request(req_b).expect("fetch B");
+    assert_eq!(first_b.bytes, b"https://b.test");
+
+    drop(disk);
+
+    let disk_again = DiskCachingFetcher::new(fetcher.clone(), tmp.path());
+    let second_a = disk_again.fetch_with_request(req_a).expect("disk A");
+    assert_eq!(second_a.bytes, b"https://a.test");
+    let second_b = disk_again.fetch_with_request(req_b).expect("disk B");
+    assert_eq!(second_b.bytes, b"https://b.test");
+
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "disk cache hits should not re-fetch the network"
+    );
+  }
+
+  #[test]
   fn should_skip_disk_matches_data_urls_case_insensitively() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let fetcher = CountingFetcher {
@@ -4554,7 +5015,15 @@ mod tests {
 
     let mut resource = FetchedResource::new(b"cached".to_vec(), Some("text/plain".to_string()));
     resource.final_url = Some(url.to_string());
-    disk.persist_resource(TEST_KIND, url, &resource, None, None, None);
+    disk.persist_resource(
+      TEST_KIND,
+      url,
+      FetchRequest::new(url, TEST_KIND.into()),
+      &resource,
+      None,
+      None,
+      None,
+    );
 
     let deadline = render_control::RenderDeadline::new(Some(Duration::from_millis(0)), None);
     let err = render_control::with_deadline(Some(&deadline), || disk.fetch(url))
@@ -6175,7 +6644,15 @@ mod tests {
       let mut resource =
         FetchedResource::new(vec![byte; entry_size], Some("text/plain".to_string()));
       resource.final_url = Some(url.to_string());
-      seeder.persist_resource(TEST_KIND, url, &resource, None, None, None);
+      seeder.persist_resource(
+        TEST_KIND,
+        url,
+        FetchRequest::new(url, TEST_KIND.into()),
+        &resource,
+        None,
+        None,
+        None,
+      );
     }
 
     let hook = PersistResourceHook::new();
@@ -6191,7 +6668,15 @@ mod tests {
       let mut refreshed =
         FetchedResource::new(vec![b'r'; entry_size], Some("text/plain".to_string()));
       refreshed.final_url = Some(url_target.to_string());
-      disk.persist_resource(TEST_KIND, url_target, &refreshed, None, None, None);
+      disk.persist_resource(
+        TEST_KIND,
+        url_target,
+        FetchRequest::new(url_target, TEST_KIND.into()),
+        &refreshed,
+        None,
+        None,
+        None,
+      );
     });
 
     let cache_dir = tmp.path().to_path_buf();
@@ -6206,9 +6691,11 @@ mod tests {
       let mut resource =
         FetchedResource::new(vec![b'n'; entry_size], Some("text/plain".to_string()));
       resource.final_url = Some("https://example.com/race-new".to_string());
+      let url_new = resource.final_url.as_deref().unwrap();
       disk.persist_resource(
         TEST_KIND,
-        resource.final_url.as_ref().unwrap(),
+        url_new,
+        FetchRequest::new(url_new, TEST_KIND.into()),
         &resource,
         None,
         None,
@@ -6273,7 +6760,15 @@ mod tests {
     let mut resource =
       FetchedResource::new(b"complete-body".to_vec(), Some("text/plain".to_string()));
     resource.final_url = Some(url.to_string());
-    disk.persist_resource(TEST_KIND, url, &resource, None, None, None);
+    disk.persist_resource(
+      TEST_KIND,
+      url,
+      FetchRequest::new(url, TEST_KIND.into()),
+      &resource,
+      None,
+      None,
+      None,
+    );
 
     let data_path = disk.data_path(TEST_KIND, url);
     let meta_path = disk.meta_path_for_data(&data_path);
@@ -6282,8 +6777,10 @@ mod tests {
 
     fs::write(&data_path, b"tiny").unwrap();
 
+    let request = FetchRequest::new(url, TEST_KIND.into());
+    let credentials_mode = request.credentials_mode;
     let snapshot = disk
-      .read_disk_entry(TEST_KIND, url, None, FetchCredentialsMode::Include)
+      .read_disk_entry(TEST_KIND, url, request, None, credentials_mode)
       .expect("read_disk_entry");
     assert!(snapshot.is_none(), "corrupted entry should be discarded");
     assert!(!data_path.exists());
@@ -6302,15 +6799,25 @@ mod tests {
 
     let mut resource = FetchedResource::new(b"persistent".to_vec(), Some("text/plain".to_string()));
     resource.final_url = Some(url.to_string());
-    disk.persist_resource(TEST_KIND, url, &resource, None, None, None);
+    disk.persist_resource(
+      TEST_KIND,
+      url,
+      FetchRequest::new(url, TEST_KIND.into()),
+      &resource,
+      None,
+      None,
+      None,
+    );
 
     let data_path = disk.data_path(TEST_KIND, url);
     let meta_path = disk.meta_path_for_data(&data_path);
     fs::write(tmp_path(&data_path), b"junk").unwrap();
     fs::write(tmp_path(&meta_path), b"junk").unwrap();
 
+    let request = FetchRequest::new(url, TEST_KIND.into());
+    let credentials_mode = request.credentials_mode;
     let (_, snapshot) = disk
-      .read_disk_entry(TEST_KIND, url, None, FetchCredentialsMode::Include)
+      .read_disk_entry(TEST_KIND, url, request, None, credentials_mode)
       .expect("read_disk_entry")
       .expect("entry should be readable");
     let cached = snapshot
@@ -6343,7 +6850,15 @@ mod tests {
       handles.push(thread::spawn(move || {
         let mut resource = FetchedResource::new(body, Some("text/plain".to_string()));
         resource.final_url = Some(url.clone());
-        disk.persist_resource(TEST_KIND, &url, &resource, None, None, None);
+        disk.persist_resource(
+          TEST_KIND,
+          &url,
+          FetchRequest::new(&url, TEST_KIND.into()),
+          &resource,
+          None,
+          None,
+          None,
+        );
       }));
     }
 
@@ -6351,8 +6866,10 @@ mod tests {
       handle.join().expect("thread should not panic");
     }
 
+    let request = FetchRequest::new(url, TEST_KIND.into());
+    let credentials_mode = request.credentials_mode;
     let (_, snapshot) = disk
-      .read_disk_entry(TEST_KIND, url, None, FetchCredentialsMode::Include)
+      .read_disk_entry(TEST_KIND, url, request, None, credentials_mode)
       .expect("read_disk_entry")
       .expect("entry should be present after concurrent persists");
     let resource = snapshot
@@ -6413,6 +6930,22 @@ mod tests {
     fn fetch(&self, _url: &str) -> Result<FetchedResource> {
       panic!("inner fetch should not be called");
     }
+
+    fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+      // Disk cache lookups for `Vary` responses require that the fetcher can deterministically
+      // supply the relevant request header values. These tests don't exercise header construction,
+      // but they do need a stable value so persisted `Vary` variants can be loaded without hitting
+      // the network.
+      if header_name.eq_ignore_ascii_case("origin")
+        || header_name.eq_ignore_ascii_case("accept-encoding")
+        || header_name.eq_ignore_ascii_case("accept-language")
+        || header_name.eq_ignore_ascii_case("user-agent")
+        || header_name.eq_ignore_ascii_case("referer")
+      {
+        return Some(String::new());
+      }
+      None
+    }
   }
 
   #[test]
@@ -6441,6 +6974,7 @@ mod tests {
     disk.persist_resource(
       TEST_KIND,
       url,
+      FetchRequest::new(url, TEST_KIND.into()),
       &resource,
       resource.etag.as_deref(),
       None,
@@ -7060,9 +7594,9 @@ mod tests {
           response_referrer_policy: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
-          vary: None,
           access_control_allow_credentials: false,
           final_url: Some(url.to_string()),
+          vary: None,
           stored_at: 0,
           len: 0,
           cache: Some(StoredCacheMetadata {
@@ -7081,9 +7615,11 @@ mod tests {
         )
         .expect("write meta");
 
+        let request = FetchRequest::new(url, kind.into());
+        let credentials_mode = request.credentials_mode;
         assert!(
           disk
-            .read_disk_entry(kind, url, None, FetchCredentialsMode::Include)
+            .read_disk_entry(kind, url, request, None, credentials_mode)
             .expect("read disk")
             .is_none(),
           "expected stale error entry to be treated as cache miss"

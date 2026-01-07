@@ -100,6 +100,34 @@ pub fn request_partitioned_resource_key_with_credentials(
   key
 }
 
+/// Synthetic manifest key suffix used for `Vary`-partitioned resources.
+///
+/// Bundles can contain multiple variants for the same URL when the upstream server includes a
+/// `Vary` header. Each variant is stored under a synthetic manifest key that appends
+/// `@@fastr:bundle:vary_v1@@<vary_key>`.
+///
+/// The returned key is **not** a real URL. It is only used as a stable lookup key inside
+/// `bundle.json`.
+const BUNDLE_VARY_KEY_SENTINEL: &str = "@@fastr:bundle:vary_v1@@";
+
+/// Create a synthetic manifest key for a specific `Vary` variant.
+pub fn vary_partitioned_resource_key(url: &str, vary_key: &str) -> String {
+  if vary_key.is_empty() {
+    url.to_string()
+  } else {
+    format!("{url}{BUNDLE_VARY_KEY_SENTINEL}{vary_key}")
+  }
+}
+
+fn parse_vary_partitioned_resource_key(key: &str) -> Option<(&str, &str)> {
+  let (base, rest) = key.split_once(BUNDLE_VARY_KEY_SENTINEL)?;
+  let vary_key = rest.trim();
+  if base.is_empty() || vary_key.is_empty() {
+    return None;
+  }
+  Some((base, vary_key))
+}
+
 fn bool_is_false(value: &bool) -> bool {
   !*value
 }
@@ -163,12 +191,12 @@ pub struct BundledResourceInfo {
   /// Stored `Referrer-Policy` response header value, when present.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub response_referrer_policy: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub vary: Option<String>,
   #[serde(default)]
   pub access_control_allow_origin: Option<String>,
   #[serde(default)]
   pub timing_allow_origin: Option<String>,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub vary: Option<String>,
   #[serde(default, skip_serializing_if = "bool_is_false")]
   pub access_control_allow_credentials: bool,
 }
@@ -221,11 +249,29 @@ fn bundle_key_is_request_partitioned(key: &str) -> bool {
   key.contains("@@fastr:bundle:req_v1@@") || key.contains("@@fastr:bundle:req_v2@@")
 }
 
+#[derive(Clone)]
+struct BundledVaryBucket {
+  canonical_url: String,
+  vary: Option<String>,
+  variants: HashMap<String, BundledResource>,
+}
+
+impl BundledVaryBucket {
+  fn new(canonical_url: String, vary: Option<String>) -> Self {
+    Self {
+      canonical_url,
+      vary,
+      variants: HashMap::new(),
+    }
+  }
+}
+
 /// In-memory representation of a bundle.
 pub struct Bundle {
   manifest: BundleManifest,
   document_bytes: Arc<Vec<u8>>,
   resources: HashMap<String, BundledResource>,
+  vary_resources: HashMap<String, Arc<BundledVaryBucket>>,
 }
 
 impl Bundle {
@@ -349,9 +395,29 @@ impl Bundle {
     let document_bytes = fetch_file(&manifest.document.path)?;
 
     let mut resources: HashMap<String, BundledResource> = HashMap::new();
+    let mut vary_canonical: HashMap<String, BundledVaryBucket> = HashMap::new();
+    let mut vary_aliases: Vec<(String, String)> = Vec::new();
     for (original_url, info) in &manifest.resources {
       let data = fetch_file(&info.path)?;
       let resource = BundledResource::from_parts(info.clone(), data);
+
+      if let Some((base_url, vary_key)) = parse_vary_partitioned_resource_key(original_url) {
+        let canonical = info
+          .final_url
+          .as_deref()
+          .unwrap_or(base_url)
+          .to_string();
+        let bucket = vary_canonical
+          .entry(canonical.clone())
+          .or_insert_with(|| BundledVaryBucket::new(canonical.clone(), info.vary.clone()));
+        if bucket.vary.is_none() {
+          bucket.vary = info.vary.clone();
+        }
+        bucket.variants.insert(vary_key.to_string(), resource.clone());
+        vary_aliases.push((base_url.to_string(), canonical));
+        continue;
+      }
+
       resources.insert(original_url.clone(), resource.clone());
       if let Some(final_url) = &info.final_url {
         resources
@@ -360,15 +426,33 @@ impl Bundle {
       }
     }
 
+    let mut vary_resources: HashMap<String, Arc<BundledVaryBucket>> = HashMap::new();
+    let mut canonical_arcs: HashMap<String, Arc<BundledVaryBucket>> = HashMap::new();
+    for (canonical, bucket) in vary_canonical {
+      let bucket = Arc::new(bucket);
+      canonical_arcs.insert(canonical.clone(), Arc::clone(&bucket));
+      vary_resources.insert(canonical, bucket);
+    }
+    for (alias, canonical) in vary_aliases {
+      if let Some(bucket) = canonical_arcs.get(&canonical) {
+        vary_resources.insert(alias, Arc::clone(bucket));
+      }
+    }
+
     Ok(Self {
       manifest,
       document_bytes,
       resources,
+      vary_resources,
     })
   }
 
   fn resource_for_url(&self, url: &str) -> Option<&BundledResource> {
     self.resources.get(url)
+  }
+
+  fn vary_bucket_for_url(&self, url: &str) -> Option<&Arc<BundledVaryBucket>> {
+    self.vary_resources.get(url)
   }
 }
 
@@ -437,6 +521,38 @@ impl ResourceFetcher for BundledFetcher {
         }
       }
       return Ok(res);
+    }
+
+    if let Some(bucket) = self.bundle.vary_bucket_for_url(url) {
+      if bucket.vary.as_deref() == Some("*") {
+        return Err(Error::Other(format!(
+          "Resource is not cacheable in bundle (Vary: *): {}",
+          url
+        )));
+      }
+      let destination = super::http_browser_request_profile_for_url(url);
+      let request = FetchRequest::new(bucket.canonical_url.as_str(), destination);
+      let Some(vary_key) =
+        super::compute_vary_key_for_request(self, request, bucket.vary.as_deref())
+      else {
+        return Err(Error::Other(format!(
+          "Resource not cacheable in bundle (unknown Vary headers): {}",
+          url
+        )));
+      };
+      if let Some(resource) = bucket.variants.get(&vary_key) {
+        return Ok(resource.as_fetched());
+      }
+      // Back-compat: older bundles may include a single Vary entry without the `vary` field.
+      if bucket.vary.is_none() && bucket.variants.len() == 1 {
+        if let Some(resource) = bucket.variants.values().next() {
+          return Ok(resource.as_fetched());
+        }
+      }
+      return Err(Error::Other(format!(
+        "Resource not found in bundle (no matching Vary variant): {}",
+        url
+      )));
     }
 
     if let Some(resource) = self.bundle.resource_for_url(url) {
@@ -543,7 +659,72 @@ impl ResourceFetcher for BundledFetcher {
       }
     }
 
+    if let Some(bucket) = self.bundle.vary_bucket_for_url(req.url) {
+      if bucket.vary.as_deref() == Some("*") {
+        return Err(Error::Other(format!(
+          "Resource is not cacheable in bundle (Vary: *): {}",
+          req.url
+        )));
+      }
+      let canonical = FetchRequest {
+        url: bucket.canonical_url.as_str(),
+        destination: req.destination,
+        referrer_url: req.referrer_url,
+        client_origin: req.client_origin,
+        referrer_policy: req.referrer_policy,
+        credentials_mode: req.credentials_mode,
+      };
+      let Some(vary_key) =
+        super::compute_vary_key_for_request(self, canonical, bucket.vary.as_deref())
+      else {
+        return Err(Error::Other(format!(
+          "Resource not cacheable in bundle (unknown Vary headers): {}",
+          req.url
+        )));
+      };
+      if let Some(resource) = bucket.variants.get(&vary_key) {
+        return Ok(resource.as_fetched());
+      }
+      if bucket.vary.is_none() && bucket.variants.len() == 1 {
+        if let Some(resource) = bucket.variants.values().next() {
+          return Ok(resource.as_fetched());
+        }
+      }
+      return Err(Error::Other(format!(
+        "Resource not found in bundle (no matching Vary variant): {}",
+        req.url
+      )));
+    }
+
     self.fetch(req.url)
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    let headers = super::build_http_header_pairs(
+      req.url,
+      super::DEFAULT_USER_AGENT,
+      super::DEFAULT_ACCEPT_LANGUAGE,
+      super::SUPPORTED_ACCEPT_ENCODING,
+      None,
+      req.destination,
+      req.client_origin,
+      req.referrer_url,
+      req.referrer_policy,
+    );
+    for (name, value) in headers {
+      if name.eq_ignore_ascii_case(header_name) {
+        return Some(value);
+      }
+    }
+    if header_name.eq_ignore_ascii_case("origin")
+      || header_name.eq_ignore_ascii_case("accept-encoding")
+      || header_name.eq_ignore_ascii_case("accept-language")
+      || header_name.eq_ignore_ascii_case("user-agent")
+      || header_name.eq_ignore_ascii_case("referer")
+    {
+      return Some(String::new());
+    }
+    None
   }
 
   fn fetch_with_validation(
@@ -661,9 +842,9 @@ mod tests {
           etag: None,
           last_modified: None,
           response_referrer_policy: None,
+          vary: Some("origin".to_string()),
           access_control_allow_origin: Some("https://example.com".to_string()),
           timing_allow_origin: Some("*".to_string()),
-          vary: Some("origin".to_string()),
           access_control_allow_credentials: true,
         },
       )]),
@@ -991,9 +1172,9 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            vary: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
-            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -1008,9 +1189,9 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            vary: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
-            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -1025,9 +1206,9 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            vary: None,
             access_control_allow_origin: Some("https://b.test".to_string()),
             timing_allow_origin: None,
-            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -1320,9 +1501,9 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      vary: None,
       access_control_allow_origin: Some(allow_origin.to_string()),
       timing_allow_origin: None,
-      vary: None,
       access_control_allow_credentials: false,
     };
 
@@ -1505,9 +1686,9 @@ mod tests {
       etag: None,
       last_modified: None,
       response_referrer_policy: None,
+      vary: Some("origin".to_string()),
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
-      vary: Some("origin".to_string()),
       access_control_allow_credentials: false,
     };
 
@@ -1572,5 +1753,112 @@ mod tests {
         .expect("fetch request-partitioned entry");
       assert_eq!(res.bytes, b"ok");
     });
+  }
+
+  #[test]
+  fn bundled_fetcher_selects_vary_origin_variants() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("font_a.woff2"), b"a").expect("write font a");
+    std::fs::write(tmp.path().join("font_b.woff2"), b"b").expect("write font b");
+
+    let url = "https://cdn.example/font.woff2";
+    let http = crate::resource::HttpFetcher::new();
+    let req_a =
+      FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://a.test/page.html");
+    let req_b =
+      FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://b.test/page.html");
+
+    let vary_key_a = super::super::compute_vary_key_for_request(&http, req_a, Some("origin"))
+      .expect("vary key A");
+    let vary_key_b = super::super::compute_vary_key_for_request(&http, req_b, Some("origin"))
+      .expect("vary key B");
+
+    let key_a = vary_partitioned_resource_key(url, &vary_key_a);
+    let key_b = vary_partitioned_resource_key(url, &vary_key_b);
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([
+        (
+          key_a,
+          BundledResourceInfo {
+            path: "font_a.woff2".to_string(),
+            content_type: Some("font/woff2".to_string()),
+            nosniff: false,
+            status: Some(200),
+            final_url: Some(url.to_string()),
+            etag: None,
+            last_modified: None,
+            response_referrer_policy: None,
+            vary: Some("origin".to_string()),
+            access_control_allow_origin: None,
+            timing_allow_origin: None,
+            access_control_allow_credentials: false,
+          },
+        ),
+        (
+          key_b,
+          BundledResourceInfo {
+            path: "font_b.woff2".to_string(),
+            content_type: Some("font/woff2".to_string()),
+            nosniff: false,
+            status: Some(200),
+            final_url: Some(url.to_string()),
+            etag: None,
+            last_modified: None,
+            response_referrer_policy: None,
+            vary: Some("origin".to_string()),
+            access_control_allow_origin: None,
+            timing_allow_origin: None,
+            access_control_allow_credentials: false,
+          },
+        ),
+      ]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let a = fetcher.fetch_with_request(req_a).expect("fetch origin A");
+    assert_eq!(a.bytes, b"a");
+
+    let b = fetcher.fetch_with_request(req_b).expect("fetch origin B");
+    assert_eq!(b.bytes, b"b");
   }
 }
