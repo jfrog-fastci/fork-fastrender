@@ -7,6 +7,7 @@ mod backdrop_filter_determinism_regression;
 mod backdrop_filter_filter_interaction_test;
 mod backdrop_filter_mask_image_test;
 mod backdrop_filter_parallel_test;
+mod backdrop_filter_through_blend_isolation;
 mod backdrop_root_clip_path_test;
 mod backdrop_root_filter_and_mask_test;
 mod backdrop_root_nested_backdrop_filter_test;
