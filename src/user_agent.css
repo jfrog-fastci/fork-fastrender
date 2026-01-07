@@ -413,13 +413,14 @@ textarea {
 }
 
 select:not([multiple]):not([size]),
+select:not([multiple])[size="0"],
 select:not([multiple])[size="1"] {
     padding-right: 20px;
     cursor: default;
 }
 
 select[multiple],
-select[size]:not([size="1"]) {
+select[size]:not([size="0"]):not([size="1"]) {
     padding-right: 6px;
     overflow-y: auto;
     overflow-x: hidden;
