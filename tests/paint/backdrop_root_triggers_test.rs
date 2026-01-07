@@ -167,3 +167,34 @@ fn mask_image_triggers_backdrop_root() {
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn mix_blend_mode_triggers_backdrop_root() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        mix-blend-mode: multiply;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // `mix-blend-mode` establishes a Backdrop Root (filter-effects-2). Without that boundary,
+  // `#overlay` would sample and invert the body background, producing cyan that would then be
+  // multiplied with red to yield black.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
