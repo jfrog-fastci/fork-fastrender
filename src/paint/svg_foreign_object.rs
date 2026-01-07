@@ -19,6 +19,17 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use tiny_skia::Pixmap;
 
+fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacement: &str) {
+  if let Some(pos) = svg.find(placeholder) {
+    let end = pos + placeholder.len();
+    svg.replace_range(pos..end, replacement);
+  } else if let Some(close_pos) = svg.rfind("</svg>") {
+    svg.insert_str(close_pos, replacement);
+  } else {
+    svg.push_str(replacement);
+  }
+}
+
 pub(crate) fn inline_svg_with_foreign_objects(
   svg: &str,
   foreign_objects: &[ForeignObjectInfo],
@@ -38,12 +49,7 @@ pub(crate) fn inline_svg_with_foreign_objects(
       foreign.placeholder.clone()
     };
 
-    if let Some(pos) = svg.find(&placeholder) {
-      let end = pos + placeholder.len();
-      svg.replace_range(pos..end, &replacement);
-    } else {
-      svg.push_str(&replacement);
-    }
+    replace_placeholder_or_insert(&mut svg, &placeholder, &replacement);
   }
 
   Some(svg)
@@ -326,4 +332,30 @@ fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {
     "data:image/png;base64,{}",
     base64::engine::general_purpose::STANDARD.encode(buf)
   ))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::replace_placeholder_or_insert;
+
+  #[test]
+  fn replaces_placeholder_when_present() {
+    let mut svg = "<svg><!--P--></svg>".to_string();
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
+    assert_eq!(svg, "<svg><image/></svg>");
+  }
+
+  #[test]
+  fn inserts_before_closing_tag_when_placeholder_missing() {
+    let mut svg = "<svg></svg>".to_string();
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
+    assert_eq!(svg, "<svg><image/></svg>");
+  }
+
+  #[test]
+  fn appends_when_svg_has_no_closing_tag() {
+    let mut svg = "<svg>".to_string();
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
+    assert_eq!(svg, "<svg><image/>");
+  }
 }
