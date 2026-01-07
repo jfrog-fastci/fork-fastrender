@@ -6535,28 +6535,30 @@ fn parse_grid_line_component(token: &str) -> TaffyGridPlacement<String> {
   }
 
   // Span syntax: span && (<integer> || <custom-ident>) in any order
-  if parts[0].eq_ignore_ascii_case("span") {
+  //
+  // The `span` keyword can appear anywhere within the component, not just as the first token.
+  // See: https://www.w3.org/TR/css-grid-2/#typedef-grid-line
+  if parts.iter().any(|part| part.eq_ignore_ascii_case("span")) {
     let mut name: Option<String> = None;
     let mut count: Option<u16> = None;
-    for part in parts.iter().skip(1) {
-      if count.is_none() {
-        if let Ok(n) = part.parse::<i32>() {
-          if n > 0 {
-            count = Some(n as u16);
-            continue;
-          }
+
+    for part in parts.iter().filter(|part| !part.eq_ignore_ascii_case("span")) {
+      if let Ok(n) = part.parse::<i32>() {
+        if n > 0 && count.is_none() {
+          count = Some(n as u16);
         }
+        continue;
       }
+
       if name.is_none() {
         name = Some((*part).to_string());
       }
     }
 
-    return match (name, count) {
-      (Some(name), Some(count)) => TaffyGridPlacement::NamedSpan(name, count.max(1)),
-      (Some(name), None) => TaffyGridPlacement::NamedSpan(name, 1),
-      (None, Some(count)) => TaffyGridPlacement::Span(count.max(1)),
-      (None, None) => TaffyGridPlacement::Span(1),
+    let count = count.unwrap_or(1).max(1);
+    return match name {
+      Some(name) => TaffyGridPlacement::NamedSpan(name, count),
+      None => TaffyGridPlacement::Span(count),
     };
   }
 
@@ -12059,6 +12061,21 @@ mod tests {
   }
 
   #[test]
+  fn parses_span_with_integer_in_any_order() {
+    let placement = parse_grid_line_placement_raw("2 span");
+    match placement.start {
+      TaffyGridPlacement::Span(count) => assert_eq!(count, 2),
+      other => panic!("expected span, got {:?}", other),
+    }
+
+    let placement_rev = parse_grid_line_placement_raw("span 2");
+    match placement_rev.start {
+      TaffyGridPlacement::Span(count) => assert_eq!(count, 2),
+      other => panic!("expected span, got {:?}", other),
+    }
+  }
+
+  #[test]
   fn parses_named_span_in_any_order() {
     let placement = parse_grid_line_placement_raw("span foo 3");
     match placement.start {
@@ -12070,6 +12087,33 @@ mod tests {
     }
 
     let placement_rev = parse_grid_line_placement_raw("span 3 foo");
+    match placement_rev.start {
+      TaffyGridPlacement::NamedSpan(name, count) => {
+        assert_eq!(name, "foo");
+        assert_eq!(count, 3);
+      }
+      other => panic!("expected named span, got {:?}", other),
+    }
+
+    let placement = parse_grid_line_placement_raw("foo span");
+    match placement.start {
+      TaffyGridPlacement::NamedSpan(name, count) => {
+        assert_eq!(name, "foo");
+        assert_eq!(count, 1);
+      }
+      other => panic!("expected named span, got {:?}", other),
+    }
+
+    let placement = parse_grid_line_placement_raw("foo 3 span");
+    match placement.start {
+      TaffyGridPlacement::NamedSpan(name, count) => {
+        assert_eq!(name, "foo");
+        assert_eq!(count, 3);
+      }
+      other => panic!("expected named span, got {:?}", other),
+    }
+
+    let placement_rev = parse_grid_line_placement_raw("3 foo span");
     match placement_rev.start {
       TaffyGridPlacement::NamedSpan(name, count) => {
         assert_eq!(name, "foo");
