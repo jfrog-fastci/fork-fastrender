@@ -298,4 +298,30 @@ mod tests {
     .expect("fit computed");
     assert!((offset_x - 20.0).abs() < 0.01);
   }
+
+  #[test]
+  fn right_offset_subtracts_from_alignment_space() {
+    let calc = CalcLength::single(LengthUnit::Percent, 100.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Px, 10.0), -1.0)
+      .expect("calc terms");
+    let position = ObjectPosition {
+      x: PositionComponent::Length(Length::calc(calc)),
+      y: PositionComponent::Keyword(PositionKeyword::Center),
+    };
+
+    let (offset_x, _, _, _) = compute_object_fit(
+      ObjectFit::None,
+      position,
+      100.0,
+      50.0,
+      50.0,
+      50.0,
+      16.0,
+      16.0,
+      None,
+    )
+    .expect("fit computed");
+    // free_x = 50 (box 100 - dest_w 50). right 10px => 50 - 10.
+    assert!((offset_x - 40.0).abs() < 0.01);
+  }
 }

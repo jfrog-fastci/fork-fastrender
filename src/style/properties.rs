@@ -12856,59 +12856,358 @@ fn parse_ratio_string(raw: &str) -> Option<f32> {
 fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
   use crate::style::types::PositionComponent as PC;
   use crate::style::types::PositionKeyword as PK;
+  use crate::style::values::CalcLength;
+  use crate::style::values::LengthUnit;
 
-  #[derive(Copy, Clone, Eq, PartialEq)]
-  enum Axis {
+  #[derive(Clone, Copy, PartialEq, Eq)]
+  enum AxisKind {
     Horizontal,
     Vertical,
+    Either, // center
   }
 
-  fn parse_component(value: &PropertyValue) -> Option<(PC, Option<Axis>)> {
+  #[derive(Clone, Copy)]
+  enum Part {
+    Keyword(AxisKind, PK),
+    Offset(Length),
+  }
+
+  #[derive(Clone, Copy)]
+  struct AxisPos {
+    align: PK,
+    offset: Option<Length>,
+  }
+
+  fn classify(value: &PropertyValue) -> Option<Part> {
     match value {
-      PropertyValue::Length(len) => Some((PC::Length(*len), None)),
-      PropertyValue::Percentage(pct) => Some((PC::Percentage(*pct / 100.0), None)),
-      PropertyValue::Keyword(kw) => match kw.as_str() {
-        "left" => Some((PC::Keyword(PK::Start), Some(Axis::Horizontal))),
-        "right" => Some((PC::Keyword(PK::End), Some(Axis::Horizontal))),
-        "center" => Some((PC::Keyword(PK::Center), None)),
-        "top" => Some((PC::Keyword(PK::Start), Some(Axis::Vertical))),
-        "bottom" => Some((PC::Keyword(PK::End), Some(Axis::Vertical))),
-        _ => None,
-      },
+      PropertyValue::Keyword(kw) => {
+        let lower = kw.to_ascii_lowercase();
+        match lower.as_str() {
+          "left" => Some(Part::Keyword(AxisKind::Horizontal, PK::Start)),
+          "right" => Some(Part::Keyword(AxisKind::Horizontal, PK::End)),
+          "top" => Some(Part::Keyword(AxisKind::Vertical, PK::Start)),
+          "bottom" => Some(Part::Keyword(AxisKind::Vertical, PK::End)),
+          "center" => Some(Part::Keyword(AxisKind::Either, PK::Center)),
+          _ => None,
+        }
+      }
+      PropertyValue::Length(len) => Some(Part::Offset(*len)),
+      PropertyValue::Percentage(p) => Some(Part::Offset(Length::percent(*p))),
+      PropertyValue::Number(n) if *n == 0.0 => Some(Part::Offset(Length::px(0.0))),
       _ => None,
     }
   }
 
-  let values: Vec<&PropertyValue> = match value {
-    PropertyValue::Multiple(list) if !list.is_empty() => list.iter().collect(),
-    _ => vec![value],
+  fn base_percent(align: PK) -> f32 {
+    match align {
+      PK::Start => 0.0,
+      PK::Center => 50.0,
+      PK::End => 100.0,
+    }
+  }
+
+  fn length_as_calc(len: Length) -> CalcLength {
+    len
+      .calc
+      .unwrap_or_else(|| CalcLength::single(len.unit, len.value))
+  }
+
+  fn offset_to_component(offset: Length) -> PC {
+    if offset.calc.is_some() {
+      return PC::Length(offset);
+    }
+    if offset.unit.is_percentage() {
+      return PC::Percentage(offset.value / 100.0);
+    }
+    PC::Length(offset)
+  }
+
+  fn axis_pos_to_component(pos: AxisPos) -> Option<PC> {
+    match pos.offset {
+      None => Some(PC::Keyword(pos.align)),
+      Some(offset) => match pos.align {
+        PK::Start => Some(offset_to_component(offset)),
+        PK::Center | PK::End => {
+          let base = base_percent(pos.align);
+          let mut calc = CalcLength::single(LengthUnit::Percent, base);
+          let offset_calc = length_as_calc(offset);
+          let sign = if matches!(pos.align, PK::End) {
+            -1.0
+          } else {
+            1.0
+          };
+          calc = calc.add_scaled(&offset_calc, sign)?;
+          Some(PC::Length(Length::calc(calc)))
+        }
+      },
+    }
+  }
+
+  fn single_axis(part: Part, axis: AxisKind) -> Option<AxisPos> {
+    match (part, axis) {
+      (Part::Keyword(kind, kw), AxisKind::Horizontal)
+        if kind == AxisKind::Horizontal || kind == AxisKind::Either =>
+      {
+        Some(AxisPos {
+          align: kw,
+          offset: None,
+        })
+      }
+      (Part::Keyword(kind, kw), AxisKind::Vertical)
+        if kind == AxisKind::Vertical || kind == AxisKind::Either =>
+      {
+        Some(AxisPos {
+          align: kw,
+          offset: None,
+        })
+      }
+      (Part::Offset(len), AxisKind::Horizontal | AxisKind::Vertical) => Some(AxisPos {
+        align: PK::Start,
+        offset: Some(len),
+      }),
+      _ => None,
+    }
+  }
+
+  let parts: Vec<Part> = match value {
+    PropertyValue::Multiple(values) if !values.is_empty() => {
+      let mut parts = Vec::with_capacity(values.len());
+      for v in values {
+        parts.push(classify(v)?);
+      }
+      parts
+    }
+    other => classify(other).into_iter().collect(),
   };
 
-  let mut parsed: Vec<(PC, Option<Axis>)> =
-    values.iter().filter_map(|v| parse_component(v)).collect();
-  if parsed.is_empty() {
+  if parts.is_empty() || parts.len() > 4 {
     return None;
   }
 
-  let default = PC::Keyword(PK::Center);
-  if parsed.len() == 1 {
-    let (comp, axis) = parsed.remove(0);
-    let (x, y) = match axis {
-      Some(Axis::Vertical) => (default, comp),
-      _ => (comp, default),
-    };
-    return Some(ObjectPosition { x, y });
-  }
-
-  let (first, first_axis) = parsed.first().copied().unwrap_or((default, None));
-  let (second, second_axis) = parsed.get(1).copied().unwrap_or((default, None));
-
-  let (x, y) = match (first_axis, second_axis) {
-    (Some(Axis::Vertical), Some(Axis::Horizontal)) => (second, first),
-    (Some(Axis::Vertical), None) => (second, first),
-    _ => (first, second),
+  let default = AxisPos {
+    align: PK::Center,
+    offset: None,
   };
 
+  let mut x: Option<AxisPos> = None;
+  let mut y: Option<AxisPos> = None;
+
+  match parts.len() {
+    1 => match parts[0] {
+      Part::Keyword(AxisKind::Horizontal, kw) => {
+        x = Some(AxisPos {
+          align: kw,
+          offset: None,
+        });
+      }
+      Part::Keyword(AxisKind::Vertical, kw) => {
+        y = Some(AxisPos {
+          align: kw,
+          offset: None,
+        });
+      }
+      Part::Keyword(AxisKind::Either, kw) => {
+        x = Some(AxisPos {
+          align: kw,
+          offset: None,
+        });
+        y = Some(AxisPos {
+          align: kw,
+          offset: None,
+        });
+      }
+      Part::Offset(len) => {
+        x = Some(AxisPos {
+          align: PK::Start,
+          offset: Some(len),
+        });
+      }
+    },
+    2 => {
+      let a = parts[0];
+      let b = parts[1];
+
+      // `<edge> <offset>` forms: e.g. `right 10px` or `top 2rem`.
+      if let (Part::Keyword(kind, kw), Part::Offset(off)) = (a, b) {
+        let axis = if kind == AxisKind::Vertical {
+          AxisKind::Vertical
+        } else {
+          AxisKind::Horizontal
+        };
+        let pos = AxisPos {
+          align: kw,
+          offset: Some(off),
+        };
+        match axis {
+          AxisKind::Vertical => y = Some(pos),
+          AxisKind::Horizontal => x = Some(pos),
+          AxisKind::Either => {}
+        }
+      } else {
+        match (a, b) {
+          (Part::Offset(x_off), Part::Offset(y_off)) => {
+            x = Some(AxisPos {
+              align: PK::Start,
+              offset: Some(x_off),
+            });
+            y = Some(AxisPos {
+              align: PK::Start,
+              offset: Some(y_off),
+            });
+          }
+          (Part::Offset(off), Part::Keyword(kind, kw)) => {
+            if kind == AxisKind::Vertical {
+              x = Some(AxisPos {
+                align: PK::Start,
+                offset: Some(off),
+              });
+              y = Some(AxisPos {
+                align: kw,
+                offset: None,
+              });
+            } else {
+              y = Some(AxisPos {
+                align: PK::Start,
+                offset: Some(off),
+              });
+              x = Some(AxisPos {
+                align: kw,
+                offset: None,
+              });
+            }
+          }
+          (Part::Keyword(kind, kw), Part::Keyword(kind2, kw2)) => {
+            match (kind, kind2) {
+              (AxisKind::Horizontal, AxisKind::Vertical) => {
+                x = Some(AxisPos {
+                  align: kw,
+                  offset: None,
+                });
+                y = Some(AxisPos {
+                  align: kw2,
+                  offset: None,
+                });
+              }
+              (AxisKind::Vertical, AxisKind::Horizontal) => {
+                x = Some(AxisPos {
+                  align: kw2,
+                  offset: None,
+                });
+                y = Some(AxisPos {
+                  align: kw,
+                  offset: None,
+                });
+              }
+              (AxisKind::Either, AxisKind::Horizontal)
+              | (AxisKind::Horizontal, AxisKind::Either) => {
+                x = Some(AxisPos {
+                  align: if kind2 == AxisKind::Horizontal {
+                    kw2
+                  } else {
+                    kw
+                  },
+                  offset: None,
+                });
+                y = Some(default);
+              }
+              (AxisKind::Either, AxisKind::Vertical) | (AxisKind::Vertical, AxisKind::Either) => {
+                x = Some(default);
+                y = Some(AxisPos {
+                  align: if kind2 == AxisKind::Vertical { kw2 } else { kw },
+                  offset: None,
+                });
+              }
+              (AxisKind::Either, AxisKind::Either) => {
+                x = Some(default);
+                y = Some(default);
+              }
+              _ => {
+                // Invalid keyword combination (e.g. left right); ignore.
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+    3 => {
+      let a = parts[0];
+      let b = parts[1];
+      let c = parts[2];
+
+      if let (Part::Keyword(kind, kw), Part::Offset(off)) = (a, b) {
+        if kind == AxisKind::Vertical {
+          y = Some(AxisPos {
+            align: kw,
+            offset: Some(off),
+          });
+          x = single_axis(c, AxisKind::Horizontal);
+        } else {
+          x = Some(AxisPos {
+            align: kw,
+            offset: Some(off),
+          });
+          y = single_axis(c, AxisKind::Vertical);
+        }
+      } else if let (Part::Keyword(kind_a, kw_a), Part::Keyword(kind_b, kw_b), Part::Offset(off)) =
+        (a, b, c)
+      {
+        // Alternate 3-token form where the offset follows the second keyword:
+        // e.g. `left top 10px` or `top left 10px`.
+        if kind_b == AxisKind::Vertical {
+          y = Some(AxisPos {
+            align: kw_b,
+            offset: Some(off),
+          });
+          x = single_axis(Part::Keyword(kind_a, kw_a), AxisKind::Horizontal);
+        } else {
+          x = Some(AxisPos {
+            align: kw_b,
+            offset: Some(off),
+          });
+          y = single_axis(Part::Keyword(kind_a, kw_a), AxisKind::Vertical);
+        }
+      }
+    }
+    4 => {
+      let a = parts[0];
+      let b = parts[1];
+      let c = parts[2];
+      let d = parts[3];
+
+      if let (
+        Part::Keyword(kind_a, kw_a),
+        Part::Offset(off_a),
+        Part::Keyword(kind_c, kw_c),
+        Part::Offset(off_c),
+      ) = (a, b, c, d)
+      {
+        if kind_a == AxisKind::Vertical && kind_c != AxisKind::Vertical {
+          y = Some(AxisPos {
+            align: kw_a,
+            offset: Some(off_a),
+          });
+          x = Some(AxisPos {
+            align: kw_c,
+            offset: Some(off_c),
+          });
+        } else {
+          x = Some(AxisPos {
+            align: kw_a,
+            offset: Some(off_a),
+          });
+          y = Some(AxisPos {
+            align: kw_c,
+            offset: Some(off_c),
+          });
+        }
+      }
+    }
+    _ => {}
+  }
+
+  let x = axis_pos_to_component(x.unwrap_or(default))?;
+  let y = axis_pos_to_component(y.unwrap_or(default))?;
   Some(ObjectPosition { x, y })
 }
 
@@ -22549,6 +22848,64 @@ mod tests {
       style.object_position.y,
       PositionComponent::Keyword(PositionKeyword::End)
     ));
+  }
+
+  #[test]
+  fn parses_object_position_edge_offsets_into_calc() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "object-position".into(),
+      value: parse_property_value("object-position", "right 10px bottom 20px")
+        .expect("object-position parsed"),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    let expected_x = CalcLength::single(LengthUnit::Percent, 100.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Px, 10.0), -1.0)
+      .expect("calc terms");
+    let expected_y = CalcLength::single(LengthUnit::Percent, 100.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Px, 20.0), -1.0)
+      .expect("calc terms");
+
+    assert_eq!(
+      style.object_position.x,
+      PositionComponent::Length(Length::calc(expected_x))
+    );
+    assert_eq!(
+      style.object_position.y,
+      PositionComponent::Length(Length::calc(expected_y))
+    );
+  }
+
+  #[test]
+  fn parses_object_position_center_offset_with_other_axis_keyword() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "object-position".into(),
+      value: parse_property_value("object-position", "center 10px top")
+        .expect("object-position parsed"),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    let expected_x = CalcLength::single(LengthUnit::Percent, 50.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Px, 10.0), 1.0)
+      .expect("calc terms");
+    assert_eq!(
+      style.object_position.x,
+      PositionComponent::Length(Length::calc(expected_x))
+    );
+    assert_eq!(
+      style.object_position.y,
+      PositionComponent::Keyword(PositionKeyword::Start)
+    );
   }
 
   #[test]
