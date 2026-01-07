@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@supports ignores !important in declaration</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #box {
+    width: 120px;
+    height: 120px;
+    background: rgb(255, 0, 0);
+  }
+
+  /* Some real-world stylesheets include !important in @supports declarations; it should not flip the condition. */
+  @supports (display: flex !important) {
+    #box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="box"></div>
+
