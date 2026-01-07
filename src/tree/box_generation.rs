@@ -29,10 +29,12 @@ use crate::style::defaults::parse_color_attribute;
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
 use crate::style::media::MediaQuery;
+use crate::style::types::Direction;
 use crate::style::types::FontStyle;
 use crate::style::types::ListStyleType;
 use crate::style::types::TextTransform;
 use crate::style::types::WhiteSpace;
+use crate::style::types::WritingMode;
 use crate::style::ComputedStyle;
 use crate::svg::parse_svg_length;
 use crate::svg::parse_svg_length_px;
@@ -3096,7 +3098,7 @@ pub(crate) fn marker_content_from_style(
     crate::style::types::ListStyleImage::None => {}
   }
 
-  let text = list_marker_text(marker_style.list_style_type.clone(), counters);
+  let text = list_marker_text(marker_style, counters);
   if text.is_empty() {
     None
   } else {
@@ -6395,6 +6397,100 @@ mod tests {
   }
 
   #[test]
+  fn disclosure_closed_marker_points_right_in_ltr() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::ListItem;
+    style.list_style_type = ListStyleType::DisclosureClosed;
+    style.direction = Direction::Ltr;
+    style.writing_mode = WritingMode::HorizontalTb;
+    let style = Arc::new(style);
+
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: style.clone(),
+      marker_styles: None,
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut counters = CounterManager::new();
+    counters.enter_scope();
+    counters.apply_reset(&CounterSet::single("list-item", 1));
+
+    let marker_box = create_marker_box(&styled, &counters).expect("marker");
+    counters.leave_scope();
+
+    match &marker_box.box_type {
+      BoxType::Marker(marker) => match &marker.content {
+        MarkerContent::Text(t) => assert!(t.starts_with("▸")),
+        MarkerContent::Image(_) => panic!("expected text marker from disclosure-closed"),
+      },
+      _ => panic!("expected marker box"),
+    }
+  }
+
+  #[test]
+  fn disclosure_closed_marker_points_left_in_rtl() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::ListItem;
+    style.list_style_type = ListStyleType::DisclosureClosed;
+    style.direction = Direction::Rtl;
+    style.writing_mode = WritingMode::HorizontalTb;
+    let style = Arc::new(style);
+
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: style.clone(),
+      marker_styles: None,
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut counters = CounterManager::new();
+    counters.enter_scope();
+    counters.apply_reset(&CounterSet::single("list-item", 1));
+
+    let marker_box = create_marker_box(&styled, &counters).expect("marker");
+    counters.leave_scope();
+
+    match &marker_box.box_type {
+      BoxType::Marker(marker) => match &marker.content {
+        MarkerContent::Text(t) => assert!(t.starts_with("◂")),
+        MarkerContent::Image(_) => panic!("expected text marker from disclosure-closed"),
+      },
+      _ => panic!("expected marker box"),
+    }
+  }
+
+  #[test]
   fn marker_uses_custom_counter_style_definition() {
     let mut registry = CounterStyleRegistry::with_builtins();
     let mut rule = CounterStyleRule::new("custom-mark");
@@ -8203,7 +8299,8 @@ mod tests {
   }
 }
 
-fn list_marker_text(list_style: ListStyleType, counters: &CounterManager) -> String {
+fn list_marker_text(marker_style: &ComputedStyle, counters: &CounterManager) -> String {
+  let list_style = marker_style.list_style_type.clone();
   let core = match list_style {
     ListStyleType::None => return String::new(),
     ListStyleType::Disc => counters.format("list-item", CounterStyle::Disc),
@@ -8222,7 +8319,16 @@ fn list_marker_text(list_style: ListStyleType, counters: &CounterManager) -> Str
     ListStyleType::Georgian => counters.format("list-item", CounterStyle::Georgian),
     ListStyleType::LowerGreek => counters.format("list-item", CounterStyle::LowerGreek),
     ListStyleType::DisclosureOpen => counters.format("list-item", CounterStyle::DisclosureOpen),
-    ListStyleType::DisclosureClosed => counters.format("list-item", CounterStyle::DisclosureClosed),
+    ListStyleType::DisclosureClosed => {
+      let symbol = match marker_style.writing_mode {
+        WritingMode::HorizontalTb => match marker_style.direction {
+          Direction::Ltr => "▸",
+          Direction::Rtl => "◂",
+        },
+        _ => "▸",
+      };
+      symbol.to_string()
+    }
     ListStyleType::String(text) => text,
     ListStyleType::Custom(name) => counters.format("list-item", CounterStyleName::Custom(name)),
   };
