@@ -413,7 +413,7 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
         continue;
       }
 
-      if let Some(raw) = d.strip_suffix('x') {
+      if let Some(raw) = d.strip_suffix("dppx") {
         match raw.parse::<f32>() {
           Ok(val) if val.is_finite() && val > 0.0 => {
             if density.is_some() {
@@ -427,7 +427,7 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
             break;
           }
         }
-      } else if let Some(raw) = d.strip_suffix("dppx") {
+      } else if let Some(raw) = d.strip_suffix('x') {
         match raw.parse::<f32>() {
           Ok(val) if val.is_finite() && val > 0.0 => {
             if density.is_some() {
@@ -854,6 +854,16 @@ mod tests {
     assert!(
       matches!(parsed[2].descriptor, SrcsetDescriptor::Density(d) if (d - 1.5).abs() < f32::EPSILON)
     );
+  }
+
+  #[test]
+  fn parse_srcset_parses_dppx_descriptors() {
+    let parsed = parse_srcset("a.png 1dppx, b.png 2dppx");
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].url, "a.png");
+    assert!(matches!(parsed[0].descriptor, SrcsetDescriptor::Density(d) if d == 1.0));
+    assert_eq!(parsed[1].url, "b.png");
+    assert!(matches!(parsed[1].descriptor, SrcsetDescriptor::Density(d) if d == 2.0));
   }
 
   #[test]
