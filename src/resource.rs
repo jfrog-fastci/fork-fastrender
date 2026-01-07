@@ -9381,6 +9381,81 @@ mod tests {
     assert_eq!(profile.origin_and_referer(&parsed), None);
   }
 
+  #[test]
+  fn cors_cache_partition_key_partitions_by_client_origin_and_credentials() {
+    if !http_browser_headers_enabled() {
+      eprintln!(
+        "skipping cors_cache_partition_key_partitions_by_client_origin_and_credentials: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let origin_a = origin_from_url("https://a.test/page").expect("origin A");
+      let origin_b = origin_from_url("https://b.test/page").expect("origin B");
+
+      let cors_url = "https://static.example.com/font.woff2";
+
+      let no_cors = FetchRequest::new("https://static.example.com/style.css", FetchDestination::Style)
+        .with_client_origin(&origin_a);
+      assert_eq!(cors_cache_partition_key(&no_cors), None);
+
+      let omit = FetchRequest::new(cors_url, FetchDestination::Font).with_client_origin(&origin_a);
+      assert_eq!(
+        cors_cache_partition_key(&omit).as_deref(),
+        Some("https://a.test")
+      );
+
+      let include = omit.with_credentials_mode(FetchCredentialsMode::Include);
+      assert_eq!(
+        cors_cache_partition_key(&include).as_deref(),
+        Some("https://a.test|cred=include")
+      );
+
+      let same_origin_url = "https://a.test/font.woff2";
+      let same_origin = FetchRequest::new(same_origin_url, FetchDestination::Font)
+        .with_client_origin(&origin_a)
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+      assert_eq!(
+        cors_cache_partition_key(&same_origin).as_deref(),
+        Some("https://a.test|cred=include")
+      );
+
+      let cross_origin = FetchRequest::new(cors_url, FetchDestination::Font)
+        .with_client_origin(&origin_a)
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+      assert_eq!(
+        cors_cache_partition_key(&cross_origin).as_deref(),
+        Some("https://a.test")
+      );
+
+      let other_origin = FetchRequest::new(cors_url, FetchDestination::Font).with_client_origin(&origin_b);
+      assert_eq!(
+        cors_cache_partition_key(&other_origin).as_deref(),
+        Some("https://b.test")
+      );
+    });
+  }
+
+  #[test]
+  fn cors_cache_partition_key_can_be_disabled() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+      "0".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let origin = origin_from_url("https://example.com/page").expect("origin");
+      let req = FetchRequest::new("https://static.example.com/font.woff2", FetchDestination::Font)
+        .with_client_origin(&origin)
+        .with_credentials_mode(FetchCredentialsMode::Include);
+      assert_eq!(cors_cache_partition_key(&req), None);
+    });
+  }
+
   fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
       .iter()
