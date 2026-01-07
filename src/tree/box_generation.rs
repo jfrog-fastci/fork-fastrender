@@ -4870,8 +4870,6 @@ mod tests {
   use crate::tree::box_tree::FormControlKind;
   use crate::tree::box_tree::MarkerContent;
   use crate::tree::box_tree::ReplacedType;
-  use crate::tree::box_tree::SelectControl;
-  use crate::tree::box_tree::SelectItem;
   use crate::tree::box_tree::TextControlKind;
 
   fn default_style() -> Arc<ComputedStyle> {
@@ -4907,20 +4905,6 @@ mod tests {
     }
   }
 
-  fn select_selected_value(select: &SelectControl) -> Option<&str> {
-    let mut min_selected_idx: Option<usize> = None;
-    for &idx in &select.selected {
-      if matches!(select.items.get(idx), Some(SelectItem::Option { .. })) {
-        min_selected_idx = Some(min_selected_idx.map(|min| min.min(idx)).unwrap_or(idx));
-      }
-    }
-
-    let idx = min_selected_idx?;
-    match select.items.get(idx) {
-      Some(SelectItem::Option { value, .. }) => Some(value.as_str()),
-      _ => None,
-    }
-  }
   fn generate_box_tree(styled: &StyledNode) -> BoxTree {
     generate_box_tree_result(styled).expect("box generation failed")
   }

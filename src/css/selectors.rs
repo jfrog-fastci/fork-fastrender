@@ -946,7 +946,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "after" => Ok(PseudoElement::After),
       "first-line" => Ok(PseudoElement::FirstLine),
       "first-letter" => Ok(PseudoElement::FirstLetter),
-      "marker" | "-moz-list-bullet" | "-moz-list-number" => Ok(PseudoElement::Marker),
+      "marker" | "-moz-list-bullet" | "-moz-list-number" | "-webkit-details-marker" => {
+        Ok(PseudoElement::Marker)
+      }
       "footnote-call" => Ok(PseudoElement::FootnoteCall),
       "footnote-marker" => Ok(PseudoElement::FootnoteMarker),
       "backdrop" | "-webkit-backdrop" | "-ms-backdrop" => Ok(PseudoElement::Backdrop),
@@ -1515,6 +1517,16 @@ mod tests {
       );
     }
 
+    for name in ["-moz-list-bullet", "-moz-list-number", "-webkit-details-marker"] {
+      assert_eq!(
+        parser
+          .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
+          .unwrap(),
+        PseudoElement::Marker,
+        "{name} should map to ::marker"
+      );
+    }
+
     for name in ["backdrop", "-webkit-backdrop", "-ms-backdrop"] {
       assert_eq!(
         parser
@@ -1580,6 +1592,14 @@ mod tests {
         .unwrap(),
       PseudoElement::Vendor(CssString::from("-webkit-search-cancel-button"))
     );
+
+    // `::-webkit-details-marker` should behave like an alias and serialize to the standard form.
+    let list = parse_selector_list("summary::-webkit-details-marker, summary::marker");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec!["summary::marker".to_string(), "summary::marker".to_string()]
+    );
   }
 
   #[test]
@@ -1633,7 +1653,7 @@ mod tests {
 
   #[test]
   fn relative_selector_bloom_hashes_are_precomputed() {
-    let mut input = ParserInput::new("span.foo#bar[data-Thing]");
+    let mut input = ParserInput::new("span.foo #bar[data-Thing]");
     let mut parser = Parser::new(&mut input);
     let list =
       SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::ForHas).expect("parse");
