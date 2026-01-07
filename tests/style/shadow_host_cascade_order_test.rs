@@ -246,6 +246,58 @@ fn shadow_host_context_wins_over_document_layers_for_important() {
 }
 
 #[test]
+fn nested_shadow_context_orders_shadow_host_rules_for_normal() {
+  // Shadow roots can be nested. For normal declarations, the outer shadow context (the shadow root
+  // containing the host element) should win over the inner shadow context (the host's own shadow
+  // root).
+  let html = r#"
+    <x-outer id="outer">
+      <template shadowroot="open">
+        <style>
+          x-inner { color: rgb(255, 0, 0); }
+        </style>
+        <x-inner id="inner">
+          <template shadowroot="open">
+            <style>
+              :host { color: rgb(0, 0, 255); }
+            </style>
+          </template>
+        </x-inner>
+      </template>
+    </x-outer>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let inner = find_by_id(&styled, "inner").expect("styled inner host");
+  assert_eq!(inner.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn nested_shadow_context_orders_shadow_host_rules_for_important() {
+  // For !important declarations, the inner shadow context wins.
+  let html = r#"
+    <x-outer id="outer">
+      <template shadowroot="open">
+        <style>
+          x-inner { color: rgb(255, 0, 0) !important; }
+        </style>
+        <x-inner id="inner">
+          <template shadowroot="open">
+            <style>
+              :host { color: rgb(0, 0, 255) !important; }
+            </style>
+          </template>
+        </x-inner>
+      </template>
+    </x-outer>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let inner = find_by_id(&styled, "inner").expect("styled inner host");
+  assert_eq!(inner.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
 fn document_rules_outrank_shadow_host_context_rules() {
   let html = r#"
     <style>
