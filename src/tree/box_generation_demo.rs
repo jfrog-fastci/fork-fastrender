@@ -656,6 +656,8 @@ impl BoxGenerator {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
       slider_thumb_styles: None,
