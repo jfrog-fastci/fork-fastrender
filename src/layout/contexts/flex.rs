@@ -1133,6 +1133,17 @@ impl FormattingContext for FlexFormattingContext {
       let mut pass_cache: FxHashMap<u64, FlexCacheEntry> =
         FxHashMap::with_capacity_and_hasher(in_flow_children.len(), Default::default());
       let measure_toggles = toggles.clone();
+      let container_inline_positive = self.inline_axis_positive(style);
+      let container_block_positive = self.block_axis_positive(style);
+      let container_flex_direction = self.flex_direction_to_taffy(
+        style,
+        container_inline_positive,
+        container_block_positive,
+      );
+      let container_main_axis_is_horizontal = matches!(
+        container_flex_direction,
+        taffy::style::FlexDirection::Row | taffy::style::FlexDirection::RowReverse
+      );
       record_taffy_invocation(TaffyAdapterKind::Flex);
       let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
       let compute_result = taffy_tree.compute_layout_with_measure_and_cancel(
@@ -1554,6 +1565,20 @@ impl FormattingContext for FlexFormattingContext {
                     // minimum (per CSS Flexbox §4.5). Keep min-width/max-width intact so explicit
                     // constraints still apply.
                     let mut cloned_style: Option<ComputedStyle> = None;
+                    if matches!(box_node.style.flex_basis, crate::style::types::FlexBasis::Content) {
+                      // `flex-basis: content` must ignore the preferred main size (width/height) when
+                      // determining the flex base size, even if it is a definite length. Our
+                      // intrinsic sizing APIs otherwise honor specified widths, so temporarily clear
+                      // the preferred main-size property for this probe.
+                      let style = cloned_style.get_or_insert_with(|| (*box_node.style).clone());
+                      if container_main_axis_is_horizontal {
+                        style.width = None;
+                        style.width_keyword = None;
+                      } else {
+                        style.height = None;
+                        style.height_keyword = None;
+                      }
+                    }
                     // When the available inline size is intrinsic (min-/max-content), percentage
                     // widths/min/max can't be resolved (§10.5). Treat them as auto so intrinsic
                     // sizing uses content-driven sizes instead of forcing 100% of an unknown base.
