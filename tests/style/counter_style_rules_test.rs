@@ -206,6 +206,61 @@ fn parsed_counter_style_extends_builtin_and_formats() {
 }
 
 #[test]
+fn extends_unknown_counter_style_name_treated_as_decimal() {
+  let css = r#"
+    @counter-style missing {
+      system: extends does-not-exist;
+      pad: 3 "0";
+      negative: "<" ">";
+    }
+  "#;
+  let sheet = parse_stylesheet(css).expect("stylesheet");
+  let dom = simple_list_dom();
+  let registry = &apply_styles(&dom, &sheet).styles.counter_styles;
+
+  assert_eq!(
+    registry.format_value(7, CounterStyleName::from("missing")),
+    "007"
+  );
+  assert_eq!(
+    registry.format_value(-4, CounterStyleName::from("missing")),
+    "<4>"
+  );
+}
+
+#[test]
+fn extends_cycle_members_do_not_inherit_each_others_descriptors() {
+  let css = r#"
+    @counter-style a {
+      system: extends b;
+      pad: 3 "0";
+    }
+    @counter-style b {
+      system: extends a;
+      negative: "<" ">";
+      suffix: ") ";
+    }
+  "#;
+  let sheet = parse_stylesheet(css).expect("stylesheet");
+  let dom = simple_list_dom();
+  let registry = &apply_styles(&dom, &sheet).styles.counter_styles;
+
+  // Styles participating in the cycle behave as if they extended decimal directly.
+  assert_eq!(
+    registry.format_value(-4, CounterStyleName::from("a")),
+    "-04"
+  );
+  assert_eq!(
+    registry.format_value(-4, CounterStyleName::from("b")),
+    "<4>"
+  );
+
+  // `a` should not inherit `b`'s marker suffix through the cycle.
+  let (_prefix, suffix) = registry.marker_affixes("a");
+  assert_eq!(suffix, ". ");
+}
+
+#[test]
 fn custom_list_style_type_uses_counter_style_registry() {
   let css = r#"
     @counter-style stars {
@@ -243,6 +298,12 @@ fn cyclic_counter_style_does_not_apply_negative_sign_descriptor() {
 
   // Cyclic styles don't "use a negative sign" per CSS Counter Styles, so the negative descriptor
   // should not wrap the representation.
-  assert_eq!(registry.format_value(-1, CounterStyleName::from("cyclic")), "00A");
-  assert_eq!(registry.format_value(-2, CounterStyleName::from("cyclic")), "00B");
+  assert_eq!(
+    registry.format_value(-1, CounterStyleName::from("cyclic")),
+    "00A"
+  );
+  assert_eq!(
+    registry.format_value(-2, CounterStyleName::from("cyclic")),
+    "00B"
+  );
 }

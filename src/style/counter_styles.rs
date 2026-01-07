@@ -196,45 +196,66 @@ impl CounterStyleRegistry {
     }
 
     let style = style.into();
-    let mut visited = HashSet::new();
+    let mut resolving_stack = Vec::new();
+    let mut cycle_members = HashSet::new();
 
     fn resolve_by_name(
       registry: &CounterStyleRegistry,
       name: &str,
-      visited: &mut HashSet<String>,
+      resolving_stack: &mut Vec<String>,
+      cycle_members: &mut HashSet<String>,
     ) -> (String, String) {
       let key = name.to_ascii_lowercase();
-      if !visited.insert(key.clone()) {
+      if let Some(pos) = resolving_stack.iter().position(|name| name == &key) {
+        for member in &resolving_stack[pos..] {
+          cycle_members.insert(member.clone());
+        }
+        cycle_members.insert(key.clone());
         return builtin_affixes(CounterStyle::Decimal);
       }
 
+      resolving_stack.push(key.clone());
+
       if let Some(def) = registry.styles.get(&key) {
         match def {
-          CounterStyleDefinition::Builtin(builtin) => return builtin_affixes(*builtin),
+          CounterStyleDefinition::Builtin(builtin) => {
+            resolving_stack.pop();
+            return builtin_affixes(*builtin);
+          }
           CounterStyleDefinition::Custom(rule) => {
-            let (base_prefix, base_suffix) = if let Some(CounterSystem::Extends(parent)) =
-              rule.system.as_ref()
-            {
-              resolve_by_name(registry, parent, visited)
-            } else {
-              (DEFAULT_PREFIX.to_string(), DEFAULT_SUFFIX.to_string())
-            };
+            let mut base_affixes =
+              if let Some(CounterSystem::Extends(parent)) = rule.system.as_ref() {
+                resolve_by_name(registry, parent, resolving_stack, cycle_members)
+              } else {
+                (DEFAULT_PREFIX.to_string(), DEFAULT_SUFFIX.to_string())
+              };
+            if cycle_members.contains(&key) {
+              base_affixes = builtin_affixes(CounterStyle::Decimal);
+            }
 
-            let prefix = rule.prefix.clone().unwrap_or(base_prefix);
-            let suffix = rule.suffix.clone().unwrap_or(base_suffix);
+            let prefix = rule.prefix.clone().unwrap_or(base_affixes.0);
+            let suffix = rule.suffix.clone().unwrap_or(base_affixes.1);
+            resolving_stack.pop();
             return (prefix, suffix);
           }
         }
       }
 
       if let Some(builtin) = CounterStyle::parse(&key) {
+        resolving_stack.pop();
         return builtin_affixes(builtin);
       }
 
+      resolving_stack.pop();
       builtin_affixes(CounterStyle::Decimal)
     }
 
-    resolve_by_name(self, &style.as_css_name(), &mut visited)
+    resolve_by_name(
+      self,
+      &style.as_css_name(),
+      &mut resolving_stack,
+      &mut cycle_members,
+    )
   }
 
   fn format_by_name(&self, name: &str, value: i32, visited: &mut HashSet<String>) -> String {
@@ -247,8 +268,10 @@ impl CounterStyleRegistry {
       match def {
         CounterStyleDefinition::Builtin(builtin) => return builtin.format(value),
         CounterStyleDefinition::Custom(rule) => {
-          let mut resolving_extends = HashSet::new();
-          if let Some(resolved) = self.resolve_rule(rule, &mut resolving_extends) {
+          let mut resolving_stack = Vec::new();
+          let mut cycle_members = HashSet::new();
+          if let Some(resolved) = self.resolve_rule(rule, &mut resolving_stack, &mut cycle_members)
+          {
             return resolved.format(value, self, visited);
           }
         }
@@ -265,20 +288,110 @@ impl CounterStyleRegistry {
   fn resolve_rule(
     &self,
     rule: &CounterStyleRule,
-    resolving_extends: &mut HashSet<String>,
+    resolving_stack: &mut Vec<String>,
+    cycle_members: &mut HashSet<String>,
   ) -> Option<ResolvedCounterStyle> {
-    // `system: extends <name>` can be cyclic. Guard against infinite recursion by tracking the
-    // chain of styles being resolved through `extends`.
-    if !resolving_extends.insert(rule.name.clone()) {
-      return None;
+    // `system: extends <name>` can be cyclic. Per CSS Counter Styles, any style participating in an
+    // `extends` cycle must be treated as if it were extending `decimal` instead.
+    if let Some(pos) = resolving_stack.iter().position(|name| name == &rule.name) {
+      for member in &resolving_stack[pos..] {
+        cycle_members.insert(member.clone());
+      }
+      cycle_members.insert(rule.name.clone());
+      return self.resolve_rule_as_decimal_extend(rule);
     }
 
-    let mut base: Option<ResolvedCounterStyle> = None;
-    let mut system = rule.system.clone().unwrap_or(CounterSystem::Symbolic);
-    if let CounterSystem::Extends(ref parent) = system {
-      base = self.resolve_by_name(parent, resolving_extends);
-      system = base.as_ref()?.system.clone();
+    resolving_stack.push(rule.name.clone());
+    let resolved = (|| {
+      let mut base: Option<ResolvedCounterStyle> = None;
+      let mut system = rule.system.clone().unwrap_or(CounterSystem::Symbolic);
+      if let CounterSystem::Extends(ref parent) = system {
+        base = self.resolve_by_name(parent, resolving_stack, cycle_members);
+        if base.is_none() {
+          base = Some(builtin_style(CounterStyle::Decimal));
+        }
+        system = base.as_ref()?.system.clone();
+      }
+      if cycle_members.contains(&rule.name) {
+        base = Some(builtin_style(CounterStyle::Decimal));
+        system = base.as_ref()?.system.clone();
+      }
+
+      let symbols = rule
+        .symbols
+        .clone()
+        .or_else(|| base.as_ref().map(|b| b.symbols.clone()))
+        .unwrap_or_default();
+      let additive_symbols = rule
+        .additive_symbols
+        .clone()
+        .or_else(|| base.as_ref().map(|b| b.additive_symbols.clone()))
+        .unwrap_or_default();
+      let negative = rule
+        .negative
+        .clone()
+        .or_else(|| base.as_ref().map(|b| b.negative.clone()))
+        .unwrap_or_else(|| ("-".to_string(), String::new()));
+      let pad = rule
+        .pad
+        .clone()
+        .or_else(|| base.as_ref().and_then(|b| b.pad.clone()));
+      let range = if let Some(r) = &rule.range {
+        r.clone()
+      } else if let Some(base) = &base {
+        base.range.clone()
+      } else {
+        default_range(&system, &symbols)
+      };
+      let fallback = rule
+        .fallback
+        .clone()
+        .or_else(|| base.as_ref().map(|b| b.fallback.clone()))
+        .unwrap_or_else(|| "decimal".to_string());
+      let speak_as = rule
+        .speak_as
+        .clone()
+        .or_else(|| base.as_ref().and_then(|b| b.speak_as.clone()));
+
+      Some(ResolvedCounterStyle::new(
+        system,
+        symbols,
+        additive_symbols,
+        negative,
+        pad,
+        range,
+        fallback,
+        speak_as,
+      ))
+    })();
+    resolving_stack.pop();
+    resolved
+  }
+
+  fn resolve_by_name(
+    &self,
+    name: &str,
+    resolving_stack: &mut Vec<String>,
+    cycle_members: &mut HashSet<String>,
+  ) -> Option<ResolvedCounterStyle> {
+    let key = name.to_ascii_lowercase();
+    if let Some(def) = self.styles.get(&key) {
+      return match def {
+        CounterStyleDefinition::Builtin(builtin) => Some(builtin_style(*builtin)),
+        CounterStyleDefinition::Custom(rule) => {
+          self.resolve_rule(rule, resolving_stack, cycle_members)
+        }
+      };
     }
+    CounterStyle::parse(&key).map(builtin_style)
+  }
+
+  fn resolve_rule_as_decimal_extend(
+    &self,
+    rule: &CounterStyleRule,
+  ) -> Option<ResolvedCounterStyle> {
+    let base = Some(builtin_style(CounterStyle::Decimal));
+    let system = base.as_ref()?.system.clone();
 
     let symbols = rule
       .symbols
@@ -326,21 +439,6 @@ impl CounterStyleRegistry {
       fallback,
       speak_as,
     ))
-  }
-
-  fn resolve_by_name(
-    &self,
-    name: &str,
-    resolving_extends: &mut HashSet<String>,
-  ) -> Option<ResolvedCounterStyle> {
-    let key = name.to_ascii_lowercase();
-    if let Some(def) = self.styles.get(&key) {
-      return match def {
-        CounterStyleDefinition::Builtin(builtin) => Some(builtin_style(*builtin)),
-        CounterStyleDefinition::Custom(rule) => self.resolve_rule(rule, resolving_extends),
-      };
-    }
-    CounterStyle::parse(&key).map(builtin_style)
   }
 }
 
@@ -405,7 +503,10 @@ impl ResolvedCounterStyle {
 
     let uses_negative_sign = matches!(
       &self.system,
-      CounterSystem::Numeric | CounterSystem::Alphabetic | CounterSystem::Symbolic | CounterSystem::Additive
+      CounterSystem::Numeric
+        | CounterSystem::Alphabetic
+        | CounterSystem::Symbolic
+        | CounterSystem::Additive
     );
 
     let negative_value = value_i64 < 0;
@@ -422,8 +523,8 @@ impl ResolvedCounterStyle {
     if let Some((width, pad_symbol)) = &self.pad {
       let mut difference = (*width as i64) - (repr.graphemes(true).count() as i64);
       if negative_value && uses_negative_sign {
-        difference -= (self.negative.0.graphemes(true).count() + self.negative.1.graphemes(true).count())
-          as i64;
+        difference -= (self.negative.0.graphemes(true).count()
+          + self.negative.1.graphemes(true).count()) as i64;
       }
       if difference > 0 {
         repr = format!("{}{}", pad_symbol.repeat(difference as usize), repr);
