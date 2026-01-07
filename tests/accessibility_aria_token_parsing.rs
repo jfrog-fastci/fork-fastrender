@@ -136,3 +136,39 @@ fn aria_multiline_ignores_empty_and_invalid_tokens() {
     );
   }
 }
+
+#[test]
+fn aria_live_treats_value_as_single_token() {
+  let html = r##"
+    <html>
+      <body>
+        <div id="empty" role="status" aria-live>Empty</div>
+        <div id="bogus" role="status" aria-live="bogus">Bogus</div>
+        <div id="multi" role="status" aria-live="polite assertive">Multi</div>
+        <div id="polite" role="status" aria-live="polite">Polite</div>
+        <div id="assertive" role="status" aria-live="ASSERTIVE">Assertive</div>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+
+  for id in ["empty", "bogus", "multi"] {
+    let node = find_json_node(&tree, id).unwrap();
+    let states = node.get("states").unwrap();
+    assert!(
+      states.get("live").is_none(),
+      "aria-live={id:?} should not set live"
+    );
+  }
+
+  for (id, expected) in [("polite", "polite"), ("assertive", "assertive")] {
+    let node = find_json_node(&tree, id).unwrap();
+    let states = node.get("states").unwrap();
+    assert_eq!(
+      states.get("live").and_then(|v| v.as_str()),
+      Some(expected),
+      "aria-live={id:?} should serialize {expected:?}"
+    );
+  }
+}

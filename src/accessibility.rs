@@ -2521,13 +2521,12 @@ fn parse_has_popup(node: &DomNode) -> Option<String> {
 
 fn parse_aria_live(node: &DomNode) -> Option<String> {
   let value = node.get_attribute_ref("aria-live")?;
-  for token in value.split_ascii_whitespace() {
-    let lower = token.to_ascii_lowercase();
-    if matches!(lower.as_str(), "off" | "polite" | "assertive") {
-      return Some(lower);
-    }
+  let token = value.trim().to_ascii_lowercase();
+  if matches!(token.as_str(), "off" | "polite" | "assertive") {
+    Some(token)
+  } else {
+    None
   }
-  None
 }
 
 fn parse_aria_relevant(node: &DomNode) -> Option<String> {
