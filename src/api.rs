@@ -7718,7 +7718,19 @@ impl FastRender {
   ) -> Result<LayoutIntermediates> {
     let trace = TraceHandle::disabled();
     let deadline = crate::render_control::active_deadline();
-    let artifacts = self.layout_document_for_media_with_artifacts(
+    let shared_diagnostics = self
+      .diagnostics
+      .as_ref()
+      .map(|diag| SharedRenderDiagnostics {
+        inner: Arc::clone(diag),
+      });
+    let context = Some(self.build_resource_context(
+      self.document_url(),
+      shared_diagnostics,
+      ReferrerPolicy::default(),
+    ));
+    let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+    let artifacts_result = self.layout_document_for_media_with_artifacts(
       dom,
       width,
       height,
@@ -7730,7 +7742,9 @@ impl FastRender {
       &trace,
       self.layout_parallelism,
       None,
-    )?;
+    );
+    self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+    let artifacts = artifacts_result?;
     let LayoutArtifacts {
       dom,
       styled_tree,
@@ -7757,7 +7771,19 @@ impl FastRender {
     deadline: Option<&RenderDeadline>,
   ) -> Result<FragmentTree> {
     let trace = TraceHandle::disabled();
-    let artifacts = self.layout_document_for_media_with_artifacts(
+    let shared_diagnostics = self
+      .diagnostics
+      .as_ref()
+      .map(|diag| SharedRenderDiagnostics {
+        inner: Arc::clone(diag),
+      });
+    let context = Some(self.build_resource_context(
+      self.document_url(),
+      shared_diagnostics,
+      ReferrerPolicy::default(),
+    ));
+    let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+    let artifacts_result = self.layout_document_for_media_with_artifacts(
       dom,
       width,
       height,
@@ -7769,7 +7795,9 @@ impl FastRender {
       &trace,
       self.layout_parallelism,
       None,
-    )?;
+    );
+    self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+    let artifacts = artifacts_result?;
     Ok(artifacts.fragment_tree)
   }
 
