@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>positioned descendant z-index stays within stacking context</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: white;
+  }
+
+  .root {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    background: white;
+  }
+
+  .outside {
+    position: absolute;
+    top: 80px;
+    left: 80px;
+    width: 120px;
+    height: 120px;
+    background: rgb(0, 160, 0);
+    z-index: 1;
+  }
+
+  .parent {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    width: 160px;
+    height: 160px;
+    z-index: 0;
+  }
+
+  .child {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    width: 120px;
+    height: 120px;
+    background: rgb(0, 0, 220);
+    z-index: 100;
+  }
+</style>
+
+<div class="root">
+  <div class="outside"></div>
+  <div class="parent">
+    <div class="child"></div>
+  </div>
+</div>
