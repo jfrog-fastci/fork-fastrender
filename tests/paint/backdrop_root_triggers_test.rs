@@ -157,6 +157,39 @@ fn mask_image_triggers_backdrop_root() {
 }
 
 #[test]
+fn mask_triggers_backdrop_root() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #parent {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        mask: linear-gradient(black, black);
+        mask-mode: alpha;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // `mask` establishes a Backdrop Root boundary; the mask itself is fully opaque, so the only
+  // observable difference is whether `#overlay` can sample and invert `#bg`.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn mix_blend_mode_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>

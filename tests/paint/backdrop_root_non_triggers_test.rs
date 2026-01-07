@@ -157,3 +157,9 @@ fn will_change_scroll_position_is_not_a_backdrop_root() {
   let pixmap = render("will-change: scroll-position;");
   assert_child_inverts_body_bg(&pixmap);
 }
+
+#[test]
+fn will_change_isolation_is_not_a_backdrop_root() {
+  let pixmap = render("will-change: isolation;");
+  assert_child_inverts_body_bg(&pixmap);
+}
