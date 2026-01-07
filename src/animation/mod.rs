@@ -4812,6 +4812,11 @@ fn apply_animations_to_node_scoped(
       for (idx, name) in names.iter().enumerate() {
         let timeline_ref = pick(timelines_list, idx, AnimationTimeline::Auto);
         let range = pick(ranges_list, idx, AnimationRange::default());
+        let play_state = pick(
+          &style_arc.animation_play_states,
+          idx,
+          AnimationPlayState::Running,
+        );
         let timing = pick(
           &style_arc.animation_timing_functions,
           idx,
@@ -4835,80 +4840,176 @@ fn apply_animations_to_node_scoped(
           },
           AnimationTimeline::None => None,
           AnimationTimeline::Named(ref timeline_name) => {
-            let raw = timeline_scope_resolve(scope, timeline_name).and_then(|state| match state {
-              TimelineState::Scroll {
-                timeline,
-                scroll_pos,
-                scroll_range,
-                viewport_size,
-              } => scroll_timeline_progress(
-                timeline,
-                *scroll_pos,
-                *scroll_range,
-                *viewport_size,
-                &range,
-              ),
-              TimelineState::View {
-                timeline,
-                target_start,
-                target_end,
-                view_size,
-                scroll_offset,
-              } => view_timeline_progress(
-                timeline,
-                *target_start,
-                *target_end,
-                *view_size,
-                *scroll_offset,
-                &range,
-              ),
-            });
-            let fill = pick(
-              &style_arc.animation_fill_modes,
-              idx,
-              AnimationFillMode::default(),
-            );
-            raw
-              .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-              .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+            if matches!(play_state, AnimationPlayState::Paused) {
+              timeline_scope_resolve(scope, timeline_name).and_then(|state| {
+                let active = match state {
+                  TimelineState::Scroll { scroll_range, .. } => scroll_range.abs() >= f32::EPSILON,
+                  TimelineState::View {
+                    target_start,
+                    target_end,
+                    view_size,
+                    scroll_offset,
+                    ..
+                  } => {
+                    view_size.is_finite()
+                      && *view_size > f32::EPSILON
+                      && target_start.is_finite()
+                      && target_end.is_finite()
+                      && scroll_offset.is_finite()
+                      && (target_end - target_start).abs() > f32::EPSILON
+                  }
+                };
+                active.then_some(scroll_driven_effect_state(&*style_arc, idx, 0.0))
+              })
+            } else {
+              let raw =
+                timeline_scope_resolve(scope, timeline_name).and_then(|state| match state {
+                  TimelineState::Scroll {
+                    timeline,
+                    scroll_pos,
+                    scroll_range,
+                    viewport_size,
+                  } => scroll_timeline_progress(
+                    timeline,
+                    *scroll_pos,
+                    *scroll_range,
+                    *viewport_size,
+                    &range,
+                  ),
+                  TimelineState::View {
+                    timeline,
+                    target_start,
+                    target_end,
+                    view_size,
+                    scroll_offset,
+                  } => view_timeline_progress(
+                    timeline,
+                    *target_start,
+                    *target_end,
+                    *view_size,
+                    *scroll_offset,
+                    &range,
+                  ),
+                });
+              let fill = pick(
+                &style_arc.animation_fill_modes,
+                idx,
+                AnimationFillMode::default(),
+              );
+              raw
+                .and_then(|raw| scroll_driven_fill_progress(raw, fill))
+                .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+            }
           }
           AnimationTimeline::Scroll(ref func) => {
-            let raw = scroll_progress_for_function(
-              func,
-              node,
-              origin,
-              root_context,
-              ancestor_scroll_containers,
-              scroll_state,
-              &range,
-            );
-            let fill = pick(
-              &style_arc.animation_fill_modes,
-              idx,
-              AnimationFillMode::default(),
-            );
-            raw
-              .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-              .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+            if matches!(play_state, AnimationPlayState::Paused) {
+              match func.scroller {
+                ScrollTimelineScroller::Root => Some(root_context),
+                ScrollTimelineScroller::Nearest => Some(
+                  ancestor_scroll_containers
+                    .last()
+                    .copied()
+                    .unwrap_or(root_context),
+                ),
+                ScrollTimelineScroller::SelfElement => {
+                  scroll_container_context_for_node(node, origin, scroll_state)
+                }
+              }
+              .and_then(|scroll_container| {
+                let (_, scroll_range, _) = axis_scroll_state(
+                  func.axis,
+                  scroll_container.writing_mode,
+                  0.0,
+                  0.0,
+                  scroll_container.viewport.width,
+                  scroll_container.viewport.height,
+                  scroll_container.content.width,
+                  scroll_container.content.height,
+                );
+                (scroll_range.abs() >= f32::EPSILON).then_some(scroll_driven_effect_state(
+                  &*style_arc,
+                  idx,
+                  0.0,
+                ))
+              })
+            } else {
+              let raw = scroll_progress_for_function(
+                func,
+                node,
+                origin,
+                root_context,
+                ancestor_scroll_containers,
+                scroll_state,
+                &range,
+              );
+              let fill = pick(
+                &style_arc.animation_fill_modes,
+                idx,
+                AnimationFillMode::default(),
+              );
+              raw
+                .and_then(|raw| scroll_driven_fill_progress(raw, fill))
+                .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+            }
           }
           AnimationTimeline::View(ref func) => {
-            let raw = view_progress_for_function(
-              func,
-              node,
-              origin,
-              root_context,
-              ancestor_scroll_containers,
-              scroll_state,
-              &range,
-            );
-            let fill = pick(
-              &style_arc.animation_fill_modes,
-              idx,
-              AnimationFillMode::default(),
-            );
-            raw
-              .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-              .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+            if matches!(play_state, AnimationPlayState::Paused) {
+              match func.scroller {
+                ScrollTimelineScroller::Root => Some(root_context),
+                ScrollTimelineScroller::Nearest => Some(
+                  ancestor_scroll_containers
+                    .last()
+                    .copied()
+                    .unwrap_or(root_context),
+                ),
+                ScrollTimelineScroller::SelfElement => {
+                  scroll_container_context_for_node(node, origin, scroll_state)
+                }
+              }
+              .and_then(|scroll_container| {
+                let horizontal = axis_is_horizontal(func.axis, scroll_container.writing_mode);
+                let target_start = if horizontal {
+                  abs.x() - scroll_container.origin.x
+                } else {
+                  abs.y() - scroll_container.origin.y
+                };
+                let target_end = if horizontal {
+                  target_start + abs.width()
+                } else {
+                  target_start + abs.height()
+                };
+                let view_size = if horizontal {
+                  scroll_container.viewport.width
+                } else {
+                  scroll_container.viewport.height
+                };
+
+                let active = view_size.is_finite()
+                  && view_size > f32::EPSILON
+                  && target_start.is_finite()
+                  && target_end.is_finite()
+                  && (target_end - target_start).abs() > f32::EPSILON;
+                active.then_some(scroll_driven_effect_state(&*style_arc, idx, 0.0))
+              })
+            } else {
+              let raw = view_progress_for_function(
+                func,
+                node,
+                origin,
+                root_context,
+                ancestor_scroll_containers,
+                scroll_state,
+                &range,
+              );
+              let fill = pick(
+                &style_arc.animation_fill_modes,
+                idx,
+                AnimationFillMode::default(),
+              );
+              raw
+                .and_then(|raw| scroll_driven_fill_progress(raw, fill))
+                .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+            }
           }
         };
 

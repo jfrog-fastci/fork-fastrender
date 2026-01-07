@@ -6,8 +6,8 @@ use fastrender::css::types::{Declaration, Keyframe, KeyframesRule, PropertyValue
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::ScrollState;
 use fastrender::style::types::{
-  AnimationDirection, AnimationFillMode, AnimationIterationCount, AnimationRange,
-  AnimationTimeline, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
+  AnimationDirection, AnimationFillMode, AnimationIterationCount, AnimationPlayState,
+  AnimationRange, AnimationTimeline, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
   ScrollTimelineScroller, StepPosition, TimelineAxis, TransitionTimingFunction,
   ViewFunctionTimeline,
 };
@@ -190,6 +190,34 @@ fn scroll_timeline_respects_steps_timing_function() {
   assert!(
     (opacity_for_scroll(&animated_style, &scroller_style, 75.0) - 0.5).abs() < 0.05,
     "expected steps(2, end) to advance to the second step"
+  );
+}
+
+#[test]
+fn scroll_timeline_paused_freezes_progress() {
+  let animation_name = "fade";
+  let timeline_name = "scroller";
+
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.scroll_timelines = vec![ScrollTimeline {
+    name: Some(timeline_name.to_string()),
+    axis: TimelineAxis::Block,
+    ..ScrollTimeline::default()
+  }];
+  let scroller_style = Arc::new(scroller_style);
+
+  let mut animated_style = ComputedStyle::default();
+  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_ranges = vec![AnimationRange::default()];
+  animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
+  animated_style.animation_play_states = vec![AnimationPlayState::Paused].into();
+  animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+  let animated_style = Arc::new(animated_style);
+
+  let opacity = opacity_for_scroll(&animated_style, &scroller_style, 50.0);
+  assert!(
+    opacity < 0.05,
+    "expected animation-play-state:paused to freeze at start keyframe, got {opacity}"
   );
 }
 
@@ -503,5 +531,54 @@ fn view_root_timeline_tracks_viewport_scroll_offset() {
   assert!(
     (opacity - 0.5).abs() < 0.05,
     "expected opacity ~0.5 mid-way through view range, got {opacity}"
+  );
+}
+
+#[test]
+fn view_root_timeline_paused_freezes_progress() {
+  let box_id = 1usize;
+
+  let mut style = ComputedStyle::default();
+  style.animation_names = vec!["fade".to_string()];
+  style.animation_timelines = vec![AnimationTimeline::View(ViewFunctionTimeline {
+    scroller: ScrollTimelineScroller::Root,
+    axis: TimelineAxis::Block,
+    inset: None,
+  })];
+  style.animation_ranges = vec![AnimationRange::default()];
+  style.animation_play_states = vec![AnimationPlayState::Paused].into();
+  style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+  let style = Arc::new(style);
+
+  let mut node = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 150.0, 50.0, 50.0),
+    FragmentContent::Block {
+      box_id: Some(box_id),
+    },
+    vec![],
+    style,
+  );
+  node.scroll_overflow = node.bounds;
+  let root = FragmentNode::new(
+    Rect::from_xywh(0.0, 0.0, 50.0, 100.0),
+    FragmentContent::Block { box_id: None },
+    vec![node],
+  );
+  let mut tree = FragmentTree::with_viewport(root, Size::new(50.0, 100.0));
+  let mut keyframes = HashMap::new();
+  keyframes.insert("fade".to_string(), fade_keyframes("fade"));
+  tree.keyframes = keyframes;
+
+  let scroll_state = ScrollState::with_viewport(Point::new(0.0, 125.0));
+  apply_scroll_driven_animations(&mut tree, &scroll_state);
+
+  let opacity = tree.root.children[0]
+    .style
+    .as_ref()
+    .expect("animated style present")
+    .opacity;
+  assert!(
+    opacity < 0.05,
+    "expected paused view() timeline to freeze at start keyframe, got {opacity}"
   );
 }
