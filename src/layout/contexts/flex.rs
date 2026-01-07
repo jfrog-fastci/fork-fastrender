@@ -119,7 +119,7 @@ thread_local! {
   /// Scope this cache to the intrinsic/layout cache epoch so we do not retain stale pointers across
   /// renders.
   static FLEX_AUTO_MIN_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
-  static FLEX_AUTO_MIN_CACHE: RefCell<FxHashMap<(usize, usize, bool, bool, u32), Option<f32>>> =
+  static FLEX_AUTO_MIN_CACHE: RefCell<FxHashMap<(usize, usize, bool, bool), Option<f32>>> =
     RefCell::new(FxHashMap::default());
 }
 
@@ -143,7 +143,6 @@ fn flex_auto_min_cache_lookup(
   style_ptr: usize,
   main_axis_is_horizontal: bool,
   skip_contents: bool,
-  percentage_base_key: u32,
 ) -> Option<Option<f32>> {
   if box_id == 0 {
     return None;
@@ -152,13 +151,7 @@ fn flex_auto_min_cache_lookup(
   FLEX_AUTO_MIN_CACHE.with(|cache| {
     cache
       .borrow()
-      .get(&(
-        box_id,
-        style_ptr,
-        main_axis_is_horizontal,
-        skip_contents,
-        percentage_base_key,
-      ))
+      .get(&(box_id, style_ptr, main_axis_is_horizontal, skip_contents))
       .cloned()
   })
 }
@@ -169,7 +162,6 @@ fn flex_auto_min_cache_store(
   style_ptr: usize,
   main_axis_is_horizontal: bool,
   skip_contents: bool,
-  percentage_base_key: u32,
   value: Option<f32>,
 ) {
   if box_id == 0 {
@@ -179,26 +171,11 @@ fn flex_auto_min_cache_store(
   FLEX_AUTO_MIN_CACHE.with(|cache| {
     let mut map = cache.borrow_mut();
     if map.len() >= FLEX_AUTO_MIN_CACHE_MAX_ENTRIES
-      && !map.contains_key(&(
-        box_id,
-        style_ptr,
-        main_axis_is_horizontal,
-        skip_contents,
-        percentage_base_key,
-      ))
+      && !map.contains_key(&(box_id, style_ptr, main_axis_is_horizontal, skip_contents))
     {
       map.clear();
     }
-    map.insert(
-      (
-        box_id,
-        style_ptr,
-        main_axis_is_horizontal,
-        skip_contents,
-        percentage_base_key,
-      ),
-      value,
-    );
+    map.insert((box_id, style_ptr, main_axis_is_horizontal, skip_contents), value);
   });
 }
 
@@ -958,15 +935,12 @@ impl FormattingContext for FlexFormattingContext {
     let descendant_nearest_fixed_cb = if establishes_fixed_cb {
       let percentage_base = container_inline_base.unwrap_or(viewport_size.width);
       let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
-      let padding_right =
-        self.resolve_length_for_width(style.padding_right, percentage_base, style);
+      let padding_right = self.resolve_length_for_width(style.padding_right, percentage_base, style);
       let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
-      let padding_bottom =
-        self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+      let padding_bottom = self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
       let border_left =
         self.resolve_length_for_width(style.border_left_width, percentage_base, style);
-      let border_top =
-        self.resolve_length_for_width(style.border_top_width, percentage_base, style);
+      let border_top = self.resolve_length_for_width(style.border_top_width, percentage_base, style);
 
       let padding_origin = Point::new(border_left + padding_left, border_top + padding_top);
       let content_width = constraints.width().unwrap_or(0.0).max(0.0);
@@ -1114,8 +1088,11 @@ impl FormattingContext for FlexFormattingContext {
         // laying out all `content-visibility:auto` items so in-viewport content is never skipped.
         auto_unskipped_nodes = auto_all_nodes.clone();
         for (child, node_id) in auto_item_nodes.iter() {
-          let mut resolved_style =
-            self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
+          let mut resolved_style = self.computed_style_to_taffy_base(
+            child.style.as_ref(),
+            false,
+            Some(style),
+          )?;
           self.apply_flex_intrinsic_size_keywords(
             child,
             false,
@@ -1128,7 +1105,6 @@ impl FormattingContext for FlexFormattingContext {
             child,
             false,
             Some(style),
-            Some(&constraints),
             skip_contents,
             &mut resolved_style,
           )?;
@@ -2787,8 +2763,11 @@ impl FormattingContext for FlexFormattingContext {
       }
 
       for (child, node_id) in newly_unskipped_nodes {
-        let mut resolved_style =
-          self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
+        let mut resolved_style = self.computed_style_to_taffy_base(
+          child.style.as_ref(),
+          false,
+          Some(style),
+        )?;
         self.apply_flex_intrinsic_size_keywords(
           child,
           false,
@@ -2801,7 +2780,6 @@ impl FormattingContext for FlexFormattingContext {
           child,
           false,
           Some(style),
-          Some(&constraints),
           skip_contents,
           &mut resolved_style,
         )?;
@@ -2860,256 +2838,293 @@ impl FormattingContext for FlexFormattingContext {
       auto_unskipped,
       &scroll_sensitive_items,
     )?;
-    // We run Taffy for most flex item placement. `flex-wrap: wrap-reverse` is currently emulated
-    // by mirroring the computed cross-axis positions (see `flex_wrap_to_taffy`).
+    // Baseline alignment post-pass.
     //
-    // Taffy also lacks access to our fragment baseline information, so we post-process
-    // `align-items/align-self: baseline` using the computed fragment baselines.
+    // Taffy does not know how to compute baselines from our fragment trees, so we translate
+    // baseline-aligned items within each flex line here.
+    //
+    // IMPORTANT: Do not overwrite the cross-axis origin for non-baseline items. Taffy's positions
+    // already include per-line cross offsets for wrapping; replacing them with a container-global
+    // coordinate would collapse wrapped lines onto each other.
     if matches!(box_node.style.display, Display::Flex | Display::InlineFlex)
       && !fragment.children.is_empty()
     {
-      let inline_is_horizontal = matches!(box_node.style.writing_mode, WritingMode::HorizontalTb);
-      let block_is_horizontal = !inline_is_horizontal;
-      let main_is_inline = matches!(
-        box_node.style.flex_direction,
-        FlexDirection::Row | FlexDirection::RowReverse
-      );
-      let main_is_horizontal = if main_is_inline {
-        inline_is_horizontal
-      } else {
-        block_is_horizontal
-      };
-      let cross_is_horizontal = if main_is_inline {
-        block_is_horizontal
-      } else {
-        inline_is_horizontal
-      };
-      let inline_positive = self.inline_axis_positive(&box_node.style);
-      let block_positive = self.block_axis_positive(&box_node.style);
-
-      let cross_size = if cross_is_horizontal {
-        fragment.bounds.width()
-      } else {
-        fragment.bounds.height()
-      };
-
-      // Child fragments are positioned within the flex container's content box. When remapping the
-      // cross-axis position to account for writing-mode differences we must preserve the
-      // border+padding offsets that Taffy already applied, otherwise `align-items:stretch` would
-      // incorrectly reset children to the border box origin (regressing content-visibility
-      // placeholder positioning tests).
-      let cb_width = fragment.bounds.width();
-      let border_left = self.resolve_length_for_width(
-        box_node.style.used_border_left_width(),
-        cb_width,
-        &box_node.style,
-      );
-      let border_right = self.resolve_length_for_width(
-        box_node.style.used_border_right_width(),
-        cb_width,
-        &box_node.style,
-      );
-      let border_top = self.resolve_length_for_width(
-        box_node.style.used_border_top_width(),
-        cb_width,
-        &box_node.style,
-      );
-      let border_bottom = self.resolve_length_for_width(
-        box_node.style.used_border_bottom_width(),
-        cb_width,
-        &box_node.style,
-      );
-      let padding_left =
-        self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
-      let padding_right =
-        self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
-      let padding_top =
-        self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
-      let padding_bottom =
-        self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
-
-      let (cross_content_start, cross_content_end) = if cross_is_horizontal {
-        (border_left + padding_left, border_right + padding_right)
-      } else {
-        (border_top + padding_top, border_bottom + padding_bottom)
-      };
-      let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
-
-      let taffy_dir =
-        self.flex_direction_to_taffy(&box_node.style, inline_positive, block_positive);
-      let main_grows_positive = matches!(
-        taffy_dir,
-        taffy::style::FlexDirection::Row | taffy::style::FlexDirection::Column
-      );
-
       let mut deadline_counter = 0usize;
+
+      // Taffy's `flex-wrap: wrap-reverse` handling reverses the cross-axis direction when placing
+      // flex lines. Our adapter maps flexbox into physical coordinates (taking writing-mode into
+      // account), but downstream fragment construction expects positions in the normal top-left
+      // coordinate system. Mirror the cross-axis positions inside the content box so wrapped lines
+      // stack in the correct (reversed) order.
       if matches!(box_node.style.flex_wrap, FlexWrap::WrapReverse) {
-        for child_fragment in fragment.children_mut().iter_mut() {
-          check_layout_deadline(&mut deadline_counter)?;
-          let (pos, child_cross) = if cross_is_horizontal {
-            (child_fragment.bounds.x(), child_fragment.bounds.width())
+        let inline_is_horizontal = matches!(box_node.style.writing_mode, WritingMode::HorizontalTb);
+        let block_is_horizontal = !inline_is_horizontal;
+        let main_is_inline = matches!(
+          box_node.style.flex_direction,
+          FlexDirection::Row | FlexDirection::RowReverse
+        );
+        let cross_is_horizontal = if main_is_inline {
+          block_is_horizontal
+        } else {
+          inline_is_horizontal
+        };
+        let cross_size = if cross_is_horizontal {
+          fragment.bounds.width()
+        } else {
+          fragment.bounds.height()
+        };
+
+        if cross_size.is_finite() && cross_size > 0.0 {
+          let cb_width = fragment.bounds.width();
+          let border_left = self.resolve_length_for_width(
+            box_node.style.used_border_left_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_right = self.resolve_length_for_width(
+            box_node.style.used_border_right_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_top = self.resolve_length_for_width(
+            box_node.style.used_border_top_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_bottom = self.resolve_length_for_width(
+            box_node.style.used_border_bottom_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let padding_left =
+            self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
+          let padding_right =
+            self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
+          let padding_top =
+            self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
+          let padding_bottom = self.resolve_length_for_width(
+            box_node.style.padding_bottom,
+            cb_width,
+            &box_node.style,
+          );
+
+          let (cross_content_start, cross_content_end) = if cross_is_horizontal {
+            (border_left + padding_left, border_right + padding_right)
           } else {
-            (child_fragment.bounds.y(), child_fragment.bounds.height())
+            (border_top + padding_top, border_bottom + padding_bottom)
           };
-          let inner_offset = pos - cross_content_start;
-          let new_pos = cross_content_start + (cross_inner_size - inner_offset - child_cross);
-          let delta = new_pos - pos;
-          if delta.abs() > 0.0 {
-            if cross_is_horizontal {
-              translate_fragment_tree(
-                child_fragment,
-                Point::new(delta, 0.0),
-                &mut deadline_counter,
-              )?;
-            } else {
-              translate_fragment_tree(
-                child_fragment,
-                Point::new(0.0, delta),
-                &mut deadline_counter,
-              )?;
-            }
-          }
-        }
-      }
-      let mut line_indices: Vec<usize> = Vec::with_capacity(fragment.children.len());
-      if matches!(box_node.style.flex_wrap, FlexWrap::NoWrap) {
-        line_indices.resize(fragment.children.len(), 0);
-      } else {
-        let mut current_line = 0usize;
-        let mut prev_main: Option<f32> = None;
-        let wrap_break_eps = 0.5;
-        for child in fragment.children.iter() {
-          check_layout_deadline(&mut deadline_counter)?;
-          let main_pos = if main_is_horizontal {
-            child.bounds.x()
-          } else {
-            child.bounds.y()
-          };
-          if let Some(prev) = prev_main {
-            let delta = main_pos - prev;
-            if (main_grows_positive && delta < -wrap_break_eps)
-              || (!main_grows_positive && delta > wrap_break_eps)
-            {
-              current_line += 1;
-            }
-          }
-          line_indices.push(current_line);
-          prev_main = Some(main_pos);
-        }
-      }
+          let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
 
-      #[derive(Clone, Copy, Default)]
-      struct LineBaselineData {
-        cross_start: f32,
-        max_above: f32,
-        max_below: f32,
-        baseline: f32,
-        has_baseline: bool,
-      }
-
-      #[derive(Clone, Copy)]
-      struct BaselineItemMetrics {
-        line_index: usize,
-        baseline_pos: f32,
-        baseline_offset: f32,
-        cross_size: f32,
-      }
-
-      let mut baseline_items: Vec<Option<BaselineItemMetrics>> =
-        vec![None; fragment.children.len()];
-      let line_count = line_indices.iter().copied().max().unwrap_or(0) + 1;
-      let mut line_cross_starts = vec![f32::INFINITY; line_count];
-
-      for idx in 0..fragment.children.len() {
-        check_layout_deadline(&mut deadline_counter)?;
-        let child_node = &in_flow_children[idx];
-        let align = child_node
-          .style
-          .align_self
-          .unwrap_or(box_node.style.align_items);
-
-        if matches!(align, AlignItems::Baseline) {
-          let child_fragment = &fragment.children[idx];
-          let cross_start = if cross_is_horizontal {
-            child_fragment.bounds.x()
-          } else {
-            child_fragment.bounds.y()
-          };
-          let cross_size_child = if cross_is_horizontal {
-            child_fragment.bounds.width()
-          } else {
-            child_fragment.bounds.height()
-          };
-          let mut baseline_offset = fragment_first_baseline(child_fragment, &mut deadline_counter)?
-            .unwrap_or(cross_size_child);
-          if !baseline_offset.is_finite() {
-            baseline_offset = cross_size_child;
-          }
-          let baseline_offset = baseline_offset.clamp(0.0, cross_size_child);
-          let baseline_pos = cross_start + baseline_offset;
-          let line_idx = *line_indices.get(idx).unwrap_or(&0);
-          if line_idx >= line_cross_starts.len() {
-            line_cross_starts.resize(line_idx + 1, f32::INFINITY);
-          }
-          line_cross_starts[line_idx] = line_cross_starts[line_idx].min(cross_start);
-          baseline_items[idx] = Some(BaselineItemMetrics {
-            line_index: line_idx,
-            baseline_pos,
-            baseline_offset,
-            cross_size: cross_size_child,
-          });
-        }
-      }
-
-      let mut line_baselines = vec![LineBaselineData::default(); line_cross_starts.len()];
-      for (idx, start) in line_cross_starts.iter().enumerate() {
-        check_layout_deadline(&mut deadline_counter)?;
-        line_baselines[idx].cross_start = if start.is_finite() { *start } else { 0.0 };
-      }
-
-      for metrics in baseline_items.iter().flatten() {
-        check_layout_deadline(&mut deadline_counter)?;
-        let line_idx = metrics.line_index;
-        if line_idx >= line_baselines.len() {
-          line_baselines.resize(line_idx + 1, LineBaselineData::default());
-        }
-        let line_start = line_baselines[line_idx].cross_start;
-        let above = metrics.baseline_pos - line_start;
-        let below = metrics.cross_size - metrics.baseline_offset;
-        let line = &mut line_baselines[line_idx];
-        line.max_above = line.max_above.max(above);
-        line.max_below = line.max_below.max(below);
-        line.has_baseline = true;
-      }
-
-      for line in line_baselines.iter_mut() {
-        check_layout_deadline(&mut deadline_counter)?;
-        if line.has_baseline {
-          line.cross_start = line.cross_start.max(0.0);
-          line.baseline = line.cross_start + line.max_above;
-        }
-      }
-
-      for (idx, child_fragment) in fragment.children_mut().iter_mut().enumerate() {
-        check_layout_deadline(&mut deadline_counter)?;
-        if let Some(metrics) = baseline_items[idx] {
-          if let Some(line) = line_baselines.get(metrics.line_index) {
-            if line.has_baseline {
-              let delta = line.baseline - metrics.baseline_pos;
-              if cross_is_horizontal {
-                translate_fragment_tree(
-                  child_fragment,
-                  Point::new(delta, 0.0),
-                  &mut deadline_counter,
-                )?;
+          if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
+            for child in fragment.children_mut() {
+              check_layout_deadline(&mut deadline_counter)?;
+              let (cross_pos, child_cross) = if cross_is_horizontal {
+                (child.bounds.x(), child.bounds.width())
               } else {
-                translate_fragment_tree(
-                  child_fragment,
-                  Point::new(0.0, delta),
-                  &mut deadline_counter,
-                )?;
+                (child.bounds.y(), child.bounds.height())
+              };
+              if !cross_pos.is_finite() || !child_cross.is_finite() {
+                continue;
+              }
+              let rel = cross_pos - cross_content_start;
+              let new_pos = cross_content_start + (cross_inner_size - child_cross - rel);
+              let delta = new_pos - cross_pos;
+              if delta.abs() <= 1e-6 {
+                continue;
+              }
+              if cross_is_horizontal {
+                translate_fragment_tree(child, Point::new(delta, 0.0), &mut deadline_counter)?;
+              } else {
+                translate_fragment_tree(child, Point::new(0.0, delta), &mut deadline_counter)?;
               }
             }
+          }
+        }
+      }
+
+      let mut needs_baseline = matches!(box_node.style.align_items, AlignItems::Baseline);
+      if !needs_baseline {
+        for child in in_flow_children.iter() {
+          check_layout_deadline(&mut deadline_counter)?;
+          if matches!(child.style.align_self, Some(AlignItems::Baseline)) {
+            needs_baseline = true;
+            break;
+          }
+        }
+      }
+
+      if needs_baseline {
+        let inline_is_horizontal = matches!(box_node.style.writing_mode, WritingMode::HorizontalTb);
+        let block_is_horizontal = !inline_is_horizontal;
+        let main_is_inline = matches!(
+          box_node.style.flex_direction,
+          FlexDirection::Row | FlexDirection::RowReverse
+        );
+        let main_is_horizontal = if main_is_inline {
+          inline_is_horizontal
+        } else {
+          block_is_horizontal
+        };
+        let cross_is_horizontal = if main_is_inline {
+          block_is_horizontal
+        } else {
+          inline_is_horizontal
+        };
+        let inline_positive = self.inline_axis_positive(&box_node.style);
+        let block_positive = self.block_axis_positive(&box_node.style);
+        let taffy_dir =
+          self.flex_direction_to_taffy(&box_node.style, inline_positive, block_positive);
+        let main_grows_positive = matches!(
+          taffy_dir,
+          taffy::style::FlexDirection::Row | taffy::style::FlexDirection::Column
+        );
+
+        let item_count = fragment.children.len().min(in_flow_children.len());
+
+        let mut line_indices: Vec<usize> = Vec::with_capacity(item_count);
+        if matches!(box_node.style.flex_wrap, FlexWrap::NoWrap) {
+          line_indices.resize(item_count, 0);
+        } else {
+          let mut current_line = 0usize;
+          let mut prev_main: Option<f32> = None;
+          let wrap_break_eps = 0.5;
+          for child in fragment.children.iter().take(item_count) {
+            check_layout_deadline(&mut deadline_counter)?;
+            let main_pos = if main_is_horizontal {
+              child.bounds.x()
+            } else {
+              child.bounds.y()
+            };
+            if let Some(prev) = prev_main {
+              let delta = main_pos - prev;
+              if (main_grows_positive && delta < -wrap_break_eps)
+                || (!main_grows_positive && delta > wrap_break_eps)
+              {
+                current_line += 1;
+              }
+            }
+            line_indices.push(current_line);
+            prev_main = Some(main_pos);
+          }
+        }
+
+        #[derive(Clone, Copy, Default)]
+        struct LineBaselineData {
+          cross_start: f32,
+          max_above: f32,
+          max_below: f32,
+          baseline: f32,
+          has_baseline: bool,
+        }
+
+        #[derive(Clone, Copy)]
+        struct BaselineItemMetrics {
+          line_index: usize,
+          baseline_pos: f32,
+          baseline_offset: f32,
+          cross_size: f32,
+        }
+
+        let mut baseline_items: Vec<Option<BaselineItemMetrics>> = vec![None; item_count];
+        let line_count = line_indices.iter().copied().max().unwrap_or(0) + 1;
+        let mut line_cross_starts = vec![f32::INFINITY; line_count];
+
+        for idx in 0..item_count {
+          check_layout_deadline(&mut deadline_counter)?;
+          let child_node = &in_flow_children[idx];
+          let align = child_node
+            .style
+            .align_self
+            .unwrap_or(box_node.style.align_items);
+
+          if matches!(align, AlignItems::Baseline) {
+            let child_fragment = &fragment.children[idx];
+            let cross_start = if cross_is_horizontal {
+              child_fragment.bounds.x()
+            } else {
+              child_fragment.bounds.y()
+            };
+            let cross_size_child = if cross_is_horizontal {
+              child_fragment.bounds.width()
+            } else {
+              child_fragment.bounds.height()
+            };
+            let mut baseline_offset =
+              fragment_first_baseline(child_fragment, &mut deadline_counter)?
+                .unwrap_or(cross_size_child);
+            if !baseline_offset.is_finite() {
+              baseline_offset = cross_size_child;
+            }
+            let baseline_offset = baseline_offset.clamp(0.0, cross_size_child);
+            let baseline_pos = cross_start + baseline_offset;
+            let line_idx = *line_indices.get(idx).unwrap_or(&0);
+            if line_idx >= line_cross_starts.len() {
+              line_cross_starts.resize(line_idx + 1, f32::INFINITY);
+            }
+            line_cross_starts[line_idx] = line_cross_starts[line_idx].min(cross_start);
+            baseline_items[idx] = Some(BaselineItemMetrics {
+              line_index: line_idx,
+              baseline_pos,
+              baseline_offset,
+              cross_size: cross_size_child,
+            });
+          }
+        }
+
+        let mut line_baselines = vec![LineBaselineData::default(); line_cross_starts.len()];
+        for (idx, start) in line_cross_starts.iter().enumerate() {
+          check_layout_deadline(&mut deadline_counter)?;
+          line_baselines[idx].cross_start = if start.is_finite() { *start } else { 0.0 };
+        }
+
+        for metrics in baseline_items.iter().flatten() {
+          check_layout_deadline(&mut deadline_counter)?;
+          let line_idx = metrics.line_index;
+          if line_idx >= line_baselines.len() {
+            line_baselines.resize(line_idx + 1, LineBaselineData::default());
+          }
+          let line_start = line_baselines[line_idx].cross_start;
+          let above = metrics.baseline_pos - line_start;
+          let below = metrics.cross_size - metrics.baseline_offset;
+          let line = &mut line_baselines[line_idx];
+          line.max_above = line.max_above.max(above);
+          line.max_below = line.max_below.max(below);
+          line.has_baseline = true;
+        }
+
+        for line in line_baselines.iter_mut() {
+          check_layout_deadline(&mut deadline_counter)?;
+          if line.has_baseline {
+            line.cross_start = line.cross_start.max(0.0);
+            line.baseline = line.cross_start + line.max_above;
+          }
+        }
+
+        for (idx, child_fragment) in fragment.children_mut().iter_mut().take(item_count).enumerate()
+        {
+          check_layout_deadline(&mut deadline_counter)?;
+          let Some(metrics) = baseline_items[idx] else {
+            continue;
+          };
+          let Some(line) = line_baselines.get(metrics.line_index) else {
+            continue;
+          };
+          if !line.has_baseline {
+            continue;
+          }
+          let delta = line.baseline - metrics.baseline_pos;
+          if cross_is_horizontal {
+            translate_fragment_tree(
+              child_fragment,
+              Point::new(delta, 0.0),
+              &mut deadline_counter,
+            )?;
+          } else {
+            translate_fragment_tree(
+              child_fragment,
+              Point::new(0.0, delta),
+              &mut deadline_counter,
+            )?;
           }
         }
       }
@@ -3372,6 +3387,23 @@ impl FormattingContext for FlexFormattingContext {
       }
     }
     flex_profile::record_convert_time(convert_timer);
+
+    if !disable_cache {
+      if let Some((cache_key, key)) = layout_cache_entry {
+        let size = fragment.bounds.size;
+        self.layout_fragments.insert(
+          cache_key,
+          key,
+          crate::layout::contexts::flex_cache::FlexCacheValue {
+            measured_size: size,
+            border_size: size,
+            fragment: std::sync::Arc::new(fragment.clone()),
+          },
+          MAX_LAYOUT_CACHE_PER_NODE,
+        );
+        flex_profile::record_layout_cache_store();
+      }
+    }
 
     // Phase 4: Position out-of-flow abs/fixed children against this flex container.
     if !positioned_children.is_empty() {
@@ -3822,25 +3854,6 @@ impl FormattingContext for FlexFormattingContext {
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => {}
         }
-      }
-    }
-
-    // Store the fully positioned fragment (including out-of-flow children). Otherwise, cache hits
-    // could return a fragment that is missing absolutely/fixed positioned descendants.
-    if !disable_cache {
-      if let Some((cache_key, key)) = layout_cache_entry {
-        let size = fragment.bounds.size;
-        self.layout_fragments.insert(
-          cache_key,
-          key,
-          crate::layout::contexts::flex_cache::FlexCacheValue {
-            measured_size: size,
-            border_size: size,
-            fragment: std::sync::Arc::new(fragment.clone()),
-          },
-          MAX_LAYOUT_CACHE_PER_NODE,
-        );
-        flex_profile::record_layout_cache_store();
       }
     }
 
@@ -4608,7 +4621,6 @@ impl FlexFormattingContext {
         child,
         false,
         Some(root_style),
-        Some(constraints),
         skip_contents,
         &mut resolved_style,
       )?;
@@ -4732,14 +4744,7 @@ impl FlexFormattingContext {
       &mut style,
     )?;
     let skip_contents = self.flex_item_should_skip_contents(box_node, auto_unskipped_for_pass);
-    self.apply_flex_auto_min_size(
-      box_node,
-      is_root,
-      containing_flex,
-      None,
-      skip_contents,
-      &mut style,
-    )?;
+    self.apply_flex_auto_min_size(box_node, is_root, containing_flex, skip_contents, &mut style)?;
     Ok(style)
   }
 
@@ -4757,11 +4762,11 @@ impl FlexFormattingContext {
     let inline_positive_container = self.inline_axis_positive(style);
     let block_positive_container = self.block_axis_positive(style);
     let inline_is_horizontal_container = matches!(style.writing_mode, WritingMode::HorizontalTb);
-    let main_is_inline = matches!(
+    let container_main_is_inline = matches!(
       style.flex_direction,
       FlexDirection::Row | FlexDirection::RowReverse
     );
-    let cross_positive_container = if main_is_inline {
+    let cross_positive_container = if container_main_is_inline {
       block_positive_container
     } else {
       inline_positive_container
@@ -4777,7 +4782,11 @@ impl FlexFormattingContext {
     let axis_source = containing_flex.unwrap_or(style);
     let inline_positive_item = self.inline_axis_positive(axis_source);
     let block_positive_item = self.block_axis_positive(axis_source);
-    let cross_positive_item = if main_is_inline {
+    let axis_main_is_inline = matches!(
+      axis_source.flex_direction,
+      FlexDirection::Row | FlexDirection::RowReverse
+    );
+    let cross_positive_item = if axis_main_is_inline {
       block_positive_item
     } else {
       inline_positive_item
@@ -5560,7 +5569,6 @@ impl FlexFormattingContext {
     box_node: &BoxNode,
     is_root: bool,
     containing_flex: Option<&ComputedStyle>,
-    constraints: Option<&LayoutConstraints>,
     skip_contents: bool,
     taffy_style: &mut taffy::style::Style,
   ) -> Result<(), LayoutError> {
@@ -5576,7 +5584,7 @@ impl FlexFormattingContext {
     // *main* axis (driven by the containing flex container), not the item's own flex-direction.
     // Taffy treats `auto` as zero, so compute the content-based minimum size to prevent
     // shrink-to-zero flex items. Flexbox specifies that scroll containers use a 0 automatic
-    // minimum, so only apply this when overflow is non-scrollable (visible/clip).
+    // minimum, so only apply this when overflow is `visible`.
     let container_inline_is_horizontal =
       matches!(container.writing_mode, WritingMode::HorizontalTb);
     let container_main_is_inline = matches!(
@@ -5595,33 +5603,9 @@ impl FlexFormattingContext {
 
     if container_main_is_horizontal {
       if taffy_style.min_size.width == Dimension::AUTO
-        && matches!(style.overflow_x, CssOverflow::Visible | CssOverflow::Clip)
+        && matches!(style.overflow_x, CssOverflow::Visible)
       {
-        let specified_size_percentage_base = style
-          .width
-          .as_ref()
-          .filter(|len| len.has_percentage())
-          .and_then(|_| {
-            constraints.and_then(|constraints| {
-              match self.fit_content_available_for_axis(Axis::Horizontal, Some(container), constraints)
-              {
-                FitContentAvailable::Definite(v) if v.is_finite() => Some(v.max(0.0)),
-                _ => None,
-              }
-            })
-          });
-        let specified_size_percentage_base_key = specified_size_percentage_base
-          .filter(|v| v.is_finite())
-          .map(|v| v.to_bits())
-          .unwrap_or(0);
-
-        if let Some(cached) = flex_auto_min_cache_lookup(
-          box_id,
-          style_ptr,
-          true,
-          skip_contents,
-          specified_size_percentage_base_key,
-        ) {
+        if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, true, skip_contents) {
           if let Some(min_candidate) = cached {
             if min_candidate.is_finite() && min_candidate > 0.0 {
               taffy_style.min_size.width = Dimension::length(min_candidate);
@@ -5630,15 +5614,7 @@ impl FlexFormattingContext {
           return Ok(());
         }
         let specified_size_suggestion = style.width.as_ref().and_then(|len| {
-          let px = resolve_length_with_percentage_metrics(
-            *len,
-            specified_size_percentage_base,
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-            Some(style),
-            Some(&self.font_context),
-          )?;
+          let px = self.resolve_length_px(len, style)?;
           if px <= 0.0 {
             return None;
           }
@@ -5673,7 +5649,6 @@ impl FlexFormattingContext {
             style_ptr,
             true,
             skip_contents,
-            specified_size_percentage_base_key,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
           );
           return Ok(());
@@ -5726,50 +5701,19 @@ impl FlexFormattingContext {
               style_ptr,
               true,
               skip_contents,
-              specified_size_percentage_base_key,
               (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
             );
           }
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => {
-            flex_auto_min_cache_store(
-              box_id,
-              style_ptr,
-              true,
-              skip_contents,
-              specified_size_percentage_base_key,
-              None,
-            );
+            flex_auto_min_cache_store(box_id, style_ptr, true, skip_contents, None);
           }
         }
       }
     } else if taffy_style.min_size.height == Dimension::AUTO
-      && matches!(style.overflow_y, CssOverflow::Visible | CssOverflow::Clip)
+      && matches!(style.overflow_y, CssOverflow::Visible)
     {
-      let specified_size_percentage_base = style
-        .height
-        .as_ref()
-        .filter(|len| len.has_percentage())
-        .and_then(|_| {
-          constraints.and_then(|constraints| {
-            match self.fit_content_available_for_axis(Axis::Vertical, Some(container), constraints) {
-              FitContentAvailable::Definite(v) if v.is_finite() => Some(v.max(0.0)),
-              _ => None,
-            }
-          })
-        });
-      let specified_size_percentage_base_key = specified_size_percentage_base
-        .filter(|v| v.is_finite())
-        .map(|v| v.to_bits())
-        .unwrap_or(0);
-
-      if let Some(cached) = flex_auto_min_cache_lookup(
-        box_id,
-        style_ptr,
-        false,
-        skip_contents,
-        specified_size_percentage_base_key,
-      ) {
+      if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, false, skip_contents) {
         if let Some(min_candidate) = cached {
           if min_candidate.is_finite() && min_candidate > 0.0 {
             taffy_style.min_size.height = Dimension::length(min_candidate);
@@ -5778,15 +5722,7 @@ impl FlexFormattingContext {
         return Ok(());
       }
       let specified_size_suggestion = style.height.as_ref().and_then(|len| {
-        let px = resolve_length_with_percentage_metrics(
-          *len,
-          specified_size_percentage_base,
-          self.viewport_size,
-          style.font_size,
-          style.root_font_size,
-          Some(style),
-          Some(&self.font_context),
-        )?;
+        let px = self.resolve_length_px(len, style)?;
         if px <= 0.0 {
           return None;
         }
@@ -5821,7 +5757,6 @@ impl FlexFormattingContext {
           style_ptr,
           false,
           skip_contents,
-          specified_size_percentage_base_key,
           (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
         );
         return Ok(());
@@ -5865,20 +5800,12 @@ impl FlexFormattingContext {
             style_ptr,
             false,
             skip_contents,
-            specified_size_percentage_base_key,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
           );
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
         Err(_) => {
-          flex_auto_min_cache_store(
-            box_id,
-            style_ptr,
-            false,
-            skip_contents,
-            specified_size_percentage_base_key,
-            None,
-          );
+          flex_auto_min_cache_store(box_id, style_ptr, false, skip_contents, None);
         }
       }
     }
@@ -7729,28 +7656,26 @@ impl FlexFormattingContext {
       }
     }
 
-    // Definite sizes from Taffy can legitimately exceed the viewport (e.g. horizontal scroll).
-    // Only sanitize obviously invalid numeric values here; do not clamp to the viewport.
-    let sanitize_definite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let clamp_def_width = |w: f32| w.min(self.viewport_size.width);
     let width = match (known.width, available.width) {
-      (Some(w), _) => CrateAvailableSpace::Definite(sanitize_definite(w)),
+      (Some(w), _) => CrateAvailableSpace::Definite(clamp_def_width(w)),
       (_, AvailableSpace::Definite(w)) => {
         if w <= 1.0 {
           CrateAvailableSpace::Indefinite
         } else {
-          CrateAvailableSpace::Definite(sanitize_definite(w))
+          CrateAvailableSpace::Definite(clamp_def_width(w))
         }
       }
       (_, AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
       (_, AvailableSpace::MaxContent) => CrateAvailableSpace::MaxContent,
     };
     let height = match (known.height, available.height) {
-      (Some(h), _) => CrateAvailableSpace::Definite(sanitize_definite(h)),
+      (Some(h), _) => CrateAvailableSpace::Definite(h),
       (_, AvailableSpace::Definite(h)) => {
         if h <= 1.0 {
           CrateAvailableSpace::Indefinite
         } else {
-          CrateAvailableSpace::Definite(sanitize_definite(h))
+          CrateAvailableSpace::Definite(h)
         }
       }
       (_, AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
@@ -7993,7 +7918,7 @@ impl FlexFormattingContext {
     &self,
     box_node: &BoxNode,
     fragment: &FragmentNode,
-    _in_flow_children: &[&BoxNode],
+    in_flow_children: &[&BoxNode],
     positioned: &[PositionedCandidate],
     auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     padding_origin: Point,
@@ -8008,75 +7933,135 @@ impl FlexFormattingContext {
     let mut positions: FxHashMap<usize, Point> =
       FxHashMap::with_capacity_and_hasher(positioned.len(), Default::default());
 
-    // CSS Flexbox § "Absolutely-Positioned Flex Children":
-    // The main-axis static position must be calculated as if the abspos child were the *sole*
-    // flex item. In particular it must not depend on siblings (in-flow or abspos), and abspos
-    // children must not respond to `order`.
-    //
-    // We approximate this by running a tiny flex layout per abspos child, containing only that
-    // child with its used border-box size fixed to the pre-laid-out fragment size.
-    let container_width = fragment.bounds.width().max(0.0);
-    let container_height = fragment.bounds.height().max(0.0);
+    let mut inflow_sizes: FxHashMap<usize, Size> =
+      FxHashMap::with_capacity_and_hasher(in_flow_children.len(), Default::default());
+    for (child_node, child_fragment) in in_flow_children.iter().zip(fragment.children.iter()) {
+      check_layout_deadline(&mut deadline_counter)?;
+      inflow_sizes.insert(ensure_box_id(child_node), child_fragment.bounds.size);
+    }
+
+    let mut positioned_index: FxHashMap<usize, usize> =
+      FxHashMap::with_capacity_and_hasher(positioned.len(), Default::default());
+    for (idx, candidate) in positioned.iter().enumerate() {
+      check_layout_deadline(&mut deadline_counter)?;
+      positioned_index.insert(candidate.child_id, idx);
+    }
+
+    let mut taffy = crate::layout::taffy_integration::PooledTaffyTree::new();
+    let mut child_nodes = Vec::new();
+    let mut node_lookup: FxHashMap<usize, NodeId> =
+      FxHashMap::with_capacity_and_hasher(positioned.len(), Default::default());
+
+    let mut ordered_children: Vec<(i32, usize)> = Vec::new();
+    let mut ordered_children_need_sort = false;
+    let mut last_ordered_order: Option<i32> = None;
+    for (idx, child) in box_node.children.iter().enumerate() {
+      check_layout_deadline(&mut deadline_counter)?;
+      if child.style.running_position.is_some() {
+        continue;
+      }
+      if let Some(prev) = last_ordered_order {
+        if child.style.order < prev {
+          ordered_children_need_sort = true;
+        }
+      }
+      last_ordered_order = Some(child.style.order);
+      ordered_children.push((child.style.order, idx));
+    }
+    if ordered_children_need_sort {
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+      ordered_children.sort_by(|(a_order, a_idx), (b_order, b_idx)| {
+        a_order.cmp(b_order).then_with(|| a_idx.cmp(b_idx))
+      });
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+    }
+
+    for (_, child_idx) in ordered_children {
+      check_layout_deadline(&mut deadline_counter)?;
+      let child = &box_node.children[child_idx];
+      let child_id = ensure_box_id(child);
+      if let Some(&pos_idx) = positioned_index.get(&child_id) {
+        let candidate = &positioned[pos_idx];
+        let mut style = self.computed_style_to_taffy(
+          &candidate.layout_child,
+          false,
+          Some(&box_node.style),
+          auto_unskipped_for_pass,
+        )?;
+        style.size.width = Dimension::length(candidate.fragment.bounds.width().max(0.0));
+        style.size.height = Dimension::length(candidate.fragment.bounds.height().max(0.0));
+        let node = taffy.new_leaf(style).map_err(|e| {
+          LayoutError::MissingContext(format!("Failed to create Taffy leaf: {:?}", e))
+        })?;
+        node_lookup.insert(candidate.child_id, node);
+        child_nodes.push(node);
+      } else {
+        let size = inflow_sizes
+          .get(&child_id)
+          .cloned()
+          .unwrap_or(Size::new(0.0, 0.0));
+        let mut style = self.computed_style_to_taffy(
+          child,
+          false,
+          Some(&box_node.style),
+          auto_unskipped_for_pass,
+        )?;
+        style.size.width = Dimension::length(size.width.max(0.0));
+        style.size.height = Dimension::length(size.height.max(0.0));
+        let node = taffy.new_leaf(style).map_err(|e| {
+          LayoutError::MissingContext(format!("Failed to create Taffy leaf: {:?}", e))
+        })?;
+        child_nodes.push(node);
+      }
+    }
 
     let mut root_style = self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
-    root_style.size.width = Dimension::length(container_width);
-    root_style.size.height = Dimension::length(container_height);
-
-    let available_space = taffy::geometry::Size {
-      width: AvailableSpace::Definite(container_width),
-      height: AvailableSpace::Definite(container_height),
-    };
+    root_style.size.width = Dimension::length(fragment.bounds.width());
+    root_style.size.height = Dimension::length(fragment.bounds.height());
+    let root = taffy
+      .new_with_children(root_style, &child_nodes)
+      .map_err(|e| LayoutError::MissingContext(format!("Failed to create Taffy root: {:?}", e)))?;
 
     let cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>> = active_deadline()
       .filter(|deadline| deadline.is_enabled())
       .map(|_| Arc::new(|| check_active(RenderStage::Layout).is_err()) as _);
+    taffy
+      .compute_layout_with_measure_and_cancel(
+        root,
+        taffy::geometry::Size {
+          width: AvailableSpace::Definite(fragment.bounds.width()),
+          height: AvailableSpace::Definite(fragment.bounds.height()),
+        },
+        |_, _, _, _, _| taffy::geometry::Size::ZERO,
+        cancel,
+        TAFFY_ABORT_CHECK_STRIDE,
+      )
+      .map_err(|e| match e {
+        taffy::TaffyError::LayoutAborted => match active_deadline() {
+          Some(deadline) => LayoutError::Timeout {
+            elapsed: deadline.elapsed(),
+          },
+          None => LayoutError::MissingContext("Taffy layout aborted".to_string()),
+        },
+        _ => LayoutError::MissingContext(format!("Taffy layout failed: {:?}", e)),
+      })?;
 
     for candidate in positioned {
       check_layout_deadline(&mut deadline_counter)?;
-
-      let mut taffy = crate::layout::taffy_integration::PooledTaffyTree::new();
-      let mut style = self.computed_style_to_taffy(
-        &candidate.layout_child,
-        false,
-        Some(&box_node.style),
-        auto_unskipped_for_pass,
-      )?;
-      style.size.width = Dimension::length(candidate.fragment.bounds.width().max(0.0));
-      style.size.height = Dimension::length(candidate.fragment.bounds.height().max(0.0));
-      let node = taffy.new_leaf(style).map_err(|e| {
-        LayoutError::MissingContext(format!("Failed to create Taffy leaf: {:?}", e))
-      })?;
-
-      let root = taffy
-        .new_with_children(root_style.clone(), &[node])
-        .map_err(|e| LayoutError::MissingContext(format!("Failed to create Taffy root: {:?}", e)))?;
-
-      taffy
-        .compute_layout_with_measure_and_cancel(
-          root,
-          available_space,
-          |_, _, _, _, _| taffy::geometry::Size::ZERO,
-          cancel.clone(),
-          TAFFY_ABORT_CHECK_STRIDE,
-        )
-        .map_err(|e| match e {
-          taffy::TaffyError::LayoutAborted => match active_deadline() {
-            Some(deadline) => LayoutError::Timeout {
-              elapsed: deadline.elapsed(),
-            },
-            None => LayoutError::MissingContext("Taffy layout aborted".to_string()),
-          },
-          _ => LayoutError::MissingContext(format!("Taffy layout failed: {:?}", e)),
-        })?;
-
-      if let Ok(layout) = taffy.layout(node) {
-        positions.insert(
-          candidate.child_id,
-          Point::new(
-            layout.location.x - padding_origin.x,
-            layout.location.y - padding_origin.y,
-          ),
-        );
+      if let Some(node_id) = node_lookup.get(&candidate.child_id) {
+        if let Ok(layout) = taffy.layout(*node_id) {
+          positions.insert(
+            candidate.child_id,
+            Point::new(
+              layout.location.x - padding_origin.x,
+              layout.location.y - padding_origin.y,
+            ),
+          );
+        }
       }
     }
 
@@ -8244,20 +8229,8 @@ impl FlexFormattingContext {
           taffy::style::AlignItems::Start
         }
       }
-      AlignItems::FlexStart => {
-        if axis_positive {
-          taffy::style::AlignItems::FlexStart
-        } else {
-          taffy::style::AlignItems::FlexEnd
-        }
-      }
-      AlignItems::FlexEnd => {
-        if axis_positive {
-          taffy::style::AlignItems::FlexEnd
-        } else {
-          taffy::style::AlignItems::FlexStart
-        }
-      }
+      AlignItems::FlexStart => taffy::style::AlignItems::FlexStart,
+      AlignItems::FlexEnd => taffy::style::AlignItems::FlexEnd,
       AlignItems::Center => taffy::style::AlignItems::Center,
       AlignItems::Baseline => taffy::style::AlignItems::Baseline,
       AlignItems::Stretch => taffy::style::AlignItems::Stretch,
@@ -8423,7 +8396,6 @@ impl FlexFormattingContext {
     match aspect_ratio {
       AspectRatio::Auto => None,
       AspectRatio::Ratio(ratio) => Some(ratio),
-      AspectRatio::AutoRatio(ratio) => Some(ratio),
     }
   }
 
@@ -8639,7 +8611,8 @@ mod tests {
     child_style.flex_direction = FlexDirection::Column;
     child_style.content_visibility = ContentVisibility::Hidden;
     child_style.contain_intrinsic_width.length = Some(Length::px(10.0));
-    let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Flex, vec![]);
+    let mut child =
+      BoxNode::new_block(Arc::new(child_style), FormattingContextType::Flex, vec![]);
     child.id = 10;
 
     let container = BoxNode::new_block(

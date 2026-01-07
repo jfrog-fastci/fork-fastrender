@@ -18,6 +18,7 @@ mod flex_box_sizing_test;
 mod flex_constraints_viewport_clamp;
 mod flex_intrinsic_sizing_keywords;
 mod flex_positioned_relayout;
+mod flex_wrap_alignment;
 mod flex_wrap_reverse_cross_alignment;
 mod float_shrink_to_min;
 mod form_control_baseline;
