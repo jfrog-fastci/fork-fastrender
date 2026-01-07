@@ -25,20 +25,13 @@ pub fn resolve_object_position(
     PositionComponent::Keyword(PositionKeyword::Center) => free * 0.5,
     PositionComponent::Keyword(PositionKeyword::End) => free,
     PositionComponent::Length(len) => {
-      let needs_viewport = len.unit.is_viewport_relative()
-        || len
-          .calc
-          .as_ref()
-          .map(|c| c.has_viewport_relative())
-          .unwrap_or(false);
-      let (vw, vh) = match viewport {
-        Some((vw, vh)) => (vw, vh),
-        None if needs_viewport => (f32::NAN, f32::NAN),
-        None => (0.0, 0.0),
-      };
-      len
-        .resolve_with_context(Some(free), vw, vh, font_size, root_font_size)
-        .unwrap_or(len.value)
+      crate::paint::paint_bounds::resolve_length_for_paint(
+        &len,
+        font_size,
+        root_font_size,
+        free,
+        viewport,
+      )
     }
     PositionComponent::Percentage(pct) => free * pct,
   }
@@ -276,6 +269,29 @@ mod tests {
     )
     .expect("fit computed");
     assert!((offset_x - 20.0).abs() < 0.01);
+    assert!((offset_y - 0.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn viewport_units_require_viewport() {
+    let position = ObjectPosition {
+      x: PositionComponent::Length(Length::new(10.0, LengthUnit::Vw)),
+      y: PositionComponent::Keyword(PositionKeyword::Start),
+    };
+
+    let (offset_x, offset_y, _, _) = compute_object_fit(
+      ObjectFit::None,
+      position,
+      100.0,
+      50.0,
+      50.0,
+      50.0,
+      16.0,
+      16.0,
+      None,
+    )
+    .expect("fit computed");
+    assert_eq!(offset_x, 0.0);
     assert!((offset_y - 0.0).abs() < 0.01);
   }
 
