@@ -313,6 +313,9 @@ impl<'a> BuildContext<'a> {
   fn is_hidden_for_mode(&self, node: &StyledNode, mode: TextAlternativeMode) -> bool {
     match mode {
       TextAlternativeMode::Visible => self.is_hidden(node),
+      // Referenced nodes (aria-labelledby/aria-describedby and HTML label associations) include
+      // text from nodes that are visually hidden, but ignore nodes explicitly hidden from
+      // assistive technology (`aria-hidden`/`inert`).
       TextAlternativeMode::Referenced => self.is_accessibility_hidden(node),
     }
   }
@@ -508,14 +511,6 @@ fn build_nodes<'a>(
       }
       styled_ancestors.pop();
       ancestors.pop();
-
-      if node
-        .node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("legend"))
-      {
-        return children;
-      }
 
       let element_ref = ElementRef::with_ancestors(&node.node, ancestors);
       let (mut role, presentational_role, role_from_attr) =
