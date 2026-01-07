@@ -1484,6 +1484,11 @@ fn column_group_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
     "border-spacing should be applied once between adjacent columns after collapsing column-group in RTL (gap={gap})"
   );
   assert!(
+    (a.rect.width() - 30.0).abs() < 0.1,
+    "expected first source column width 30px (got {})",
+    a.rect.width()
+  );
+  assert!(
     (d.rect.width() - 50.0).abs() < 0.1,
     "collapsed column-group should not affect remaining column width in RTL (got {})",
     d.rect.width()

@@ -3584,7 +3584,9 @@ fn parallel_paint_falls_back_for_nested_backdrop_filters() {
   let outer = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: true,
     bounds: outer_bounds,
     plane_rect: outer_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -3605,7 +3607,9 @@ fn parallel_paint_falls_back_for_nested_backdrop_filters() {
   let inner = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: true,
     bounds: inner_bounds,
     plane_rect: inner_bounds,
     mix_blend_mode: BlendMode::Normal,
