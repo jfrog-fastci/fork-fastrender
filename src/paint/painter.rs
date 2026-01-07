@@ -6230,7 +6230,7 @@ impl Painter {
         src,
         referrer_policy,
       } => {
-        if let Some(image) = self.render_iframe_srcdoc(html, src, content_rect, style) {
+        if let Some(image) = self.render_iframe_srcdoc(html, src, *referrer_policy, content_rect, style) {
           if let Some(pixmap) =
             PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
           {
@@ -8107,6 +8107,7 @@ impl Painter {
     &self,
     html: &str,
     src: &str,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
     content_rect: Rect,
     style: Option<&ComputedStyle>,
   ) -> Option<Arc<ImageData>> {
@@ -8114,6 +8115,7 @@ impl Painter {
     render_iframe_srcdoc(
       html,
       Some(src),
+      referrer_policy,
       content_rect,
       style,
       &self.image_cache,

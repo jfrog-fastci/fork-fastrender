@@ -391,6 +391,7 @@ fn record_resource_error(
 pub(crate) fn render_iframe_srcdoc(
   html: &str,
   src: Option<&str>,
+  referrer_policy: Option<ReferrerPolicy>,
   content_rect: Rect,
   style: Option<&ComputedStyle>,
   image_cache: &ImageCache,
@@ -441,9 +442,13 @@ pub(crate) fn render_iframe_srcdoc(
   }
   let context = cache.resource_context();
   let nested_depth = remaining_depth.saturating_sub(1);
-  let nested_context = context
-    .as_ref()
-    .map(|ctx| ctx.clone().with_iframe_depth(nested_depth));
+  let nested_context = context.as_ref().map(|ctx| {
+    let mut nested = ctx.clone().with_iframe_depth(nested_depth);
+    if let Some(policy) = referrer_policy {
+      nested.referrer_policy = policy;
+    }
+    nested
+  });
   let policy = nested_context
     .as_ref()
     .map(|c| c.policy.clone())
@@ -462,7 +467,7 @@ pub(crate) fn render_iframe_srcdoc(
     nested_depth,
     background: background.into(),
     policy_hash: policy_fingerprint(&policy),
-    referrer_policy: None,
+    referrer_policy,
   };
 
   let (flight, is_owner) = {
@@ -937,7 +942,7 @@ mod tests {
       <div data-fastr-test="iframe-render-cache-113"></div>
     "#;
 
-    let first = render_iframe_srcdoc(html, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
+    let first = render_iframe_srcdoc(html, None, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
       .expect("first iframe render");
     assert_eq!(
       take_last_iframe_cache_hit(),
@@ -945,7 +950,7 @@ mod tests {
       "first render should miss cache"
     );
 
-    let second = render_iframe_srcdoc(html, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
+    let second = render_iframe_srcdoc(html, None, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
       .expect("second iframe render");
     assert_eq!(
       take_last_iframe_cache_hit(),
@@ -986,6 +991,7 @@ mod tests {
     let first = render_iframe_srcdoc(
       html,
       None,
+      None,
       rect,
       Some(&style_pos),
       &image_cache,
@@ -1002,6 +1008,7 @@ mod tests {
 
     let second = render_iframe_srcdoc(
       html,
+      None,
       None,
       rect,
       Some(&style_neg),
@@ -1228,11 +1235,11 @@ mod tests {
     let font1 = font_ctx.clone();
     let font2 = font_ctx.clone();
     let t1 = std::thread::spawn(move || {
-      render_iframe_srcdoc(html, None, rect, None, &cache1, &font1, 1.0, 3)
+      render_iframe_srcdoc(html, None, None, rect, None, &cache1, &font1, 1.0, 3)
         .expect("thread1 iframe render")
     });
     let t2 = std::thread::spawn(move || {
-      render_iframe_srcdoc(html, None, rect, None, &cache2, &font2, 1.0, 3)
+      render_iframe_srcdoc(html, None, None, rect, None, &cache2, &font2, 1.0, 3)
         .expect("thread2 iframe render")
     });
     let first = t1.join().expect("join thread1");
@@ -1514,6 +1521,7 @@ mod diagnostics_tests {
     let result = render_iframe_srcdoc(
       "<html></html>",
       Some("   "),
+      None,
       rect,
       None,
       &cache,

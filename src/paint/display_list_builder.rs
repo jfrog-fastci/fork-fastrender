@@ -4756,6 +4756,7 @@ impl DisplayListBuilder {
               render_iframe_srcdoc(
                 html,
                 Some(src.as_str()),
+                *referrer_policy,
                 content_rect,
                 style_for_image,
                 cache,
