@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference: Transform establishes containing block for absolute descendants</title>
+<style>
+  html, body {
+    margin: 0;
+    background: #fff;
+  }
+
+  #ancestor {
+    position: relative;
+    margin-left: 50px;
+    margin-top: 40px;
+    width: 120px;
+    height: 100px;
+    background: #ddd;
+  }
+
+  #box {
+    position: absolute;
+    top: 10px;
+    left: 15px;
+    width: 30px;
+    height: 30px;
+    background: #0a0;
+  }
+</style>
+<div id="ancestor">
+  <div id="box"></div>
+</div>

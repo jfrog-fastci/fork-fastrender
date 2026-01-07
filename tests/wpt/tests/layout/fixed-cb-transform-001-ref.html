@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference: Transform establishes containing block for fixed descendants</title>
+<style>
+  html, body {
+    margin: 0;
+    background: #fff;
+  }
+
+  #transformer {
+    position: relative;
+    margin-left: 70px;
+    margin-top: 50px;
+    width: 120px;
+    height: 90px;
+    background: #ddd;
+  }
+
+  #box {
+    position: absolute;
+    top: 10px;
+    left: 20px;
+    width: 40px;
+    height: 30px;
+    background: #0a0;
+  }
+</style>
+<div id="transformer">
+  <div id="box"></div>
+</div>

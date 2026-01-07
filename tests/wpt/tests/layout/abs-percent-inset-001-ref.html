@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference: Absolute percent insets resolve against the containing block size</title>
+<style>
+  html, body {
+    margin: 0;
+    background: #fff;
+  }
+
+  #cb {
+    position: relative;
+    width: 200px;
+    height: 160px;
+    background: #ddd;
+  }
+
+  #box {
+    position: absolute;
+    background: #0a0;
+    /* 10% of 160px height = 16px; 30% = 48px. */
+    top: 16px;
+    bottom: 48px;
+    /* 10% of 200px width = 20px; 20% = 40px. */
+    left: 20px;
+    right: 40px;
+  }
+</style>
+<div id="cb">
+  <div id="box"></div>
+</div>

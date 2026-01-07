@@ -232,6 +232,136 @@ width = 120
 height = 120
 
 [[tests]]
+id = "layout/abs-inset-bottom-right-001"
+path = "layout/abs-inset-bottom-right-001.html"
+reference = "layout/abs-inset-bottom-right-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/abs-inset-padding-box-001"
+path = "layout/abs-inset-padding-box-001.html"
+reference = "layout/abs-inset-padding-box-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/abs-percent-inset-001"
+path = "layout/abs-percent-inset-001.html"
+reference = "layout/abs-percent-inset-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/abs-inset-shorthand-001"
+path = "layout/abs-inset-shorthand-001.html"
+reference = "layout/abs-inset-shorthand-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/abs-cb-transform-001"
+path = "layout/abs-cb-transform-001.html"
+reference = "layout/abs-cb-transform-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/fixed-vs-viewport-001"
+path = "layout/fixed-vs-viewport-001.html"
+reference = "layout/fixed-vs-viewport-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/abs-static-position-001"
+path = "layout/abs-static-position-001.html"
+reference = "layout/abs-static-position-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/relative-inline-offset-001"
+path = "layout/relative-inline-offset-001.html"
+reference = "layout/relative-inline-offset-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/abs-overconstrained-left-right-001"
+path = "layout/abs-overconstrained-left-right-001.html"
+reference = "layout/abs-overconstrained-left-right-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
+id = "layout/fixed-cb-transform-001"
+path = "layout/fixed-cb-transform-001.html"
+reference = "layout/fixed-cb-transform-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 8000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 160
+
+[[tests]]
 id = "paint/border-radius-001"
 path = "paint/border-radius-001.html"
 test_type = "visual"

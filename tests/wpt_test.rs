@@ -17,6 +17,9 @@ static SET_BUNDLED_FONTS: Once = Once::new();
 fn ensure_bundled_fonts() {
   SET_BUNDLED_FONTS.call_once(|| {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+    // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count,
+    // which can exceed CI sandbox thread budgets and panic during global pool init. If the caller
+    // hasn't pinned the pool size already, clamp it to a small deterministic default.
     if std::env::var("RAYON_NUM_THREADS").is_err() {
       std::env::set_var("RAYON_NUM_THREADS", "4");
     }

@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Relative offsets apply to inline formatting without affecting layout</title>
+<style>
+  html, body {
+    margin: 0;
+    background: #fff;
+  }
+
+  #line {
+    font-size: 0;
+  }
+
+  .box {
+    display: inline-block;
+    width: 40px;
+    height: 40px;
+  }
+
+  .a { background: #00f; }
+  .b { background: #f00; position: relative; left: 20px; }
+  .c { background: #0a0; }
+</style>
+<div id="line">
+  <span class="box a"></span>
+  <span class="box b"></span>
+  <span class="box c"></span>
+</div>

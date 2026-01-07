@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference: Absolute positioning overconstrained left/right/width</title>
+<style>
+  html, body {
+    margin: 0;
+    background: #fff;
+  }
+
+  #cb {
+    position: relative;
+    direction: ltr;
+    width: 200px;
+    height: 160px;
+    background: #ddd;
+  }
+
+  #box {
+    position: absolute;
+    top: 20px;
+    left: 10px;
+    width: 50px;
+    height: 40px;
+    background: #0a0;
+  }
+</style>
+<div id="cb">
+  <div id="box"></div>
+</div>

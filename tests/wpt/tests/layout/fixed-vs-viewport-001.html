@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fixed positioning is relative to the viewport</title>
+<style>
+  html, body {
+    margin: 0;
+    background: #fff;
+  }
+
+  #outer {
+    margin-left: 100px;
+    margin-top: 90px;
+    width: 80px;
+    height: 60px;
+    background: #ddd;
+  }
+
+  #box {
+    position: fixed;
+    top: 20px;
+    left: 30px;
+    width: 40px;
+    height: 30px;
+    background: #0a0;
+  }
+</style>
+<div id="outer">
+  <div id="box"></div>
+</div>
