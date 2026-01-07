@@ -93,6 +93,24 @@ fn transform_is_not_a_backdrop_root() {
 }
 
 #[test]
+fn translate_is_not_a_backdrop_root() {
+  let pixmap = render("translate: 0px 0px;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn rotate_is_not_a_backdrop_root() {
+  let pixmap = render("rotate: 0deg;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn scale_is_not_a_backdrop_root() {
+  let pixmap = render("scale: 1 1;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
 fn z_index_is_not_a_backdrop_root() {
   let pixmap = render("position: relative; z-index: 1;");
   assert_child_inverts_body_bg(&pixmap);
