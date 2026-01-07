@@ -2633,7 +2633,7 @@ fn resolve_opt_length_against(
 /// intrinsic sizes.
 fn choose_table_distribution_mode(
   wants_fixed_layout: bool,
-  specified_width: Option<f32>,
+  has_computed_width: bool,
   style: &ComputedStyle,
   constraints: Option<&LayoutConstraints>,
 ) -> DistributionMode {
@@ -2641,9 +2641,10 @@ fn choose_table_distribution_mode(
     return DistributionMode::Auto;
   }
 
-  // Fixed layout is only unconditionally applicable when the table has a non-auto
-  // width (i.e. it resolves to a definite value).
-  if specified_width.is_some() {
+  // CSS2.1 §17.5.2.1: fixed layout only applies when the table's *computed* `width`
+  // is not `auto`. Use the presence of a computed `width` / `width` keyword as the
+  // signal here rather than a resolved used width so intrinsic sizing stays consistent.
+  if has_computed_width {
     return DistributionMode::Fixed;
   }
 
@@ -2651,6 +2652,12 @@ fn choose_table_distribution_mode(
   // with `width:auto` after their used width has been resolved from the containing
   // block (CSS2.1 §10.3.3). This does *not* apply to inline-table.
   if let Some(constraints) = constraints {
+    // If an outer sizing algorithm has already forced a used width (e.g. shrink-to-fit,
+    // flex/grid item sizing), `width:auto` should still use the automatic algorithm so
+    // later rows contribute to intrinsic sizing.
+    if constraints.used_border_box_width.is_some() {
+      return DistributionMode::Auto;
+    }
     let in_normal_flow = !style.float.is_floating()
       && matches!(
         style.position,
@@ -4777,20 +4784,12 @@ impl TableFormattingContext {
     available_content_width: f32,
     percent_base: Option<f32>,
   ) -> Vec<f32> {
-    // Bench helpers don't have full layout constraints; assume a fixed layout table
-    // only qualifies for the fixed algorithm when an authored width resolves to a
-    // definite value (CSS2.1 §17.5.2.1).
-    let font_size = table_box.style.font_size;
-    let root_font_size = table_box.style.root_font_size;
-    let specified_width = table_box
-      .style
-      .width
-      .as_ref()
-      .and_then(|len| resolve_length_against(len, font_size, root_font_size, None));
     let wants_fixed_layout = matches!(table_box.style.table_layout, TableLayout::Fixed);
+    let has_computed_width =
+      table_box.style.width.is_some() || table_box.style.width_keyword.is_some();
     let mode = choose_table_distribution_mode(
       wants_fixed_layout,
-      specified_width,
+      has_computed_width,
       table_box.style.as_ref(),
       None,
     );
@@ -5822,7 +5821,9 @@ impl FormattingContext for TableFormattingContext {
         .or(containing_width)
         .map(|w| clamp_to_min_max(w, min_width, max_width))
     };
-    let percent_base_width = table_width;
+    // Percentages on columns rely on an explicit table width. When the table width is `auto`,
+    // treat percentage constraints as auto so layout isn't forced by the containing block.
+    let percent_base_width = specified_width;
     // Table padding and borders (ignored for box sizing under collapsed model per CSS 2.1),
     // but we still track outer borders for percentage-height resolution.
     let resolve_abs = |l: &crate::style::values::Length| match l.unit {
@@ -6420,9 +6421,11 @@ impl FormattingContext for TableFormattingContext {
     }
 
     let wants_fixed_layout = matches!(table_root_style.table_layout, TableLayout::Fixed);
+    let has_computed_width =
+      table_root_style.width.is_some() || table_root_style.width_keyword.is_some();
     let mode = choose_table_distribution_mode(
       wants_fixed_layout,
-      specified_width,
+      has_computed_width,
       table_root_style,
       Some(constraints),
     );
@@ -6511,8 +6514,9 @@ impl FormattingContext for TableFormattingContext {
     // this in fixed mode, so at this point `col_widths` should already fill `available_content`
     // unless all columns hit authored max-width caps.
 
-    // If the table width is specified and columns don't fill the available content width, expand flexible columns.
-    if table_width.is_some()
+    // If the table width is explicitly specified and columns don't fill the available content
+    // width, expand flexible columns.
+    if specified_width.is_some()
       && mode == DistributionMode::Auto
       && available_content.is_finite()
       && !col_widths.is_empty()
@@ -8201,9 +8205,11 @@ impl FormattingContext for TableFormattingContext {
     };
     let percent_base = authored_width.map(|w| (w - spacing - edge_consumption).max(0.0));
     let wants_fixed_layout = matches!(table_root_style.table_layout, TableLayout::Fixed);
+    let has_computed_width =
+      table_root_style.width.is_some() || table_root_style.width_keyword.is_some();
     let distribution_mode = choose_table_distribution_mode(
       wants_fixed_layout,
-      authored_width,
+      has_computed_width,
       table_root_style,
       None,
     );
