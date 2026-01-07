@@ -385,15 +385,29 @@ pub(crate) fn resolve_text_emphasis_block_side(
 ///
 /// Spec: <https://www.w3.org/TR/css-text-decor-4/#text-emphasis-style-property> (mark omission rules)
 pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
-  if ch.is_whitespace() || ch.is_control() {
+  if ch.is_control() {
     return true;
   }
 
   use unicode_general_category::get_general_category;
   use unicode_general_category::GeneralCategory;
 
+  let category = get_general_category(ch);
+  if matches!(
+    category,
+    GeneralCategory::SpaceSeparator
+      | GeneralCategory::LineSeparator
+      | GeneralCategory::ParagraphSeparator
+  ) {
+    return true;
+  }
+
+  if ch.is_whitespace() {
+    return true;
+  }
+
   let is_punctuation = matches!(
-    get_general_category(ch),
+    category,
     GeneralCategory::ConnectorPunctuation
       | GeneralCategory::DashPunctuation
       | GeneralCategory::ClosePunctuation

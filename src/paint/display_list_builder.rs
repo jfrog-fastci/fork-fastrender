@@ -7515,7 +7515,7 @@ impl DisplayListBuilder {
         let mut chars = run.text[text_byte..].chars();
         if let Some(ch) = chars.next() {
           if crate::style::is_text_emphasis_mark_excluded(ch)
-            && !(ch.is_whitespace() && chars.next().is_some_and(crate::style::is_combining_mark))
+            && !(ch == ' ' && chars.next().is_some_and(crate::style::is_combining_mark))
           {
             continue;
           }
