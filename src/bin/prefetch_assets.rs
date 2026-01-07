@@ -157,8 +157,9 @@ mod disk_cache_main {
   use fastrender::resource::{
     ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane,
     ensure_stylesheet_mime_sane, is_data_url, origin_from_url, CachingFetcherConfig,
-    DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
-    FetchedResource, ReferrerPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+    CorsMode, DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode, FetchDestination,
+    FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
+    DEFAULT_USER_AGENT,
   };
   use fastrender::style::media::{MediaContext, MediaQuery, MediaQueryCache};
   use fastrender::tree::box_tree::CrossOriginAttribute;
@@ -1091,6 +1092,8 @@ mod disk_cache_main {
     fetcher: &'a dyn ResourceFetcher,
     document_referrer: &'a str,
     client_origin: Option<&'a DocumentOrigin>,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
     referrer_policy: ReferrerPolicy,
     css_cache: RefCell<HashMap<String, FetchedStylesheet>>,
     summary: &'a RefCell<PageSummary>,
@@ -1104,6 +1107,8 @@ mod disk_cache_main {
       fetcher: &'a dyn ResourceFetcher,
       document_referrer: &'a str,
       client_origin: Option<&'a DocumentOrigin>,
+      destination: FetchDestination,
+      credentials_mode: FetchCredentialsMode,
       referrer_policy: ReferrerPolicy,
       summary: &'a RefCell<PageSummary>,
       all_asset_urls: &'a RefCell<BTreeSet<String>>,
@@ -1114,6 +1119,8 @@ mod disk_cache_main {
         fetcher,
         document_referrer,
         client_origin,
+        destination,
+        credentials_mode,
         referrer_policy,
         css_cache: RefCell::new(HashMap::new()),
         summary,
@@ -1139,9 +1146,10 @@ mod disk_cache_main {
       }
 
       let referrer_url = importer_url.unwrap_or(self.document_referrer);
-      let mut request = FetchRequest::new(url, FetchDestination::Style)
+      let mut request = FetchRequest::new(url, self.destination)
         .with_referrer_url(referrer_url)
-        .with_referrer_policy(self.referrer_policy);
+        .with_referrer_policy(self.referrer_policy)
+        .with_credentials_mode(self.credentials_mode);
       if let Some(origin) = self.client_origin {
         request = request.with_client_origin(origin);
       }
@@ -1177,10 +1185,11 @@ mod disk_cache_main {
           }
 
           let fetched = FetchedStylesheet::new(rewritten, res.final_url.clone());
-          self
-            .css_cache
-            .borrow_mut()
-            .insert(url.to_string(), fetched.clone());
+          let mut cache = self.css_cache.borrow_mut();
+          cache.insert(url.to_string(), fetched.clone());
+          if let Some(final_url) = fetched.final_url.as_deref() {
+            cache.insert(final_url.to_string(), fetched.clone());
+          }
 
           Ok(fetched)
         }
@@ -1197,8 +1206,17 @@ mod disk_cache_main {
     Inline(String),
     External {
       url: String,
+      cors_mode: Option<CorsMode>,
       referrer_policy: Option<ReferrerPolicy>,
     },
+  }
+
+  fn stylesheet_fetch_profile(cors_mode: Option<CorsMode>) -> (FetchDestination, FetchCredentialsMode) {
+    match cors_mode {
+      None => (FetchDestination::Style, FetchCredentialsMode::Include),
+      Some(CorsMode::Anonymous) => (FetchDestination::StyleCors, FetchCredentialsMode::SameOrigin),
+      Some(CorsMode::UseCredentials) => (FetchDestination::StyleCors, FetchCredentialsMode::Include),
+    }
   }
 
   fn stylesheet_type_is_css(type_attr: Option<&str>) -> bool {
@@ -1249,7 +1267,7 @@ mod disk_cache_main {
       toggles.truthy_with_default("FASTR_FETCH_ALTERNATE_STYLESHEETS", true);
 
     let mut tasks = Vec::new();
-    let mut seen_external: HashSet<String> = HashSet::new();
+    let mut seen_external: HashSet<(String, Option<CorsMode>)> = HashSet::new();
 
     let mut consider_source = |source: &StylesheetSource| match source {
       StylesheetSource::Inline(inline) => {
@@ -1290,9 +1308,11 @@ mod disk_cache_main {
         let Some(stylesheet_url) = resolve_href_with_base(Some(base_url), &link.href) else {
           return;
         };
-        if seen_external.insert(stylesheet_url.clone()) {
+        let cors_mode = link.crossorigin;
+        if seen_external.insert((stylesheet_url.clone(), cors_mode)) {
           tasks.push(StylesheetTask::External {
             url: stylesheet_url,
+            cors_mode,
             referrer_policy: link.referrer_policy,
           });
         }
@@ -1455,8 +1475,10 @@ mod disk_cache_main {
     summary: &mut PageSummary,
   ) {
     for face in sheet.collect_font_face_rules_with_cache(media_ctx, Some(media_query_cache)) {
+      let stylesheet_url = face.source_stylesheet_url.as_deref().unwrap_or(referrer_url);
+      let base_url = face.source_stylesheet_url.as_deref().unwrap_or(css_base_url);
       for url_source in ordered_remote_font_face_sources(&face.sources) {
-        let Some(resolved) = resolve_href(css_base_url, &url_source.url) else {
+        let Some(resolved) = resolve_href(base_url, &url_source.url) else {
           continue;
         };
         if is_data_url(&resolved) {
@@ -1470,7 +1492,7 @@ mod disk_cache_main {
         }
 
         let mut request = FetchRequest::new(&resolved, FetchDestination::Font)
-          .with_referrer_url(referrer_url)
+          .with_referrer_url(stylesheet_url)
           .with_referrer_policy(referrer_policy)
           .with_credentials_mode(FetchCredentialsMode::Omit);
         if let Some(origin) = client_origin {
@@ -1523,17 +1545,18 @@ mod disk_cache_main {
           // substrings.
           let mut out = Vec::new();
           let mut seen = HashSet::new();
-            if let Ok(urls) = extract_embedded_css_urls(html, base_url) {
-              for url in urls {
-                if seen.insert(url.clone()) {
-                  out.push(StylesheetTask::External {
-                    url,
-                    referrer_policy: None,
-                  });
-                }
+          if let Ok(urls) = extract_embedded_css_urls(html, base_url) {
+            for url in urls {
+              if seen.insert(url.clone()) {
+                out.push(StylesheetTask::External {
+                  url,
+                  cors_mode: None,
+                  referrer_policy: None,
+                });
               }
             }
-            out
+          }
+          out
         } else {
           tasks
         }
@@ -1541,12 +1564,17 @@ mod disk_cache_main {
       None => {
         // DOM parse failed; fall back to the string-based extraction used by older versions.
         let mut out = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen_tasks: HashSet<(String, Option<CorsMode>)> = HashSet::new();
+        let mut seen_urls: HashSet<String> = HashSet::new();
         if let Ok(candidates) = extract_css_links_with_meta(html, base_url, media_ctx.media_type) {
           for candidate in candidates {
-            if seen.insert(candidate.url.clone()) {
+            let cors_mode = candidate.crossorigin;
+            let url = candidate.url;
+            seen_urls.insert(url.clone());
+            if seen_tasks.insert((url.clone(), cors_mode)) {
               out.push(StylesheetTask::External {
-                url: candidate.url,
+                url,
+                cors_mode,
                 referrer_policy: candidate.referrer_policy,
               });
             }
@@ -1554,9 +1582,10 @@ mod disk_cache_main {
         }
         if let Ok(urls) = extract_embedded_css_urls(html, base_url) {
           for url in urls {
-            if seen.insert(url.clone()) {
+            if seen_urls.insert(url.clone()) {
               out.push(StylesheetTask::External {
                 url,
+                cors_mode: None,
                 referrer_policy: None,
               });
             }
@@ -1770,14 +1799,35 @@ mod disk_cache_main {
 
     if !tasks.is_empty() {
       // Process external stylesheets in sorted order for more reproducible network/cache behavior.
+      fn cors_mode_sort_key(mode: Option<CorsMode>) -> u8 {
+        match mode {
+          None => 0,
+          Some(CorsMode::Anonymous) => 1,
+          Some(CorsMode::UseCredentials) => 2,
+        }
+      }
       tasks.sort_by(|a, b| match (a, b) {
         (StylesheetTask::Inline(_), StylesheetTask::External { .. }) => std::cmp::Ordering::Less,
         (StylesheetTask::External { .. }, StylesheetTask::Inline(_)) => std::cmp::Ordering::Greater,
         (StylesheetTask::Inline(_), StylesheetTask::Inline(_)) => std::cmp::Ordering::Equal,
         (
-          StylesheetTask::External { url: a, .. },
-          StylesheetTask::External { url: b, .. },
-        ) => a.cmp(b),
+          StylesheetTask::External {
+            url: a_url,
+            cors_mode: a_cors,
+            ..
+          },
+          StylesheetTask::External {
+            url: b_url,
+            cors_mode: b_cors,
+            ..
+          },
+        ) => {
+          let by_url = a_url.cmp(b_url);
+          if by_url != std::cmp::Ordering::Equal {
+            return by_url;
+          }
+          cors_mode_sort_key(*a_cors).cmp(&cors_mode_sort_key(*b_cors))
+        }
       });
 
       let css_asset_urls_ref = if opts.prefetch_css_url_assets {
@@ -1816,10 +1866,13 @@ mod disk_cache_main {
             };
 
             let resolved = if sheet.contains_imports() {
+              let (destination, credentials_mode) = stylesheet_fetch_profile(None);
               let import_loader = PrefetchImportLoader::new(
                 fetcher.as_ref(),
                 base_hint,
                 document_origin.as_ref(),
+                destination,
+                credentials_mode,
                 referrer_policy,
                 &summary,
                 &all_asset_urls,
@@ -1860,13 +1913,20 @@ mod disk_cache_main {
           }
           StylesheetTask::External {
             url: css_url,
+            cors_mode,
             referrer_policy: link_referrer_policy,
           } => {
             let effective_referrer_policy = link_referrer_policy.unwrap_or(referrer_policy);
+            let (destination, credentials_mode) = stylesheet_fetch_profile(cors_mode);
+            let mut request = FetchRequest::new(css_url.as_str(), destination)
+              .with_referrer_url(base_hint)
+              .with_referrer_policy(effective_referrer_policy)
+              .with_credentials_mode(credentials_mode);
+            if let Some(origin) = document_origin.as_ref() {
+              request = request.with_client_origin(origin);
+            }
             match fetcher.fetch_with_request(
-              FetchRequest::new(css_url.as_str(), FetchDestination::Style)
-                .with_referrer_url(base_hint)
-                .with_referrer_policy(effective_referrer_policy),
+              request,
             ) {
               Ok(res) => {
                 if ensure_http_success(&res, &css_url)
@@ -1912,6 +1972,8 @@ mod disk_cache_main {
                     fetcher.as_ref(),
                     base_hint,
                     document_origin.as_ref(),
+                    destination,
+                    credentials_mode,
                     effective_referrer_policy,
                     &summary,
                     &all_asset_urls,
@@ -2781,6 +2843,133 @@ mod disk_cache_main {
       assert_eq!(font_calls.len(), 1, "expected a single font request");
       assert_eq!(font_calls[0].2.as_deref(), Some(STYLESHEET));
       assert_eq!(font_calls[0].3, Some(expected_origin));
+    }
+
+    fn assert_stylesheet_crossorigin_fetches(
+      crossorigin_value: &str,
+      expected_credentials: FetchCredentialsMode,
+    ) {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<
+          Vec<(
+            String,
+            FetchDestination,
+            FetchCredentialsMode,
+            Option<String>,
+            Option<DocumentOrigin>,
+          )>,
+        >,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("stylesheet prefetch should use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push((
+            req.url.to_string(),
+            req.destination,
+            req.credentials_mode,
+            req.referrer_url.map(|r| r.to_string()),
+            req.client_origin.cloned(),
+          ));
+
+          const STYLESHEET: &str = "https://cdn.test/style.css";
+          const IMPORT: &str = "https://cdn.test/import.css";
+          match req.url {
+            STYLESHEET => {
+              let mut res = FetchedResource::with_final_url(
+                br#"@import "import.css"; body{color:black;}"#.to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            IMPORT => {
+              let mut res = FetchedResource::with_final_url(
+                b"body{color:red;}".to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            other => Err(fastrender::Error::Other(format!(
+              "unexpected fetch: {other}"
+            ))),
+          }
+        }
+      }
+
+      const DOCUMENT_URL: &str = "https://example.com/page";
+      const BASE_URL: &str = "https://example.com/";
+      const STYLESHEET: &str = "https://cdn.test/style.css";
+      const IMPORT: &str = "https://cdn.test/import.css";
+
+      let expected_origin = origin_from_url(DOCUMENT_URL).expect("document origin");
+
+      let html = format!(
+        r#"<!doctype html><html><head><link rel="stylesheet" crossorigin="{crossorigin_value}" href="{STYLESHEET}"></head><body></body></html>"#
+      );
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      prefetch_assets_for_html(
+        "test",
+        DOCUMENT_URL,
+        &html,
+        DOCUMENT_URL,
+        BASE_URL,
+        ReferrerPolicy::default(),
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      let calls = fetcher_impl.calls.lock().unwrap().clone();
+      let stylesheet_calls: Vec<_> = calls.iter().filter(|(url, ..)| url == STYLESHEET).collect();
+      assert_eq!(stylesheet_calls.len(), 1, "expected stylesheet fetch for {STYLESHEET}");
+      assert_eq!(stylesheet_calls[0].1, FetchDestination::StyleCors);
+      assert_eq!(stylesheet_calls[0].2, expected_credentials);
+      assert_eq!(stylesheet_calls[0].3.as_deref(), Some(DOCUMENT_URL));
+      assert_eq!(stylesheet_calls[0].4, Some(expected_origin.clone()));
+
+      let import_calls: Vec<_> = calls.iter().filter(|(url, ..)| url == IMPORT).collect();
+      assert_eq!(import_calls.len(), 1, "expected import fetch for {IMPORT}");
+      assert_eq!(import_calls[0].1, FetchDestination::StyleCors);
+      assert_eq!(import_calls[0].2, expected_credentials);
+      assert_eq!(import_calls[0].3.as_deref(), Some(STYLESHEET));
+      assert_eq!(import_calls[0].4, Some(expected_origin));
+    }
+
+    #[test]
+    fn stylesheet_crossorigin_anonymous_uses_cors_destination_and_inherits_for_imports() {
+      assert_stylesheet_crossorigin_fetches("anonymous", FetchCredentialsMode::SameOrigin);
+    }
+
+    #[test]
+    fn stylesheet_crossorigin_use_credentials_uses_cors_destination_and_inherits_for_imports() {
+      assert_stylesheet_crossorigin_fetches("use-credentials", FetchCredentialsMode::Include);
     }
 
     #[test]
