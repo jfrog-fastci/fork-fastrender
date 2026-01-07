@@ -1969,7 +1969,9 @@ mod disk_cache_main {
 
     if opts.prefetch_iframes || opts.prefetch_embeds {
       let mut fetched_docs: Vec<(String, FetchedResource)> = Vec::new();
-      let fetch_destination = FetchDestination::Document;
+      // Embedded documents (iframes/embeds/objects) are fetched as subframe navigations, which use
+      // a distinct `Sec-Fetch-Dest: iframe` profile (and a distinct cache kind).
+      let fetch_destination = FetchDestination::Iframe;
       {
         let mut summary = summary.borrow_mut();
         for url in &document_urls {
@@ -2259,7 +2261,7 @@ mod disk_cache_main {
       let calls = fetcher_impl.calls.lock().unwrap();
       assert_eq!(calls.len(), 1);
       assert_eq!(calls[0].0, "https://example.com/base/frame.html");
-      assert_eq!(calls[0].1, FetchDestination::Document);
+      assert_eq!(calls[0].1, FetchDestination::Iframe);
       assert_eq!(calls[0].2.as_deref(), Some(document_url));
     }
 
