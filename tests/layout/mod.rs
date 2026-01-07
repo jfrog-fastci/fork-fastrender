@@ -93,6 +93,7 @@ mod table_direction_rtl_colgroup_background;
 mod table_direction_rtl_column_order;
 mod table_empty_cells;
 mod table_fixed_layout_expands_to_width;
+mod table_fixed_layout_width_auto_falls_back_to_auto;
 mod table_fixup_box_generation;
 mod table_fixup_integration;
 mod table_fixup_wrapper;

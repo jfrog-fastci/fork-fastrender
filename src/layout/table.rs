@@ -2526,6 +2526,55 @@ fn resolve_opt_length_against(
   length.and_then(|l| resolve_length_against(l, font_size, root_font_size, containing_width))
 }
 
+/// Decide which column distribution algorithm to use for a table.
+///
+/// CSS2.1 §17.5.2.1 ("Fixed table layout") requires falling back to the automatic
+/// table layout algorithm when `width:auto`, even if `table-layout: fixed` is set.
+///
+/// Browsers are allowed to keep using the fixed algorithm for **block-level tables
+/// in normal flow** after resolving their used width via CSS2.1 §10.3.3. We keep
+/// that optimization behind a narrow check (only `display: table` with a definite
+/// available width).
+///
+/// This exception must *not* apply to `display:inline-table`, where `width:auto`
+/// participates in shrink-to-fit and requires scanning all rows to compute the
+/// intrinsic sizes.
+fn choose_table_distribution_mode(
+  wants_fixed_layout: bool,
+  specified_width: Option<f32>,
+  style: &ComputedStyle,
+  constraints: Option<&LayoutConstraints>,
+) -> DistributionMode {
+  if !wants_fixed_layout {
+    return DistributionMode::Auto;
+  }
+
+  // Fixed layout is only unconditionally applicable when the table has a non-auto
+  // width (i.e. it resolves to a definite value).
+  if specified_width.is_some() {
+    return DistributionMode::Fixed;
+  }
+
+  // Optional UA behavior: allow fixed layout for normal-flow block-level tables
+  // with `width:auto` after their used width has been resolved from the containing
+  // block (CSS2.1 §10.3.3). This does *not* apply to inline-table.
+  if let Some(constraints) = constraints {
+    let in_normal_flow = !style.float.is_floating()
+      && matches!(
+        style.position,
+        crate::style::position::Position::Static | crate::style::position::Position::Relative
+      );
+    let normal_flow_block_table = matches!(style.display, Display::Table)
+      && in_normal_flow
+      && matches!(constraints.available_width, AvailableSpace::Definite(_));
+    if normal_flow_block_table {
+      return DistributionMode::Fixed;
+    }
+  }
+
+  DistributionMode::Auto
+}
+
 fn clamp_to_min_max(value: f32, min: Option<f32>, max: Option<f32>) -> f32 {
   let mut v = value;
   if let Some(min) = min {
@@ -4525,39 +4574,6 @@ impl TableFormattingContext {
     }
   }
 
-  fn table_is_inline_level(table_box: &BoxNode, table_root_style: &ComputedStyle) -> bool {
-    // Table wrapper boxes resolve to inline-level when the underlying table is `display: inline-table`,
-    // but some layout contexts (floats/abspos) may turn the wrapper into a block even when the
-    // computed `display` remains inline-table. Treat either signal as "inline-level" for the
-    // purposes of selecting the table layout algorithm.
-    table_box.is_inline_level() || matches!(table_root_style.display, Display::InlineTable)
-  }
-
-  /// CSS 2.1 §17.5.2.1:
-  ///
-  /// The fixed table layout algorithm is used only when the table has a definite width. When the
-  /// table's computed `width` is `auto`, user agents must fall back to the automatic table layout
-  /// algorithm for inline-level tables so shrink-to-fit sizing can account for content in *all*
-  /// rows (not just the first row).
-  ///
-  /// Browsers may still use fixed layout for block-level tables with `width:auto`, so we preserve
-  /// that behaviour for non-inline tables.
-  fn should_use_fixed_layout(
-    table_root_style: &ComputedStyle,
-    specified_width: Option<f32>,
-    table_is_inline_level: bool,
-  ) -> bool {
-    if !matches!(table_root_style.table_layout, TableLayout::Fixed) {
-      return false;
-    }
-
-    if specified_width.is_none() && table_is_inline_level {
-      return false;
-    }
-
-    true
-  }
-
   fn column_constraints_cached(
     &self,
     table_box: &BoxNode,
@@ -4669,11 +4685,23 @@ impl TableFormattingContext {
     available_content_width: f32,
     percent_base: Option<f32>,
   ) -> Vec<f32> {
-    let mode = if structure.is_fixed_layout {
-      DistributionMode::Fixed
-    } else {
-      DistributionMode::Auto
-    };
+    // Bench helpers don't have full layout constraints; assume a fixed layout table
+    // only qualifies for the fixed algorithm when an authored width resolves to a
+    // definite value (CSS2.1 §17.5.2.1).
+    let font_size = table_box.style.font_size;
+    let root_font_size = table_box.style.root_font_size;
+    let specified_width = table_box
+      .style
+      .width
+      .as_ref()
+      .and_then(|len| resolve_length_against(len, font_size, root_font_size, None));
+    let wants_fixed_layout = matches!(table_box.style.table_layout, TableLayout::Fixed);
+    let mode = choose_table_distribution_mode(
+      wants_fixed_layout,
+      specified_width,
+      table_box.style.as_ref(),
+      None,
+    );
     let style_overrides = StyleOverrideCache::default();
     let mut constraints: Vec<ColumnConstraints> = (0..structure.column_count)
       .map(|_| ColumnConstraints::new(0.0, 0.0))
@@ -6107,14 +6135,13 @@ impl FormattingContext for TableFormattingContext {
       return Ok(fragment);
     }
 
-    let table_is_inline_level = Self::table_is_inline_level(table_box, table_root_style);
-    let use_fixed_layout =
-      Self::should_use_fixed_layout(table_root_style, specified_width, table_is_inline_level);
-    let mode = if use_fixed_layout {
-      DistributionMode::Fixed
-    } else {
-      DistributionMode::Auto
-    };
+    let wants_fixed_layout = matches!(table_root_style.table_layout, TableLayout::Fixed);
+    let mode = choose_table_distribution_mode(
+      wants_fixed_layout,
+      specified_width,
+      table_root_style,
+      Some(constraints),
+    );
     let style_override_cache =
       StyleOverrideCache::for_table_layout("layout", table_box.id, &source_rows, &structure, mode);
     let spacing = structure.total_horizontal_spacing();
@@ -7994,16 +8021,13 @@ impl FormattingContext for TableFormattingContext {
       padding_h_base + border_h_base
     };
     let percent_base = authored_width.map(|w| (w - spacing - edge_consumption).max(0.0));
-    let table_is_inline_level = Self::table_is_inline_level(table_box, table_root_style);
-    let use_fixed_layout =
-      Self::should_use_fixed_layout(table_root_style, authored_width, table_is_inline_level);
-    let distribution_mode = if use_fixed_layout {
-      // Fixed layout tables should not require scanning every cell. When no definite width basis
-      // exists (auto widths or intrinsic contexts), percentages are normalized away to keep sizing stable.
-      DistributionMode::Fixed
-    } else {
-      DistributionMode::Auto
-    };
+    let wants_fixed_layout = matches!(table_root_style.table_layout, TableLayout::Fixed);
+    let distribution_mode = choose_table_distribution_mode(
+      wants_fixed_layout,
+      authored_width,
+      table_root_style,
+      None,
+    );
     let style_override_cache = StyleOverrideCache::for_intrinsic_measurement(
       "intrinsic",
       table_box.id,
