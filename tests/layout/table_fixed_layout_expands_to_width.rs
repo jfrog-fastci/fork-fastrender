@@ -32,7 +32,7 @@ fn table_fixed_layout_expands_to_specified_width() {
             table-layout: fixed;
             width: 300px;
             border-collapse: separate;
-            border-spacing: 0px;
+            border-spacing: 0;
             padding: 0;
             border: 0;
           }

@@ -17070,6 +17070,14 @@ mod tests {
   }
 
   #[test]
+  fn extract_length_pair_accepts_zero_number() {
+    let num_zero = PropertyValue::Number(0.0);
+    let (h, v) = extract_length_pair(&num_zero).expect("number zero should be accepted");
+    assert_eq!(h, Length::px(0.0));
+    assert_eq!(v, Length::px(0.0));
+  }
+
+  #[test]
   fn text_underline_offset_rejects_from_font_keyword() {
     let parent = ComputedStyle::default();
     let decls = parse_declarations("text-underline-offset: from-font;");
