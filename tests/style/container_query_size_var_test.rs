@@ -168,3 +168,50 @@ fn container_size_query_var_fallback_used_when_missing() {
   assert_eq!(display(find_by_id(&styled, "t1").expect("target")), "inline");
 }
 
+#[test]
+fn container_size_query_var_missing_without_fallback_is_false() {
+  let css = r#"
+    .target { display: block; }
+    @container (width > var(--missing)) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let dom = dom::parse_html(HTML_ONE_CONTAINER).unwrap();
+  let ids = dom::enumerate_dom_ids(&dom);
+  let container = find_dom_by_id(&dom, "c1").expect("container");
+  let container_id = *ids.get(&(container as *const DomNode)).expect("id for container");
+
+  let base_media = MediaContext::screen(800.0, 600.0);
+  let mut containers = HashMap::new();
+  containers.insert(
+    container_id,
+    ContainerQueryInfo {
+      inline_size: 200.0,
+      block_size: 300.0,
+      container_type: ContainerType::InlineSize,
+      names: Vec::new(),
+      font_size: 16.0,
+      styles: Arc::new(ComputedStyle::default()),
+    },
+  );
+  let ctx = ContainerQueryContext {
+    base_media: base_media.clone(),
+    containers,
+  };
+  let stylesheet = parse_stylesheet(css).unwrap();
+
+  let styled = apply_styles_with_media_target_and_imports(
+    &dom,
+    &stylesheet,
+    &base_media,
+    None,
+    None,
+    None,
+    Some(&ctx),
+    None,
+    None,
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t1").expect("target")), "block");
+}
