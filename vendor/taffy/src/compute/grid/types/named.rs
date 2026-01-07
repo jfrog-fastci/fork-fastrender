@@ -342,6 +342,24 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     //
     // <https://drafts.csswg.org/css-grid-2/#grid-span>
     match (&start_line_resolved, &end_line_resolved) {
+      // If the placement contains two spans, remove the one contributed by the end property.
+      //
+      // Without this, `span N / span <name> M` or `span <name> N / span M` would carry a
+      // `NamedSpan` through to the auto-placement algorithm where it does not have enough context
+      // to resolve the span relative to a concrete opposite edge, leading to panics.
+      //
+      // <https://drafts.csswg.org/css-grid-2/#grid-placement-errors>
+      (GridPlacement::Span(span), GridPlacement::NamedSpan(_, _)) => Line {
+        start: NonNamedGridPlacementWithNamedSpan::Span(*span),
+        end: NonNamedGridPlacementWithNamedSpan::Auto,
+      },
+      (GridPlacement::NamedSpan(_, _), GridPlacement::Span(_) | GridPlacement::NamedSpan(_, _)) => {
+        // If the placement contains only a span for a named line, replace it with a span of 1.
+        Line {
+          start: NonNamedGridPlacementWithNamedSpan::Span(1),
+          end: NonNamedGridPlacementWithNamedSpan::Auto,
+        }
+      }
       (GridPlacement::Line(start_line), GridPlacement::NamedSpan(name, idx))
         if start_line.as_i16() != 0 =>
       {

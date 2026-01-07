@@ -93,3 +93,74 @@ fn grid_named_span_autoplacement_named_span_then_auto() {
   );
 }
 
+#[test]
+fn grid_named_span_conflict_handling_span_then_named_span() {
+  let container = make_named_grid_container(make_named_grid_child(
+    "span 2 / span foo 2",
+    "span 2 / span foo 2",
+  ));
+  let grid_fc = GridFormattingContext::new();
+  let fragment = grid_fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 80.0))
+    .expect("layout should succeed");
+
+  let child = fragment.children.first().expect("child fragment");
+  assert!(
+    (child.bounds.width() - 100.0).abs() < 0.1,
+    "expected end span to be ignored (span 2 should remain) (got width {})",
+    child.bounds.width()
+  );
+  assert!(
+    (child.bounds.height() - 80.0).abs() < 0.1,
+    "expected end span to be ignored (span 2 should remain) (got height {})",
+    child.bounds.height()
+  );
+}
+
+#[test]
+fn grid_named_span_conflict_handling_named_span_then_span() {
+  let container = make_named_grid_container(make_named_grid_child(
+    "span foo 2 / span 2",
+    "span foo 2 / span 2",
+  ));
+  let grid_fc = GridFormattingContext::new();
+  let fragment = grid_fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 80.0))
+    .expect("layout should succeed");
+
+  let child = fragment.children.first().expect("child fragment");
+  assert!(
+    (child.bounds.width() - 50.0).abs() < 0.1,
+    "expected named span to resolve to the default span 1 (got width {})",
+    child.bounds.width()
+  );
+  assert!(
+    (child.bounds.height() - 40.0).abs() < 0.1,
+    "expected named span to resolve to the default span 1 (got height {})",
+    child.bounds.height()
+  );
+}
+
+#[test]
+fn grid_named_span_conflict_handling_named_span_then_named_span() {
+  let container = make_named_grid_container(make_named_grid_child(
+    "span foo 2 / span foo 2",
+    "span foo 2 / span foo 2",
+  ));
+  let grid_fc = GridFormattingContext::new();
+  let fragment = grid_fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 80.0))
+    .expect("layout should succeed");
+
+  let child = fragment.children.first().expect("child fragment");
+  assert!(
+    (child.bounds.width() - 50.0).abs() < 0.1,
+    "expected placement with only a named span to fall back to span 1 (got width {})",
+    child.bounds.width()
+  );
+  assert!(
+    (child.bounds.height() - 40.0).abs() < 0.1,
+    "expected placement with only a named span to fall back to span 1 (got height {})",
+    child.bounds.height()
+  );
+}

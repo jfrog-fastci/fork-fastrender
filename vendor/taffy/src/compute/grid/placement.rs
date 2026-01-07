@@ -983,6 +983,120 @@ mod tests {
     }
 
     #[test]
+    fn test_span_then_named_span_conflict_handling() {
+      let flow = GridAutoFlow::Row;
+      let explicit_col_count = 2;
+      let explicit_row_count = 2;
+      let children = {
+        vec![(
+          1,
+          (
+            span(2),
+            GridPlacement::NamedSpan("foo".to_string(), 2),
+            auto(),
+            auto(),
+          )
+            .into_grid_child(),
+          (0, 2, 0, 1),
+        )]
+      };
+      let expected_cols = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      let expected_rows = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      placement_test_runner(
+        explicit_col_count,
+        explicit_row_count,
+        children,
+        expected_cols,
+        expected_rows,
+        flow,
+      );
+    }
+
+    #[test]
+    fn test_named_span_then_span_conflict_handling() {
+      let flow = GridAutoFlow::Row;
+      let explicit_col_count = 2;
+      let explicit_row_count = 2;
+      let children = {
+        vec![(
+          1,
+          (
+            GridPlacement::NamedSpan("foo".to_string(), 2),
+            span(2),
+            auto(),
+            auto(),
+          )
+            .into_grid_child(),
+          (0, 1, 0, 1),
+        )]
+      };
+      let expected_cols = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      let expected_rows = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      placement_test_runner(
+        explicit_col_count,
+        explicit_row_count,
+        children,
+        expected_cols,
+        expected_rows,
+        flow,
+      );
+    }
+
+    #[test]
+    fn test_named_span_then_named_span_conflict_handling() {
+      let flow = GridAutoFlow::Row;
+      let explicit_col_count = 2;
+      let explicit_row_count = 2;
+      let children = {
+        vec![(
+          1,
+          (
+            GridPlacement::NamedSpan("foo".to_string(), 2),
+            GridPlacement::NamedSpan("foo".to_string(), 2),
+            auto(),
+            auto(),
+          )
+            .into_grid_child(),
+          (0, 1, 0, 1),
+        )]
+      };
+      let expected_cols = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      let expected_rows = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      placement_test_runner(
+        explicit_col_count,
+        explicit_row_count,
+        children,
+        expected_cols,
+        expected_rows,
+        flow,
+      );
+    }
+
+    #[test]
     fn test_fixed_in_secondary_axis() {
       let flow = GridAutoFlow::Row;
       let explicit_col_count = 2;
