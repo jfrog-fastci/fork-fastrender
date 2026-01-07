@@ -25,6 +25,17 @@ fn approx_eq(a: f32, b: f32) -> bool {
   (a - b).abs() < 0.01
 }
 
+fn find_context_by_bounds_and_z_index<'a>(
+  contexts: &'a [StackingContextItem],
+  width: f32,
+  height: f32,
+  z_index: i32,
+) -> Option<&'a StackingContextItem> {
+  contexts.iter().find(|ctx| {
+    ctx.z_index == z_index && approx_eq(ctx.bounds.width(), width) && approx_eq(ctx.bounds.height(), height)
+  })
+}
+
 fn render(
   html: &str,
   width: u32,
@@ -107,6 +118,32 @@ fn backdrop_filter_crosses_z_index_stacking_context() {
 }
 
 #[test]
+fn backdrop_filter_crosses_positive_z_index_stacking_context() {
+  let html = r#"<!doctype html>
+    <style>
+      body { margin: 0; background: rgb(255 0 0); }
+      #sc { position: relative; z-index: 1; width: 60px; height: 60px; }
+      #overlay { position: absolute; left: 0; top: 0; width: 40px; height: 40px; backdrop-filter: invert(1); }
+    </style>
+    <div id="sc"><div id="overlay"></div></div>
+  "#;
+
+  let (pixmap, stacking_reasons, display_list_stacking_contexts) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::PositionedWithZIndex),
+    "expected a z-index stacking context; got {stacking_reasons:?}"
+  );
+  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
+    .expect("expected display list stacking context for #sc");
+  assert!(
+    !sc_context.establishes_backdrop_root,
+    "z-index stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
+  );
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn backdrop_filter_crosses_fixed_position_stacking_context() {
   let html = r#"<!doctype html>
     <style>
@@ -122,9 +159,7 @@ fn backdrop_filter_crosses_fixed_position_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::FixedPositioning),
     "expected a position: fixed stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = display_list_stacking_contexts
-    .iter()
-    .find(|ctx| approx_eq(ctx.bounds.width(), 60.0) && approx_eq(ctx.bounds.height(), 60.0))
+  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
     .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
@@ -155,9 +190,7 @@ fn backdrop_filter_crosses_sticky_position_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::StickyPositioning),
     "expected a position: sticky stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = display_list_stacking_contexts
-    .iter()
-    .find(|ctx| approx_eq(ctx.bounds.width(), 60.0) && approx_eq(ctx.bounds.height(), 60.0))
+  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
     .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
