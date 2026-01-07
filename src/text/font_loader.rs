@@ -1574,12 +1574,17 @@ impl FontContext {
       FontFaceStyle::Normal => FontStyle::Normal,
     };
     let target_weight = face.weight.0;
-    if let Some(id) = self.db.resolve_family_list_full(
-      &[local_name.to_string()],
-      FontWeight::new(target_weight),
-      target_style,
-      FontStretch::Normal,
-    ) {
+
+    let id = resolve_local_face_id(&self.db, local_name).or_else(|| {
+      self.db.resolve_family_list_full(
+        &[local_name.to_string()],
+        FontWeight::new(target_weight),
+        target_style,
+        FontStretch::Normal,
+      )
+    });
+
+    if let Some(id) = id {
       if let Some(font) = self.db.load_font(id) {
         if display_allows_use(face.display, start.elapsed()) {
           self.register_web_font(
@@ -2619,6 +2624,72 @@ fn style_rank(face: &WebFontFace, desired: FontStyle, angle: Option<f32>) -> (f3
   (distance, tie_bias)
 }
 
+fn resolve_local_face_id(db: &FontDatabase, local_name: &str) -> Option<fontdb::ID> {
+  // CSS Fonts requires `local()` to resolve by installed font *face* name, not by family name.
+  // Specifically, it matches:
+  //   - PostScript name (name table ID 6), and
+  //   - Full font name (name table ID 4).
+  //
+  // We only use this routine for exact face-name matches; callers should fall back to the
+  // family-based resolution algorithm when it returns `None` so simple `local(<family-name>)`
+  // remains supported.
+  let mut best: Option<fontdb::ID> = None;
+
+  // 1) PostScript name (case-insensitive; PostScript names are ASCII).
+  for face in db.faces() {
+    let post_script = face.post_script_name.as_str();
+    if !post_script.is_empty() && post_script.eq_ignore_ascii_case(local_name) {
+      best = match best {
+        None => Some(face.id),
+        Some(current) => Some(current.min(face.id)),
+      };
+    }
+  }
+  if best.is_some() {
+    return best;
+  }
+
+  // 2) Full font name from the name table (name ID 4), matched case-insensitively.
+  let target_folded = case_fold(local_name);
+  for face in db.faces() {
+    let matches = db
+      .inner()
+      .with_face_data(face.id, |data, face_index| {
+        ttf_parser::Face::parse(data, face_index)
+          .ok()
+          .is_some_and(|parsed| {
+            ttf_face_matches_name_id(&parsed, ttf_parser::name_id::FULL_NAME, &target_folded)
+          })
+      })
+      .unwrap_or(false);
+
+    if matches {
+      best = match best {
+        None => Some(face.id),
+        Some(current) => Some(current.min(face.id)),
+      };
+    }
+  }
+
+  best
+}
+
+fn ttf_face_matches_name_id(
+  face: &ttf_parser::Face<'_>,
+  name_id: u16,
+  target_folded: &str,
+) -> bool {
+  face.names().into_iter().any(|name| {
+    if name.name_id == name_id {
+      name
+        .to_string()
+        .is_some_and(|value| case_fold(&value) == target_folded)
+    } else {
+      false
+    }
+  })
+}
+
 fn case_fold(name: &str) -> String {
   let mut out = String::with_capacity(name.len());
   for ch in name.chars() {
@@ -3187,6 +3258,188 @@ mod tests {
         "https://example.com/font.ttf",
         "https://example.com/font.woff"
       ]
+    );
+  }
+
+  fn font_face_style_from_db(style: fontdb::Style) -> FontFaceStyle {
+    match style {
+      fontdb::Style::Normal => FontFaceStyle::Normal,
+      fontdb::Style::Italic => FontFaceStyle::Italic,
+      fontdb::Style::Oblique => FontFaceStyle::Oblique { range: None },
+    }
+  }
+
+  fn font_style_from_face_style(style: &FontFaceStyle) -> FontStyle {
+    match style {
+      FontFaceStyle::Normal => FontStyle::Normal,
+      FontFaceStyle::Italic => FontStyle::Italic,
+      FontFaceStyle::Oblique { .. } => FontStyle::Oblique,
+    }
+  }
+
+  fn oblique_angle_from_style(style: &FontFaceStyle) -> Option<f32> {
+    matches!(style, FontFaceStyle::Oblique { .. }).then_some(DEFAULT_OBLIQUE_ANGLE_DEG)
+  }
+
+  fn first_ttf_name(face: &ttf_parser::Face<'_>, name_id: u16) -> Option<String> {
+    face.names().into_iter().find_map(|name| {
+      if name.name_id == name_id {
+        name.to_string()
+      } else {
+        None
+      }
+    })
+  }
+
+  #[test]
+  fn local_src_matches_post_script_name() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let db = ctx.database();
+    let face = db
+      .faces()
+      .find(|face| !face.post_script_name.is_empty())
+      .expect("expected a bundled face with a PostScript name");
+
+    let post_script_name = face.post_script_name.clone();
+
+    let style = font_face_style_from_db(face.style);
+    let weight = face.weight.0;
+
+    let rule = FontFaceRule {
+      family: Some("LocalPsTest".to_string()),
+      sources: vec![FontFaceSource::local(post_script_name)],
+      style: style.clone(),
+      display: FontDisplay::Block,
+      weight: (weight, weight),
+      stretch: (100.0, 100.0),
+      ..Default::default()
+    };
+
+    ctx
+      .load_web_fonts(&[rule], None, None)
+      .expect("load local PostScript font");
+
+    assert!(ctx.is_web_family_declared("LocalPsTest"));
+    assert!(
+      ctx
+        .match_web_font_for_family(
+          "LocalPsTest",
+          weight,
+          font_style_from_face_style(&style),
+          FontStretch::Normal,
+          oblique_angle_from_style(&style),
+        )
+        .is_some(),
+      "expected PostScript local() to resolve"
+    );
+  }
+
+  #[test]
+  fn local_src_matches_full_font_name() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let db = ctx.database();
+
+    let mut selected: Option<(&fontdb::FaceInfo, String)> = None;
+    for face in db.faces() {
+      let Some(font) = db.load_font(face.id) else { continue };
+      let Ok(parsed) = ttf_parser::Face::parse(&font.data, font.index) else {
+        continue;
+      };
+      let Some(full_name) = first_ttf_name(&parsed, ttf_parser::name_id::FULL_NAME) else {
+        continue;
+      };
+      let full_folded = case_fold(&full_name);
+      if face
+        .families
+        .iter()
+        .all(|(family, _)| case_fold(family) != full_folded)
+      {
+        selected = Some((face, full_name));
+        break;
+      }
+      if selected.is_none() {
+        selected = Some((face, full_name));
+      }
+    }
+
+    let (face, full_name) = selected.expect("expected a bundled face with a full name");
+
+    let style = font_face_style_from_db(face.style);
+    let weight = face.weight.0;
+
+    let rule = FontFaceRule {
+      family: Some("LocalFullNameTest".to_string()),
+      sources: vec![FontFaceSource::local(full_name)],
+      style: style.clone(),
+      display: FontDisplay::Block,
+      weight: (weight, weight),
+      stretch: (100.0, 100.0),
+      ..Default::default()
+    };
+
+    ctx
+      .load_web_fonts(&[rule], None, None)
+      .expect("load local full-name font");
+
+    assert!(ctx.is_web_family_declared("LocalFullNameTest"));
+    assert!(
+      ctx
+        .match_web_font_for_family(
+          "LocalFullNameTest",
+          weight,
+          font_style_from_face_style(&style),
+          FontStretch::Normal,
+          oblique_angle_from_style(&style),
+        )
+        .is_some(),
+      "expected full-name local() to resolve"
+    );
+  }
+
+  #[test]
+  fn local_src_family_name_fallback_still_resolves() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let db = ctx.database();
+    let face = db
+      .faces()
+      .find(|face| face.families.first().is_some())
+      .expect("expected at least one bundled face");
+
+    let family_name = face
+      .families
+      .first()
+      .expect("missing family")
+      .0
+      .clone();
+    let style = font_face_style_from_db(face.style);
+    let weight = face.weight.0;
+
+    let rule = FontFaceRule {
+      family: Some("LocalFamilyTest".to_string()),
+      sources: vec![FontFaceSource::local(family_name)],
+      style: style.clone(),
+      display: FontDisplay::Block,
+      weight: (weight, weight),
+      stretch: (100.0, 100.0),
+      ..Default::default()
+    };
+
+    ctx
+      .load_web_fonts(&[rule], None, None)
+      .expect("load local family font");
+
+    assert!(ctx.is_web_family_declared("LocalFamilyTest"));
+    assert!(
+      ctx
+        .match_web_font_for_family(
+          "LocalFamilyTest",
+          weight,
+          font_style_from_face_style(&style),
+          FontStretch::Normal,
+          oblique_angle_from_style(&style),
+        )
+        .is_some(),
+      "expected family-name local() fallback to resolve"
     );
   }
 
