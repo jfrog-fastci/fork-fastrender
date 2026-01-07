@@ -9614,12 +9614,17 @@ impl DisplayListRenderer {
           && (item.transform.is_some()
             || (!self.projective_warp_enabled && warp_candidate_is_projective))
         {
-          let transform_for_canvas =
-            if !self.projective_warp_enabled && warp_candidate_is_projective {
-              &warp_candidate
-            } else {
-              &local_transform
-            };
+          let transform_for_canvas = if !self.projective_warp_enabled && warp_candidate_is_projective
+          {
+            &warp_candidate
+          } else if !parent_perspective.is_identity() && item.transform.is_some() {
+            // Even when the combined transform is affine on the z=0 plane (e.g. `perspective` +
+            // `translateZ`), we must apply the ancestor perspective to get the correct projected
+            // scale/translation for this stacking context.
+            &warp_candidate
+          } else {
+            &local_transform
+          };
           let (t, valid) = self.to_skia_transform_checked(transform_for_canvas);
           if valid {
             local_skia_transform = Some(t);
@@ -15363,6 +15368,80 @@ mod tests {
     assert!(
       changed,
       "expected backdrop-filter to change at least one pixel"
+    );
+  }
+
+  #[test]
+  fn perspective_stack_affects_translate_z_transforms() {
+    let mut list = DisplayList::new();
+    let viewport = Rect::from_xywh(0.0, 0.0, 64.0, 64.0);
+
+    // Parent establishes a CSS `perspective` that applies to children only.
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds: viewport,
+      plane_rect: viewport,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: Some(Transform3D::perspective(100.0)),
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    // Child is translated towards the camera, which under perspective should scale up its plane.
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds: viewport,
+      plane_rect: viewport,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: Some(Transform3D::translate(0.0, 0.0, 50.0)),
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(10.0, 10.0, 10.0, 10.0),
+      color: Rgba::RED,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+
+    let pixmap =
+      DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .render(&list)
+        .unwrap();
+
+    // With perspective=100 and translateZ(50), the projected scale factor is 2×. The filled rect
+    // should therefore move from (10,10)-(20,20) to (20,20)-(40,40).
+    assert_eq!(
+      pixel(&pixmap, 15, 15),
+      (255, 255, 255, 255),
+      "expected original location to remain background"
+    );
+    assert_eq!(
+      pixel(&pixmap, 25, 25),
+      (255, 0, 0, 255),
+      "expected scaled rect to cover a pixel in the projected area"
     );
   }
 
