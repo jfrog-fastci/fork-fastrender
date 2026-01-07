@@ -3215,25 +3215,19 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
     }
-    // Clamp the container width to the definite available width when provided. A block-level
-    // flex container with auto width should not expand to its max-content size; it fills the
-    // containing block width. This prevents oversized flex containers from ballooning when
-    // child intrinsic sizes are large.
-    if let CrateAvailableSpace::Definite(w) = constraints.available_width {
-      let clamped_w = w.min(self.viewport_size.width);
-      fragment.bounds = Rect::new(
-        fragment.bounds.origin,
-        Size::new(clamped_w, fragment.bounds.height()),
-      );
-    } else if fragment.bounds.width() > self.viewport_size.width {
-      // When width is indefinite, default to filling the viewport rather than expanding to
-      // the max-content of children (which can explode with wide carousels). Block-level
-      // flex containers with auto width should behave as width: auto in normal flow, i.e.
-      // fill the containing block (viewport at root).
-      fragment.bounds = Rect::new(
-        fragment.bounds.origin,
-        Size::new(self.viewport_size.width, fragment.bounds.height()),
-      );
+    // Block-level flex containers with `width:auto` fill the available inline space. Enforce that
+    // here (without clamping to the viewport) so explicitly-sized or shrink-to-fit flex containers
+    // can still overflow horizontally.
+    if constraints.used_border_box_width.is_none()
+      && physical_width_is_auto(style)
+      && matches!(style.display, Display::Flex)
+    {
+      if let CrateAvailableSpace::Definite(w) = constraints.available_width {
+        fragment.bounds = Rect::new(
+          fragment.bounds.origin,
+          Size::new(w.max(0.0), fragment.bounds.height()),
+        );
+      }
     }
     // Keep child layout positions intact even when they overflow the container; overflow handling
     // is a paint concern (via overflow clipping). Only sanitize clearly invalid or runaway values.

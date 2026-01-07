@@ -60,6 +60,12 @@ fn flex_constraints_do_not_clamp_definite_width_to_viewport() {
     .layout(&container, &constraints)
     .expect("layout should succeed");
 
+  assert!(
+    (fragment.bounds.width() - 1000.0).abs() < 0.5,
+    "flex container width should not be clamped to the viewport (got {:.1})",
+    fragment.bounds.width()
+  );
+
   let child_fragment = fragment.children.first().expect("child fragment");
   let lines = line_count(child_fragment);
   let max_right = descendant_max_right(child_fragment);
