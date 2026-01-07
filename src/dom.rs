@@ -3187,14 +3187,33 @@ pub(crate) const COMPAT_VIDEO_POSTER_DATA_ATTR_CANDIDATES: [&str; 5] = [
 ];
 
 pub(crate) fn img_src_is_placeholder(value: &str) -> bool {
+  fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+      .as_bytes()
+      .get(..prefix.len())
+      .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+  }
+
   let value = value.trim();
   if value.is_empty() {
     return true;
   }
-  if value.eq_ignore_ascii_case("about:blank") {
+  if value.starts_with('#') {
     return true;
   }
-  if value == "#" {
+  if starts_with_ignore_ascii_case(value, "about:blank") {
+    const PREFIX: &str = "about:blank";
+    if matches!(
+      value.as_bytes().get(PREFIX.len()),
+      None | Some(b'#') | Some(b'?')
+    ) {
+      return true;
+    }
+  }
+  if starts_with_ignore_ascii_case(value, "javascript:")
+    || starts_with_ignore_ascii_case(value, "vbscript:")
+    || starts_with_ignore_ascii_case(value, "mailto:")
+  {
     return true;
   }
 
@@ -7475,6 +7494,16 @@ mod tests {
   fn img_src_is_placeholder_accepts_base64_data_url_with_whitespace() {
     let url = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEK\nAAEALAAAAAABAAEAAAICTAEAOw==";
     assert!(img_src_is_placeholder(url));
+  }
+
+  #[test]
+  fn img_src_is_placeholder_accepts_fragment_and_script_urls() {
+    assert!(img_src_is_placeholder("#"));
+    assert!(img_src_is_placeholder("#foo"));
+    assert!(img_src_is_placeholder("about:blank#foo"));
+    assert!(img_src_is_placeholder("javascript:void(0)"));
+    assert!(img_src_is_placeholder("vbscript:msgbox(\"x\")"));
+    assert!(img_src_is_placeholder("mailto:test@example.com"));
   }
 
   fn enumerate_dom_ids_legacy(root: &DomNode) -> HashMap<*const DomNode, usize> {
