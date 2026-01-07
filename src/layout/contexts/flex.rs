@@ -4538,6 +4538,8 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.justify_content, &mut h);
   hash_enum_discriminant(&style.align_items, &mut h);
   hash_enum_discriminant(&style.align_content, &mut h);
+  hash_length(&style.grid_row_gap, &mut h);
+  hash_length(&style.grid_column_gap, &mut h);
   match style.align_self {
     Some(v) => {
       1u8.hash(&mut h);
@@ -10616,6 +10618,38 @@ mod tests {
     assert_ne!(
       fp_a, fp_c,
       "scrollbar-gutter should affect flex style fingerprint"
+    );
+  }
+
+  #[test]
+  fn flex_style_fingerprint_accounts_for_gap_values() {
+    let mut base = ComputedStyle::default();
+    base.display = Display::Flex;
+
+    let mut row_gap = base.clone();
+    row_gap.grid_row_gap = Length::px(8.0);
+    let mut row_gap_b = base.clone();
+    row_gap_b.grid_row_gap = Length::px(16.0);
+    assert_ne!(
+      flex_style_fingerprint(&row_gap),
+      flex_style_fingerprint(&row_gap_b),
+      "row-gap should affect flex style fingerprint"
+    );
+
+    let mut column_gap = base.clone();
+    column_gap.grid_column_gap = Length::px(8.0);
+    let mut column_gap_b = base.clone();
+    column_gap_b.grid_column_gap = Length::px(16.0);
+    assert_ne!(
+      flex_style_fingerprint(&column_gap),
+      flex_style_fingerprint(&column_gap_b),
+      "column-gap should affect flex style fingerprint"
+    );
+
+    assert_ne!(
+      flex_style_fingerprint(&row_gap),
+      flex_style_fingerprint(&column_gap),
+      "row-gap and column-gap must be distinguishable in flex style fingerprint"
     );
   }
 
