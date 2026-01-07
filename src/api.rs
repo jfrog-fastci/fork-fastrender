@@ -179,7 +179,7 @@ use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SrcsetCandidate;
 #[cfg(test)]
 use crate::tree::box_tree::SrcsetDescriptor;
-use crate::tree::box_tree::{FormControlKind, TextControlKind};
+use crate::tree::box_tree::{FormControlKind, SelectItem, TextControlKind};
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentInstrumentationGuard;
 use crate::tree::fragment_tree::FragmentNode;
@@ -9931,9 +9931,32 @@ impl FastRender {
               let text_len = label.chars().count().max(1) as f32;
               Size::new(char_width * text_len + char_width * 2.0, line_height)
             }
-            FormControlKind::Select { label, .. } => {
-              let text_len = label.chars().count().max(4) as f32;
-              Size::new(char_width * text_len + 20.0, line_height)
+            FormControlKind::Select(select) => {
+              let is_listbox = select.multiple || select.size > 1;
+              let max_label_len = select
+                .items
+                .iter()
+                .map(|item| match item {
+                  SelectItem::OptGroupLabel { label, .. } => label.chars().count(),
+                  SelectItem::Option { label, .. } => label.chars().count(),
+                })
+                .max()
+                .unwrap_or(4) as f32;
+              let scrollbar = if is_listbox && select.items.len() as u32 > select.size.max(1) {
+                crate::layout::utils::resolve_scrollbar_width(style)
+              } else {
+                0.0
+              };
+              let width_gutter = if is_listbox { char_width * 2.0 } else { 20.0 };
+              let height = if is_listbox {
+                line_height * select.size.max(1) as f32
+              } else {
+                line_height
+              };
+              Size::new(
+                char_width * max_label_len.max(4.0) + width_gutter + scrollbar,
+                height,
+              )
             }
             FormControlKind::Checkbox { .. } => {
               let edge = (style.font_size * 1.1).clamp(12.0, 20.0);

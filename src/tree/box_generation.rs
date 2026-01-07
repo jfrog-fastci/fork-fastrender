@@ -50,6 +50,8 @@ use crate::tree::box_tree::MathReplaced;
 use crate::tree::box_tree::PictureSource;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::box_tree::ReplacedType;
+use crate::tree::box_tree::SelectControl;
+use crate::tree::box_tree::SelectItem;
 use crate::tree::box_tree::SizesList;
 use crate::tree::box_tree::SrcsetCandidate;
 use crate::tree::box_tree::SvgContent;
@@ -2874,96 +2876,25 @@ fn collect_text_content(node: &StyledNode) -> String {
   text
 }
 
-fn option_label_from_node(node: &StyledNode) -> Option<String> {
+fn option_label_from_node(node: &StyledNode) -> String {
   if let Some(label) = node
     .node
     .get_attribute_ref("label")
     .filter(|l| !l.is_empty())
   {
-    return Some(label.to_string());
+    return label.to_string();
   }
-  if let Some(label) = node
+
+  collect_text_content(node).trim().to_string()
+}
+
+fn optgroup_label_from_node(node: &StyledNode) -> String {
+  node
     .node
-    .get_attribute_ref("value")
-    .filter(|v| !v.is_empty())
-  {
-    return Some(label.to_string());
-  }
-
-  let text = collect_text_content(node);
-  let trimmed = text.trim();
-  if trimmed.is_empty() {
-    None
-  } else {
-    Some(trimmed.to_string())
-  }
-}
-
-fn find_selected_option_label(node: &StyledNode, optgroup_disabled: bool) -> Option<String> {
-  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
-  stack.push((node, optgroup_disabled));
-
-  while let Some((node, optgroup_disabled)) = stack.pop() {
-    let Some(tag) = node.node.tag_name() else {
-      continue;
-    };
-
-    let is_option = tag.eq_ignore_ascii_case("option");
-    let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
-    let disabled_attr = node.node.get_attribute_ref("disabled").is_some();
-    let this_disabled = optgroup_disabled || ((is_option || is_optgroup) && disabled_attr);
-
-    if is_option && !this_disabled && node.node.get_attribute_ref("selected").is_some() {
-      return option_label_from_node(node);
-    }
-
-    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
-    for child in node.children.iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
-
-  None
-}
-
-fn first_enabled_option_label(node: &StyledNode, optgroup_disabled: bool) -> Option<String> {
-  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
-  stack.push((node, optgroup_disabled));
-
-  while let Some((node, optgroup_disabled)) = stack.pop() {
-    let Some(tag) = node.node.tag_name() else {
-      continue;
-    };
-
-    let is_option = tag.eq_ignore_ascii_case("option");
-    let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
-    let disabled_attr = node.node.get_attribute_ref("disabled").is_some();
-    let this_disabled = optgroup_disabled || ((is_option || is_optgroup) && disabled_attr);
-
-    if is_option && !this_disabled {
-      return option_label_from_node(node);
-    }
-
-    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
-    for child in node.children.iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
-
-  None
-}
-
-fn select_label(node: &StyledNode) -> Option<String> {
-  let explicit = find_selected_option_label(node, false);
-  if explicit.is_some() {
-    return explicit;
-  }
-
-  if node.node.get_attribute_ref("multiple").is_some() {
-    return None;
-  }
-
-  first_enabled_option_label(node, false)
+    .get_attribute_ref("label")
+    .filter(|l| !l.is_empty())
+    .map(|l| l.to_string())
+    .unwrap_or_default()
 }
 
 fn option_value_from_node(node: &StyledNode) -> String {
@@ -2980,103 +2911,123 @@ fn option_value_from_node(node: &StyledNode) -> String {
   value
 }
 
-fn collect_selected_option_values(
-  node: &StyledNode,
-  optgroup_disabled: bool,
-  out: &mut Vec<String>,
-) {
-  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
-  stack.push((node, optgroup_disabled));
-
-  while let Some((node, optgroup_disabled)) = stack.pop() {
-    let tag = node.node.tag_name().unwrap_or("");
-    let is_option = tag.eq_ignore_ascii_case("option");
-    let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
-
-    let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && option_disabled);
-
-    if is_option
-      && node.node.get_attribute_ref("selected").is_some()
-      && !(option_disabled || optgroup_disabled)
-    {
-      out.push(option_value_from_node(node));
-    }
-
-    for child in node.children.iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
+fn parse_select_size(node: &StyledNode, multiple: bool) -> u32 {
+  let parsed = node
+    .node
+    .get_attribute_ref("size")
+    .and_then(|value| value.trim().parse::<i32>().ok())
+    .filter(|value| *value > 0)
+    .map(|value| value as u32);
+  parsed.unwrap_or_else(|| if multiple { 4 } else { 1 }).max(1)
 }
 
-fn find_selected_option_value(node: &StyledNode, optgroup_disabled: bool) -> Option<String> {
-  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
-  stack.push((node, optgroup_disabled));
-
-  while let Some((node, optgroup_disabled)) = stack.pop() {
-    let tag = node.node.tag_name().unwrap_or("");
-    let is_option = tag.eq_ignore_ascii_case("option");
-    let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
-
-    let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && option_disabled);
-
-    if is_option
-      && node.node.get_attribute_ref("selected").is_some()
-      && !(option_disabled || optgroup_disabled)
-    {
-      return Some(option_value_from_node(node));
-    }
-
-    for child in node.children.iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
-
-  None
-}
-
-fn first_enabled_option_value(node: &StyledNode, optgroup_disabled: bool) -> Option<String> {
-  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
-  stack.push((node, optgroup_disabled));
-
-  while let Some((node, optgroup_disabled)) = stack.pop() {
-    let tag = node.node.tag_name().unwrap_or("");
-    let is_option = tag.eq_ignore_ascii_case("option");
-    let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
-
-    let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && option_disabled);
-
-    if is_option && !(option_disabled || optgroup_disabled) {
-      return Some(option_value_from_node(node));
-    }
-
-    for child in node.children.iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
-
-  None
-}
-
-fn select_value(node: &StyledNode) -> Option<String> {
+fn build_select_control(node: &StyledNode) -> SelectControl {
   let multiple = node.node.get_attribute_ref("multiple").is_some();
-  if multiple {
-    let mut values = Vec::new();
-    collect_selected_option_values(node, false, &mut values);
-    if values.is_empty() {
-      return None;
+  let size = parse_select_size(node, multiple);
+
+  let mut items = Vec::new();
+  let mut option_item_indices = Vec::new();
+  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
+  for child in node.children.iter().rev() {
+    stack.push((child, false));
+  }
+  while let Some((node, optgroup_disabled)) = stack.pop() {
+    if node.styles.display == Display::None {
+      continue;
     }
-    return Some(values.join(", "));
+
+    if let Some(tag) = node.node.tag_name() {
+      if tag.eq_ignore_ascii_case("option") {
+        let disabled = optgroup_disabled || node.node.get_attribute_ref("disabled").is_some();
+        let idx = items.len();
+        items.push(SelectItem::Option {
+          label: option_label_from_node(node),
+          value: option_value_from_node(node),
+          selected: node.node.get_attribute_ref("selected").is_some(),
+          disabled,
+        });
+        option_item_indices.push(idx);
+        continue;
+      }
+
+      if tag.eq_ignore_ascii_case("optgroup") {
+        let disabled_attr = node.node.get_attribute_ref("disabled").is_some();
+        let disabled = optgroup_disabled || disabled_attr;
+        items.push(SelectItem::OptGroupLabel {
+          label: optgroup_label_from_node(node),
+          disabled,
+        });
+        for child in node.children.iter().rev() {
+          stack.push((child, disabled));
+        }
+        continue;
+      }
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push((child, optgroup_disabled));
+    }
   }
 
-  let explicit = find_selected_option_value(node, false);
-  if explicit.is_some() {
-    return explicit;
+  let mut selected: Vec<usize> = Vec::new();
+  if multiple {
+    for &idx in option_item_indices.iter() {
+      if let SelectItem::Option { selected: is_selected, .. } = &items[idx] {
+        if *is_selected {
+          selected.push(idx);
+        }
+      }
+    }
+  } else {
+    let mut chosen: Option<usize> = None;
+    for &idx in option_item_indices.iter() {
+      if let SelectItem::Option { selected: is_selected, .. } = &items[idx] {
+        if *is_selected {
+          chosen = Some(idx);
+        }
+      }
+    }
+
+    if chosen.is_none() {
+      for &idx in option_item_indices.iter() {
+        if let SelectItem::Option { disabled, .. } = &items[idx] {
+          if !*disabled {
+            chosen = Some(idx);
+            break;
+          }
+        }
+      }
+    }
+
+    if chosen.is_none() {
+      chosen = option_item_indices.first().copied();
+    }
+
+    for &idx in option_item_indices.iter() {
+      if let SelectItem::Option { selected, .. } = items.get_mut(idx).unwrap() {
+        *selected = Some(idx) == chosen;
+      }
+    }
+
+    if let Some(chosen) = chosen {
+      selected.push(chosen);
+    }
   }
 
-  first_enabled_option_value(node, false)
+  SelectControl {
+    multiple,
+    size,
+    items,
+    selected,
+  }
+}
+
+fn select_selected_value(control: &SelectControl) -> Option<String> {
+  let idx = control.selected.first().copied()?;
+  match control.items.get(idx)? {
+    SelectItem::Option { value, .. } => Some(value.clone()),
+    _ => None,
+  }
 }
 
 fn input_label(node: &DomNode, input_type: &str) -> String {
@@ -3157,6 +3108,10 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   let textarea_value = tag
     .eq_ignore_ascii_case("textarea")
     .then(|| collect_text_content(styled));
+  let mut select_control: Option<SelectControl> = None;
+  if tag.eq_ignore_ascii_case("select") {
+    select_control = Some(build_select_control(styled));
+  }
   let element_ref = ElementRef::new(&styled.node);
   let required = element_ref.accessibility_required() && !disabled;
   let mut invalid = element_ref.accessibility_supports_validation() && !disabled;
@@ -3169,7 +3124,17 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
           .trim()
           .is_empty();
     } else if tag.eq_ignore_ascii_case("select") {
-      invalid = required && select_value(styled).unwrap_or_default().trim().is_empty();
+      let control = select_control.as_ref().expect("select control computed");
+      invalid = if !required {
+        false
+      } else if control.multiple {
+        control.selected.is_empty()
+      } else {
+        select_selected_value(control)
+          .unwrap_or_default()
+          .trim()
+          .is_empty()
+      };
     } else {
       invalid = !element_ref.accessibility_is_valid();
     }
@@ -3338,12 +3303,9 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       invalid,
     })
   } else if tag.eq_ignore_ascii_case("select") {
-    let label = select_label(styled).unwrap_or_else(|| "Select".to_string());
+    let control = select_control.unwrap_or_else(|| build_select_control(styled));
     Some(FormControl {
-      control: FormControlKind::Select {
-        label,
-        multiple: styled.node.get_attribute_ref("multiple").is_some(),
-      },
+      control: FormControlKind::Select(control),
       appearance,
       disabled,
       focused,
@@ -3691,6 +3653,25 @@ mod tests {
 
   fn generate_box_tree_with_anonymous_fixup(styled: &StyledNode) -> BoxTree {
     generate_box_tree_with_anonymous_fixup_result(styled).expect("anonymous box generation failed")
+  }
+
+  fn first_select_control_from_html(html: &str) -> FormControl {
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_select(node: &BoxNode) -> Option<FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          if matches!(control.control, FormControlKind::Select(_)) {
+            return Some(control.clone());
+          }
+        }
+      }
+      node.children.iter().find_map(find_select)
+    }
+
+    find_select(&box_tree.root).expect("expected select form control")
   }
 
   #[test]
@@ -4101,10 +4082,167 @@ mod tests {
     assert!(controls.iter().any(|c| matches!(
       c,
       ReplacedType::FormControl(FormControl {
-        control: FormControlKind::Select { label, .. },
+        control: FormControlKind::Select(select),
         ..
-      }) if label == "One"
+      }) if select.selected.first().copied().is_some_and(|idx| matches!(
+        select.items.get(idx),
+        Some(SelectItem::Option { label, .. }) if label == "One"
+      ))
     )));
+  }
+
+  #[test]
+  fn select_single_last_selected_wins() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option selected>One</option><option selected>Two</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+
+    assert_eq!(select.selected.len(), 1);
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, .. }) if label == "Two"
+    )));
+    assert_eq!(
+      select
+        .items
+        .iter()
+        .filter(|item| matches!(item, SelectItem::Option { selected: true, .. }))
+        .count(),
+      1
+    );
+  }
+
+  #[test]
+  fn select_single_defaults_to_first_non_disabled_option() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option disabled>One</option><option>Two</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, .. }) if label == "Two"
+    )));
+  }
+
+  #[test]
+  fn select_single_defaults_to_first_option_if_all_disabled() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option disabled>One</option><option disabled>Two</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, .. }) if label == "One"
+    )));
+  }
+
+  #[test]
+  fn required_select_with_disabled_selected_placeholder_stays_invalid() {
+    let control = first_select_control_from_html(
+      "<html><body><select required><option disabled selected value=\"\">Choose…</option><option value=\"a\">A</option></select></body></html>",
+    );
+    assert!(control.required);
+    assert!(control.invalid);
+
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, value, .. }) if label == "Choose…" && value.is_empty()
+    )));
+  }
+
+  #[test]
+  fn select_ignores_display_none_options() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option selected style=\"display:none\">One</option><option>Two</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+
+    assert_eq!(select.items.len(), 1);
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, .. }) if label == "Two"
+    )));
+  }
+
+  #[test]
+  fn optgroup_disabled_propagates_and_does_not_clear_selected() {
+    let control = first_select_control_from_html(
+      "<html><body><select><optgroup label=\"g\" disabled><option selected>One</option></optgroup><option>Two</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+
+    assert!(select.items.iter().any(|item| matches!(
+      item,
+      SelectItem::OptGroupLabel { label, .. } if label == "g"
+    )));
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, disabled: true, .. }) if label == "One"
+    )));
+  }
+
+  #[test]
+  fn select_multiple_keeps_all_selected_and_defaults_size() {
+    let control = first_select_control_from_html(
+      "<html><body><select multiple><option selected>One</option><option>Two</option><option selected disabled>Three</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+
+    assert!(select.multiple);
+    assert_eq!(select.size, 4);
+    assert_eq!(select.selected.len(), 2);
+    assert!(select.selected.iter().all(|&idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { selected: true, .. })
+    )));
+    assert!(select.items.iter().any(|item| matches!(
+      item,
+      SelectItem::Option { label, selected: true, disabled: true, .. } if label == "Three"
+    )));
+  }
+
+  #[test]
+  fn select_size_attribute_defaults_and_parses() {
+    let control = first_select_control_from_html(
+      "<html><body><select multiple size=\"0\"><option selected>One</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert_eq!(select.size, 4);
+
+    let control = first_select_control_from_html(
+      "<html><body><select size=\"0\"><option>One</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert_eq!(select.size, 1);
+
+    let control =
+      first_select_control_from_html("<html><body><select size=\"5\"><option>One</option></select></body></html>");
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert_eq!(select.size, 5);
   }
 
   #[test]
@@ -6243,6 +6381,7 @@ mod tests {
           namespace: HTML_NAMESPACE.to_string(),
           attributes: vec![
             ("value".to_string(), "chosen".to_string()),
+            ("label".to_string(), "chosen".to_string()),
             ("selected".to_string(), String::new()),
           ],
         },
@@ -6313,11 +6452,14 @@ mod tests {
     let ReplacedType::FormControl(FormControl { control, .. }) = &replaced.replaced_type else {
       panic!("expected form control replaced type");
     };
-    let FormControlKind::Select { label, multiple } = control else {
+    let FormControlKind::Select(select) = control else {
       panic!("expected select form control kind");
     };
-    assert_eq!(label, "chosen");
-    assert!(!multiple);
+    assert!(!select.multiple);
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, .. }) if label == "chosen"
+    )));
   }
 
   #[test]

@@ -142,7 +142,9 @@ use crate::tree::box_tree::ReplacedBox;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::SvgDocumentCssInjection;
-use crate::tree::box_tree::{CrossOriginAttribute, FormControl, FormControlKind, TextControlKind};
+use crate::tree::box_tree::{
+  CrossOriginAttribute, FormControl, FormControlKind, SelectItem, TextControlKind,
+};
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
@@ -1086,9 +1088,32 @@ impl Painter {
               let text_len = label.chars().count().max(1) as f32;
               Size::new(char_width * text_len + char_width * 2.0, line_height)
             }
-            FormControlKind::Select { label, .. } => {
-              let text_len = label.chars().count().max(4) as f32;
-              Size::new(char_width * text_len + 20.0, line_height)
+            FormControlKind::Select(select) => {
+              let is_listbox = select.multiple || select.size > 1;
+              let max_label_len = select
+                .items
+                .iter()
+                .map(|item| match item {
+                  SelectItem::OptGroupLabel { label, .. } => label.chars().count(),
+                  SelectItem::Option { label, .. } => label.chars().count(),
+                })
+                .max()
+                .unwrap_or(4) as f32;
+              let scrollbar = if is_listbox && select.items.len() as u32 > select.size.max(1) {
+                crate::layout::utils::resolve_scrollbar_width(style)
+              } else {
+                0.0
+              };
+              let width_gutter = if is_listbox { char_width * 2.0 } else { 20.0 };
+              let height = if is_listbox {
+                line_height * select.size.max(1) as f32
+              } else {
+                line_height
+              };
+              Size::new(
+                char_width * max_label_len.max(4.0) + width_gutter + scrollbar,
+                height,
+              )
             }
             FormControlKind::Checkbox { .. } => {
               let edge = (style.font_size * 1.1).clamp(12.0, 20.0);
@@ -6836,37 +6861,203 @@ impl Painter {
         }
         true
       }
-      FormControlKind::Select { label, .. } => {
-        let rect = inset_rect(content_rect, 2.0);
-        let arrow_space = if matches!(control.appearance, Appearance::None) {
-          0.0
-        } else {
-          14.0
-        };
-        let mut select_style = style.clone();
-        if control.invalid {
-          select_style.color = accent;
-        }
-        let text_rect = Rect::from_xywh(
-          rect.x(),
-          rect.y(),
-          (rect.width() - arrow_space).max(0.0),
-          rect.height(),
-        );
-        let _ = self.paint_alt_text(label, &select_style, text_rect, clip_mask);
+      FormControlKind::Select(select) => {
+        let is_listbox = select.multiple || select.size > 1;
 
-        if arrow_space > 0.0 {
-          let mut arrow_style = select_style;
-          arrow_style.color = muted_accent;
-          let arrow_rect = Rect::from_xywh(
-            rect.x() + rect.width() - arrow_space,
+        if is_listbox {
+          let metrics = self.resolve_scaled_metrics(style);
+          let line_height = compute_line_height_with_metrics_viewport(
+            style,
+            metrics.as_ref(),
+            Some(Size::new(self.css_width, self.css_height)),
+          );
+
+          let visible_rows = select.size.max(1) as usize;
+          let total_rows = select.items.len();
+          let scrollbar_width = if total_rows > visible_rows {
+            crate::layout::utils::resolve_scrollbar_width(style).min(content_rect.width().max(0.0))
+          } else {
+            0.0
+          };
+
+          let mut scroll_start = 0usize;
+          if total_rows > visible_rows && visible_rows > 0 {
+            if let Some(first_selected) = select.selected.iter().copied().min() {
+              if first_selected >= visible_rows {
+                scroll_start = first_selected + 1 - visible_rows;
+              }
+            }
+            let max_scroll = total_rows.saturating_sub(visible_rows);
+            scroll_start = scroll_start.min(max_scroll);
+          }
+
+          let group_present = select
+            .items
+            .iter()
+            .any(|item| matches!(item, SelectItem::OptGroupLabel { .. }));
+          let option_indent = if group_present { 10.0 } else { 2.0 };
+
+          let rect = inset_rect(content_rect, 1.0);
+          let text_rect = Rect::from_xywh(
+            rect.x(),
             rect.y(),
-            arrow_space,
+            (rect.width() - scrollbar_width).max(0.0),
             rect.height(),
           );
-          let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, clip_mask);
+
+          let mut local_clip_mask: Option<Mask> = None;
+          let list_clip_mask = clip_mask.or_else(|| {
+            let canvas_w = self.pixmap.width();
+            let canvas_h = self.pixmap.height();
+            local_clip_mask = build_rounded_rect_mask(
+              self.device_rect(content_rect),
+              BorderRadii::ZERO,
+              canvas_w,
+              canvas_h,
+            );
+            local_clip_mask.as_ref()
+          });
+
+          for row in 0..visible_rows {
+            let item_idx = scroll_start + row;
+            if item_idx >= total_rows {
+              break;
+            }
+            let y = rect.y() + row as f32 * line_height;
+            let row_rect = Rect::from_xywh(text_rect.x(), y, text_rect.width(), line_height);
+            if row_rect.width() <= 0.0 || row_rect.height() <= 0.0 {
+              continue;
+            }
+
+            match &select.items[item_idx] {
+              SelectItem::OptGroupLabel { label, disabled } => {
+                let mut row_style = style.clone();
+                row_style.color = if *disabled {
+                  style.color.with_alpha(0.5)
+                } else {
+                  style.color.with_alpha(0.75)
+                };
+                let row_rect = Rect::from_xywh(
+                  row_rect.x() + 2.0,
+                  row_rect.y(),
+                  (row_rect.width() - 2.0).max(0.0),
+                  row_rect.height(),
+                );
+                let _ = self.paint_alt_text(label, &row_style, row_rect, list_clip_mask);
+              }
+              SelectItem::Option {
+                label,
+                selected,
+                disabled,
+                ..
+              } => {
+                if *selected {
+                  let highlight =
+                    muted_accent.with_alpha((muted_accent.a * 0.25).max(0.15).min(0.4));
+                  let device_rect = self.device_rect(row_rect);
+                  fill_rounded_rect_masked(
+                    &mut self.pixmap,
+                    device_rect,
+                    BorderRadii::ZERO,
+                    highlight,
+                    list_clip_mask,
+                  );
+                }
+
+                let mut row_style = style.clone();
+                row_style.color = if *disabled {
+                  style.color.with_alpha(0.5)
+                } else if control.invalid {
+                  accent
+                } else {
+                  style.color
+                };
+                let row_rect = Rect::from_xywh(
+                  row_rect.x() + option_indent,
+                  row_rect.y(),
+                  (row_rect.width() - option_indent).max(0.0),
+                  row_rect.height(),
+                );
+                let _ = self.paint_alt_text(label, &row_style, row_rect, list_clip_mask);
+              }
+            }
+          }
+
+          if scrollbar_width > 0.0 && rect.height() > 0.0 {
+            let track_rect = Rect::from_xywh(
+              rect.max_x() - scrollbar_width,
+              rect.y(),
+              scrollbar_width,
+              rect.height(),
+            );
+            let device_track = self.device_rect(track_rect);
+            fill_rounded_rect_masked(
+              &mut self.pixmap,
+              device_track,
+              BorderRadii::ZERO,
+              Rgba::rgb(240, 240, 240),
+              list_clip_mask,
+            );
+
+            let max_scroll = total_rows.saturating_sub(visible_rows).max(1) as f32;
+            let visible_fraction = visible_rows as f32 / total_rows.max(1) as f32;
+            let thumb_height = (track_rect.height() * visible_fraction).max(8.0);
+            let travel = (track_rect.height() - thumb_height).max(0.0);
+            let thumb_y = track_rect.y() + travel * (scroll_start as f32 / max_scroll);
+            let thumb_rect =
+              Rect::from_xywh(track_rect.x(), thumb_y, track_rect.width(), thumb_height);
+            let device_thumb = self.device_rect(thumb_rect);
+            fill_rounded_rect_masked(
+              &mut self.pixmap,
+              device_thumb,
+              BorderRadii::ZERO,
+              Rgba::rgb(180, 180, 180),
+              list_clip_mask,
+            );
+          }
+
+          true
+        } else {
+          let label = select
+            .selected
+            .first()
+            .and_then(|&idx| match select.items.get(idx) {
+              Some(SelectItem::Option { label, .. }) => Some(label.as_str()),
+              _ => None,
+            })
+            .unwrap_or("Select");
+
+          let rect = inset_rect(content_rect, 2.0);
+          let arrow_space = if matches!(control.appearance, Appearance::None) {
+            0.0
+          } else {
+            14.0
+          };
+          let mut select_style = style.clone();
+          if control.invalid {
+            select_style.color = accent;
+          }
+          let text_rect = Rect::from_xywh(
+            rect.x(),
+            rect.y(),
+            (rect.width() - arrow_space).max(0.0),
+            rect.height(),
+          );
+          let _ = self.paint_alt_text(label, &select_style, text_rect, clip_mask);
+
+          if arrow_space > 0.0 {
+            let mut arrow_style = select_style;
+            arrow_style.color = muted_accent;
+            let arrow_rect = Rect::from_xywh(
+              rect.x() + rect.width() - arrow_space,
+              rect.y(),
+              arrow_space,
+              rect.height(),
+            );
+            let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, clip_mask);
+          }
+          true
         }
-        true
       }
       FormControlKind::Button { label } => {
         if label.trim().is_empty() {

@@ -159,12 +159,7 @@ pub enum FormControlKind {
   /// Button control (<button> and <input type=button|submit|reset>)
   Button { label: String },
   /// Selection control (<select>)
-  Select {
-    /// User-visible label for the current selection
-    label: String,
-    /// Whether multiple selections are allowed
-    multiple: bool,
-  },
+  Select(SelectControl),
   /// Checkbox or radio input
   Checkbox {
     /// Whether this represents a radio input (circle) instead of checkbox (square)
@@ -205,6 +200,41 @@ pub enum TextControlKind {
   Number,
   /// Date-like input that renders a simple date placeholder
   Date,
+}
+
+/// Flattened model of a `<select>` control used for intrinsic sizing + painting.
+#[derive(Clone, PartialEq)]
+pub struct SelectControl {
+  /// Whether multiple selections are allowed.
+  pub multiple: bool,
+  /// Computed visible row count (`size` attribute semantics).
+  pub size: u32,
+  /// Flattened rows in tree order (includes optgroup labels).
+  pub items: Vec<SelectItem>,
+  /// Indices into `items` for selected `<option>` rows (tree order).
+  pub selected: Vec<usize>,
+}
+
+impl fmt::Debug for SelectControl {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("SelectControl")
+      .field("multiple", &self.multiple)
+      .field("size", &self.size)
+      .field("items_len", &self.items.len())
+      .field("selected", &self.selected)
+      .finish()
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectItem {
+  OptGroupLabel { label: String, disabled: bool },
+  Option {
+    label: String,
+    value: String,
+    selected: bool,
+    disabled: bool,
+  },
 }
 
 /// A replaced element box

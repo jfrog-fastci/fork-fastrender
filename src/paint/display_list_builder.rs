@@ -38,7 +38,7 @@ use crate::geometry::Size;
 use crate::image_loader::ImageCache;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::layout::contexts::inline::line_builder::TextItem as InlineTextItem;
-use crate::layout::utils::resolve_font_relative_length;
+use crate::layout::utils::{resolve_font_relative_length, resolve_scrollbar_width};
 use crate::math::{layout_mathml, MathFragment};
 use crate::paint::clip_path::resolve_clip_path;
 use crate::paint::display_list::BlendMode;
@@ -162,6 +162,7 @@ use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
 use crate::tree::box_tree::ReplacedType;
+use crate::tree::box_tree::SelectItem;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::TextControlKind;
 use crate::tree::fragment_tree::FragmentContent;
@@ -7693,30 +7694,169 @@ impl DisplayListBuilder {
         }
         true
       }
-      FormControlKind::Select { label, .. } => {
-        let mut select_style = style.clone();
-        if control.invalid {
-          select_style.color = accent;
-        }
-        let _ = self.emit_text_with_style(label, Some(&select_style), content_rect);
+      FormControlKind::Select(select) => {
+        let is_listbox = select.multiple || select.size > 1;
 
-        if !matches!(control.appearance, Appearance::None) {
-          let arrow_space = 14.0_f32.min(padding_rect.width().max(0.0));
-          let arrow_left = (padding_rect.max_x() - arrow_space).max(content_rect.max_x());
-          let arrow_rect = Rect::from_xywh(
-            arrow_left,
+        if is_listbox {
+          let metrics_scaled = Self::resolve_scaled_metrics(style, &self.font_ctx);
+          let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
+          let line_height =
+            compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), viewport);
+
+          let visible_rows = select.size.max(1) as usize;
+          let total_rows = select.items.len();
+          let scrollbar_width = if total_rows > visible_rows {
+            resolve_scrollbar_width(style).min(content_rect.width().max(0.0))
+          } else {
+            0.0
+          };
+          let text_rect = Rect::from_xywh(
+            content_rect.x(),
             content_rect.y(),
-            (padding_rect.max_x() - arrow_left).max(0.0),
+            (content_rect.width() - scrollbar_width).max(0.0),
             content_rect.height(),
           );
-          if arrow_rect.width() > 0.0 {
-            let mut arrow_style = select_style;
-            arrow_style.color = muted_accent;
-            arrow_style.font_size = (style.font_size * 0.9).max(8.0);
-            let _ = emit_text_aligned(self, "▾", &arrow_style, arrow_rect, true, true);
+
+          let mut scroll_start = 0usize;
+          if total_rows > visible_rows && visible_rows > 0 {
+            if let Some(first_selected) = select.selected.iter().copied().min() {
+              if first_selected >= visible_rows {
+                scroll_start = first_selected + 1 - visible_rows;
+              }
+            }
+            let max_scroll = total_rows.saturating_sub(visible_rows);
+            scroll_start = scroll_start.min(max_scroll);
           }
+
+          let group_present = select
+            .items
+            .iter()
+            .any(|item| matches!(item, SelectItem::OptGroupLabel { .. }));
+          let option_indent = if group_present { 10.0 } else { 2.0 };
+
+          self.push_clip(content_rect);
+          for row in 0..visible_rows {
+            let item_idx = scroll_start + row;
+            if item_idx >= total_rows {
+              break;
+            }
+            let y = content_rect.y() + row as f32 * line_height;
+            let row_rect = Rect::from_xywh(text_rect.x(), y, text_rect.width(), line_height);
+            if row_rect.width() <= 0.0 || row_rect.height() <= 0.0 {
+              continue;
+            }
+
+            match &select.items[item_idx] {
+              SelectItem::OptGroupLabel { label, disabled } => {
+                let mut row_style = style.clone();
+                row_style.color = if *disabled {
+                  style.color.with_alpha(0.5)
+                } else {
+                  style.color.with_alpha(0.75)
+                };
+                let row_rect = Rect::from_xywh(
+                  row_rect.x() + 2.0,
+                  row_rect.y(),
+                  (row_rect.width() - 2.0).max(0.0),
+                  row_rect.height(),
+                );
+                let _ = self.emit_text_with_style(label, Some(&row_style), row_rect);
+              }
+              SelectItem::Option {
+                label,
+                selected,
+                disabled,
+                ..
+              } => {
+                if *selected {
+                  let highlight =
+                    muted_accent.with_alpha((muted_accent.a * 0.25).max(0.15).min(0.4));
+                  self.list.push(DisplayItem::FillRect(FillRectItem {
+                    rect: row_rect,
+                    color: highlight,
+                  }));
+                }
+
+                let mut row_style = style.clone();
+                row_style.color = if *disabled {
+                  style.color.with_alpha(0.5)
+                } else if control.invalid {
+                  accent
+                } else {
+                  style.color
+                };
+                let row_rect = Rect::from_xywh(
+                  row_rect.x() + option_indent,
+                  row_rect.y(),
+                  (row_rect.width() - option_indent).max(0.0),
+                  row_rect.height(),
+                );
+                let _ = self.emit_text_with_style(label, Some(&row_style), row_rect);
+              }
+            }
+          }
+
+          if scrollbar_width > 0.0 && content_rect.height() > 0.0 {
+            let track_rect = Rect::from_xywh(
+              content_rect.max_x() - scrollbar_width,
+              content_rect.y(),
+              scrollbar_width,
+              content_rect.height(),
+            );
+            self.list.push(DisplayItem::FillRect(FillRectItem {
+              rect: track_rect,
+              color: Rgba::rgb(240, 240, 240),
+            }));
+
+            let max_scroll = total_rows.saturating_sub(visible_rows).max(1) as f32;
+            let visible_fraction = visible_rows as f32 / total_rows.max(1) as f32;
+            let thumb_height = (track_rect.height() * visible_fraction).max(8.0);
+            let travel = (track_rect.height() - thumb_height).max(0.0);
+            let thumb_y = track_rect.y() + travel * (scroll_start as f32 / max_scroll);
+            let thumb_rect =
+              Rect::from_xywh(track_rect.x(), thumb_y, track_rect.width(), thumb_height);
+            self.list.push(DisplayItem::FillRect(FillRectItem {
+              rect: thumb_rect,
+              color: Rgba::rgb(180, 180, 180),
+            }));
+          }
+
+          self.pop_clip();
+          true
+        } else {
+          let label = select
+            .selected
+            .first()
+            .and_then(|&idx| match select.items.get(idx) {
+              Some(SelectItem::Option { label, .. }) => Some(label.as_str()),
+              _ => None,
+            })
+            .unwrap_or("Select");
+
+          let mut select_style = style.clone();
+          if control.invalid {
+            select_style.color = accent;
+          }
+          let _ = self.emit_text_with_style(label, Some(&select_style), content_rect);
+
+          if !matches!(control.appearance, Appearance::None) {
+            let arrow_space = 14.0_f32.min(padding_rect.width().max(0.0));
+            let arrow_left = (padding_rect.max_x() - arrow_space).max(content_rect.max_x());
+            let arrow_rect = Rect::from_xywh(
+              arrow_left,
+              content_rect.y(),
+              (padding_rect.max_x() - arrow_left).max(0.0),
+              content_rect.height(),
+            );
+            if arrow_rect.width() > 0.0 {
+              let mut arrow_style = select_style;
+              arrow_style.color = muted_accent;
+              arrow_style.font_size = (style.font_size * 0.9).max(8.0);
+              let _ = emit_text_aligned(self, "▾", &arrow_style, arrow_rect, true, true);
+            }
+          }
+          true
         }
-        true
       }
       FormControlKind::Button { label } => {
         if label.trim().is_empty() {
