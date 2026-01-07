@@ -94,6 +94,9 @@ pub fn running_elements_for_page(
         last: None,
       });
     if entry.first.is_none() {
+      if (event.abs_block - start).abs() < EPSILON {
+        entry.start = Some(event.snapshot.clone());
+      }
       entry.first = Some(event.snapshot.clone());
     }
     entry.last = Some(event.snapshot.clone());
@@ -119,18 +122,24 @@ pub fn select_running_element(
 ) -> Option<FragmentNode> {
   let page = page_values.get(ident);
   match select {
-    RunningElementSelect::First => state
-      .first
-      .get(ident)
-      .cloned()
-      .or_else(|| page.and_then(|v| v.first.clone().or_else(|| v.start.clone()))),
-    RunningElementSelect::Start => page.and_then(|v| v.first.clone().or_else(|| v.start.clone())),
-    RunningElementSelect::Last => page.and_then(|v| {
-      v.last
-        .clone()
-        .or_else(|| v.first.clone())
-        .or_else(|| v.start.clone())
-    }),
+    RunningElementSelect::First => page
+      .and_then(|v| v.first.clone().or_else(|| v.start.clone()))
+      .or_else(|| state.last.get(ident).cloned()),
+    RunningElementSelect::Start => page
+      .and_then(|v| v.start.clone())
+      .or_else(|| state.last.get(ident).cloned()),
+    RunningElementSelect::Last => page
+      .and_then(|v| v.last.clone().or_else(|| v.start.clone()))
+      .or_else(|| state.last.get(ident).cloned()),
+    RunningElementSelect::FirstExcept => {
+      if page.is_some_and(|v| v.first.is_some()) {
+        None
+      } else {
+        page
+          .and_then(|v| v.first.clone().or_else(|| v.start.clone()))
+          .or_else(|| state.last.get(ident).cloned())
+      }
+    }
   }
 }
 

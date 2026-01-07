@@ -164,6 +164,8 @@ pub enum RunningElementSelect {
   Start,
   /// Last occurrence of the running element
   Last,
+  /// Like `First`, but resolves to no snapshot on pages where the element is assigned.
+  FirstExcept,
 }
 
 impl fmt::Display for RunningElementSelect {
@@ -172,6 +174,7 @@ impl fmt::Display for RunningElementSelect {
       RunningElementSelect::First => "first",
       RunningElementSelect::Start => "start",
       RunningElementSelect::Last => "last",
+      RunningElementSelect::FirstExcept => "first-except",
     };
     write!(f, "{}", name)
   }
@@ -180,7 +183,10 @@ impl fmt::Display for RunningElementSelect {
 /// Values captured for a named string on a page.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunningStringValues {
-  /// Value carried into this page.
+  /// Value used for `string(name, start)` on this page.
+  ///
+  /// This is normally the entry value (carried into the page), but if the first assignment occurs
+  /// at the page start boundary it is set to that first assignment.
   pub start: Option<String>,
   /// First assignment within this page.
   pub first: Option<String>,
@@ -191,7 +197,10 @@ pub struct RunningStringValues {
 /// Running element values captured for a page.
 #[derive(Debug, Clone, Default)]
 pub struct RunningElementValues {
-  /// Value carried into this page (last occurrence before the page start).
+  /// Value used for `element(name, start)` on this page.
+  ///
+  /// This is normally the entry value (last occurrence before the page start), but if the first
+  /// assignment occurs at the page start boundary it is set to that first assignment.
   pub start: Option<crate::tree::fragment_tree::FragmentNode>,
   /// First occurrence within this page.
   pub first: Option<crate::tree::fragment_tree::FragmentNode>,
@@ -308,8 +317,10 @@ pub enum StringReferenceKind {
   Start,
   /// First assignment within the current page.
   First,
-  /// Last assignment within the current page (default for `string()`).
+  /// Last assignment within the current page.
   Last,
+  /// Like `First`, but resolves to the empty string on pages where the string is assigned.
+  FirstExcept,
 }
 
 /// Computed value for a string-set assignment.
@@ -417,8 +428,9 @@ impl fmt::Display for ContentItem {
       ContentItem::String(s) => write!(f, "\"{}\"", s.replace('"', "\\\"")),
       ContentItem::StringReference { name, kind } => match kind {
         StringReferenceKind::Start => write!(f, "string({}, start)", name),
-        StringReferenceKind::First => write!(f, "string({}, first)", name),
-        StringReferenceKind::Last => write!(f, "string({})", name),
+        StringReferenceKind::First => write!(f, "string({})", name),
+        StringReferenceKind::Last => write!(f, "string({}, last)", name),
+        StringReferenceKind::FirstExcept => write!(f, "string({}, first-except)", name),
       },
       ContentItem::Attr { name, fallback, .. } => {
         if let Some(fb) = fallback {
@@ -959,6 +971,16 @@ impl ContentContext {
       StringReferenceKind::Start => values.start.as_deref(),
       StringReferenceKind::First => values.first.as_deref().or_else(|| values.start.as_deref()),
       StringReferenceKind::Last => values.last.as_deref().or_else(|| values.start.as_deref()),
+      StringReferenceKind::FirstExcept => {
+        if values.first.is_some() {
+          Some("")
+        } else {
+          values
+            .first
+            .as_deref()
+            .or_else(|| values.start.as_deref())
+        }
+      }
     }
   }
 
@@ -970,20 +992,16 @@ impl ContentContext {
   ) -> Option<crate::tree::fragment_tree::FragmentNode> {
     let values = self.running_elements.get(name);
     match select {
-      RunningElementSelect::First => self
-        .running_element_firsts
-        .get(name)
-        .cloned()
-        .or_else(|| values.and_then(|v| v.first.clone().or_else(|| v.start.clone()))),
-      RunningElementSelect::Start => {
-        values.and_then(|v| v.first.clone().or_else(|| v.start.clone()))
+      RunningElementSelect::First => values.and_then(|v| v.first.clone().or_else(|| v.start.clone())),
+      RunningElementSelect::Start => values.and_then(|v| v.start.clone()),
+      RunningElementSelect::Last => values.and_then(|v| v.last.clone().or_else(|| v.start.clone())),
+      RunningElementSelect::FirstExcept => {
+        if values.is_some_and(|v| v.first.is_some()) {
+          None
+        } else {
+          values.and_then(|v| v.first.clone().or_else(|| v.start.clone()))
+        }
       }
-      RunningElementSelect::Last => values.and_then(|v| {
-        v.last
-          .clone()
-          .or_else(|| v.first.clone())
-          .or_else(|| v.start.clone())
-      }),
     }
   }
 
@@ -1547,8 +1565,9 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
         Some(k) if k == "start" => StringReferenceKind::Start,
         Some(k) if k == "first" => StringReferenceKind::First,
         Some(k) if k == "last" => StringReferenceKind::Last,
+        Some(k) if k == "first-except" => StringReferenceKind::FirstExcept,
         Some(_) => return None,
-        None => StringReferenceKind::Last,
+        None => StringReferenceKind::First,
       };
       if parts.next().is_some() {
         return None;
@@ -1588,6 +1607,7 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
           "first" => RunningElementSelect::First,
           "start" => RunningElementSelect::Start,
           "last" => RunningElementSelect::Last,
+          "first-except" => RunningElementSelect::FirstExcept,
           _ => return None,
         }
       } else {
@@ -2173,7 +2193,7 @@ mod tests {
       content,
       ContentValue::Items(vec![ContentItem::StringReference {
         name: "header".to_string(),
-        kind: StringReferenceKind::Last
+        kind: StringReferenceKind::First
       }])
     );
   }
@@ -2186,6 +2206,18 @@ mod tests {
       ContentValue::Items(vec![ContentItem::StringReference {
         name: "header".to_string(),
         kind: StringReferenceKind::Start
+      }])
+    );
+  }
+
+  #[test]
+  fn test_parse_string_function_first_except() {
+    let content = parse_content("string(header, first-except)").unwrap();
+    assert_eq!(
+      content,
+      ContentValue::Items(vec![ContentItem::StringReference {
+        name: "header".to_string(),
+        kind: StringReferenceKind::FirstExcept,
       }])
     );
   }
@@ -2234,6 +2266,15 @@ mod tests {
       ContentValue::Items(vec![ContentItem::Element {
         ident: "header".to_string(),
         select: RunningElementSelect::Last,
+      }])
+    );
+
+    let first_except = parse_content("element(header, first-except)").unwrap();
+    assert_eq!(
+      first_except,
+      ContentValue::Items(vec![ContentItem::Element {
+        ident: "header".to_string(),
+        select: RunningElementSelect::FirstExcept,
       }])
     );
   }

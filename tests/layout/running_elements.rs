@@ -1,5 +1,6 @@
 use fastrender::api::FastRender;
 use fastrender::geometry::Point;
+use fastrender::style::media::MediaType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
 fn pages<'a>(tree: &'a FragmentTree) -> Vec<&'a FragmentNode> {
@@ -62,27 +63,31 @@ fn running_headers_follow_page_start() {
     <html>
       <head>
         <style>
-          @page {
-            size: 200px 200px;
-            margin: 20px;
-            @top-center { content: element(header, start); }
-          }
-          body { margin: 0; }
-          h1 { position: running(header); margin: 0; font-size: 16px; }
-          .spacer { height: 220px; }
-        </style>
-      </head>
-      <body>
-        <h1>First Title</h1>
-        <div class="spacer"></div>
-        <h1>Second Title</h1>
-      </body>
-    </html>
-  "#;
+           @page {
+             size: 200px 200px;
+             margin: 20px;
+             @top-center { content: element(header, start); }
+           }
+           body { margin: 0; }
+            h1 { position: running(header); margin: 0; font-size: 16px; }
+            .spacer { height: 10px; }
+            /* Force the second running element to start at the top of page 2. */
+            .page-break { break-before: page; height: 0; }
+          </style>
+        </head>
+        <body>
+          <h1>First Title</h1>
+          <div class="spacer"></div>
+          <div class="page-break"></div>
+          <h1>Second Title</h1>
+          <div class="spacer"></div>
+        </body>
+      </html>
+   "#;
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -94,7 +99,7 @@ fn running_headers_follow_page_start() {
   );
   assert!(
     second_margin.iter().any(|t| t.contains("SecondTitle")),
-    "second page header should use start-most running element on that page"
+    "second page header should update when the running element starts the page (start selection)"
   );
 }
 
@@ -126,7 +131,7 @@ fn first_start_last_selection_differs() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page_roots = pages(&tree);
   assert!(page_roots.len() >= 2);
   let second_page = page_roots[1];
@@ -170,7 +175,7 @@ fn running_elements_and_strings_coexist() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page_roots = pages(&tree);
   assert!(page_roots.len() >= 2);
 
