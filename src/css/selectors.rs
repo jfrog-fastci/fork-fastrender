@@ -531,7 +531,9 @@ pub enum PseudoElement {
   Marker,
   Backdrop,
   Placeholder,
+  Selection,
   MozFocusInner,
+  MozFocusOuter,
   SliderThumb,
   SliderTrack,
   Slotted(Box<[Selector<FastRenderSelectorImpl>]>),
@@ -595,7 +597,9 @@ impl ToCss for PseudoElement {
       PseudoElement::Marker => dest.write_str("::marker"),
       PseudoElement::Backdrop => dest.write_str("::backdrop"),
       PseudoElement::Placeholder => dest.write_str("::placeholder"),
+      PseudoElement::Selection => dest.write_str("::selection"),
       PseudoElement::MozFocusInner => dest.write_str("::-moz-focus-inner"),
+      PseudoElement::MozFocusOuter => dest.write_str("::-moz-focus-outer"),
       PseudoElement::SliderThumb => dest.write_str("::-webkit-slider-thumb"),
       PseudoElement::SliderTrack => dest.write_str("::-webkit-slider-runnable-track"),
       PseudoElement::Slotted(selectors) => {
@@ -671,11 +675,13 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     match name.to_ascii_lowercase().as_str() {
       // Real-world stylesheets (and some engines) still use single-colon forms for these
       // vendor pseudo-elements.
+      "selection" | "-moz-selection" => true,
       "placeholder"
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
       | "-ms-input-placeholder" => true,
       "-moz-focus-inner" => true,
+      "-moz-focus-outer" => true,
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => true,
       _ => false,
@@ -890,6 +896,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "first-letter" => Ok(PseudoElement::FirstLetter),
       "marker" => Ok(PseudoElement::Marker),
       "backdrop" => Ok(PseudoElement::Backdrop),
+      "selection" | "-moz-selection" => Ok(PseudoElement::Selection),
       // `::placeholder` has widely used vendor aliases; accept them and canonicalize to the
       // standard name so selector lists containing vendor variants do not invalidate the rule.
       "placeholder"
@@ -897,6 +904,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       | "-moz-placeholder"
       | "-ms-input-placeholder" => Ok(PseudoElement::Placeholder),
       "-moz-focus-inner" => Ok(PseudoElement::MozFocusInner),
+      "-moz-focus-outer" => Ok(PseudoElement::MozFocusOuter),
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => Ok(PseudoElement::SliderTrack),
       _ => Err(ParseError {
@@ -1407,6 +1415,16 @@ mod tests {
   fn parses_vendor_pseudo_element_aliases() {
     let parser = PseudoClassParser;
     let loc = SourceLocation { line: 0, column: 0 };
+    for name in ["selection", "-moz-selection"] {
+      assert_eq!(
+        parser
+          .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
+          .unwrap(),
+        PseudoElement::Selection,
+        "{name} should map to ::selection"
+      );
+    }
+
     for name in [
       "placeholder",
       "-webkit-input-placeholder",
@@ -1427,6 +1445,13 @@ mod tests {
         .parse_pseudo_element(loc, cssparser::CowRcStr::from("-moz-focus-inner"))
         .unwrap(),
       PseudoElement::MozFocusInner
+    );
+
+    assert_eq!(
+      parser
+        .parse_pseudo_element(loc, cssparser::CowRcStr::from("-moz-focus-outer"))
+        .unwrap(),
+      PseudoElement::MozFocusOuter
     );
 
     for name in ["-webkit-slider-thumb", "-moz-range-thumb", "-ms-thumb"] {
@@ -1654,6 +1679,49 @@ mod tests {
   }
 
   #[test]
+  fn parses_moz_focus_outer_pseudo_element_selectors() {
+    for selector_text in [
+      "button::-moz-focus-outer",
+      "input::-moz-focus-outer",
+      "button::-moz-focus-outer, input::-moz-focus-outer",
+      "button:-moz-focus-outer, input:-moz-focus-outer",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+  }
+
+  #[test]
+  fn parses_selection_pseudo_element_selectors() {
+    for selector_text in [
+      ".CodeMirror-line::selection",
+      ".CodeMirror-line::-moz-selection",
+      ".CodeMirror-line:selection",
+      ".CodeMirror-line:-moz-selection",
+      ".CodeMirror-line::selection, .CodeMirror-line::-moz-selection, .CodeMirror-line",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+
+    // Vendor spelling should behave like an alias and serialize to the standard form.
+    let list = parse_selector_list(".a::-moz-selection, .a::selection");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec![".a::selection".to_string(), ".a::selection".to_string()]
+    );
+  }
+
+  #[test]
   fn parses_placeholder_pseudo_elements() {
     let mut input = ParserInput::new("input::-ms-input-placeholder, input::placeholder");
     let mut parser = Parser::new(&mut input);
@@ -1713,11 +1781,13 @@ mod tests {
     assert_eq!(part.to_css_string(), "::part(name)");
 
     assert_eq!(PseudoElement::Placeholder.to_css_string(), "::placeholder");
+    assert_eq!(PseudoElement::Selection.to_css_string(), "::selection");
     assert_eq!(PseudoElement::SliderThumb.to_css_string(), "::-webkit-slider-thumb");
     assert_eq!(
       PseudoElement::SliderTrack.to_css_string(),
       "::-webkit-slider-runnable-track"
     );
+    assert_eq!(PseudoElement::MozFocusOuter.to_css_string(), "::-moz-focus-outer");
   }
 
   #[test]

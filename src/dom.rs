@@ -6190,7 +6190,9 @@ impl<'a> Element for ElementRef<'a> {
       | PseudoElement::Marker
       | PseudoElement::Backdrop => true,
       PseudoElement::MozFocusInner => false,
+      PseudoElement::MozFocusOuter => false,
       PseudoElement::Placeholder => self.is_placeholder_shown(),
+      PseudoElement::Selection => false,
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
         let Some(tag) = self.node.tag_name() else {
           return false;
