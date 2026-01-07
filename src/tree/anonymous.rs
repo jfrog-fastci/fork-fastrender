@@ -565,7 +565,7 @@ impl AnonymousBoxCreator {
     let mut inline_style: Option<Arc<ComputedStyle>> = None;
 
     for child in children.iter_mut() {
-      if !child.is_text() {
+      if !matches!(&child.box_type, BoxType::Text(_)) {
         continue;
       }
 
@@ -668,7 +668,7 @@ impl AnonymousBoxCreator {
     let mut inherited_inline_style: Option<Arc<ComputedStyle>> = None;
     let mut children = children;
     for child in children.iter_mut() {
-      if !child.is_text() {
+      if !matches!(&child.box_type, BoxType::Text(_)) {
         continue;
       }
       // Wrap text in anonymous inline.
@@ -684,7 +684,7 @@ impl AnonymousBoxCreator {
   }
 
   fn wrap_text_in_anonymous_inline_in_place(node: &mut BoxNode, wrapper_style: Arc<ComputedStyle>) {
-    debug_assert!(node.is_text());
+    debug_assert!(matches!(&node.box_type, BoxType::Text(_)));
 
     let wrapper_box_type = BoxType::Anonymous(AnonymousBox {
       anonymous_type: AnonymousType::Inline,
@@ -923,6 +923,7 @@ mod tests {
   use crate::style::color::Rgba;
   use crate::style::display::{Display, FormattingContextType};
   use crate::style::position::Position;
+  use crate::tree::box_tree::MarkerContent;
   use crate::tree::table_fixup::TableStructureFixer;
 
   fn default_style() -> Arc<ComputedStyle> {
@@ -1005,6 +1006,34 @@ mod tests {
     assert_eq!(fixed.children.len(), 1);
     assert!(fixed.children[0].is_anonymous());
     assert!(fixed.children[0].is_inline_level());
+  }
+
+  #[test]
+  fn marker_boxes_are_not_wrapped_in_anonymous_inlines() {
+    let marker = BoxNode::new_marker(default_style(), MarkerContent::Text("•".to_string()));
+    let text = BoxNode::new_text(default_style(), "Hello".to_string());
+
+    let container = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![marker, text],
+    );
+
+    let fixed = fixup_tree(container);
+    assert_eq!(fixed.children.len(), 2);
+
+    assert!(
+      matches!(&fixed.children[0].box_type, BoxType::Marker(_)),
+      "marker should remain a direct child (not wrapped in anonymous inline)"
+    );
+
+    let wrapper = &fixed.children[1];
+    assert!(
+      wrapper.is_anonymous() && wrapper.is_inline_level(),
+      "text should still be wrapped in an anonymous inline"
+    );
+    assert_eq!(wrapper.children.len(), 1);
+    assert!(matches!(&wrapper.children[0].box_type, BoxType::Text(_)));
   }
 
   #[test]
