@@ -1724,13 +1724,20 @@ fn popover_open(node: &DomNode) -> bool {
 /// Bench helper: determine whether the DOM contains an open modal `<dialog>`.
 #[doc(hidden)]
 pub fn modal_dialog_present(node: &DomNode) -> bool {
-  if let Some((_, modal)) = dialog_state(node) {
-    if modal {
-      return true;
+  let mut stack: Vec<&DomNode> = vec![node];
+  while let Some(node) = stack.pop() {
+    if let Some((_, modal)) = dialog_state(node) {
+      if modal {
+        return true;
+      }
+    }
+
+    for child in node.traversal_children().iter().rev() {
+      stack.push(child);
     }
   }
 
-  node.traversal_children().iter().any(modal_dialog_present)
+  false
 }
 
 fn set_attr(attrs: &mut Vec<(String, String)>, name: &str, value: &str) {
@@ -1861,70 +1868,13 @@ fn apply_top_layer_open_state(node: &mut DomNode) -> bool {
   modal_open
 }
 
-fn apply_top_layer_state_inner(node: &mut DomNode, modal_open: bool, inside_modal: bool) -> bool {
-  let mut within_modal = inside_modal;
-  let dialog_info = dialog_state(node);
-  let has_popover = node.get_attribute_ref("popover").is_some();
-  let popover_is_open = if has_popover {
-    popover_open_assuming_popover(node)
-  } else {
-    false
-  };
-  let mut subtree_has_modal = within_modal;
-
-  if let DomNodeType::Element {
-    tag_name,
-    attributes,
-    ..
-  } = &mut node.node_type
-  {
-    let is_dialog = tag_name.eq_ignore_ascii_case("dialog");
-    let mut should_open = false;
-
-    if is_dialog {
-      if let Some((open, modal)) = dialog_info {
-        should_open = open;
-        if modal {
-          within_modal = true;
-          subtree_has_modal = true;
-        }
-      }
-    } else if has_popover {
-      should_open = popover_is_open;
-    }
-
-    if is_dialog || has_popover {
-      if should_open {
-        set_attr(attributes, "open", "");
-      } else {
-        remove_attr(attributes, "open");
-      }
-    }
-  }
-
-  let child_modal = within_modal;
-  if !node.is_template_element() {
-    for child in node.children.iter_mut() {
-      let child_contains_modal = apply_top_layer_state_inner(child, modal_open, child_modal);
-      subtree_has_modal |= child_contains_modal;
-    }
-  }
-
-  if modal_open {
-    if let DomNodeType::Element { attributes, .. } = &mut node.node_type {
-      if !subtree_has_modal {
-        set_attr(attributes, "data-fastr-inert", "true");
-      }
-    }
-  }
-
-  subtree_has_modal
-}
-
 /// Bench helper: apply dialog/popover open state and `data-fastr-inert` propagation.
 #[doc(hidden)]
 pub fn apply_top_layer_state(node: &mut DomNode, modal_open: bool) {
-  let _ = apply_top_layer_state_inner(node, modal_open, false);
+  let _ = apply_top_layer_open_state(node);
+  if modal_open {
+    apply_top_layer_inert_state(node);
+  }
 }
 
 fn open_modal_dialog_after_open_state(node: &DomNode) -> bool {
