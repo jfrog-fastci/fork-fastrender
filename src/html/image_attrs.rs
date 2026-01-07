@@ -444,26 +444,45 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
 /// Returns `None` if no valid size entries are found.
 pub fn parse_sizes(attr: &str) -> Option<SizesList> {
   use crate::style::media::MediaQuery;
-  use crate::style::properties::split_top_level_commas;
 
-  let mut entries = Vec::new();
-  for item in split_top_level_commas(attr) {
-    let trimmed = item.trim();
-    if trimmed.is_empty() {
-      continue;
+  fn split_top_level_commas(input: &str) -> Vec<&str> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+
+    for (idx, &b) in bytes.iter().enumerate() {
+      match b {
+        b'(' => depth += 1,
+        b')' => {
+          if depth > 0 {
+            depth -= 1;
+          }
+        }
+        b',' if depth == 0 => {
+          out.push(&input[start..idx]);
+          start = idx + 1;
+        }
+        _ => {}
+      }
     }
 
+    out.push(&input[start..]);
+    out
+  }
+
+  fn split_media_and_length(entry: &str) -> (Option<&str>, &str) {
     // `sizes` values are `<media-condition>? <length>`, where the `<length>` can itself contain
     // whitespace (e.g. `calc(100vw - 20px)`) and commas (e.g. `clamp(10px, 20vw, 30px)`).
     //
     // Split on the last *top-level* whitespace (outside any ()/[]/{}) so we don't tear apart
     // calc/min/max/clamp expressions.
-    let mut depth = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut brace_depth = 0i32;
     let mut in_string: Option<char> = None;
     let mut last_ws: Option<usize> = None;
-    let mut chars = trimmed.char_indices().peekable();
+    let mut chars = entry.char_indices().peekable();
     while let Some((idx, ch)) = chars.next() {
       if let Some(quote) = in_string {
         if ch == '\\' {
@@ -484,34 +503,55 @@ pub fn parse_sizes(attr: &str) -> Option<SizesList> {
       }
 
       match ch {
-        '(' => depth += 1,
-        ')' => depth = (depth - 1).max(0),
-        '[' => bracket += 1,
-        ']' => bracket = (bracket - 1).max(0),
-        '{' => brace += 1,
-        '}' => brace = (brace - 1).max(0),
+        '(' => paren_depth += 1,
+        ')' => paren_depth = (paren_depth - 1).max(0),
+        '[' => bracket_depth += 1,
+        ']' => bracket_depth = (bracket_depth - 1).max(0),
+        '{' => brace_depth += 1,
+        '}' => brace_depth = (brace_depth - 1).max(0),
         '"' | '\'' => in_string = Some(ch),
-        ch if ch.is_ascii_whitespace() && depth == 0 && bracket == 0 && brace == 0 => {
+        ch
+          if ch.is_ascii_whitespace()
+            && paren_depth == 0
+            && bracket_depth == 0
+            && brace_depth == 0 =>
+        {
           last_ws = Some(idx);
         }
         _ => {}
       }
     }
 
-    let (media_part, length_part) = if let Some(idx) = last_ws {
-      let (head, tail) = trimmed.split_at(idx);
-      (head.trim(), tail.trim())
-    } else {
-      ("", trimmed)
+    let Some(ws_idx) = last_ws else {
+      return (None, entry.trim());
     };
 
+    let (head, tail) = entry.split_at(ws_idx);
+    let media = head.trim();
+    let length = tail.trim();
+
+    if media.is_empty() {
+      (None, length)
+    } else {
+      (Some(media), length)
+    }
+  }
+
+  let mut entries = Vec::new();
+  for item in split_top_level_commas(attr) {
+    let item = item.trim();
+    if item.is_empty() {
+      continue;
+    }
+
+    let (media_part, length_part) = split_media_and_length(item);
     let length = match parse_sizes_length(length_part) {
       Some(l) => l,
       None => continue,
     };
 
     let media = match media_part {
-      cond if !cond.is_empty() => MediaQuery::parse_list(cond).ok(),
+      Some(cond) if !cond.is_empty() => MediaQuery::parse_list(cond).ok(),
       _ => None,
     };
 
@@ -533,96 +573,186 @@ fn parse_sizes_length(value: &str) -> Option<crate::style::values::Length> {
   use crate::style::values::Length;
   use crate::style::values::LengthUnit;
 
-  let mut input = ParserInput::new(value);
-  let mut parser = Parser::new(&mut input);
+  fn parse_strict(value: &str) -> Option<Length> {
+    let mut input = ParserInput::new(value);
+    let mut parser = Parser::new(&mut input);
 
-  let parsed = match parser.next() {
-    Ok(Token::Dimension {
-      value, ref unit, ..
-    }) => {
-      let unit = unit.as_ref();
-      if unit.eq_ignore_ascii_case("px") {
-        Some(Length::px(*value))
-      } else if unit.eq_ignore_ascii_case("em") {
-        Some(Length::em(*value))
-      } else if unit.eq_ignore_ascii_case("rem") {
-        Some(Length::rem(*value))
-      } else if unit.eq_ignore_ascii_case("ex") {
-        Some(Length::ex(*value))
-      } else if unit.eq_ignore_ascii_case("ch") {
-        Some(Length::ch(*value))
-      } else if unit.eq_ignore_ascii_case("pt") {
-        Some(Length::pt(*value))
-      } else if unit.eq_ignore_ascii_case("pc") {
-        Some(Length::pc(*value))
-      } else if unit.eq_ignore_ascii_case("in") {
-        Some(Length::inches(*value))
-      } else if unit.eq_ignore_ascii_case("cm") {
-        Some(Length::cm(*value))
-      } else if unit.eq_ignore_ascii_case("mm") {
-        Some(Length::mm(*value))
-      } else if unit.eq_ignore_ascii_case("q") {
-        Some(Length::q(*value))
-      } else if unit.eq_ignore_ascii_case("vw") {
-        Some(Length::new(*value, LengthUnit::Vw))
-      } else if unit.eq_ignore_ascii_case("vh") {
-        Some(Length::new(*value, LengthUnit::Vh))
-      } else if unit.eq_ignore_ascii_case("vmin") {
-        Some(Length::new(*value, LengthUnit::Vmin))
-      } else if unit.eq_ignore_ascii_case("vmax") {
-        Some(Length::new(*value, LengthUnit::Vmax))
-      } else if unit.eq_ignore_ascii_case("svw") {
-        Some(Length::new(*value, LengthUnit::Vw))
-      } else if unit.eq_ignore_ascii_case("svh") {
-        Some(Length::new(*value, LengthUnit::Vh))
-      } else if unit.eq_ignore_ascii_case("svmin") {
-        Some(Length::new(*value, LengthUnit::Vmin))
-      } else if unit.eq_ignore_ascii_case("svmax") {
-        Some(Length::new(*value, LengthUnit::Vmax))
-      } else if unit.eq_ignore_ascii_case("lvw") {
-        Some(Length::new(*value, LengthUnit::Vw))
-      } else if unit.eq_ignore_ascii_case("lvh") {
-        Some(Length::new(*value, LengthUnit::Vh))
-      } else if unit.eq_ignore_ascii_case("lvmin") {
-        Some(Length::new(*value, LengthUnit::Vmin))
-      } else if unit.eq_ignore_ascii_case("lvmax") {
-        Some(Length::new(*value, LengthUnit::Vmax))
-      } else if unit.eq_ignore_ascii_case("dvw") {
-        Some(Length::new(*value, LengthUnit::Dvw))
-      } else if unit.eq_ignore_ascii_case("dvh") {
-        Some(Length::new(*value, LengthUnit::Dvh))
-      } else if unit.eq_ignore_ascii_case("dvmin") {
-        Some(Length::new(*value, LengthUnit::Dvmin))
-      } else if unit.eq_ignore_ascii_case("dvmax") {
-        Some(Length::new(*value, LengthUnit::Dvmax))
-      } else {
-        None
+    let parsed = match parser.next() {
+      Ok(Token::Dimension {
+        value, ref unit, ..
+      }) => {
+        let unit = unit.as_ref();
+        if unit.eq_ignore_ascii_case("px") {
+          Some(Length::px(*value))
+        } else if unit.eq_ignore_ascii_case("em") {
+          Some(Length::em(*value))
+        } else if unit.eq_ignore_ascii_case("rem") {
+          Some(Length::rem(*value))
+        } else if unit.eq_ignore_ascii_case("ex") {
+          Some(Length::ex(*value))
+        } else if unit.eq_ignore_ascii_case("ch") {
+          Some(Length::ch(*value))
+        } else if unit.eq_ignore_ascii_case("pt") {
+          Some(Length::pt(*value))
+        } else if unit.eq_ignore_ascii_case("pc") {
+          Some(Length::pc(*value))
+        } else if unit.eq_ignore_ascii_case("in") {
+          Some(Length::inches(*value))
+        } else if unit.eq_ignore_ascii_case("cm") {
+          Some(Length::cm(*value))
+        } else if unit.eq_ignore_ascii_case("mm") {
+          Some(Length::mm(*value))
+        } else if unit.eq_ignore_ascii_case("q") {
+          Some(Length::q(*value))
+        } else if unit.eq_ignore_ascii_case("vw") {
+          Some(Length::new(*value, LengthUnit::Vw))
+        } else if unit.eq_ignore_ascii_case("vh") {
+          Some(Length::new(*value, LengthUnit::Vh))
+        } else if unit.eq_ignore_ascii_case("vmin") {
+          Some(Length::new(*value, LengthUnit::Vmin))
+        } else if unit.eq_ignore_ascii_case("vmax") {
+          Some(Length::new(*value, LengthUnit::Vmax))
+        } else if unit.eq_ignore_ascii_case("svw") {
+          Some(Length::new(*value, LengthUnit::Vw))
+        } else if unit.eq_ignore_ascii_case("svh") {
+          Some(Length::new(*value, LengthUnit::Vh))
+        } else if unit.eq_ignore_ascii_case("svmin") {
+          Some(Length::new(*value, LengthUnit::Vmin))
+        } else if unit.eq_ignore_ascii_case("svmax") {
+          Some(Length::new(*value, LengthUnit::Vmax))
+        } else if unit.eq_ignore_ascii_case("lvw") {
+          Some(Length::new(*value, LengthUnit::Vw))
+        } else if unit.eq_ignore_ascii_case("lvh") {
+          Some(Length::new(*value, LengthUnit::Vh))
+        } else if unit.eq_ignore_ascii_case("lvmin") {
+          Some(Length::new(*value, LengthUnit::Vmin))
+        } else if unit.eq_ignore_ascii_case("lvmax") {
+          Some(Length::new(*value, LengthUnit::Vmax))
+        } else if unit.eq_ignore_ascii_case("dvw") {
+          Some(Length::new(*value, LengthUnit::Dvw))
+        } else if unit.eq_ignore_ascii_case("dvh") {
+          Some(Length::new(*value, LengthUnit::Dvh))
+        } else if unit.eq_ignore_ascii_case("dvmin") {
+          Some(Length::new(*value, LengthUnit::Dvmin))
+        } else if unit.eq_ignore_ascii_case("dvmax") {
+          Some(Length::new(*value, LengthUnit::Dvmax))
+        } else {
+          None
+        }
+      }
+      Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("calc") => {
+        parse_calc_function_length(&mut parser).ok()
+      }
+      Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("min") => {
+        parse_min_max_function_length(&mut parser, MathFn::Min).ok()
+      }
+      Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("max") => {
+        parse_min_max_function_length(&mut parser, MathFn::Max).ok()
+      }
+      Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("clamp") => {
+        parse_clamp_function_length(&mut parser).ok()
+      }
+      Ok(Token::Percentage { unit_value, .. }) => Some(Length::percent(*unit_value * 100.0)),
+      Ok(Token::Number { value, .. }) if *value == 0.0 => Some(Length::px(0.0)),
+      Err(_) => None,
+      _ => None,
+    }?;
+
+    parser.skip_whitespace();
+    if parser.is_exhausted() {
+      Some(parsed)
+    } else {
+      None
+    }
+  }
+
+  fn split_top_level_commas(input: &str) -> Vec<&str> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+
+    for (idx, &b) in bytes.iter().enumerate() {
+      match b {
+        b'(' => depth += 1,
+        b')' => {
+          if depth > 0 {
+            depth -= 1;
+          }
+        }
+        b',' if depth == 0 => {
+          out.push(&input[start..idx]);
+          start = idx + 1;
+        }
+        _ => {}
       }
     }
-    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("calc") => {
-      parse_calc_function_length(&mut parser).ok()
-    }
-    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("min") => {
-      parse_min_max_function_length(&mut parser, MathFn::Min).ok()
-    }
-    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("max") => {
-      parse_min_max_function_length(&mut parser, MathFn::Max).ok()
-    }
-    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("clamp") => {
-      parse_clamp_function_length(&mut parser).ok()
-    }
-    Ok(Token::Percentage { unit_value, .. }) => Some(Length::percent(*unit_value * 100.0)),
-    Ok(Token::Number { value, .. }) if *value == 0.0 => Some(Length::px(0.0)),
-    Err(_) => None,
-    _ => None,
-  }?;
 
-  parser.skip_whitespace();
-  if parser.is_exhausted() {
-    Some(parsed)
-  } else {
+    out.push(&input[start..]);
+    out
+  }
+
+  fn extract_function_args<'a>(value: &'a str, name: &str) -> Option<&'a str> {
+    if !value.ends_with(')') {
+      return None;
+    }
+    if value.len() <= name.len() + 2 {
+      return None;
+    }
+    if !value
+      .get(..name.len())
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
+    {
+      return None;
+    }
+    if value.as_bytes()[name.len()] != b'(' {
+      return None;
+    }
+    value.get(name.len() + 1..value.len() - 1)
+  }
+
+  fn parse_lenient_math_function(value: &str) -> Option<Length> {
+    let value = value.trim();
+
+    // When the core CSS parser cannot represent the math function (e.g., `min(100vw, 500px)` with
+    // mixed units), fall back to parsing one argument so the `sizes` entry isn't discarded.
+    for (func, preferred_index) in [("min", 0usize), ("max", 0usize), ("clamp", 1usize)] {
+      let Some(args_str) = extract_function_args(value, func) else {
+        continue;
+      };
+
+      let args = split_top_level_commas(args_str);
+      let candidates = [preferred_index, 0, 1, 2];
+      let mut tried = [false; 4];
+      for idx in candidates {
+        if idx >= tried.len() || tried[idx] {
+          continue;
+        }
+        tried[idx] = true;
+        let Some(arg) = args.get(idx) else {
+          continue;
+        };
+        let arg = arg.trim();
+        if arg.is_empty() {
+          continue;
+        }
+        if let Some(len) = parse_sizes_length(arg) {
+          return Some(len);
+        }
+      }
+
+      return None;
+    }
+
     None
   }
+
+  let value = value.trim();
+  if value.is_empty() {
+    return None;
+  }
+
+  parse_strict(value).or_else(|| parse_lenient_math_function(value))
 }
 
 #[cfg(test)]
@@ -808,21 +938,58 @@ mod tests {
   }
 
   #[test]
-  fn parse_sizes_supports_calc_with_internal_whitespace() {
-    let parsed = parse_sizes("(max-width: 600px) calc(50vw - 20px), 100vw").expect("sizes parsed");
+  fn parse_sizes_parses_calc_with_spaces() {
+    let parsed = parse_sizes("calc(100vw - 20px)").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 1);
+    assert!(parsed.entries[0].media.is_none());
+    assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
+    assert!(parsed.entries[0].length.calc.is_some());
+  }
+
+  #[test]
+  fn parse_sizes_parses_min_max_clamp_with_commas() {
+    let parsed = parse_sizes("min(100vw, 500px)").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 1);
+    assert!(parsed.entries[0].media.is_none());
+
+    let parsed = parse_sizes("clamp(10px, 50vw, 300px)").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 1);
+    assert!(parsed.entries[0].media.is_none());
+  }
+
+  #[test]
+  fn parse_sizes_parses_media_with_calc_length() {
+    let parsed =
+      parse_sizes("(max-width: 600px) calc(100vw - 20px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_some());
     assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
     assert!(parsed.entries[0].length.calc.is_some());
+    assert!(parsed.entries[1].media.is_none());
+    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+  }
+
+  #[test]
+  fn parse_sizes_supports_calc_with_internal_whitespace() {
+    let parsed =
+      parse_sizes("(max-width: 600px) calc(50vw - 20px), 100vw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 2);
+    assert!(parsed.entries[0].media.is_some());
+    assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
+    assert!(parsed.entries[0].length.calc.is_some());
+    assert!(parsed.entries[1].media.is_none());
     assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
   }
 
   #[test]
   fn parse_sizes_supports_clamp_with_internal_commas() {
-    let parsed = parse_sizes("clamp(10px, calc(50vw - 20px), 300px), 100vw").expect("sizes parsed");
+    let parsed =
+      parse_sizes("clamp(10px, calc(50vw - 20px), 300px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
+    assert!(parsed.entries[0].media.is_none());
     assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
     assert!(parsed.entries[0].length.calc.is_some());
+    assert!(parsed.entries[1].media.is_none());
     assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
   }
 
