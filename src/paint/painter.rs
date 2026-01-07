@@ -6357,54 +6357,66 @@ impl Painter {
           }
         }
       }
-      ReplacedType::Embed { src: content } | ReplacedType::Object { data: content } => {
-        if self.paint_svg(
-          content,
-          style,
-          content_rect.x(),
-          content_rect.y(),
-          content_rect.width(),
-          content_rect.height(),
-          clip_mask,
-        ) {
-          return;
-        }
-        let image_source = crate::tree::box_tree::SelectedImageSource {
-          url: content.as_str(),
-          descriptor: None,
-          density: None,
-          from_picture: false,
-        };
-        if self.paint_image_from_src_reject_placeholder(
-          &image_source,
-          CrossOriginAttribute::None,
-          None,
-          style,
-          content_rect.x(),
-          content_rect.y(),
-          content_rect.width(),
-          content_rect.height(),
-          clip_mask,
-        ) {
-          return;
+      ReplacedType::Embed { .. } | ReplacedType::Object { .. } => {
+        let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
+          .with_device_pixel_ratio(self.scale)
+          .with_env_overrides();
+        let cache_base = self.image_cache.base_url();
+        let sources =
+          replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
+            device_pixel_ratio: self.scale,
+            slot_width: Some(content_rect.width()),
+            viewport: Some(Size::new(self.css_width, self.css_height)),
+            media_context: Some(&media_ctx),
+            font_size: style.map(|s| s.font_size),
+            root_font_size: style.map(|s| s.root_font_size),
+            base_url: cache_base.as_deref(),
+          });
+        for candidate in &sources {
+          if self.paint_svg(
+            candidate.url,
+            style,
+            content_rect.x(),
+            content_rect.y(),
+            content_rect.width(),
+            content_rect.height(),
+            clip_mask,
+          ) {
+            return;
+          }
+          if self.paint_image_from_src_reject_placeholder(
+            candidate,
+            CrossOriginAttribute::None,
+            None,
+            style,
+            content_rect.x(),
+            content_rect.y(),
+            content_rect.width(),
+            content_rect.height(),
+            clip_mask,
+          ) {
+            return;
+          }
         }
 
-        if let Some(image) = self.render_iframe_src(content, None, content_rect, style) {
-          if let Some(pixmap) =
-            PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
-          {
-            let device_x = self.device_x(content_rect.x());
-            let device_y = self.device_y(content_rect.y());
-            let paint = PixmapPaint::default();
-            self.pixmap.draw_pixmap(
-              device_x as i32,
-              device_y as i32,
-              pixmap,
-              &paint,
-              Transform::identity(),
-              clip_mask,
-            );
-            return;
+        if let Some(candidate) = sources.first() {
+          if let Some(image) = self.render_iframe_src(candidate.url, None, content_rect, style) {
+            if let Some(pixmap) =
+              PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
+            {
+              let device_x = self.device_x(content_rect.x());
+              let device_y = self.device_y(content_rect.y());
+              let paint = PixmapPaint::default();
+              self.pixmap.draw_pixmap(
+                device_x as i32,
+                device_y as i32,
+                pixmap,
+                &paint,
+                Transform::identity(),
+                clip_mask,
+              );
+              return;
+            }
           }
         }
       }

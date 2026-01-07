@@ -2444,6 +2444,30 @@ mod tests {
   }
 
   #[test]
+  fn image_sources_with_fallback_trims_urls() {
+    let img = ReplacedType::Image {
+      src: "  base  ".to_string(),
+      alt: None,
+      srcset: Vec::new(),
+      sizes: None,
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
+    };
+    let sources = img.image_sources_with_fallback(ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: None,
+      media_context: None,
+      font_size: None,
+      root_font_size: None,
+      base_url: None,
+    });
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].url, "base");
+  }
+
+  #[test]
   fn video_image_sources_with_fallback_filters_whitespace_poster() {
     let video = ReplacedType::Video {
       src: String::new(),

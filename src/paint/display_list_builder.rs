@@ -4712,23 +4712,20 @@ impl DisplayListBuilder {
         if reject_placeholder {
           if let Some(cache) = self.image_cache.as_ref() {
             let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
-            let src = match replaced_type {
-              ReplacedType::Embed { src } => src.as_str(),
-              ReplacedType::Object { data } => data.as_str(),
-              _ => "",
-            };
-            if let Some(image) = render_iframe_src(
-              src,
-              None,
-              content_rect,
-              style_for_image,
-              cache,
-              &self.font_ctx,
-              self.device_pixel_ratio,
-              self.max_iframe_depth,
-            ) {
-              self.emit_iframe_image(image, rect, style_for_image);
-              return;
+            if let Some(candidate) = sources.first() {
+              if let Some(image) = render_iframe_src(
+                candidate.url,
+                referrer_policy,
+                content_rect,
+                style_for_image,
+                cache,
+                &self.font_ctx,
+                self.device_pixel_ratio,
+                self.max_iframe_depth,
+              ) {
+                self.emit_iframe_image(image, rect, style_for_image);
+                return;
+              }
             }
           }
         }

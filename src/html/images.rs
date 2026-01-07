@@ -331,7 +331,9 @@ fn push_unique<'a>(
   }
 
   if seen.insert(key) {
-    out.push(candidate);
+    let mut normalized = candidate;
+    normalized.url = trimmed;
+    out.push(normalized);
   }
 }
 
