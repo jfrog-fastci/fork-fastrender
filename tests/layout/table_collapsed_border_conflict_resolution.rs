@@ -177,6 +177,45 @@ fn collapsed_border_resolution_honors_colgroup_span() {
 }
 
 #[test]
+fn collapsed_border_resolution_honors_colgroup_span_in_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; direction: rtl; }
+          colgroup { border-right: 3px solid red; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <colgroup span="2"></colgroup>
+          <col>
+          <tr><td></td><td></td><td></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  assert!(
+    (borders.vertical_line_width(3) - 3.0).abs() < 0.01,
+    "expected the colgroup right border to land on the table's outer edge in RTL, got {}",
+    borders.vertical_line_width(3)
+  );
+  assert!(
+    borders.vertical_line_width(2) < 0.01,
+    "expected the internal divider between colgroup columns to remain borderless, got {}",
+    borders.vertical_line_width(2)
+  );
+  assert!(
+    borders.vertical_line_width(1) < 0.01,
+    "expected the divider between the colgroup and remaining column to remain borderless, got {}",
+    borders.vertical_line_width(1)
+  );
+}
+
+#[test]
 fn collapsed_border_resolution_honors_col_span() {
   let html = r#"
     <html>
