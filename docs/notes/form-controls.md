@@ -26,6 +26,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 - Form control model: `src/tree/box_tree.rs::FormControl` (+ `FormControlKind`, `TextControlKind`)
 - Box generation: `src/tree/box_generation.rs::create_form_control_replaced`
 - Intrinsic sizing: `src/api.rs::resolve_intrinsic_for_replaced_for_media`
+- Form-control pseudo-element styles (`::placeholder`, `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`): `src/style/cascade.rs::compute_form_control_pseudo_styles`
 - Vendor aliasing:
   - `-webkit-appearance` → `appearance` during style application: `src/style/properties.rs`
   - `-moz-appearance` (and other vendor prefixes) canonicalized during CSS parsing when possible:
@@ -46,12 +47,18 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Checkbox/radio marks are skipped when `control.appearance == Appearance::None`:
     - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Checkbox`)
     - `src/paint/painter.rs::paint_form_control` (`FormControlKind::Checkbox`)
-- Task 80 is expected to broaden the set of suppressed native affordances when `appearance:none` is set (for example, allowing more fully custom-styled controls without UA chrome).
+  - Range controls switch to “custom range” painting when `control.appearance == Appearance::None`:
+    - Default UA track/thumb painting is suppressed.
+    - The display-list painter can use styles captured from `::-webkit-slider-thumb` and
+      `::-webkit-slider-runnable-track` (see the `FormControlKind::Range` branch).
+    - The immediate painter currently uses `slider_thumb_style` only (no track style yet).
+- Task 80 tracks further broadening of the suppressed affordance set for `appearance:none` (beyond the current select/checkbox/range hooks).
 - Current limitations:
   - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
-  - `appearance:none` does **not** currently suppress range painting (`FormControlKind::Range` still draws a track + thumb in both painters; see `emit_form_control` / `paint_form_control` range branches).
   - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today; see `TextControlKind::{Number,Date}` handling in both painters).
-  - Vendor pseudo-elements like `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`, etc. are not implemented yet, so fully custom range styling isn’t available.
+  - Only the WebKit range pseudo-elements are currently recognized:
+    - Supported: `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`
+    - Not yet implemented: Mozilla equivalents like `::-moz-range-thumb`, `::-moz-range-track`, etc.
 
 ## Intended direction (fallback rendering model)
 
