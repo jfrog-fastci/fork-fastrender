@@ -568,7 +568,6 @@ fn transitions_interpolate_border_shorthand_over_time_without_allow_discrete() {
     <style>
       @starting-style { #box { border: 0px solid rgb(255, 0, 0); } }
       #box { width: 100px; height: 100px; border: 10px dashed rgb(0, 0, 255); transition: border 1000ms linear; }
-      #box { transition-behavior: allow-discrete; }
     </style>
     <div id="box"></div>
   "#;
@@ -661,7 +660,7 @@ fn transitions_do_not_start_border_style_transition_without_allow_discrete() {
         border-width: 4px;
         border-color: rgb(0, 0, 0);
         border-style: dashed;
-        transition: border-style 1000ms linear allow-discrete;
+        transition: border-style 1000ms linear;
       }
     </style>
     <div id="box"></div>
