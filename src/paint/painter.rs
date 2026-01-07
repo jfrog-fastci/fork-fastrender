@@ -13091,21 +13091,13 @@ fn resolve_length_for_paint(
   percentage_base: f32,
   viewport: (f32, f32),
 ) -> f32 {
-  len
-    .resolve_with_context(
-      Some(percentage_base),
-      viewport.0,
-      viewport.1,
-      font_size,
-      root_font_size,
-    )
-    .unwrap_or_else(|| {
-      if len.unit.is_absolute() {
-        len.to_px()
-      } else {
-        len.value * font_size
-      }
-    })
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    len,
+    font_size,
+    root_font_size,
+    percentage_base,
+    Some(viewport),
+  )
 }
 
 fn compute_background_size(
@@ -14276,6 +14268,20 @@ mod tests {
     let key = TextCacheKey::new(1, 0.0, "hello");
     let key_neg = TextCacheKey::new(1, -0.0, "hello");
     assert_eq!(key, key_neg);
+  }
+
+  #[test]
+  fn painter_resolve_length_for_paint_resolves_rem_against_root_font_size() {
+    let len = Length::rem(1.0);
+    let resolved = resolve_length_for_paint(&len, 10.0, 20.0, 0.0, (100.0, 100.0));
+    assert!((resolved - 20.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn painter_resolve_length_for_paint_does_not_fallback_to_element_font_size_for_rem() {
+    let len = Length::rem(1.0);
+    let resolved = resolve_length_for_paint(&len, 10.0, f32::NAN, 0.0, (100.0, 100.0));
+    assert_eq!(resolved, 0.0);
   }
 
   #[test]

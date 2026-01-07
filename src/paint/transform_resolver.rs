@@ -465,31 +465,13 @@ fn resolve_length_for_paint(
   percentage_base: f32,
   viewport: Option<(f32, f32)>,
 ) -> f32 {
-  let needs_viewport = len.unit.is_viewport_relative()
-    || len
-      .calc
-      .as_ref()
-      .map(|c| c.has_viewport_relative())
-      .unwrap_or(false);
-  let (vw, vh) = match viewport {
-    Some(vp) => vp,
-    None if needs_viewport => (f32::NAN, f32::NAN),
-    None => (percentage_base, percentage_base),
-  };
-  let resolved = len
-    .resolve_with_context(Some(percentage_base), vw, vh, font_size, root_font_size)
-    .unwrap_or_else(|| {
-      if len.unit.is_absolute() {
-        len.to_px()
-      } else {
-        len.value * font_size
-      }
-    });
-  if resolved.is_finite() {
-    resolved
-  } else {
-    0.0
-  }
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    len,
+    font_size,
+    root_font_size,
+    percentage_base,
+    viewport,
+  )
 }
 
 fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
@@ -537,6 +519,20 @@ mod tests {
   use crate::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
   use crate::style::types::{MotionPathCommand, MotionPosition, OffsetAnchor, OffsetPath};
   use crate::style::values::LengthUnit;
+
+  #[test]
+  fn transform_resolver_resolve_length_for_paint_resolves_rem_against_root_font_size() {
+    let len = Length::rem(1.0);
+    let resolved = resolve_length_for_paint(&len, 10.0, 20.0, 0.0, Some((100.0, 100.0)));
+    assert!((resolved - 20.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn transform_resolver_resolve_length_for_paint_does_not_fallback_to_element_font_size_for_rem() {
+    let len = Length::rem(1.0);
+    let resolved = resolve_length_for_paint(&len, 10.0, f32::NAN, 0.0, Some((100.0, 100.0)));
+    assert_eq!(resolved, 0.0);
+  }
 
   #[test]
   fn resolves_basic_2d_components() {

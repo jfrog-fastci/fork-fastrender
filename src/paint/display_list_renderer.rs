@@ -11535,27 +11535,13 @@ fn resolve_length_for_border_image(
   root_font_size: f32,
   viewport: Option<(f32, f32)>,
 ) -> f32 {
-  let needs_viewport = len.unit.is_viewport_relative()
-    || len
-      .calc
-      .as_ref()
-      .map(|c| c.has_viewport_relative())
-      .unwrap_or(false);
-  let (vw, vh) = match viewport {
-    Some(vp) => vp,
-    None if needs_viewport => (f32::NAN, f32::NAN),
-    None => (0.0, 0.0),
-  };
-
-  len
-    .resolve_with_context(Some(percentage_base), vw, vh, font_size, root_font_size)
-    .unwrap_or_else(|| {
-      if len.unit.is_absolute() {
-        len.to_px()
-      } else {
-        len.value * font_size
-      }
-    })
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    len,
+    font_size,
+    root_font_size,
+    percentage_base,
+    viewport,
+  )
 }
 
 fn resolve_border_image_widths(
@@ -12199,21 +12185,13 @@ fn resolve_length_for_paint(
   percentage_base: f32,
   viewport: (f32, f32),
 ) -> f32 {
-  len
-    .resolve_with_context(
-      Some(percentage_base),
-      viewport.0,
-      viewport.1,
-      font_size,
-      root_font_size,
-    )
-    .unwrap_or_else(|| {
-      if len.unit.is_absolute() {
-        len.to_px()
-      } else {
-        len.value * font_size
-      }
-    })
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    len,
+    font_size,
+    root_font_size,
+    percentage_base,
+    Some(viewport),
+  )
 }
 
 fn compute_background_size_from_value(
@@ -15576,6 +15554,20 @@ mod tests {
 
     let unresolved = resolve_length_for_border_image(&len, 100.0, 16.0, 16.0, None);
     assert_eq!(unresolved, 0.0);
+  }
+
+  #[test]
+  fn display_list_renderer_resolve_length_for_paint_resolves_rem_against_root_font_size() {
+    let len = Length::rem(1.0);
+    let resolved = resolve_length_for_paint(&len, 10.0, 20.0, 0.0, (100.0, 100.0));
+    assert!((resolved - 20.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn display_list_renderer_resolve_length_for_paint_does_not_fallback_to_element_font_size_for_rem() {
+    let len = Length::rem(1.0);
+    let resolved = resolve_length_for_paint(&len, 10.0, f32::NAN, 0.0, (100.0, 100.0));
+    assert_eq!(resolved, 0.0);
   }
 
   #[test]
