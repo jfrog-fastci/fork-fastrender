@@ -588,3 +588,62 @@ fn select_required_multi_select_empty_value_is_not_invalid() {
   let multi = find_by_id(&tree, "multi").expect("multi select");
   assert!(!multi.states.invalid);
 }
+
+#[test]
+fn form_control_invalid_state_uses_control_semantics_not_dom_children() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="optgroup-empty" required>
+          <optgroup label="Group">
+            <option id="optgroup-empty-opt" selected value="">Empty</option>
+          </optgroup>
+          <option value="x">X</option>
+        </select>
+
+        <select id="multi-missing" multiple required aria-label="Missing">
+          <option>One</option>
+        </select>
+
+        <select id="multi-disabled-selected" multiple required aria-label="Selected">
+          <option selected disabled>One</option>
+        </select>
+
+        <textarea id="ta-filled" required>Hi</textarea>
+        <textarea id="ta-empty" required></textarea>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let optgroup_empty = find_by_id(&tree, "optgroup-empty").expect("optgroup select");
+  assert!(optgroup_empty.states.required);
+  assert!(
+    !optgroup_empty.states.invalid,
+    "empty value option inside optgroup is not a placeholder label option"
+  );
+
+  let multi_missing = find_by_id(&tree, "multi-missing").expect("missing multi-select");
+  assert!(multi_missing.states.required);
+  assert!(multi_missing.states.invalid);
+
+  let multi_selected = find_by_id(&tree, "multi-disabled-selected").expect("selected multi-select");
+  assert!(multi_selected.states.required);
+  assert!(
+    multi_selected.states.invalid,
+    "disabled selections do not satisfy <select multiple required>"
+  );
+
+  let ta_filled = find_by_id(&tree, "ta-filled").expect("filled textarea");
+  assert!(ta_filled.states.required);
+  assert!(!ta_filled.states.invalid);
+
+  let ta_empty = find_by_id(&tree, "ta-empty").expect("empty textarea");
+  assert!(ta_empty.states.required);
+  assert!(ta_empty.states.invalid);
+}

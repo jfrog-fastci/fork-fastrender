@@ -534,15 +534,15 @@ fn build_nodes<'a>(
 
       // `StyledNode.node` is a shallow copy of the DOM node; its `children` are intentionally empty.
       //
-      // Most native accessibility state can be derived from element attributes alone, but `<select>`
-      // validity depends on its descendant `<option>` elements. Reconstruct a minimal DOM subtree
-      // for selects so `ElementRef` validity helpers can see option descendants.
-      let is_select = node
-        .node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("select"));
-      let select_dom_subtree = is_select.then(|| clone_dom_subtree(node));
-      let element_ref_node = select_dom_subtree.as_ref().unwrap_or(&node.node);
+      // Most native accessibility state can be derived from element attributes alone, but some
+      // constraint validation rules depend on descendant content (e.g. `<select>` uses `<option>`
+      // descendants, and `<textarea>` uses its text contents). Reconstruct a minimal DOM subtree
+      // for these controls so `ElementRef` validity helpers can see the required descendants.
+      let needs_dom_subtree = node.node.tag_name().is_some_and(|tag| {
+        tag.eq_ignore_ascii_case("select") || tag.eq_ignore_ascii_case("textarea")
+      });
+      let dom_subtree = needs_dom_subtree.then(|| clone_dom_subtree(node));
+      let element_ref_node = dom_subtree.as_ref().unwrap_or(&node.node);
       let element_ref = ElementRef::with_ancestors(element_ref_node, ancestors);
       let (mut role, presentational_role, role_from_attr) =
         compute_role(node, ancestors, styled_ancestors.last().copied());
@@ -2294,7 +2294,6 @@ fn compute_invalid(node: &StyledNode, element_ref: &ElementRef) -> bool {
       return true;
     }
   }
-
   element_ref.accessibility_supports_validation() && !element_ref.accessibility_is_valid()
 }
 
