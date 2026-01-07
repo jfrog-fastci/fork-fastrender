@@ -5557,6 +5557,15 @@ mod tests {
   }
 
   #[test]
+  fn required_multiple_select_without_selection_is_invalid() {
+    let control = first_select_control_from_html(
+      "<html><body><select multiple required><option>One</option><option>Two</option></select></body></html>",
+    );
+    assert!(control.required);
+    assert!(control.invalid);
+  }
+
+  #[test]
   fn required_multiple_select_with_only_disabled_selected_is_invalid() {
     let control = first_select_control_from_html(
       "<html><body><select multiple required><option selected disabled value=\"a\">A</option></select></body></html>",
@@ -5575,9 +5584,9 @@ mod tests {
   }
 
   #[test]
-  fn required_multiple_select_with_enabled_selected_is_valid() {
+  fn required_multiple_select_with_selected_empty_value_is_valid() {
     let control = first_select_control_from_html(
-      "<html><body><select multiple required><option selected value=\"a\">A</option><option disabled selected value=\"b\">B</option></select></body></html>",
+      "<html><body><select multiple required><option selected value=\"\">A</option><option disabled selected value=\"b\">B</option></select></body></html>",
     );
     assert!(control.required);
     assert!(!control.invalid);

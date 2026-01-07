@@ -5080,13 +5080,15 @@ impl<'a> ElementRef<'a> {
       return false;
     };
 
-    let value = self.control_value().unwrap_or_default();
-    let required = self.is_required();
-
     if tag.eq_ignore_ascii_case("select") {
-      return !(required && value.is_empty());
+      if self.is_required() && select_required_value_missing(self.node) {
+        return false;
+      }
+      return true;
     }
 
+    let value = self.control_value().unwrap_or_default();
+    let required = self.is_required();
     if tag.eq_ignore_ascii_case("textarea") {
       return !(required && value.is_empty());
     }
@@ -5693,6 +5695,43 @@ fn single_select_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode>
   last_selected_option
     .or(first_enabled_option)
     .or(first_option)
+}
+
+fn select_required_value_missing(select: &DomNode) -> bool {
+  if select.get_attribute_ref("multiple").is_some() {
+    let mut stack: Vec<(&DomNode, bool)> = Vec::new();
+    stack.push((select, false));
+
+    while let Some((node, optgroup_disabled)) = stack.pop() {
+      if node_hidden_for_select(node) {
+        continue;
+      }
+      let tag = node.tag_name().unwrap_or("");
+      let is_option = tag.eq_ignore_ascii_case("option");
+      let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
+
+      let disabled_attr = node.get_attribute_ref("disabled").is_some();
+      let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
+
+      if is_option && node.get_attribute_ref("selected").is_some() {
+        let option_disabled = disabled_attr || optgroup_disabled;
+        if !option_disabled {
+          return false;
+        }
+      }
+
+      for child in node.children.iter().rev() {
+        stack.push((child, next_optgroup_disabled));
+      }
+    }
+
+    return true;
+  }
+
+  single_select_selected_option(select)
+    .map(option_value_from_node)
+    .unwrap_or_default()
+    .is_empty()
 }
 
 impl<'a> Element for ElementRef<'a> {
@@ -11332,6 +11371,77 @@ mod tests {
     };
     assert!(matches(&valid_multiple_select, &[], &PseudoClass::Valid));
     assert!(!matches(&valid_multiple_select, &[], &PseudoClass::Invalid));
+  }
+
+  #[test]
+  fn select_required_validation_matches_html_semantics() {
+    let missing_multiple = element_with_attrs(
+      "select",
+      vec![("required", ""), ("multiple", "")],
+      vec![element("option", vec![])],
+    );
+    assert!(
+      !ElementRef::new(&missing_multiple).accessibility_is_valid(),
+      "<select multiple required> with no selected options is invalid"
+    );
+
+    let present_multiple_empty_value = element_with_attrs(
+      "select",
+      vec![("required", ""), ("multiple", "")],
+      vec![element_with_attrs(
+        "option",
+        vec![("selected", ""), ("value", "")],
+        vec![],
+      )],
+    );
+    assert!(
+      ElementRef::new(&present_multiple_empty_value).accessibility_is_valid(),
+      "<select multiple required> is valid when any enabled option is selected, even if its value is empty"
+    );
+
+    let disabled_placeholder_multiple = element_with_attrs(
+      "select",
+      vec![("required", ""), ("multiple", "")],
+      vec![element_with_attrs(
+        "option",
+        vec![("selected", ""), ("disabled", ""), ("value", "")],
+        vec![],
+      )],
+    );
+    assert!(
+      !ElementRef::new(&disabled_placeholder_multiple).accessibility_is_valid(),
+      "<select multiple required> with only a disabled selected option is invalid"
+    );
+
+    let disabled_placeholder_single = element_with_attrs(
+      "select",
+      vec![("required", "")],
+      vec![
+        element_with_attrs(
+          "option",
+          vec![("selected", ""), ("disabled", ""), ("value", "")],
+          vec![text("Pick one")],
+        ),
+        element_with_attrs("option", vec![("value", "x")], vec![text("X")]),
+      ],
+    );
+    assert!(
+      !ElementRef::new(&disabled_placeholder_single).accessibility_is_valid(),
+      "<select required> is invalid when the effective selected option has an empty value"
+    );
+
+    let single_last_selected_wins = element_with_attrs(
+      "select",
+      vec![("required", "")],
+      vec![
+        element_with_attrs("option", vec![("selected", ""), ("value", "")], vec![]),
+        element_with_attrs("option", vec![("selected", ""), ("value", "x")], vec![]),
+      ],
+    );
+    assert!(
+      ElementRef::new(&single_last_selected_wins).accessibility_is_valid(),
+      "single selects should treat the last selected option as the effective selection"
+    );
   }
 
   #[test]

@@ -130,14 +130,13 @@ fn inline_text_like_form_controls_use_text_baseline() {
       FormControlKind::Select(SelectControl {
         multiple: false,
         size: 1,
-        items: vec![SelectItem::Option {
+        items: Arc::new(vec![SelectItem::Option {
           label: "Option".to_string(),
           value: "option".to_string(),
           selected: true,
           disabled: false,
           in_optgroup: false,
-        }]
-        .into(),
+        }]),
         selected: vec![0],
       }),
     ),
