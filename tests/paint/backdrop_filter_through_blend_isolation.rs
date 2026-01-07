@@ -172,3 +172,40 @@ fn backdrop_filter_samples_through_fixed_blend_isolation_layer() {
   assert_magentaish("backdrop-filter pixel", pixel(&pixmap, 44, 44));
   assert_greenish("control pixel", pixel(&pixmap, 60, 10));
 }
+
+#[test]
+fn backdrop_filter_samples_through_sticky_blend_isolation_layer() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(0 255 0); }
+      #wrapper { position: sticky; top: 0; left: 0; width: 64px; height: 64px; }
+      #blend {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 20px;
+        height: 20px;
+        background: rgb(255 0 0);
+        mix-blend-mode: difference;
+      }
+      #glass {
+        position: absolute;
+        left: 32px;
+        top: 32px;
+        width: 24px;
+        height: 24px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="wrapper">
+      <div id="blend"></div>
+      <div id="glass"></div>
+    </div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  assert_redish("blend isolation pixel", pixel(&pixmap, 10, 10));
+  assert_magentaish("backdrop-filter pixel", pixel(&pixmap, 44, 44));
+  assert_greenish("control pixel", pixel(&pixmap, 60, 10));
+}
