@@ -1706,15 +1706,18 @@ impl Canvas {
     }
     let ascent = font_size;
     let descent = font_size * 0.25;
-    let rect = tiny_skia::Rect::from_xywh(
-      min_x,
-      position.y - ascent,
-      (max_x - min_x).max(0.0),
-      ascent + descent,
-    )
-    .unwrap_or_else(|| tiny_skia::Rect::from_xywh(0.0, 0.0, 0.0, 0.0).unwrap());
     let mut bounds = PathBounds::new();
-    bounds.include(&rect);
+    let x = if min_x.is_finite() { min_x } else { 0.0 };
+    let y = position.y - ascent;
+    let y = if y.is_finite() { y } else { 0.0 };
+    let w = (max_x - min_x).max(0.0);
+    let w = if w.is_finite() { w } else { 0.0 };
+    let h = ascent + descent;
+    let h = if h.is_finite() { h } else { 0.0 };
+    let rect = SkiaRect::from_xywh(x, y, w, h).or_else(|| SkiaRect::from_xywh(x, y, 1.0, 1.0));
+    if let Some(rect) = rect {
+      bounds.include(&rect);
+    }
     Ok((Vec::new(), bounds))
   }
 
@@ -2719,6 +2722,46 @@ mod tests {
     let idx = ((y * width + x) * 4) as usize;
     let data = pixmap.data();
     (data[idx], data[idx + 1], data[idx + 2], data[idx + 3])
+  }
+
+  fn dummy_font() -> LoadedFont {
+    LoadedFont {
+      id: None,
+      data: std::sync::Arc::new(Vec::new()),
+      index: 0,
+      face_metrics_overrides: Default::default(),
+      face_settings: Default::default(),
+      family: "Dummy".to_string(),
+      weight: Default::default(),
+      style: Default::default(),
+      stretch: Default::default(),
+    }
+  }
+
+  #[test]
+  fn canvas_glyph_paths_do_not_panic_on_empty_or_zero_advance() {
+    let mut canvas = Canvas::new(10, 10, Rgba::WHITE).unwrap();
+    let font = dummy_font();
+
+    let (paths, bounds) = canvas
+      .glyph_paths(Point::new(0.0, 0.0), &[], &font, 16.0, 0.0, &[], None)
+      .unwrap();
+    assert!(paths.is_empty());
+    assert!(bounds.is_valid());
+
+    let glyphs = [GlyphPosition {
+      glyph_id: 0,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 0.0,
+      y_advance: 0.0,
+    }];
+    let (paths, bounds) = canvas
+      .glyph_paths(Point::new(0.0, 0.0), &glyphs, &font, 16.0, 0.0, &[], None)
+      .unwrap();
+    assert!(paths.is_empty());
+    assert!(bounds.is_valid());
   }
 
   #[test]
