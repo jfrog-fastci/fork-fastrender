@@ -138,6 +138,28 @@ fn image_probe_max_bytes() -> usize {
     .clamp(1, 16 * 1024 * 1024)
 }
 
+const PANIC_REASON_MAX_BYTES: usize = 1024;
+
+fn truncate_utf8_at_boundary(input: &str, max_bytes: usize) -> &str {
+  if input.len() <= max_bytes {
+    return input;
+  }
+  let mut end = max_bytes;
+  while end > 0 && !input.is_char_boundary(end) {
+    end -= 1;
+  }
+  &input[..end]
+}
+
+fn panic_payload_to_reason(panic: &(dyn std::any::Any + Send)) -> String {
+  let message = panic
+    .downcast_ref::<&str>()
+    .map(|msg| (*msg).to_string())
+    .or_else(|| panic.downcast_ref::<String>().cloned())
+    .unwrap_or_else(|| "<unknown panic>".to_string());
+  truncate_utf8_at_boundary(&message, PANIC_REASON_MAX_BYTES).to_string()
+}
+
 /// Image cache diagnostics collection.
 #[derive(Debug, Default, Clone)]
 pub struct ImageCacheDiagnostics {
@@ -511,9 +533,11 @@ fn try_render_simple_svg_pixmap(
     RenderStage::Paint,
   )?;
 
-  let doc = match Document::parse(svg_content) {
-    Ok(doc) => doc,
-    Err(_) => return Ok(None),
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_content)
+  })) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) | Err(_) => return Ok(None),
   };
   let root = doc.root_element();
   let has_view_box_attr = root.attribute("viewBox").is_some();
@@ -2548,9 +2572,11 @@ impl ImageCache {
       return Ok(());
     };
 
-    let doc = match roxmltree::Document::parse(svg_content) {
-      Ok(doc) => doc,
-      Err(_) => return Ok(()),
+    let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      roxmltree::Document::parse(svg_content)
+    })) {
+      Ok(Ok(doc)) => doc,
+      Ok(Err(_)) | Err(_) => return Ok(()),
     };
 
     for node in doc.descendants() {
@@ -3236,12 +3262,23 @@ impl ImageCache {
         }
       }
     }
-    let tree = usvg::Tree::from_str(svg_content, &options).map_err(|e| {
-      Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: format!("Failed to parse SVG: {}", e),
-      })
-    })?;
+    let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      usvg::Tree::from_str(svg_content, &options)
+    })) {
+      Ok(Ok(tree)) => tree,
+      Ok(Err(e)) => {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("Failed to parse SVG: {}", e),
+        }));
+      }
+      Err(panic) => {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("SVG parse panicked: {}", panic_payload_to_reason(&*panic)),
+        }));
+      }
+    };
 
     let size = tree.size();
     let source_width = size.width();
@@ -3275,7 +3312,14 @@ impl ImageCache {
       }
     };
     check_active(RenderStage::Paint).map_err(Error::Render)?;
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      resvg::render(&tree, transform, &mut pixmap.as_mut());
+    })) {
+      return Err(Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("SVG render panicked: {}", panic_payload_to_reason(&*panic)),
+      }));
+    }
     check_active(RenderStage::Paint).map_err(Error::Render)?;
 
     let pixmap = Arc::new(pixmap);
@@ -3472,15 +3516,19 @@ impl ImageCache {
 
     let (orientation, resolution) = Self::exif_metadata(bytes);
     let format_from_content_type = Self::format_from_content_type(content_type);
-    let sniffed_format = Self::sniff_image_format(bytes);
-    let (width, height) = self
-      .predecoded_dimensions(bytes, format_from_content_type, sniffed_format)
-      .ok_or_else(|| {
-        Error::Image(ImageError::DecodeFailed {
-          url: url.to_string(),
-          reason: "Unable to determine image dimensions".to_string(),
-        })
-      })?;
+    let (sniffed_format, sniff_panic) = Self::sniff_image_format(bytes);
+    let (dims, dims_panic) =
+      self.predecoded_dimensions(bytes, format_from_content_type, sniffed_format);
+    let (width, height) = dims.ok_or_else(|| {
+      let reason = dims_panic
+        .or(sniff_panic)
+        .map(|panic| format!("Image probe panicked: {panic}"))
+        .unwrap_or_else(|| "Unable to determine image dimensions".to_string());
+      Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason,
+      })
+    })?;
     self.enforce_decode_limits(width, height, url)?;
 
     Ok(CachedImageMetadata {
@@ -3502,10 +3550,16 @@ impl ImageCache {
   ) -> Result<DynamicImage> {
     check_active(RenderStage::Paint).map_err(Error::Render)?;
     let format_from_content_type = Self::format_from_content_type(content_type);
-    let sniffed_format = Self::sniff_image_format(bytes);
-    if let Some((width, height)) =
-      self.predecoded_dimensions(bytes, format_from_content_type, sniffed_format)
-    {
+    let (sniffed_format, sniff_panic) = Self::sniff_image_format(bytes);
+    let (pre_dims, dims_panic) =
+      self.predecoded_dimensions(bytes, format_from_content_type, sniffed_format);
+    let panic_error = dims_panic
+      .or(sniff_panic)
+      .map(|panic| Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("Image decode panicked: {panic}"),
+      }));
+    if let Some((width, height)) = pre_dims {
       self.enforce_decode_limits(width, height, url)?;
     }
     let mut last_error: Option<Error> = None;
@@ -3523,14 +3577,13 @@ impl ImageCache {
     if let Some(format) = format_from_content_type {
       if format != ImageFormat::Avif {
         check_active(RenderStage::Paint).map_err(Error::Render)?;
-        match Self::decode_with_format(bytes, format) {
+        match self.decode_with_format(bytes, format, url) {
           Ok(img) => return self.finish_bitmap_decode(img, url),
           Err(err) => {
-            let mapped = self.decode_error(url, err);
-            if let Error::Render(_) = mapped {
-              return Err(mapped);
+            if let Error::Render(_) = err {
+              return Err(err);
             }
-            last_error = Some(mapped);
+            last_error = Some(err);
           }
         }
       }
@@ -3539,30 +3592,25 @@ impl ImageCache {
     if let Some(format) = sniffed_format {
       if Some(format) != format_from_content_type && format != ImageFormat::Avif {
         check_active(RenderStage::Paint).map_err(Error::Render)?;
-        match Self::decode_with_format(bytes, format) {
+        match self.decode_with_format(bytes, format, url) {
           Ok(img) => return self.finish_bitmap_decode(img, url),
           Err(err) => {
-            let mapped = self.decode_error(url, err);
-            if let Error::Render(_) = mapped {
-              return Err(mapped);
+            if let Error::Render(_) = err {
+              return Err(err);
             }
-            last_error = Some(mapped);
+            last_error = Some(err);
           }
         }
       }
     }
 
     check_active(RenderStage::Paint).map_err(Error::Render)?;
-    match Self::decode_with_guess(bytes) {
+    match self.decode_with_guess(bytes, url) {
       Ok(img) => self.finish_bitmap_decode(img, url),
-      Err(err) => {
-        let mapped = self.decode_error(url, err);
-        if let Error::Render(_) = mapped {
-          Err(mapped)
-        } else {
-          Err(last_error.unwrap_or(mapped))
-        }
-      }
+      Err(err) => Err(match err {
+        Error::Render(_) => err,
+        _ => panic_error.or(last_error).unwrap_or(err),
+      }),
     }
   }
 
@@ -3650,25 +3698,54 @@ impl ImageCache {
     None
   }
 
-  fn sniff_image_format(bytes: &[u8]) -> Option<ImageFormat> {
+  fn sniff_image_format(bytes: &[u8]) -> (Option<ImageFormat>, Option<String>) {
     if let Some(format) = Self::sniff_image_format_fast(bytes) {
-      return Some(format);
+      return (Some(format), None);
     }
     // `image::guess_format` may invoke codec sniffers that use debug assertions (notably for AVIF).
-    // Guard against panics so metadata probing can't crash the renderer in debug builds.
-    std::panic::catch_unwind(|| image::guess_format(bytes).ok())
-      .ok()
-      .flatten()
+    // Guard against panics so metadata probing can't crash the renderer in debug builds. Preserve
+    // the panic message so callers can surface it in decode/probe errors.
+    match std::panic::catch_unwind(|| image::guess_format(bytes).ok()) {
+      Ok(format) => (format, None),
+      Err(panic) => (
+        None,
+        Some(format!(
+          "image::guess_format panicked: {}",
+          panic_payload_to_reason(&*panic)
+        )),
+      ),
+    }
   }
 
-  fn decode_with_format(bytes: &[u8], format: ImageFormat) -> image::ImageResult<DynamicImage> {
-    ImageReader::with_format(DeadlineCursor::new(bytes), format).decode()
+  fn decode_with_format(&self, bytes: &[u8], format: ImageFormat, url: &str) -> Result<DynamicImage> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      ImageReader::with_format(DeadlineCursor::new(bytes), format).decode()
+    })) {
+      Ok(Ok(img)) => Ok(img),
+      Ok(Err(err)) => Err(self.decode_error(url, err)),
+      Err(panic) => Err(Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("image decode panicked: {}", panic_payload_to_reason(&*panic)),
+      })),
+    }
   }
 
-  fn decode_with_guess(bytes: &[u8]) -> image::ImageResult<DynamicImage> {
-    ImageReader::new(DeadlineCursor::new(bytes))
-      .with_guessed_format()?
-      .decode()
+  fn decode_with_guess(&self, bytes: &[u8], url: &str) -> Result<DynamicImage> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      ImageReader::new(DeadlineCursor::new(bytes))
+        .with_guessed_format()?
+        .decode()
+    })) {
+      Ok(Ok(img)) => Ok(img),
+      Ok(Err(err)) => Err(self.decode_error(url, err)),
+      Err(panic) => Err(Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!(
+          "image decode (guessed format) panicked: {}",
+          panic_payload_to_reason(&*panic)
+        ),
+      })),
+    }
   }
 
   fn decode_error(&self, url: &str, err: image::ImageError) -> Error {
@@ -3691,10 +3768,30 @@ impl ImageCache {
     bytes: &[u8],
     format_from_content_type: Option<ImageFormat>,
     sniffed_format: Option<ImageFormat>,
-  ) -> Option<(u32, u32)> {
-    format_from_content_type
-      .and_then(|format| Self::dimensions_for_format(bytes, format))
-      .or_else(|| sniffed_format.and_then(|format| Self::dimensions_for_format(bytes, format)))
+  ) -> (Option<(u32, u32)>, Option<String>) {
+    let mut panic_reason = None;
+
+    if let Some(format) = format_from_content_type {
+      let (dims, panic) = Self::dimensions_for_format(bytes, format);
+      if dims.is_some() {
+        return (dims, None);
+      }
+      if panic_reason.is_none() {
+        panic_reason = panic;
+      }
+    }
+
+    if let Some(format) = sniffed_format {
+      let (dims, panic) = Self::dimensions_for_format(bytes, format);
+      if dims.is_some() {
+        return (dims, None);
+      }
+      if panic_reason.is_none() {
+        panic_reason = panic;
+      }
+    }
+
+    (None, panic_reason)
   }
 
   /// Returns a prefix of `bytes` that excludes any trailing data that does not form a valid top
@@ -3707,18 +3804,39 @@ impl ImageCache {
     let len = bytes.len();
     let mut offset = 0usize;
 
-    while offset + 8 <= len {
-      let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    while offset
+      .checked_add(8)
+      .is_some_and(|next_header| next_header <= len)
+    {
+      let Some(size_end) = offset.checked_add(4).filter(|end| *end <= len) else {
+        break;
+      };
+      let Some(size_bytes) = bytes.get(offset..size_end) else {
+        break;
+      };
+      let Ok(size_bytes) = <[u8; 4]>::try_from(size_bytes) else {
+        break;
+      };
+      let size = u32::from_be_bytes(size_bytes);
 
       let box_size = match size {
         // Box extends to end of file.
         0 => len - offset,
         // Extended size stored in the next 8 bytes.
         1 => {
-          if offset + 16 > len {
+          let Some(ext_end) = offset.checked_add(16).filter(|end| *end <= len) else {
             break;
-          }
-          let ext = u64::from_be_bytes(bytes[offset + 8..offset + 16].try_into().unwrap());
+          };
+          let Some(ext_start) = offset.checked_add(8) else {
+            break;
+          };
+          let Some(ext_slice) = bytes.get(ext_start..ext_end) else {
+            break;
+          };
+          let Ok(ext_bytes) = <[u8; 8]>::try_from(ext_slice) else {
+            break;
+          };
+          let ext = u64::from_be_bytes(ext_bytes);
           if ext < 16 {
             break;
           }
@@ -3755,8 +3873,11 @@ impl ImageCache {
     }
   }
 
-  fn dimensions_for_format(bytes: &[u8], format: ImageFormat) -> Option<(u32, u32)> {
-    match format {
+  fn dimensions_for_format(
+    bytes: &[u8],
+    format: ImageFormat,
+  ) -> (Option<(u32, u32)>, Option<String>) {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match format {
       ImageFormat::Png => image::codecs::png::PngDecoder::new(Cursor::new(bytes))
         .ok()
         .map(|d| d.dimensions()),
@@ -3771,19 +3892,24 @@ impl ImageCache {
         .map(|d| d.dimensions()),
       ImageFormat::Avif => {
         // `avif_parse` includes debug assertions that can panic when the payload includes trailing
-        // bytes (which is tolerated by other decoders and observed on pageset content). Guard
-        // against that so image probing doesn't crash the renderer in debug builds.
+        // bytes (which is tolerated by other decoders and observed on pageset content). Trim and
+        // catch panics so image probing doesn't crash the renderer in debug builds.
         let trimmed = Self::trim_isobmff_trailing_bytes(bytes);
-        std::panic::catch_unwind(|| {
-          let mut cursor = Cursor::new(trimmed);
-          let data = AvifData::from_reader(&mut cursor).ok()?;
-          let meta = data.primary_item_metadata().ok()?;
-          Some((meta.max_frame_width.get(), meta.max_frame_height.get()))
-        })
-        .ok()
-        .flatten()
+        let mut cursor = Cursor::new(trimmed);
+        let data = AvifData::from_reader(&mut cursor).ok()?;
+        let meta = data.primary_item_metadata().ok()?;
+        Some((meta.max_frame_width.get(), meta.max_frame_height.get()))
       }
       _ => None,
+    })) {
+      Ok(dims) => (dims, None),
+      Err(panic) => (
+        None,
+        Some(format!(
+          "{format:?} dimensions probe panicked: {}",
+          panic_payload_to_reason(&*panic)
+        )),
+      ),
     }
   }
 
@@ -3834,11 +3960,7 @@ impl ImageCache {
       match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_inner(payload))) {
         Ok(result) => result,
         Err(panic) => {
-          let message = panic
-            .downcast_ref::<&str>()
-            .map(|msg| (*msg).to_string())
-            .or_else(|| panic.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "<unknown panic>".to_string());
+          let message = panic_payload_to_reason(&*panic);
           Err(AvifDecodeError::Image(Self::avif_error(format!(
             "avif decode panicked: {message}"
           ))))
@@ -4142,64 +4264,67 @@ impl ImageCache {
   }
 
   fn exif_metadata(bytes: &[u8]) -> (Option<OrientationTransform>, Option<f32>) {
-    let mut cursor = std::io::Cursor::new(bytes);
-    let Ok(exif) = exif::Reader::new().read_from_container(&mut cursor) else {
-      return (None, None);
-    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut cursor = std::io::Cursor::new(bytes);
+      let Ok(exif) = exif::Reader::new().read_from_container(&mut cursor) else {
+        return (None, None);
+      };
 
-    let orientation = exif
-      .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-      .and_then(|f| f.value.get_uint(0))
-      .and_then(|v| Self::orientation_from_exif(v as u16));
+      let orientation = exif
+        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|f| f.value.get_uint(0))
+        .and_then(|v| Self::orientation_from_exif(v as u16));
 
-    let resolution_unit = exif
-      .get_field(exif::Tag::ResolutionUnit, exif::In::PRIMARY)
-      .and_then(|f| f.value.get_uint(0))
-      .unwrap_or(0);
+      let resolution_unit = exif
+        .get_field(exif::Tag::ResolutionUnit, exif::In::PRIMARY)
+        .and_then(|f| f.value.get_uint(0))
+        .unwrap_or(0);
 
-    let rational_to_f32 = |r: exif::Rational| -> Option<f32> {
-      if r.denom == 0 {
-        None
-      } else {
-        Some(r.num as f32 / r.denom as f32)
-      }
-    };
-
-    let x_res = exif
-      .get_field(exif::Tag::XResolution, exif::In::PRIMARY)
-      .and_then(|f| {
-        if let exif::Value::Rational(ref vals) = f.value {
-          vals.first().copied()
-        } else {
+      let rational_to_f32 = |r: exif::Rational| -> Option<f32> {
+        if r.denom == 0 {
           None
-        }
-      })
-      .and_then(rational_to_f32);
-    let y_res = exif
-      .get_field(exif::Tag::YResolution, exif::In::PRIMARY)
-      .and_then(|f| {
-        if let exif::Value::Rational(ref vals) = f.value {
-          vals.first().copied()
         } else {
-          None
+          Some(r.num as f32 / r.denom as f32)
         }
-      })
-      .and_then(rational_to_f32);
-    let avg_res = match (x_res, y_res) {
-      (Some(x), Some(y)) if x.is_finite() && y.is_finite() && x > 0.0 && y > 0.0 => {
-        Some((x + y) / 2.0)
-      }
-      (Some(v), None) | (None, Some(v)) if v.is_finite() && v > 0.0 => Some(v),
-      _ => None,
-    };
+      };
 
-    let resolution = avg_res.and_then(|res| match resolution_unit {
-      2 => Some(res / 96.0),          // inch -> dppx
-      3 => Some((res * 2.54) / 96.0), // cm -> dppx
-      _ => None,
-    });
+      let x_res = exif
+        .get_field(exif::Tag::XResolution, exif::In::PRIMARY)
+        .and_then(|f| {
+          if let exif::Value::Rational(ref vals) = f.value {
+            vals.first().copied()
+          } else {
+            None
+          }
+        })
+        .and_then(rational_to_f32);
+      let y_res = exif
+        .get_field(exif::Tag::YResolution, exif::In::PRIMARY)
+        .and_then(|f| {
+          if let exif::Value::Rational(ref vals) = f.value {
+            vals.first().copied()
+          } else {
+            None
+          }
+        })
+        .and_then(rational_to_f32);
+      let avg_res = match (x_res, y_res) {
+        (Some(x), Some(y)) if x.is_finite() && y.is_finite() && x > 0.0 && y > 0.0 => {
+          Some((x + y) / 2.0)
+        }
+        (Some(v), None) | (None, Some(v)) if v.is_finite() && v > 0.0 => Some(v),
+        _ => None,
+      };
 
-    (orientation, resolution)
+      let resolution = avg_res.and_then(|res| match resolution_unit {
+        2 => Some(res / 96.0),          // inch -> dppx
+        3 => Some((res * 2.54) / 96.0), // cm -> dppx
+        _ => None,
+      });
+
+      (orientation, resolution)
+    }))
+    .unwrap_or((None, None))
   }
 
   #[allow(dead_code)]
@@ -4244,12 +4369,23 @@ impl ImageCache {
       }
     }
     self.enforce_svg_resource_policy(svg_content, url)?;
-    let tree = usvg::Tree::from_str(svg_content, &options).map_err(|e| {
-      Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: format!("Failed to parse SVG: {}", e),
-      })
-    })?;
+    let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      usvg::Tree::from_str(svg_content, &options)
+    })) {
+      Ok(Ok(tree)) => tree,
+      Ok(Err(e)) => {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("Failed to parse SVG: {}", e),
+        }));
+      }
+      Err(panic) => {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("SVG parse panicked: {}", panic_payload_to_reason(&*panic)),
+        }));
+      }
+    };
 
     let size = tree.size();
     let source_width = size.width();
@@ -4304,7 +4440,14 @@ impl ImageCache {
       tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, translate_x, translate_y)
     };
     check_active(RenderStage::Paint).map_err(Error::Render)?;
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      resvg::render(&tree, transform, &mut pixmap.as_mut());
+    })) {
+      return Err(Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("SVG render panicked: {}", panic_payload_to_reason(&*panic)),
+      }));
+    }
     check_active(RenderStage::Paint).map_err(Error::Render)?;
 
     // Convert pixmap to image
@@ -4343,25 +4486,29 @@ impl ImageCache {
 fn svg_intrinsic_metadata(
   svg_content: &str,
 ) -> Option<(Option<f32>, Option<f32>, Option<f32>, bool)> {
-  let doc = Document::parse(svg_content).ok()?;
-  let root = doc.root_element();
-  if !root.tag_name().name().eq_ignore_ascii_case("svg") {
-    return None;
-  }
+  std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let doc = Document::parse(svg_content).ok()?;
+    let root = doc.root_element();
+    if !root.tag_name().name().eq_ignore_ascii_case("svg") {
+      return None;
+    }
 
-  let intrinsic = svg_intrinsic_dimensions_from_attributes(
-    root.attribute("width"),
-    root.attribute("height"),
-    root.attribute("viewBox"),
-    root.attribute("preserveAspectRatio"),
-  );
+    let intrinsic = svg_intrinsic_dimensions_from_attributes(
+      root.attribute("width"),
+      root.attribute("height"),
+      root.attribute("viewBox"),
+      root.attribute("preserveAspectRatio"),
+    );
 
-  Some((
-    intrinsic.width,
-    intrinsic.height,
-    intrinsic.aspect_ratio,
-    intrinsic.aspect_ratio_none,
-  ))
+    Some((
+      intrinsic.width,
+      intrinsic.height,
+      intrinsic.aspect_ratio,
+      intrinsic.aspect_ratio_none,
+    ))
+  }))
+  .ok()
+  .flatten()
 }
 
 // ============================================================================
@@ -6813,6 +6960,111 @@ mod tests {
     release.wait();
     let _ = owner_handle.join();
     let _ = waiter_handle.join();
+  }
+
+  fn assert_decode_or_timeout(err: Error) {
+    match err {
+      Error::Image(_) | Error::Render(RenderError::Timeout { .. }) => {}
+      other => panic!("unexpected error kind: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn truncated_bitmap_headers_do_not_panic() {
+    let cases: &[(&str, &[u8])] = &[
+      ("png", b"\x89PNG\r\n\x1a\n"),
+      ("jpeg", b"\xff\xd8\xff"),
+      ("gif", b"GIF89a"),
+      ("webp", b"RIFF\x00\x00\x00\x00WEBP"),
+    ];
+
+    let entries = cases.iter().map(|(name, bytes)| {
+      (
+        format!("test://truncated.{name}"),
+        FetchedResource::new(bytes.to_vec(), None),
+      )
+    });
+    let fetcher = Arc::new(MapFetcher::with_entries(entries));
+    let cache = ImageCache::with_fetcher_and_config(
+      fetcher,
+      ImageCacheConfig::default().with_max_decoded_dimension(1024).with_max_decoded_pixels(1024 * 1024),
+    );
+
+    for (name, _) in cases {
+      let url = format!("test://truncated.{name}");
+
+      let probe = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cache.probe(&url)));
+      let probe = probe.unwrap_or_else(|_| panic!("probe panicked for {name}"));
+      let probe_err = match probe {
+        Ok(_) => panic!("probe should fail for truncated header {name}"),
+        Err(err) => err,
+      };
+      assert_decode_or_timeout(probe_err);
+
+      let load = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cache.load(&url)));
+      let load = load.unwrap_or_else(|_| panic!("load panicked for {name}"));
+      let load_err = match load {
+        Ok(_) => panic!("load should fail for truncated header {name}"),
+        Err(err) => err,
+      };
+      assert_decode_or_timeout(load_err);
+    }
+  }
+
+  #[test]
+  fn malformed_isobmff_avif_headers_do_not_panic() {
+    // ISO-BMFF box headers that have historically triggered debug-only assertions inside AVIF
+    // sniffers/parsers.
+    let cases: &[(&str, Vec<u8>)] = &[
+      // Box declares an extended size but the header is truncated.
+      (
+        "short_ext_size",
+        vec![
+          0x00, 0x00, 0x00, 0x01, b'f', b't', b'y', b'p', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          0x00,
+        ],
+      ),
+      // Extended size is present but invalid (smaller than the 16-byte extended header).
+      (
+        "invalid_ext_size",
+        vec![
+          0x00, 0x00, 0x00, 0x01, b'f', b't', b'y', b'p', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          0x00, 0x08,
+        ],
+      ),
+    ];
+
+    let entries = cases.iter().map(|(name, bytes)| {
+      (
+        format!("test://malformed.{name}.avif"),
+        FetchedResource::new(bytes.clone(), Some("image/avif".to_string())),
+      )
+    });
+    let fetcher = Arc::new(MapFetcher::with_entries(entries));
+    let cache = ImageCache::with_fetcher_and_config(
+      fetcher,
+      ImageCacheConfig::default().with_max_decoded_dimension(1024).with_max_decoded_pixels(1024 * 1024),
+    );
+
+    for (name, _) in cases {
+      let url = format!("test://malformed.{name}.avif");
+
+      let probe = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cache.probe(&url)));
+      let probe = probe.unwrap_or_else(|_| panic!("probe panicked for {name}"));
+      let probe_err = match probe {
+        Ok(_) => panic!("probe should fail for malformed avif header {name}"),
+        Err(err) => err,
+      };
+      assert_decode_or_timeout(probe_err);
+
+      let load = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cache.load(&url)));
+      let load = load.unwrap_or_else(|_| panic!("load panicked for {name}"));
+      let load_err = match load {
+        Ok(_) => panic!("load should fail for malformed avif header {name}"),
+        Err(err) => err,
+      };
+      assert_decode_or_timeout(load_err);
+    }
   }
 
   fn mean_abs_diff(a: &[u8], b: &[u8]) -> f64 {

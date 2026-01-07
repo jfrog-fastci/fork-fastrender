@@ -80,3 +80,10 @@ path = "fuzz_targets/html_scanners.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "image_decoding"
+path = "fuzz_targets/image_decoding.rs"
+test = false
+doc = false
+bench = false

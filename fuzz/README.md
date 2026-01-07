@@ -29,6 +29,8 @@ cargo install cargo-fuzz
   fetching disabled.
 - `html_scanners`: Feeds random HTML into lightweight string-based scanners
   (template stripping, client redirect inference, and HTML asset discovery).
+- `image_decoding`: Feeds arbitrary bytes into the image probing + decode
+  pipeline with tight decode limits (dimensions/pixels) to prevent OOM.
 
 ## Running
 
@@ -39,6 +41,7 @@ cargo fuzz run css_parser -- -runs=1000
 cargo fuzz run selectors tests/fuzz_corpus -- -max_total_time=10
 cargo fuzz run render_pipeline tests/fuzz_corpus -- -runs=1000
 cargo fuzz run html_scanners -- -runs=1000
+cargo fuzz run image_decoding -- -runs=1000
 ```
 
 You can point any target at additional corpora (e.g. `tests/fuzz_corpus/` which
