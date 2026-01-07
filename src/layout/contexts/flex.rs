@@ -4503,6 +4503,8 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.display, &mut h);
   hash_enum_discriminant(&style.position, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);
+  hash_enum_discriminant(&style.writing_mode, &mut h);
+  hash_enum_discriminant(&style.direction, &mut h);
   hash_enum_discriminant(&style.content_visibility, &mut h);
   style.contain_intrinsic_width.auto.hash(&mut h);
   hash_option_length(&style.contain_intrinsic_width.length, &mut h);
@@ -4528,6 +4530,8 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   hash_length(&style.used_border_left_width(), &mut h);
   hash_enum_discriminant(&style.overflow_x, &mut h);
   hash_enum_discriminant(&style.overflow_y, &mut h);
+  style.scrollbar_gutter.stable.hash(&mut h);
+  style.scrollbar_gutter.both_edges.hash(&mut h);
   hash_enum_discriminant(&style.scrollbar_width, &mut h);
   hash_enum_discriminant(&style.flex_direction, &mut h);
   hash_enum_discriminant(&style.flex_wrap, &mut h);
@@ -8805,10 +8809,12 @@ mod tests {
   use crate::style::types::BorderStyle;
   use crate::style::types::ContainIntrinsicSizeAxis;
   use crate::style::types::ContentVisibility;
+  use crate::style::types::Direction;
   use crate::style::types::FlexWrap;
   use crate::style::types::LineHeight;
   use crate::style::types::Overflow;
   use crate::style::types::ScrollbarWidth;
+  use crate::style::types::WritingMode;
   use crate::style::values::Length;
   use crate::text::font_db::FontConfig;
   use crate::tree::box_tree::ReplacedType;
@@ -10559,6 +10565,57 @@ mod tests {
       flex_style_fingerprint(&lh_neg_zero),
       flex_style_fingerprint(&lh_pos_zero),
       "line-height should canonicalize -0.0 in the flex style fingerprint"
+    );
+  }
+
+  #[test]
+  fn flex_style_fingerprint_accounts_for_writing_mode_and_direction() {
+    let mut base = ComputedStyle::default();
+    base.display = Display::Flex;
+    base.writing_mode = WritingMode::HorizontalTb;
+    base.direction = Direction::Ltr;
+
+    let mut vertical = base.clone();
+    vertical.writing_mode = WritingMode::VerticalRl;
+    let mut rtl = base.clone();
+    rtl.direction = Direction::Rtl;
+
+    let fp_base = flex_style_fingerprint(&base);
+    assert_ne!(
+      fp_base,
+      flex_style_fingerprint(&vertical),
+      "writing-mode should affect flex style fingerprint"
+    );
+    assert_ne!(
+      fp_base,
+      flex_style_fingerprint(&rtl),
+      "direction should affect flex style fingerprint"
+    );
+  }
+
+  #[test]
+  fn flex_style_fingerprint_accounts_for_scrollbar_gutter() {
+    let mut style_a = ComputedStyle::default();
+    style_a.display = Display::Flex;
+    style_a.overflow_x = Overflow::Auto;
+
+    let mut style_b = style_a.clone();
+    style_b.scrollbar_gutter.stable = true;
+
+    let mut style_c = style_a.clone();
+    style_c.scrollbar_gutter.both_edges = true;
+
+    let fp_a = flex_style_fingerprint(&style_a);
+    let fp_b = flex_style_fingerprint(&style_b);
+    let fp_c = flex_style_fingerprint(&style_c);
+
+    assert_ne!(
+      fp_a, fp_b,
+      "scrollbar-gutter should affect flex style fingerprint"
+    );
+    assert_ne!(
+      fp_a, fp_c,
+      "scrollbar-gutter should affect flex style fingerprint"
     );
   }
 
