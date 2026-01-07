@@ -413,6 +413,7 @@ textarea {
 }
 
 select:not([multiple]):not([size]),
+select:not([multiple])[size=""],
 select:not([multiple])[size="0"],
 select:not([multiple])[size="1"] {
     padding-right: 20px;
@@ -420,10 +421,11 @@ select:not([multiple])[size="1"] {
 }
 
 select[multiple],
-select[size]:not([size="0"]):not([size="1"]) {
+select[size]:not([size=""]):not([size="0"]):not([size="1"]) {
     padding-right: 6px;
     overflow-y: auto;
     overflow-x: hidden;
+    cursor: default;
 }
 
 input[type="reset"] {
