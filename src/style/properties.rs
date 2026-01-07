@@ -17225,62 +17225,71 @@ fn parse_text_combine_upright(value: &PropertyValue) -> Option<TextCombineUprigh
 fn parse_text_transform(value: &PropertyValue) -> Option<TextTransform> {
   use crate::style::types::CaseTransform;
 
+  let mut tokens: Vec<String> = match value {
+    PropertyValue::Keyword(kw) => kw
+      .split_whitespace()
+      .map(|s| s.to_ascii_lowercase())
+      .collect(),
+    PropertyValue::Multiple(list) if !list.is_empty() => {
+      let mut out = Vec::new();
+      for part in list {
+        let PropertyValue::Keyword(kw) = part else {
+          return None;
+        };
+        out.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+      }
+      out
+    }
+    _ => return None,
+  };
+
+  if tokens.is_empty() {
+    return None;
+  }
+
+  // CSS Text 3: `none` cannot be combined with other keywords.
+  if tokens.iter().any(|t| t == "none") {
+    return (tokens.len() == 1).then_some(TextTransform::none());
+  }
+
   let mut case = CaseTransform::None;
   let mut full_width = false;
   let mut full_size_kana = false;
 
-  let mut apply_keyword = |kw: &str| -> Option<()> {
-    match kw {
-      "none" => {
-        // none must be the only keyword present
-        case = CaseTransform::None;
-        full_width = false;
-        full_size_kana = false;
-      }
+  for token in tokens.drain(..) {
+    match token.as_str() {
       "uppercase" => {
-        if !matches!(case, CaseTransform::None | CaseTransform::Uppercase) {
+        if !matches!(case, CaseTransform::None) {
           return None;
         }
         case = CaseTransform::Uppercase;
       }
       "lowercase" => {
-        if !matches!(case, CaseTransform::None | CaseTransform::Lowercase) {
+        if !matches!(case, CaseTransform::None) {
           return None;
         }
         case = CaseTransform::Lowercase;
       }
       "capitalize" => {
-        if !matches!(case, CaseTransform::None | CaseTransform::Capitalize) {
+        if !matches!(case, CaseTransform::None) {
           return None;
         }
         case = CaseTransform::Capitalize;
       }
-      "full-width" => full_width = true,
-      "full-size-kana" => full_size_kana = true,
-      _ => return None,
-    }
-    Some(())
-  };
-
-  match value {
-    PropertyValue::Keyword(kw) => apply_keyword(kw)?,
-    PropertyValue::Multiple(list) if !list.is_empty() => {
-      // 'none' cannot be combined with other keywords
-      let has_none = list
-        .iter()
-        .any(|v| matches!(v, PropertyValue::Keyword(k) if k == "none"));
-      if has_none && list.len() > 1 {
-        return None;
-      }
-      for part in list {
-        if let PropertyValue::Keyword(kw) = part {
-          apply_keyword(kw)?;
-        } else {
+      "full-width" => {
+        if full_width {
           return None;
         }
+        full_width = true;
       }
+      "full-size-kana" => {
+        if full_size_kana {
+          return None;
+        }
+        full_size_kana = true;
+      }
+      _ => return None,
     }
-    _ => return None,
   }
 
   Some(TextTransform {
@@ -21546,6 +21555,59 @@ mod tests {
     assert_eq!(
       styles.text_transform,
       TextTransform::with_case(CaseTransform::Uppercase)
+    );
+  }
+
+  #[test]
+  fn parses_text_transform_whitespace_separated_keywords() {
+    let mut styles = ComputedStyle::default();
+    apply_declaration(
+      &mut styles,
+      &Declaration {
+        property: "text-transform".into(),
+        value: PropertyValue::Keyword("uppercase full-width".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(
+      styles.text_transform,
+      TextTransform {
+        case: CaseTransform::Uppercase,
+        full_width: true,
+        full_size_kana: false,
+      }
+    );
+  }
+
+  #[test]
+  fn text_transform_rejects_duplicate_keywords() {
+    let mut styles = ComputedStyle::default();
+    styles.text_transform = TextTransform::with_case(CaseTransform::Lowercase);
+
+    apply_declaration(
+      &mut styles,
+      &Declaration {
+        property: "text-transform".into(),
+        value: PropertyValue::Keyword("uppercase uppercase".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(
+      styles.text_transform,
+      TextTransform::with_case(CaseTransform::Lowercase),
+      "duplicate keywords should make the declaration invalid and ignored"
     );
   }
 
