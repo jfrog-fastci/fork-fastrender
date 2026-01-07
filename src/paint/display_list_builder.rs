@@ -2330,6 +2330,15 @@ impl DisplayListBuilder {
       || mask.is_some()
       || has_opacity;
 
+    let establishes_backdrop_root = is_root
+      || !filters.is_empty()
+      || has_opacity
+      || mask.is_some()
+      || clip_path.is_some()
+      || !backdrop_filters.is_empty()
+      || mix_blend_mode != BlendMode::Normal
+      || root_style.is_some_and(|style| style.will_change.establishes_backdrop_root());
+
     if is_root && !has_effects {
       if let Some(root_background) = root_background.as_ref() {
         self.emit_root_background(root_background);
@@ -2418,6 +2427,7 @@ impl DisplayListBuilder {
       .push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: context.z_index,
         creates_stacking_context: true,
+        establishes_backdrop_root,
         bounds: context_bounds,
         plane_rect,
         mix_blend_mode,
@@ -8957,6 +8967,8 @@ mod tests {
   use crate::style::types::TextUnderlinePosition;
   use crate::style::types::TransformBox;
   use crate::style::types::TransformStyle;
+  use crate::style::types::WillChange;
+  use crate::style::types::WillChangeHint;
   use crate::style::values::CalcLength;
   use crate::style::values::Length;
   use crate::style::values::LengthUnit;
@@ -9322,6 +9334,39 @@ mod tests {
             | DisplayItem::PopStackingContext
         )
     })
+  }
+
+  #[test]
+  fn will_change_filter_establishes_backdrop_root() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let child_bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.background_color = Rgba::RED;
+    child_style.will_change = WillChange::Hints(vec![WillChangeHint::Property("filter".into())]);
+    let child_style = Arc::new(child_style);
+
+    let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
+    let root =
+      FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+
+    let child_context = list.items().iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(ctx) if ctx.bounds == child_bounds => Some(ctx),
+      _ => None,
+    });
+
+    let child_context = child_context.expect("expected a stacking context for will-change:filter");
+    assert!(
+      child_context.establishes_backdrop_root,
+      "will-change: filter should establish a backdrop root even if no filter functions are present"
+    );
+    assert!(child_context.filters.is_empty());
+    assert!(child_context.backdrop_filters.is_empty());
+    assert!(child_context.mask.is_none());
+    assert_eq!(child_context.mix_blend_mode, BlendMode::Normal);
+    assert!((child_context.opacity - 1.0).abs() <= f32::EPSILON);
   }
 
   #[test]

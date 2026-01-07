@@ -93,6 +93,7 @@ fn stacking_context(bounds: Rect, child_perspective: Option<Transform3D>) -> Sta
   StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -1109,6 +1110,7 @@ fn test_stacking_context_preserved() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
     mix_blend_mode: BlendMode::Normal,
@@ -1138,6 +1140,7 @@ fn stacking_context_filters_expand_cull_bounds() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: Rect::from_xywh(-10.0, 0.0, 5.0, 5.0),
     plane_rect: Rect::from_xywh(-10.0, 0.0, 5.0, 5.0),
     mix_blend_mode: BlendMode::Normal,
@@ -1174,6 +1177,7 @@ fn offscreen_filtered_stacking_context_is_culled() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: Rect::from_xywh(500.0, 500.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(500.0, 500.0, 10.0, 10.0),
     mix_blend_mode: BlendMode::Normal,
@@ -1220,6 +1224,7 @@ fn deep_filtered_stack_still_matches_baseline_after_culling() {
   let translated_context = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: offscreen_clip,
     plane_rect: offscreen_clip,
     mix_blend_mode: BlendMode::Normal,

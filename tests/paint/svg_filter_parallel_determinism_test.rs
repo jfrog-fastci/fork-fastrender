@@ -105,6 +105,7 @@ fn build_display_list(filter: Arc<fastrender::paint::svg_filter::SvgFilter>) -> 
       list.push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: true,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -178,6 +179,7 @@ fn build_seam_display_list(filter: Arc<fastrender::paint::svg_filter::SvgFilter>
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,

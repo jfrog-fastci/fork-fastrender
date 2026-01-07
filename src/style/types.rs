@@ -1733,6 +1733,18 @@ impl WillChange {
       WillChange::Hints(hints) => hints.iter().any(WillChangeHint::creates_stacking_context),
     }
   }
+
+  /// Returns true if the hint set should proactively establish a Backdrop Root.
+  ///
+  /// Filter Effects Level 2 defines *Backdrop Roots* to scope the backdrop image used by
+  /// `backdrop-filter` and `mix-blend-mode`. `will-change` must behave as if the hinted property
+  /// were non-initial for this purpose.
+  pub fn establishes_backdrop_root(&self) -> bool {
+    match self {
+      WillChange::Auto => false,
+      WillChange::Hints(hints) => hints.iter().any(WillChangeHint::establishes_backdrop_root),
+    }
+  }
 }
 
 impl WillChangeHint {
@@ -1757,6 +1769,25 @@ impl WillChangeHint {
           | "mix-blend-mode"
           | "isolation"
           | "contain"
+      ),
+    }
+  }
+
+  fn establishes_backdrop_root(&self) -> bool {
+    match self {
+      // These hints exist for performance and do not map to any single property that establishes a
+      // Backdrop Root.
+      WillChangeHint::ScrollPosition | WillChangeHint::Contents => false,
+      WillChangeHint::Property(name) => matches!(
+        name.as_str(),
+        "filter"
+          | "opacity"
+          | "mask"
+          | "mask-image"
+          | "mask-border"
+          | "clip-path"
+          | "backdrop-filter"
+          | "mix-blend-mode"
       ),
     }
   }

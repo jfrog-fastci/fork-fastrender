@@ -13,6 +13,7 @@ fn preserve_3d_list(bounds: Rect) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -32,6 +33,7 @@ fn preserve_3d_list(bounds: Rect) -> DisplayList {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: z,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,

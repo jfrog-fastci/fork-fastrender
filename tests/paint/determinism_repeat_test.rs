@@ -162,6 +162,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: backdrop_bounds,
     plane_rect: backdrop_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -182,6 +183,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: masked_bounds,
     plane_rect: masked_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -206,6 +208,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: shadow_bounds,
     plane_rect: shadow_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -263,6 +266,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: root_bounds,
     plane_rect: root_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -282,6 +286,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: far_plane,
     plane_rect: far_plane,
     mix_blend_mode: BlendMode::Normal,
@@ -306,6 +311,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: mid_plane,
     plane_rect: mid_plane,
     mix_blend_mode: BlendMode::Normal,
@@ -331,6 +337,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: near_plane,
     plane_rect: near_plane,
     mix_blend_mode: BlendMode::Normal,

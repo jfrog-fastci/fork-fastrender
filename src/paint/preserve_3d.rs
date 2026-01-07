@@ -375,6 +375,7 @@ mod tests {
     StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -434,6 +435,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -478,7 +480,11 @@ mod tests {
       }
     }
 
-    assert_eq!(order, vec![1, 2], "expected back-to-front depth sort without warping");
+    assert_eq!(
+      order,
+      vec![1, 2],
+      "expected back-to-front depth sort without warping"
+    );
   }
 
   #[test]
@@ -487,6 +493,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       mix_blend_mode: crate::paint::display_list::BlendMode::Normal,

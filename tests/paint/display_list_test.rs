@@ -1913,6 +1913,7 @@ fn test_stacking_context() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 10,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
     mix_blend_mode: BlendMode::Normal,

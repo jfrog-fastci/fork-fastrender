@@ -302,6 +302,7 @@ fn mask_parallel_paint_matches_serial_output() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -422,6 +423,7 @@ fn viewport_unit_masks_match_serial_output() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -561,6 +563,7 @@ fn clip_transform_and_stacking_context_match_serial_output() {
   let stacking = StackingContextItem {
     z_index: 1,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: Rect::from_xywh(18.0, 26.0, 40.0, 36.0),
     plane_rect: Rect::from_xywh(18.0, 26.0, 40.0, 36.0),
     mix_blend_mode: BlendMode::Normal,
@@ -635,6 +638,7 @@ fn stacking_context_mask_matches_serial_output() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: masked_bounds,
     plane_rect: masked_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -715,6 +719,7 @@ fn stacking_context_isolated_layer_matches_serial_output() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -814,6 +819,7 @@ fn svg_filter_and_rounded_clip_match_serial_output_in_translated_tiles() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -879,6 +885,7 @@ fn mix_blend_mode_triggers_serial_fallback_without_isolation() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
     mix_blend_mode: BlendMode::Multiply,
@@ -1112,6 +1119,7 @@ fn mask_layers_survive_tiling() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: element_rect,
     plane_rect: element_rect,
     mix_blend_mode: BlendMode::Normal,
@@ -1216,6 +1224,7 @@ fn mask_viewport_units_match_serial_output() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -1283,6 +1292,7 @@ fn stacking_context_filter_radii_match_serial_output_under_tiling() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -1429,6 +1439,7 @@ fn backdrop_filters_survive_tiling() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: Rect::from_xywh(32.0, 0.0, 64.0, 64.0),
     plane_rect: Rect::from_xywh(32.0, 0.0, 64.0, 64.0),
     mix_blend_mode: BlendMode::Normal,
@@ -1500,6 +1511,7 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
   let root = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: root_bounds,
     plane_rect: root_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -1520,6 +1532,7 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
   let plane = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: plane_bounds,
     plane_rect: plane_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -1665,6 +1678,7 @@ fn mask_composite_respects_deadline() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -1852,6 +1866,7 @@ fn parallel_paint_masked_element_matches_serial_off_origin_tiles() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,

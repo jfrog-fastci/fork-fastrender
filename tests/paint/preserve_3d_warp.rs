@@ -25,6 +25,7 @@ fn perspective_plane_projects_with_warp() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: root_bounds,
     plane_rect: root_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -42,6 +43,7 @@ fn perspective_plane_projects_with_warp() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: plane,
     plane_rect: plane,
     mix_blend_mode: BlendMode::Normal,
@@ -144,6 +146,7 @@ fn perspective_plane_projects_with_warp_at_2x_scale() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: root_bounds,
     plane_rect: root_bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -161,6 +164,7 @@ fn perspective_plane_projects_with_warp_at_2x_scale() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds: plane,
     plane_rect: plane,
     mix_blend_mode: BlendMode::Normal,

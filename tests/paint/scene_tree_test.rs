@@ -18,6 +18,7 @@ fn stacking_context(
   StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: mix_blend_mode != BlendMode::Normal,
     bounds: Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
     mix_blend_mode,

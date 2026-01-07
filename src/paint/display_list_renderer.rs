@@ -1483,10 +1483,8 @@ fn apply_backdrop_filters(
     return Ok(());
   }
 
-  let src_start_x =
-    (write_x as i32 + dest_origin_in_src.0 - clamped_x as i32).max(0) as u32;
-  let src_start_y =
-    (write_y as i32 + dest_origin_in_src.1 - clamped_y as i32).max(0) as u32;
+  let src_start_x = (write_x as i32 + dest_origin_in_src.0 - clamped_x as i32).max(0) as u32;
+  let src_start_y = (write_y as i32 + dest_origin_in_src.1 - clamped_y as i32).max(0) as u32;
 
   let dest_bytes_per_row = dest.width() as usize * 4;
   let clip_mask_data =
@@ -7762,7 +7760,7 @@ impl DisplayListRenderer {
               None => return Ok(()),
             };
           }
- 
+
           layer_bounds = match layer_bounds.intersection(parent_bounds) {
             Some(r) => r,
             None => return Ok(()),
@@ -13002,6 +13000,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: rect,
       plane_rect: rect,
       mix_blend_mode: BlendMode::Normal,
@@ -13101,6 +13100,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
       mix_blend_mode: BlendMode::Normal,
@@ -13121,6 +13121,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: tilted_rect,
       plane_rect: tilted_rect,
       mix_blend_mode: BlendMode::Normal,
@@ -13145,6 +13146,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: front_rect,
       plane_rect: front_rect,
       mix_blend_mode: BlendMode::Normal,
@@ -13198,6 +13200,7 @@ mod tests {
       list.push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: false,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -13217,6 +13220,7 @@ mod tests {
       list.push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: false,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -13246,6 +13250,7 @@ mod tests {
       list.push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: !backdrop_filters.is_empty(),
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -13296,6 +13301,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -13337,6 +13343,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -13356,6 +13363,7 @@ mod tests {
       list.push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: order,
         creates_stacking_context: true,
+        establishes_backdrop_root: false,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -13426,6 +13434,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -13457,6 +13466,7 @@ mod tests {
       list.push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: false,
         bounds: plane_rect,
         plane_rect,
         mix_blend_mode: BlendMode::Normal,
@@ -14148,6 +14158,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds: Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
       plane_rect: Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
       mix_blend_mode: BlendMode::Normal,
@@ -14572,6 +14583,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds: Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
       plane_rect: Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
       mix_blend_mode: BlendMode::Normal,
@@ -14707,6 +14719,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Multiply,
@@ -14774,6 +14787,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Multiply,
@@ -16289,6 +16303,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds: Rect::from_xywh(10.0, 10.0, 20.0, 10.0),
       plane_rect: Rect::from_xywh(10.0, 10.0, 20.0, 10.0),
       mix_blend_mode: BlendMode::Normal,
@@ -16376,6 +16391,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
       plane_rect: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
       mix_blend_mode: BlendMode::Normal,
@@ -16432,6 +16448,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -16481,6 +16498,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -16576,6 +16594,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -16645,6 +16664,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -16693,6 +16713,7 @@ mod tests {
       crate::paint::display_list::StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -16733,6 +16754,7 @@ mod tests {
       crate::paint::display_list::StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: true,
         bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -17091,6 +17113,7 @@ mod tests {
       crate::paint::display_list::StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: false,
         bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -17138,6 +17161,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
       mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -17215,6 +17239,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       mix_blend_mode: BlendMode::Normal,
@@ -17249,6 +17274,7 @@ mod tests {
       crate::paint::display_list::StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
@@ -17294,6 +17320,7 @@ mod tests {
       crate::paint::display_list::StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
@@ -17345,6 +17372,7 @@ mod tests {
       crate::paint::display_list::StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
@@ -17396,6 +17424,7 @@ mod tests {
       crate::paint::display_list::StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Hue,
@@ -17474,6 +17503,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -17598,6 +17628,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       mix_blend_mode: BlendMode::Normal,
@@ -17675,6 +17706,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       mix_blend_mode: BlendMode::Normal,
@@ -17739,6 +17771,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -18158,6 +18191,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,

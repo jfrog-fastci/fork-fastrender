@@ -2127,6 +2127,13 @@ pub struct StackingContextItem {
   /// Whether this element creates a new stacking context
   pub creates_stacking_context: bool,
 
+  /// Whether this element establishes a Filter Effects Level 2 *Backdrop Root* for its descendants.
+  ///
+  /// Backdrop roots control the backdrop scope used by effects like `backdrop-filter` and
+  /// `mix-blend-mode`. This is distinct from "creates a stacking context": some stacking contexts
+  /// (e.g. transforms) do **not** establish a backdrop root.
+  pub establishes_backdrop_root: bool,
+
   /// Bounds of the stacking context
   pub bounds: Rect,
 

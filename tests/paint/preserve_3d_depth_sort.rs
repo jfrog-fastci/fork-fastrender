@@ -19,6 +19,7 @@ fn stacking_context(
   StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: false,
     bounds,
     plane_rect,
     mix_blend_mode: BlendMode::Normal,

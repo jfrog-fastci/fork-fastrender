@@ -827,6 +827,7 @@ impl DisplayListOptimizer {
 
   fn is_noop_stacking_context(item: &StackingContextItem) -> bool {
     item.z_index == 0
+      && !item.establishes_backdrop_root
       && matches!(item.transform_style, TransformStyle::Flat)
       && item.child_perspective.is_none()
       && item.transform.is_none()
@@ -1306,6 +1307,7 @@ mod tests {
       DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        establishes_backdrop_root: false,
         bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
         mix_blend_mode: BlendMode::Normal,
@@ -1544,6 +1546,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(108.0, 10.0, 2.0, 2.0),
       plane_rect: Rect::from_xywh(108.0, 10.0, 2.0, 2.0),
       mix_blend_mode: BlendMode::Normal,
@@ -1581,6 +1584,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(500.0, 0.0, 100.0, 100.0),
       plane_rect: Rect::from_xywh(500.0, 0.0, 100.0, 100.0),
       mix_blend_mode: BlendMode::Normal,
@@ -1598,6 +1602,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(500.0, 0.0, 50.0, 50.0),
       plane_rect: Rect::from_xywh(500.0, 0.0, 50.0, 50.0),
       mix_blend_mode: BlendMode::Normal,
@@ -1649,6 +1654,7 @@ mod tests {
     let stacking_context = StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
       mix_blend_mode: BlendMode::Normal,
@@ -1683,6 +1689,7 @@ mod tests {
     let stacking_context = StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
       mix_blend_mode: BlendMode::Normal,
@@ -1810,6 +1817,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -1906,6 +1914,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
       mix_blend_mode: BlendMode::Normal,
@@ -1924,6 +1933,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
       mix_blend_mode: BlendMode::Normal,
@@ -1985,6 +1995,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       mix_blend_mode: BlendMode::Normal,
@@ -2005,6 +2016,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       mix_blend_mode: BlendMode::Normal,
@@ -2025,6 +2037,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       mix_blend_mode: BlendMode::Normal,
