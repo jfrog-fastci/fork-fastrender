@@ -256,3 +256,60 @@ fn shadow_dom_nodes_keep_roles_and_names() {
   assert_eq!(header.name.as_deref(), Some("Shadow Header"));
   assert_eq!(header.role, "generic");
 }
+
+#[test]
+fn select_placeholder_disabled_selected_exposes_value_text() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="placeholder" required>
+          <option value="" disabled selected>Choose</option>
+          <option value="x">X</option>
+        </select>
+
+        <select id="last-selected">
+          <option selected>First</option>
+          <option selected>Last</option>
+        </select>
+
+        <select id="hidden-selected">
+          <option selected>Visible</option>
+          <option selected hidden>Hidden</option>
+        </select>
+
+        <select id="first-enabled">
+          <option disabled>Disabled</option>
+          <option>Enabled</option>
+        </select>
+
+        <select id="all-disabled">
+          <option disabled>A</option>
+          <option disabled>B</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let placeholder = find_by_id(&tree, "placeholder").expect("placeholder select");
+  assert_eq!(placeholder.value.as_deref(), Some("Choose"));
+  assert!(placeholder.states.required);
+  assert!(placeholder.states.invalid);
+
+  let last_selected = find_by_id(&tree, "last-selected").expect("last-selected select");
+  assert_eq!(last_selected.value.as_deref(), Some("Last"));
+
+  let hidden_selected = find_by_id(&tree, "hidden-selected").expect("hidden-selected select");
+  assert_eq!(hidden_selected.value.as_deref(), Some("Visible"));
+
+  let first_enabled = find_by_id(&tree, "first-enabled").expect("first-enabled select");
+  assert_eq!(first_enabled.value.as_deref(), Some("Enabled"));
+
+  let all_disabled = find_by_id(&tree, "all-disabled").expect("all-disabled select");
+  assert_eq!(all_disabled.value.as_deref(), Some("A"));
+}

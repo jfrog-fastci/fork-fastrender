@@ -465,9 +465,10 @@ fn build_nodes<'a>(
       let native_required = element_ref.accessibility_required();
       let aria_required = parse_bool_attr(&node.node, "aria-required");
       let required = native_required || aria_required == Some(true);
-      let invalid = parse_invalid(&node.node, &element_ref);
+      let invalid = parse_invalid(node, &element_ref, ctx);
       let checked = compute_checked(node, role.as_deref(), &element_ref);
-      let selected = compute_selected(node, role.as_deref(), &element_ref);
+      let selected =
+        compute_selected(node, role.as_deref(), &element_ref, styled_ancestors, ctx);
       let pressed = compute_pressed(node, role.as_deref());
       let busy = attr_truthy(&node.node, "aria-busy");
       let modal = compute_modal(&node.node);
@@ -1272,7 +1273,7 @@ fn selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String>
     return None;
   }
 
-  first_enabled_option_text(node, false, ctx)
+  first_enabled_option_text(node, false, ctx).or_else(|| first_option_text(node, ctx))
 }
 
 fn find_selected_option_text(
@@ -1287,20 +1288,17 @@ fn find_selected_option_text(
   let next_optgroup_disabled =
     optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-  if is_option
-    && node.node.get_attribute_ref("selected").is_some()
-    && !(option_disabled || optgroup_disabled)
-    && !ctx.is_hidden(node)
-  {
-    return Some(option_text(node, ctx));
+  let mut selected = None;
+  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
+    selected = Some(option_text(node, ctx));
   }
 
   for child in ctx.composed_children(node) {
     if let Some(val) = find_selected_option_text(child, next_optgroup_disabled, ctx) {
-      return Some(val);
+      selected = Some(val);
     }
   }
-  None
+  selected
 }
 
 fn first_enabled_option_text(
@@ -1328,9 +1326,196 @@ fn first_enabled_option_text(
   None
 }
 
+fn first_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  if is_option && !ctx.is_hidden(node) {
+    return Some(option_text(node, ctx));
+  }
+
+  for child in ctx.composed_children(node) {
+    if let Some(val) = first_option_text(child, ctx) {
+      return Some(val);
+    }
+  }
+
+  None
+}
+
 fn option_text(node: &StyledNode, ctx: &BuildContext) -> String {
   let mut visited = HashSet::new();
   ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible)
+}
+
+fn selected_option_value(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
+  let explicit = find_selected_option_value(node, false, ctx);
+  if explicit.is_some() {
+    return explicit;
+  }
+
+  let multiple = node.node.get_attribute_ref("multiple").is_some();
+  if multiple {
+    return None;
+  }
+
+  first_enabled_option_value(node, false, ctx).or_else(|| first_option_value(node, ctx))
+}
+
+fn find_selected_option_value(
+  node: &StyledNode,
+  optgroup_disabled: bool,
+  ctx: &BuildContext,
+) -> Option<String> {
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
+  let next_optgroup_disabled =
+    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+
+  let mut selected = None;
+  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
+    selected = Some(option_value(node, ctx));
+  }
+
+  for child in ctx.composed_children(node) {
+    if let Some(val) = find_selected_option_value(child, next_optgroup_disabled, ctx) {
+      selected = Some(val);
+    }
+  }
+  selected
+}
+
+fn first_enabled_option_value(
+  node: &StyledNode,
+  optgroup_disabled: bool,
+  ctx: &BuildContext,
+) -> Option<String> {
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
+  let next_optgroup_disabled =
+    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+
+  if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(node) {
+    return Some(option_value(node, ctx));
+  }
+
+  for child in ctx.composed_children(node) {
+    if let Some(val) = first_enabled_option_value(child, next_optgroup_disabled, ctx) {
+      return Some(val);
+    }
+  }
+
+  None
+}
+
+fn first_option_value(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  if is_option && !ctx.is_hidden(node) {
+    return Some(option_value(node, ctx));
+  }
+
+  for child in ctx.composed_children(node) {
+    if let Some(val) = first_option_value(child, ctx) {
+      return Some(val);
+    }
+  }
+
+  None
+}
+
+fn option_value(node: &StyledNode, ctx: &BuildContext) -> String {
+  node
+    .node
+    .get_attribute_ref("value")
+    .map(|v| v.to_string())
+    .unwrap_or_else(|| option_text(node, ctx))
+}
+
+fn selected_option_node_id(node: &StyledNode, ctx: &BuildContext) -> Option<usize> {
+  let explicit = find_selected_option_node_id(node, false, ctx);
+  if explicit.is_some() {
+    return explicit;
+  }
+
+  let multiple = node.node.get_attribute_ref("multiple").is_some();
+  if multiple {
+    return None;
+  }
+
+  first_enabled_option_node_id(node, false, ctx).or_else(|| first_option_node_id(node, ctx))
+}
+
+fn find_selected_option_node_id(
+  node: &StyledNode,
+  optgroup_disabled: bool,
+  ctx: &BuildContext,
+) -> Option<usize> {
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
+  let next_optgroup_disabled =
+    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+
+  let mut selected = None;
+  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
+    selected = Some(node.node_id);
+  }
+
+  for child in ctx.composed_children(node) {
+    if let Some(val) = find_selected_option_node_id(child, next_optgroup_disabled, ctx) {
+      selected = Some(val);
+    }
+  }
+  selected
+}
+
+fn first_enabled_option_node_id(
+  node: &StyledNode,
+  optgroup_disabled: bool,
+  ctx: &BuildContext,
+) -> Option<usize> {
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
+  let next_optgroup_disabled =
+    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+
+  if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(node) {
+    return Some(node.node_id);
+  }
+
+  for child in ctx.composed_children(node) {
+    if let Some(val) = first_enabled_option_node_id(child, next_optgroup_disabled, ctx) {
+      return Some(val);
+    }
+  }
+
+  None
+}
+
+fn first_option_node_id(node: &StyledNode, ctx: &BuildContext) -> Option<usize> {
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  if is_option && !ctx.is_hidden(node) {
+    return Some(node.node_id);
+  }
+
+  for child in ctx.composed_children(node) {
+    if let Some(val) = first_option_node_id(child, ctx) {
+      return Some(val);
+    }
+  }
+
+  None
 }
 
 /// Use placeholder text as a fallback accessible name for text-entry controls.
@@ -1773,9 +1958,27 @@ fn meter_value(node: &DomNode) -> Option<String> {
   Some(format_number(parsed))
 }
 
-fn compute_invalid(node: &DomNode, element_ref: &ElementRef) -> bool {
-  if let Some(value) = parse_aria_invalid(node) {
+fn compute_invalid(node: &StyledNode, element_ref: &ElementRef, ctx: &BuildContext) -> bool {
+  if let Some(value) = parse_aria_invalid(&node.node) {
     return value;
+  }
+
+  if node
+    .node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
+    && node.node.get_attribute_ref("multiple").is_none()
+  {
+    if element_ref.accessibility_disabled() {
+      return false;
+    }
+
+    if element_ref.accessibility_required() {
+      let value = selected_option_value(node, ctx).unwrap_or_default();
+      return value.trim().is_empty();
+    }
+
+    return false;
   }
 
   element_ref.accessibility_supports_validation() && !element_ref.accessibility_is_valid()
@@ -1828,6 +2031,8 @@ fn compute_selected(
   node: &StyledNode,
   role: Option<&str>,
   element_ref: &ElementRef,
+  styled_ancestors: &[&StyledNode],
+  ctx: &BuildContext,
 ) -> Option<bool> {
   let is_native_option =
     is_html_element(&node.node) && node.node.tag_name().is_some_and(|t| t.eq_ignore_ascii_case("option"));
@@ -1841,6 +2046,20 @@ fn compute_selected(
   }
 
   if role == Some("option") {
+    if let Some(select) = styled_ancestors.iter().rev().find(|ancestor| {
+      ancestor
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
+    }) {
+      if select.node.get_attribute_ref("multiple").is_some() {
+        return Some(node.node.get_attribute_ref("selected").is_some());
+      }
+
+      let selected_id = selected_option_node_id(select, ctx);
+      return Some(selected_id.is_some_and(|id| id == node.node_id));
+    }
+
     return Some(element_ref.accessibility_selected());
   }
 
@@ -1991,8 +2210,8 @@ fn compute_focusable(node: &DomNode, role: Option<&str>, disabled: bool) -> bool
     .unwrap_or(false)
 }
 
-fn parse_invalid(node: &DomNode, element_ref: &ElementRef) -> bool {
-  compute_invalid(node, element_ref)
+fn parse_invalid(node: &StyledNode, element_ref: &ElementRef, ctx: &BuildContext) -> bool {
+  compute_invalid(node, element_ref, ctx)
 }
 
 fn parse_expanded(node: &DomNode) -> Option<bool> {
