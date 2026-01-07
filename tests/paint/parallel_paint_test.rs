@@ -960,6 +960,7 @@ fn mix_blend_mode_allows_parallel_tiling_with_isolation() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
     mix_blend_mode: BlendMode::Multiply,
