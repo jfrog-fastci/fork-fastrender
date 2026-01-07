@@ -9894,6 +9894,105 @@ fn compute_pseudo_styles(
   )
 }
 
+fn is_input_type_range(node: &DomNode) -> bool {
+  let Some(tag) = node.tag_name() else {
+    return false;
+  };
+  if !tag.eq_ignore_ascii_case("input") {
+    return false;
+  }
+
+  matches!(
+    node.get_attribute_ref("type"),
+    Some(t) if t.eq_ignore_ascii_case("range")
+  )
+}
+
+fn placeholder_is_shown(node: &DomNode) -> bool {
+  let Some(tag) = node.tag_name() else {
+    return false;
+  };
+
+  if tag.eq_ignore_ascii_case("input") {
+    if node.get_attribute_ref("placeholder").is_none() {
+      return false;
+    }
+
+    let input_type = node.get_attribute_ref("type");
+    if !input_type_supports_placeholder(input_type) {
+      return false;
+    }
+
+    return node.get_attribute_ref("value").unwrap_or("").is_empty();
+  }
+
+  if tag.eq_ignore_ascii_case("textarea") {
+    if node.get_attribute_ref("placeholder").is_none() {
+      return false;
+    }
+
+    return textarea_value(node).is_empty();
+  }
+
+  false
+}
+
+fn input_type_supports_placeholder(input_type: Option<&str>) -> bool {
+  let Some(t) = input_type else {
+    return true;
+  };
+
+  if t.eq_ignore_ascii_case("text")
+    || t.eq_ignore_ascii_case("search")
+    || t.eq_ignore_ascii_case("url")
+    || t.eq_ignore_ascii_case("tel")
+    || t.eq_ignore_ascii_case("email")
+    || t.eq_ignore_ascii_case("password")
+    || t.eq_ignore_ascii_case("number")
+  {
+    return true;
+  }
+
+  if t.eq_ignore_ascii_case("hidden")
+    || t.eq_ignore_ascii_case("submit")
+    || t.eq_ignore_ascii_case("reset")
+    || t.eq_ignore_ascii_case("button")
+    || t.eq_ignore_ascii_case("image")
+    || t.eq_ignore_ascii_case("file")
+    || t.eq_ignore_ascii_case("checkbox")
+    || t.eq_ignore_ascii_case("radio")
+    || t.eq_ignore_ascii_case("range")
+    || t.eq_ignore_ascii_case("color")
+    || t.eq_ignore_ascii_case("date")
+    || t.eq_ignore_ascii_case("datetime-local")
+    || t.eq_ignore_ascii_case("month")
+    || t.eq_ignore_ascii_case("week")
+    || t.eq_ignore_ascii_case("time")
+  {
+    return false;
+  }
+
+  true
+}
+
+fn textarea_value(node: &DomNode) -> String {
+  let mut value = String::new();
+  for child in node.children.iter() {
+    if let DomNodeType::Text { content } = &child.node_type {
+      value.push_str(content);
+    }
+  }
+
+  if value.contains('\r') {
+    value = value.replace("\r\n", "\n").replace('\r', "\n");
+  }
+  if value.starts_with('\n') {
+    value.remove(0);
+  }
+
+  value
+}
+
 #[inline(never)]
 fn compute_form_control_pseudo_styles(
   node: &DomNode,
@@ -9924,12 +10023,7 @@ fn compute_form_control_pseudo_styles(
     return (None, None, None);
   }
 
-  let Some(tag) = node.tag_name() else {
-    return (None, None, None);
-  };
-
-  let placeholder_styles = if tag.eq_ignore_ascii_case("input") || tag.eq_ignore_ascii_case("textarea")
-  {
+  let placeholder_styles = if placeholder_is_shown(node) {
     compute_pseudo_element_styles(
       node,
       rule_scopes,
@@ -9958,11 +10052,7 @@ fn compute_form_control_pseudo_styles(
     None
   };
 
-  let (slider_thumb_styles, slider_track_styles) = if tag.eq_ignore_ascii_case("input")
-    && node
-      .get_attribute_ref("type")
-      .is_some_and(|t| t.eq_ignore_ascii_case("range"))
-  {
+  let (slider_thumb_styles, slider_track_styles) = if is_input_type_range(node) {
     (
       compute_pseudo_element_styles(
         node,
@@ -12695,6 +12785,51 @@ mod tests {
       target.starting_styles.base.as_deref(),
       Some(&starting_snapshot)
     );
+  }
+
+  #[test]
+  fn cascades_form_control_pseudo_element_styles() {
+    let _guard = cascade_global_test_lock();
+
+    let input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "x".to_string())],
+      },
+      children: vec![],
+    };
+    let stylesheet = parse_stylesheet("input::placeholder { color: rgb(255, 0, 0); opacity: 1; }")
+      .expect("parse stylesheet");
+    let styled = apply_styles(&input_dom, &stylesheet);
+    let placeholder = styled
+      .placeholder_styles
+      .as_ref()
+      .expect("expected ::placeholder styles to be computed");
+    assert_eq!(placeholder.color, Rgba::RED);
+    assert_eq!(placeholder.opacity, 1.0);
+
+    let range_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "range".to_string()),
+          ("class".to_string(), "range".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    let stylesheet =
+      parse_stylesheet(".range::-webkit-slider-thumb { width: 18px; height: 18px; }")
+        .expect("parse stylesheet");
+    let styled = apply_styles(&range_dom, &stylesheet);
+    let thumb = styled
+      .slider_thumb_styles
+      .as_ref()
+      .expect("expected ::-webkit-slider-thumb styles to be computed");
+    assert_eq!(thumb.width, Some(Length::px(18.0)));
+    assert_eq!(thumb.height, Some(Length::px(18.0)));
   }
 
   #[test]
