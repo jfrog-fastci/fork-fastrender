@@ -5574,7 +5574,7 @@ impl FlexFormattingContext {
     // *main* axis (driven by the containing flex container), not the item's own flex-direction.
     // Taffy treats `auto` as zero, so compute the content-based minimum size to prevent
     // shrink-to-zero flex items. Flexbox specifies that scroll containers use a 0 automatic
-    // minimum, so only apply this when overflow is `visible`.
+    // minimum, so only apply this when overflow is non-scrollable (visible/clip).
     let container_inline_is_horizontal =
       matches!(container.writing_mode, WritingMode::HorizontalTb);
     let container_main_is_inline = matches!(
@@ -5593,7 +5593,7 @@ impl FlexFormattingContext {
 
     if container_main_is_horizontal {
       if taffy_style.min_size.width == Dimension::AUTO
-        && matches!(style.overflow_x, CssOverflow::Visible)
+        && matches!(style.overflow_x, CssOverflow::Visible | CssOverflow::Clip)
       {
         let specified_size_percentage_base = style
           .width
@@ -5742,7 +5742,7 @@ impl FlexFormattingContext {
         }
       }
     } else if taffy_style.min_size.height == Dimension::AUTO
-      && matches!(style.overflow_y, CssOverflow::Visible)
+      && matches!(style.overflow_y, CssOverflow::Visible | CssOverflow::Clip)
     {
       let specified_size_percentage_base = style
         .height
