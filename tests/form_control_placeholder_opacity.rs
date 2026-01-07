@@ -22,11 +22,10 @@ fn max_red_dominant_alpha(pixmap: &Pixmap) -> u8 {
     .unwrap_or(0)
 }
 
-#[test]
-fn legacy_placeholder_pseudo_opacity_is_applied() {
+fn render_placeholder_with_backend(backend: &str) -> Pixmap {
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
-    "legacy".to_string(),
+    backend.to_string(),
   )]));
   let config = FastRenderConfig::new()
     .with_default_background(Rgba::TRANSPARENT)
@@ -58,19 +57,33 @@ fn legacy_placeholder_pseudo_opacity_is_applied() {
   "#;
 
   let mut renderer = FastRender::with_config(config).expect("create renderer");
-  let pixmap = renderer
+  renderer
     .render_html(html, 200, 80)
-    .expect("render placeholder");
+    .expect("render placeholder")
+}
 
+fn assert_placeholder_opacity_applied(pixmap: &Pixmap, backend: &str) {
   // Fully covered glyph pixels should retain low alpha (≈0.2) instead of painting as fully opaque.
-  let max_alpha = max_red_dominant_alpha(&pixmap);
+  let max_alpha = max_red_dominant_alpha(pixmap);
   assert!(
     max_alpha > 0,
-    "expected placeholder glyph pixels to paint (max red-dominant alpha={max_alpha})"
+    "expected placeholder glyph pixels to paint (backend={backend}, max red-dominant alpha={max_alpha})"
   );
   assert!(
     max_alpha < 100,
-    "expected placeholder alpha to be reduced by ::placeholder opacity (max red-dominant alpha={max_alpha})"
+    "expected placeholder alpha to be reduced by ::placeholder opacity (backend={backend}, max red-dominant alpha={max_alpha})"
   );
+}
+
+#[test]
+fn display_list_placeholder_pseudo_opacity_is_applied() {
+  let pixmap = render_placeholder_with_backend("display_list");
+  assert_placeholder_opacity_applied(&pixmap, "display_list");
+}
+
+#[test]
+fn legacy_placeholder_pseudo_opacity_is_applied() {
+  let pixmap = render_placeholder_with_backend("legacy");
+  assert_placeholder_opacity_applied(&pixmap, "legacy");
 }
 
