@@ -14530,9 +14530,7 @@ fn parse_container_type_keyword(text: &str) -> Option<ContainerType> {
   }
 }
 
-fn parse_container_type_from_str(input: &str) -> Option<ContainerType> {
-  let mut input = ParserInput::new(input);
-  let mut parser = Parser::new(&mut input);
+fn parse_container_type_from_parser<'i, 't>(parser: &mut Parser<'i, 't>) -> Option<ContainerType> {
   let mut size_type: Option<ContainerType> = None;
   let mut saw_scroll_state = false;
   let mut saw_normal = false;
@@ -14588,6 +14586,12 @@ fn parse_container_type_from_str(input: &str) -> Option<ContainerType> {
   } else {
     None
   }
+}
+
+fn parse_container_type_from_str(input: &str) -> Option<ContainerType> {
+  let mut input = ParserInput::new(input);
+  let mut parser = Parser::new(&mut input);
+  parse_container_type_from_parser(&mut parser)
 }
 
 fn parse_container_type_value(value: &PropertyValue) -> Option<ContainerType> {
@@ -14760,10 +14764,7 @@ fn parse_container_shorthand(
     return Some((names, ContainerType::Normal));
   }
 
-  let type_start = parser.position();
-  while parser.next_including_whitespace_and_comments().is_ok() {}
-  let type_text = parser.slice_from(type_start);
-  let container_type = parse_container_type_from_str(type_text)?;
+  let container_type = parse_container_type_from_parser(&mut parser)?;
   Some((names, container_type))
 }
 
