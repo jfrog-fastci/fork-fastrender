@@ -26,26 +26,13 @@ const REFERRER_POLICY_DEADLINE_STRIDE: usize = 1024;
 pub fn parse_referrer_policy_value(value: &str) -> Option<ReferrerPolicy> {
   let mut policy = None;
   for raw_token in value.split(|c: char| c == ',' || c.is_whitespace()) {
-    let token = raw_token.trim();
-    if token.is_empty() {
+    let Some(parsed) = ReferrerPolicy::parse(raw_token) else {
+      continue;
+    };
+    if parsed == ReferrerPolicy::EmptyString {
       continue;
     }
-
-    policy = Some(match token {
-      t if t.eq_ignore_ascii_case("no-referrer") => ReferrerPolicy::NoReferrer,
-      t if t.eq_ignore_ascii_case("no-referrer-when-downgrade") => {
-        ReferrerPolicy::NoReferrerWhenDowngrade
-      }
-      t if t.eq_ignore_ascii_case("origin") => ReferrerPolicy::Origin,
-      t if t.eq_ignore_ascii_case("origin-when-cross-origin") => ReferrerPolicy::OriginWhenCrossOrigin,
-      t if t.eq_ignore_ascii_case("same-origin") => ReferrerPolicy::SameOrigin,
-      t if t.eq_ignore_ascii_case("strict-origin") => ReferrerPolicy::StrictOrigin,
-      t if t.eq_ignore_ascii_case("strict-origin-when-cross-origin") => {
-        ReferrerPolicy::StrictOriginWhenCrossOrigin
-      }
-      t if t.eq_ignore_ascii_case("unsafe-url") => ReferrerPolicy::UnsafeUrl,
-      _ => continue,
-    });
+    policy = Some(parsed);
   }
   policy
 }
@@ -188,4 +175,3 @@ mod tests {
     assert_eq!(extract_referrer_policy(&dom), None);
   }
 }
-

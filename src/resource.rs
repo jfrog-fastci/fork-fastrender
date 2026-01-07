@@ -882,16 +882,24 @@ impl ReferrerPolicy {
     if token.is_empty() {
       return Some(Self::EmptyString);
     }
-    match token.to_ascii_lowercase().as_str() {
-      "no-referrer" => Some(Self::NoReferrer),
-      "no-referrer-when-downgrade" => Some(Self::NoReferrerWhenDowngrade),
-      "origin" => Some(Self::Origin),
-      "origin-when-cross-origin" => Some(Self::OriginWhenCrossOrigin),
-      "same-origin" => Some(Self::SameOrigin),
-      "strict-origin" => Some(Self::StrictOrigin),
-      "strict-origin-when-cross-origin" => Some(Self::StrictOriginWhenCrossOrigin),
-      "unsafe-url" => Some(Self::UnsafeUrl),
-      _ => None,
+    if token.eq_ignore_ascii_case("no-referrer") {
+      Some(Self::NoReferrer)
+    } else if token.eq_ignore_ascii_case("no-referrer-when-downgrade") {
+      Some(Self::NoReferrerWhenDowngrade)
+    } else if token.eq_ignore_ascii_case("origin") {
+      Some(Self::Origin)
+    } else if token.eq_ignore_ascii_case("origin-when-cross-origin") {
+      Some(Self::OriginWhenCrossOrigin)
+    } else if token.eq_ignore_ascii_case("same-origin") {
+      Some(Self::SameOrigin)
+    } else if token.eq_ignore_ascii_case("strict-origin") {
+      Some(Self::StrictOrigin)
+    } else if token.eq_ignore_ascii_case("strict-origin-when-cross-origin") {
+      Some(Self::StrictOriginWhenCrossOrigin)
+    } else if token.eq_ignore_ascii_case("unsafe-url") {
+      Some(Self::UnsafeUrl)
+    } else {
+      None
     }
   }
 
