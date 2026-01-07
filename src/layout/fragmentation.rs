@@ -1026,6 +1026,7 @@ fn clone_without_children(node: &FragmentNode) -> FragmentNode {
     logical_override: node.logical_override,
     content: node.content.clone(),
     table_borders: node.table_borders.clone(),
+    grid_tracks: node.grid_tracks.clone(),
     baseline: node.baseline,
     children: FragmentChildren::default(),
     style: node.style.clone(),
@@ -1724,6 +1725,37 @@ fn collect_atomic_range_for_node(
   if avoid_inside && (fits_fragmentainer || !matches!(context, FragmentationContext::Page)) {
     ranges.push(AtomicRange { start, end });
   }
+
+  if matches!(style.display, Display::Grid | Display::InlineGrid) {
+    if let Some(grid_tracks) = node.grid_tracks.as_deref() {
+      let tracks = if axis.block_is_horizontal {
+        &grid_tracks.columns
+      } else {
+        &grid_tracks.rows
+      };
+      for (track_start, track_end) in tracks.iter().copied() {
+        let size = track_end - track_start;
+        if size <= BREAK_EPSILON {
+          continue;
+        }
+        if matches!(context, FragmentationContext::Page) {
+          if let Some(fragmentainer_size) = fragmentainer_size {
+            if size > fragmentainer_size + BREAK_EPSILON {
+              continue;
+            }
+          }
+        }
+
+        let flow_offset = axis.flow_offset(track_start, size, node_block_size);
+        let start = abs_start + flow_offset;
+        let end = start + size;
+        if end <= start + BREAK_EPSILON {
+          continue;
+        }
+        ranges.push(AtomicRange { start, end });
+      }
+    }
+  }
 }
 
 pub(crate) fn collect_atomic_ranges(
@@ -1899,6 +1931,7 @@ fn default_style() -> &'static ComputedStyle {
 mod tests {
   use super::*;
   use crate::layout::axis::FragmentAxes;
+  use crate::tree::fragment_tree::GridTrackRanges;
   use std::sync::Arc;
   use std::time::{Duration, Instant};
 
@@ -1975,6 +2008,49 @@ mod tests {
         .iter()
         .all(|b| *b <= 0.0 + BREAK_EPSILON || *b >= 30.0 - BREAK_EPSILON),
       "no boundary should fall inside the atomic range: {boundaries:?}"
+    );
+  }
+
+  #[test]
+  fn grid_track_rows_are_not_split_when_they_fit_fragmentainer() {
+    let leading = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 15.0), vec![]);
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 15.0, 100.0, 30.0),
+      vec![
+        FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 25.0), vec![]),
+        FragmentNode::new_block(Rect::from_xywh(0.0, 25.0, 100.0, 5.0), vec![]),
+      ],
+      Arc::new(grid_style),
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 30.0)],
+      columns: Vec::new(),
+    }));
+
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 45.0),
+      vec![leading, grid],
+    );
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Page,
+      default_axes(),
+      Some(40.0),
+    );
+    let total_extent = analyzer.content_extent().max(40.0);
+    let boundaries = analyzer.boundaries(40.0, total_extent).unwrap();
+    let first_break = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+
+    assert!(
+      (first_break - 15.0).abs() < BREAK_EPSILON,
+      "expected break before the grid row band, got {first_break} (boundaries={boundaries:?})"
     );
   }
 

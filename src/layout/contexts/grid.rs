@@ -86,8 +86,7 @@ use crate::style::types::WritingMode;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;
-use crate::tree::fragment_tree::FragmentContent;
-use crate::tree::fragment_tree::FragmentNode;
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode, GridTrackRanges};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use std::cell::{Cell, RefCell};
@@ -3598,12 +3597,12 @@ impl GridFormattingContext {
       child_fragments,
       box_node.style.clone(),
     );
+    let has_in_flow_children = !fragment.children.is_empty();
 
-    let is_grid_style = matches!(
-      taffy.style(root_id).ok().map(|style| style.display),
-      Some(Display::Grid)
-    );
+    let container_style = taffy.style(root_id).ok();
+    let is_grid_style = matches!(container_style.map(|style| style.display), Some(Display::Grid));
     if is_grid_style {
+      let axis_style = GridAxisStyle::from_style(&box_node.style);
       if let Err(err) = self.apply_grid_baseline_alignment(
         taffy,
         root_id,
@@ -3619,10 +3618,21 @@ impl GridFormattingContext {
         root_id,
         root_layout,
         &mut fragment,
-        GridAxisStyle::from_style(&box_node.style),
+        axis_style,
         &mut deadline_counter,
       ) {
         return Some(Err(err));
+      }
+      if let Some(container_style) = container_style {
+        fragment.grid_tracks = grid_track_ranges_for_container(
+          taffy,
+          root_id,
+          root_layout,
+          container_style,
+          axis_style,
+          has_in_flow_children,
+        )
+        .map(Arc::new);
       }
     }
 
@@ -3709,6 +3719,7 @@ impl GridFormattingContext {
           child_fragments,
           box_node.style.clone(),
         );
+        let has_in_flow_children = !fragment.children.is_empty();
         if is_grid_style {
           self.apply_grid_baseline_alignment(
             taffy,
@@ -3727,6 +3738,17 @@ impl GridFormattingContext {
               axis_style,
               deadline_counter,
             )?;
+          }
+          if let (Some(container_style), Some(axis_style)) = (taffy_style, node_axis_style) {
+            fragment.grid_tracks = grid_track_ranges_for_container(
+              taffy,
+              node_id,
+              layout,
+              container_style,
+              axis_style,
+              has_in_flow_children,
+            )
+            .map(Arc::new);
           }
         }
         if let Some(positioned) = positioned_children.get(&node_id) {
@@ -6662,6 +6684,137 @@ fn compute_alignment_offset_for_grid(
       TaffyAlignContent::SpaceAround => free_space / (num_items.max(1) as f32),
       TaffyAlignContent::SpaceEvenly => free_space / (num_items + 1) as f32,
     }
+  }
+}
+
+fn grid_track_ranges_for_container(
+  taffy: &TaffyTree<*const BoxNode>,
+  node_id: TaffyNodeId,
+  layout: &TaffyLayout,
+  container_style: &taffy::style::Style,
+  axis_style: GridAxisStyle,
+  apply_axis_mirroring: bool,
+) -> Option<GridTrackRanges> {
+  let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) else {
+    return None;
+  };
+
+  if info.rows.sizes.is_empty() && info.columns.sizes.is_empty() {
+    return None;
+  }
+
+  let row_offsets = compute_track_offsets(
+    &info.rows,
+    layout.size.height,
+    layout.padding.top,
+    layout.padding.bottom,
+    layout.border.top,
+    layout.border.bottom,
+    container_style
+      .align_content
+      .unwrap_or(TaffyAlignContent::Stretch),
+  );
+  let col_offsets = compute_track_offsets(
+    &info.columns,
+    layout.size.width,
+    layout.padding.left,
+    layout.padding.right,
+    layout.border.left,
+    layout.border.right,
+    container_style
+      .justify_content
+      .unwrap_or(TaffyAlignContent::Stretch),
+  );
+
+  let mut rows = Vec::with_capacity(info.rows.sizes.len());
+  for (idx, size) in info.rows.sizes.iter().copied().enumerate() {
+    let start_idx = 1usize + 2usize * idx;
+    let Some(&start) = row_offsets.get(start_idx) else {
+      break;
+    };
+    let end = start + size;
+    if start.is_finite() && end.is_finite() && end > start {
+      rows.push((start, end));
+    }
+  }
+
+  let mut columns = Vec::with_capacity(info.columns.sizes.len());
+  for (idx, size) in info.columns.sizes.iter().copied().enumerate() {
+    let start_idx = 1usize + 2usize * idx;
+    let Some(&start) = col_offsets.get(start_idx) else {
+      break;
+    };
+    let end = start + size;
+    if start.is_finite() && end.is_finite() && end > start {
+      columns.push((start, end));
+    }
+  }
+
+  if apply_axis_mirroring && (!rows.is_empty() || !columns.is_empty()) {
+    let inline_is_horizontal = axis_style.inline_is_horizontal();
+    let mut mirror_x = false;
+    let mut mirror_y = false;
+
+    if !axis_style.inline_positive() {
+      if inline_is_horizontal {
+        mirror_x = true;
+      } else {
+        mirror_y = true;
+      }
+    }
+    if !axis_style.block_positive() {
+      if inline_is_horizontal {
+        mirror_y = true;
+      } else {
+        mirror_x = true;
+      }
+    }
+
+    if mirror_y && !rows.is_empty() {
+      let track_count = info.rows.sizes.len();
+      if track_count > 0 && row_offsets.len() >= 2 {
+        let span_start = row_offsets[1];
+        let span_end = row_offsets
+          .get(track_count * 2)
+          .copied()
+          .or_else(|| row_offsets.last().copied())
+          .unwrap_or(span_start);
+        if span_end > span_start {
+          for range in rows.iter_mut() {
+            let (start, end) = *range;
+            let new_start = span_start + (span_end - end);
+            let new_end = span_start + (span_end - start);
+            *range = (new_start, new_end);
+          }
+        }
+      }
+    }
+
+    if mirror_x && !columns.is_empty() {
+      let track_count = info.columns.sizes.len();
+      if track_count > 0 && col_offsets.len() >= 2 {
+        let span_start = col_offsets[1];
+        let span_end = col_offsets
+          .get(track_count * 2)
+          .copied()
+          .or_else(|| col_offsets.last().copied())
+          .unwrap_or(span_start);
+        if span_end > span_start {
+          for range in columns.iter_mut() {
+            let (start, end) = *range;
+            let new_start = span_start + (span_end - end);
+            let new_end = span_start + (span_end - start);
+            *range = (new_start, new_end);
+          }
+        }
+      }
+    }
+  }
+
+  if rows.is_empty() && columns.is_empty() {
+    None
+  } else {
+    Some(GridTrackRanges { rows, columns })
   }
 }
 

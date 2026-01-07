@@ -454,6 +454,17 @@ impl TableCollapsedBorders {
   }
 }
 
+/// Physical track ranges for a grid container, used by fragmentation.
+///
+/// The ranges are stored in the grid container's local coordinate space:
+/// - `rows` are physical **Y** intervals.
+/// - `columns` are physical **X** intervals.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GridTrackRanges {
+  pub rows: Vec<(f32, f32)>,
+  pub columns: Vec<(f32, f32)>,
+}
+
 /// Identifies the fragmentainer (page/column) a fragment belongs to.
 ///
 /// Pagination yields distinct pages (`page_index`), while multi-column layout can further
@@ -572,6 +583,9 @@ pub struct FragmentNode {
   /// Optional collapsed border data for tables.
   pub table_borders: Option<Arc<TableCollapsedBorders>>,
 
+  /// Optional physical grid track ranges (row/column bands) for grid containers.
+  pub grid_tracks: Option<Arc<GridTrackRanges>>,
+
   /// Optional baseline offset from the fragment's top edge.
   ///
   /// Useful for fragments that need to participate in baseline alignment
@@ -636,6 +650,7 @@ impl Clone for FragmentNode {
       logical_override: self.logical_override,
       content: self.content.clone(),
       table_borders: self.table_borders.clone(),
+      grid_tracks: self.grid_tracks.clone(),
       baseline: self.baseline,
       children: self.children.clone(),
       style: self.style.clone(),
@@ -699,6 +714,7 @@ impl FragmentNode {
       logical_override: None,
       content,
       table_borders: None,
+      grid_tracks: None,
       baseline: None,
       children: children.into(),
       style: None,
@@ -728,6 +744,7 @@ impl FragmentNode {
       logical_override: None,
       content,
       table_borders: None,
+      grid_tracks: None,
       baseline: None,
       children: children.into(),
       style: Some(style),
@@ -1084,6 +1101,7 @@ impl FragmentNode {
       logical_override: self.logical_override.map(|r| r.translate(offset)),
       content,
       table_borders: self.table_borders.clone(),
+      grid_tracks: self.grid_tracks.clone(),
       baseline: self.baseline,
       children: self
         .children
@@ -1224,6 +1242,7 @@ impl FragmentNode {
       logical_override: self.logical_override,
       content: self.content.clone(),
       table_borders: self.table_borders.clone(),
+      grid_tracks: self.grid_tracks.clone(),
       baseline: self.baseline,
       children: FragmentChildren::default(),
       style: self.style.clone(),
@@ -1264,6 +1283,7 @@ impl FragmentNode {
       logical_override: self.logical_override,
       content,
       table_borders: self.table_borders.clone(),
+      grid_tracks: self.grid_tracks.clone(),
       baseline: self.baseline,
       children: self.children.deep_clone(),
       style: self.style.clone(),
