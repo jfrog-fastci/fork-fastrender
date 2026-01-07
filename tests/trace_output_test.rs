@@ -33,9 +33,14 @@ fn trace_file_includes_pipeline_events() {
       assert!(data.contains("\"dom_parse\""), "dom parse span missing");
       assert!(data.contains("\"css_parse\""), "css parse span missing");
       assert!(data.contains("\"layout\""), "layout span missing");
+      assert!(data.contains("\"layout_tree\""), "layout_tree span missing");
       assert!(
         data.contains("\"display_list_build\""),
         "display list build span missing"
+      );
+      assert!(
+        data.contains("\"display_list_optimize\""),
+        "display list optimize span missing"
       );
       assert!(data.contains("\"rasterize\""), "rasterization span missing");
     })

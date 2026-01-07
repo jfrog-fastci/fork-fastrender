@@ -8284,10 +8284,12 @@ impl FastRender {
       )))
     };
     let layout_timer = stats.as_deref().and_then(|rec| rec.timer());
+    let _layout_span = trace.span("layout_tree", "layout");
     let mut fragment_tree = self
       .layout_engine
       .layout_tree_with_trace(&box_tree, trace)
       .map_err(map_formatting_layout_error)?;
+    drop(_layout_span);
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(&mut rec.stats.timings.layout_ms, layout_timer);
     }
@@ -8523,10 +8525,12 @@ impl FastRender {
           layout_start = timings_enabled.then(Instant::now);
           let relayout_timer = stats.as_deref().and_then(|rec| rec.timer());
           record_stage(StageHeartbeat::Layout);
+          let _layout_span = trace.span("layout_tree_reuse", "layout");
           fragment_tree = self
             .layout_engine
             .layout_tree_reuse_caches_with_trace(&box_tree, trace)
             .map_err(map_formatting_layout_error)?;
+          drop(_layout_span);
           if let Some(rec) = stats.as_deref_mut() {
             RenderStatsRecorder::add_ms(&mut rec.stats.timings.layout_ms, relayout_timer);
           }
