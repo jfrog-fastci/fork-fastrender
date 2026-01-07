@@ -7490,6 +7490,7 @@ impl DisplayListRenderer {
   ) -> Result<(u64, u64, usize)> {
     const GRADIENT_WEIGHT: u64 = 4;
     const IMAGE_LINEAR_WEIGHT: u64 = 2;
+    const BLEND_WEIGHT: u64 = 1;
     const MANUAL_BLEND_WEIGHT: u64 = 4;
 
     let viewport = Rect::from_xywh(
@@ -7507,15 +7508,16 @@ impl DisplayListRenderer {
       .max(1)
       .min((tiles_x.saturating_mul(tiles_y)).max(1) as usize);
     struct BlendScope {
-      manual: bool,
+      weight: u64,
       bounds: Option<Rect>,
     }
 
     let mut image_tiles: Vec<u64> = Vec::with_capacity(tile_cap.min(8));
     let mut deadline_counter = 0usize;
-    // Track manual blend-mode groups introduced by `PushBlendMode`. In auto parallel mode we use
-    // these to estimate per-pixel compositor cost so large blend-mode layers don't stay serial.
+    // Track blend-mode groups introduced by `PushBlendMode`. In auto parallel mode we use these
+    // to estimate per-pixel compositor cost so large blend-mode layers don't stay serial.
     let mut blend_stack: Vec<BlendScope> = Vec::new();
+    let mut active_blend_scopes = 0usize;
     let union_bounds = |dst: &mut Option<Rect>, rect: Rect| {
       *dst = Some(match *dst {
         Some(prev) => prev.union(rect),
@@ -7543,32 +7545,42 @@ impl DisplayListRenderer {
     for item in items {
       check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
         .map_err(Error::Render)?;
-      if !blend_stack.is_empty() && !item.is_stack_operation() {
+      if active_blend_scopes > 0 && !item.is_stack_operation() {
         if let Some(bounds) = item.bounds() {
-          if let Some(scope) = blend_stack.iter_mut().rev().find(|scope| scope.manual) {
+          if let Some(scope) = blend_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
             union_bounds(&mut scope.bounds, bounds);
           }
         }
       }
       match item {
         DisplayItem::PushBlendMode(item) => {
-          blend_stack.push(BlendScope {
-            manual: is_manual_blend(item.mode),
-            bounds: None,
-          });
+          let weight = if matches!(item.mode, BlendMode::Normal) {
+            0
+          } else if is_manual_blend(item.mode) {
+            MANUAL_BLEND_WEIGHT
+          } else {
+            BLEND_WEIGHT
+          };
+          if weight > 0 {
+            active_blend_scopes = active_blend_scopes.saturating_add(1);
+          }
+          blend_stack.push(BlendScope { weight, bounds: None });
         }
         DisplayItem::PopBlendMode => {
           let Some(scope) = blend_stack.pop() else {
             continue;
           };
-          if !scope.manual {
-            continue;
+          if scope.weight > 0 {
+            active_blend_scopes = active_blend_scopes.saturating_sub(1);
           }
+          if scope.weight == 0 {
+            continue;
+          };
           let Some(bounds) = scope.bounds else {
             continue;
           };
-          let _ = add_rect(&mut total, self.ds_rect(bounds), MANUAL_BLEND_WEIGHT);
-          if let Some(parent) = blend_stack.iter_mut().rev().find(|scope| scope.manual) {
+          let _ = add_rect(&mut total, self.ds_rect(bounds), scope.weight);
+          if let Some(parent) = blend_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
             union_bounds(&mut parent.bounds, bounds);
           }
         }
@@ -7669,13 +7681,18 @@ impl DisplayListRenderer {
           total = total.saturating_add(tmp_pixels.saturating_mul(blur_weight));
         }
         DisplayItem::PushStackingContext(sc) => {
-          if is_manual_blend(sc.mix_blend_mode) {
-            // Manual blend modes (HSL/HSV/OKLCH conversions + plus-darker) are implemented with
-            // per-pixel color space conversions and compositing. Treat them similarly to
-            // gradients/filters so `PaintParallelismMode::Auto` doesn't keep large blend-mode pages
-            // serial.
+          if !matches!(sc.mix_blend_mode, BlendMode::Normal) {
+            // Blend modes composite an intermediate surface back into the destination. Manual blend
+            // modes (HSL/HSV/OKLCH conversions + plus-darker) are more expensive than tiny-skia
+            // blend modes, so give them a higher weight to nudge `PaintParallelismMode::Auto`
+            // toward tiling for pages dominated by blending.
+            let weight = if is_manual_blend(sc.mix_blend_mode) {
+              MANUAL_BLEND_WEIGHT
+            } else {
+              BLEND_WEIGHT
+            };
             let bounds = self.ds_rect(sc.bounds);
-            let _ = add_rect(&mut total, bounds, MANUAL_BLEND_WEIGHT);
+            let _ = add_rect(&mut total, bounds, weight);
           }
 
           if sc.filters.is_empty() && sc.backdrop_filters.is_empty() {
