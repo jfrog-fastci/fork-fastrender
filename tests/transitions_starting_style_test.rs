@@ -7,7 +7,7 @@ use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::types::{
   BackgroundPosition, BackgroundSize, BackgroundSizeComponent, BasicShape, BorderStyle,
-  ClipComponent, ClipPath, ClipRect, FilterFunction,
+  ClipComponent, ClipPath, ClipRect, FillRule, FilterFunction,
 };
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
@@ -797,6 +797,51 @@ fn transitions_fall_back_to_discrete_when_interpolation_fails() {
     fragment_clip_shape(&late, box_id),
     BasicShape::Circle { .. }
   ));
+}
+
+#[test]
+fn transitions_interpolate_clip_path_polygon_over_time() {
+  let html = r#"
+    <style>
+      @starting-style {
+        #box {
+          clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%);
+        }
+      }
+
+      #box {
+        width: 100px;
+        height: 100px;
+        clip-path: polygon(0% 0%, 50% 0%, 50% 50%, 0% 50%);
+        transition: clip-path 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let shape = fragment_clip_shape(&mid, box_id);
+  let (fill, points) = match shape {
+    BasicShape::Polygon { fill, points } => (fill, points),
+    other => panic!("expected polygon clip-path, got {other:?}"),
+  };
+  assert_eq!(fill, FillRule::NonZero);
+  assert_eq!(points.len(), 4);
+
+  let eps = 1e-3;
+  assert!((points[0].0.to_px() - 0.0).abs() < eps);
+  assert!((points[0].1.to_px() - 0.0).abs() < eps);
+  assert!((points[1].0.to_px() - 75.0).abs() < eps);
+  assert!((points[1].1.to_px() - 0.0).abs() < eps);
+  assert!((points[2].0.to_px() - 75.0).abs() < eps);
+  assert!((points[2].1.to_px() - 75.0).abs() < eps);
+  assert!((points[3].0.to_px() - 0.0).abs() < eps);
+  assert!((points[3].1.to_px() - 75.0).abs() < eps);
 }
 
 #[test]

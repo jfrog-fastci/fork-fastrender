@@ -40,6 +40,7 @@ use crate::style::types::ClipComponent;
 use crate::style::types::ClipPath;
 use crate::style::types::ClipRadii;
 use crate::style::types::ClipRect;
+use crate::style::types::FillRule;
 use crate::style::types::FilterColor;
 use crate::style::types::FilterFunction;
 use crate::style::types::OutlineColor;
@@ -308,6 +309,11 @@ enum ResolvedClipPath {
     radius_x: f32,
     radius_y: f32,
     position: ResolvedBackgroundPosition,
+    reference: Option<ReferenceBox>,
+  },
+  Polygon {
+    fill: FillRule,
+    points: Vec<(f32, f32)>,
     reference: Option<ReferenceBox>,
   },
 }
@@ -869,8 +875,26 @@ fn resolve_clip_path(
           reference: *reference,
         })
       }
-      // Polygons/path and unsupported shapes fall back to discrete animation.
-      BasicShape::Polygon { .. } | BasicShape::Path { .. } => None,
+      BasicShape::Polygon { fill, points } => {
+        let width = ctx.element_size.width;
+        let height = ctx.element_size.height;
+        let resolved_points = points
+          .iter()
+          .map(|(x, y)| {
+            (
+              resolve_length_px(x, Some(width), style, ctx),
+              resolve_length_px(y, Some(height), style, ctx),
+            )
+          })
+          .collect();
+        Some(ResolvedClipPath::Polygon {
+          fill: *fill,
+          points: resolved_points,
+          reference: *reference,
+        })
+      }
+      // Path and unsupported shapes fall back to discrete animation.
+      BasicShape::Path { .. } => None,
     },
   }
 }
@@ -958,6 +982,28 @@ fn interpolate_clip_paths(
         reference: *refa,
       })
     }
+    (
+      ResolvedClipPath::Polygon {
+        fill: fa,
+        points: pa,
+        reference: refa,
+      },
+      ResolvedClipPath::Polygon {
+        fill: fb,
+        points: pb,
+        reference: refb,
+      },
+    ) if fa == fb && refa == refb && pa.len() == pb.len() => {
+      let mut points = Vec::with_capacity(pa.len());
+      for ((ax, ay), (bx, by)) in pa.iter().zip(pb.iter()) {
+        points.push((lerp(*ax, *bx, t), lerp(*ay, *by, t)));
+      }
+      Some(ResolvedClipPath::Polygon {
+        fill: *fa,
+        points,
+        reference: *refa,
+      })
+    }
     _ => None,
   }
 }
@@ -1030,6 +1076,20 @@ fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
             offset: Length::px(position.y.offset),
           },
         },
+      }),
+      *reference,
+    ),
+    ResolvedClipPath::Polygon {
+      fill,
+      points,
+      reference,
+    } => ClipPath::BasicShape(
+      Box::new(BasicShape::Polygon {
+        fill: *fill,
+        points: points
+          .iter()
+          .map(|(x, y)| (Length::px(*x), Length::px(*y)))
+          .collect(),
       }),
       *reference,
     ),
@@ -1119,7 +1179,15 @@ fn clip_path_to_resolved(path: &ClipPath) -> Option<ResolvedClipPath> {
         }),
         _ => None,
       },
-      BasicShape::Polygon { .. } | BasicShape::Path { .. } => None,
+      BasicShape::Polygon { fill, points } => Some(ResolvedClipPath::Polygon {
+        fill: *fill,
+        points: points
+          .iter()
+          .map(|(x, y)| (x.to_px(), y.to_px()))
+          .collect(),
+        reference: *reference,
+      }),
+      BasicShape::Path { .. } => None,
     },
   }
 }
