@@ -3334,16 +3334,35 @@ fn collect_text_content(node: &StyledNode) -> String {
   text
 }
 
+fn normalize_select_label_text(input: &str) -> String {
+  let mut out = String::new();
+  let mut last_space = false;
+  for ch in input.chars() {
+    // Ignore zero-width characters that may be injected for break opportunities.
+    if matches!(ch, '\u{200B}' | '\u{FEFF}' | '\u{2060}') {
+      continue;
+    }
+
+    if ch.is_whitespace() {
+      if !last_space {
+        out.push(' ');
+      }
+      last_space = true;
+    } else {
+      out.push(ch);
+      last_space = false;
+    }
+  }
+  out.trim().to_string()
+}
+
 fn option_label_from_node(node: &StyledNode) -> String {
-  if let Some(label) = node
-    .node
-    .get_attribute_ref("label")
-    .filter(|l| !l.is_empty())
-  {
+  if let Some(label) = node.node.get_attribute_ref("label") {
     return label.to_string();
   }
 
-  collect_text_content(node).trim().to_string()
+  let text = collect_text_content(node);
+  normalize_select_label_text(&text)
 }
 
 fn optgroup_label_from_node(node: &StyledNode) -> String {
@@ -5035,6 +5054,34 @@ mod tests {
     assert!(matches!(
       select.items.first(),
       Some(SelectItem::Option { label, .. }) if label == "Foo"
+    ));
+  }
+
+  #[test]
+  fn select_option_label_honors_empty_label_attribute() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option label=\"\">Text</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, value, .. }) if label.is_empty() && value == "Text"
+    ));
+  }
+
+  #[test]
+  fn select_option_label_collapses_internal_whitespace() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option>Foo\n  Bar\tBaz</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, .. }) if label == "Foo Bar Baz"
     ));
   }
 

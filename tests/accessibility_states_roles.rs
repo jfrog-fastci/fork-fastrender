@@ -283,6 +283,10 @@ fn select_placeholder_disabled_selected_exposes_value_text() {
           <option>Enabled</option>
         </select>
 
+        <select id="label-attr">
+          <option label="Label value">Text value</option>
+        </select>
+
         <select id="all-disabled">
           <option disabled>A</option>
           <option disabled>B</option>
@@ -309,6 +313,9 @@ fn select_placeholder_disabled_selected_exposes_value_text() {
 
   let first_enabled = find_by_id(&tree, "first-enabled").expect("first-enabled select");
   assert_eq!(first_enabled.value.as_deref(), Some("Enabled"));
+
+  let label_attr = find_by_id(&tree, "label-attr").expect("label-attr select");
+  assert_eq!(label_attr.value.as_deref(), Some("Label value"));
 
   let all_disabled = find_by_id(&tree, "all-disabled").expect("all-disabled select");
   assert_eq!(all_disabled.value.as_deref(), Some("A"));

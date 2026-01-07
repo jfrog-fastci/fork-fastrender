@@ -1347,7 +1347,7 @@ fn collect_selected_option_text(
     && !(option_disabled || optgroup_disabled)
     && !ctx.is_hidden(node)
   {
-    out.push(option_text(node, ctx));
+    out.push(option_label_text(node, ctx));
   }
 
   for child in ctx.composed_children(node) {
@@ -1369,7 +1369,7 @@ fn find_selected_option_text(
 
   let mut selected = None;
   if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
-    selected = Some(option_text(node, ctx));
+    selected = Some(option_label_text(node, ctx));
   }
 
   for child in ctx.composed_children(node) {
@@ -1422,7 +1422,7 @@ fn first_enabled_option_text(
     optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
   if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(node) {
-    return Some(option_text(node, ctx));
+    return Some(option_label_text(node, ctx));
   }
 
   for child in ctx.composed_children(node) {
@@ -1439,7 +1439,7 @@ fn first_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
   let is_option = tag.as_deref() == Some("option");
 
   if is_option && !ctx.is_hidden(node) {
-    return Some(option_text(node, ctx));
+    return Some(option_label_text(node, ctx));
   }
 
   for child in ctx.composed_children(node) {
@@ -1449,6 +1449,14 @@ fn first_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
   }
 
   None
+}
+
+fn option_label_text(node: &StyledNode, ctx: &BuildContext) -> String {
+  if let Some(label) = node.node.get_attribute_ref("label") {
+    return normalize_whitespace(label);
+  }
+
+  option_text(node, ctx)
 }
 
 fn option_text(node: &StyledNode, ctx: &BuildContext) -> String {
@@ -1825,11 +1833,20 @@ fn role_specific_name(
       }
     }
     "option" => {
-      let text = ctx.subtree_text(node, visited, mode);
-      if text.is_empty() {
-        None
+      if let Some(label) = node.node.get_attribute_ref("label") {
+        let norm = normalize_whitespace(label);
+        if norm.is_empty() {
+          None
+        } else {
+          Some(norm)
+        }
       } else {
-        Some(text)
+        let text = ctx.subtree_text(node, visited, mode);
+        if text.is_empty() {
+          None
+        } else {
+          Some(text)
+        }
       }
     }
     "fieldset" => ctx
@@ -1880,12 +1897,21 @@ fn fallback_name_for_role(
         .filter(|v| !v.is_empty())
     }
     Some("option") => {
-      let mut visited = HashSet::new();
-      let text = ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible);
-      if text.is_empty() {
-        None
+      if let Some(label) = node.node.get_attribute_ref("label") {
+        let norm = normalize_whitespace(label);
+        if norm.is_empty() {
+          None
+        } else {
+          Some(norm)
+        }
       } else {
-        Some(text)
+        let mut visited = HashSet::new();
+        let text = ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible);
+        if text.is_empty() {
+          None
+        } else {
+          Some(text)
+        }
       }
     }
     _ => None,
