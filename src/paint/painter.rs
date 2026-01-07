@@ -10384,94 +10384,142 @@ impl Painter {
       let advance = run.advance * self.scale;
       let run_origin_inline = pen_inline;
 
-      let mut seen_clusters = std::collections::HashSet::new();
+      use unicode_segmentation::UnicodeSegmentation;
+
+      // `text-emphasis` marks are drawn once per typographic character unit (extended grapheme
+      // cluster). HarfBuzz cluster values can span multiple grapheme clusters (e.g. ligatures), so
+      // distribute each HarfBuzz cluster's advance across the graphemes it covers.
+      let graphemes: Vec<(usize, &str)> = run.text.grapheme_indices(true).collect();
+      let mut cluster_starts: Vec<usize> = run.glyphs.iter().map(|g| g.cluster as usize).collect();
+      cluster_starts.sort_unstable();
+      cluster_starts.dedup();
+      let mut cluster_end_for: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+      for (idx, start) in cluster_starts.iter().enumerate() {
+        let end = cluster_starts
+          .get(idx + 1)
+          .copied()
+          .unwrap_or_else(|| run.text.len());
+        cluster_end_for.insert(*start, end);
+      }
+
       let mut cursor_inline = run_origin_inline;
-      for glyph in &run.glyphs {
-        let (inline_offset, inline_advance) = if inline_vertical {
-          let inline_advance = if glyph.y_advance.abs() > f32::EPSILON {
-            glyph.y_advance
+      let mut glyph_idx = 0;
+      while glyph_idx < run.glyphs.len() {
+        let cluster_start = run.glyphs[glyph_idx].cluster as usize;
+        let cluster_end = cluster_end_for
+          .get(&cluster_start)
+          .copied()
+          .unwrap_or_else(|| run.text.len());
+
+        let first_glyph = &run.glyphs[glyph_idx];
+        let cluster_offset = if inline_vertical {
+          -first_glyph.y_offset
+        } else {
+          first_glyph.x_offset
+        };
+
+        let mut cluster_advance = 0.0_f32;
+        while glyph_idx < run.glyphs.len() && run.glyphs[glyph_idx].cluster as usize == cluster_start
+        {
+          let glyph = &run.glyphs[glyph_idx];
+          let inline_advance = if inline_vertical {
+            if glyph.y_advance.abs() > f32::EPSILON {
+              glyph.y_advance
+            } else {
+              glyph.x_advance
+            }
           } else {
             glyph.x_advance
           };
-          (-glyph.y_offset, inline_advance)
-        } else {
-          (glyph.x_offset, glyph.x_advance)
-        };
-        let inline_center =
-          cursor_inline + inline_offset * self.scale + inline_advance * 0.5 * self.scale;
-        cursor_inline += inline_advance * self.scale;
+          cluster_advance += inline_advance;
+          glyph_idx += 1;
+        }
 
-        if !seen_clusters.insert(glyph.cluster) {
+        let start_idx = graphemes.partition_point(|(start, _)| *start < cluster_start);
+        let end_idx = graphemes.partition_point(|(start, _)| *start < cluster_end);
+        let count = end_idx.saturating_sub(start_idx);
+        if count == 0 {
+          cursor_inline += cluster_advance * self.scale;
           continue;
         }
-        let text_byte = glyph.cluster as usize;
-        if text_byte < run.text.len() {
-          let mut chars = run.text[text_byte..].chars();
+
+        let per_unit_advance = cluster_advance / (count as f32);
+        for (idx, (_, grapheme)) in graphemes[start_idx..end_idx].iter().enumerate() {
+          let inline_center = cursor_inline
+            + cluster_offset * self.scale
+            + (idx as f32 + 0.5) * per_unit_advance * self.scale;
+
+          let mut chars = grapheme.chars();
           if let Some(ch) = chars.next() {
             if crate::style::is_text_emphasis_mark_excluded(ch)
-              && !(ch == ' ' && chars.next().is_some_and(crate::style::is_combining_mark))
+              && !(ch == ' ' && chars.any(crate::style::is_combining_mark))
             {
               continue;
             }
           }
-        }
-        let block_center_with_pen = block_center;
-        let (mark_center_x, mark_center_y) = if inline_vertical {
-          (block_center_with_pen, inline_center)
-        } else {
-          (inline_center, block_center_with_pen)
-        };
 
-        match style.text_emphasis_style {
-          crate::style::types::TextEmphasisStyle::Mark { fill, shape } => {
-            let default_shape = if crate::style::is_vertical_typographic_mode(style.writing_mode) {
-              crate::style::types::TextEmphasisShape::Sesame
-            } else {
-              crate::style::types::TextEmphasisShape::Circle
-            };
-            let shape = shape.unwrap_or(default_shape);
-            self.draw_emphasis_mark(
-              mark_center_x,
-              mark_center_y,
-              mark_size,
-              fill,
-              shape,
-              emphasis_color,
-              resolved_position,
-              inline_vertical,
-            );
-          }
-          crate::style::types::TextEmphasisStyle::String(_) => {
-            if let Some((ref paths, width, height)) = string_mark {
-              let mut paint = Paint::default();
-              paint.anti_alias = true;
-              paint.set_color(color_to_skia(emphasis_color));
+          let block_center_with_pen = block_center;
+          let (mark_center_x, mark_center_y) = if inline_vertical {
+            (block_center_with_pen, inline_center)
+          } else {
+            (inline_center, block_center_with_pen)
+          };
 
-              let (draw_w, draw_h) = if inline_vertical {
-                (height, width)
-              } else {
-                (width, height)
-              };
-              let offset_x = mark_center_x - draw_w * 0.5;
-              let offset_y = mark_center_y - draw_h * 0.5;
-              for path in paths {
-                let translated = path
-                  .clone()
-                  .transform(Transform::from_translate(offset_x, offset_y));
-                if let Some(p) = translated {
-                  self.pixmap.fill_path(
-                    &p,
-                    &paint,
-                    tiny_skia::FillRule::EvenOdd,
-                    Transform::identity(),
-                    None,
-                  );
+          match style.text_emphasis_style {
+            crate::style::types::TextEmphasisStyle::Mark { fill, shape } => {
+              let default_shape =
+                if crate::style::is_vertical_typographic_mode(style.writing_mode) {
+                  crate::style::types::TextEmphasisShape::Sesame
+                } else {
+                  crate::style::types::TextEmphasisShape::Circle
+                };
+              let shape = shape.unwrap_or(default_shape);
+              self.draw_emphasis_mark(
+                mark_center_x,
+                mark_center_y,
+                mark_size,
+                fill,
+                shape,
+                emphasis_color,
+                resolved_position,
+                inline_vertical,
+              );
+            }
+            crate::style::types::TextEmphasisStyle::String(_) => {
+              if let Some((ref paths, width, height)) = string_mark {
+                let mut paint = Paint::default();
+                paint.anti_alias = true;
+                paint.set_color(color_to_skia(emphasis_color));
+
+                let (draw_w, draw_h) = if inline_vertical {
+                  (height, width)
+                } else {
+                  (width, height)
+                };
+                let offset_x = mark_center_x - draw_w * 0.5;
+                let offset_y = mark_center_y - draw_h * 0.5;
+                for path in paths {
+                  let translated = path
+                    .clone()
+                    .transform(Transform::from_translate(offset_x, offset_y));
+                  if let Some(p) = translated {
+                    self.pixmap.fill_path(
+                      &p,
+                      &paint,
+                      tiny_skia::FillRule::EvenOdd,
+                      Transform::identity(),
+                      None,
+                    );
+                  }
                 }
               }
             }
+            crate::style::types::TextEmphasisStyle::None => {}
           }
-          crate::style::types::TextEmphasisStyle::None => {}
         }
+
+        cursor_inline += cluster_advance * self.scale;
       }
 
       pen_inline += advance;

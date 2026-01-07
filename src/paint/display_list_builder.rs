@@ -7514,46 +7514,95 @@ impl DisplayListBuilder {
     };
 
     let mut marks = Vec::new();
-    let mut seen_clusters = HashSet::new();
-    let mut cursor_inline = inline_origin;
-    for glyph in &run.glyphs {
-      let (inline_offset, inline_advance) = if inline_vertical {
-        // For vertical runs, HarfBuzz offsets use a y-up coordinate system. Flip the inline offset
-        // so we stay in CSS's y-down space.
-        let inline_advance = if glyph.y_advance.abs() > f32::EPSILON {
-          glyph.y_advance
+    if !run.glyphs.is_empty() && !run.text.is_empty() {
+      use unicode_segmentation::UnicodeSegmentation;
+
+      // `text-emphasis` marks are drawn once per typographic character unit (extended grapheme
+      // cluster). HarfBuzz cluster values can span multiple grapheme clusters (e.g. ligatures), so
+      // derive per-grapheme positions by distributing each HarfBuzz cluster's advance across the
+      // graphemes that fall within its text span.
+      let graphemes: Vec<(usize, &str)> = run.text.grapheme_indices(true).collect();
+
+      let mut cluster_starts: Vec<usize> = run.glyphs.iter().map(|g| g.cluster as usize).collect();
+      cluster_starts.sort_unstable();
+      cluster_starts.dedup();
+
+      let mut cluster_end_for = HashMap::new();
+      for (idx, start) in cluster_starts.iter().enumerate() {
+        let end = cluster_starts
+          .get(idx + 1)
+          .copied()
+          .unwrap_or_else(|| run.text.len());
+        cluster_end_for.insert(*start, end);
+      }
+
+      let mut cursor_inline = inline_origin;
+      let mut glyph_idx = 0;
+      while glyph_idx < run.glyphs.len() {
+        let cluster_start = run.glyphs[glyph_idx].cluster as usize;
+        let cluster_end = cluster_end_for
+          .get(&cluster_start)
+          .copied()
+          .unwrap_or_else(|| run.text.len());
+
+        let first_glyph = &run.glyphs[glyph_idx];
+        let cluster_offset = if inline_vertical {
+          // For vertical runs, HarfBuzz offsets use a y-up coordinate system. Flip the inline
+          // offset so we stay in CSS's y-down space.
+          -first_glyph.y_offset
         } else {
-          glyph.x_advance
+          first_glyph.x_offset
         };
-        (-glyph.y_offset, inline_advance)
-      } else {
-        (glyph.x_offset, glyph.x_advance)
-      };
 
-      let inline_center = cursor_inline + inline_offset + inline_advance * 0.5;
-      cursor_inline += inline_advance;
+        let mut cluster_advance = 0.0_f32;
+        while glyph_idx < run.glyphs.len() && run.glyphs[glyph_idx].cluster as usize == cluster_start
+        {
+          let glyph = &run.glyphs[glyph_idx];
+          let inline_advance = if inline_vertical {
+            if glyph.y_advance.abs() > f32::EPSILON {
+              glyph.y_advance
+            } else {
+              glyph.x_advance
+            }
+          } else {
+            glyph.x_advance
+          };
+          cluster_advance += inline_advance;
+          glyph_idx += 1;
+        }
 
-      if !seen_clusters.insert(glyph.cluster) {
-        continue;
-      }
-      let text_byte = glyph.cluster as usize;
-      if text_byte < run.text.len() {
-        let mut chars = run.text[text_byte..].chars();
-        if let Some(ch) = chars.next() {
-          if crate::style::is_text_emphasis_mark_excluded(ch)
-            && !(ch == ' ' && chars.next().is_some_and(crate::style::is_combining_mark))
-          {
-            continue;
+        let start_idx = graphemes.partition_point(|(start, _)| *start < cluster_start);
+        let end_idx = graphemes.partition_point(|(start, _)| *start < cluster_end);
+        let count = end_idx.saturating_sub(start_idx);
+        if count == 0 {
+          cursor_inline += cluster_advance;
+          continue;
+        }
+
+        let per_unit_advance = cluster_advance / (count as f32);
+        for (idx, (_, grapheme)) in graphemes[start_idx..end_idx].iter().enumerate() {
+          let inline_center =
+            cursor_inline + cluster_offset + (idx as f32 + 0.5) * per_unit_advance;
+
+          let mut chars = grapheme.chars();
+          if let Some(ch) = chars.next() {
+            if crate::style::is_text_emphasis_mark_excluded(ch)
+              && !(ch == ' ' && chars.any(crate::style::is_combining_mark))
+            {
+              continue;
+            }
           }
-        };
-      }
 
-      let center = if inline_vertical {
-        Point::new(block_center, inline_center)
-      } else {
-        Point::new(inline_center, block_center)
-      };
-      marks.push(EmphasisMark { center });
+          let center = if inline_vertical {
+            Point::new(block_center, inline_center)
+          } else {
+            Point::new(inline_center, block_center)
+          };
+          marks.push(EmphasisMark { center });
+        }
+
+        cursor_inline += cluster_advance;
+      }
     }
 
     let text = if let TextEmphasisStyle::String(ref s) = style.text_emphasis_style {
