@@ -299,7 +299,11 @@ pub enum PseudoClass {
   ReadOnly,
   ReadWrite,
   PlaceholderShown,
+  MsInputPlaceholder,
+  MozPlaceholder,
   Autofill,
+  MozUiInvalid,
+  MozFocusring,
   Checked,
   Indeterminate,
   Default,
@@ -499,7 +503,11 @@ impl ToCss for PseudoClass {
       PseudoClass::ReadOnly => dest.write_str(":read-only"),
       PseudoClass::ReadWrite => dest.write_str(":read-write"),
       PseudoClass::PlaceholderShown => dest.write_str(":placeholder-shown"),
+      PseudoClass::MsInputPlaceholder => dest.write_str(":-ms-input-placeholder"),
+      PseudoClass::MozPlaceholder => dest.write_str(":-moz-placeholder"),
       PseudoClass::Autofill => dest.write_str(":autofill"),
+      PseudoClass::MozUiInvalid => dest.write_str(":-moz-ui-invalid"),
+      PseudoClass::MozFocusring => dest.write_str(":-moz-focusring"),
       PseudoClass::Checked => dest.write_str(":checked"),
       PseudoClass::Link => dest.write_str(":link"),
       PseudoClass::Visited => dest.write_str(":visited"),
@@ -689,7 +697,12 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "read-only" => Ok(PseudoClass::ReadOnly),
       "read-write" => Ok(PseudoClass::ReadWrite),
       "placeholder-shown" => Ok(PseudoClass::PlaceholderShown),
+      "-ms-input-placeholder" => Ok(PseudoClass::MsInputPlaceholder),
+      "-moz-placeholder" => Ok(PseudoClass::MozPlaceholder),
       "autofill" => Ok(PseudoClass::Autofill),
+      "-webkit-autofill" => Ok(PseudoClass::Autofill),
+      "-moz-ui-invalid" => Ok(PseudoClass::MozUiInvalid),
+      "-moz-focusring" => Ok(PseudoClass::MozFocusring),
       "checked" => Ok(PseudoClass::Checked),
       "link" => Ok(PseudoClass::Link),
       "visited" => Ok(PseudoClass::Visited),
@@ -1464,7 +1477,32 @@ mod tests {
       PseudoClass::PlaceholderShown.to_css_string(),
       ":placeholder-shown"
     );
+    assert_eq!(
+      PseudoClass::MsInputPlaceholder.to_css_string(),
+      ":-ms-input-placeholder"
+    );
+    assert_eq!(PseudoClass::MozPlaceholder.to_css_string(), ":-moz-placeholder");
     assert_eq!(PseudoClass::Autofill.to_css_string(), ":autofill");
+    assert_eq!(PseudoClass::MozUiInvalid.to_css_string(), ":-moz-ui-invalid");
+    assert_eq!(PseudoClass::MozFocusring.to_css_string(), ":-moz-focusring");
+  }
+
+  #[test]
+  fn parses_vendor_form_control_pseudo_classes() {
+    let mut input = ParserInput::new(
+      "input:-ms-input-placeholder, input:-moz-placeholder, input:-webkit-autofill, input:-moz-ui-invalid, input:-moz-focusring",
+    );
+    let mut parser = Parser::new(&mut input);
+    assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
+  }
+
+  #[test]
+  fn vendor_form_control_pseudo_classes_do_not_invalidate_selector_lists() {
+    let mut input = ParserInput::new(
+      "input:focus, input:-ms-input-placeholder, input:-moz-placeholder, input:-webkit-autofill, input:-moz-ui-invalid, input:-moz-focusring, input:disabled",
+    );
+    let mut parser = Parser::new(&mut input);
+    assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
   }
 
   #[test]
