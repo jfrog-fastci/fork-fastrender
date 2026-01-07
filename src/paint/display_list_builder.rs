@@ -6373,7 +6373,14 @@ impl DisplayListBuilder {
   }
 
   fn emit_outline(&mut self, rect: Rect, style: &ComputedStyle) {
-    let ow = style.outline_width.to_px();
+    let ow = Self::resolve_length_for_paint(
+      &style.outline_width,
+      style.font_size,
+      style.root_font_size,
+      rect.width(),
+      self.viewport,
+    )
+    .max(0.0);
     let outline_style = style.outline_style.to_border_style();
     if ow <= 0.0
       || matches!(
@@ -6383,7 +6390,13 @@ impl DisplayListBuilder {
     {
       return;
     }
-    let offset = style.outline_offset.to_px();
+    let offset = Self::resolve_length_for_paint(
+      &style.outline_offset,
+      style.font_size,
+      style.root_font_size,
+      rect.width(),
+      self.viewport,
+    );
     let (color, invert) = style.outline_color.resolve(style.color);
     if ow > 0.0 && !color.is_transparent() {
       self.list.push(DisplayItem::Outline(OutlineItem {

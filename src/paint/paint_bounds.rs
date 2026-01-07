@@ -26,7 +26,7 @@ pub(crate) fn fragment_paint_bounds(
     return bounds;
   };
 
-  if let Some(outline) = outline_bounds(style, rect) {
+  if let Some(outline) = outline_bounds(style, rect, viewport) {
     bounds = bounds.union(outline);
   }
   if let Some(shadows) = box_shadow_bounds(rect, style, false, viewport) {
@@ -151,8 +151,19 @@ pub(crate) fn resolve_length_for_paint(
   if resolved.is_finite() { resolved } else { 0.0 }
 }
 
-fn outline_bounds(style: &ComputedStyle, rect: Rect) -> Option<Rect> {
-  let width = style.outline_width.to_px();
+fn outline_bounds(
+  style: &ComputedStyle,
+  rect: Rect,
+  viewport: Option<(f32, f32)>,
+) -> Option<Rect> {
+  let width = resolve_length_for_paint(
+    &style.outline_width,
+    style.font_size,
+    style.root_font_size,
+    rect.width(),
+    viewport,
+  )
+  .max(0.0);
   let outline_style = style.outline_style.to_border_style();
   if width <= 0.0
     || matches!(
@@ -162,8 +173,17 @@ fn outline_bounds(style: &ComputedStyle, rect: Rect) -> Option<Rect> {
   {
     return None;
   }
-  let offset = style.outline_offset.to_px();
-  let expand = width.abs() + offset.abs();
+  let offset = resolve_length_for_paint(
+    &style.outline_offset,
+    style.font_size,
+    style.root_font_size,
+    rect.width(),
+    viewport,
+  );
+  let expand = (width + offset).max(0.0);
+  if expand <= 0.0 {
+    return None;
+  }
   Some(rect.inflate(expand))
 }
 
