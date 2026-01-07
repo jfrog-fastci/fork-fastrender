@@ -12,6 +12,7 @@ fn text_control(kind: TextControlKind, appearance: Appearance, value: &str) -> F
     control: FormControlKind::Text {
       value: value.to_string(),
       placeholder: None,
+      placeholder_style: None,
       size_attr: None,
       kind,
     },
@@ -76,4 +77,3 @@ fn appearance_none_suppresses_date_dropdown_glyph() {
     "expected date-like input to paint an extra dropdown glyph run when appearance != none (auto={auto}, none={none})"
   );
 }
-

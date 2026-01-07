@@ -3,7 +3,7 @@
 use crate::geometry::{Point, Size};
 use crate::style::{AvailableSpace, Overflow, Position};
 use crate::tree::{CollapsibleMarginSet, RunMode};
-use crate::tree::{LayoutInput, LayoutOutput, SizingMode};
+use crate::tree::{LayoutInput, LayoutOutput, MeasureOutput, SizingMode};
 use crate::util::check_layout_abort;
 use crate::util::debug::debug_log;
 use crate::util::sys::f32_max;
@@ -20,7 +20,7 @@ pub fn compute_leaf_layout<MeasureFunction>(
   measure_function: MeasureFunction,
 ) -> LayoutOutput
 where
-  MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
+  MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> MeasureOutput,
 {
   let LayoutInput {
     known_dimensions,
@@ -159,7 +159,7 @@ where
 
   // Measure node
   check_layout_abort();
-  let measured_size = measure_function(
+  let measured_output = measure_function(
     match run_mode {
       RunMode::ComputeSize => known_dimensions,
       RunMode::PerformLayout => Size::NONE,
@@ -167,6 +167,7 @@ where
     },
     available_space,
   );
+  let measured_size = measured_output.size;
   let clamped_size = known_dimensions
     .or(node_size)
     .unwrap_or(measured_size + content_box_inset.sum_axes())
@@ -186,7 +187,7 @@ where
     size,
     #[cfg(feature = "content_size")]
     content_size: measured_size + padding.sum_axes(),
-    first_baselines: Point::NONE,
+    first_baselines: measured_output.first_baselines,
     top_margin: CollapsibleMarginSet::ZERO,
     bottom_margin: CollapsibleMarginSet::ZERO,
     margins_can_collapse_through: !has_styles_preventing_being_collapsed_through

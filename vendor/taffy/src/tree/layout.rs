@@ -186,6 +186,57 @@ pub struct LayoutOutput {
   pub margins_can_collapse_through: bool,
 }
 
+/// Output of a leaf node measurement callback.
+///
+/// The high-level [`TaffyTree`](crate::TaffyTree) API accepts a user-provided "measure function"
+/// that is used to size leaf nodes (nodes with no children). In addition to returning the leaf's
+/// measured content size, integrators may also provide the leaf's first baselines so that baseline
+/// alignment can influence flex/grid sizing and positioning.
+///
+/// If a leaf node does not have a baseline (or you are unsure how to compute it), return
+/// [`Point::NONE`] for `first_baselines`.
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct MeasureOutput {
+  /// The measured size of the node's content box.
+  pub size: Size<f32>,
+  /// The first baseline of the node in each dimension, if any.
+  pub first_baselines: Point<Option<f32>>,
+}
+
+impl MeasureOutput {
+  /// A `MeasureOutput` representing a zero-sized node with no baselines.
+  pub const ZERO: Self = Self {
+    size: Size::ZERO,
+    first_baselines: Point::NONE,
+  };
+
+  /// Construct a `MeasureOutput` from just the measured size (no baselines).
+  pub fn from_size(size: Size<f32>) -> Self {
+    Self {
+      size,
+      first_baselines: Point::NONE,
+    }
+  }
+
+  /// Construct a `MeasureOutput` from a measured size and baselines.
+  pub fn from_size_and_baselines(size: Size<f32>, first_baselines: Point<Option<f32>>) -> Self {
+    Self { size, first_baselines }
+  }
+}
+
+impl Default for MeasureOutput {
+  fn default() -> Self {
+    Self::ZERO
+  }
+}
+
+impl From<Size<f32>> for MeasureOutput {
+  fn from(size: Size<f32>) -> Self {
+    Self::from_size(size)
+  }
+}
+
 impl LayoutOutput {
   /// An all-zero `LayoutOutput` for hidden nodes
   pub const HIDDEN: Self = Self {

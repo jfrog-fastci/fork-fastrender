@@ -1052,17 +1052,23 @@ where
   // Record this as a boolean (per-axis) on each item for later use in the track-sizing algorithm
   determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
 
-  // Determine if the grid has any baseline aligned items
-  let has_baseline_aligned_item = items
+  // Determine whether the grid has any baseline-aligned items in either axis.
+  //
+  // Note: virtual items (subgrid descendants mapped into the parent) participate in baseline
+  // alignment and must contribute to track sizing.
+  let has_align_self_baseline_item = items
     .iter()
-    .any(|item| !item.is_virtual && item.align_self == AlignSelf::Baseline);
+    .any(|item| item.align_self == AlignSelf::Baseline);
+  let has_justify_self_baseline_item = items
+    .iter()
+    .any(|item| item.justify_self == AlignSelf::Baseline);
 
   // Run track sizing algorithm for Inline axis
-  track_sizing_algorithm(
-    tree,
-    AbstractAxis::Inline,
-    min_size.get(AbstractAxis::Inline),
-    max_size.get(AbstractAxis::Inline),
+      track_sizing_algorithm(
+        tree,
+        AbstractAxis::Inline,
+        min_size.get(AbstractAxis::Inline),
+        max_size.get(AbstractAxis::Inline),
     justify_content,
     align_content,
     available_grid_space,
@@ -1075,7 +1081,7 @@ where
         .max_track_sizing_function
         .definite_value(parent_size, |val, basis| tree.calc(val, basis))
     },
-    has_baseline_aligned_item,
+    has_align_self_baseline_item,
   );
   let initial_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
   inner_node_size.width = inner_node_size.width.or_else(|| initial_column_sum.into());
@@ -1117,7 +1123,7 @@ where
     &mut columns,
     &mut items,
     |track: &GridTrack, _, _| Some(track.base_size),
-    false, // TODO: Support baseline alignment in the vertical axis
+    has_justify_self_baseline_item,
   );
   let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
   inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
@@ -1231,11 +1237,11 @@ where
       available_grid_space_for_rerun,
       inner_node_size,
       &mut columns,
-      &mut rows,
-      &mut items,
-      |track: &GridTrack, _, _| Some(track.base_size),
-      has_baseline_aligned_item,
-    );
+        &mut rows,
+        &mut items,
+        |track: &GridTrack, _, _| Some(track.base_size),
+        has_align_self_baseline_item,
+      );
 
     // The first row sizing pass may have already consumed the overrides recorded earlier. Refresh
     // them now that column sizes have been rerun so subsequent block-axis measurements inherit the
@@ -1324,7 +1330,7 @@ where
       &mut columns,
       &mut items,
       |track: &GridTrack, _, _| Some(track.base_size),
-      false, // TODO: Support baseline alignment in the vertical axis
+      has_justify_self_baseline_item,
     );
   }
 
@@ -1485,7 +1491,7 @@ where
         order,
         grid_area,
         container_alignment_styles,
-        0.0,
+        Point::ZERO,
       );
       #[cfg(feature = "content_size")]
       {

@@ -9,8 +9,8 @@ use crate::geometry::Size;
 use crate::style::{AvailableSpace, CompactLength, Display, Style};
 use crate::sys::DefaultCheapStr;
 use crate::tree::{
-  Cache, ClearState, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree,
-  RequestedAxis, RoundTree, RunMode, TraversePartialTree, TraverseTree,
+  Cache, ClearState, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, MeasureOutput, NodeId,
+  PrintTree, RequestedAxis, RoundTree, RunMode, TraversePartialTree, TraverseTree,
 };
 use crate::util::debug::{debug_log, debug_log_node};
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
@@ -455,13 +455,13 @@ where
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>,
+  ) -> MeasureOutput,
 {
   /// A reference to the TaffyTree
   pub(crate) taffy: &'t mut TaffyTree<NodeContext>,
   /// The context provided for passing to measure functions if layout is run over this struct
   pub(crate) measure_function: MeasureFunction,
-  leaf_measure_cache: LeafMeasureCacheMap<LeafMeasureCacheKey, Size<f32>>,
+  leaf_measure_cache: LeafMeasureCacheMap<LeafMeasureCacheKey, MeasureOutput>,
 }
 
 // TraversePartialTree impl for TaffyView
@@ -474,7 +474,7 @@ where
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>,
+  ) -> MeasureOutput,
 {
   type ChildIter<'a>
     = TaffyTreeChildIter<'a>
@@ -505,7 +505,7 @@ impl<NodeContext, MeasureFunction> TraverseTree for TaffyView<'_, NodeContext, M
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>
+  ) -> MeasureOutput
 {
 }
 
@@ -518,7 +518,7 @@ where
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>,
+  ) -> MeasureOutput,
 {
   type CoreContainerStyle<'a>
     = &'a Style
@@ -617,7 +617,7 @@ where
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>,
+  ) -> MeasureOutput,
 {
   fn cache_get(
     &self,
@@ -662,7 +662,7 @@ where
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>,
+  ) -> MeasureOutput,
 {
   type BlockContainerStyle<'a>
     = &'a Style
@@ -694,7 +694,7 @@ where
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>,
+  ) -> MeasureOutput,
 {
   type FlexboxContainerStyle<'a>
     = &'a Style
@@ -726,7 +726,7 @@ where
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>,
+  ) -> MeasureOutput,
 {
   type GridContainerStyle<'a>
     = &'a Style
@@ -774,7 +774,7 @@ where
     NodeId,
     Option<&mut NodeContext>,
     &Style,
-  ) -> Size<f32>,
+  ) -> MeasureOutput,
 {
   #[inline(always)]
   fn get_unrounded_layout(&self, node: NodeId) -> Layout {
@@ -1220,7 +1220,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
       NodeId,
       Option<&mut NodeContext>,
       &Style,
-    ) -> Size<f32>,
+    ) -> MeasureOutput,
   {
     // Subgrid overrides are stored in thread-local state. Scope them to this layout pass so that
     // nested layout calls (e.g. from measure functions) don't clobber the outer layout's overrides.
@@ -1297,7 +1297,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
       NodeId,
       Option<&mut NodeContext>,
       &Style,
-    ) -> Size<f32>,
+    ) -> MeasureOutput,
   {
     let Some(cancel) = cancel else {
       return self.compute_layout_with_measure(node_id, available_space, measure_function);
@@ -1314,7 +1314,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
     node: NodeId,
     available_space: Size<AvailableSpace>,
   ) -> Result<(), TaffyError> {
-    self.compute_layout_with_measure(node, available_space, |_, _, _, _, _| Size::ZERO)
+    self.compute_layout_with_measure(node, available_space, |_, _, _, _, _| MeasureOutput::ZERO)
   }
 
   /// Prints a debug representation of the tree's layout
@@ -1328,7 +1328,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
   pub(crate) fn as_layout_tree(&mut self) -> impl LayoutPartialTree + CacheTree + '_ {
     TaffyView {
       taffy: self,
-      measure_function: |_, _, _, _, _| Size::ZERO,
+      measure_function: |_, _, _, _, _| MeasureOutput::ZERO,
       leaf_measure_cache: Default::default(),
     }
   }
@@ -1348,8 +1348,8 @@ mod tests {
     _node_id: NodeId,
     node_context: Option<&mut Size<f32>>,
     _style: &Style,
-  ) -> Size<f32> {
-    known_dimensions.unwrap_or(node_context.cloned().unwrap_or(Size::ZERO))
+  ) -> MeasureOutput {
+    MeasureOutput::from_size(known_dimensions.unwrap_or(node_context.cloned().unwrap_or(Size::ZERO)))
   }
 
   #[test]
@@ -1367,10 +1367,10 @@ mod tests {
       taffy: &mut taffy,
       measure_function: move |_, _, _, _, _| {
         calls_for_cb.fetch_add(1, Ordering::Relaxed);
-        Size {
+        MeasureOutput::from_size(Size {
           width: 10.0,
           height: 10.0,
-        }
+        })
       },
       leaf_measure_cache: Default::default(),
     };
@@ -1418,10 +1418,10 @@ mod tests {
       taffy: &mut taffy,
       measure_function: move |_, _, _, _, _| {
         calls_for_cb.fetch_add(1, Ordering::Relaxed);
-        Size {
+        MeasureOutput::from_size(Size {
           width: 10.0,
           height: 10.0,
-        }
+        })
       },
       leaf_measure_cache: Default::default(),
     };
@@ -1519,7 +1519,7 @@ mod tests {
     let result = taffy.compute_layout_with_measure_and_cancel(
       root,
       Size::MAX_CONTENT,
-      |_, _, _, _, _| Size::ZERO,
+      |_, _, _, _, _| MeasureOutput::ZERO,
       Some(cancel),
       16,
     );
@@ -2082,7 +2082,7 @@ mod tests {
       let result = taffy.compute_layout_with_measure_and_cancel(
         root,
         Size::MAX_CONTENT,
-        |_, _, _, _, _| Size::ZERO,
+        |_, _, _, _, _| MeasureOutput::ZERO,
         Some(cancel),
         1,
       );

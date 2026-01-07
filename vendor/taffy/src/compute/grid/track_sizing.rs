@@ -583,6 +583,15 @@ fn resolve_item_baselines(
   items: &mut [GridItem],
   inner_node_size: Size<Option<f32>>,
 ) {
+  // Clear any stale shims for the axis we are computing. The track sizing algorithm can rerun, so
+  // we must ensure we don't carry baseline shims forward when baseline participation changes.
+  match axis {
+    // Column sizing pass shims `align-self: baseline` items (physical vertical baseline alignment).
+    AbstractAxis::Inline => items.iter_mut().for_each(|item| item.baseline_shim.y = 0.0),
+    // Row sizing pass shims `justify-self: baseline` items (physical horizontal baseline alignment).
+    AbstractAxis::Block => items.iter_mut().for_each(|item| item.baseline_shim.x = 0.0),
+  }
+
   // Sort items by track in the other axis (row) start position so that we can iterate items in groups which
   // are in the same track in the other axis (row)
   let other_axis = axis.other();
@@ -614,19 +623,18 @@ fn resolve_item_baselines(
       row_items
     };
 
-    // Count how many items in *this row* are baseline aligned
-    // If a row has one or zero items participating in baseline alignment then baseline alignment is a no-op
-    // for those items and we skip further computations for that row
-    let row_baseline_item_count = row_items
-      .iter()
-      .filter(|item| item.align_self == AlignSelf::Baseline)
-      .count();
-    if row_baseline_item_count <= 1 {
-      continue;
-    }
+    let is_baseline_aligned = |item: &GridItem| match axis {
+      AbstractAxis::Inline => item.align_self == AlignSelf::Baseline,
+      AbstractAxis::Block => item.justify_self == AlignSelf::Baseline,
+    };
 
-    // Compute the baselines of all items in the row
-    for item in row_items.iter_mut() {
+    // Collect baseline-aligned items in this group.
+    let mut baseline_values: Vec<(usize, f32)> = Vec::new();
+    for (idx, item) in row_items.iter_mut().enumerate() {
+      if !is_baseline_aligned(item) {
+        continue;
+      }
+
       let measured_size_and_baselines = tree.perform_child_layout(
         item.node,
         Size::NONE,
@@ -636,28 +644,55 @@ fn resolve_item_baselines(
         Line::FALSE,
       );
 
-      let baseline = measured_size_and_baselines.first_baselines.y;
-      let height = measured_size_and_baselines.size.height;
-
-      item.baseline = Some(
-        baseline.unwrap_or(height)
-          + item
+      let (baseline, fallback_size, margin_start) = match axis {
+        AbstractAxis::Inline => (
+          measured_size_and_baselines.first_baselines.y,
+          measured_size_and_baselines.size.height,
+          item
             .margin
             .top
             .resolve_or_zero(inner_node_size.width, |val, basis| tree.calc(val, basis)),
-      );
+        ),
+        AbstractAxis::Block => (
+          measured_size_and_baselines.first_baselines.x,
+          measured_size_and_baselines.size.width,
+          item
+            .margin
+            .left
+            .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+        ),
+      };
+
+      let value = baseline.unwrap_or(fallback_size) + margin_start;
+      if axis == AbstractAxis::Inline {
+        // Record the vertical baseline for computing the grid container baseline.
+        item.baseline = Some(value);
+      }
+
+      baseline_values.push((idx, value));
     }
 
-    // Compute the max baseline of all items in the row
-    let row_max_baseline = row_items
+    // If this group has one or zero items participating in baseline alignment then baseline
+    // alignment is a no-op for those items and we skip further shim computations for that group.
+    if baseline_values.len() <= 1 {
+      continue;
+    }
+
+    let group_max_baseline = baseline_values
       .iter()
-      .map(|item| item.baseline.unwrap_or(0.0))
+      .map(|(_, value)| *value)
       .max_by(|a, b| a.total_cmp(b))
       .unwrap();
 
-    // Compute the baseline shim for each item in the row
-    for item in row_items.iter_mut() {
-      item.baseline_shim = row_max_baseline - item.baseline.unwrap_or(0.0);
+    for (idx, value) in baseline_values {
+      match axis {
+        AbstractAxis::Inline => {
+          row_items[idx].baseline_shim.y = group_max_baseline - value;
+        }
+        AbstractAxis::Block => {
+          row_items[idx].baseline_shim.x = group_max_baseline - value;
+        }
+      }
     }
   }
 }

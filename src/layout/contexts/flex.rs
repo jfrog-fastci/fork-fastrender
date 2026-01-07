@@ -1151,6 +1151,7 @@ impl FormattingContext for FlexFormattingContext {
         root_node,
         available_space,
         |mut known_dimensions, mut avail, _node_id, node_context, _style| {
+                    let measured = (|| {
                     if taffy_perf_enabled {
                       record_taffy_measure_call(TaffyAdapterKind::Flex);
                     }
@@ -2693,6 +2694,8 @@ impl FormattingContext for FlexFormattingContext {
                     };
                     flex_profile::record_measure_time(measure_timer);
                     size
+                    })();
+                    taffy::tree::MeasureOutput::from_size(measured)
                 },
         cancel.clone(),
         TAFFY_ABORT_CHECK_STRIDE,
@@ -8308,7 +8311,7 @@ impl FlexFormattingContext {
         .compute_layout_with_measure_and_cancel(
           root,
           available_space,
-          |_, _, _, _, _| taffy::geometry::Size::ZERO,
+          |_, _, _, _, _| taffy::tree::MeasureOutput::ZERO,
           cancel.clone(),
           TAFFY_ABORT_CHECK_STRIDE,
         )

@@ -112,6 +112,7 @@ fn inline_text_like_form_controls_use_text_baseline() {
       FormControlKind::Text {
         value: String::new(),
         placeholder: None,
+        placeholder_style: None,
         size_attr: None,
         kind: TextControlKind::Plain,
       },
@@ -121,6 +122,7 @@ fn inline_text_like_form_controls_use_text_baseline() {
       FormControlKind::TextArea {
         value: String::new(),
         placeholder: None,
+        placeholder_style: None,
         rows: None,
         cols: None,
       },

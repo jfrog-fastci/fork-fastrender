@@ -77,7 +77,7 @@ pub(super) fn align_and_position_item(
   order: u32,
   grid_area: Rect<f32>,
   container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
-  baseline_shim: f32,
+  baseline_shim: Point<f32>,
 ) -> (Size<f32>, f32, f32) {
   let grid_area_size = Size {
     width: grid_area.right - grid_area.left,
@@ -177,7 +177,11 @@ pub(super) fn align_and_position_item(
       .height
       .maybe_sub(margin.top)
       .maybe_sub(margin.bottom)
-      - baseline_shim,
+      - baseline_shim.y,
+  };
+  let grid_area_minus_item_margins_size = Size {
+    width: grid_area_minus_item_margins_size.width - baseline_shim.x,
+    height: grid_area_minus_item_margins_size.height,
   };
 
   // If node is absolutely positioned and width is not set explicitly, then deduce it
@@ -272,7 +276,7 @@ pub(super) fn align_and_position_item(
     position,
     inset_horizontal,
     margin.horizontal_components(),
-    0.0,
+    baseline_shim.x,
   );
   let (y, y_margin) = align_item_within_area(
     Line {
@@ -284,7 +288,7 @@ pub(super) fn align_and_position_item(
     position,
     inset_vertical,
     margin.vertical_components(),
-    baseline_shim,
+    baseline_shim.y,
   );
 
   let scrollbar_size = Size {
