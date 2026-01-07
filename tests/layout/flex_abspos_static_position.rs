@@ -5,7 +5,7 @@ use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
 use fastrender::style::types::{
-  AlignItems, BorderStyle, BoxSizing, Direction, FlexDirection, JustifyContent, WritingMode,
+  AlignItems, BorderStyle, BoxSizing, Direction, FlexDirection, FlexWrap, JustifyContent, WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -166,6 +166,29 @@ fn abspos_static_position_respects_vertical_writing_mode_axes() {
 
   let (x, y) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_wrap_reverse_cross_axis_direction() {
+  // Flexbox §flex-wrap: `wrap-reverse` swaps cross-start/cross-end, which affects `align-items` and
+  // therefore the cross-axis static position for abspos flex children (Flexbox §abspos-items).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
   assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
 }
 

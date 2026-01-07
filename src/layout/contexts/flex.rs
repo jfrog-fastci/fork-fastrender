@@ -8455,6 +8455,7 @@ impl FlexFormattingContext {
     // not absorb free space (which would otherwise override justify-content/align-self).
     let container_width = fragment.bounds.width().max(0.0);
     let container_height = fragment.bounds.height().max(0.0);
+    let container_style = box_node.style.as_ref();
 
     let mut root_style =
       self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
@@ -8464,6 +8465,77 @@ impl FlexFormattingContext {
     let available_space = taffy::geometry::Size {
       width: AvailableSpace::Definite(container_width),
       height: AvailableSpace::Definite(container_height),
+    };
+
+    // Our Taffy adapter runs wrapping flex containers with a positive-physical cross axis and
+    // mirrors in-flow items after layout to emulate `flex-wrap: wrap-reverse` (and negative cross
+    // axes in vertical writing modes). Abspos children are laid out after that mirroring pass, so
+    // we must apply the same mirroring to the static-position probe results here.
+    let cross_mirror: Option<(bool, f32, f32)> = {
+      let is_wrapping = matches!(container_style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse);
+      if !is_wrapping {
+        None
+      } else {
+        let inline_is_horizontal = matches!(container_style.writing_mode, WritingMode::HorizontalTb);
+        let block_is_horizontal = !inline_is_horizontal;
+        let main_is_inline = matches!(
+          container_style.flex_direction,
+          FlexDirection::Row | FlexDirection::RowReverse
+        );
+        let inline_positive = self.inline_axis_positive(container_style);
+        let block_positive = self.block_axis_positive(container_style);
+        let base_cross_positive = if main_is_inline {
+          block_positive
+        } else {
+          inline_positive
+        };
+        let wrap_reverse = matches!(container_style.flex_wrap, FlexWrap::WrapReverse);
+        let should_mirror_cross = base_cross_positive == wrap_reverse;
+        if !should_mirror_cross {
+          None
+        } else {
+          let cross_is_horizontal = if main_is_inline {
+            block_is_horizontal
+          } else {
+            inline_is_horizontal
+          };
+          let cross_size = if cross_is_horizontal {
+            container_width
+          } else {
+            container_height
+          };
+          if !cross_size.is_finite() || cross_size <= 0.0 {
+            None
+          } else {
+            let cb_width = container_width;
+            let border_left =
+              self.resolve_length_for_width(container_style.used_border_left_width(), cb_width, container_style);
+            let border_right =
+              self.resolve_length_for_width(container_style.used_border_right_width(), cb_width, container_style);
+            let border_top =
+              self.resolve_length_for_width(container_style.used_border_top_width(), cb_width, container_style);
+            let border_bottom =
+              self.resolve_length_for_width(container_style.used_border_bottom_width(), cb_width, container_style);
+            let padding_left =
+              self.resolve_length_for_width(container_style.padding_left, cb_width, container_style);
+            let padding_right =
+              self.resolve_length_for_width(container_style.padding_right, cb_width, container_style);
+            let padding_top =
+              self.resolve_length_for_width(container_style.padding_top, cb_width, container_style);
+            let padding_bottom =
+              self.resolve_length_for_width(container_style.padding_bottom, cb_width, container_style);
+
+            let (cross_content_start, cross_content_end) = if cross_is_horizontal {
+              (border_left + padding_left, border_right + padding_right)
+            } else {
+              (border_top + padding_top, border_bottom + padding_bottom)
+            };
+            let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
+            (cross_inner_size.is_finite() && cross_inner_size > 0.0)
+              .then_some((cross_is_horizontal, cross_content_start, cross_inner_size))
+          }
+        }
+      }
     };
 
     let cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>> = active_deadline()
@@ -8521,11 +8593,37 @@ impl FlexFormattingContext {
         })?;
 
       if let Ok(layout) = taffy.layout(node) {
+        let mut margin_edge_x = layout.location.x - layout.margin.left;
+        let mut margin_edge_y = layout.location.y - layout.margin.top;
+        if let Some((cross_is_horizontal, cross_content_start, cross_inner_size)) = cross_mirror {
+          let (cross_edge, cross_span) = if cross_is_horizontal {
+            (
+              margin_edge_x,
+              layout.size.width + layout.margin.left + layout.margin.right,
+            )
+          } else {
+            (
+              margin_edge_y,
+              layout.size.height + layout.margin.top + layout.margin.bottom,
+            )
+          };
+          if cross_edge.is_finite() && cross_span.is_finite() {
+            let rel = cross_edge - cross_content_start;
+            let new_edge = cross_content_start + (cross_inner_size - cross_span - rel);
+            if new_edge.is_finite() {
+              if cross_is_horizontal {
+                margin_edge_x = new_edge;
+              } else {
+                margin_edge_y = new_edge;
+              }
+            }
+          }
+        }
         positions.insert(
           candidate.child_id,
           Point::new(
-            layout.location.x - layout.margin.left - padding_origin.x,
-            layout.location.y - layout.margin.top - padding_origin.y,
+            margin_edge_x - padding_origin.x,
+            margin_edge_y - padding_origin.y,
           ),
         );
       }
