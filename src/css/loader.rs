@@ -993,6 +993,7 @@ pub struct InlineImportState {
   stack: Vec<String>,
   seen: FxHashSet<String>,
   cache: FxHashMap<String, String>,
+  redirects: FxHashMap<String, String>,
   budget: StylesheetInlineBudget,
 }
 
@@ -1006,8 +1007,37 @@ impl InlineImportState {
       stack: Vec::new(),
       seen: FxHashSet::default(),
       cache: FxHashMap::default(),
+      redirects: FxHashMap::default(),
       budget,
     }
+  }
+
+  /// Record that a stylesheet request resolved to a different final URL (e.g. after redirects).
+  ///
+  /// This allows later `@import` processing to reuse cached content and detect cycles when the
+  /// same stylesheet is referenced via its original and redirected URL.
+  pub fn record_redirect(&mut self, requested_url: &str, final_url: &str) {
+    if requested_url == final_url {
+      return;
+    }
+    self.redirects
+      .insert(requested_url.to_string(), final_url.to_string());
+  }
+
+  fn canonicalize_url(&self, url: &str) -> String {
+    let mut current = url;
+    // Redirect chains for stylesheets are typically tiny, but guard against cycles in case a
+    // caller records inconsistent mappings.
+    for _ in 0..8 {
+      let Some(next) = self.redirects.get(current) else {
+        break;
+      };
+      if next == current {
+        break;
+      }
+      current = next;
+    }
+    current.to_string()
   }
 
   pub fn register_stylesheet(&mut self, url: impl Into<String>) {
@@ -1067,7 +1097,7 @@ pub fn inline_imports_with_request<F>(
   deadline: Option<&RenderDeadline>,
 ) -> std::result::Result<String, RenderError>
 where
-  F: FnMut(ImportFetchContext<'_>) -> Result<String>,
+  F: FnMut(ImportFetchContext<'_>) -> Result<FetchedStylesheet>,
 {
   inline_imports_with_request_with_diagnostics(
     css,
@@ -1088,18 +1118,19 @@ pub fn inline_imports_with_request_with_diagnostics<F, D>(
   deadline: Option<&RenderDeadline>,
 ) -> std::result::Result<String, RenderError>
 where
-  F: FnMut(ImportFetchContext<'_>) -> Result<String>,
+  F: FnMut(ImportFetchContext<'_>) -> Result<FetchedStylesheet>,
   D: FnMut(&str, &str),
 {
-  if !state.try_register_stylesheet_with_budget(base_url, diagnostics) {
+  let canonical_base = state.canonicalize_url(base_url);
+  if !state.try_register_stylesheet_with_budget(&canonical_base, diagnostics) {
     return Ok(String::new());
   }
   if state.budget.remaining_bytes() == 0 {
-    diagnostics(base_url, "stylesheet byte budget exhausted");
+    diagnostics(&canonical_base, "stylesheet byte budget exhausted");
     return Ok(String::new());
   }
-  state.stack.push(base_url.to_string());
-  let result = inline_imports_inner(css, base_url, fetch, state, diagnostics, deadline);
+  state.stack.push(canonical_base.clone());
+  let result = inline_imports_inner(css, &canonical_base, fetch, state, diagnostics, deadline);
   state.stack.pop();
   result
 }
@@ -1109,6 +1140,18 @@ where
 /// All fetched stylesheets have their `url(...)` references rewritten against the
 /// stylesheet URL before inlining, so relative asset references continue to work
 /// once the CSS is embedded in the document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedStylesheet {
+  pub css: String,
+  pub final_url: Option<String>,
+}
+
+impl FetchedStylesheet {
+  pub fn new(css: String, final_url: Option<String>) -> Self {
+    Self { css, final_url }
+  }
+}
+
 pub fn inline_imports<F>(
   css: &str,
   base_url: &str,
@@ -1117,9 +1160,9 @@ pub fn inline_imports<F>(
   deadline: Option<&RenderDeadline>,
 ) -> std::result::Result<String, RenderError>
 where
-  F: FnMut(&str) -> Result<String>,
+  F: FnMut(&str, &str) -> Result<FetchedStylesheet>,
 {
-  let mut adapter = |ctx: ImportFetchContext<'_>| fetch(ctx.url);
+  let mut adapter = |ctx: ImportFetchContext<'_>| fetch(ctx.url, ctx.importer_url);
   inline_imports_with_request(css, base_url, &mut adapter, state, deadline)
 }
 
@@ -1135,10 +1178,10 @@ pub fn inline_imports_with_diagnostics<F, D>(
   deadline: Option<&RenderDeadline>,
 ) -> std::result::Result<String, RenderError>
 where
-  F: FnMut(&str) -> Result<String>,
+  F: FnMut(&str, &str) -> Result<FetchedStylesheet>,
   D: FnMut(&str, &str),
 {
-  let mut adapter = |ctx: ImportFetchContext<'_>| fetch(ctx.url);
+  let mut adapter = |ctx: ImportFetchContext<'_>| fetch(ctx.url, ctx.importer_url);
   inline_imports_with_request_with_diagnostics(css, base_url, &mut adapter, state, diagnostics, deadline)
 }
 
@@ -1151,7 +1194,7 @@ fn inline_imports_inner<F, D>(
   deadline: Option<&RenderDeadline>,
 ) -> std::result::Result<String, RenderError>
 where
-  F: FnMut(ImportFetchContext<'_>) -> Result<String>,
+  F: FnMut(ImportFetchContext<'_>) -> Result<FetchedStylesheet>,
   D: FnMut(&str, &str),
 {
   fn push_with_budget<D>(
@@ -1435,6 +1478,8 @@ where
               continue;
             };
             if let Some(resolved) = resolve_href(base_url, target) {
+              let canonical_resolved = state.canonicalize_url(&resolved);
+              let mut budget_url = canonical_resolved.clone();
               if !push_with_budget(
                 &mut out,
                 &css[last_emit..i],
@@ -1447,7 +1492,7 @@ where
               }
               if !state
                 .budget
-                .import_depth_allowed(state.stack.len(), &resolved, diagnostics)
+                .import_depth_allowed(state.stack.len(), &canonical_resolved, diagnostics)
               {
                 if let Some(layer) = layer {
                   if let ImportLayerModifier::Named(path) = layer {
@@ -1463,7 +1508,7 @@ where
                       if !push_with_budget(
                         &mut out,
                         wrapped.as_ref(),
-                        &resolved,
+                        &budget_url,
                         &mut state.budget,
                         diagnostics,
                       ) {
@@ -1474,7 +1519,7 @@ where
                       if !push_with_budget(
                         &mut out,
                         &to_insert,
-                        &resolved,
+                        &budget_url,
                         &mut state.budget,
                         diagnostics,
                       ) {
@@ -1487,38 +1532,52 @@ where
                 i = j;
                 continue;
               }
-              if state.stack.contains(&resolved) {
-                diagnostics(&resolved, "skipping cyclic @import");
+              if state.stack.contains(&canonical_resolved) {
+                diagnostics(&canonical_resolved, "skipping cyclic @import");
               }
 
-              let mut inlined: Option<&str> = None;
-              if !state.stack.contains(&resolved) {
-                if !state.try_register_stylesheet_with_budget(&resolved, diagnostics) {
-                  // Count exhausted; skip this import.
-                } else if state.budget.remaining_bytes() == 0 {
-                  diagnostics(&resolved, "stylesheet byte budget exhausted");
+              let mut inlined_key: Option<String> = None;
+              if !state.stack.contains(&canonical_resolved) {
+                if state.budget.remaining_bytes() == 0 {
+                  diagnostics(&canonical_resolved, "stylesheet byte budget exhausted");
                   budget_exhausted = true;
-                } else if let Some(cached) = state.cache.get(&resolved) {
-                  inlined = Some(cached);
+                } else if state.cache.contains_key(&canonical_resolved) {
+                  inlined_key = Some(canonical_resolved.clone());
                 } else if let Ok(fetched) = fetch(ImportFetchContext {
                   url: &resolved,
                   importer_url: base_url,
                 }) {
-                  let rewritten = absolutize_css_urls_cow(&fetched, &resolved)?;
-                  let rewritten_str = rewritten.as_ref();
-                  if rewritten_str.len() > state.budget.remaining_bytes() {
-                    diagnostics(&resolved, "stylesheet byte budget exhausted");
+                  let final_url = fetched.final_url.unwrap_or_else(|| resolved.clone());
+                  state.record_redirect(&resolved, &final_url);
+                  let canonical_final = state.canonicalize_url(&final_url);
+                  budget_url = canonical_final.clone();
+
+                  if state.stack.contains(&canonical_final) {
+                    diagnostics(&canonical_final, "skipping cyclic @import");
+                  } else if state.cache.contains_key(&canonical_final) {
+                    inlined_key = Some(canonical_final.clone());
+                  } else if !state.try_register_stylesheet_with_budget(&canonical_final, diagnostics) {
+                    // Count exhausted; skip this import.
+                  } else if state.budget.remaining_bytes() == 0 {
+                    diagnostics(&canonical_final, "stylesheet byte budget exhausted");
+                    budget_exhausted = true;
                   } else {
-                    let nested = inline_imports_with_request_with_diagnostics(
-                      rewritten_str,
-                      &resolved,
-                      fetch,
-                      state,
-                      diagnostics,
-                      deadline,
-                    )?;
-                    let cached = state.cache.entry(resolved.clone()).or_insert(nested);
-                    inlined = Some(cached.as_str());
+                    let rewritten = absolutize_css_urls_cow(&fetched.css, &canonical_final)?;
+                    let rewritten_str = rewritten.as_ref();
+                    if rewritten_str.len() > state.budget.remaining_bytes() {
+                      diagnostics(&canonical_final, "stylesheet byte budget exhausted");
+                    } else {
+                      let nested = inline_imports_with_request_with_diagnostics(
+                        rewritten_str,
+                        &canonical_final,
+                        fetch,
+                        state,
+                        diagnostics,
+                        deadline,
+                      )?;
+                      state.cache.entry(canonical_final.clone()).or_insert(nested);
+                      inlined_key = Some(canonical_final.clone());
+                    }
                   }
                 }
               }
@@ -1526,20 +1585,26 @@ where
               // Failed imports are ignored, but `@import ... layer(foo)` still establishes the
               // layer ordering so subsequent `@layer foo { ... }` blocks don't change precedence
               // based on network outcomes.
-              if inlined.is_some() || matches!(layer.as_ref(), Some(ImportLayerModifier::Named(_)))
+              if inlined_key.is_some()
+                || matches!(layer.as_ref(), Some(ImportLayerModifier::Named(_)))
               {
+                let inlined = inlined_key
+                  .as_deref()
+                  .and_then(|key| state.cache.get(key))
+                  .map(|css| css.as_str());
+                let has_inlined = inlined.is_some();
                 let mut wrapped: std::borrow::Cow<'_, str> =
                   std::borrow::Cow::Borrowed(inlined.unwrap_or_default());
 
                 if let Some(layer) = layer {
                   match layer {
                     ImportLayerModifier::Anonymous => {
-                      if inlined.is_some() {
+                      if has_inlined {
                         wrapped = std::borrow::Cow::Owned(format!("@layer {{\n{}\n}}\n", wrapped));
                       }
                     }
                     ImportLayerModifier::Named(path) => {
-                      wrapped = if inlined.is_some() {
+                      wrapped = if has_inlined {
                         std::borrow::Cow::Owned(format!(
                           "@layer {} {{\n{}\n}}\n",
                           serialize_layer_name(&path),
@@ -1565,7 +1630,7 @@ where
                   if !push_with_budget(
                     &mut out,
                     wrapped.as_ref(),
-                    &resolved,
+                    &budget_url,
                     &mut state.budget,
                     diagnostics,
                   ) {
@@ -1576,7 +1641,7 @@ where
                   if !push_with_budget(
                     &mut out,
                     &to_insert,
-                    &resolved,
+                    &budget_url,
                     &mut state.budget,
                     diagnostics,
                   ) {
@@ -3072,9 +3137,9 @@ mod tests {
   fn inline_imports_parses_url_functions_case_insensitively() {
     let mut state = InlineImportState::new();
     let css = "@import URL(\"https://example.com/nested.css\");\nbody { color: black; }";
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       assert_eq!(url, "https://example.com/nested.css");
-      Ok("p { margin: 0; }".to_string())
+      Ok(FetchedStylesheet::new("p { margin: 0; }".to_string(), None))
     };
     let out = inline_imports(
       css,
@@ -3094,11 +3159,11 @@ mod tests {
   fn inline_imports_flattens_nested_imports() {
     let mut state = InlineImportState::new();
     let css = "@import \"nested.css\";\nbody { color: black; }";
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       if url.ends_with("nested.css") {
-        Ok("p { margin: 0; }".to_string())
+        Ok(FetchedStylesheet::new("p { margin: 0; }".to_string(), None))
       } else {
-        Ok(String::new())
+        Ok(FetchedStylesheet::new(String::new(), None))
       }
     };
     let out = inline_imports(
@@ -3114,6 +3179,78 @@ mod tests {
     }
     assert!(out.contains("p { margin: 0; }"));
     assert!(out.contains("body { color: black; }"));
+  }
+
+  #[test]
+  fn inline_imports_passes_importing_stylesheet_as_referrer() {
+    let mut state = InlineImportState::new();
+    let mut calls: Vec<(String, String)> = Vec::new();
+    let mut fetched = |url: &str, referrer: &str| -> Result<FetchedStylesheet> {
+      calls.push((url.to_string(), referrer.to_string()));
+      match url {
+        "https://example.com/styles/imports/child.css" => {
+          assert_eq!(referrer, "https://example.com/styles/main.css");
+          Ok(FetchedStylesheet::new("@import \"grand.css\";".to_string(), None))
+        }
+        "https://example.com/styles/imports/grand.css" => {
+          assert_eq!(referrer, "https://example.com/styles/imports/child.css");
+          Ok(FetchedStylesheet::new("body { color: red; }".to_string(), None))
+        }
+        other => panic!("unexpected url {other}"),
+      }
+    };
+
+    let out = inline_imports(
+      "@import \"imports/child.css\";",
+      "https://example.com/styles/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+    assert!(out.contains("body { color: red; }"));
+    assert_eq!(
+      calls,
+      vec![
+        (
+          "https://example.com/styles/imports/child.css".to_string(),
+          "https://example.com/styles/main.css".to_string(),
+        ),
+        (
+          "https://example.com/styles/imports/grand.css".to_string(),
+          "https://example.com/styles/imports/child.css".to_string(),
+        )
+      ]
+    );
+  }
+
+  #[test]
+  fn inline_imports_rewrites_urls_against_final_url_after_redirect() {
+    let mut state = InlineImportState::new();
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
+      assert_eq!(url, "https://example.com/redir.css");
+      Ok(FetchedStylesheet::new(
+        "div { background: url(\"asset.png\"); }".to_string(),
+        Some("https://cdn.example.com/css/redir.css".to_string()),
+      ))
+    };
+
+    let out = inline_imports(
+      "@import \"redir.css\";",
+      "https://example.com/root.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+    assert!(
+      out.contains("url(\"https://cdn.example.com/css/asset.png\")"),
+      "expected url() inside redirected stylesheet to resolve against final_url: {out}"
+    );
+    assert!(
+      !out.contains("url(\"https://example.com/asset.png\")"),
+      "should not resolve url() against the original requested URL: {out}"
+    );
   }
 
   #[test]
@@ -3152,9 +3289,9 @@ mod tests {
   fn inline_imports_handles_uppercase_at_keyword() {
     let mut state = InlineImportState::new();
     let css = "@IMPORT url(\"nested.css\");\nbody { color: black; }";
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       assert_eq!(url, "https://example.com/nested.css");
-      Ok("p { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new("p { color: blue; }".to_string(), None))
     };
     let out = inline_imports(
       css,
@@ -3172,9 +3309,9 @@ mod tests {
   fn inline_imports_handles_mixedcase_at_keyword() {
     let mut state = InlineImportState::new();
     let css = "@ImPoRt \"nested.css\";\nbody { color: black; }";
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       assert_eq!(url, "https://example.com/nested.css");
-      Ok("p { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new("p { color: blue; }".to_string(), None))
     };
     let out = inline_imports(
       css,
@@ -3195,7 +3332,7 @@ mod tests {
       "body {{ color: black; }}\n{}\nbody {{ color: blue; }}",
       "@".repeat(50_000)
     );
-    let mut fetched = |_url: &str| -> Result<String> {
+    let mut fetched = |_url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       panic!("inline_imports should not attempt to fetch when there are no @import rules")
     };
     let out = inline_imports(
@@ -3213,7 +3350,10 @@ mod tests {
   fn inline_imports_preserves_media_wrappers_for_duplicates() {
     let mut state = InlineImportState::new();
     let css = "@import url(\"shared.css\") screen;\n@import url(\"shared.css\") print;";
-    let mut fetched = |_url: &str| -> Result<String> { Ok("p { color: green; }".to_string()) };
+    let mut fetched =
+      |_url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
+        Ok(FetchedStylesheet::new("p { color: green; }".to_string(), None))
+      };
     let out = inline_imports(
       css,
       "https://example.com/main.css",
@@ -3234,9 +3374,12 @@ mod tests {
   fn inline_imports_ignores_late_import_after_style_rule() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "body { color: black; } @import \"late.css\";\n.x { color: red; }";
     let out = inline_imports(
@@ -3266,9 +3409,12 @@ mod tests {
   fn inline_imports_allows_import_after_layer_statement() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "@layer base; @import \"layered.css\";";
     let out = inline_imports(
@@ -3295,14 +3441,20 @@ mod tests {
   fn inline_imports_layer_block_blocks_subsequent_imports() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
       if url.ends_with("/a.css") {
-        Ok(".from-a { color: blue; }".to_string())
+        Ok(FetchedStylesheet::new(
+          ".from-a { color: blue; }".to_string(),
+          None,
+        ))
       } else if url.ends_with("/b.css") {
-        Ok(".from-b { color: green; }".to_string())
+        Ok(FetchedStylesheet::new(
+          ".from-b { color: green; }".to_string(),
+          None,
+        ))
       } else {
-        Ok(String::new())
+        Ok(FetchedStylesheet::new(String::new(), None))
       }
     };
     let css = "@import \"a.css\"; @layer base { .x { color: red; } } @import \"b.css\";";
@@ -3338,9 +3490,12 @@ mod tests {
   fn inline_imports_allows_import_after_charset() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "@charset \"UTF-8\"; @import \"charset.css\";";
     let out = inline_imports(
@@ -3367,9 +3522,12 @@ mod tests {
   fn inline_imports_inlines_named_layer_modifier() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "@import \"layered.css\" layer(foo);";
     let out = inline_imports(
@@ -3404,7 +3562,7 @@ mod tests {
   fn inline_imports_declares_layer_on_failed_layered_import() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
       Err(crate::error::Error::Other("network error".to_string()))
     };
@@ -3475,8 +3633,12 @@ mod tests {
   #[test]
   fn inline_imports_preserves_escaped_layer_names() {
     let mut state = InlineImportState::new();
-    let mut fetched =
-      |_url: &str| -> Result<String> { Ok(".imported { color: blue; }".to_string()) };
+    let mut fetched = |_url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
+    };
     // Layer names can contain escaped whitespace. Ensure we re-serialize them so the parser sees a
     // single identifier rather than treating the whitespace as a separator.
     let css = r#"@import "layered.css" layer(foo\ bar);"#;
@@ -3505,9 +3667,12 @@ mod tests {
   fn inline_imports_inlines_anonymous_layer_modifier() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "@import \"layered.css\" layer;";
     let out = inline_imports(
@@ -3538,9 +3703,12 @@ mod tests {
   fn inline_imports_inlines_supports_modifier() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "@import \"supported.css\" supports((display: grid));";
     let out = inline_imports(
@@ -3571,9 +3739,12 @@ mod tests {
   fn inline_imports_nests_layer_supports_and_media_wrappers() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "@import \"combo.css\" layer(foo) supports((display: grid)) screen;";
     let out = inline_imports(
@@ -3608,9 +3779,12 @@ mod tests {
   fn inline_imports_does_not_treat_at_layered_as_layer_statement() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "@layered foo; @import \"a.css\";";
     let out = inline_imports(
@@ -3640,9 +3814,12 @@ mod tests {
   fn inline_imports_does_not_treat_at_imported_as_import() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       fetched_urls.push(url.to_string());
-      Ok(".imported { color: blue; }".to_string())
+      Ok(FetchedStylesheet::new(
+        ".imported { color: blue; }".to_string(),
+        None,
+      ))
     };
     let css = "@imported \"ignored.css\"; @import \"a.css\";";
     let out = inline_imports(
@@ -3671,11 +3848,14 @@ mod tests {
   #[test]
   fn inline_imports_reports_cycles() {
     let mut state = InlineImportState::new();
-    let mut fetched = |url: &str| -> Result<String> {
+    let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
       if url.ends_with("a.css") {
-        Ok("@import \"b.css\";\nbody { color: red; }".to_string())
+        Ok(FetchedStylesheet::new(
+          "@import \"b.css\";\nbody { color: red; }".to_string(),
+          None,
+        ))
       } else {
-        Ok("@import \"a.css\";".to_string())
+        Ok(FetchedStylesheet::new("@import \"a.css\";".to_string(), None))
       }
     };
     let mut diags: Vec<(String, String)> = Vec::new();

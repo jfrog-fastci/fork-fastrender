@@ -1,6 +1,6 @@
 use fastrender::css::loader::{
   absolutize_css_urls, infer_base_url, inline_imports_with_diagnostics, resolve_href,
-  InlineImportState, StylesheetInlineBudget,
+  FetchedStylesheet, InlineImportState, StylesheetInlineBudget,
 };
 use fastrender::error::Result;
 
@@ -123,9 +123,12 @@ fn resolve_href_accepts_uppercase_data_urls() {
 #[test]
 fn inline_imports_resolves_urls_relative_to_imported_sheet() {
   let mut state = InlineImportState::new();
-  let mut fetch = |url: &str| -> fastrender::error::Result<String> {
+  let mut fetch = |url: &str, _referrer: &str| -> fastrender::error::Result<FetchedStylesheet> {
     assert_eq!(url, "https://example.com/styles/imports/inner.css");
-    Ok("body { background: url(\"./img/bg.png\"); }".to_string())
+    Ok(FetchedStylesheet::new(
+      "body { background: url(\"./img/bg.png\"); }".to_string(),
+      None,
+    ))
   };
   let mut diagnostics = Vec::new();
   let mut diag = |url: &str, reason: &str| diagnostics.push((url.to_string(), reason.to_string()));
@@ -157,7 +160,9 @@ fn inline_imports_reports_cycles() {
   let out = inline_imports_with_diagnostics(
     "@import url(\"main.css\");",
     "https://example.com/main.css",
-    &mut |_url| -> fastrender::error::Result<String> { unreachable!("cycle should short-circuit") },
+    &mut |_url, _referrer| -> fastrender::error::Result<FetchedStylesheet> {
+      unreachable!("cycle should short-circuit")
+    },
     &mut state,
     &mut diag,
     None,
@@ -177,11 +182,17 @@ fn inline_imports_reports_cycles() {
 #[test]
 fn inline_imports_respects_stylesheet_budget() {
   let mut state = InlineImportState::with_budget(StylesheetInlineBudget::new(2, 1024, 8));
-  let mut fetched = |url: &str| -> Result<String> {
+  let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
     if url.ends_with("first.css") {
-      Ok("h1 { color: rgb(1, 2, 3); }".to_string())
+      Ok(FetchedStylesheet::new(
+        "h1 { color: rgb(1, 2, 3); }".to_string(),
+        None,
+      ))
     } else if url.ends_with("second.css") {
-      Ok("p { color: rgb(4, 5, 6); }".to_string())
+      Ok(FetchedStylesheet::new(
+        "p { color: rgb(4, 5, 6); }".to_string(),
+        None,
+      ))
     } else {
       Err(fastrender::error::Error::Io(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -221,11 +232,11 @@ fn inline_imports_respects_stylesheet_budget() {
 fn inline_imports_respects_byte_budget() {
   let mut state = InlineImportState::with_budget(StylesheetInlineBudget::new(8, 64, 8));
   let big_css = "a { color: blue; }".repeat(8);
-  let mut fetched = |url: &str| -> Result<String> {
+  let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
     if url.ends_with("big.css") {
-      Ok(big_css.clone())
+      Ok(FetchedStylesheet::new(big_css.clone(), None))
     } else {
-      Ok(String::new())
+      Ok(FetchedStylesheet::new(String::new(), None))
     }
   };
   let mut diags: Vec<(String, String)> = Vec::new();
@@ -265,11 +276,14 @@ fn inline_imports_respects_byte_budget() {
 #[test]
 fn inline_imports_respects_depth_budget() {
   let mut state = InlineImportState::with_budget(StylesheetInlineBudget::new(8, 1024, 2));
-  let mut fetched = |url: &str| -> Result<String> {
+  let mut fetched = |url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
     if url.ends_with("a.css") {
-      Ok("@import \"b.css\";\na { color: red; }".to_string())
+      Ok(FetchedStylesheet::new(
+        "@import \"b.css\";\na { color: red; }".to_string(),
+        None,
+      ))
     } else {
-      Ok("b { color: green; }".to_string())
+      Ok(FetchedStylesheet::new("b { color: green; }".to_string(), None))
     }
   };
   let mut diags: Vec<(String, String)> = Vec::new();

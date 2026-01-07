@@ -65,7 +65,8 @@ use crate::css::loader::{
   absolutize_css_urls_cow, extract_css_links, extract_embedded_css_urls_with_meta,
   inject_css_into_html, inline_imports_with_request_with_diagnostics,
   link_rel_is_stylesheet_candidate, resolve_href, resolve_href_with_base,
-  should_scan_embedded_css_urls, ImportFetchContext, InlineImportState, StylesheetInlineBudget,
+  should_scan_embedded_css_urls, FetchedStylesheet, ImportFetchContext, InlineImportState,
+  StylesheetInlineBudget,
 };
 use crate::css::parser::{
   extract_css_sources, extract_scoped_css_sources, parse_stylesheet_with_media, CssTreeScope,
@@ -9272,9 +9273,6 @@ impl FastRender {
         budget_diag(&css_url, "stylesheet byte budget exhausted");
         break;
       }
-      if !import_state.try_register_stylesheet_with_budget(&css_url, &mut budget_diag) {
-        break;
-      }
       if let Some(ctx) = resource_context {
         if let Err(err) = ctx.policy.allows(&css_url) {
           diagnostics.record_message(ResourceKind::Stylesheet, &css_url, err.reason);
@@ -9310,15 +9308,16 @@ impl FastRender {
               continue;
             }
           }
-          let sheet_base_url = res.final_url.as_deref().unwrap_or(css_url.as_str());
-          if sheet_base_url != css_url.as_str() {
-            import_state.register_stylesheet_alias(sheet_base_url);
-          }
           if let Err(err) = ensure_http_success(&res, &css_url)
             .and_then(|()| ensure_stylesheet_mime_sane(&res, &css_url))
           {
             diagnostics.record_error(ResourceKind::Stylesheet, &css_url, &err);
             continue;
+          }
+          let stylesheet_base = res.final_url.clone().unwrap_or_else(|| css_url.clone());
+          import_state.record_redirect(&css_url, &stylesheet_base);
+          if !import_state.try_register_stylesheet_with_budget(&stylesheet_base, &mut budget_diag) {
+            break;
           }
           let decode_timer = stats.as_deref().and_then(|rec| rec.timer());
           let decoded = decode_css_bytes_cow(&res.bytes, res.content_type.as_deref());
@@ -9329,7 +9328,7 @@ impl FastRender {
             );
           }
           let absolutize_timer = stats.as_deref().and_then(|rec| rec.timer());
-          let css_text = match absolutize_css_urls_cow(decoded.as_ref(), sheet_base_url)? {
+          let css_text = match absolutize_css_urls_cow(decoded.as_ref(), &stylesheet_base)? {
             std::borrow::Cow::Borrowed(_) => decoded,
             std::borrow::Cow::Owned(rewritten) => std::borrow::Cow::Owned(rewritten),
           };
@@ -9342,7 +9341,7 @@ impl FastRender {
           let mut import_diags: Vec<(String, String)> = Vec::new();
           let import_timer = stats.as_deref().and_then(|rec| rec.timer());
           let inlined = {
-            let mut import_fetch = |import_ctx: ImportFetchContext<'_>| -> Result<String> {
+            let mut import_fetch = |import_ctx: ImportFetchContext<'_>| -> Result<FetchedStylesheet> {
               let u = import_ctx.url;
               if let Some(rec) = stats.as_deref_mut() {
                 rec.record_fetch(ResourceKind::Stylesheet);
@@ -9379,12 +9378,15 @@ impl FastRender {
                     diagnostics.record_error(ResourceKind::Stylesheet, u, &err);
                     return Err(err);
                   }
-                  Ok(decode_css_bytes(&res.bytes, res.content_type.as_deref()))
+                  Ok(FetchedStylesheet::new(
+                    decode_css_bytes(&res.bytes, res.content_type.as_deref()),
+                    res.final_url.clone(),
+                  ))
                 }
                 Err(err) => {
                   if should_suppress_stylesheet_network_error(u, &err) {
                     diagnostics.record_error(ResourceKind::Stylesheet, u, &err);
-                    Ok(String::new())
+                    Ok(FetchedStylesheet::new(String::new(), None))
                   } else {
                     diagnostics.record_error(ResourceKind::Stylesheet, u, &err);
                     Err(err)
@@ -9399,7 +9401,7 @@ impl FastRender {
 
             inline_imports_with_request_with_diagnostics(
               css_text.as_ref(),
-              sheet_base_url,
+              &stylesheet_base,
               &mut import_fetch,
               &mut import_state,
               &mut import_diag,
@@ -9422,7 +9424,7 @@ impl FastRender {
             };
             if import_state
               .budget_mut()
-              .try_spend_bytes(&css_url, 1, &mut newline_diag)
+              .try_spend_bytes(&stylesheet_base, 1, &mut newline_diag)
             {
               combined_css.push('\n');
             } else {
@@ -13473,7 +13475,7 @@ mod tests {
 
   #[derive(Clone, Default)]
   struct RecordingRequestFetcher {
-    map: HashMap<String, (Vec<u8>, Option<String>)>,
+    map: HashMap<String, (Vec<u8>, Option<String>, Option<String>)>,
     requests: Arc<Mutex<Vec<RecordedFetchRequest>>>,
   }
 
@@ -13489,7 +13491,29 @@ mod tests {
     fn with_entry(mut self, url: &str, content: &str, content_type: &str) -> Self {
       self.map.insert(
         url.to_string(),
-        (content.as_bytes().to_vec(), Some(content_type.to_string())),
+        (
+          content.as_bytes().to_vec(),
+          Some(content_type.to_string()),
+          None,
+        ),
+      );
+      self
+    }
+
+    fn with_entry_with_final_url(
+      mut self,
+      url: &str,
+      content: &str,
+      content_type: &str,
+      final_url: &str,
+    ) -> Self {
+      self.map.insert(
+        url.to_string(),
+        (
+          content.as_bytes().to_vec(),
+          Some(content_type.to_string()),
+          Some(final_url.to_string()),
+        ),
       );
       self
     }
@@ -13508,7 +13532,11 @@ mod tests {
       self
         .map
         .get(url)
-        .map(|(bytes, content_type)| FetchedResource::new(bytes.clone(), content_type.clone()))
+        .map(|(bytes, content_type, final_url)| {
+          let mut resource = FetchedResource::new(bytes.clone(), content_type.clone());
+          resource.final_url = final_url.clone();
+          resource
+        })
         .ok_or_else(|| {
           Error::Io(io::Error::new(
             io::ErrorKind::NotFound,
@@ -18289,6 +18317,86 @@ mod tests {
     assert!(
       import_pos < a_pos && a_pos < b_pos,
       "expected @import content < a.css < b.css (import={import_pos}, a={a_pos}, b={b_pos})\noutput={output:?}"
+    );
+  }
+
+  #[test]
+  fn inline_stylesheets_imports_use_stylesheet_referrer_and_redirect_base_url() {
+    let document_url = "https://example.com/page.html";
+    let fetcher = RecordingRequestFetcher::default()
+      .with_entry_with_final_url(
+        "https://example.com/main.css",
+        "@import \"child.css\";\nbody { background-image: url(\"asset.png\"); }",
+        "text/css",
+        "https://cdn.example.com/assets/main.css",
+      )
+      .with_entry_with_final_url(
+        "https://cdn.example.com/assets/child.css",
+        "@import \"grand.css\";\nspan { background-image: url(\"child.png\"); }",
+        "text/css",
+        "https://cdn.example.com/v2/child.css",
+      )
+      .with_entry(
+        "https://cdn.example.com/v2/grand.css",
+        "div { background-image: url(\"grand.png\"); }",
+        "text/css",
+      );
+
+    let ctx = ResourceContext {
+      document_url: Some(document_url.to_string()),
+      referrer_policy: ReferrerPolicy::default(),
+      policy: ResourceAccessPolicy::default(),
+      diagnostics: None,
+      iframe_depth_remaining: None,
+    };
+
+    let mut diagnostics = RenderDiagnostics::default();
+    let html = r#"<link rel="stylesheet" href="main.css">"#;
+    let output = FastRender::inline_stylesheets_for_html_with_context(
+      &fetcher,
+      html,
+      document_url,
+      MediaType::Screen,
+      None,
+      Some(&ctx),
+      &mut diagnostics,
+      None,
+      None,
+    )
+    .expect("inlined styles");
+
+    assert!(
+      output.contains("url(\"https://cdn.example.com/assets/asset.png\")"),
+      "expected main stylesheet urls to resolve against final_url: {output}"
+    );
+    assert!(
+      output.contains("url(\"https://cdn.example.com/v2/child.png\")"),
+      "expected imported stylesheet urls to resolve against final_url: {output}"
+    );
+    assert!(
+      output.contains("url(\"https://cdn.example.com/v2/grand.png\")"),
+      "expected nested imported stylesheet urls to resolve against final_url: {output}"
+    );
+
+    let requests = fetcher.requests();
+    let child_req = requests
+      .iter()
+      .find(|req| req.url == "https://cdn.example.com/assets/child.css")
+      .expect("child.css request");
+    assert_eq!(
+      child_req.referrer.as_deref(),
+      Some("https://cdn.example.com/assets/main.css"),
+      "expected @import to use importing stylesheet as referrer"
+    );
+
+    let grand_req = requests
+      .iter()
+      .find(|req| req.url == "https://cdn.example.com/v2/grand.css")
+      .expect("grand.css request");
+    assert_eq!(
+      grand_req.referrer.as_deref(),
+      Some("https://cdn.example.com/v2/child.css"),
+      "expected nested @import to use immediate parent stylesheet as referrer"
     );
   }
 
