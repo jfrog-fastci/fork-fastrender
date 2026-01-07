@@ -1068,7 +1068,10 @@ fn parse_aria_role_attr(node: &DomNode) -> Option<ParsedRole> {
   for token in raw_role.split_ascii_whitespace() {
     let role = token.to_ascii_lowercase();
     if role == "none" || role == "presentation" {
-      return Some(ParsedRole::Presentational);
+      if should_honor_presentational(node) {
+        return Some(ParsedRole::Presentational);
+      }
+      continue;
     }
 
     if is_supported_role(&role) {
@@ -1101,10 +1104,7 @@ fn compute_role(
     match parsed {
       ParsedRole::Explicit(role) => return (Some(role), false, true),
       ParsedRole::Presentational => {
-        if should_honor_presentational(dom_node) {
-          return (None, true, true);
-        }
-        // Otherwise, ignore and fall back to implicit role inference.
+        return (None, true, true);
       }
     }
   }

@@ -232,6 +232,29 @@ fn accessibility_role_tokenization_uses_first_token() {
 }
 
 #[test]
+fn accessibility_presentational_role_falls_back_to_next_token_when_disallowed() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <div id="x" role="presentation checkbox" aria-checked="true" tabindex="0">
+          Check
+        </div>
+      </body>
+    </html>
+  "##;
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let node = find_by_id(&tree, "x").expect("node with id x");
+  assert_eq!(node.role, "checkbox");
+  assert_eq!(node.states.checked, Some(CheckState::True));
+  assert!(node.states.focusable);
+}
+
+#[test]
 fn accessibility_presentational_role_suppresses_semantics() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
