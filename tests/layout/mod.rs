@@ -88,6 +88,7 @@ mod table_fixed_layout_expands_to_width;
 mod table_fixup_box_generation;
 mod table_fixup_integration;
 mod table_fixup_wrapper;
+mod table_fixed_layout_width_auto_inline_table;
 mod table_fragmentation;
 mod table_large_layout;
 mod table_visibility_collapse_layout;

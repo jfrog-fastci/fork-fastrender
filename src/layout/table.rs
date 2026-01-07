@@ -4525,6 +4525,39 @@ impl TableFormattingContext {
     }
   }
 
+  fn table_is_inline_level(table_box: &BoxNode, table_root_style: &ComputedStyle) -> bool {
+    // Table wrapper boxes resolve to inline-level when the underlying table is `display: inline-table`,
+    // but some layout contexts (floats/abspos) may turn the wrapper into a block even when the
+    // computed `display` remains inline-table. Treat either signal as "inline-level" for the
+    // purposes of selecting the table layout algorithm.
+    table_box.is_inline_level() || matches!(table_root_style.display, Display::InlineTable)
+  }
+
+  /// CSS 2.1 §17.5.2.1:
+  ///
+  /// The fixed table layout algorithm is used only when the table has a definite width. When the
+  /// table's computed `width` is `auto`, user agents must fall back to the automatic table layout
+  /// algorithm for inline-level tables so shrink-to-fit sizing can account for content in *all*
+  /// rows (not just the first row).
+  ///
+  /// Browsers may still use fixed layout for block-level tables with `width:auto`, so we preserve
+  /// that behaviour for non-inline tables.
+  fn should_use_fixed_layout(
+    table_root_style: &ComputedStyle,
+    specified_width: Option<f32>,
+    table_is_inline_level: bool,
+  ) -> bool {
+    if !matches!(table_root_style.table_layout, TableLayout::Fixed) {
+      return false;
+    }
+
+    if specified_width.is_none() && table_is_inline_level {
+      return false;
+    }
+
+    true
+  }
+
   fn column_constraints_cached(
     &self,
     table_box: &BoxNode,
@@ -6118,7 +6151,10 @@ impl FormattingContext for TableFormattingContext {
       return Ok(fragment);
     }
 
-    let mode = if structure.is_fixed_layout {
+    let table_is_inline_level = Self::table_is_inline_level(table_box, table_root_style);
+    let use_fixed_layout =
+      Self::should_use_fixed_layout(table_root_style, specified_width, table_is_inline_level);
+    let mode = if use_fixed_layout {
       DistributionMode::Fixed
     } else {
       DistributionMode::Auto
@@ -7893,7 +7929,10 @@ impl FormattingContext for TableFormattingContext {
       padding_h_base + border_h_base
     };
     let percent_base = authored_width.map(|w| (w - spacing - edge_consumption).max(0.0));
-    let distribution_mode = if structure.is_fixed_layout {
+    let table_is_inline_level = Self::table_is_inline_level(table_box, table_root_style);
+    let use_fixed_layout =
+      Self::should_use_fixed_layout(table_root_style, authored_width, table_is_inline_level);
+    let distribution_mode = if use_fixed_layout {
       // Fixed layout tables should not require scanning every cell. When no definite width basis
       // exists (auto widths or intrinsic contexts), percentages are normalized away to keep sizing stable.
       DistributionMode::Fixed
