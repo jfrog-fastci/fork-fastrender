@@ -326,13 +326,14 @@ impl PositionedLayout {
     // Compute the offset from top/right/bottom/left properties
     let offset = self.compute_relative_offset(style, containing_block);
 
-    // Apply offset to fragment position
-    let new_bounds = fragment.bounds.translate(offset);
-
     // Create new fragment with adjusted bounds but same children and style.
-    // Note: Children positions are relative to parent, so they don't change
+    // Note: Children positions are relative to parent, so they don't change.
+    //
+    // Keep `logical_override` consistent with `bounds` since downstream
+    // fragmentation/pagination decisions may use logical geometry.
     let mut adjusted = fragment.clone();
-    adjusted.bounds = new_bounds;
+    adjusted.bounds = adjusted.bounds.translate(offset);
+    adjusted.logical_override = adjusted.logical_override.map(|logical| logical.translate(offset));
     Ok(adjusted)
   }
 
@@ -632,6 +633,27 @@ mod tests {
     // Should be offset by (30, 20)
     assert_eq!(result.bounds.x(), 130.0); // 100 + 30
     assert_eq!(result.bounds.y(), 120.0); // 100 + 20
+  }
+
+  #[test]
+  fn test_relative_position_translates_logical_override() {
+    let layout = PositionedLayout::new();
+    let mut fragment = create_fragment(100.0, 100.0, 200.0, 150.0);
+    fragment.logical_override = Some(fragment.bounds);
+
+    let mut style = default_style();
+    style.position = Position::Relative;
+    style.top = LengthOrAuto::px(20.0);
+    style.left = LengthOrAuto::px(30.0);
+
+    let cb = create_containing_block(800.0, 600.0);
+    let result = layout
+      .apply_relative_positioning(&fragment, &style, &cb)
+      .unwrap();
+
+    let expected_bounds = fragment.bounds.translate(Point::new(30.0, 20.0));
+    assert_eq!(result.bounds, expected_bounds);
+    assert_eq!(result.logical_override, Some(expected_bounds));
   }
 
   #[test]
