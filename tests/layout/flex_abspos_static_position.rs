@@ -170,6 +170,54 @@ fn abspos_static_position_respects_vertical_writing_mode_axes() {
 }
 
 #[test]
+fn abspos_static_position_respects_align_self_on_cross_axis() {
+  // Flexbox § abspos-items: the cross-axis edges of the static-position rectangle are the flex
+  // container's content edges, and `align-self` is used to align within that axis.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.align_self = Some(AlignItems::FlexEnd);
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_ignores_justify_self_on_main_axis() {
+  // Flexbox § abspos-items defines the main-axis edges of the static-position rectangle as where
+  // the child's margin edges would be if it were the sole flex item. That makes `justify-self`
+  // irrelevant for the main-axis static position (WPT: flex-abspos-staticpos-justify-self-001).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.justify_content = JustifyContent::Center;
+  container_style.align_items = AlignItems::Center;
+  container_style.justify_items = AlignItems::End;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.justify_self = Some(AlignItems::FlexEnd);
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 45.0).abs() < 0.1, "expected x≈45, got {}", x);
+  assert!((y - 45.0).abs() < 0.1, "expected y≈45, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_is_relative_to_flex_content_box() {
   // The "static position rectangle" for abspos flex children is the flex container's content box
   // (i.e. inside padding/border). Ensure we measure alignment from there rather than from the
