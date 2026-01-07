@@ -6,6 +6,18 @@ use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{FastRender, FontConfig, Point, Rgba};
+use std::sync::Once;
+
+fn init_rayon_for_tests() {
+  static INIT: Once = Once::new();
+  INIT.call_once(|| {
+    // Many CI machines have very high CPU counts; combining that with an address-space cap can
+    // cause Rayon global pool initialization to fail when it tries to spawn one worker per CPU.
+    // Constrain the default pool so these paint regressions are stable under `run_limited.sh`.
+    std::env::set_var("RAYON_NUM_THREADS", "2");
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(2).build_global();
+  });
+}
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
@@ -13,6 +25,7 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, FontContext) {
+  init_rayon_for_tests();
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())
     .build()
@@ -112,4 +125,3 @@ fn will_change_transform_does_not_establish_backdrop_root() {
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
-
