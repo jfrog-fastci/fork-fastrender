@@ -71,3 +71,31 @@ fn matches_alias_is_forgiving_like_is() {
   assert!(selector_matches(&element_ref, &selector));
 }
 
+#[test]
+fn host_context_requires_compound_selector() {
+  // Per CSS Scoping, :host-context() takes a single <compound-selector>. It must not accept
+  // selector lists, combinators, or pseudo-elements.
+  for selector in [
+    "div:host-context(.foo, .bar)",
+    "div:host-context(.foo .bar)",
+    "div:host-context(::before)",
+  ] {
+    let mut input = ParserInput::new(selector);
+    let mut parser = Parser::new(&mut input);
+    assert!(
+      SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_err(),
+      "expected parse error for {selector}"
+    );
+  }
+}
+
+#[test]
+fn invalid_host_context_is_dropped_inside_is() {
+  // :is() is forgiving; an invalid :host-context() argument should make that branch invalid and
+  // dropped, leaving `.baz`.
+  let selector = parse_selector("div:is(:host-context(.foo, .bar), .baz)");
+
+  let dom = element_with_class("div", Some("baz"), vec![]);
+  let element_ref = ElementRef::with_ancestors(&dom, &[]);
+  assert!(selector_matches(&element_ref, &selector));
+}

@@ -768,7 +768,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
         Ok(PseudoClass::Host(Some(selectors)))
       }
       "host-context" => {
-        let selectors = SelectorList::parse(
+        let selectors = SelectorList::parse_disallow_pseudo(
           &PseudoClassParser,
           parser,
           selectors::parser::ParseRelative::No,
@@ -778,6 +778,11 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
             name.clone(),
           ))
         })?;
+        if selectors.slice().len() != 1 || selectors.slice().iter().any(selector_has_combinators) {
+          return Err(parser.new_custom_error(
+            SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name.clone()),
+          ));
+        }
         Ok(PseudoClass::HostContext(selectors))
       }
       "has" => {
