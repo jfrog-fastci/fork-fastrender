@@ -165,6 +165,32 @@ fn not_container_query_parses_and_evaluates() {
 }
 
 #[test]
+fn container_query_or_with_unknown_branch_matches_when_known_branch_true() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 400px) or scroll-state(stuck: top) {
+      .target { display: inline; }
+    }
+  "#;
+  let styled = cascade_with_container(css, 500.0, vec![]);
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn not_unknown_container_query_does_not_match() {
+  let css = r#"
+    .target { display: block; }
+    @container not scroll-state(stuck: top) {
+      .target { display: inline; }
+    }
+  "#;
+  let styled = cascade_with_container(css, 500.0, vec![]);
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
 fn named_container_selection() {
   let css = r#"
     .target { display: block; }

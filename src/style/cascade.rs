@@ -320,6 +320,31 @@ fn popover_top_layer(node: &DomNode) -> Option<TopLayerKind> {
   }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueryResult {
+  True,
+  False,
+  Unknown,
+}
+
+impl QueryResult {
+  fn from_bool(value: bool) -> Self {
+    if value {
+      Self::True
+    } else {
+      Self::False
+    }
+  }
+
+  fn not(self) -> Self {
+    match self {
+      Self::True => Self::False,
+      Self::False => Self::True,
+      Self::Unknown => Self::Unknown,
+    }
+  }
+}
+
 fn container_query_matches(
   container_id: usize,
   query: &ContainerQuery,
@@ -328,7 +353,7 @@ fn container_query_matches(
   ctx_ptr: usize,
   guard: &mut Vec<usize>,
   memo: &mut ContainerQueryMemo,
-) -> bool {
+) -> QueryResult {
   let key = QueryEvalCacheKey {
     ctx_ptr,
     container_id,
@@ -344,10 +369,10 @@ fn container_query_matches(
         container.container_type,
         ContainerType::Size | ContainerType::InlineSize
       ) {
-        memo.query_eval.insert(key, false);
-        return false;
+        memo.query_eval.insert(key, QueryResult::False);
+        return QueryResult::False;
       }
-      let result = match size_query {
+      let result = QueryResult::from_bool(match size_query {
         ContainerSizeQuery::Parsed(mq) => evaluate_container_size_query(mq, container),
         ContainerSizeQuery::UnresolvedVars { text, .. } => {
           let value = PropertyValue::Custom(text.clone());
@@ -372,36 +397,52 @@ fn container_query_matches(
             _ => false,
           }
         }
-      };
+      });
       memo.query_eval.insert(key, result);
       result
     }
     ContainerQuery::Style(style_query) => {
-      let result = matches_style_query(style_query, container.styles.as_ref());
+      let result = QueryResult::from_bool(matches_style_query(style_query, container.styles.as_ref()));
       memo.query_eval.insert(key, result);
       result
     }
     ContainerQuery::Unknown(_) => {
-      memo.query_eval.insert(key, false);
-      false
+      memo.query_eval.insert(key, QueryResult::Unknown);
+      QueryResult::Unknown
     }
     ContainerQuery::Not(inner) => {
-      let result =
-        !container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo);
+      let result = container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo)
+        .not();
       memo.query_eval.insert(key, result);
       result
     }
     ContainerQuery::And(list) => {
-      let result = list.iter().all(|inner| {
-        container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo)
-      });
+      let mut result = QueryResult::True;
+      for inner in list {
+        match container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo) {
+          QueryResult::False => {
+            result = QueryResult::False;
+            break;
+          }
+          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::True => {}
+        }
+      }
       memo.query_eval.insert(key, result);
       result
     }
     ContainerQuery::Or(list) => {
-      let result = list.iter().any(|inner| {
-        container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo)
-      });
+      let mut result = QueryResult::False;
+      for inner in list {
+        match container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo) {
+          QueryResult::True => {
+            result = QueryResult::True;
+            break;
+          }
+          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::False => {}
+        }
+      }
       memo.query_eval.insert(key, result);
       result
     }
@@ -872,7 +913,10 @@ fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
   match query {
     ContainerQuery::Size(mq) => cq_size_query_support_mask(mq),
     ContainerQuery::Style(_) => CQ_SUPPORT_ALL,
-    ContainerQuery::Unknown(_) => 0,
+    // Treat unknown/forward-compatible query terms as potentially referencing any container type.
+    // This preserves expected OR short-circuit behavior like `(<size-feature>) or <unknown>`,
+    // matching when the known branch is true.
+    ContainerQuery::Unknown(_) => CQ_SUPPORT_ALL,
     ContainerQuery::Not(inner) => cq_query_support_mask(inner),
     ContainerQuery::And(list) => {
       if list.is_empty() {
@@ -932,7 +976,7 @@ struct QueryEvalCacheKey {
 struct ContainerQueryMemo {
   // Map from (query-container lookup key) -> selected container id (or None).
   find_container: HashMap<FindContainerCacheKey, Option<usize>>,
-  query_eval: HashMap<QueryEvalCacheKey, bool>,
+  query_eval: HashMap<QueryEvalCacheKey, QueryResult>,
   condition_sigs: HashMap<usize, ConditionSignature>,
   // Intern container names to avoid storing strings in every cache key.
   name_ids: HashMap<String, u32>,
@@ -6873,7 +6917,7 @@ impl ContainerQueryContext {
           let matches = match &condition.query {
             Some(query) => {
               if guard.len() >= depth_limit || guard.contains(&container_id) {
-                false
+                QueryResult::False
               } else {
                 guard.push(container_id);
                 let matches = container_query_matches(
@@ -6889,10 +6933,10 @@ impl ContainerQueryContext {
                 matches
               }
             }
-            None => true,
+            None => QueryResult::True,
           };
 
-          if matches {
+          if matches == QueryResult::True {
             group_matches = true;
             break;
           }

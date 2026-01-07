@@ -8431,7 +8431,7 @@ impl FlexFormattingContext {
   fn aspect_ratio_to_taffy(&self, aspect_ratio: AspectRatio) -> Option<f32> {
     match aspect_ratio {
       AspectRatio::Auto => None,
-      AspectRatio::Ratio(ratio) => Some(ratio),
+      AspectRatio::Ratio(ratio) | AspectRatio::AutoRatio(ratio) => Some(ratio),
     }
   }
 
