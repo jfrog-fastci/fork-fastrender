@@ -26,8 +26,10 @@ pub struct ImageSelectionContext<'a> {
   pub viewport: Option<Size>,
   /// Active media context for evaluating media conditions in `<source media>` and `sizes`.
   pub media_context: Option<&'a MediaContext>,
-  /// Font size used to resolve `em`/`rem` units in `sizes` when provided.
+  /// Element font size used to resolve `em` units in `sizes` when provided.
   pub font_size: Option<f32>,
+  /// Root font size used to resolve `rem` units in `sizes` when provided.
+  pub root_font_size: Option<f32>,
   /// Document base URL for resolving relative references when deduplicating fallbacks.
   pub base_url: Option<&'a str>,
 }
@@ -146,6 +148,7 @@ fn resolve_source_size(sizes: Option<&SizesList>, ctx: ImageSelectionContext<'_>
 
   let viewport = ctx.viewport?;
   let font_size = ctx.font_size.unwrap_or(16.0);
+  let root_font_size = ctx.root_font_size.unwrap_or(font_size);
   let media_ctx = ctx.media_context.cloned().unwrap_or_else(|| {
     MediaContext::screen(viewport.width, viewport.height)
       .with_device_pixel_ratio(ctx.device_pixel_ratio)
@@ -153,7 +156,7 @@ fn resolve_source_size(sizes: Option<&SizesList>, ctx: ImageSelectionContext<'_>
   });
 
   if let Some(list) = sizes {
-    Some(list.evaluate(&media_ctx, viewport, font_size))
+    Some(list.evaluate(&media_ctx, viewport, font_size, root_font_size))
   } else {
     Some(viewport.width)
   }

@@ -17,6 +17,7 @@ pub fn resolve_object_position(
   comp: PositionComponent,
   free: f32,
   font_size: f32,
+  root_font_size: f32,
   viewport: Option<(f32, f32)>,
 ) -> f32 {
   match comp {
@@ -36,7 +37,7 @@ pub fn resolve_object_position(
         None => (0.0, 0.0),
       };
       len
-        .resolve_with_context(Some(free), vw, vh, font_size, font_size)
+        .resolve_with_context(Some(free), vw, vh, font_size, root_font_size)
         .unwrap_or(len.value)
     }
     PositionComponent::Percentage(pct) => free * pct,
@@ -54,6 +55,7 @@ pub fn compute_object_fit(
   image_width: f32,
   image_height: f32,
   font_size: f32,
+  root_font_size: f32,
   viewport: Option<(f32, f32)>,
 ) -> Option<(f32, f32, f32, f32)> {
   if box_width <= 0.0 || box_height <= 0.0 || image_width <= 0.0 || image_height <= 0.0 {
@@ -89,8 +91,8 @@ pub fn compute_object_fit(
   let free_x = box_width - dest_w;
   let free_y = box_height - dest_h;
 
-  let offset_x = resolve_object_position(position.x, free_x, font_size, viewport);
-  let offset_y = resolve_object_position(position.y, free_y, font_size, viewport);
+  let offset_x = resolve_object_position(position.x, free_x, font_size, root_font_size, viewport);
+  let offset_y = resolve_object_position(position.y, free_y, font_size, root_font_size, viewport);
 
   Some((offset_x, offset_y, dest_w, dest_h))
 }
@@ -111,7 +113,7 @@ mod tests {
     };
 
     let (offset_x, offset_y, dest_w, dest_h) =
-      compute_object_fit(fit, position, 200.0, 100.0, 100.0, 100.0, 16.0, None)
+      compute_object_fit(fit, position, 200.0, 100.0, 100.0, 100.0, 16.0, 16.0, None)
         .expect("fit computed");
     assert_eq!(dest_h, 100.0);
     assert_eq!(dest_w, 100.0);
@@ -133,6 +135,7 @@ mod tests {
       100.0,
       200.0,
       50.0,
+      16.0,
       16.0,
       None,
     )
@@ -159,6 +162,7 @@ mod tests {
       60.0,
       60.0,
       16.0,
+      16.0,
       None,
     )
     .expect("fit computed");
@@ -183,10 +187,35 @@ mod tests {
       50.0,
       50.0,
       20.0,
+      30.0,
       None,
     )
     .expect("fit computed");
     assert!((offset_x - 40.0).abs() < 0.01);
+    assert!((offset_y - 0.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn rem_lengths_use_root_font_size() {
+    let position = ObjectPosition {
+      x: PositionComponent::Length(Length::rem(1.0)),
+      y: PositionComponent::Keyword(PositionKeyword::Start),
+    };
+
+    // free_x is 50 (100 - 50). 1rem at 20px root font size => 20px.
+    let (offset_x, offset_y, _, _) = compute_object_fit(
+      ObjectFit::None,
+      position,
+      100.0,
+      50.0,
+      50.0,
+      50.0,
+      10.0,
+      20.0,
+      None,
+    )
+    .expect("fit computed");
+    assert!((offset_x - 20.0).abs() < 0.01);
     assert!((offset_y - 0.0).abs() < 0.01);
   }
 
@@ -205,6 +234,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      16.0,
       16.0,
       Some((200.0, 100.0)),
     )
@@ -232,6 +262,7 @@ mod tests {
       20.0,
       20.0,
       16.0,
+      16.0,
       None,
     )
     .expect("fit computed");
@@ -251,6 +282,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      16.0,
       16.0,
       Some((200.0, 100.0)),
     )

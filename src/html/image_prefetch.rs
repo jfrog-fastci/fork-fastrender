@@ -215,6 +215,7 @@ fn select_picture_source<'a>(
 fn estimate_source_size(sizes: Option<&SizesList>, ctx: ImageSelectionContext<'_>) -> Option<f32> {
   let viewport = ctx.viewport?;
   let font_size = ctx.font_size.unwrap_or(16.0);
+  let root_font_size = ctx.root_font_size.unwrap_or(font_size);
   let media_ctx = ctx.media_context.cloned().unwrap_or_else(|| {
     MediaContext::screen(viewport.width, viewport.height)
       .with_device_pixel_ratio(ctx.device_pixel_ratio)
@@ -222,7 +223,7 @@ fn estimate_source_size(sizes: Option<&SizesList>, ctx: ImageSelectionContext<'_
   });
 
   let resolved = if let Some(list) = sizes {
-    list.evaluate(&media_ctx, viewport, font_size)
+    list.evaluate(&media_ctx, viewport, font_size, root_font_size)
   } else {
     viewport.width
   };
@@ -883,6 +884,7 @@ mod tests {
       viewport: Some(Size::new(viewport.0, viewport.1)),
       media_context: Some(media_ctx),
       font_size: None,
+      root_font_size: None,
       base_url: Some(base_url),
     }
   }

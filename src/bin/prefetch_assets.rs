@@ -1532,6 +1532,7 @@ mod disk_cache_main {
           )),
           media_context: Some(media_ctx),
           font_size: Some(media_ctx.base_font_size),
+          root_font_size: Some(media_ctx.base_font_size),
           base_url: Some(base_url),
         };
         let discovery = discover_image_prefetch_requests(dom, selection_ctx, opts.image_limits);

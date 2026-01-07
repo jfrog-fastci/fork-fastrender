@@ -1557,6 +1557,7 @@ fn crawl_document(
       viewport: Some(viewport),
       media_context: Some(&media_ctx),
       font_size: None,
+      root_font_size: None,
       base_url: Some(base_url),
     };
     let discovery = discover_image_prefetch_requests(&dom, ctx, ImagePrefetchLimits::default());

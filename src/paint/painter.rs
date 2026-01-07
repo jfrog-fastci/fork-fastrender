@@ -1165,6 +1165,7 @@ impl Painter {
                 viewport: Some(viewport),
                 media_context: Some(&media_ctx),
                 font_size: Some(style.font_size),
+                root_font_size: Some(style.root_font_size),
                 base_url: cache_base.as_deref(),
               }),
           )
@@ -5948,6 +5949,7 @@ impl Painter {
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),
+            root_font_size: style.map(|s| s.root_font_size),
             base_url: cache_base.as_deref(),
           });
         for candidate in sources {
@@ -6195,6 +6197,7 @@ impl Painter {
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),
+            root_font_size: style.map(|s| s.root_font_size),
             base_url: cache_base.as_deref(),
           });
         for candidate in sources {
@@ -6454,6 +6457,8 @@ impl Painter {
     let pos = style
       .map(|s| s.object_position)
       .unwrap_or_else(default_object_position);
+    let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
+    let root_font_size = style.map(|s| s.root_font_size).unwrap_or(font_size);
 
     let (dest_x, dest_y, dest_w, dest_h) = match compute_object_fit(
       fit,
@@ -6462,7 +6467,8 @@ impl Painter {
       height,
       img_w_css,
       img_h_css,
-      style.map(|s| s.font_size).unwrap_or(16.0),
+      font_size,
+      root_font_size,
       Some((self.css_width, self.css_height)),
     ) {
       Some(v) => v,
@@ -7503,6 +7509,8 @@ impl Painter {
     let pos = style
       .map(|s| s.object_position)
       .unwrap_or_else(default_object_position);
+    let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
+    let root_font_size = style.map(|s| s.root_font_size).unwrap_or(font_size);
 
     let (dest_x, dest_y, mut dest_w, mut dest_h) = match compute_object_fit(
       fit,
@@ -7511,7 +7519,8 @@ impl Painter {
       height,
       img_w_css,
       img_h_css,
-      style.map(|s| s.font_size).unwrap_or(16.0),
+      font_size,
+      root_font_size,
       Some((self.css_width, self.css_height)),
     ) {
       Some(v) => v,
@@ -7713,6 +7722,8 @@ impl Painter {
       let pos = style
         .map(|s| s.object_position)
         .unwrap_or_else(default_object_position);
+      let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
+      let root_font_size = style.map(|s| s.root_font_size).unwrap_or(font_size);
 
       let (dest_x, dest_y, dest_w, dest_h) = match compute_object_fit(
         fit,
@@ -7721,7 +7732,8 @@ impl Painter {
         height,
         img_w_css,
         img_h_css,
-        style.map(|s| s.font_size).unwrap_or(16.0),
+        font_size,
+        root_font_size,
         Some((self.css_width, self.css_height)),
       ) {
         Some(v) => v,
@@ -7798,6 +7810,8 @@ impl Painter {
     let pos = style
       .map(|s| s.object_position)
       .unwrap_or_else(default_object_position);
+    let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
+    let root_font_size = style.map(|s| s.root_font_size).unwrap_or(font_size);
 
     let (dest_x, dest_y, mut dest_w, mut dest_h) = match compute_object_fit(
       fit,
@@ -7806,7 +7820,8 @@ impl Painter {
       height,
       img_w_css,
       img_h_css,
-      style.map(|s| s.font_size).unwrap_or(16.0),
+      font_size,
+      root_font_size,
       Some((self.css_width, self.css_height)),
     ) {
       Some(v) => v,
@@ -16162,6 +16177,7 @@ mod tests {
       100.0,
       100.0,
       100.0,
+      16.0,
       16.0,
       Some((200.0, 100.0)),
     )

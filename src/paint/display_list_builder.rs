@@ -4632,6 +4632,7 @@ impl DisplayListBuilder {
             viewport: self.viewport.map(|(w, h)| crate::geometry::Size::new(w, h)),
             media_context: media_ctx.as_ref(),
             font_size: fragment.style.as_deref().map(|s| s.font_size),
+            root_font_size: fragment.style.as_deref().map(|s| s.root_font_size),
             base_url: cache_base.as_deref(),
           });
 
@@ -4655,10 +4656,17 @@ impl DisplayListBuilder {
           let (content_rect, clip_radii) =
             self.replaced_content_rect_and_radii(rect, style_for_image);
           let (dest_x, dest_y, dest_w, dest_h) = {
-            let (fit, position, font_size) = if let Some(style) = fragment.style.as_deref() {
-              (style.object_fit, style.object_position, style.font_size)
+            let (fit, position, font_size, root_font_size) = if let Some(style) =
+              fragment.style.as_deref()
+            {
+              (
+                style.object_fit,
+                style.object_position,
+                style.font_size,
+                style.root_font_size,
+              )
             } else {
-              (ObjectFit::Fill, default_object_position(), 16.0)
+              (ObjectFit::Fill, default_object_position(), 16.0, 16.0)
             };
 
             compute_object_fit(
@@ -4669,6 +4677,7 @@ impl DisplayListBuilder {
               image.css_width,
               image.css_height,
               font_size,
+              root_font_size,
               self.viewport,
             )
             .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
@@ -8238,6 +8247,8 @@ impl DisplayListBuilder {
     let pos = style
       .map(|s| s.object_position)
       .unwrap_or_else(default_object_position);
+    let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
+    let root_font_size = style.map(|s| s.root_font_size).unwrap_or(font_size);
 
     let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
     let (dest_x, dest_y, dest_w, dest_h) = match compute_object_fit(
@@ -8247,7 +8258,8 @@ impl DisplayListBuilder {
       content_rect.height(),
       img_w_css,
       img_h_css,
-      style.map(|s| s.font_size).unwrap_or(16.0),
+      font_size,
+      root_font_size,
       self.viewport,
     ) {
       Some(v) => v,

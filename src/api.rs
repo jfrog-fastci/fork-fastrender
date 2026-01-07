@@ -9267,6 +9267,7 @@ impl FastRender {
         )),
         media_context: Some(media_ctx),
         font_size: Some(media_ctx.base_font_size),
+        root_font_size: Some(media_ctx.base_font_size),
         base_url: self.base_url.as_deref(),
       },
       ImagePrefetchLimits {
@@ -9423,6 +9424,7 @@ impl FastRender {
             viewport: Some(viewport),
             media_context: Some(media_ctx),
             font_size: Some(style.font_size),
+            root_font_size: Some(style.root_font_size),
             base_url: self.base_url.as_deref(),
           })
           .into_iter()
@@ -10069,6 +10071,7 @@ impl FastRender {
               viewport: Some(viewport),
               media_context: Some(&media_ctx),
               font_size: Some(style.font_size),
+              root_font_size: Some(style.root_font_size),
               base_url: self.base_url.as_deref(),
             })
             .into_iter()

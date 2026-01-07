@@ -516,6 +516,7 @@ impl SizesList {
     media_ctx: &crate::style::media::MediaContext,
     viewport: crate::geometry::Size,
     font_size: f32,
+    root_font_size: f32,
   ) -> f32 {
     let mut last_entry: Option<crate::style::values::Length> = None;
     for entry in &self.entries {
@@ -526,7 +527,9 @@ impl SizesList {
         .map(|q| media_ctx.evaluate_list(q))
         .unwrap_or(true);
       if media_matches {
-        if let Some(resolved) = resolve_sizes_length(entry.length, viewport, font_size) {
+        if let Some(resolved) =
+          resolve_sizes_length(entry.length, viewport, font_size, root_font_size)
+        {
           let clamped = resolved.max(0.0);
           if clamped.is_finite() {
             return clamped;
@@ -536,7 +539,7 @@ impl SizesList {
     }
 
     if let Some(len) = last_entry {
-      if let Some(resolved) = resolve_sizes_length(len, viewport, font_size) {
+      if let Some(resolved) = resolve_sizes_length(len, viewport, font_size, root_font_size) {
         let clamped = resolved.max(0.0);
         if clamped.is_finite() {
           return clamped;
@@ -549,6 +552,7 @@ impl SizesList {
       crate::style::values::Length::new(100.0, crate::style::values::LengthUnit::Vw),
       viewport,
       font_size,
+      root_font_size,
     )
     .unwrap_or(viewport.width)
   }
@@ -558,6 +562,7 @@ fn resolve_sizes_length(
   length: crate::style::values::Length,
   viewport: crate::geometry::Size,
   font_size: f32,
+  root_font_size: f32,
 ) -> Option<f32> {
   use crate::style::values::LengthUnit;
   match length.unit {
@@ -570,8 +575,16 @@ fn resolve_sizes_length(
     | LengthUnit::Dvh
     | LengthUnit::Dvmin
     | LengthUnit::Dvmax => length.resolve_with_viewport(viewport.width, viewport.height),
-    LengthUnit::Em | LengthUnit::Rem => Some(font_size * length.value),
+    LengthUnit::Em => Some(font_size * length.value),
+    LengthUnit::Rem => Some(root_font_size * length.value),
     LengthUnit::Ex | LengthUnit::Ch => Some(font_size * length.value * 0.5),
+    LengthUnit::Calc => length.resolve_with_context(
+      Some(viewport.width),
+      viewport.width,
+      viewport.height,
+      font_size,
+      root_font_size,
+    ),
     _ if length.unit.is_absolute() => Some(length.to_px()),
     // Unsupported units in sizes make the entry invalid; caller will fall back.
     _ => None,
@@ -1589,6 +1602,22 @@ mod tests {
   }
 
   #[test]
+  fn sizes_list_resolves_rem_against_root_font_size() {
+    let list = SizesList {
+      entries: vec![SizesEntry {
+        media: None,
+        length: Length::new(10.0, LengthUnit::Rem),
+      }],
+    };
+
+    let viewport = Size::new(800.0, 600.0);
+    let media_ctx = MediaContext::screen(viewport.width, viewport.height);
+
+    // 10rem should resolve against the root font size, not the element font size.
+    assert_eq!(list.evaluate(&media_ctx, viewport, 10.0, 20.0), 200.0);
+  }
+
+  #[test]
   fn image_source_prefers_width_descriptor_with_sizes() {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
@@ -1622,6 +1651,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_ctx),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -1671,6 +1701,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_ctx),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -1715,6 +1746,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_ctx),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -1751,6 +1783,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_ctx),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -1790,6 +1823,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_ctx),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -1826,6 +1860,7 @@ mod tests {
       viewport: Some(Size::new(800.0, 600.0)),
       media_context: Some(&media_ctx),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -1935,6 +1970,7 @@ mod tests {
       viewport: Some(small_viewport),
       media_context: Some(&small_media),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
     assert_eq!(chosen_small, "avif-2x");
@@ -1948,6 +1984,7 @@ mod tests {
       viewport: Some(large_viewport),
       media_context: Some(&large_media),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
     assert_eq!(chosen_large, "webp-2x");
@@ -1992,6 +2029,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_ctx),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -2037,6 +2075,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_ctx),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -2080,6 +2119,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_1x),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
     let at_2x = img.image_source_for_context(ImageSelectionContext {
@@ -2088,6 +2128,7 @@ mod tests {
       viewport: Some(viewport),
       media_context: Some(&media_2x),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -2139,6 +2180,7 @@ mod tests {
       viewport: Some(small_viewport),
       media_context: Some(&small_media),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
     let chosen_large = img.image_source_for_context(ImageSelectionContext {
@@ -2147,6 +2189,7 @@ mod tests {
       viewport: Some(large_viewport),
       media_context: Some(&large_media),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -2200,6 +2243,7 @@ mod tests {
       viewport: Some(small_viewport),
       media_context: Some(&small_media),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
     let chosen_large = img.image_source_for_context(ImageSelectionContext {
@@ -2208,6 +2252,7 @@ mod tests {
       viewport: Some(large_viewport),
       media_context: Some(&large_media),
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
@@ -2242,6 +2287,7 @@ mod tests {
       viewport: Some(Size::new(800.0, 600.0)),
       media_context: None,
       font_size: Some(16.0),
+      root_font_size: Some(16.0),
       base_url: None,
     });
 
