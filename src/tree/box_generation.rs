@@ -1494,20 +1494,18 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         if let Some(id) = styled.node.get_attribute_ref("id") {
           if !id.is_empty() && !defs.contains_key(id) {
             let mut serialized = String::new();
-            if tag_name.eq_ignore_ascii_case("mask") {
-              // Inline computed SVG presentation properties (fill/stroke/etc.) so fragment-only mask
-              // images (`mask-image: url(#id)`) preserve document CSS styling when rasterized.
-              serialize_svg_mask_subtree_with_namespaces(
-                styled,
-                namespaces,
-                None,
-                None,
-                true,
-                &mut serialized,
-              );
-            } else {
-              serialize_node_with_namespaces(styled, namespaces, &mut serialized);
-            }
+            // Inline computed SVG presentation properties (fill/stroke/etc.) so fragment-only mask
+            // images (`mask-image: url(#id)`) preserve document CSS styling when rasterized. We do
+            // this for all collected defs (not just `<mask>`), because masks may reference other
+            // defs via `<use href="#...">`, gradients, patterns, etc.
+            serialize_svg_mask_subtree_with_namespaces(
+              styled,
+              namespaces,
+              None,
+              None,
+              true,
+              &mut serialized,
+            );
             defs.insert(id.to_string(), serialized);
           }
         }

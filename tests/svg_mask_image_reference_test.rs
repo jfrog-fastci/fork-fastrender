@@ -45,3 +45,43 @@ fn mask_image_url_fragment_uses_computed_svg_presentation_styles() {
   assert_eq!(pixel(&pixmap, 40, 10), [255, 0, 0, 255]);
 }
 
+#[test]
+fn mask_image_url_fragment_preserves_styles_for_defs_referenced_via_use() {
+  let html = r##"
+    <style>
+      html, body { margin: 0; padding: 0; background: white; }
+      svg { position: absolute; width: 0; height: 0; }
+      .cut { fill: black; }
+      .keep { fill: white; }
+      #box {
+        width: 50px;
+        height: 20px;
+        background: rgb(255, 0, 0);
+        mask-image: url(#m);
+        mask-mode: alpha;
+        mask-size: 100% 100%;
+        mask-repeat: no-repeat;
+        mask-position: 0 0;
+      }
+    </style>
+    <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true">
+      <defs>
+        <rect id="r" class="cut" width="25" height="20"></rect>
+        <rect id="s" class="keep" x="25" width="25" height="20"></rect>
+        <mask id="m" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="50" height="20">
+          <use href="#r"></use>
+          <use href="#s"></use>
+        </mask>
+      </defs>
+    </svg>
+    <div id="box"></div>
+  "##;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let pixmap = renderer.render_html(html, 60, 30).expect("render");
+
+  // `.cut { fill: black }` should still be applied even though the masked geometry is defined
+  // inside `<defs>` and referenced by `<use>`.
+  assert_eq!(pixel(&pixmap, 10, 10), [255, 255, 255, 255]);
+  assert_eq!(pixel(&pixmap, 40, 10), [255, 0, 0, 255]);
+}
