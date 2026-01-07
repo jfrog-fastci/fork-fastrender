@@ -327,6 +327,42 @@ fn inline_svg_applies_foreign_object_opacity_presentation_attribute() {
 }
 
 #[test]
+fn foreign_object_unpremultiplies_alpha_when_encoded_into_svg_image() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="16" height="16" viewBox="0 0 16 16">
+        <foreignObject x="0" y="0" width="16" height="16">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;background: rgba(255, 0, 0, 0.5);"></div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
+      let sample = pixel(&pixmap, 8, 8);
+      assert_eq!(sample[3], 255, "page background is opaque, got {sample:?}");
+      assert!(
+        sample[0] >= 240,
+        "semi-transparent red should preserve full red channel after compositing, got {sample:?}"
+      );
+      assert!(
+        sample[1] >= 110 && sample[1] <= 150,
+        "expected blended green channel around 50% over white, got {sample:?}"
+      );
+      assert!(
+        (sample[1] as i16 - sample[2] as i16).abs() <= 3,
+        "expected green/blue channels to match, got {sample:?}"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn foreign_object_renders_nested_html_children() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

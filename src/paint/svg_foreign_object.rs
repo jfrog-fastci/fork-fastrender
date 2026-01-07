@@ -6,15 +6,13 @@
 //! back into the SVG as `<image href="data:image/png;base64,…">`.
 
 use crate::api::render_html_with_shared_resources;
+use crate::image_output::{encode_image, OutputFormat};
 use crate::image_loader::ImageCache;
 use crate::style::color::Rgba;
 use crate::style::types::{Direction, FontStyle as CssFontStyle, Overflow, WritingMode};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::ForeignObjectInfo;
 use base64::Engine;
-use image::codecs::png::PngEncoder;
-use image::ColorType;
-use image::ImageEncoder;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use tiny_skia::Pixmap;
@@ -322,14 +320,7 @@ fn escape_attr_value(value: &str) -> String {
 }
 
 fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {
-  let width = pixmap.width();
-  let height = pixmap.height();
-  let data = pixmap.take();
-  let image = image::RgbaImage::from_raw(width, height, data)?;
-  let mut buf = Vec::new();
-  PngEncoder::new(&mut buf)
-    .write_image(image.as_raw(), width, height, ColorType::Rgba8.into())
-    .ok()?;
+  let buf = encode_image(&pixmap, OutputFormat::Png).ok()?;
 
   Some(format!(
     "data:image/png;base64,{}",
@@ -339,7 +330,8 @@ fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-  use super::replace_placeholder_or_insert;
+  use super::{pixmap_to_data_url, replace_placeholder_or_insert};
+  use base64::Engine;
 
   #[test]
   fn replaces_placeholder_when_present() {
@@ -360,5 +352,23 @@ mod tests {
     let mut svg = "<svg>".to_string();
     replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
     assert_eq!(svg, "<svg><image/>");
+  }
+
+  #[test]
+  fn pixmap_data_url_unpremultiplies_alpha() {
+    let mut pixmap = tiny_skia::Pixmap::new(1, 1).expect("pixmap");
+    pixmap.data_mut()[..4].copy_from_slice(&[128, 0, 0, 128]);
+
+    let data_url = pixmap_to_data_url(pixmap).expect("data url");
+    let encoded = data_url
+      .strip_prefix("data:image/png;base64,")
+      .expect("prefix");
+    let png = base64::engine::general_purpose::STANDARD
+      .decode(encoded)
+      .expect("decode base64");
+    let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+      .expect("decode png")
+      .to_rgba8();
+    assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 128]);
   }
 }
