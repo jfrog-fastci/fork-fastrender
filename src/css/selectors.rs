@@ -402,6 +402,10 @@ impl selectors::parser::NonTSPseudoClass for PseudoClass {
     }
   }
 
+  fn is_has(&self) -> bool {
+    matches!(self, PseudoClass::Has(..))
+  }
+
   fn matches_featureless_host(&self) -> selectors::parser::MatchesFeaturelessHost {
     match self {
       PseudoClass::Host(_) | PseudoClass::HostContext(_) => {

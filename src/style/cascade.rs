@@ -1290,15 +1290,10 @@ fn eval_plain_style_feature(
         // `css_text` is empty on the fast path when no `var()` calls were present. Avoid treating an
         // actual empty resolution (`var(--x,)`) as "no substitution" by also checking whether the
         // resolver had to materialize a new value.
-        let no_substitution = matches!(
-          resolved,
-          crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_)
-        ) && css_text.is_empty();
-        if no_substitution {
-          Cow::Borrowed(value)
-        } else {
-          css_text
-        }
+        let no_substitution =
+          matches!(resolved, crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_))
+            && css_text.is_empty();
+        if no_substitution { Cow::Borrowed(value) } else { css_text }
       }
       _ => return false,
     }
@@ -1626,15 +1621,10 @@ fn parse_numeric_value(
         css_text,
         value: resolved,
       } => {
-        let no_substitution = matches!(
-          resolved,
-          crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_)
-        ) && css_text.is_empty();
-        if no_substitution {
-          Cow::Borrowed(trimmed)
-        } else {
-          css_text
-        }
+        let no_substitution =
+          matches!(resolved, crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_))
+            && css_text.is_empty();
+        if no_substitution { Cow::Borrowed(trimmed) } else { css_text }
       }
       _ => return None,
     }
@@ -9900,6 +9890,7 @@ fn match_part_rules<'a>(
             sibling_cache,
             &info.pseudo,
             allow_shadow_host,
+            false,
             scopes.quirks_mode,
           );
           for rule in part_matches {
@@ -9965,6 +9956,7 @@ fn collect_matching_rules<'a>(
     Some(element_attr_cache),
     sibling_cache,
     false,
+    false,
     scopes.quirks_mode,
   )?;
 
@@ -9989,6 +9981,7 @@ fn collect_matching_rules<'a>(
       Some(element_attr_cache),
       sibling_cache,
       allow_shadow_host,
+      false,
       scopes.quirks_mode,
     )?);
   }
@@ -10015,6 +10008,7 @@ fn collect_matching_rules<'a>(
           Some(element_attr_cache),
           sibling_cache,
           false,
+          false,
           scopes.quirks_mode,
         )?);
       }
@@ -10039,6 +10033,7 @@ fn collect_matching_rules<'a>(
         host_slot_map,
         Some(element_attr_cache),
         sibling_cache,
+        true,
         true,
         scopes.quirks_mode,
       )?);
@@ -10065,6 +10060,7 @@ fn collect_matching_rules<'a>(
           Some(element_attr_cache),
           sibling_cache,
           true,
+          false,
           scopes.quirks_mode,
         )?);
       }
@@ -10139,6 +10135,7 @@ fn collect_pseudo_matching_rules<'a>(
     sibling_cache,
     pseudo,
     false,
+    false,
     scopes.quirks_mode,
   );
 
@@ -10162,6 +10159,7 @@ fn collect_pseudo_matching_rules<'a>(
       sibling_cache,
       pseudo,
       allow_shadow_host,
+      false,
       scopes.quirks_mode,
     ));
   }
@@ -10188,6 +10186,7 @@ fn collect_pseudo_matching_rules<'a>(
           sibling_cache,
           pseudo,
           false,
+          false,
           scopes.quirks_mode,
         ));
       }
@@ -10213,6 +10212,7 @@ fn collect_pseudo_matching_rules<'a>(
       Some(element_attr_cache),
       sibling_cache,
       pseudo,
+      true,
       true,
       scopes.quirks_mode,
     ));
@@ -13766,6 +13766,7 @@ mod tests {
           None,
           None,
           &sibling_cache,
+          false,
           false,
           QuirksMode::NoQuirks,
         )
@@ -25305,6 +25306,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       &sibling_cache,
       &PseudoElement::Marker,
       false,
+      false,
       QuirksMode::NoQuirks,
     );
     assert_eq!(
@@ -26594,6 +26596,7 @@ fn find_matching_rules<'a>(
   element_attr_cache: Option<&'a ElementAttrCache>,
   sibling_cache: &SiblingListCache,
   allow_shadow_host: bool,
+  featureless_subject: bool,
   quirks_mode: QuirksMode,
 ) -> Result<Vec<MatchedRule<'a>>, RenderError> {
   if !node.is_element() {
@@ -26812,33 +26815,37 @@ fn find_matching_rules<'a>(
           }
         }
 
-        let selector = indexed.selector;
-        let mut selector_matches = match scope_match {
-          ScopeMatchResult::Scoped(scope_root) => {
-            let (root, root_ancestors) = scope_root.root_and_ancestors(node, ancestors);
-            let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
-            match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-              ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
-                matches_selector_cascade_counted(
-                  selector,
-                  Some(&indexed.ancestor_hashes),
-                  &element_ref,
-                  ctx,
-                )
-              })
-            })
-          }
-          ScopeMatchResult::Unscoped => {
-            match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-              matches_selector_cascade_counted(
-                selector,
-                Some(&indexed.ancestor_hashes),
-                &element_ref,
-                ctx,
-              )
-            })
-          }
-        };
+         let selector = indexed.selector;
+         let mut selector_matches = match scope_match {
+           ScopeMatchResult::Scoped(scope_root) => {
+             let (root, root_ancestors) = scope_root.root_and_ancestors(node, ancestors);
+             let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
+             match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
+               ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
+                 ctx.with_featureless(featureless_subject, |ctx| {
+                   matches_selector_cascade_counted(
+                     selector,
+                     Some(&indexed.ancestor_hashes),
+                     &element_ref,
+                     ctx,
+                   )
+                 })
+               })
+             })
+           }
+           ScopeMatchResult::Unscoped => {
+             match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
+               ctx.with_featureless(featureless_subject, |ctx| {
+                 matches_selector_cascade_counted(
+                   selector,
+                   Some(&indexed.ancestor_hashes),
+                   &element_ref,
+                   ctx,
+                 )
+               })
+             })
+           }
+         };
         take_matching_error(&mut context)?;
 
         if allow_shadow_host && !selector_matches && selector_contains_host_context(selector) {
@@ -26848,13 +26855,33 @@ fn find_matching_rules<'a>(
               let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
               match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
                 ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
+                  ctx.with_featureless(featureless_subject, |ctx| {
+                    ctx.with_allow_featureless_host_traversal(true, |ctx| {
+                      // `:host-context()` selectors are allowed to match outside the shadow tree.
+                      //
+                      // 1. A shadow host is normally treated as "featureless", which prevents
+                      //    matching further ancestor combinators. Enable traversal for this retry.
+                      // 2. The shadow-scoped bloom filter may be missing required outer-ancestor
+                      //    hashes, so disable bloom fast-reject to avoid false negatives.
+                      let prev_bloom_filter = ctx.bloom_filter;
+                      ctx.bloom_filter = None;
+                      let matched = matches_selector_cascade_counted(
+                        selector,
+                        Some(&indexed.ancestor_hashes),
+                        &element_ref,
+                        ctx,
+                      );
+                      ctx.bloom_filter = prev_bloom_filter;
+                      matched
+                    })
+                  })
+                })
+              })
+            }
+            ScopeMatchResult::Unscoped => {
+              match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
+                ctx.with_featureless(featureless_subject, |ctx| {
                   ctx.with_allow_featureless_host_traversal(true, |ctx| {
-                    // `:host-context()` selectors are allowed to match outside the shadow tree.
-                    //
-                    // 1. A shadow host is normally treated as "featureless", which prevents
-                    //    matching further ancestor combinators. Enable traversal for this retry.
-                    // 2. The shadow-scoped bloom filter may be missing required outer-ancestor
-                    //    hashes, so disable bloom fast-reject to avoid false negatives.
                     let prev_bloom_filter = ctx.bloom_filter;
                     ctx.bloom_filter = None;
                     let matched = matches_selector_cascade_counted(
@@ -26866,22 +26893,6 @@ fn find_matching_rules<'a>(
                     ctx.bloom_filter = prev_bloom_filter;
                     matched
                   })
-                })
-              })
-            }
-            ScopeMatchResult::Unscoped => {
-              match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-                ctx.with_allow_featureless_host_traversal(true, |ctx| {
-                  let prev_bloom_filter = ctx.bloom_filter;
-                  ctx.bloom_filter = None;
-                  let matched = matches_selector_cascade_counted(
-                    selector,
-                    Some(&indexed.ancestor_hashes),
-                    &element_ref,
-                    ctx,
-                  );
-                  ctx.bloom_filter = prev_bloom_filter;
-                  matched
                 })
               })
             }
@@ -26904,6 +26915,26 @@ fn find_matching_rules<'a>(
               let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
               match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
                 ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
+                  ctx.with_featureless(featureless_subject, |ctx| {
+                    ctx.with_allow_featureless_host_traversal(true, |ctx| {
+                      let prev_bloom_filter = ctx.bloom_filter;
+                      ctx.bloom_filter = None;
+                      let matched = matches_selector_cascade_counted(
+                        selector,
+                        Some(&indexed.ancestor_hashes),
+                        &element_ref,
+                        ctx,
+                      );
+                      ctx.bloom_filter = prev_bloom_filter;
+                      matched
+                    })
+                  })
+                })
+              })
+            }
+            ScopeMatchResult::Unscoped => {
+              match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
+                ctx.with_featureless(featureless_subject, |ctx| {
                   ctx.with_allow_featureless_host_traversal(true, |ctx| {
                     let prev_bloom_filter = ctx.bloom_filter;
                     ctx.bloom_filter = None;
@@ -26916,22 +26947,6 @@ fn find_matching_rules<'a>(
                     ctx.bloom_filter = prev_bloom_filter;
                     matched
                   })
-                })
-              })
-            }
-            ScopeMatchResult::Unscoped => {
-              match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-                ctx.with_allow_featureless_host_traversal(true, |ctx| {
-                  let prev_bloom_filter = ctx.bloom_filter;
-                  ctx.bloom_filter = None;
-                  let matched = matches_selector_cascade_counted(
-                    selector,
-                    Some(&indexed.ancestor_hashes),
-                    &element_ref,
-                    ctx,
-                  );
-                  ctx.bloom_filter = prev_bloom_filter;
-                  matched
                 })
               })
             }
@@ -27296,6 +27311,7 @@ fn find_pseudo_element_rules<'a>(
   sibling_cache: &SiblingListCache,
   pseudo: &PseudoElement,
   allow_shadow_host: bool,
+  featureless_subject: bool,
   quirks_mode: QuirksMode,
 ) -> Vec<MatchedRule<'a>> {
   if !node.is_element() {
@@ -27459,6 +27475,20 @@ fn find_pseudo_element_rules<'a>(
         let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
         match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
           ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
+            ctx.with_featureless(featureless_subject, |ctx| {
+              matches_selector_cascade_counted(
+                selector,
+                Some(&indexed.ancestor_hashes),
+                &element_ref,
+                ctx,
+              )
+            })
+          })
+        })
+      }
+      ScopeMatchResult::Unscoped => {
+        match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
+          ctx.with_featureless(featureless_subject, |ctx| {
             matches_selector_cascade_counted(
               selector,
               Some(&indexed.ancestor_hashes),
@@ -27466,16 +27496,6 @@ fn find_pseudo_element_rules<'a>(
               ctx,
             )
           })
-        })
-      }
-      ScopeMatchResult::Unscoped => {
-        match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-          matches_selector_cascade_counted(
-            selector,
-            Some(&indexed.ancestor_hashes),
-            &element_ref,
-            ctx,
-          )
         })
       }
     };
@@ -27487,6 +27507,26 @@ fn find_pseudo_element_rules<'a>(
           let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
           match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
             ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
+              ctx.with_featureless(featureless_subject, |ctx| {
+                ctx.with_allow_featureless_host_traversal(true, |ctx| {
+                  let prev_bloom_filter = ctx.bloom_filter;
+                  ctx.bloom_filter = None;
+                  let matched = matches_selector_cascade_counted(
+                    selector,
+                    Some(&indexed.ancestor_hashes),
+                    &element_ref,
+                    ctx,
+                  );
+                  ctx.bloom_filter = prev_bloom_filter;
+                  matched
+                })
+              })
+            })
+          })
+        }
+        ScopeMatchResult::Unscoped => {
+          match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
+            ctx.with_featureless(featureless_subject, |ctx| {
               ctx.with_allow_featureless_host_traversal(true, |ctx| {
                 let prev_bloom_filter = ctx.bloom_filter;
                 ctx.bloom_filter = None;
@@ -27502,22 +27542,6 @@ fn find_pseudo_element_rules<'a>(
             })
           })
         }
-        ScopeMatchResult::Unscoped => {
-          match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-            ctx.with_allow_featureless_host_traversal(true, |ctx| {
-              let prev_bloom_filter = ctx.bloom_filter;
-              ctx.bloom_filter = None;
-              let matched = matches_selector_cascade_counted(
-                selector,
-                Some(&indexed.ancestor_hashes),
-                &element_ref,
-                ctx,
-              );
-              ctx.bloom_filter = prev_bloom_filter;
-              matched
-            })
-          })
-        }
       };
     }
 
@@ -27528,31 +27552,39 @@ fn find_pseudo_element_rules<'a>(
           let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
           match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
             ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
-              let prev_bloom_filter = ctx.bloom_filter;
-              ctx.bloom_filter = None;
-              let matched = matches_selector_cascade_counted(
-                selector,
-                Some(&indexed.ancestor_hashes),
-                &element_ref,
-                ctx,
-              );
-              ctx.bloom_filter = prev_bloom_filter;
-              matched
+              ctx.with_featureless(featureless_subject, |ctx| {
+                ctx.with_allow_featureless_host_traversal(true, |ctx| {
+                  let prev_bloom_filter = ctx.bloom_filter;
+                  ctx.bloom_filter = None;
+                  let matched = matches_selector_cascade_counted(
+                    selector,
+                    Some(&indexed.ancestor_hashes),
+                    &element_ref,
+                    ctx,
+                  );
+                  ctx.bloom_filter = prev_bloom_filter;
+                  matched
+                })
+              })
             })
           })
         }
         ScopeMatchResult::Unscoped => {
           match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-            let prev_bloom_filter = ctx.bloom_filter;
-            ctx.bloom_filter = None;
-            let matched = matches_selector_cascade_counted(
-              selector,
-              Some(&indexed.ancestor_hashes),
-              &element_ref,
-              ctx,
-            );
-            ctx.bloom_filter = prev_bloom_filter;
-            matched
+            ctx.with_featureless(featureless_subject, |ctx| {
+              ctx.with_allow_featureless_host_traversal(true, |ctx| {
+                let prev_bloom_filter = ctx.bloom_filter;
+                ctx.bloom_filter = None;
+                let matched = matches_selector_cascade_counted(
+                  selector,
+                  Some(&indexed.ancestor_hashes),
+                  &element_ref,
+                  ctx,
+                );
+                ctx.bloom_filter = prev_bloom_filter;
+                matched
+              })
+            })
           })
         }
       };

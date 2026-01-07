@@ -1120,19 +1120,36 @@ pub(crate) fn compound_matches_featureless_host<Impl: SelectorImpl>(
     scope_matches_featureless_host: bool,
 ) -> MatchesFeaturelessHost {
     let mut matches = MatchesFeaturelessHost::Only;
+    let mut saw_has = false;
+    let mut has_other_allowed_simple_selector = false;
     for component in iter {
         match component {
-            Component::Scope | Component::ImplicitScope if scope_matches_featureless_host => {},
+            Component::Scope | Component::ImplicitScope if scope_matches_featureless_host => {
+                has_other_allowed_simple_selector = true;
+            },
             // Relative selectors insert an internal `RelativeSelectorAnchor` that must be able to
             // match the (featureless) shadow host. This is required for selectors like
             // `:host:has(.foo)` to work.
             Component::RelativeSelectorAnchor => {},
             // :host only matches featureless elements.
-            Component::Host(..) => {},
+            Component::Host(..) => {
+                has_other_allowed_simple_selector = true;
+            },
+            Component::Has(..) => {
+                saw_has = true;
+            },
+            Component::NonTSPseudoClass(ref pc) if pc.is_has() => {
+                saw_has = true;
+            },
             Component::NonTSPseudoClass(ref pc) => match pc.matches_featureless_host() {
                 MatchesFeaturelessHost::Never => return MatchesFeaturelessHost::Never,
-                MatchesFeaturelessHost::Yes => matches = MatchesFeaturelessHost::Yes,
-                MatchesFeaturelessHost::Only => {},
+                MatchesFeaturelessHost::Yes => {
+                    matches = MatchesFeaturelessHost::Yes;
+                    has_other_allowed_simple_selector = true;
+                },
+                MatchesFeaturelessHost::Only => {
+                    has_other_allowed_simple_selector = true;
+                },
             },
             // Pseudo-elements are allowed to match as well.
             Component::PseudoElement(..) => {},
@@ -1162,6 +1179,7 @@ pub(crate) fn compound_matches_featureless_host<Impl: SelectorImpl>(
                     // Potentially downgrade since we might match non-featureless elements too.
                     matches = MatchesFeaturelessHost::Yes;
                 }
+                has_other_allowed_simple_selector = true;
             },
             Component::Negation(ref l) => {
                 // For now preserving behavior, see
@@ -1174,10 +1192,18 @@ pub(crate) fn compound_matches_featureless_host<Impl: SelectorImpl>(
                         return MatchesFeaturelessHost::Never;
                     }
                 }
+                has_other_allowed_simple_selector = true;
             },
             // Other components don't match the host scope.
             _ => return MatchesFeaturelessHost::Never,
         }
+    }
+    // https://drafts.csswg.org/selectors-4/#featureless-elements
+    //
+    // Featureless elements only match `:has()` when it is combined with another simple selector
+    // that's allowed to match the element (e.g. `:host:has(.foo)`, but not `:has(.foo)`).
+    if saw_has && !has_other_allowed_simple_selector {
+        return MatchesFeaturelessHost::Never;
     }
     matches
 }

@@ -143,3 +143,72 @@ fn host_has_does_not_match_slotted_light_dom() {
     "block"
   );
 }
+
+#[test]
+fn shadow_host_is_featureless_for_subject_matching() {
+  let html = r#"
+    <div id="host" class="foo">
+      <template shadowroot="open">
+        <style>
+          :host { display: block; }
+          :host(.foo) { display: inline; }
+          .foo:host { display: inline-block; }
+        </style>
+      </template>
+    </div>
+  "#;
+  let dom = dom::parse_html(html).expect("parse html");
+  let scoped_sources = extract_scoped_css_sources(&dom);
+  let mut shadows = std::collections::HashMap::new();
+  for (host, sources) in scoped_sources.shadows {
+    shadows.insert(host, stylesheet_from_sources(&sources));
+  }
+  let style_set = StyleSet {
+    document: stylesheet_from_sources(&scoped_sources.document),
+    shadows,
+  };
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_style_set_with_media_target_and_imports(
+    &dom, &style_set, &media, None, None, None, None, None, None,
+  );
+
+  assert_eq!(
+    display(find_styled_by_id(&styled, "host").expect("host")),
+    "inline"
+  );
+}
+
+#[test]
+fn featureless_host_does_not_unlock_has_inside_is() {
+  let html = r#"
+    <div id="host">
+      <template shadowroot="open">
+        <style>
+          :host { display: block; }
+          :host:has(.inner) { display: inline; }
+          :host:is(:has(.inner)) { display: inline-block; }
+        </style>
+        <div class="inner"></div>
+      </template>
+    </div>
+  "#;
+  let dom = dom::parse_html(html).expect("parse html");
+  let scoped_sources = extract_scoped_css_sources(&dom);
+  let mut shadows = std::collections::HashMap::new();
+  for (host, sources) in scoped_sources.shadows {
+    shadows.insert(host, stylesheet_from_sources(&sources));
+  }
+  let style_set = StyleSet {
+    document: stylesheet_from_sources(&scoped_sources.document),
+    shadows,
+  };
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_style_set_with_media_target_and_imports(
+    &dom, &style_set, &media, None, None, None, None, None, None,
+  );
+
+  assert_eq!(
+    display(find_styled_by_id(&styled, "host").expect("host")),
+    "inline"
+  );
+}

@@ -6049,7 +6049,9 @@ impl<'a> Element for ElementRef<'a> {
         if _context.relative_selector_anchor().is_some() {
           return false;
         }
-        matches_has_relative(self, relative, _context)
+        _context.with_featureless(false, |context| {
+          matches_has_relative(self, relative, context)
+        })
       }
       PseudoClass::Host(selectors) => {
         if !_context

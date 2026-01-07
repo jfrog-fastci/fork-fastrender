@@ -99,6 +99,19 @@ pub trait NonTSPseudoClass: Sized + ToCss {
         1 << 10
     }
 
+    /// Whether this pseudo-class is `:has()`.
+    ///
+    /// Featureless elements have a special rule for `:has()`:
+    /// they match `:has()` only when the containing compound selector also
+    /// contains another simple selector that's allowed to match the element.
+    ///
+    /// This hook lets embedders implement `:has()` as a custom pseudo-class
+    /// while still benefiting from the selectors crate's featureless-element
+    /// guardrail logic.
+    fn is_has(&self) -> bool {
+        false
+    }
+
     /// Whether this pseudo-class may match a featureless shadow host.
     ///
     /// The default is `Never`, which preserves the behavior of treating most
