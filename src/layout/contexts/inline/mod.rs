@@ -358,6 +358,7 @@ impl InlineFormattingContext {
     &self,
     align: crate::style::types::VerticalAlign,
     font_size: f32,
+    root_font_size: f32,
     line_height: f32,
   ) -> crate::layout::contexts::inline::baseline::VerticalAlign {
     use crate::layout::contexts::inline::baseline::VerticalAlign as Align;
@@ -373,10 +374,31 @@ impl InlineFormattingContext {
       StyleAlign::Top => Align::Top,
       StyleAlign::Bottom => Align::Bottom,
       StyleAlign::Length(len) => {
-        let px = if len.unit.is_font_relative() {
+        let px = if len.unit == crate::style::values::LengthUnit::Calc {
           len
-            .resolve_with_font_size(font_size)
-            .unwrap_or(len.value * font_size)
+            .resolve_with_context(
+              Some(line_height),
+              self.viewport_size.width,
+              self.viewport_size.height,
+              font_size,
+              root_font_size,
+            )
+            .unwrap_or(len.value)
+        } else if len.unit == crate::style::values::LengthUnit::Lh {
+          if line_height.is_finite() {
+            len.value * line_height
+          } else {
+            0.0
+          }
+        } else if len.unit.is_font_relative() {
+          let base = if len.unit == crate::style::values::LengthUnit::Rem {
+            root_font_size
+          } else {
+            font_size
+          };
+          len
+            .resolve_with_font_size(base)
+            .unwrap_or(len.value * base)
         } else if len.unit.is_percentage() {
           len.resolve_against(line_height).unwrap_or(0.0)
         } else if len.unit.is_absolute() {
@@ -729,6 +751,7 @@ impl InlineFormattingContext {
             let va = self.convert_vertical_align(
               child.style.vertical_align,
               child.style.font_size,
+              child.style.root_font_size,
               metrics.line_height,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
@@ -954,6 +977,7 @@ impl InlineFormattingContext {
           inline_box.vertical_align = self.convert_vertical_align(
             child.style.vertical_align,
             child.style.font_size,
+            child.style.root_font_size,
             metrics.line_height,
           );
           for item in child_items {
@@ -978,6 +1002,7 @@ impl InlineFormattingContext {
             let va = self.convert_vertical_align(
               child.style.vertical_align,
               child.style.font_size,
+              child.style.root_font_size,
               metrics.line_height,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
@@ -1217,6 +1242,7 @@ impl InlineFormattingContext {
           inline_box.vertical_align = self.convert_vertical_align(
             child.style.vertical_align,
             child.style.font_size,
+            child.style.root_font_size,
             metrics.line_height,
           );
           for item in child_items {
@@ -1238,6 +1264,7 @@ impl InlineFormattingContext {
             let va = self.convert_vertical_align(
               child.style.vertical_align,
               child.style.font_size,
+              child.style.root_font_size,
               metrics.line_height,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
@@ -1593,6 +1620,7 @@ impl InlineFormattingContext {
             let va = self.convert_vertical_align(
               child.style.vertical_align,
               child.style.font_size,
+              child.style.root_font_size,
               metrics.line_height,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
@@ -1825,6 +1853,7 @@ impl InlineFormattingContext {
           inline_box.vertical_align = self.convert_vertical_align(
             child.style.vertical_align,
             child.style.font_size,
+            child.style.root_font_size,
             metrics.line_height,
           );
           for item in child_items {
@@ -1849,6 +1878,7 @@ impl InlineFormattingContext {
             let va = self.convert_vertical_align(
               child.style.vertical_align,
               child.style.font_size,
+              child.style.root_font_size,
               metrics.line_height,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
@@ -2083,6 +2113,7 @@ impl InlineFormattingContext {
           inline_box.vertical_align = self.convert_vertical_align(
             child.style.vertical_align,
             child.style.font_size,
+            child.style.root_font_size,
             metrics.line_height,
           );
           for item in child_items {
@@ -2104,6 +2135,7 @@ impl InlineFormattingContext {
             let va = self.convert_vertical_align(
               child.style.vertical_align,
               child.style.font_size,
+              child.style.root_font_size,
               metrics.line_height,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
@@ -2488,7 +2520,12 @@ impl InlineFormattingContext {
       })
       .unwrap_or(0.0);
 
-    let va = self.convert_vertical_align(style.vertical_align, style.font_size, line_height);
+    let va = self.convert_vertical_align(
+      style.vertical_align,
+      style.font_size,
+      style.root_font_size,
+      line_height,
+    );
 
     if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) | crate::style::types::AspectRatio::AutoRatio(r) if r > 0.0)
       && style.height.is_none()
@@ -2993,6 +3030,7 @@ impl InlineFormattingContext {
         vertical_align: self.convert_vertical_align(
           style.vertical_align,
           style.font_size,
+          style.root_font_size,
           empty_metrics.line_height,
         ),
         direction: style.direction,
@@ -3038,6 +3076,7 @@ impl InlineFormattingContext {
       vertical_align: self.convert_vertical_align(
         style.vertical_align,
         style.font_size,
+        style.root_font_size,
         metrics.line_height,
       ),
       direction: style.direction,
@@ -3592,7 +3631,12 @@ impl InlineFormattingContext {
       )
     };
 
-    let va = self.convert_vertical_align(style.vertical_align, style.font_size, line_height);
+    let va = self.convert_vertical_align(
+      style.vertical_align,
+      style.font_size,
+      style.root_font_size,
+      line_height,
+    );
 
     let mut item = TextItem::new(
       shaped_runs,
@@ -4164,8 +4208,12 @@ impl InlineFormattingContext {
       )
       .unwrap_or(0.0),
     };
-    let va =
-      self.convert_vertical_align(style.vertical_align, style.font_size, metrics.line_height);
+    let va = self.convert_vertical_align(
+      style.vertical_align,
+      style.font_size,
+      style.root_font_size,
+      metrics.line_height,
+    );
     Ok(InlineItem::Tab(
       TabItem::new(style.clone(), metrics, tab_interval, allow_wrap).with_vertical_align(va),
     ))
@@ -4287,7 +4335,12 @@ impl InlineFormattingContext {
       })
       .unwrap_or(0.0);
 
-    let va = self.convert_vertical_align(style.vertical_align, style.font_size, line_height);
+    let va = self.convert_vertical_align(
+      style.vertical_align,
+      style.font_size,
+      style.root_font_size,
+      line_height,
+    );
 
     let mut item = ReplacedItem::new(
       Size::new(box_width, box_height),
@@ -12032,6 +12085,7 @@ mod tests {
   use crate::style::types::WhiteSpace;
   use crate::style::types::WordBreak;
   use crate::style::types::WritingMode;
+  use crate::style::values::CalcLength;
   use crate::style::values::Length;
   use crate::style::values::LengthUnit;
   use crate::style::ComputedStyle;
@@ -13379,11 +13433,51 @@ mod tests {
     let align = ctx.convert_vertical_align(
       crate::style::types::VerticalAlign::Length(Length::new(10.0, LengthUnit::Vh)),
       10.0,
+      10.0,
       12.0,
     );
     assert!(matches!(
         align,
         crate::layout::contexts::inline::baseline::VerticalAlign::Length(v) if (v - 40.0).abs() < 1e-3
+    ));
+  }
+
+  #[test]
+  fn vertical_align_length_resolves_rem_against_root_font_size() {
+    let ctx = InlineFormattingContext::with_font_context_and_viewport(
+      FontContext::new(),
+      Size::new(500.0, 400.0),
+    );
+    let align = ctx.convert_vertical_align(
+      crate::style::types::VerticalAlign::Length(Length::rem(1.0)),
+      10.0,
+      20.0,
+      12.0,
+    );
+    assert!(matches!(
+      align,
+      crate::layout::contexts::inline::baseline::VerticalAlign::Length(v) if (v - 20.0).abs() < 1e-3
+    ));
+  }
+
+  #[test]
+  fn vertical_align_length_resolves_calc() {
+    let ctx = InlineFormattingContext::with_font_context_and_viewport(
+      FontContext::new(),
+      Size::new(500.0, 400.0),
+    );
+    let calc = CalcLength::single(LengthUnit::Vh, 10.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Rem, 1.0), 1.0)
+      .expect("calc length fits");
+    let align = ctx.convert_vertical_align(
+      crate::style::types::VerticalAlign::Length(Length::calc(calc)),
+      10.0,
+      20.0,
+      12.0,
+    );
+    assert!(matches!(
+      align,
+      crate::layout::contexts::inline::baseline::VerticalAlign::Length(v) if (v - 60.0).abs() < 1e-3
     ));
   }
 
