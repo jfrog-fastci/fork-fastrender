@@ -21088,4 +21088,132 @@ mod tests {
     // Child content is affected by the same stacking context opacity.
     assert_eq!(pixel(&pixmap, 1, 1), (128, 128, 255, 255));
   }
+
+  #[test]
+  fn backdrop_root_without_sensitive_descendants_does_not_allocate_layer() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 32.0, 32.0);
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::RED,
+    }));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      is_root: false,
+      establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(8.0, 8.0, 16.0, 16.0),
+      color: Rgba::BLUE,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    let diag = Arc::new(LayerAllocationDiagnostics::default());
+    let mut renderer = DisplayListRenderer::new(32, 32, Rgba::WHITE, FontContext::new()).unwrap();
+    renderer.set_parallelism(PaintParallelism::disabled());
+    renderer.layer_alloc_diagnostics = Some(diag);
+
+    let report = renderer.render_with_report(&list).expect("render");
+    assert_eq!(
+      report.layer_allocations, 0,
+      "expected Backdrop Root boundaries without backdrop-sensitive descendants to avoid allocating an offscreen layer"
+    );
+  }
+
+  #[test]
+  fn backdrop_root_allocates_boundary_layer_when_descendants_sample_backdrop() {
+    let render_allocations = |establishes_backdrop_root: bool| -> u64 {
+      let bounds = Rect::from_xywh(0.0, 0.0, 64.0, 64.0);
+      let plane = Rect::from_xywh(16.0, 16.0, 32.0, 32.0);
+      let mut list = DisplayList::new();
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: bounds,
+        color: Rgba::RED,
+      }));
+
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        is_root: false,
+        establishes_backdrop_root,
+        has_backdrop_sensitive_descendants: true,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: false,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: Vec::new(),
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        is_root: false,
+        establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
+        bounds: plane,
+        plane_rect: plane,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: true,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+      list.push(DisplayItem::PopStackingContext);
+      list.push(DisplayItem::PopStackingContext);
+
+      let diag = Arc::new(LayerAllocationDiagnostics::default());
+      let mut renderer =
+        DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
+      renderer.set_parallelism(PaintParallelism::disabled());
+      renderer.layer_alloc_diagnostics = Some(diag);
+
+      let report = renderer.render_with_report(&list).expect("render");
+      report.layer_allocations
+    };
+
+    let without_backdrop_root = render_allocations(false);
+    let with_backdrop_root = render_allocations(true);
+    assert!(
+      without_backdrop_root > 0,
+      "expected backdrop-filter descendant to allocate at least one offscreen layer"
+    );
+    assert_eq!(
+      with_backdrop_root,
+      without_backdrop_root + 1,
+      "expected Backdrop Root boundaries with backdrop-sensitive descendants to allocate one extra offscreen layer"
+    );
+  }
 }
