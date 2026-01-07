@@ -119,3 +119,18 @@ fn flex_shorthand_numbers_and_basis() {
     FlexBasis::Length(Length::px(12.0))
   );
 }
+
+#[test]
+fn flex_basis_content_parses_in_longhand_and_shorthand() {
+  use fastrender::style::types::FlexBasis;
+
+  let children = styled_children(
+    r#"<div style="display:flex">
+        <span style="flex-basis: content"></span>
+        <span style="flex: 1 1 content"></span>
+      </div>"#,
+  );
+
+  assert!(matches!(children[0].styles.flex_basis, FlexBasis::Content));
+  assert!(matches!(children[1].styles.flex_basis, FlexBasis::Content));
+}

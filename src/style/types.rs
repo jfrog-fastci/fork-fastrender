@@ -2178,6 +2178,7 @@ pub enum AlignContent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlexBasis {
   Auto,
+  Content,
   Length(Length),
 }
 

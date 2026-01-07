@@ -8828,9 +8828,11 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "flex-basis" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        if kw == "auto" {
-          styles.flex_basis = FlexBasis::Auto;
-        }
+        match kw.as_str() {
+          "auto" => styles.flex_basis = FlexBasis::Auto,
+          "content" => styles.flex_basis = FlexBasis::Content,
+          _ => {}
+        };
       } else if let Some(len) = extract_length(resolved_value) {
         styles.flex_basis = FlexBasis::Length(len);
       }
@@ -12074,6 +12076,7 @@ fn parse_flex_shorthand(value: &PropertyValue) -> Option<(f32, f32, FlexBasis)> 
     PropertyValue::Keyword(kw) => match kw.as_str() {
       "none" => return Some((0.0, 0.0, FlexBasis::Auto)),
       "auto" => return Some((1.0, 1.0, FlexBasis::Auto)),
+      "content" => return Some((1.0, 1.0, FlexBasis::Content)),
       "initial" => return Some((0.0, 1.0, FlexBasis::Auto)),
       _ => {}
     },
@@ -12114,7 +12117,11 @@ fn parse_flex_shorthand(value: &PropertyValue) -> Option<(f32, f32, FlexBasis)> 
           }
           PropertyValue::Keyword(kw) if kw == "auto" || kw == "content" => {
             if basis.is_none() {
-              basis = Some(FlexBasis::Auto);
+              basis = Some(if kw == "auto" {
+                FlexBasis::Auto
+              } else {
+                FlexBasis::Content
+              });
             }
           }
           _ => {

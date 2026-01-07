@@ -546,6 +546,7 @@ fn hash_sizing_property(
 fn hash_flex_basis(basis: &FlexBasis, hasher: &mut FxHasher) {
   match basis {
     FlexBasis::Auto => 0u8.hash(hasher),
+    FlexBasis::Content => 2u8.hash(hasher),
     FlexBasis::Length(len) => {
       1u8.hash(hasher);
       hash_length(len, hasher);

@@ -1225,13 +1225,20 @@ impl FormattingContext for FlexFormattingContext {
                             }
                         }
 
-                        // For auto flex-basis + auto width items, prefer intrinsic max-content sizing
+                        // For content-based flex base sizing, prefer intrinsic max-content sizing
                         // instead of forcing the container's definite width into the measurement
-                        // constraints. This matches CSS Flexbox §4.5 (auto main size uses max-content).
+                        // constraints. This matches CSS Flexbox §4.5 (auto main size uses max-content)
+                        // and the `flex-basis: content` override.
                         if known_dimensions.width.is_none()
                             && matches!(avail.width, AvailableSpace::Definite(_))
-                            && matches!(box_node.style.flex_basis, crate::style::types::FlexBasis::Auto)
-                            && physical_width_is_auto(box_node.style.as_ref())
+                            && ((matches!(
+                                box_node.style.flex_basis,
+                                crate::style::types::FlexBasis::Auto
+                              ) && physical_width_is_auto(box_node.style.as_ref()))
+                              || matches!(
+                                box_node.style.flex_basis,
+                                crate::style::types::FlexBasis::Content
+                              ))
                         {
                             avail.width = AvailableSpace::MaxContent;
                         }
@@ -4359,6 +4366,7 @@ fn hash_sizing_property(
 fn hash_flex_basis(basis: &crate::style::types::FlexBasis, hasher: &mut FingerprintHasher) {
   match basis {
     crate::style::types::FlexBasis::Auto => 0u8.hash(hasher),
+    crate::style::types::FlexBasis::Content => 2u8.hash(hasher),
     crate::style::types::FlexBasis::Length(l) => {
       1u8.hash(hasher);
       hash_length(l, hasher);
@@ -4818,7 +4826,7 @@ impl FlexFormattingContext {
     let min_height_dimension =
       self.length_option_to_dimension_box_sizing(style.min_height.as_ref(), style, Axis::Vertical);
 
-    Ok(taffy::style::Style {
+    let mut taffy_style = taffy::style::Style {
       // Display mode - only root is Flex, children are Block (flex items)
       display: self.display_to_taffy(style, is_root),
 
@@ -4905,7 +4913,35 @@ impl FlexFormattingContext {
       scrollbar_width: resolve_scrollbar_width(style),
 
       ..Default::default()
-    })
+    };
+
+    if !is_root && matches!(style.flex_basis, FlexBasis::Content) {
+      // CSS `flex-basis: content` explicitly requests content-based flex base sizing even when a
+      // preferred main-size (`width`/`height`) is specified. Taffy models this behaviour by using
+      // `flex_basis: auto` *and* a non-definite main size, causing the base size calculation to
+      // enter its measurement step.
+      taffy_style.flex_basis = Dimension::auto();
+
+      let parent_style = containing_flex.unwrap_or(style);
+      let parent_inline_positive = self.inline_axis_positive(parent_style);
+      let parent_block_positive = self.block_axis_positive(parent_style);
+      let parent_direction = self.flex_direction_to_taffy(
+        parent_style,
+        parent_inline_positive,
+        parent_block_positive,
+      );
+      let main_axis_is_horizontal = matches!(
+        parent_direction,
+        taffy::style::FlexDirection::Row | taffy::style::FlexDirection::RowReverse
+      );
+      if main_axis_is_horizontal {
+        taffy_style.size.width = Dimension::auto();
+      } else {
+        taffy_style.size.height = Dimension::auto();
+      }
+    }
+
+    Ok(taffy_style)
   }
 
   /// Resolves intrinsic sizing keywords (`min-content` / `max-content`) for a specific flex item.
@@ -8275,7 +8311,7 @@ impl FlexFormattingContext {
 
   fn flex_basis_to_taffy(&self, basis: &FlexBasis, style: &ComputedStyle) -> Dimension {
     match basis {
-      FlexBasis::Auto => Dimension::auto(),
+      FlexBasis::Auto | FlexBasis::Content => Dimension::auto(),
       FlexBasis::Length(len) => self.length_to_dimension(len, style),
     }
   }

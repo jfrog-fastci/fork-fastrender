@@ -11153,6 +11153,7 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut DefaultHasher) {
 fn hash_flex_basis(basis: &crate::style::types::FlexBasis, hasher: &mut DefaultHasher) {
   match basis {
     crate::style::types::FlexBasis::Auto => 0u8.hash(hasher),
+    crate::style::types::FlexBasis::Content => 2u8.hash(hasher),
     crate::style::types::FlexBasis::Length(l) => {
       1u8.hash(hasher);
       hash_length(l, hasher);
