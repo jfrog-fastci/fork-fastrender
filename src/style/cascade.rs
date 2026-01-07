@@ -485,6 +485,7 @@ fn resolve_container_query_length(
   viewport_height: f32,
   font_size: f32,
   root_font_size: f32,
+  line_height: f32,
   cqw_base: f32,
   cqh_base: f32,
   cqi_base: f32,
@@ -510,6 +511,11 @@ fn resolve_container_query_length(
     .then_some(root_font_size)
     .filter(|v| *v >= 0.0)
     .unwrap_or(font_size);
+  let line_height = line_height
+    .is_finite()
+    .then_some(line_height)
+    .filter(|v| *v >= 0.0)
+    .unwrap_or(font_size * 1.2);
 
   let vw = viewport_width.is_finite().then_some(viewport_width);
   let vh = viewport_height.is_finite().then_some(viewport_height);
@@ -521,7 +527,23 @@ fn resolve_container_query_length(
     let needs_viewport = calc.has_viewport_relative();
     let vw = if needs_viewport { vw? } else { vw.unwrap_or(0.0) };
     let vh = if needs_viewport { vh? } else { vh.unwrap_or(0.0) };
-    return calc.resolve(percentage_base, vw, vh, font_size, root_font_size);
+    let percentage_base = percentage_base.filter(|v| v.is_finite());
+    let mut total = 0.0;
+    for term in calc.terms() {
+      let resolved = match term.unit {
+        LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
+        u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+        u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
+        LengthUnit::Em => Some(term.value * font_size),
+        LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size * 0.5),
+        LengthUnit::Rem => Some(term.value * root_font_size),
+        LengthUnit::Lh => Some(term.value * line_height),
+        LengthUnit::Calc => None,
+        _ => None,
+      }?;
+      total += resolved;
+    }
+    return Some(total);
   }
 
   match length.unit {
@@ -569,8 +591,8 @@ fn resolve_container_query_length(
     LengthUnit::Pc => Some(length.value * 16.0),
     LengthUnit::Ex => Some(length.value * (font_size * 0.5)),
     LengthUnit::Ch => Some(length.value * (font_size * 0.5)),
-    // Container queries lack access to computed `line-height`; treat `lh` as `normal` (1.2em).
-    LengthUnit::Lh => Some(length.value * (font_size * 1.2)),
+    // Container query length resolution uses the query container's computed `line-height`.
+    LengthUnit::Lh => Some(length.value * line_height),
     LengthUnit::Calc => None,
     _ => None,
   }
@@ -583,6 +605,7 @@ fn evaluate_container_size_feature(
   viewport_height: f32,
   font_size: f32,
   root_font_size: f32,
+  line_height: f32,
 ) -> QueryResult {
   let cqw_base = container.width;
   let cqh_base = container.height;
@@ -604,6 +627,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -629,6 +653,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -654,6 +679,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -680,6 +706,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -705,6 +732,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -730,6 +758,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -757,6 +786,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -782,6 +812,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -807,6 +838,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -833,6 +865,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -858,6 +891,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -883,6 +917,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        line_height,
         cqw_base,
         cqh_base,
         cqi_base,
@@ -959,6 +994,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          line_height,
           cqw_base,
           cqh_base,
           cqi_base,
@@ -984,6 +1020,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          line_height,
           cqw_base,
           cqh_base,
           cqi_base,
@@ -1009,6 +1046,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          line_height,
           cqw_base,
           cqh_base,
           cqi_base,
@@ -1034,6 +1072,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          line_height,
           cqw_base,
           cqh_base,
           cqi_base,
@@ -1069,6 +1108,7 @@ fn evaluate_container_size_feature(
       viewport_height,
       font_size,
       root_font_size,
+      line_height,
     )
     .not(),
     MediaFeature::And(list) => {
@@ -1081,6 +1121,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          line_height,
         ) {
           QueryResult::False => return QueryResult::False,
           QueryResult::Unknown => result = QueryResult::Unknown,
@@ -1099,6 +1140,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          line_height,
         ) {
           QueryResult::True => return QueryResult::True,
           QueryResult::Unknown => result = QueryResult::Unknown,
@@ -1122,8 +1164,39 @@ fn evaluate_container_size_query(
   // Container size queries reuse the media-query parser, but are evaluated against the query
   // container's size + font metrics. Viewport units (`vw`/`vh`/etc) resolve against the document
   // viewport, so callers pass the base media viewport size through explicitly.
-  let font_size = container.styles.font_size;
-  let root_font_size = container.styles.root_font_size;
+  let font_size = container
+    .styles
+    .font_size
+    .is_finite()
+    .then_some(container.styles.font_size)
+    .filter(|v| *v >= 0.0)
+    .unwrap_or(16.0);
+  let root_font_size = container
+    .styles
+    .root_font_size
+    .is_finite()
+    .then_some(container.styles.root_font_size)
+    .filter(|v| *v >= 0.0)
+    .unwrap_or(font_size);
+  let line_height = match &container.styles.line_height {
+    crate::style::types::LineHeight::Normal => font_size * 1.2,
+    crate::style::types::LineHeight::Number(mult) => font_size * *mult,
+    crate::style::types::LineHeight::Percentage(pct) => font_size * (*pct / 100.0),
+    crate::style::types::LineHeight::Length(len) => len
+      .resolve_with_context(
+        Some(font_size),
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      )
+      .unwrap_or(font_size * 1.2),
+  };
+  let line_height = line_height
+    .is_finite()
+    .then_some(line_height)
+    .filter(|v| *v >= 0.0)
+    .unwrap_or(font_size * 1.2);
 
   if mq.media_type.is_some() {
     // Container Queries Level 1 forbids media types. Treat as non-matching, but preserve `not`
@@ -1152,6 +1225,7 @@ fn evaluate_container_size_query(
       viewport_height,
       font_size,
       root_font_size,
+      line_height,
     ) {
       QueryResult::False => {
         result = QueryResult::False;
