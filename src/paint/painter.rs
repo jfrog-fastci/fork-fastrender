@@ -10211,8 +10211,8 @@ impl Painter {
     fill: crate::style::types::TextEmphasisFill,
     shape: crate::style::types::TextEmphasisShape,
     color: Rgba,
-    position: crate::style::types::TextEmphasisPosition,
-    inline_vertical: bool,
+    _position: crate::style::types::TextEmphasisPosition,
+    _inline_vertical: bool,
   ) {
     let mut paint = Paint::default();
     paint.anti_alias = true;
@@ -10276,42 +10276,12 @@ impl Painter {
       crate::style::types::TextEmphasisShape::Triangle => {
         let half = size * 0.5;
         let height = size * 0.9;
-        let direction = matches!(
-          position,
-          crate::style::types::TextEmphasisPosition::Over
-            | crate::style::types::TextEmphasisPosition::OverLeft
-            | crate::style::types::TextEmphasisPosition::OverRight
-        );
         let mut builder = PathBuilder::new();
-        if inline_vertical {
-          let apex_x = if direction {
-            center_x - height * 0.5
-          } else {
-            center_x + height * 0.5
-          };
-          let base_x = if direction {
-            center_x + height * 0.5
-          } else {
-            center_x - height * 0.5
-          };
-          builder.move_to(apex_x, center_y);
-          builder.line_to(base_x, center_y - half);
-          builder.line_to(base_x, center_y + half);
-        } else {
-          let apex_y = if direction {
-            center_y - height * 0.5
-          } else {
-            center_y + height * 0.5
-          };
-          let base_y = if direction {
-            center_y + height * 0.5
-          } else {
-            center_y - height * 0.5
-          };
-          builder.move_to(center_x, apex_y);
-          builder.line_to(center_x - half, base_y);
-          builder.line_to(center_x + half, base_y);
-        }
+        let apex_y = center_y - height * 0.5;
+        let base_y = center_y + height * 0.5;
+        builder.move_to(center_x, apex_y);
+        builder.line_to(center_x - half, base_y);
+        builder.line_to(center_x + half, base_y);
         builder.close();
         if let Some(path) = builder.finish() {
           match fill {
@@ -10339,14 +10309,8 @@ impl Painter {
         let angle = 20.0_f32.to_radians();
         let dx = (angle.cos() * len * 0.5, angle.sin() * len * 0.5);
         let mut builder = PathBuilder::new();
-        if inline_vertical {
-          // Rotate sesame strokes to slant along the block axis for vertical writing.
-          builder.move_to(center_x - dx.1, center_y - dx.0);
-          builder.line_to(center_x + dx.1, center_y + dx.0);
-        } else {
-          builder.move_to(center_x - dx.0, center_y - dx.1);
-          builder.line_to(center_x + dx.0, center_y + dx.1);
-        }
+        builder.move_to(center_x - dx.0, center_y - dx.1);
+        builder.line_to(center_x + dx.0, center_y + dx.1);
         if let Some(path) = builder.finish() {
           let mut stroke = Stroke::default();
           stroke.width = (size * 0.2).max(0.6);
@@ -16029,6 +15993,60 @@ mod tests {
     assert!(
       red_bbox.1 < black_bbox.1,
       "emphasis mark should appear above the glyphs when positioned over the text"
+    );
+  }
+
+  #[test]
+  fn emphasis_triangle_mark_remains_upright_for_vertical_runs() {
+    let mut painter = Painter::new(120, 120, Rgba::WHITE).expect("painter");
+    painter.fill_background();
+    painter.draw_emphasis_mark(
+      60.0,
+      60.0,
+      50.0,
+      crate::style::types::TextEmphasisFill::Filled,
+      crate::style::types::TextEmphasisShape::Triangle,
+      Rgba::from_rgba8(255, 0, 0, 255),
+      crate::style::types::TextEmphasisPosition::Under,
+      true,
+    );
+
+    let bbox = bounding_box_for_color(&painter.pixmap, |(r, g, b, a)| {
+      a > 0 && r > 200 && g < 80 && b < 80
+    })
+    .expect("triangle mark");
+    let width = bbox.2 - bbox.0;
+    let height = bbox.3 - bbox.1;
+    assert!(
+      width > height,
+      "expected upright triangle mark (width {width} > height {height})"
+    );
+  }
+
+  #[test]
+  fn emphasis_sesame_mark_remains_upright_for_vertical_runs() {
+    let mut painter = Painter::new(120, 120, Rgba::WHITE).expect("painter");
+    painter.fill_background();
+    painter.draw_emphasis_mark(
+      60.0,
+      60.0,
+      50.0,
+      crate::style::types::TextEmphasisFill::Filled,
+      crate::style::types::TextEmphasisShape::Sesame,
+      Rgba::from_rgba8(255, 0, 0, 255),
+      crate::style::types::TextEmphasisPosition::Under,
+      true,
+    );
+
+    let bbox = bounding_box_for_color(&painter.pixmap, |(r, g, b, a)| {
+      a > 0 && r > 200 && g < 80 && b < 80
+    })
+    .expect("sesame mark");
+    let width = bbox.2 - bbox.0;
+    let height = bbox.3 - bbox.1;
+    assert!(
+      width > height,
+      "expected upright sesame mark (width {width} > height {height})"
     );
   }
 

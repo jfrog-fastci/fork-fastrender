@@ -113,7 +113,6 @@ use crate::style::types::MaskMode;
 use crate::style::types::MaskOrigin;
 use crate::style::types::TextDecorationStyle;
 use crate::style::types::TextEmphasisFill;
-use crate::style::types::TextEmphasisPosition;
 use crate::style::types::TextEmphasisShape;
 use crate::style::types::TextEmphasisStyle;
 use crate::style::types::TransformStyle;
@@ -10484,42 +10483,12 @@ impl DisplayListRenderer {
         TextEmphasisShape::Triangle => {
           let half = emphasis.size * 0.5;
           let height = emphasis.size * 0.9;
-          let direction = matches!(
-            emphasis.position,
-            TextEmphasisPosition::Over
-              | TextEmphasisPosition::OverLeft
-              | TextEmphasisPosition::OverRight
-          );
           let mut builder = tiny_skia::PathBuilder::new();
-          if inline_vertical {
-            let apex_x = if direction {
-              mark.center.x - height * 0.5
-            } else {
-              mark.center.x + height * 0.5
-            };
-            let base_x = if direction {
-              mark.center.x + height * 0.5
-            } else {
-              mark.center.x - height * 0.5
-            };
-            builder.move_to(apex_x, mark.center.y);
-            builder.line_to(base_x, mark.center.y - half);
-            builder.line_to(base_x, mark.center.y + half);
-          } else {
-            let apex_y = if direction {
-              mark.center.y - height * 0.5
-            } else {
-              mark.center.y + height * 0.5
-            };
-            let base_y = if direction {
-              mark.center.y + height * 0.5
-            } else {
-              mark.center.y - height * 0.5
-            };
-            builder.move_to(mark.center.x, apex_y);
-            builder.line_to(mark.center.x - half, base_y);
-            builder.line_to(mark.center.x + half, base_y);
-          }
+          let apex_y = mark.center.y - height * 0.5;
+          let base_y = mark.center.y + height * 0.5;
+          builder.move_to(mark.center.x, apex_y);
+          builder.line_to(mark.center.x - half, base_y);
+          builder.line_to(mark.center.x + half, base_y);
           builder.close();
           if let Some(path) = builder.finish() {
             match fill {
@@ -10551,13 +10520,8 @@ impl DisplayListRenderer {
           let angle = 20.0_f32.to_radians();
           let dx = (angle.cos() * len * 0.5, angle.sin() * len * 0.5);
           let mut builder = tiny_skia::PathBuilder::new();
-          if inline_vertical {
-            builder.move_to(mark.center.x - dx.1, mark.center.y - dx.0);
-            builder.line_to(mark.center.x + dx.1, mark.center.y + dx.0);
-          } else {
-            builder.move_to(mark.center.x - dx.0, mark.center.y - dx.1);
-            builder.line_to(mark.center.x + dx.0, mark.center.y + dx.1);
-          }
+          builder.move_to(mark.center.x - dx.0, mark.center.y - dx.1);
+          builder.line_to(mark.center.x + dx.0, mark.center.y + dx.1);
           if let Some(path) = builder.finish() {
             let mut stroke = tiny_skia::Stroke::default();
             stroke.width = (emphasis.size * 0.2).max(0.6);
@@ -17385,6 +17349,86 @@ mod tests {
       below_pixel,
       (255, 255, 255, 255),
       "baseline area should remain untouched when no text glyphs are present"
+    );
+  }
+
+  #[test]
+  fn renders_triangle_emphasis_mark_upright_when_inline_vertical() {
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Text(TextItem {
+      origin: Point::new(0.0, 0.0),
+      glyphs: Vec::new(),
+      color: Rgba::BLACK,
+      font_size: 16.0,
+      advance_width: 0.0,
+      emphasis: Some(TextEmphasis {
+        style: TextEmphasisStyle::Mark {
+          fill: TextEmphasisFill::Filled,
+          shape: TextEmphasisShape::Triangle,
+        },
+        color: Rgba::from_rgba8(255, 0, 0, 255),
+        position: TextEmphasisPosition::Under,
+        size: 50.0,
+        marks: vec![crate::paint::display_list::EmphasisMark {
+          center: Point::new(60.0, 60.0),
+        }],
+        inline_vertical: true,
+        text: None,
+      }),
+      ..Default::default()
+    }));
+
+    let renderer =
+      DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new()).expect("renderer");
+    let pixmap = renderer.render(&list).expect("rendered");
+
+    let bbox = bounding_box_for_color(&pixmap, |(r, g, b, a)| a > 0 && r > 200 && g < 80 && b < 80)
+      .expect("triangle mark");
+    let width = bbox.2 - bbox.0;
+    let height = bbox.3 - bbox.1;
+    assert!(
+      width > height,
+      "expected upright triangle mark (width {width} > height {height})"
+    );
+  }
+
+  #[test]
+  fn renders_sesame_emphasis_mark_upright_when_inline_vertical() {
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Text(TextItem {
+      origin: Point::new(0.0, 0.0),
+      glyphs: Vec::new(),
+      color: Rgba::BLACK,
+      font_size: 16.0,
+      advance_width: 0.0,
+      emphasis: Some(TextEmphasis {
+        style: TextEmphasisStyle::Mark {
+          fill: TextEmphasisFill::Filled,
+          shape: TextEmphasisShape::Sesame,
+        },
+        color: Rgba::from_rgba8(255, 0, 0, 255),
+        position: TextEmphasisPosition::Under,
+        size: 50.0,
+        marks: vec![crate::paint::display_list::EmphasisMark {
+          center: Point::new(60.0, 60.0),
+        }],
+        inline_vertical: true,
+        text: None,
+      }),
+      ..Default::default()
+    }));
+
+    let renderer =
+      DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new()).expect("renderer");
+    let pixmap = renderer.render(&list).expect("rendered");
+
+    let bbox = bounding_box_for_color(&pixmap, |(r, g, b, a)| a > 0 && r > 200 && g < 80 && b < 80)
+      .expect("sesame mark");
+    let width = bbox.2 - bbox.0;
+    let height = bbox.3 - bbox.1;
+    assert!(
+      width > height,
+      "expected upright sesame mark (width {width} > height {height})"
     );
   }
 
