@@ -12,10 +12,8 @@ fn init_rayon() {
     // fail to spawn (it tries to match the host CPU count). Force a tiny pool so painter internals
     // that rely on Rayon helpers (e.g. `rayon::current_num_threads`) are reliable when running
     // isolated test filters.
-    rayon::ThreadPoolBuilder::new()
-      .num_threads(1)
-      .build_global()
-      .expect("init global rayon pool");
+    // Ignore `GlobalPoolAlreadyInitialized`; another test may have already configured Rayon.
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
   });
 }
 
