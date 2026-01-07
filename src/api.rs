@@ -8708,10 +8708,15 @@ impl FastRender {
           layout_start = timings_enabled.then(Instant::now);
           let relayout_timer = stats.as_deref().and_then(|rec| rec.timer());
           record_stage(StageHeartbeat::Layout);
-          let _layout_span = trace.span("layout_tree_reuse", "layout");
+          // Layout fingerprints changed, so layout-affecting styles (including container query
+          // units like `cqw`) may have changed across the entire subtree. Avoid reusing cached
+          // layout results from previous iterations; they can be keyed too coarsely (e.g. only by
+          // container style/constraints) and yield a fragment tree that doesn't match the
+          // container-query-resolved styles.
+          let _layout_span = trace.span("layout_tree", "layout");
           fragment_tree = self
             .layout_engine
-            .layout_tree_reuse_caches_with_trace(&box_tree, trace)
+            .layout_tree_with_trace(&box_tree, trace)
             .map_err(map_formatting_layout_error)?;
           drop(_layout_span);
           if let Some(rec) = stats.as_deref_mut() {
