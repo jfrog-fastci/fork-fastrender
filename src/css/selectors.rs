@@ -920,6 +920,12 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     // Enable parsing of :is() and :where() pseudo-classes
     true
   }
+
+  fn is_is_alias(&self, name: &str) -> bool {
+    // Selectors Level 4 notes that previous drafts used `:matches()` for `:is()`, and UAs may
+    // support it as a legacy alias for backwards-compatibility.
+    name.eq_ignore_ascii_case("matches")
+  }
 }
 
 pub(crate) fn build_relative_selectors(
