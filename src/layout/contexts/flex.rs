@@ -958,12 +958,15 @@ impl FormattingContext for FlexFormattingContext {
     let descendant_nearest_fixed_cb = if establishes_fixed_cb {
       let percentage_base = container_inline_base.unwrap_or(viewport_size.width);
       let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
-      let padding_right = self.resolve_length_for_width(style.padding_right, percentage_base, style);
+      let padding_right =
+        self.resolve_length_for_width(style.padding_right, percentage_base, style);
       let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
-      let padding_bottom = self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+      let padding_bottom =
+        self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
       let border_left =
         self.resolve_length_for_width(style.border_left_width, percentage_base, style);
-      let border_top = self.resolve_length_for_width(style.border_top_width, percentage_base, style);
+      let border_top =
+        self.resolve_length_for_width(style.border_top_width, percentage_base, style);
 
       let padding_origin = Point::new(border_left + padding_left, border_top + padding_top);
       let content_width = constraints.width().unwrap_or(0.0).max(0.0);
@@ -1111,11 +1114,8 @@ impl FormattingContext for FlexFormattingContext {
         // laying out all `content-visibility:auto` items so in-viewport content is never skipped.
         auto_unskipped_nodes = auto_all_nodes.clone();
         for (child, node_id) in auto_item_nodes.iter() {
-          let mut resolved_style = self.computed_style_to_taffy_base(
-            child.style.as_ref(),
-            false,
-            Some(style),
-          )?;
+          let mut resolved_style =
+            self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
           self.apply_flex_intrinsic_size_keywords(
             child,
             false,
@@ -2787,11 +2787,8 @@ impl FormattingContext for FlexFormattingContext {
       }
 
       for (child, node_id) in newly_unskipped_nodes {
-        let mut resolved_style = self.computed_style_to_taffy_base(
-          child.style.as_ref(),
-          false,
-          Some(style),
-        )?;
+        let mut resolved_style =
+          self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
         self.apply_flex_intrinsic_size_keywords(
           child,
           false,
@@ -2863,9 +2860,11 @@ impl FormattingContext for FlexFormattingContext {
       auto_unskipped,
       &scroll_sensitive_items,
     )?;
-    // Respect align-items/align-self in the container's coordinate system (parent axes), even
-    // when the child uses a different writing mode. Taffy resolves alignment in its own
-    // axis space; here we remap the cross-axis position to match the parent's writing-mode.
+    // We run Taffy for most flex item placement. `flex-wrap: wrap-reverse` is currently emulated
+    // by mirroring the computed cross-axis positions (see `flex_wrap_to_taffy`).
+    //
+    // Taffy also lacks access to our fragment baseline information, so we post-process
+    // `align-items/align-self: baseline` using the computed fragment baselines.
     if matches!(box_node.style.display, Display::Flex | Display::InlineFlex)
       && !fragment.children.is_empty()
     {
@@ -2887,11 +2886,6 @@ impl FormattingContext for FlexFormattingContext {
       };
       let inline_positive = self.inline_axis_positive(&box_node.style);
       let block_positive = self.block_axis_positive(&box_node.style);
-      let cross_positive = if main_is_inline {
-        block_positive
-      } else {
-        inline_positive
-      };
 
       let cross_size = if cross_is_horizontal {
         fragment.bounds.width()
@@ -2949,6 +2943,34 @@ impl FormattingContext for FlexFormattingContext {
       );
 
       let mut deadline_counter = 0usize;
+      if matches!(box_node.style.flex_wrap, FlexWrap::WrapReverse) {
+        for child_fragment in fragment.children_mut().iter_mut() {
+          check_layout_deadline(&mut deadline_counter)?;
+          let (pos, child_cross) = if cross_is_horizontal {
+            (child_fragment.bounds.x(), child_fragment.bounds.width())
+          } else {
+            (child_fragment.bounds.y(), child_fragment.bounds.height())
+          };
+          let inner_offset = pos - cross_content_start;
+          let new_pos = cross_content_start + (cross_inner_size - inner_offset - child_cross);
+          let delta = new_pos - pos;
+          if delta.abs() > 0.0 {
+            if cross_is_horizontal {
+              translate_fragment_tree(
+                child_fragment,
+                Point::new(delta, 0.0),
+                &mut deadline_counter,
+              )?;
+            } else {
+              translate_fragment_tree(
+                child_fragment,
+                Point::new(0.0, delta),
+                &mut deadline_counter,
+              )?;
+            }
+          }
+        }
+      }
       let mut line_indices: Vec<usize> = Vec::with_capacity(fragment.children.len());
       if matches!(box_node.style.flex_wrap, FlexWrap::NoWrap) {
         line_indices.resize(fragment.children.len(), 0);
@@ -3068,17 +3090,8 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
 
-      for (idx, (child_node, child_fragment)) in in_flow_children
-        .iter()
-        .zip(fragment.children_mut().iter_mut())
-        .enumerate()
-      {
+      for (idx, child_fragment) in fragment.children_mut().iter_mut().enumerate() {
         check_layout_deadline(&mut deadline_counter)?;
-        let align = child_node
-          .style
-          .align_self
-          .unwrap_or(box_node.style.align_items);
-
         if let Some(metrics) = baseline_items[idx] {
           if let Some(line) = line_baselines.get(metrics.line_index) {
             if line.has_baseline {
@@ -3096,48 +3109,8 @@ impl FormattingContext for FlexFormattingContext {
                   &mut deadline_counter,
                 )?;
               }
-              continue;
             }
           }
-        }
-
-        let child_cross = if cross_is_horizontal {
-          child_fragment.bounds.width()
-        } else {
-          child_fragment.bounds.height()
-        };
-        let delta = cross_inner_size - child_cross;
-        let pos_inner = match align {
-          AlignItems::Start | AlignItems::SelfStart | AlignItems::FlexStart => {
-            if cross_positive {
-              0.0
-            } else {
-              delta.max(0.0)
-            }
-          }
-          AlignItems::End | AlignItems::SelfEnd | AlignItems::FlexEnd => {
-            if cross_positive {
-              delta.max(0.0)
-            } else {
-              0.0
-            }
-          }
-          AlignItems::Center => delta / 2.0,
-          AlignItems::Stretch => 0.0,
-          AlignItems::Baseline => {
-            if cross_positive {
-              0.0
-            } else {
-              delta.max(0.0)
-            }
-          }
-        };
-        let pos = cross_content_start + pos_inner;
-
-        if cross_is_horizontal {
-          child_fragment.bounds.origin.x = pos;
-        } else {
-          child_fragment.bounds.origin.y = pos;
         }
       }
       if toggles.truthy("FASTR_DEBUG_FLEX_CHILD") {
@@ -8107,7 +8080,8 @@ impl FlexFormattingContext {
       }
     }
 
-    let mut root_style = self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
+    let mut root_style =
+      self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
     root_style.size.width = Dimension::length(fragment.bounds.width());
     root_style.size.height = Dimension::length(fragment.bounds.height());
     let root = taffy
@@ -8246,7 +8220,10 @@ impl FlexFormattingContext {
     match wrap {
       FlexWrap::NoWrap => taffy::style::FlexWrap::NoWrap,
       FlexWrap::Wrap => taffy::style::FlexWrap::Wrap,
-      FlexWrap::WrapReverse => taffy::style::FlexWrap::WrapReverse,
+      // Taffy's wrap-reverse behavior is incomplete for multi-line containers (line stacking and
+      // `align-content`). We emulate wrap-reverse by running Taffy with normal wrapping and then
+      // mirroring item positions along the cross axis.
+      FlexWrap::WrapReverse => taffy::style::FlexWrap::Wrap,
     }
   }
 
@@ -8314,8 +8291,20 @@ impl FlexFormattingContext {
           taffy::style::AlignItems::Start
         }
       }
-      AlignItems::FlexStart => taffy::style::AlignItems::FlexStart,
-      AlignItems::FlexEnd => taffy::style::AlignItems::FlexEnd,
+      AlignItems::FlexStart => {
+        if axis_positive {
+          taffy::style::AlignItems::FlexStart
+        } else {
+          taffy::style::AlignItems::FlexEnd
+        }
+      }
+      AlignItems::FlexEnd => {
+        if axis_positive {
+          taffy::style::AlignItems::FlexEnd
+        } else {
+          taffy::style::AlignItems::FlexStart
+        }
+      }
       AlignItems::Center => taffy::style::AlignItems::Center,
       AlignItems::Baseline => taffy::style::AlignItems::Baseline,
       AlignItems::Stretch => taffy::style::AlignItems::Stretch,
@@ -8697,8 +8686,7 @@ mod tests {
     child_style.flex_direction = FlexDirection::Column;
     child_style.content_visibility = ContentVisibility::Hidden;
     child_style.contain_intrinsic_width.length = Some(Length::px(10.0));
-    let mut child =
-      BoxNode::new_block(Arc::new(child_style), FormattingContextType::Flex, vec![]);
+    let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Flex, vec![]);
     child.id = 10;
 
     let container = BoxNode::new_block(
@@ -12155,7 +12143,7 @@ mod tests {
     );
     assert_eq!(
       fc.flex_wrap_to_taffy(FlexWrap::WrapReverse),
-      taffy::style::FlexWrap::WrapReverse
+      taffy::style::FlexWrap::Wrap
     );
   }
 

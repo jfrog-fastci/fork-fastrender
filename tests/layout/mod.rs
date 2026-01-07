@@ -15,6 +15,7 @@ mod flex_auto_min_size_percent;
 mod flex_box_sizing_test;
 mod flex_intrinsic_sizing_keywords;
 mod flex_positioned_relayout;
+mod flex_wrap_reverse_cross_alignment;
 mod float_shrink_to_min;
 mod form_control_baseline;
 mod fragmentation;
