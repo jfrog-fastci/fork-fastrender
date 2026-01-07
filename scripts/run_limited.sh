@@ -62,7 +62,7 @@ to_kib() {
 
 to_bytes() {
   local kib
-  kib="$(to_kib "${1}")" || return 1
+  kib="$(to_kib "${1:-}")" || return 1
   echo $((kib * 1024))
 }
 

@@ -371,6 +371,18 @@ impl Canvas {
     Some((backdrop, &mut self.pixmap))
   }
 
+  pub(crate) fn layer_stack_len(&self) -> usize {
+    self.layer_stack.len()
+  }
+
+  pub(crate) fn layer_stack_pixmap(&self, index: usize) -> Option<&Pixmap> {
+    self.layer_stack.get(index).map(|layer| &layer.pixmap)
+  }
+
+  pub(crate) fn layer_stack_child_origin(&self, index: usize) -> Option<(i32, i32)> {
+    self.layer_stack.get(index).map(|layer| layer.origin)
+  }
+
   // ========================================================================
   // State Management
   // ========================================================================

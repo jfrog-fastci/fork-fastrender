@@ -153,3 +153,40 @@ fn opacity_applies_to_backdrop_filter_output() {
   // Outside the overlay remains untouched.
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn backdrop_filter_crosses_bounded_isolation_layer_origin_offset() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      body { background: rgb(255 0 0); }
+      #iso {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 60px;
+        height: 60px;
+        isolation: isolate;
+      }
+      #overlay {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="iso"><div id="overlay"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 80, 80);
+  let pixmap = DisplayListRenderer::new(80, 80, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  assert_eq!(pixel(&pixmap, 5, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+}

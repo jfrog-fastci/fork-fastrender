@@ -6761,9 +6761,46 @@ impl DisplayListRenderer {
     let world_to_dest = self.canvas.transform();
     let scale = self.scale;
 
+    let mut composited_parent_backdrop: Option<Pixmap> = None;
+    let layer_depth = self.canvas.layer_stack_len();
+    if layer_depth > 1 {
+      let parent_index = layer_depth.saturating_sub(1);
+      let mut composite: Option<Pixmap> = None;
+      let Some(mut src) = self.canvas.layer_stack_pixmap(0) else {
+        return Ok(());
+      };
+      for idx in 1..=parent_index {
+        let Some(layer_pixmap) = self.canvas.layer_stack_pixmap(idx) else {
+          composite = None;
+          break;
+        };
+        let Some(origin) = self.canvas.layer_stack_child_origin(idx.saturating_sub(1)) else {
+          composite = None;
+          break;
+        };
+        let mut next = match new_pixmap(layer_pixmap.width(), layer_pixmap.height()) {
+          Some(p) => p,
+          None => {
+            composite = None;
+            break;
+          }
+        };
+        copy_pixmap_region_with_offset(&mut next, src, origin.0, origin.1)?;
+
+        let mut paint = PixmapPaint::default();
+        paint.blend_mode = SkiaBlendMode::SourceOver;
+        next.draw_pixmap(0, 0, layer_pixmap.as_ref(), &paint, Transform::identity(), None);
+
+        composite = Some(next);
+        src = composite.as_ref().unwrap();
+      }
+      composited_parent_backdrop = composite;
+    }
+
     let Some((backdrop, dest_pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
       return Ok(());
     };
+    let backdrop = composited_parent_backdrop.as_ref().unwrap_or(backdrop);
     let clip_origin = (0, 0);
     let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut() {
       Some(shared) => shared,
