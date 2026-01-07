@@ -282,7 +282,14 @@ fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
   let mut style = format!(
     "margin:0;padding:0;width:{width}px;height:{height}px;display:block;box-sizing:border-box;"
   );
-  style.push_str("background:transparent !important;border:none !important;box-shadow:none !important;outline:none !important;");
+  style.push_str("border:none !important;box-shadow:none !important;outline:none !important;");
+  if let Some(bg) = info.background {
+    style.push_str("background:");
+    style.push_str(&format_css_color(bg));
+    style.push_str(" !important;");
+  } else {
+    style.push_str("background:transparent !important;");
+  }
   let overflow_keyword = |overflow: Overflow| match overflow {
     Overflow::Visible => "visible",
     Overflow::Hidden => "hidden",
@@ -296,13 +303,6 @@ fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
     overflow_keyword(info.overflow_x),
     overflow_keyword(info.overflow_y)
   );
-
-  if let Some(bg) = info.background {
-    style.push_str("background:");
-    style.push_str(&format_css_color(bg));
-    style.push_str(" !important;");
-  }
-
   style.push_str("color:");
   style.push_str(&format_css_color(info.style.color));
   style.push(';');
