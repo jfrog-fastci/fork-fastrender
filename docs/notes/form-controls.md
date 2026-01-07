@@ -41,6 +41,17 @@ FastRender treats native form controls as replaced elements so they participate 
   - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today; see `TextControlKind::{Number,Date}` handling in both painters).
   - Vendor pseudo-elements like `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`, etc. are not implemented yet, so fully custom range styling isn’t available.
 
+## Intended direction (fallback rendering model)
+
+The CSS UI “fallback rendering model” for form controls is that `appearance:none` should allow author styling to fully take over, including the ability to build controls out of normal box-tree/pseudo-element mechanics.
+
+FastRender does **not** implement that model yet (see limitations above). Implementing it would likely involve:
+
+- Changing box generation so `appearance:none` (and `-webkit-appearance:none`) no longer forces `ReplacedType::FormControl`, allowing children/pseudo-elements to lay out normally.
+- Supporting vendor pseudo-elements used for custom controls (e.g. `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`).
+
+This work is tracked in the capability map under `alg.forms.appearance-none`.
+
 The offline page regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
 so we can catch large visual diffs caused by missing UA form control styling/painting. Regenerate
 their goldens with:
