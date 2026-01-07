@@ -72,7 +72,6 @@ use std::hash::Hasher;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use unicode_bidi::BidiInfo;
 use unicode_bidi::Level;
 
 fn pipeline_dir_from_style(dir: Direction) -> crate::text::pipeline::Direction {
@@ -3845,11 +3844,19 @@ fn reorder_paragraph(
   } else if paragraph_text.is_empty() {
     Level::ltr()
   } else {
-    let info = BidiInfo::new(&paragraph_text, None);
-    info
-      .paragraphs
-      .first()
-      .map(|p| p.level)
+    // When `base_level` is omitted we are resolving `unicode-bidi: plaintext` paragraph direction
+    // (first-strong). The Unicode bidi algorithm's paragraph base resolution does not look through
+    // nested isolates (e.g. an outer plaintext element containing an inner plaintext element), so
+    // using `BidiInfo::new(.., None)` here can incorrectly fall back to LTR. Match CSS plaintext by
+    // scanning the visible content directly for the first strong bidi class.
+    use unicode_bidi::BidiClass;
+    paragraph_text
+      .chars()
+      .find_map(|ch| match unicode_bidi::bidi_class(ch) {
+        BidiClass::L => Some(Level::ltr()),
+        BidiClass::R | BidiClass::AL => Some(Level::rtl()),
+        _ => None,
+      })
       .unwrap_or_else(Level::ltr)
   };
 
