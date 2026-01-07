@@ -82,3 +82,28 @@ fn text_emphasis_skips_nbsp_separator() {
     "expected emphasis marks only for letters, not for NBSP"
   );
 }
+
+#[test]
+fn text_emphasis_skips_unassigned_character() {
+  // CSS Text Decoration 4: emphasis marks are not drawn for unassigned characters (Cn).
+  //
+  // Use U+0378, which is unassigned in Unicode, to ensure we don't emit emphasis marks for tofu.
+  let text = format!("A\u{0378}A");
+  let html = format!(
+    r#"
+      <html>
+        <body style="margin:0">
+          <div style="font-size:40px; line-height:1; text-emphasis-style: dot; text-emphasis-position: over;">
+            {text}
+          </div>
+        </body>
+      </html>
+    "#,
+    text = text
+  );
+  assert_eq!(
+    emphasis_mark_count(&html),
+    2,
+    "expected emphasis marks only for letters, not for unassigned characters"
+  );
+}

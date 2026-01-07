@@ -378,21 +378,25 @@ pub(crate) fn resolve_text_emphasis_block_side(
 
 /// Returns true if the character should *not* receive text-emphasis marks.
 ///
-/// CSS Text Decoration 4 excludes emphasis marks for whitespace/control and for most punctuation.
+/// CSS Text Decoration 4 excludes emphasis marks for whitespace/separators, control-format-unassigned
+/// characters (Cc, Cf, Cn), and for most punctuation.
 /// This implements a conservative subset of the punctuation rules:
 /// - All Unicode P* general-category characters are excluded, except for a small allowlist of
 ///   symbols called out by the spec (e.g. `#`, `%`, `&`, `@`).
 ///
 /// Spec: <https://www.w3.org/TR/css-text-decor-4/#text-emphasis-style-property> (mark omission rules)
 pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
-  if ch.is_control() {
-    return true;
-  }
-
   use unicode_general_category::get_general_category;
   use unicode_general_category::GeneralCategory;
 
   let category = get_general_category(ch);
+  if matches!(
+    category,
+    GeneralCategory::Control | GeneralCategory::Format | GeneralCategory::Unassigned
+  ) {
+    return true;
+  }
+
   if matches!(
     category,
     GeneralCategory::SpaceSeparator
