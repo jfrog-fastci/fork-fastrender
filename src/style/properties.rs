@@ -14595,7 +14595,9 @@ fn parse_container_shorthand(
     return Some((names, ContainerType::Normal));
   }
 
-  let type_text = parser.slice_from(parser.position());
+  let type_start = parser.position();
+  while parser.next_including_whitespace_and_comments().is_ok() {}
+  let type_text = parser.slice_from(type_start);
   let container_type = parse_container_type_from_str(type_text)?;
   Some((names, container_type))
 }
