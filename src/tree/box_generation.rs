@@ -4251,10 +4251,20 @@ fn create_replaced_box_from_styled(
       referrer_policy,
     }
   } else if tag.eq_ignore_ascii_case("embed") {
-    let src = styled.node.get_attribute("src").unwrap_or_default();
+    let src = styled
+      .node
+      .get_attribute_ref("src")
+      .map(str::trim)
+      .unwrap_or("")
+      .to_string();
     ReplacedType::Embed { src }
   } else if tag.eq_ignore_ascii_case("object") {
-    let data = styled.node.get_attribute("data").unwrap_or_default();
+    let data = styled
+      .node
+      .get_attribute_ref("data")
+      .map(str::trim)
+      .unwrap_or("")
+      .to_string();
     ReplacedType::Object { data }
   } else {
     let src = styled.node.get_attribute("src").unwrap_or_default();
@@ -4431,6 +4441,15 @@ mod tests {
       count += count_object_replacements(child);
     }
     count
+  }
+
+  fn first_object_data(node: &BoxNode) -> Option<String> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Object { data } = &repl.replaced_type {
+        return Some(data.clone());
+      }
+    }
+    node.children.iter().find_map(first_object_data)
   }
 
   fn collect_text(node: &BoxNode, out: &mut Vec<String>) {
@@ -4922,6 +4941,26 @@ mod tests {
       count_object_replacements(&box_tree.root),
       1,
       "object with supported image type should render as replaced content"
+    );
+  }
+
+  #[test]
+  fn object_replaced_data_is_trimmed() {
+    let html =
+      "<html><body><object data=\"  img.png  \" type=\"image/png\"></object></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      count_object_replacements(&box_tree.root),
+      1,
+      "object should be a replaced element"
+    );
+    assert_eq!(
+      first_object_data(&box_tree.root).as_deref(),
+      Some("img.png"),
+      "replaced object data should be whitespace-trimmed"
     );
   }
 
