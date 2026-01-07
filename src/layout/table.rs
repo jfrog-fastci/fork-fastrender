@@ -7048,8 +7048,13 @@ impl FormattingContext for TableFormattingContext {
               last_visible = Some(visible);
             }
           }
-          if let (Some(start), Some(end)) = (first_visible, last_visible) {
-            column_spans.push((start, end + 1, child.style.clone()));
+          if let (Some(first), Some(last)) = (first_visible, last_visible) {
+            // `direction: rtl` mirrors source columns to physical indices, so the visible column
+            // indices encountered here can decrease. Normalize to `[start, end)` so the span
+            // remains valid regardless of traversal order.
+            let start = first.min(last);
+            let end = first.max(last) + 1;
+            column_spans.push((start, end, child.style.clone()));
           }
           source_col_idx += span;
         }
@@ -7082,8 +7087,10 @@ impl FormattingContext for TableFormattingContext {
                   col_last_visible = Some(visible);
                 }
               }
-              if let (Some(start), Some(end)) = (col_first_visible, col_last_visible) {
-                column_spans.push((start, end + 1, col_child.style.clone()));
+              if let (Some(first), Some(last)) = (col_first_visible, col_last_visible) {
+                let start = first.min(last);
+                let end = first.max(last) + 1;
+                column_spans.push((start, end, col_child.style.clone()));
               }
               source_col_idx += span;
             }
