@@ -5204,13 +5204,35 @@ impl Painter {
         return;
       }
     };
+    let Some(size) = IntSize::from_wh(width, height) else {
+      return;
+    };
+    let Some(row_bytes) = u64::from(width).checked_mul(4) else {
+      return;
+    };
     for row in sy0..sy1 {
-      let start = ((row * source.width() + sx0) * 4) as usize;
-      let end = start + (width * 4) as usize;
+      let Some(start) = u64::from(row)
+        .checked_mul(u64::from(source.width()))
+        .and_then(|v| v.checked_add(u64::from(sx0)))
+        .and_then(|v| v.checked_mul(4))
+      else {
+        return;
+      };
+      let Some(end) = start.checked_add(row_bytes) else {
+        return;
+      };
+      let Ok(start) = usize::try_from(start) else {
+        return;
+      };
+      let Ok(end) = usize::try_from(end) else {
+        return;
+      };
+      if end > data.len() || start > end {
+        return;
+      }
       patch.extend_from_slice(&data[start..end]);
     }
-    let Some(patch_pixmap) = Pixmap::from_vec(patch, IntSize::from_wh(width, height).unwrap())
-    else {
+    let Some(patch_pixmap) = Pixmap::from_vec(patch, size) else {
       return;
     };
 

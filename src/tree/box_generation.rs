@@ -4811,6 +4811,13 @@ mod tests {
     }
   }
 
+  fn select_selected_value(select: &SelectControl) -> Option<String> {
+    select.selected.iter().find_map(|&idx| match select.items.get(idx) {
+      Some(SelectItem::Option { value, .. }) => Some(value.clone()),
+      _ => None,
+    })
+  }
+
   fn generate_box_tree(styled: &StyledNode) -> BoxTree {
     generate_box_tree_result(styled).expect("box generation failed")
   }

@@ -164,6 +164,12 @@ const PRESERVE_3D_PLANE_PARALLEL_MIN_TOTAL_PIXELS: u64 = 512 * 512;
 const TILE_HALO_SAFETY_MARGIN_CSS: f32 = 4.0;
 const MAX_PARALLEL_TILE_PIXEL_AMPLIFICATION: u128 = 8;
 
+fn rgba_bytes(width: u32, height: u32) -> Option<u64> {
+  u64::from(width)
+    .checked_mul(u64::from(height))
+    .and_then(|px| px.checked_mul(4))
+}
+
 fn map_blend_mode(mode: BlendMode) -> tiny_skia::BlendMode {
   match mode {
     BlendMode::Normal => tiny_skia::BlendMode::SourceOver,
@@ -6125,15 +6131,45 @@ impl DisplayListRenderer {
     let width = sx1 - sx0;
     let height = sy1 - sy0;
 
+    let Some(size) = IntSize::from_wh(width, height) else {
+      return;
+    };
+    let Some(bytes) = rgba_bytes(width, height) else {
+      return;
+    };
+    let mut patch = match reserve_buffer(bytes, "border-image patch") {
+      Ok(buf) => buf,
+      Err(_) => return,
+    };
+
     let data = source.data();
-    let mut patch = Vec::with_capacity((width * height * 4) as usize);
+    let source_width = source.width();
+    let Some(row_bytes) = u64::from(width).checked_mul(4) else {
+      return;
+    };
     for row in sy0..sy1 {
-      let start = ((row * source.width() + sx0) * 4) as usize;
-      let end = start + (width * 4) as usize;
+      let Some(start) = u64::from(row)
+        .checked_mul(u64::from(source_width))
+        .and_then(|v| v.checked_add(u64::from(sx0)))
+        .and_then(|v| v.checked_mul(4))
+      else {
+        return;
+      };
+      let Some(end) = start.checked_add(row_bytes) else {
+        return;
+      };
+      let Ok(start) = usize::try_from(start) else {
+        return;
+      };
+      let Ok(end) = usize::try_from(end) else {
+        return;
+      };
+      if end > data.len() || start > end {
+        return;
+      }
       patch.extend_from_slice(&data[start..end]);
     }
-    let Some(patch_pixmap) = Pixmap::from_vec(patch, IntSize::from_wh(width, height).unwrap())
-    else {
+    let Some(patch_pixmap) = Pixmap::from_vec(patch, size) else {
       return;
     };
 
@@ -13897,6 +13933,12 @@ mod tests {
   use std::sync::atomic::Ordering;
   use std::sync::Arc;
   use std::time::Duration;
+
+  #[test]
+  fn rgba_bytes_rejects_overflow() {
+    assert_eq!(rgba_bytes(2, 3), Some(24));
+    assert!(rgba_bytes(u32::MAX, u32::MAX).is_none());
+  }
 
   fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
     let idx = ((y * pixmap.width() + x) * 4) as usize;
