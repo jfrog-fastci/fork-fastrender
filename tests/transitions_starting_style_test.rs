@@ -315,7 +315,10 @@ fn transitions_interpolate_registered_custom_properties_with_transition_all() {
 
   let frag = find_fragment(&mid.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
-  let value = style.custom_properties.get("--x").expect("custom property present");
+  let value = style
+    .custom_properties
+    .get("--x")
+    .expect("custom property present");
   match value.typed.as_ref() {
     Some(CustomPropertyTypedValue::Number(v)) => assert!((v - 0.5).abs() < 1e-3, "v={v}"),
     other => panic!("expected typed number, got {other:?}"),
@@ -460,6 +463,7 @@ fn transitions_interpolate_border_shorthand_over_time() {
     <style>
       @starting-style { #box { border: 0px solid rgb(255, 0, 0); } }
       #box { width: 100px; height: 100px; border: 10px dashed rgb(0, 0, 255); transition: border 1000ms linear; }
+      #box { transition-behavior: allow-discrete; }
     </style>
     <div id="box"></div>
   "#;
@@ -518,7 +522,7 @@ fn transitions_interpolate_border_style_over_time() {
         border-width: 4px;
         border-color: rgb(0, 0, 0);
         border-style: dashed;
-        transition: border-style 1000ms linear;
+        transition: border-style 1000ms linear allow-discrete;
       }
     </style>
     <div id="box"></div>
@@ -548,6 +552,112 @@ fn transitions_interpolate_border_style_over_time() {
     BorderStyle::Dashed
   );
   assert!((fragment_border_top_width(&late, box_id) - 4.0).abs() < 1e-3);
+}
+
+#[test]
+fn transition_behavior_blocks_border_style_by_default() {
+  let html = r#"
+    <style>
+      @starting-style { #box { border-style: solid; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        border-width: 4px;
+        border-color: rgb(0, 0, 0);
+        border-style: dashed;
+        transition: border-style 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 400.0, viewport);
+  assert_eq!(fragment_border_top_style(&mid, box_id), BorderStyle::Dashed);
+  assert!((fragment_border_top_width(&mid, box_id) - 4.0).abs() < 1e-3);
+  assert_eq!(
+    fragment_border_top_color(&mid, box_id),
+    fastrender::Rgba::new(0, 0, 0, 1.0)
+  );
+}
+
+#[test]
+fn transition_behavior_blocks_untyped_custom_properties_by_default() {
+  let html = r#"
+    <style>
+      @starting-style { #box { --x: 0; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        --x: 1;
+        transition: --x 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 400.0, viewport);
+
+  let frag = find_fragment(&mid.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  let value = style
+    .custom_properties
+    .get("--x")
+    .expect("custom property present");
+  assert!(value.typed.is_none());
+  assert_eq!(value.value.trim(), "1");
+}
+
+#[test]
+fn transition_behavior_allows_untyped_custom_properties_when_opted_in() {
+  let html = r#"
+    <style>
+      @starting-style { #box { --x: 0; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        --x: 1;
+        transition: --x 1000ms linear allow-discrete;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 400.0, viewport);
+  let frag = find_fragment(&early.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  let value = style
+    .custom_properties
+    .get("--x")
+    .expect("custom property present");
+  assert!(value.typed.is_none());
+  assert_eq!(value.value.trim(), "0");
+
+  let mut late = fragment_tree.clone();
+  let viewport = late.viewport_size();
+  animation::apply_transitions(&mut late, 600.0, viewport);
+  let frag = find_fragment(&late.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  let value = style
+    .custom_properties
+    .get("--x")
+    .expect("custom property present");
+  assert!(value.typed.is_none());
+  assert_eq!(value.value.trim(), "1");
 }
 
 #[test]
@@ -795,7 +905,7 @@ fn transitions_fall_back_to_discrete_when_interpolation_fails() {
         width: 100px;
         height: 100px;
         clip-path: circle(50%);
-        transition: clip-path 1000ms linear;
+        transition: clip-path 1000ms linear allow-discrete;
       }
     </style>
     <div id="box"></div>

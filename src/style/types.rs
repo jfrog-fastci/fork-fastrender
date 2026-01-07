@@ -1284,6 +1284,23 @@ pub enum TransitionProperty {
   Name(String),
 }
 
+/// Controls whether discrete transitions are allowed to run.
+///
+/// CSS: `transition-behavior` (CSS Transitions Level 2)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionBehavior {
+  /// Default: discrete transitions are suppressed.
+  Normal,
+  /// Allow discrete transitions to run (switching at the 50% midpoint).
+  AllowDiscrete,
+}
+
+impl Default for TransitionBehavior {
+  fn default() -> Self {
+    Self::Normal
+  }
+}
+
 /// Step timing-function position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepPosition {

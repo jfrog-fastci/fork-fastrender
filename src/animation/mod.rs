@@ -56,6 +56,7 @@ use crate::style::types::TimelineAxis;
 use crate::style::types::TimelineOffset;
 use crate::style::types::TimelineScopeProperty;
 use crate::style::types::TransformOrigin;
+use crate::style::types::TransitionBehavior;
 use crate::style::types::TransitionProperty;
 use crate::style::types::TransitionTimingFunction;
 use crate::style::types::ViewFunctionTimeline;
@@ -5541,6 +5542,7 @@ fn interpolated_transition_names() -> impl Iterator<Item = &'static str> {
 fn transition_value_for_property(
   name: &str,
   idx: usize,
+  allow_discrete: bool,
   style: &ComputedStyle,
   start_style: &ComputedStyle,
   durations: &[f32],
@@ -5566,6 +5568,23 @@ fn transition_value_for_property(
   let timing = pick(timings, idx, TransitionTimingFunction::Ease);
   let progress = timing.value_at(raw_progress);
 
+  if !allow_discrete
+    && matches!(
+      name,
+      "visibility"
+        | "border-style"
+        | "border-top-style"
+        | "border-right-style"
+        | "border-bottom-style"
+        | "border-left-style"
+        | "outline-style"
+    )
+  {
+    // CSS Transitions Level 2: discrete transitions only run when explicitly enabled via
+    // `transition-behavior: allow-discrete`.
+    return None;
+  }
+
   let Some(interpolator) = interpolator_for(name) else {
     return None;
   };
@@ -5575,15 +5594,51 @@ fn transition_value_for_property(
   let Some(to_val) = (interpolator.extract)(style, ctx) else {
     return None;
   };
-  let Some(value) = (interpolator.interpolate)(&from_val, &to_val, progress).or_else(|| {
-    if progress >= 0.5 {
-      Some(to_val.clone())
-    } else {
-      Some(from_val.clone())
+
+  let value = if allow_discrete {
+    (interpolator.interpolate)(&from_val, &to_val, progress).or_else(|| {
+      if progress >= 0.5 {
+        Some(to_val.clone())
+      } else {
+        Some(from_val.clone())
+      }
+    })
+  } else {
+    let mut value = (interpolator.interpolate)(&from_val, &to_val, progress)?;
+
+    // Suppress discrete sub-components for shorthands that include both interpolable and discrete
+    // parts (e.g. `border` includes `border-*-style`).
+    match (&mut value, &to_val) {
+      (AnimatedValue::Border(_, styles, _), AnimatedValue::Border(_, to_styles, _))
+        if matches!(
+          name,
+          "border" | "border-top" | "border-right" | "border-bottom" | "border-left"
+        ) =>
+      {
+        *styles = *to_styles;
+      }
+      (
+        AnimatedValue::Outline(color, outline_style, _),
+        AnimatedValue::Outline(to_color, to_style, _),
+      ) if name == "outline" => {
+        *outline_style = *to_style;
+        // Outline color interpolation is only continuous when both endpoints are explicit colors;
+        // otherwise it is discrete and follows `transition-behavior`.
+        if !matches!(
+          (&from_val, &to_val),
+          (
+            AnimatedValue::Outline(OutlineColor::Color(_), _, _),
+            AnimatedValue::Outline(OutlineColor::Color(_), _, _)
+          )
+        ) {
+          *color = *to_color;
+        }
+      }
+      _ => {}
     }
-  }) else {
-    return None;
-  };
+
+    Some(value)
+  }?;
 
   Some((value, progress, delay, duration))
 }
@@ -5591,6 +5646,7 @@ fn transition_value_for_property(
 fn transition_value_for_custom_property(
   name: &str,
   idx: usize,
+  allow_discrete: bool,
   style: &ComputedStyle,
   start_style: &ComputedStyle,
   durations: &[f32],
@@ -5621,10 +5677,14 @@ fn transition_value_for_custom_property(
 
   let sampled = interpolate_custom_property(&from_val, &to_val, progress, start_style, style, ctx)
     .or_else(|| {
-      if progress >= 0.5 {
-        Some(to_val.clone())
+      if allow_discrete {
+        if progress >= 0.5 {
+          Some(to_val.clone())
+        } else {
+          Some(from_val.clone())
+        }
       } else {
-        Some(from_val.clone())
+        None
       }
     })?;
 
@@ -5737,10 +5797,17 @@ fn apply_transitions_to_fragment(
       let mut custom_updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
       for (name, idx) in pairs {
         let name_str = name;
+        let behavior = pick(
+          &style_arc.transition_behaviors,
+          idx,
+          TransitionBehavior::Normal,
+        );
+        let allow_discrete = matches!(behavior, TransitionBehavior::AllowDiscrete);
         if name_str.starts_with("--") {
           let value = transition_value_for_custom_property(
             name_str,
             idx,
+            allow_discrete,
             &style_arc,
             &start_arc,
             &style_arc.transition_durations,
@@ -5768,6 +5835,7 @@ fn apply_transitions_to_fragment(
         let value = transition_value_for_property(
           name_str,
           idx,
+          allow_discrete,
           &style_arc,
           &start_arc,
           &style_arc.transition_durations,

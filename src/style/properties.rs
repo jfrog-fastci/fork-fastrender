@@ -2462,6 +2462,26 @@ fn parse_transition_time_list(raw: &str) -> Vec<f32> {
   }
 }
 
+fn parse_transition_behavior(raw: &str) -> Option<TransitionBehavior> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "normal" => Some(TransitionBehavior::Normal),
+    "allow-discrete" => Some(TransitionBehavior::AllowDiscrete),
+    _ => None,
+  }
+}
+
+fn parse_transition_behavior_list(raw: &str) -> Option<Vec<TransitionBehavior>> {
+  let mut behaviors = Vec::new();
+  for part in split_top_level_commas(raw) {
+    behaviors.push(parse_transition_behavior(&part)?);
+  }
+  if behaviors.is_empty() {
+    None
+  } else {
+    Some(behaviors)
+  }
+}
+
 pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTimingFunction> {
   let trimmed = raw.trim();
   if trimmed.is_empty() {
@@ -2837,17 +2857,20 @@ fn parse_transition_shorthand(
   Vec<f32>,
   Vec<f32>,
   Vec<TransitionTimingFunction>,
+  Vec<TransitionBehavior>,
 ) {
   let mut properties = Vec::new();
   let mut durations = Vec::new();
   let mut delays = Vec::new();
   let mut timings = Vec::new();
+  let mut behaviors = Vec::new();
 
   for part in split_top_level_commas(raw) {
     let mut property: Option<TransitionProperty> = None;
     let mut duration: Option<f32> = None;
     let mut delay: Option<f32> = None;
     let mut timing: Option<TransitionTimingFunction> = None;
+    let mut behavior: Option<TransitionBehavior> = None;
 
     for token in split_top_level_whitespace(&part) {
       if let Some(ms) = parse_time_ms(&token) {
@@ -2862,6 +2885,13 @@ fn parse_transition_shorthand(
       if let Some(tf) = parse_transition_timing_function(&token) {
         timing = Some(tf);
         continue;
+      }
+
+      if behavior.is_none() {
+        if let Some(found) = parse_transition_behavior(&token) {
+          behavior = Some(found);
+          continue;
+        }
       }
 
       if property.is_none() {
@@ -2880,6 +2910,7 @@ fn parse_transition_shorthand(
     durations.push(duration.unwrap_or(0.0));
     delays.push(delay.unwrap_or(0.0));
     timings.push(timing.unwrap_or(TransitionTimingFunction::Ease));
+    behaviors.push(behavior.unwrap_or(TransitionBehavior::Normal));
   }
 
   if properties.is_empty() {
@@ -2888,9 +2919,10 @@ fn parse_transition_shorthand(
       vec![0.0],
       vec![0.0],
       vec![TransitionTimingFunction::Ease],
+      vec![TransitionBehavior::Normal],
     )
   } else {
-    (properties, durations, delays, timings)
+    (properties, durations, delays, timings, behaviors)
   }
 }
 
@@ -10891,14 +10923,20 @@ fn apply_declaration_with_base_internal_with_order(
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
       styles.transition_timing_functions = parse_transition_timing_function_list(css_text).into();
     }
-    "transition-behavior" => {}
+    "transition-behavior" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      if let Some(list) = parse_transition_behavior_list(css_text) {
+        styles.transition_behaviors = list.into();
+      }
+    }
     "transition" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let (props, durations, delays, timings) = parse_transition_shorthand(css_text);
+      let (props, durations, delays, timings, behaviors) = parse_transition_shorthand(css_text);
       styles.transition_properties = props.into();
       styles.transition_durations = durations.into();
       styles.transition_delays = delays.into();
       styles.transition_timing_functions = timings.into();
+      styles.transition_behaviors = behaviors.into();
     }
     "scrollbar-gutter" => {
       let mut stable = false;

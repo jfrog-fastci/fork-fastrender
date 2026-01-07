@@ -190,6 +190,7 @@ use types::TouchAction;
 use types::TransformBox;
 use types::TransformOrigin;
 use types::TransformStyle;
+use types::TransitionBehavior;
 use types::TransitionProperty;
 use types::TransitionTimingFunction;
 use types::UnicodeBidi;
@@ -580,6 +581,8 @@ pub struct ComputedStyle {
   pub transition_delays: Arc<[f32]>,
   /// Timing functions used by transitions.
   pub transition_timing_functions: Arc<[TransitionTimingFunction]>,
+  /// Behaviors used by transitions (CSS Transitions Level 2).
+  pub transition_behaviors: Arc<[TransitionBehavior]>,
   pub top: Option<Length>,
   pub right: Option<Length>,
   pub bottom: Option<Length>,
@@ -992,6 +995,7 @@ impl Default for ComputedStyle {
       transition_durations: vec![0.0].into(),
       transition_delays: vec![0.0].into(),
       transition_timing_functions: vec![TransitionTimingFunction::Ease].into(),
+      transition_behaviors: vec![TransitionBehavior::Normal].into(),
       top: None,
       right: None,
       bottom: None,
