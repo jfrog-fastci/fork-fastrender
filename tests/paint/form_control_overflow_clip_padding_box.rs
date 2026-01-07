@@ -54,10 +54,25 @@ fn form_control_overflow_clip_uses_padding_box() {
   );
 
   // Sanity check: dropdown selects paint a single-glyph arrow affordance inside the clip.
-  let has_arrow_glyph = list.items().iter().any(|item| match item {
-    DisplayItem::Text(text) => text.glyphs.len() == 1,
-    _ => false,
-  });
-  assert!(has_arrow_glyph, "expected dropdown select to paint an arrow glyph");
-}
+  let arrow_origin_x = list
+    .items()
+    .iter()
+    .find_map(|item| match item {
+      DisplayItem::Text(text) if text.glyphs.len() == 1 => Some(text.origin.x),
+      _ => None,
+    })
+    .expect("expected dropdown select to paint an arrow glyph");
 
+  // The UA stylesheet reserves `padding-right: 20px` for dropdown selects. The arrow should be
+  // painted into that padding region (i.e. to the right of the content box), not inside the
+  // content box itself.
+  //
+  // Here, we set `border: 10px` and `padding: 5px` on a 100px-wide border box:
+  // - padding box max-x: 90
+  // - content box max-x: 85
+  let content_max_x = clip_rect.max_x() - 5.0;
+  assert!(
+    arrow_origin_x + 0.01 >= content_max_x,
+    "expected dropdown select arrow to be placed in the padding box (arrow origin x={arrow_origin_x}, content max x={content_max_x})"
+  );
+}
