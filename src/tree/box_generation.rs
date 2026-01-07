@@ -6579,6 +6579,9 @@ mod tests {
       after_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: vec![],
@@ -6588,7 +6591,7 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &counters).expect("marker");
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -6626,6 +6629,9 @@ mod tests {
       after_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: vec![],
@@ -6635,7 +6641,7 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &counters).expect("marker");
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {

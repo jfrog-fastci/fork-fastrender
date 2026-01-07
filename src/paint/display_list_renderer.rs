@@ -14217,6 +14217,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14263,6 +14264,7 @@ mod tests {
     base.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      establishes_backdrop_root: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14282,6 +14284,7 @@ mod tests {
     let mut filtered = base.clone();
     if let Some(DisplayItem::PushStackingContext(ctx)) = filtered.items_mut().get_mut(1) {
       ctx.backdrop_filters = vec![ResolvedFilter::Invert(1.0)];
+      ctx.establishes_backdrop_root = true;
     }
 
     let baseline_pixmap =
