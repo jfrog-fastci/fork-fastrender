@@ -1754,6 +1754,91 @@ fn luminosity_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
 }
 
 #[test]
+fn plus_lighter_mix_blend_mode_allows_parallel_tiling_without_isolation() {
+  // `plus-lighter` is implemented via tiny-skia's `Plus` blend mode (with a custom pixmap composite
+  // fast-path). Ensure it remains tile-friendly and produces byte-identical results when tiled
+  // even when compositing happens under an active clip mask (forcing the slow path).
+  let mut list = DisplayList::new();
+  // Use a non-uniform backdrop so the blend result varies across the canvas.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 48.0, 96.0),
+    color: Rgba::from_rgba8(200, 60, 120, 255),
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(48.0, 0.0, 48.0, 96.0),
+    color: Rgba::from_rgba8(60, 120, 200, 255),
+  }));
+  // Keep the clip active while the blend layer is popped so plus-blend compositing must respect a
+  // mask (exercising `draw_pixmap_with_plus_blend`'s clipped slow path under tiling).
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Rect {
+      rect: Rect::from_xywh(8.0, 8.0, 80.0, 80.0),
+      radii: Some(BorderRadii::uniform(10.0)),
+    },
+  }));
+  let stacking = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    mix_blend_mode: BlendMode::PlusLighter,
+    opacity: 0.65,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  };
+  list.push(DisplayItem::PushStackingContext(stacking));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
+    color: Rgba::from_rgba8(200, 200, 40, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+  list.push(DisplayItem::PopClip);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 24,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
 fn plus_darker_mix_blend_mode_allows_parallel_tiling_without_isolation() {
   // `plus-darker` uses a bespoke manual compositor path (not expressible via tiny-skia). Ensure it
   // remains tile-friendly and produces byte-identical results when tiled.
@@ -2252,6 +2337,59 @@ fn color_oklch_blend_mode_allows_parallel_tiling() {
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
     color: Rgba::from_rgba8(0, 200, 0, 255),
+  }));
+  list.push(DisplayItem::PopBlendMode);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 24,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
+fn plus_lighter_blend_mode_allows_parallel_tiling() {
+  // `plus-lighter` uses tiny-skia's `Plus` blend mode (with a custom pixmap composite fast-path).
+  // Ensure it remains tile-friendly and produces byte-identical results when tiled.
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 96.0, 96.0),
+    color: Rgba::from_rgba8(160, 180, 200, 255),
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::PlusLighter,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
+    color: Rgba::from_rgba8(200, 100, 80, 255),
   }));
   list.push(DisplayItem::PopBlendMode);
 
