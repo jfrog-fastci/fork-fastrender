@@ -1157,15 +1157,17 @@ fn parse_timeline_offset_token(token: &str) -> Option<TimelineOffset> {
 
 fn parse_scroll_timeline_list(raw: &str) -> Vec<ScrollTimeline> {
   let mut timelines = Vec::new();
-  for part in split_top_level_commas(raw) {
+  let trimmed = raw.trim();
+  if trimmed.eq_ignore_ascii_case("none") {
+    return Vec::new();
+  }
+  for part in split_top_level_commas(trimmed) {
     let tokens = split_top_level_whitespace(&part);
     if tokens.is_empty() {
       continue;
     }
-    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("none") {
-      return Vec::new();
-    }
     let mut name: Option<String> = None;
+    let mut name_specified_as_none = false;
     let mut axis = TimelineAxis::Block;
     let mut offsets: Vec<TimelineOffset> = Vec::new();
     for token in tokens {
@@ -1178,7 +1180,11 @@ fn parse_scroll_timeline_list(raw: &str) -> Vec<ScrollTimeline> {
         offsets.push(offset);
         continue;
       }
-      if name.is_none() {
+      if name.is_none() && !name_specified_as_none {
+        if token.eq_ignore_ascii_case("none") {
+          name_specified_as_none = true;
+          continue;
+        }
         name = Some(token.to_string());
       }
     }
@@ -1196,15 +1202,17 @@ fn parse_scroll_timeline_list(raw: &str) -> Vec<ScrollTimeline> {
 
 fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
   let mut timelines = Vec::new();
-  for part in split_top_level_commas(raw) {
+  let trimmed = raw.trim();
+  if trimmed.eq_ignore_ascii_case("none") {
+    return Vec::new();
+  }
+  for part in split_top_level_commas(trimmed) {
     let tokens = split_top_level_whitespace(&part);
     if tokens.is_empty() {
       continue;
     }
-    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("none") {
-      return Vec::new();
-    }
     let mut name: Option<String> = None;
+    let mut name_specified_as_none = false;
     let mut axis = TimelineAxis::Block;
     let mut inset_values: Vec<Length> = Vec::new();
     for token in tokens {
@@ -1222,7 +1230,11 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
           continue;
         }
       }
-      if name.is_none() {
+      if name.is_none() && !name_specified_as_none {
+        if token.eq_ignore_ascii_case("none") {
+          name_specified_as_none = true;
+          continue;
+        }
         name = Some(token.to_string());
       }
     }

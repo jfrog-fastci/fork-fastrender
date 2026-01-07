@@ -80,6 +80,37 @@ fn parses_timelines_and_keyframes() {
 }
 
 #[test]
+fn scroll_timeline_list_allows_none_items() {
+  let css = r#"
+    #box { scroll-timeline: none, main block 0% 100%; }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+  assert_eq!(div.styles.scroll_timelines.len(), 2);
+  assert_eq!(div.styles.scroll_timelines[0].name, None);
+  assert_eq!(div.styles.scroll_timelines[1].name.as_deref(), Some("main"));
+}
+
+#[test]
+fn view_timeline_list_allows_none_items() {
+  let css = r#"
+    #box { view-timeline: none, viewy inline; }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+  assert_eq!(div.styles.view_timelines.len(), 2);
+  assert_eq!(div.styles.view_timelines[0].name, None);
+  assert_eq!(div.styles.view_timelines[1].name.as_deref(), Some("viewy"));
+  assert_eq!(div.styles.view_timelines[1].axis, TimelineAxis::Inline);
+}
+
+#[test]
 fn parses_animation_timeline_functions() {
   let css = r#"
     #box {
