@@ -6395,32 +6395,114 @@ fn matches_has_relative(
         }
 
         let quirks_mode = ctx.quirks_mode();
-        if selector.match_hint.is_descendant_direction() {
-          if let Some(summary) = anchor_summary {
-            let should_prune = if matches!(quirks_mode, QuirksMode::Quirks) {
-              let hashes = relative_selector_bloom_hashes(selector, quirks_mode);
-              !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
-            } else {
-              let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
-              !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
-            };
+         if selector.match_hint.is_descendant_direction() {
+           if let Some(summary) = anchor_summary {
+             let should_prune = if matches!(quirks_mode, QuirksMode::Quirks) {
+               let hashes = relative_selector_bloom_hashes(selector, quirks_mode);
+               !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+             } else {
+               let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
+               !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+             };
 
-            if should_prune {
-              record_has_prune();
-              ctx.selector_caches.relative_selector.add(
-                anchor.opaque(),
-                selector,
-                RelativeSelectorCachedMatch::NotMatched,
-              );
-              continue;
-            }
-          }
-        }
+             if should_prune {
+               record_has_prune();
+               ctx.selector_caches.relative_selector.add(
+                 anchor.opaque(),
+                 selector,
+                 RelativeSelectorCachedMatch::NotMatched,
+               );
+               continue;
+             }
+           }
+         }
 
-        if selector_bloom_enabled()
-          && ctx
-            .selector_caches
-            .relative_selector_filter_map
+         if !selector.match_hint.is_descendant_direction() {
+           let parent = match anchor.parent {
+             Some(parent) => parent,
+             None => {
+               record_has_prune();
+               ctx.selector_caches.relative_selector.add(
+                 anchor.opaque(),
+                 selector,
+                 RelativeSelectorCachedMatch::NotMatched,
+               );
+               continue;
+             }
+           };
+           if parent.template_contents_are_inert() {
+             record_has_prune();
+             ctx.selector_caches.relative_selector.add(
+               anchor.opaque(),
+               selector,
+               RelativeSelectorCachedMatch::NotMatched,
+             );
+             continue;
+           }
+ 
+           let mut seen_anchor = false;
+           let mut next_sibling: Option<&DomNode> = None;
+           for sibling in parent
+             .traversal_children()
+             .iter()
+             .filter(|c| c.is_element())
+           {
+             if ptr::eq(sibling, anchor.node) {
+               seen_anchor = true;
+               continue;
+             }
+             if !seen_anchor {
+               continue;
+             }
+             next_sibling = Some(sibling);
+             break;
+           }
+ 
+           if next_sibling.is_none() {
+             record_has_prune();
+             ctx.selector_caches.relative_selector.add(
+               anchor.opaque(),
+               selector,
+               RelativeSelectorCachedMatch::NotMatched,
+             );
+             continue;
+           }
+ 
+            if selector.match_hint.is_next_sibling() {
+              if let Some(store) = ctx.extra_data.selector_blooms {
+                let next = next_sibling.expect("checked for next sibling");
+                let sibling_id = ctx
+                  .extra_data
+                  .node_id_for(next)
+                  .or_else(|| ctx.extra_data.slot_map.and_then(|map| map.node_id(next)));
+                if let Some(sibling_id) = sibling_id {
+                  if let Some(summary) = store.summary_for_id(sibling_id) {
+                    let should_prune = if matches!(quirks_mode, QuirksMode::Quirks) {
+                      let hashes = relative_selector_bloom_hashes(selector, quirks_mode);
+                      !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+                   } else {
+                     let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
+                     !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+                   };
+                   if should_prune {
+                     record_has_prune();
+                     ctx.selector_caches.relative_selector.add(
+                       anchor.opaque(),
+                       selector,
+                       RelativeSelectorCachedMatch::NotMatched,
+                     );
+                     continue;
+                   }
+                 }
+               }
+             }
+           }
+         }
+ 
+         if selector_bloom_enabled()
+           && ctx
+             .selector_caches
+             .relative_selector_filter_map
             .fast_reject(anchor, selector, ctx.quirks_mode())
         {
           if ctx.extra_data.deadline_error.is_some() {
@@ -6659,6 +6741,21 @@ fn match_relative_selector_siblings<'a>(
   deadline_counter: &mut usize,
 ) -> bool {
   let ancestor_hashes = selector.ancestor_hashes_for_mode(context.quirks_mode());
+  let quirks_mode = context.quirks_mode();
+  let selector_blooms = context.extra_data.selector_blooms;
+  let node_to_id = context.extra_data.node_to_id;
+  let slot_map = context.extra_data.slot_map;
+  let hashes_quirks = (selector_blooms.is_some()
+    && (node_to_id.is_some() || slot_map.is_some())
+    && matches!(quirks_mode, QuirksMode::Quirks))
+  .then(|| relative_selector_bloom_hashes(selector, quirks_mode));
+  let hashes: &[u32] = if let Some(hashes) = hashes_quirks.as_deref() {
+    hashes
+  } else if selector_blooms.is_some() && (node_to_id.is_some() || slot_map.is_some()) {
+    selector.bloom_hashes.hashes_for_mode(quirks_mode)
+  } else {
+    &[]
+  };
   let parent = match ancestors.parent() {
     Some(p) => p,
     None => return false,
@@ -6687,6 +6784,23 @@ fn match_relative_selector_siblings<'a>(
     }
     if !seen_anchor {
       continue;
+    }
+
+    if !hashes.is_empty() {
+      let sibling_id = context
+        .extra_data
+        .node_id_for(sibling)
+        .or_else(|| slot_map.and_then(|map| map.node_id(sibling)));
+      if let (Some(store), Some(sibling_id)) = (selector_blooms, sibling_id) {
+        if let Some(summary) = store.summary_for_id(sibling_id) {
+          if hashes.iter().any(|hash| !summary.contains_hash(*hash)) {
+            if selector.match_hint.is_next_sibling() {
+              break;
+            }
+            continue;
+          }
+        }
+      }
     }
 
     let sibling_ref = ElementRef::with_ancestors(sibling, ancestors.as_slice())
@@ -7955,6 +8069,157 @@ mod tests {
       counters.evaluated, 1,
       "expected only the outer :has() to run a relative selector evaluation"
     );
+  }
+
+  #[test]
+  fn bloom_pruning_next_sibling_prunes_when_absent() {
+    reset_has_counters();
+    set_selector_bloom_enabled(true);
+
+    let dom = element("div", vec![element("span", vec![])]);
+    let id_map = enumerate_dom_ids(&dom);
+    let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
+
+    let mut caches = SelectorCaches::default();
+    caches.set_epoch(next_selector_cache_epoch());
+    let mut context = MatchingContext::new(
+      MatchingMode::Normal,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document()
+      .with_selector_blooms(Some(&bloom_store))
+      .with_node_to_id(Some(&id_map));
+
+    let mut input = ParserInput::new("+ .missing");
+    let mut parser = Parser::new(&mut input);
+    let list =
+      SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::ForHas).expect("parse");
+    let selectors = build_relative_selectors(list);
+
+    let anchor_node = dom.children.first().expect("anchor exists");
+    let anchor_id = *id_map
+      .get(&(anchor_node as *const DomNode))
+      .expect("anchor id exists");
+    let anchor_ancestors = [&dom];
+    let anchor = ElementRef::with_ancestors(anchor_node, &anchor_ancestors).with_node_id(anchor_id);
+
+    assert!(
+      !matches_has_relative(&anchor, &selectors, &mut context),
+      ":has(+ ...) should not match without a next sibling"
+    );
+
+    let counters = capture_has_counters();
+    assert_eq!(counters.prunes, 1);
+    assert_eq!(counters.evaluated, 0);
+  }
+
+  #[test]
+  fn bloom_pruning_next_sibling_prunes_when_hash_missing() {
+    reset_has_counters();
+    set_selector_bloom_enabled(true);
+
+    let dom = element(
+      "div",
+      vec![
+        element("span", vec![]),
+        element_with_attrs("span", vec![("class", "present")], vec![]),
+      ],
+    );
+    let id_map = enumerate_dom_ids(&dom);
+    let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
+
+    let mut caches = SelectorCaches::default();
+    caches.set_epoch(next_selector_cache_epoch());
+    let mut context = MatchingContext::new(
+      MatchingMode::Normal,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document()
+      .with_selector_blooms(Some(&bloom_store))
+      .with_node_to_id(Some(&id_map));
+
+    let mut input = ParserInput::new("+ .missing");
+    let mut parser = Parser::new(&mut input);
+    let list =
+      SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::ForHas).expect("parse");
+    let selectors = build_relative_selectors(list);
+
+    let anchor_node = dom.children.first().expect("anchor exists");
+    let anchor_id = *id_map
+      .get(&(anchor_node as *const DomNode))
+      .expect("anchor id exists");
+    let anchor_ancestors = [&dom];
+    let anchor = ElementRef::with_ancestors(anchor_node, &anchor_ancestors).with_node_id(anchor_id);
+
+    assert!(
+      !matches_has_relative(&anchor, &selectors, &mut context),
+      ":has(+ .missing) should prune when the next sibling subtree lacks the hash"
+    );
+
+    let counters = capture_has_counters();
+    assert_eq!(counters.prunes, 1);
+    assert_eq!(counters.filter_prunes, 0);
+    assert_eq!(counters.evaluated, 0);
+  }
+
+  #[test]
+  fn bloom_pruning_next_sibling_preserves_matches() {
+    reset_has_counters();
+    set_selector_bloom_enabled(true);
+
+    let dom = element(
+      "div",
+      vec![
+        element("span", vec![]),
+        element_with_attrs("span", vec![("class", "hit")], vec![]),
+      ],
+    );
+    let id_map = enumerate_dom_ids(&dom);
+    let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
+
+    let mut caches = SelectorCaches::default();
+    caches.set_epoch(next_selector_cache_epoch());
+    let mut context = MatchingContext::new(
+      MatchingMode::Normal,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document()
+      .with_selector_blooms(Some(&bloom_store))
+      .with_node_to_id(Some(&id_map));
+
+    let mut input = ParserInput::new("+ .hit");
+    let mut parser = Parser::new(&mut input);
+    let list =
+      SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::ForHas).expect("parse");
+    let selectors = build_relative_selectors(list);
+
+    let anchor_node = dom.children.first().expect("anchor exists");
+    let anchor_id = *id_map
+      .get(&(anchor_node as *const DomNode))
+      .expect("anchor id exists");
+    let anchor_ancestors = [&dom];
+    let anchor = ElementRef::with_ancestors(anchor_node, &anchor_ancestors).with_node_id(anchor_id);
+
+    assert!(
+      matches_has_relative(&anchor, &selectors, &mut context),
+      ":has(+ .hit) should still match the next sibling"
+    );
+
+    let counters = capture_has_counters();
+    assert_eq!(counters.prunes, 0);
+    assert_eq!(counters.evaluated, 1);
   }
 
   #[test]

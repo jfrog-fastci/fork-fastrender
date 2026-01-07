@@ -11918,6 +11918,7 @@ mod tests {
       part_export_map: None,
       deadline_error: None,
       selector_blooms: dom_maps.selector_blooms(),
+      node_to_id: Some(&dom_maps.id_map),
       sibling_cache: Some(sibling_cache),
       element_attr_cache: None,
     };

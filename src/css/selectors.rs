@@ -53,6 +53,7 @@ pub struct ShadowMatchData<'a> {
   pub deadline_error: Option<RenderError>,
   /// Precomputed selector bloom summaries for fast :has() pruning.
   pub selector_blooms: Option<&'a SelectorBloomStore>,
+  /// Mapping from DOM node pointers to their stable pre-order `node_id` (for bloom-summary lookups).
   pub node_to_id: Option<&'a HashMap<*const DomNode, usize>>,
   /// Cached sibling positions for structural pseudo-classes.
   pub sibling_cache: Option<&'a SiblingListCache>,

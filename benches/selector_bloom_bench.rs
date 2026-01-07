@@ -453,6 +453,24 @@ fn generate_nested_has_styles(c_variants: usize) -> String {
   css
 }
 
+fn build_has_sibling_wide_list_html(sibling_count: usize, leaves_per_sibling: usize) -> String {
+  let mut html = String::from("<!doctype html><html><head></head><body><div id=\"container\">");
+
+  html.push_str("<div class=\"gate\"><span class=\"missing\"></span></div>");
+
+  html.push_str("<div id=\"anchor\"></div>");
+  for _ in 0..sibling_count {
+    html.push_str("<div class=\"gate\"><div class=\"wrap\">");
+    for idx in 0..leaves_per_sibling {
+      let _ = write!(html, "<span class=\"leaf{idx}\"></span>", idx = idx % 4);
+    }
+    html.push_str("</div></div>");
+  }
+
+  html.push_str("</div></body></html>");
+  html
+}
+
 fn build_nested_shadow_dom(
   depth: usize,
   selector_chain_len: usize,
@@ -880,6 +898,37 @@ fn nested_has_selector_summary_benchmark(c: &mut Criterion) {
   set_selector_bloom_enabled(true);
 }
 
+fn has_sibling_wide_list_benchmark(c: &mut Criterion) {
+  let sibling_count = 4096;
+  let leaves_per_sibling = 32;
+
+  let html = build_has_sibling_wide_list_html(sibling_count, leaves_per_sibling);
+  let css = "body { margin: 0; }\n#anchor:has(~ .gate .missing) { padding-left: 1px; }\n";
+
+  let dom = parse_html(&html).expect("parse html");
+  let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
+  let media = MediaContext::screen(1280.0, 720.0);
+
+  let mut group = c.benchmark_group("has_sibling_wide_list");
+  group.bench_function("with_bloom", |b| {
+    set_selector_bloom_enabled(true);
+    b.iter(|| {
+      let styled = apply_styles_with_media(black_box(&dom), black_box(&stylesheet), &media);
+      black_box(styled);
+    });
+  });
+  group.bench_function("without_bloom", |b| {
+    set_selector_bloom_enabled(false);
+    b.iter(|| {
+      let styled = apply_styles_with_media(black_box(&dom), black_box(&stylesheet), &media);
+      black_box(styled);
+    });
+  });
+  group.finish();
+
+  set_selector_bloom_enabled(true);
+}
+
 fn selector_bloom_lookup_benchmark(c: &mut Criterion) {
   bench_config();
   // Focused micro-benchmark: compare per-element bloom summary lookups using the dense
@@ -1024,6 +1073,7 @@ criterion_group!(
   selector_bloom_summary_bits_build_benchmark,
   has_selector_summary_bits_benchmark,
   nested_has_selector_summary_benchmark,
+  has_sibling_wide_list_benchmark,
   selector_bloom_lookup_benchmark,
   bloom_hash_insert_benchmark
 );
