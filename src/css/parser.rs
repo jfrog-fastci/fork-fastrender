@@ -3485,7 +3485,7 @@ fn parse_pad_descriptor(value: &str) -> Option<(u32, String)> {
   let width = match parser.next_including_whitespace() {
     Ok(Token::Number {
       int_value: Some(v), ..
-    }) if *v > 0 => *v as u32,
+    }) if *v >= 0 => *v as u32,
     Ok(Token::Ident(v)) => v.parse::<u32>().ok()?,
     _ => return None,
   };
@@ -3494,6 +3494,10 @@ fn parse_pad_descriptor(value: &str) -> Option<(u32, String)> {
     Ok(tok) => token_to_symbol(&tok)?,
     Err(_) => return None,
   };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return None;
+  }
   Some((width, symbol))
 }
 

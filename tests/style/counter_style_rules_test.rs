@@ -112,7 +112,7 @@ fn extends_chain_inherits_pad_and_negative() {
   );
   assert_eq!(
     registry.format_value(-3, CounterStyleName::from("leaf")),
-    "<0011>"
+    "<11>"
   );
 }
 
@@ -201,7 +201,7 @@ fn parsed_counter_style_extends_builtin_and_formats() {
   );
   assert_eq!(
     registry.format_value(-4, CounterStyleName::from("padded")),
-    "<004>"
+    "<4>"
   );
 }
 
@@ -225,4 +225,24 @@ fn custom_list_style_type_uses_counter_style_registry() {
       .format_value(1, CounterStyleName::from("stars")),
     "★"
   );
+}
+
+#[test]
+fn cyclic_counter_style_does_not_apply_negative_sign_descriptor() {
+  let css = r#"
+    @counter-style cyclic {
+      system: cyclic;
+      symbols: "A" "B";
+      negative: "<" ">";
+      pad: 3 "0";
+    }
+  "#;
+  let sheet = parse_stylesheet(css).expect("stylesheet");
+  let dom = simple_list_dom();
+  let registry = &apply_styles(&dom, &sheet).styles.counter_styles;
+
+  // Cyclic styles don't "use a negative sign" per CSS Counter Styles, so the negative descriptor
+  // should not wrap the representation.
+  assert_eq!(registry.format_value(-1, CounterStyleName::from("cyclic")), "00A");
+  assert_eq!(registry.format_value(-2, CounterStyleName::from("cyclic")), "00B");
 }

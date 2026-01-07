@@ -6,6 +6,7 @@
 use crate::style::content::CounterStyle;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Reference to a counter style, either built-in or custom.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -402,26 +403,34 @@ impl ResolvedCounterStyle {
       return registry.format_by_name(&self.fallback, value, visited);
     }
 
+    let uses_negative_sign = matches!(
+      &self.system,
+      CounterSystem::Numeric | CounterSystem::Alphabetic | CounterSystem::Symbolic | CounterSystem::Additive
+    );
+
     let negative_value = value_i64 < 0;
-    let magnitude = value_i64.abs();
-    let mut repr = match self.format_positive(magnitude) {
+    let initial_value = if negative_value && uses_negative_sign {
+      value_i64.abs()
+    } else {
+      value_i64
+    };
+    let mut repr = match self.format_positive(initial_value) {
       Some(r) => r,
       None => return registry.format_by_name(&self.fallback, value, visited),
     };
 
     if let Some((width, pad_symbol)) = &self.pad {
-      let width = *width as usize;
-      let current = repr.chars().count();
-      if current < width {
-        let mut pad = String::new();
-        while pad.chars().count() + current < width {
-          pad.push_str(pad_symbol);
-        }
-        repr = format!("{}{}", pad, repr);
+      let mut difference = (*width as i64) - (repr.graphemes(true).count() as i64);
+      if negative_value && uses_negative_sign {
+        difference -= (self.negative.0.graphemes(true).count() + self.negative.1.graphemes(true).count())
+          as i64;
+      }
+      if difference > 0 {
+        repr = format!("{}{}", pad_symbol.repeat(difference as usize), repr);
       }
     }
 
-    if negative_value {
+    if negative_value && uses_negative_sign {
       repr = format!("{}{}{}", self.negative.0, repr, self.negative.1);
     }
 
