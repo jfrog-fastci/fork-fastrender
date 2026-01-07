@@ -13789,6 +13789,32 @@ mod tests {
     assert_eq!(output.match_indices("opacity=").count(), 1);
   }
 
+  #[test]
+  fn foreign_object_image_tag_preserves_opacity_attribute_when_computed_is_default() {
+    let foreign = ForeignObjectInfo {
+      placeholder: String::new(),
+      attributes: vec![("opacity".to_string(), "0.9".to_string())],
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 1.0,
+      background: None,
+      html: String::new(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Visible,
+      overflow_y: Overflow::Visible,
+    };
+
+    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
+      &foreign,
+      "data:image/png;base64,abc",
+      0,
+    );
+    assert_eq!(output.match_indices("opacity=").count(), 1);
+    assert!(output.contains("opacity=\"0.9\""));
+  }
+
   fn make_empty_tree() -> FragmentTree {
     let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![]);
     FragmentTree::new(root)

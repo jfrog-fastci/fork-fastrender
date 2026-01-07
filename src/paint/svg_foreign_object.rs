@@ -55,7 +55,8 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
   parts.push(format!("y=\"{:.6}\"", info.y));
   parts.push(format!("width=\"{:.6}\"", info.width));
   parts.push(format!("height=\"{:.6}\"", info.height));
-  if info.opacity < 1.0 {
+  let emits_computed_opacity = info.opacity < 1.0;
+  if emits_computed_opacity {
     parts.push(format!("opacity=\"{:.3}\"", info.opacity.clamp(0.0, 1.0)));
   }
 
@@ -64,7 +65,7 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
       || name.eq_ignore_ascii_case("y")
       || name.eq_ignore_ascii_case("width")
       || name.eq_ignore_ascii_case("height")
-      || name.eq_ignore_ascii_case("opacity")
+      || (emits_computed_opacity && name.eq_ignore_ascii_case("opacity"))
     {
       continue;
     }
