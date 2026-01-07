@@ -13950,25 +13950,61 @@ fn parse_container_type_keyword(text: &str) -> Option<ContainerType> {
 fn parse_container_type_from_str(input: &str) -> Option<ContainerType> {
   let mut input = ParserInput::new(input);
   let mut parser = Parser::new(&mut input);
-  let mut container_type = None;
+  let mut size_type: Option<ContainerType> = None;
+  let mut saw_scroll_state = false;
+  let mut saw_normal = false;
 
   while let Ok(token) = parser.next_including_whitespace_and_comments() {
     match token {
       Token::WhiteSpace(_) | Token::Comment(_) => continue,
       Token::Ident(ident) => {
-        if container_type.is_some() {
+        let ident = ident.as_ref();
+
+        if ident.eq_ignore_ascii_case("normal") {
+          if saw_normal || saw_scroll_state || size_type.is_some() {
+            return None;
+          }
+          saw_normal = true;
+          continue;
+        }
+
+        if ident.eq_ignore_ascii_case("scroll-state") {
+          if saw_scroll_state || saw_normal {
+            return None;
+          }
+          saw_scroll_state = true;
+          continue;
+        }
+
+        let parsed = parse_container_type_keyword(ident)?;
+        if parsed == ContainerType::Normal {
+          // `normal` is handled above, so treat it as invalid here to avoid mixing.
           return None;
         }
-        container_type = parse_container_type_keyword(ident.as_ref());
-        if container_type.is_none() {
-          return None;
+        if let Some(existing) = size_type {
+          if existing != parsed {
+            return None;
+          }
+        } else {
+          size_type = Some(parsed);
         }
       }
       _ => return None,
     }
   }
 
-  container_type
+  if saw_normal {
+    Some(ContainerType::Normal)
+  } else if let Some(size_type) = size_type {
+    Some(size_type)
+  } else if saw_scroll_state {
+    // `container-type: scroll-state` is valid per spec. FastRender does not currently model
+    // scroll-state query containers distinctly, but treating this as `normal` ensures the value
+    // still resets any previously-set size/inline-size container capability.
+    Some(ContainerType::Normal)
+  } else {
+    None
+  }
 }
 
 fn parse_container_type_value(value: &PropertyValue) -> Option<ContainerType> {
@@ -14141,24 +14177,9 @@ fn parse_container_shorthand(
     return Some((names, ContainerType::Normal));
   }
 
-  let mut container_type: Option<ContainerType> = None;
-  while let Ok(token) = parser.next_including_whitespace_and_comments() {
-    match token {
-      Token::WhiteSpace(_) | Token::Comment(_) => continue,
-      Token::Ident(ident) => {
-        if container_type.is_some() {
-          return None;
-        }
-        container_type = parse_container_type_keyword(ident.as_ref());
-        if container_type.is_none() {
-          return None;
-        }
-      }
-      _ => return None,
-    }
-  }
-
-  Some((names, container_type?))
+  let type_text = parser.slice_from(parser.position());
+  let container_type = parse_container_type_from_str(type_text)?;
+  Some((names, container_type))
 }
 
 fn parse_containment(value: &PropertyValue) -> Option<Containment> {

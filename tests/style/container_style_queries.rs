@@ -148,20 +148,28 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
       .base { container-type: inline-size; }
       .invalid-style { container-type: style; }
       .invalid-none { container-type: none; }
+      .scroll-state { container-type: scroll-state; }
+      .scroll-state-and-size { container-type: scroll-state size; }
       .commented-size { container-type: size/*comment*/; }
       .escaped-size { container-type: s\69ze; }
       .reset { container: none; }
       .name-only { container: demo; }
+      .shorthand-scroll-state { container: demo / scroll-state; }
+      .shorthand-scroll-state-and-size { container: demo / scroll-state size; }
       .commented-reset { container: none/*comment*/; }
       .commented-name-only { container: demo/*comment*/; }
       .commented-name-and-type { container: demo /*comment*/ / inline-size; }
     </style>
     <div id="invalid-style" class="base invalid-style"></div>
     <div id="invalid-none" class="base invalid-none"></div>
+    <div id="scroll-state" class="base scroll-state"></div>
+    <div id="scroll-state-and-size" class="base scroll-state-and-size"></div>
     <div id="commented-size" class="base commented-size"></div>
     <div id="escaped-size" class="base escaped-size"></div>
     <div id="reset" class="base reset"></div>
     <div id="name-only" class="base name-only"></div>
+    <div id="shorthand-scroll-state" class="base shorthand-scroll-state"></div>
+    <div id="shorthand-scroll-state-and-size" class="base shorthand-scroll-state-and-size"></div>
     <div id="commented-reset" class="base commented-reset"></div>
     <div id="commented-name-only" class="base commented-name-only"></div>
     <div id="commented-name-and-type" class="base commented-name-and-type"></div>
@@ -174,6 +182,13 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
 
   let invalid_none = find_by_id(&styled, "invalid-none").expect("invalid-none element");
   assert_eq!(invalid_none.styles.container_type, ContainerType::InlineSize);
+
+  let scroll_state = find_by_id(&styled, "scroll-state").expect("scroll-state element");
+  assert_eq!(scroll_state.styles.container_type, ContainerType::Normal);
+
+  let scroll_state_and_size =
+    find_by_id(&styled, "scroll-state-and-size").expect("scroll-state-and-size element");
+  assert_eq!(scroll_state_and_size.styles.container_type, ContainerType::Size);
 
   let commented_size = find_by_id(&styled, "commented-size").expect("commented-size element");
   assert_eq!(commented_size.styles.container_type, ContainerType::Size);
@@ -188,6 +203,25 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
   let name_only = find_by_id(&styled, "name-only").expect("name-only element");
   assert_eq!(name_only.styles.container_type, ContainerType::Normal);
   assert_eq!(name_only.styles.container_name, vec!["demo".to_string()]);
+
+  let shorthand_scroll_state =
+    find_by_id(&styled, "shorthand-scroll-state").expect("shorthand-scroll-state element");
+  assert_eq!(shorthand_scroll_state.styles.container_type, ContainerType::Normal);
+  assert_eq!(
+    shorthand_scroll_state.styles.container_name,
+    vec!["demo".to_string()]
+  );
+
+  let shorthand_scroll_state_and_size = find_by_id(&styled, "shorthand-scroll-state-and-size")
+    .expect("shorthand-scroll-state-and-size element");
+  assert_eq!(
+    shorthand_scroll_state_and_size.styles.container_type,
+    ContainerType::Size
+  );
+  assert_eq!(
+    shorthand_scroll_state_and_size.styles.container_name,
+    vec!["demo".to_string()]
+  );
 
   let commented_reset = find_by_id(&styled, "commented-reset").expect("commented-reset element");
   assert_eq!(commented_reset.styles.container_type, ContainerType::Normal);
