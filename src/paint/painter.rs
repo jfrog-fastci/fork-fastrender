@@ -6555,7 +6555,12 @@ impl Painter {
     }
 
     for (name, value) in &info.attributes {
-      if matches!(name.as_str(), "x" | "y" | "width" | "height") {
+      if name.eq_ignore_ascii_case("x")
+        || name.eq_ignore_ascii_case("y")
+        || name.eq_ignore_ascii_case("width")
+        || name.eq_ignore_ascii_case("height")
+        || name.eq_ignore_ascii_case("opacity")
+      {
         continue;
       }
       parts.push(format!("{}=\"{}\"", name, escape_attr_value(value)));
@@ -13775,6 +13780,31 @@ mod tests {
     let key = TextCacheKey::new(1, 0.0, "hello");
     let key_neg = TextCacheKey::new(1, -0.0, "hello");
     assert_eq!(key, key_neg);
+  }
+
+  #[test]
+  fn foreign_object_image_tag_dedupes_opacity_attribute() {
+    let foreign = ForeignObjectInfo {
+      placeholder: String::new(),
+      attributes: vec![
+        ("opacity".to_string(), "0.9".to_string()),
+        ("id".to_string(), "foo".to_string()),
+      ],
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 0.5,
+      background: None,
+      html: String::new(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Visible,
+      overflow_y: Overflow::Visible,
+    };
+
+    let painter = Painter::new(1, 1, Rgba::TRANSPARENT).expect("create painter");
+    let output = painter.foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+    assert_eq!(output.match_indices("opacity=").count(), 1);
   }
 
   fn make_empty_tree() -> FragmentTree {
