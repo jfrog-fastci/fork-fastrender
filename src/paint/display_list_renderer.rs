@@ -14872,7 +14872,7 @@ mod tests {
   }
 
   #[test]
-  fn non_isolated_mix_blend_mode_disables_parallel_tiling() {
+  fn non_isolated_mix_blend_mode_allows_parallel_tiling_and_matches_serial() {
     let bounds = Rect::from_xywh(0.0, 0.0, 260.0, 260.0);
     let mut list = DisplayList::new();
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -14931,12 +14931,21 @@ mod tests {
     });
 
     assert!(
-      !report.parallel_used,
-      "expected non-isolated mix-blend-mode to disable parallel tiling"
+      report.parallel_used,
+      "expected non-isolated mix-blend-mode to allow parallel tiling (fallback_reason={:?})",
+      report.fallback_reason
     );
+    assert_eq!(pixel(&report.pixmap, 0, 0), (128, 0, 0, 255));
+
+    let serial = DisplayListRenderer::new(260, 260, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled())
+      .render(&list)
+      .unwrap();
     assert_eq!(
-      report.fallback_reason.as_deref(),
-      Some("mix-blend-mode on non-isolated context requires serial painting")
+      report.pixmap.data(),
+      serial.data(),
+      "parallel and serial output should match for non-isolated mix-blend-mode"
     );
   }
 
