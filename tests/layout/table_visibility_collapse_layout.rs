@@ -1210,7 +1210,7 @@ fn column_group_visibility_collapse_removes_extra_border_spacing_gap() {
 }
 
 #[test]
-fn column_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
+fn column_group_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
   let html = r#"
     <html>
       <head>
@@ -1229,12 +1229,16 @@ fn column_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
       <body>
         <table>
           <col style="width: 30px" />
-          <col style="width: 40px; visibility: collapse" />
+          <colgroup style="visibility: collapse">
+            <col style="width: 40px" />
+            <col style="width: 40px" />
+          </colgroup>
           <col style="width: 50px" />
           <tr>
             <td>A</td>
             <td>B</td>
             <td>C</td>
+            <td>D</td>
           </tr>
         </table>
       </body>
@@ -1249,21 +1253,29 @@ fn column_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
   let mut cells = HashMap::new();
   collect_cells(table, (0.0, 0.0), &mut cells);
 
-  assert!(!cells.contains_key(&'B'), "collapsed column cell should not be laid out");
+  assert!(
+    !cells.contains_key(&'B') && !cells.contains_key(&'C'),
+    "collapsed column-group cells should not be laid out"
+  );
 
   let a = cells.get(&'A').expect("cell A present");
-  let c = cells.get(&'C').expect("cell C present");
+  let d = cells.get(&'D').expect("cell D present");
 
   assert!(
-    a.rect.x() > c.rect.x(),
-    "expected RTL order A (right) > C (left), got A.x={} C.x={}",
+    a.rect.x() > d.rect.x(),
+    "expected RTL order A (right) > D (left), got A.x={} D.x={}",
     a.rect.x(),
-    c.rect.x()
+    d.rect.x()
   );
-  let gap = a.rect.x() - (c.rect.x() + c.rect.width());
+  let gap = a.rect.x() - (d.rect.x() + d.rect.width());
   assert!(
     (gap - 10.0).abs() < 0.1,
-    "border-spacing should be applied once between adjacent columns in RTL (gap={gap})"
+    "border-spacing should be applied once between adjacent columns after collapsing column-group in RTL (gap={gap})"
+  );
+  assert!(
+    (d.rect.width() - 50.0).abs() < 0.1,
+    "collapsed column-group should not affect remaining column width in RTL (got {})",
+    d.rect.width()
   );
 }
 
