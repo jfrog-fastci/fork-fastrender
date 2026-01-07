@@ -298,6 +298,50 @@ fn collapsed_border_resolution_honors_col_span() {
 }
 
 #[test]
+fn collapsed_border_resolution_honors_col_span_in_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; direction: rtl; }
+          col { border: none; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col span="2" style="border-right: 3px solid red;">
+          <col>
+          <tr><td></td><td></td><td></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  assert!(
+    borders.vertical_line_width(0) < 0.01,
+    "expected no border on the left edge, got {}",
+    borders.vertical_line_width(0)
+  );
+  assert!(
+    borders.vertical_line_width(1) < 0.01,
+    "expected no border between the non-spanned column and the spanned columns, got {}",
+    borders.vertical_line_width(1)
+  );
+  assert!(
+    (borders.vertical_line_width(2) - 3.0).abs() < 0.01,
+    "expected the <col span> border-right to apply between the spanned columns, got {}",
+    borders.vertical_line_width(2)
+  );
+  assert!(
+    (borders.vertical_line_width(3) - 3.0).abs() < 0.01,
+    "expected the <col span> border-right to also apply on the outer edge, got {}",
+    borders.vertical_line_width(3)
+  );
+}
+
+#[test]
 fn collapsed_border_hidden_suppresses_all() {
   let html = r#"
     <html>
