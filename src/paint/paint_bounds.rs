@@ -128,11 +128,13 @@ pub(crate) fn resolve_length_for_paint(
       len.value * font_size
     }
   } else if len.unit.is_viewport_relative() {
-    if let Some((vw, vh)) = viewport {
-      len.resolve_with_viewport(vw, vh).unwrap_or(len.value * font_size)
-    } else {
-      len.value * font_size
+    let Some((vw, vh)) = viewport else {
+      return 0.0;
+    };
+    if !vw.is_finite() || !vh.is_finite() {
+      return 0.0;
     }
+    len.resolve_with_viewport(vw, vh).unwrap_or(0.0)
   } else if len.unit.is_font_relative() {
     let px = if matches!(len.unit, LengthUnit::Rem) {
       root_font_size

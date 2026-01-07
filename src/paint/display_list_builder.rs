@@ -9209,6 +9209,21 @@ mod tests {
   }
 
   #[test]
+  fn resolve_length_for_paint_resolves_viewport_units_against_viewport() {
+    let len = Length::new(10.0, LengthUnit::Vw);
+    let resolved =
+      DisplayListBuilder::resolve_length_for_paint(&len, 10.0, 10.0, 0.0, Some((200.0, 100.0)));
+    assert!((resolved - 20.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn resolve_length_for_paint_viewport_units_require_viewport() {
+    let len = Length::new(10.0, LengthUnit::Vw);
+    let resolved = DisplayListBuilder::resolve_length_for_paint(&len, 10.0, 10.0, 0.0, None);
+    assert_eq!(resolved, 0.0);
+  }
+
+  #[test]
   fn text_underline_offset_is_relative_to_baseline_for_auto_position() {
     let builder = DisplayListBuilder::new();
     let metrics = DecorationMetrics {
