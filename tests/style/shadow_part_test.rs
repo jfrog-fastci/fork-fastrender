@@ -470,6 +470,8 @@ fn part_container_query_uses_flat_tree_ancestors_when_host_is_slotted() {
       containers: HashMap::from([(
         container_id,
         ContainerQueryInfo {
+          width: inline_size,
+          height: 300.0,
           inline_size,
           block_size: 300.0,
           container_type: ContainerType::InlineSize,

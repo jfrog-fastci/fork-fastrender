@@ -304,6 +304,8 @@ fn container_size_query_var_orientation_parses_and_matches() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      width: 100.0,
+      height: 200.0,
       inline_size: 100.0,
       block_size: 200.0,
       container_type: ContainerType::Size,
@@ -352,6 +354,8 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      width: 160.0,
+      height: 90.0,
       inline_size: 160.0,
       block_size: 90.0,
       container_type: ContainerType::Size,
