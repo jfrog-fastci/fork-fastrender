@@ -64,6 +64,9 @@ fn inline_text_like_form_control_uses_text_baseline() {
       focus_visible: false,
       required: false,
       invalid: false,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
     }),
     Some(Size::new(100.0, 40.0)),
     None,
@@ -104,4 +107,3 @@ fn inline_text_like_form_control_uses_text_baseline() {
     "expected form control to extend below the line baseline: bottom={control_bottom_y:.3} baseline={baseline_y:.3}",
   );
 }
-
