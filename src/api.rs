@@ -2573,6 +2573,30 @@ thread_local! {
   static DIAGNOSTICS_SESSION_DEPTH: Cell<usize> = Cell::new(0);
 }
 
+thread_local! {
+  // Layout for paged media (pagination + fragmentation) is deeply recursive and can overflow the
+  // default 2MB Rust thread stack on debug builds. Run it on a larger-stack helper thread and use
+  // this flag to avoid recursively spawning further helper threads (e.g. nested iframe layout).
+  static LAYOUT_STACK_THREAD_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+struct LayoutStackThreadGuard {
+  previous: bool,
+}
+
+impl LayoutStackThreadGuard {
+  fn install() -> Self {
+    let previous = LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.replace(true));
+    Self { previous }
+  }
+}
+
+impl Drop for LayoutStackThreadGuard {
+  fn drop(&mut self) {
+    LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.set(self.previous));
+  }
+}
+
 /// Ensures only one diagnostics-enabled render executes at a time.
 ///
 /// The various `*_diagnostics` modules use global state (enabled flag + accumulator). If multiple
@@ -7990,6 +8014,77 @@ impl FastRender {
   }
 
   fn layout_document_for_media_with_artifacts(
+    &mut self,
+    dom: &DomNode,
+    width: u32,
+    height: u32,
+    media_type: MediaType,
+    options: LayoutDocumentOptions,
+    viewport_scroll: Point,
+    deadline: Option<&RenderDeadline>,
+    stage_mem_budget_bytes: Option<u64>,
+    trace: &TraceHandle,
+    layout_parallelism: LayoutParallelism,
+    stats: Option<&mut RenderStatsRecorder>,
+  ) -> Result<LayoutArtifacts> {
+    if matches!(media_type, MediaType::Print)
+      && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get())
+    {
+      let deadline_stack = crate::render_control::deadline_stack_snapshot();
+      let stage = crate::render_control::active_stage();
+      return std::thread::scope(|scope| {
+        let handle = std::thread::Builder::new()
+          .name("fastr-layout".to_string())
+          .stack_size(8 * 1024 * 1024)
+          .spawn_scoped(scope, || {
+            let _deadline_stack_guard =
+              crate::render_control::DeadlineStackGuard::install(deadline_stack);
+            let _stage_guard = StageGuard::install(stage);
+            let _stack_guard = LayoutStackThreadGuard::install();
+            self.layout_document_for_media_with_artifacts_inner(
+              dom,
+              width,
+              height,
+              media_type,
+              options,
+              viewport_scroll,
+              deadline,
+              stage_mem_budget_bytes,
+              trace,
+              layout_parallelism,
+              stats,
+            )
+          })
+          .map_err(|e| {
+            Error::Render(RenderError::InvalidParameters {
+              message: format!("Failed to spawn layout worker: {e}"),
+            })
+          })?;
+
+        handle.join().map_err(|_| {
+          Error::Render(RenderError::InvalidParameters {
+            message: "Layout worker thread panicked".to_string(),
+          })
+        })?
+      });
+    }
+
+    self.layout_document_for_media_with_artifacts_inner(
+      dom,
+      width,
+      height,
+      media_type,
+      options,
+      viewport_scroll,
+      deadline,
+      stage_mem_budget_bytes,
+      trace,
+      layout_parallelism,
+      stats,
+    )
+  }
+
+  fn layout_document_for_media_with_artifacts_inner(
     &mut self,
     dom: &DomNode,
     width: u32,
