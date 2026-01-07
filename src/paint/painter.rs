@@ -18303,6 +18303,7 @@ mod tests {
       &ReplacedType::Iframe {
         src: "   ".to_string(),
         srcdoc: None,
+        referrer_policy: None,
       },
       None,
       None,
@@ -18333,6 +18334,7 @@ mod tests {
       !painter.paint_image_from_src(
         &src,
         CrossOriginAttribute::None,
+        None,
         None,
         0.0,
         0.0,

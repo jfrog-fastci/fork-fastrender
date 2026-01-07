@@ -1848,6 +1848,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(200.0, 100.0);
@@ -1898,6 +1899,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(200.0, 100.0);
@@ -1950,6 +1952,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(200.0, 100.0);
@@ -1999,6 +2002,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(200.0, 100.0);
@@ -2140,6 +2144,7 @@ mod tests {
         }),
         picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(500.0, 300.0);
@@ -2188,6 +2193,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     // Viewport width 200 => 50vw = 100; minus 10px => slot width 90px.
