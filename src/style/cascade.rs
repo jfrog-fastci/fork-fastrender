@@ -13121,6 +13121,39 @@ mod tests {
   }
 
   #[test]
+  fn vendor_placeholder_pseudo_element_selector_lists_do_not_drop_rules() {
+    let _guard = cascade_global_test_lock();
+
+    let input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "x".to_string())],
+      },
+      children: vec![],
+    };
+
+    // Real-world stylesheets commonly include a 4-way vendor placeholder selector list. Ensure we
+    // parse `::-ms-input-placeholder` as an alias for `::placeholder` so the whole rule is not
+    // dropped.
+    let stylesheet = parse_stylesheet(
+      r#"input::-webkit-input-placeholder, input::-moz-placeholder, input::-ms-input-placeholder, input::placeholder {
+        color: rgb(255, 0, 0);
+        opacity: 1;
+      }"#,
+    )
+    .expect("parse stylesheet");
+
+    let styled = apply_styles(&input_dom, &stylesheet);
+    let placeholder = styled
+      .placeholder_styles
+      .as_ref()
+      .expect("expected placeholder pseudo styles");
+    assert_eq!(placeholder.color, Rgba::RED);
+    assert_eq!(placeholder.opacity, 1.0);
+  }
+
+  #[test]
   fn prepared_cascade_matches_legacy_container_query_recascade() {
     let dom = DomNode {
       node_type: DomNodeType::Element {
