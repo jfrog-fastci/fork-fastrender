@@ -3059,11 +3059,14 @@ pub struct DisplayListRenderer {
   gradient_pixmap_cache: GradientPixmapCache,
   gradient_stats: GradientStats,
   diagnostics_enabled: bool,
+  trace_backdrop_stack: bool,
 }
 
 #[derive(Debug)]
 struct StackingRecord {
+  establishes_backdrop_root: bool,
   needs_layer: bool,
+  mix_blend_mode: BlendMode,
   filters: Vec<ResolvedFilter>,
   radii: BorderRadii,
   bounds: Rect,
@@ -4069,6 +4072,7 @@ impl DisplayListRenderer {
       gradient_pixmap_cache: GradientPixmapCache::default(),
       gradient_stats: GradientStats::default(),
       diagnostics_enabled,
+      trace_backdrop_stack: runtime_flag("FASTR_TRACE_BACKDROP_STACK"),
     })
   }
 
@@ -6849,6 +6853,24 @@ impl DisplayListRenderer {
       return Ok(());
     };
 
+    if self.trace_backdrop_stack {
+      let parent_depth = layer_stack.len().saturating_sub(1);
+      let mut root_depth = 0usize;
+      if parent_depth > 0 {
+        for idx in (0..parent_depth).rev() {
+          if layer_stack[idx].is_backdrop_root {
+            root_depth = idx + 1;
+            break;
+          }
+        }
+      }
+      eprintln!(
+        "backdrop_stack apply_backdrop_filter range={}..{} composite_allocated={}",
+        root_depth,
+        parent_depth,
+        root_depth != parent_depth
+      );
+    }
     let clip_origin = (0, 0);
     let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut() {
       Some(shared) => shared,
@@ -9034,6 +9056,7 @@ impl DisplayListRenderer {
         self.render_list_marker(&scaled)?;
       }
       DisplayItem::PushStackingContext(item) => {
+        let canvas_layer_depth_before = self.canvas.layer_stack_len();
         let parent_child_transform = *self
           .transform_stack
           .last()
@@ -9291,7 +9314,9 @@ impl DisplayListRenderer {
           transform: clip_transform,
         });
         self.stacking_layers.push(StackingRecord {
+          establishes_backdrop_root: item.establishes_backdrop_root,
           needs_layer,
+          mix_blend_mode: item.mix_blend_mode,
           filters: scaled_filters,
           radii,
           bounds,
@@ -9311,13 +9336,24 @@ impl DisplayListRenderer {
         if let Some(layer_transform) = layer_transform_for_canvas {
           self.canvas.set_transform(layer_transform);
         }
+
+        if self.trace_backdrop_stack {
+          let depth_after = self.canvas.layer_stack_len();
+          eprintln!(
+            "backdrop_stack push_sc backdrop_root={} needs_layer={} canvas_layers={} -> {}",
+            item.establishes_backdrop_root, needs_layer, canvas_layer_depth_before, depth_after
+          );
+        }
       }
       DisplayItem::PopStackingContext => {
+        let canvas_layer_depth_before = self.canvas.layer_stack_len();
         let record = self
           .stacking_layers
           .pop()
           .unwrap_or_else(|| StackingRecord {
+            establishes_backdrop_root: false,
             needs_layer: false,
+            mix_blend_mode: BlendMode::Normal,
             filters: Vec::new(),
             radii: BorderRadii::ZERO,
             bounds: Rect::ZERO,
@@ -9341,6 +9377,22 @@ impl DisplayListRenderer {
             self.culled_depth -= 1;
           }
           return Ok(());
+        }
+
+        if self.trace_backdrop_stack {
+          let depth_after = canvas_layer_depth_before.saturating_sub(record.needs_layer as usize);
+          eprintln!(
+            "backdrop_stack pop_sc backdrop_root={} needs_layer={} canvas_layers={} -> {}",
+            record.establishes_backdrop_root, record.needs_layer, canvas_layer_depth_before, depth_after
+          );
+        }
+
+        if self.trace_backdrop_stack && !matches!(record.mix_blend_mode, BlendMode::Normal) {
+          let parent_depth = canvas_layer_depth_before.saturating_sub(1);
+          eprintln!(
+            "backdrop_stack composite_mix_blend mode={:?} range={}..{} composite_allocated={}",
+            record.mix_blend_mode, parent_depth, parent_depth, false
+          );
         }
         if record.needs_layer {
           let (mut layer, origin, opacity, composite_blend) = self.canvas.pop_layer_raw()?;

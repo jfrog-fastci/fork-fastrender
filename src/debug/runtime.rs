@@ -527,6 +527,10 @@ impl DebugConfig {
       truthy(raw.get("FASTR_TRACE_GRID_LAYOUT"), false),
     );
     config.insert_bool(
+      "FASTR_TRACE_BACKDROP_STACK",
+      truthy(raw.get("FASTR_TRACE_BACKDROP_STACK"), false),
+    );
+    config.insert_bool(
       "FASTR_DEBUG_GRID_BASELINE",
       raw.contains_key("FASTR_DEBUG_GRID_BASELINE"),
     );
