@@ -62,7 +62,7 @@ use crate::animation;
 use crate::compat::CompatProfile;
 use crate::css::encoding::{decode_css_bytes, decode_css_bytes_cow};
 use crate::css::loader::{
-  absolutize_css_urls_cow, extract_css_links, extract_embedded_css_urls_with_meta,
+  absolutize_css_urls_cow, extract_css_links_with_meta, extract_embedded_css_urls_with_meta,
   inject_css_into_html, inline_imports_with_request_with_diagnostics,
   link_rel_is_stylesheet_candidate, resolve_href, resolve_href_with_base,
   should_scan_embedded_css_urls, FetchedStylesheet, ImportFetchContext, InlineImportState,
@@ -248,6 +248,7 @@ struct ImageIntrinsicProbeJob {
 struct ImageIntrinsicProbeKey {
   url: String,
   crossorigin: CrossOriginAttribute,
+  referrer_policy: Option<crate::resource::ReferrerPolicy>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -6682,7 +6683,10 @@ impl FastRender {
 
     enum StylesheetTask {
       Inline { css: String },
-      External { url: String },
+      External {
+        url: String,
+        referrer_policy: Option<crate::resource::ReferrerPolicy>,
+      },
     }
 
     impl StylesheetTask {
@@ -6722,22 +6726,27 @@ impl FastRender {
             };
             Ok((Some(resolved), local_media_cache))
           }
-          StylesheetTask::External { url } => {
+          StylesheetTask::External {
+            url,
+            referrer_policy: link_referrer_policy,
+          } => {
             if let Some(counter) = stylesheet_fetch_counter.as_ref() {
               counter.fetch_add(1, Ordering::Relaxed);
             }
             let referrer = resource_context
               .as_ref()
               .and_then(|ctx| ctx.document_url.as_deref());
-            let referrer_policy = resource_context
+            let doc_referrer_policy = resource_context
               .as_ref()
               .map(|ctx| ctx.referrer_policy)
               .unwrap_or_default();
+            let request_referrer_policy =
+              link_referrer_policy.unwrap_or(doc_referrer_policy);
             let mut request = FetchRequest::new(url.as_str(), FetchDestination::Style);
             if let Some(referrer) = referrer {
               request = request.with_referrer(referrer);
             }
-            request = request.with_referrer_policy(referrer_policy);
+            request = request.with_referrer_policy(request_referrer_policy);
             let resource = match fetcher.fetch_with_request(request) {
               Ok(resource) => resource,
               Err(err) => {
@@ -6866,6 +6875,7 @@ impl FastRender {
 
               tasks.push(StylesheetTask::External {
                 url: stylesheet_url,
+                referrer_policy: link.referrer_policy,
               });
             }
           }
@@ -7050,16 +7060,17 @@ impl FastRender {
           if let Some(counter) = stylesheet_fetch_counter.as_ref() {
             counter.fetch_add(1, Ordering::Relaxed);
           }
-          let referrer_policy = self
+          let doc_referrer_policy = self
             .resource_context
             .as_ref()
             .map(|ctx| ctx.referrer_policy)
             .unwrap_or_default();
+          let request_referrer_policy = link.referrer_policy.unwrap_or(doc_referrer_policy);
           let mut request = FetchRequest::new(stylesheet_url.as_str(), FetchDestination::Style);
           if let Some(referrer) = self.document_url() {
             request = request.with_referrer(referrer);
           }
-          request = request.with_referrer_policy(referrer_policy);
+          request = request.with_referrer_policy(request_referrer_policy);
           match fetcher.fetch_with_request(request) {
             Ok(resource) => {
               if let Some(ctx) = resource_context {
@@ -9209,7 +9220,7 @@ impl FastRender {
     let inlining_start = stats.as_deref().and_then(|rec| rec.timer());
     let fetch_link_css = runtime_toggles.truthy_with_default("FASTR_FETCH_LINK_CSS", true);
     let extract_links_timer = stats.as_deref().and_then(|rec| rec.timer());
-    let mut css_links = extract_css_links(html, base_url, media_type)?;
+    let mut css_links = extract_css_links_with_meta(html, base_url, media_type)?;
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(
         &mut rec.stats.timings.css_inline_extract_links_ms,
@@ -9225,7 +9236,7 @@ impl FastRender {
         css_links.truncate(limit);
       }
     }
-    let mut seen: HashSet<String> = css_links.iter().cloned().collect();
+    let mut seen: HashSet<String> = css_links.iter().map(|link| link.url.clone()).collect();
     let remaining_limit = css_limit
       .unwrap_or(usize::MAX)
       .saturating_sub(css_links.len());
@@ -9253,7 +9264,10 @@ impl FastRender {
       }
       for extra in embedded.urls {
         if seen.insert(extra.clone()) {
-          css_links.push(extra);
+          css_links.push(crate::css::loader::CssLinkCandidate {
+            url: extra,
+            referrer_policy: None,
+          });
         }
       }
     }
@@ -9265,7 +9279,10 @@ impl FastRender {
       .map(|ctx| ctx.referrer_policy)
       .unwrap_or_default();
 
-    for css_url in css_links {
+    for candidate in css_links {
+      let css_url = candidate.url;
+      let referrer_policy = candidate.referrer_policy;
+      let effective_referrer_policy = referrer_policy.unwrap_or(document_referrer_policy);
       let mut budget_diag = |url: &str, reason: &str| {
         diagnostics.record_message(ResourceKind::Stylesheet, url, reason);
       };
@@ -9286,7 +9303,7 @@ impl FastRender {
       if let Some(referrer) = document_referrer {
         request = request.with_referrer(referrer);
       }
-      request = request.with_referrer_policy(document_referrer_policy);
+      request = request.with_referrer_policy(effective_referrer_policy);
       let fetch_timer = stats.as_deref().and_then(|rec| rec.timer());
       match fetcher.fetch_with_request(request) {
         Ok(res) => {
@@ -9355,13 +9372,13 @@ impl FastRender {
                   )));
                 }
               }
-              let mut request = FetchRequest::new(u, FetchDestination::Style);
-              request = request.with_referrer(import_ctx.importer_url);
-              request = request.with_referrer_policy(document_referrer_policy);
-              match fetcher.fetch_with_request(request) {
-                Ok(res) => {
-                  if let Some(resource_ctx) = resource_context {
-                    if let Err(err) = resource_ctx.check_allowed_with_final(
+               let mut request = FetchRequest::new(u, FetchDestination::Style);
+               request = request.with_referrer(import_ctx.importer_url);
+              request = request.with_referrer_policy(effective_referrer_policy);
+               match fetcher.fetch_with_request(request) {
+                 Ok(res) => {
+                   if let Some(resource_ctx) = resource_context {
+                     if let Err(err) = resource_ctx.check_allowed_with_final(
                       ResourceKind::Stylesheet,
                       u,
                       res.final_url.as_deref(),
@@ -9640,12 +9657,14 @@ impl FastRender {
           srcset,
           picture_sources,
           crossorigin,
+          referrer_policy,
           ..
         } = &replaced_box.replaced_type
         else {
           return;
         };
         let crossorigin = *crossorigin;
+        let referrer_policy = *referrer_policy;
 
         // Mirrors the early-return logic in `resolve_intrinsic_for_replaced_for_media` so we don't
         // schedule unnecessary probes.
@@ -9726,6 +9745,7 @@ impl FastRender {
           .entry(ImageIntrinsicProbeKey {
             url: resolved_url,
             crossorigin,
+            referrer_policy,
           })
           .or_default()
           .push(ImageIntrinsicProbeJob {
@@ -9800,7 +9820,11 @@ impl FastRender {
       let _stage_guard = StageGuard::install(Some(RenderStage::BoxTree));
       let probe_start = profile_enabled.then(Instant::now);
       let probe_result =
-        image_cache.probe_resolved_with_crossorigin(key.url.as_str(), key.crossorigin);
+        image_cache.probe_resolved_with_crossorigin_and_referrer_policy(
+          key.url.as_str(),
+          key.crossorigin,
+          key.referrer_policy,
+        );
       let probe_ms = probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
       let probe_ok = probe_result.is_ok();
 
@@ -15956,6 +15980,7 @@ mod tests {
         srcset: Vec::new(),
         picture_sources: Vec::new(),
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
       },
       None,
       None,
@@ -16198,6 +16223,7 @@ mod tests {
       ReplacedType::Iframe {
         src: "https://example.com/embed.html".to_string(),
         srcdoc: None,
+        referrer_policy: None,
       },
       Some(Size::new(120.0, 0.0)),
       None,
@@ -16296,6 +16322,7 @@ mod tests {
             srcset: Vec::new(),
             picture_sources: Vec::new(),
             crossorigin: CrossOriginAttribute::None,
+            referrer_policy: None,
           },
           None,
           None,
@@ -16309,6 +16336,7 @@ mod tests {
             srcset: Vec::new(),
             picture_sources: Vec::new(),
             crossorigin: CrossOriginAttribute::None,
+            referrer_policy: None,
           },
           None,
           None,
@@ -16542,6 +16570,7 @@ mod tests {
             srcset: Vec::new(),
             picture_sources: Vec::new(),
             crossorigin: CrossOriginAttribute::None,
+            referrer_policy: None,
           },
           None,
           None,
@@ -16555,6 +16584,7 @@ mod tests {
             srcset: Vec::new(),
             picture_sources: Vec::new(),
             crossorigin: CrossOriginAttribute::None,
+            referrer_policy: None,
           },
           None,
           None,
@@ -16774,6 +16804,7 @@ mod tests {
         srcset: Vec::new(),
         picture_sources: Vec::new(),
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
       },
       None,
       None,
@@ -16822,6 +16853,7 @@ mod tests {
         }],
         picture_sources: Vec::new(),
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
       },
       None,
       None,

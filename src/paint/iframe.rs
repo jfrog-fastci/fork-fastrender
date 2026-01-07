@@ -8,6 +8,7 @@ use crate::paint::pixmap::new_pixmap;
 use crate::render_control;
 use crate::resource::{
   ensure_http_success, origin_from_url, FetchDestination, FetchRequest, ResourceAccessPolicy,
+  ReferrerPolicy,
 };
 use crate::style::color::Rgba;
 use crate::style::ComputedStyle;
@@ -74,6 +75,7 @@ struct IframeRenderCacheKey {
   nested_depth: usize,
   background: BackgroundKey,
   policy_hash: u64,
+  referrer_policy: Option<ReferrerPolicy>,
 }
 
 #[derive(Clone)]
@@ -460,6 +462,7 @@ pub(crate) fn render_iframe_srcdoc(
     nested_depth,
     background: background.into(),
     policy_hash: policy_fingerprint(&policy),
+    referrer_policy: None,
   };
 
   let (flight, is_owner) = {
@@ -507,6 +510,7 @@ pub(crate) fn render_iframe_srcdoc(
 
 pub(crate) fn render_iframe_src(
   src: &str,
+  referrer_policy: Option<ReferrerPolicy>,
   content_rect: Rect,
   style: Option<&ComputedStyle>,
   image_cache: &ImageCache,
@@ -597,6 +601,7 @@ pub(crate) fn render_iframe_src(
     nested_depth,
     background: background.into(),
     policy_hash: policy_fingerprint(&policy),
+    referrer_policy,
   };
   let (flight, is_owner) = {
     let mut cache = iframe_render_cache()
@@ -624,15 +629,16 @@ pub(crate) fn render_iframe_src(
     .as_ref()
     .and_then(|ctx| ctx.document_url.as_deref())
     .or(base_url.as_deref());
-  let referrer_policy = context
+  let doc_referrer_policy = context
     .as_ref()
     .map(|ctx| ctx.referrer_policy)
     .unwrap_or_default();
+  let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
   let mut request = FetchRequest::new(&resolved, FetchDestination::Iframe);
   if let Some(referrer) = referrer {
     request = request.with_referrer(referrer);
   }
-  request = request.with_referrer_policy(referrer_policy);
+  request = request.with_referrer_policy(request_referrer_policy);
   let resource = match fetcher.fetch_with_request(request) {
     Ok(resource) => resource,
     Err(err) => {
@@ -942,7 +948,7 @@ mod tests {
     let image_cache = ImageCache::with_fetcher(fetcher.clone());
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
-    let first = render_iframe_src(url, rect, None, &image_cache, &font_ctx, 1.0, 3)
+    let first = render_iframe_src(url, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
       .expect("first iframe src render");
     assert_eq!(
       take_last_iframe_cache_hit(),
@@ -950,7 +956,7 @@ mod tests {
       "first render should miss cache"
     );
 
-    let second = render_iframe_src(url, rect, None, &image_cache, &font_ctx, 1.0, 3)
+    let second = render_iframe_src(url, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
       .expect("second iframe src render");
     assert_eq!(
       take_last_iframe_cache_hit(),
@@ -995,7 +1001,7 @@ mod tests {
     }));
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
-    let result = render_iframe_src(url, rect, None, &image_cache, &font_ctx, 1.0, 3);
+    let result = render_iframe_src(url, None, rect, None, &image_cache, &font_ctx, 1.0, 3);
     assert!(
       result.is_some(),
       "expected cross-origin iframe document to render even when same-origin subresource policy is enabled"
@@ -1022,7 +1028,7 @@ mod tests {
     let image_cache = ImageCache::with_fetcher(fetcher.clone());
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
-    render_iframe_src(requested_url, rect, None, &image_cache, &font_ctx, 1.0, 3)
+    render_iframe_src(requested_url, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
       .expect("iframe src render should succeed");
 
     let urls = fetcher
@@ -1064,6 +1070,7 @@ mod tests {
       nested_depth: 2,
       background: Rgba::WHITE.into(),
       policy_hash: policy_fingerprint(&ResourceAccessPolicy::default()),
+      referrer_policy: None,
     };
     let barrier = Arc::new(Barrier::new(2));
     let owners = Arc::new(AtomicUsize::new(0));
@@ -1200,6 +1207,7 @@ mod diagnostics_tests {
 
     let result = render_iframe_src(
       "/bad-network",
+      None,
       rect,
       None,
       &cache,
@@ -1233,6 +1241,7 @@ mod diagnostics_tests {
 
     let result = render_iframe_src(
       "/bad-status",
+      None,
       rect,
       None,
       &cache,
@@ -1263,6 +1272,7 @@ mod diagnostics_tests {
 
     let result = render_iframe_src(
       "about:blank",
+      None,
       rect,
       None,
       &cache,
@@ -1286,7 +1296,7 @@ mod diagnostics_tests {
     let cache = test_image_cache(fetcher, diagnostics.clone());
     let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
 
-    let result = render_iframe_src("   ", rect, None, &cache, &test_font_context(), 1.0, 1);
+    let result = render_iframe_src("   ", None, rect, None, &cache, &test_font_context(), 1.0, 1);
     assert!(result.is_none());
 
     let diag = diagnostics.into_inner();
@@ -1311,6 +1321,7 @@ mod diagnostics_tests {
 
     let result = render_iframe_src(
       " \t  https://example.com",
+      None,
       rect,
       None,
       &cache,

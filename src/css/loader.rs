@@ -12,12 +12,19 @@ use crate::debug::runtime;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{RenderError, RenderStage, Result};
 use crate::render_control::{check_active, check_active_periodic, RenderDeadline};
+use crate::resource::ReferrerPolicy;
 use cssparser::{serialize_identifier, Parser, ParserInput, Token};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 use url::Url;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CssLinkCandidate {
+  pub url: String,
+  pub referrer_policy: Option<ReferrerPolicy>,
+}
 
 /// Determine whether a tokenized `<link rel>` list should be treated as a stylesheet.
 ///
@@ -2000,11 +2007,24 @@ pub fn extract_css_links(
   base_url: &str,
   media_type: crate::style::media::MediaType,
 ) -> std::result::Result<Vec<String>, RenderError> {
+  Ok(
+    extract_css_links_with_meta(html, base_url, media_type)?
+      .into_iter()
+      .map(|candidate| candidate.url)
+      .collect(),
+  )
+}
+
+pub fn extract_css_links_with_meta(
+  html: &str,
+  base_url: &str,
+  media_type: crate::style::media::MediaType,
+) -> std::result::Result<Vec<CssLinkCandidate>, RenderError> {
   let Ok(dom) = crate::dom::parse_html(html) else {
-    return extract_css_links_without_dom(html, base_url, media_type);
+    return extract_css_links_without_dom_with_meta(html, base_url, media_type);
   };
 
-  let mut css_urls = Vec::new();
+  let mut css_links = Vec::new();
   let toggles = runtime::runtime_toggles();
   let debug = toggles.truthy("FASTR_LOG_CSS_LINKS");
   let preload_stylesheets_enabled =
@@ -2055,7 +2075,10 @@ pub fn extract_css_links(
       );
     }
     if let Some(full_url) = resolve_href(base_url, &href) {
-      css_urls.push(full_url);
+      css_links.push(CssLinkCandidate {
+        url: full_url,
+        referrer_policy: link.referrer_policy,
+      });
     }
   };
 
@@ -2073,7 +2096,7 @@ pub fn extract_css_links(
     }
   }
 
-  Ok(dedupe_links_preserving_order(css_urls))
+  Ok(dedupe_link_candidates_preserving_order(css_links))
 }
 
 fn extract_css_links_without_dom(
@@ -2081,6 +2104,19 @@ fn extract_css_links_without_dom(
   base_url: &str,
   media_type: crate::style::media::MediaType,
 ) -> std::result::Result<Vec<String>, RenderError> {
+  Ok(
+    extract_css_links_without_dom_with_meta(html, base_url, media_type)?
+      .into_iter()
+      .map(|candidate| candidate.url)
+      .collect(),
+  )
+}
+
+fn extract_css_links_without_dom_with_meta(
+  html: &str,
+  base_url: &str,
+  media_type: crate::style::media::MediaType,
+) -> std::result::Result<Vec<CssLinkCandidate>, RenderError> {
   let html = crate::html::strip_template_contents(html);
   let html = html.as_ref();
   let mut css_urls = Vec::new();
@@ -2131,10 +2167,10 @@ fn extract_css_links_without_dom(
         is_stylesheet_link = true;
       }
 
-      if is_stylesheet_link {
-        if debug {
-          eprintln!("[css] found <link>: {}", link_tag);
-        }
+        if is_stylesheet_link {
+          if debug {
+            eprintln!("[css] found <link>: {}", link_tag);
+          }
         let mut allowed = true;
 
         if let Some(media) = attrs.get("media") {
@@ -2161,7 +2197,13 @@ fn extract_css_links_without_dom(
           let href = normalize_scheme_slashes(href);
           if let Some(full_url) = resolve_href(base_url, &href) {
             if allowed {
-              css_urls.push(full_url);
+              let referrer_policy = attrs
+                .get("referrerpolicy")
+                .and_then(|value| ReferrerPolicy::from_attribute(value));
+              css_urls.push(CssLinkCandidate {
+                url: full_url,
+                referrer_policy,
+              });
             }
           }
         }
@@ -2173,7 +2215,7 @@ fn extract_css_links_without_dom(
     }
   }
 
-  Ok(dedupe_links_preserving_order(css_urls))
+  Ok(dedupe_link_candidates_preserving_order(css_urls))
 }
 
 fn media_attr_allows_target(value: &str, target: crate::style::media::MediaType) -> bool {
@@ -2608,6 +2650,13 @@ pub fn dedupe_links_preserving_order(mut links: Vec<String>) -> Vec<String> {
   let mut seen: FxHashSet<String> = FxHashSet::default();
   seen.reserve(links.len());
   links.retain(|link| seen.insert(link.clone()));
+  links
+}
+
+fn dedupe_link_candidates_preserving_order(mut links: Vec<CssLinkCandidate>) -> Vec<CssLinkCandidate> {
+  let mut seen: FxHashSet<String> = FxHashSet::default();
+  seen.reserve(links.len());
+  links.retain(|link| seen.insert(link.url.clone()));
   links
 }
 

@@ -874,6 +874,31 @@ impl ReferrerPolicy {
   /// Chromium's default policy for requests without an explicit referrer policy.
   pub const CHROMIUM_DEFAULT: ReferrerPolicy = ReferrerPolicy::StrictOriginWhenCrossOrigin;
 
+  pub const fn as_str(self) -> &'static str {
+    match self {
+      Self::EmptyString => "",
+      Self::NoReferrer => "no-referrer",
+      Self::NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
+      Self::Origin => "origin",
+      Self::OriginWhenCrossOrigin => "origin-when-cross-origin",
+      Self::SameOrigin => "same-origin",
+      Self::StrictOrigin => "strict-origin",
+      Self::StrictOriginWhenCrossOrigin => "strict-origin-when-cross-origin",
+      Self::UnsafeUrl => "unsafe-url",
+    }
+  }
+
+  /// Parse a `referrerpolicy` attribute value.
+  ///
+  /// Returns `None` when the attribute is missing, empty, or invalid, which signals that the
+  /// request should use the document's default referrer policy.
+  pub fn from_attribute(value: &str) -> Option<Self> {
+    match Self::parse(value)? {
+      Self::EmptyString => None,
+      other => Some(other),
+    }
+  }
+
   /// Parse a referrer policy token (case-insensitive, trims whitespace).
   ///
   /// Returns `None` when the token is unrecognized.

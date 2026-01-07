@@ -23,6 +23,7 @@
 
 use crate::geometry::Size;
 use crate::math::MathLayout;
+use crate::resource::ReferrerPolicy;
 use crate::style::color::Rgba;
 use crate::style::display::FormattingContextType;
 use crate::style::media::MediaQuery;
@@ -509,6 +510,8 @@ pub enum ReplacedType {
     alt: Option<String>,
     /// Parsed `crossorigin` attribute, used to drive CORS-mode image requests.
     crossorigin: CrossOriginAttribute,
+    /// Optional parsed `referrerpolicy` attribute.
+    referrer_policy: Option<ReferrerPolicy>,
     /// Srcset candidates for density-aware selection
     srcset: Vec<SrcsetCandidate>,
     /// Sizes attribute values for width-descriptor selection
@@ -545,6 +548,8 @@ pub enum ReplacedType {
     src: String,
     /// Inline HTML content overriding src
     srcdoc: Option<String>,
+    /// Optional parsed `referrerpolicy` attribute.
+    referrer_policy: Option<ReferrerPolicy>,
   },
 
   /// `<embed>` element
@@ -1519,6 +1524,7 @@ mod tests {
         src: "image.png".to_string(),
         alt: None,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1652,6 +1658,7 @@ mod tests {
         srcset: Vec::new(),
         picture_sources: Vec::new(),
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
       },
       None,
       None,
@@ -1785,6 +1792,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(200.0, 100.0);
@@ -2036,6 +2044,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(1200.0, 800.0);
@@ -2081,6 +2090,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(200.0, 100.0);
@@ -2207,6 +2217,7 @@ mod tests {
       sizes: None,
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     // With viewport width 500 and DPR 2, density candidates are 0.8 and 1.6.
@@ -2247,6 +2258,7 @@ mod tests {
       sizes: None,
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     // Slot width is zero (e.g., auto-sized placeholder), so selection should fall back to viewport.
@@ -2287,6 +2299,7 @@ mod tests {
       sizes: None,
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let media_ctx = MediaContext::screen(800.0, 600.0).with_device_pixel_ratio(2.0);
@@ -2397,6 +2410,7 @@ mod tests {
         },
       ],
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let small_viewport = Size::new(400.0, 300.0);
@@ -2434,6 +2448,7 @@ mod tests {
       src: "fallback".to_string(),
       alt: None,
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
       srcset: vec![],
       sizes: None,
       picture_sources: vec![
@@ -2502,6 +2517,7 @@ mod tests {
         mime_type: None,
       }],
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(800.0, 600.0);
@@ -2543,6 +2559,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let viewport = Size::new(400.0, 200.0);
@@ -2603,6 +2620,7 @@ mod tests {
       }),
       picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let small_viewport = Size::new(300.0, 400.0);
@@ -2666,6 +2684,7 @@ mod tests {
         },
       ],
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
     };
 
     let small_viewport = Size::new(400.0, 300.0);
@@ -2703,12 +2722,14 @@ mod tests {
     let iframe = ReplacedType::Iframe {
       src: "https://example.com".to_string(),
       srcdoc: Some("hello world".to_string()),
+      referrer_policy: None,
     };
     assert_eq!(iframe.placeholder_label(), Some("hello world"));
 
     let iframe_no_srcdoc = ReplacedType::Iframe {
       src: "https://example.com".to_string(),
       srcdoc: None,
+      referrer_policy: None,
     };
     assert_eq!(iframe_no_srcdoc.placeholder_label(), Some("iframe"));
   }

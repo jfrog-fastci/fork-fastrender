@@ -1966,6 +1966,7 @@ mod tests {
         srcset: Vec::new(),
         picture_sources: Vec::new(),
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
       },
     );
 

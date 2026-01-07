@@ -53,6 +53,7 @@ use super::types::SupportsCondition;
 use super::types::SupportsRule;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{Error, RenderError, RenderStage, Result};
+use crate::resource::ReferrerPolicy;
 use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Color;
 use crate::style::counter_styles::{CounterStyleRule, CounterSystem, SpeakAs};
@@ -4374,6 +4375,8 @@ pub struct StylesheetLink {
   pub rel: Vec<String>,
   /// Optional `as` attribute value.
   pub as_attr: Option<String>,
+  /// Optional parsed `referrerpolicy` attribute.
+  pub referrer_policy: Option<ReferrerPolicy>,
   /// Optional `media` attribute value.
   pub media: Option<String>,
   /// Optional `type` attribute value.
@@ -4469,7 +4472,7 @@ pub fn extract_css_sources(dom: &DomNode) -> Vec<ScopedStylesheetSource> {
               css.push_str(text);
             }
           }
-
+ 
           sources.push(ScopedStylesheetSource {
             scope: frame.scope.clone(),
             source: StylesheetSource::Inline(InlineStyle {
@@ -4496,6 +4499,10 @@ pub fn extract_css_sources(dom: &DomNode) -> Vec<ScopedStylesheetSource> {
                 href,
                 rel,
                 as_attr: frame.node.get_attribute("as"),
+                referrer_policy: frame
+                  .node
+                  .get_attribute_ref("referrerpolicy")
+                  .and_then(ReferrerPolicy::from_attribute),
                 media: frame.node.get_attribute("media"),
                 type_attr: frame.node.get_attribute("type"),
                 disabled: frame.node.get_attribute_ref("disabled").is_some(),
@@ -4592,6 +4599,9 @@ pub fn extract_scoped_css_sources(dom: &DomNode) -> ScopedStylesheetSources {
             href,
             rel,
             as_attr: node.get_attribute("as"),
+            referrer_policy: node
+              .get_attribute_ref("referrerpolicy")
+              .and_then(ReferrerPolicy::from_attribute),
             media: node.get_attribute("media"),
             type_attr: node.get_attribute("type"),
             disabled: node.get_attribute_ref("disabled").is_some(),

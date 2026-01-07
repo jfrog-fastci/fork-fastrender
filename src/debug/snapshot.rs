@@ -625,7 +625,7 @@ fn snapshot_replaced(replaced: &ReplacedType) -> ReplacedSnapshot {
     ReplacedType::Audio { src } => ReplacedSnapshot::Audio { src: src.clone() },
     ReplacedType::Canvas => ReplacedSnapshot::Canvas,
     ReplacedType::Svg { .. } => ReplacedSnapshot::Svg,
-    ReplacedType::Iframe { src, srcdoc } => ReplacedSnapshot::Iframe {
+    ReplacedType::Iframe { src, srcdoc, .. } => ReplacedSnapshot::Iframe {
       src: src.clone(),
       srcdoc: srcdoc.clone(),
     },

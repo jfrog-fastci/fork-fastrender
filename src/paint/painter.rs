@@ -6104,7 +6104,10 @@ impl Painter {
         }
       }
       ReplacedType::Image {
-        alt, crossorigin, ..
+        alt,
+        crossorigin,
+        referrer_policy,
+        ..
       } => {
         let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
           .with_device_pixel_ratio(self.scale)
@@ -6124,6 +6127,7 @@ impl Painter {
           if self.paint_image_from_src(
             &candidate,
             *crossorigin,
+            *referrer_policy,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -6143,6 +6147,7 @@ impl Painter {
       ReplacedType::Iframe {
         srcdoc: Some(html),
         src,
+        referrer_policy,
       } => {
         if let Some(image) = self.render_iframe_srcdoc(html, src, content_rect, style) {
           if let Some(pixmap) =
@@ -6192,6 +6197,7 @@ impl Painter {
           if self.paint_image_from_src(
             &candidate,
             CrossOriginAttribute::None,
+            *referrer_policy,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -6249,6 +6255,7 @@ impl Painter {
           if self.paint_image_from_src(
             &fallback_source,
             CrossOriginAttribute::None,
+            None,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -6263,8 +6270,9 @@ impl Painter {
       ReplacedType::Iframe {
         src: content,
         srcdoc: None,
+        referrer_policy,
       } => {
-        if let Some(image) = self.render_iframe_src(content, content_rect, style) {
+        if let Some(image) = self.render_iframe_src(content, *referrer_policy, content_rect, style) {
           if let Some(pixmap) =
             PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
           {
@@ -6312,6 +6320,7 @@ impl Painter {
           if self.paint_image_from_src(
             &candidate,
             CrossOriginAttribute::None,
+            *referrer_policy,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -6344,6 +6353,7 @@ impl Painter {
         if self.paint_image_from_src_reject_placeholder(
           &image_source,
           CrossOriginAttribute::None,
+          None,
           style,
           content_rect.x(),
           content_rect.y(),
@@ -6354,7 +6364,7 @@ impl Painter {
           return;
         }
 
-        if let Some(image) = self.render_iframe_src(content, content_rect, style) {
+        if let Some(image) = self.render_iframe_src(content, None, content_rect, style) {
           if let Some(pixmap) =
             PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
           {
@@ -6392,6 +6402,7 @@ impl Painter {
           if self.paint_image_from_src(
             &candidate,
             CrossOriginAttribute::None,
+            None,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -7586,12 +7597,14 @@ impl Painter {
   fn render_iframe_src(
     &self,
     src: &str,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
     content_rect: Rect,
     style: Option<&ComputedStyle>,
   ) -> Option<Arc<ImageData>> {
     let remaining_depth = self.iframe_depth_remaining(self.image_cache.resource_context().as_ref());
     render_iframe_src(
       src,
+      referrer_policy,
       content_rect,
       style,
       &self.image_cache,
@@ -7605,6 +7618,7 @@ impl Painter {
     &mut self,
     src: &crate::tree::box_tree::SelectedImageSource<'_>,
     crossorigin: CrossOriginAttribute,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
     style: Option<&ComputedStyle>,
     x: f32,
     y: f32,
@@ -7615,6 +7629,7 @@ impl Painter {
     self.paint_image_from_src_impl(
       src,
       crossorigin,
+      referrer_policy,
       style,
       x,
       y,
@@ -7629,6 +7644,7 @@ impl Painter {
     &mut self,
     src: &crate::tree::box_tree::SelectedImageSource<'_>,
     crossorigin: CrossOriginAttribute,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
     style: Option<&ComputedStyle>,
     x: f32,
     y: f32,
@@ -7639,6 +7655,7 @@ impl Painter {
     self.paint_image_from_src_impl(
       src,
       crossorigin,
+      referrer_policy,
       style,
       x,
       y,
@@ -7653,6 +7670,7 @@ impl Painter {
     &mut self,
     src: &crate::tree::box_tree::SelectedImageSource<'_>,
     crossorigin: CrossOriginAttribute,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
     style: Option<&ComputedStyle>,
     x: f32,
     y: f32,
@@ -7699,7 +7717,7 @@ impl Painter {
     } else {
       match self
         .image_cache
-        .load_with_crossorigin(&resolved_src, crossorigin)
+        .load_with_crossorigin_and_referrer_policy(&resolved_src, crossorigin, referrer_policy)
       {
         Ok(img) => img,
         Err(e) => {
@@ -15675,6 +15693,7 @@ mod tests {
           src: String::new(),
           alt: Some("alt".to_string()),
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -15804,6 +15823,7 @@ mod tests {
       src: red.clone(),
       alt: None,
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
       sizes: None,
       srcset: vec![
         SrcsetCandidate {
@@ -15847,6 +15867,7 @@ mod tests {
       src: red.clone(),
       alt: None,
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
       sizes: None,
       srcset: vec![
         SrcsetCandidate {
@@ -17555,6 +17576,7 @@ mod tests {
         from_picture: false,
       },
       CrossOriginAttribute::None,
+      None,
       Some(&style),
       0.0,
       0.0,
@@ -17592,6 +17614,7 @@ mod tests {
         from_picture: false,
       },
       CrossOriginAttribute::None,
+      None,
       Some(&style),
       0.0,
       0.0,
@@ -18199,6 +18222,7 @@ mod tests {
         replaced_type: ReplacedType::Iframe {
           src: String::new(),
           srcdoc: Some(outer),
+          referrer_policy: None,
         },
       },
       vec![],
@@ -18242,6 +18266,7 @@ mod tests {
         replaced_type: ReplacedType::Iframe {
           src: String::new(),
           srcdoc: Some(html.to_string()),
+          referrer_policy: None,
         },
       },
       vec![],

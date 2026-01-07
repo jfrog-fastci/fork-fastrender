@@ -46,6 +46,7 @@ use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::CrossOriginAttribute;
+use crate::resource::ReferrerPolicy;
 use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
@@ -2849,6 +2850,7 @@ fn create_pseudo_element_box(
             src: url.clone(),
             alt: None,
             crossorigin: CrossOriginAttribute::None,
+            referrer_policy: None,
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
@@ -3085,6 +3087,7 @@ pub(crate) fn marker_content_from_style(
           src,
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -3104,6 +3107,7 @@ pub(crate) fn marker_content_from_style(
           src: url.clone(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -3974,10 +3978,15 @@ fn create_replaced_box_from_styled(
       .map(parse_srcset)
       .unwrap_or_default();
     let sizes = styled.node.get_attribute_ref("sizes").and_then(parse_sizes);
+    let referrer_policy = styled
+      .node
+      .get_attribute_ref("referrerpolicy")
+      .and_then(ReferrerPolicy::from_attribute);
     ReplacedType::Image {
       src,
       alt,
       crossorigin,
+      referrer_policy,
       srcset,
       sizes,
       picture_sources,
@@ -4021,7 +4030,15 @@ fn create_replaced_box_from_styled(
       .node
       .get_attribute_ref("srcdoc")
       .map(|s| s.to_string());
-    ReplacedType::Iframe { src, srcdoc }
+    let referrer_policy = styled
+      .node
+      .get_attribute_ref("referrerpolicy")
+      .and_then(ReferrerPolicy::from_attribute);
+    ReplacedType::Iframe {
+      src,
+      srcdoc,
+      referrer_policy,
+    }
   } else if tag.eq_ignore_ascii_case("embed") {
     let src = styled.node.get_attribute("src").unwrap_or_default();
     ReplacedType::Embed { src }
@@ -4039,6 +4056,7 @@ fn create_replaced_box_from_styled(
       src,
       alt,
       crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
       sizes: None,
       srcset: Vec::new(),
       picture_sources: Vec::new(),
@@ -5699,6 +5717,7 @@ mod tests {
         src: "test.png".to_string(),
         alt: None,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

@@ -247,6 +247,7 @@ impl DOMNode {
         src,
         alt,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         srcset,
         sizes: None,
         picture_sources: Vec::new(),
@@ -256,7 +257,11 @@ impl DOMNode {
       "svg" => Some(ReplacedType::Svg {
         content: SvgContent::raw(src),
       }),
-      "iframe" => Some(ReplacedType::Iframe { src, srcdoc }),
+      "iframe" => Some(ReplacedType::Iframe {
+        src,
+        srcdoc,
+        referrer_policy: None,
+      }),
       _ => None,
     }
   }
@@ -1453,6 +1458,7 @@ mod tests {
         src: "test.png".to_string(),
         alt: None,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

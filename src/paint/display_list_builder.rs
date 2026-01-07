@@ -246,6 +246,7 @@ fn f32_to_canonical_bits(value: f32) -> u32 {
 struct ImageKey {
   url: String,
   crossorigin: CrossOriginAttribute,
+  referrer_policy: Option<crate::resource::ReferrerPolicy>,
   orientation: OrientationTransform,
   decorative: bool,
   used_resolution_bits: u32,
@@ -256,6 +257,7 @@ impl ImageKey {
   fn new(
     url: String,
     crossorigin: CrossOriginAttribute,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
     orientation: OrientationTransform,
     decorative: bool,
     used_resolution: f32,
@@ -264,6 +266,7 @@ impl ImageKey {
     Self {
       url,
       crossorigin,
+      referrer_policy,
       orientation,
       decorative,
       used_resolution_bits: f32_to_canonical_bits(used_resolution),
@@ -3079,10 +3082,10 @@ impl DisplayListBuilder {
     let trimmed = src.trim();
     if let Some(id) = trimmed.strip_prefix('#') {
       if let Some(svg) = self.inline_svg_for_svg_mask(id, bounds) {
-        return self.decode_image(&svg, Some(style), true, CrossOriginAttribute::None, false);
+        return self.decode_image(&svg, Some(style), true, CrossOriginAttribute::None, None, false);
       }
     }
-    self.decode_image(src, Some(style), true, CrossOriginAttribute::None, false)
+    self.decode_image(src, Some(style), true, CrossOriginAttribute::None, None, false)
   }
 
   fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
@@ -4650,7 +4653,12 @@ impl DisplayListBuilder {
           }
         }
 
-        if let ReplacedType::Iframe { src, srcdoc } = replaced_type {
+        if let ReplacedType::Iframe {
+          src,
+          srcdoc,
+          referrer_policy,
+        } = replaced_type
+        {
           if let Some(cache) = self.image_cache.as_ref() {
             let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
             if let Some(image) = srcdoc.as_deref().and_then(|html| {
@@ -4671,6 +4679,7 @@ impl DisplayListBuilder {
 
             if let Some(image) = render_iframe_src(
               src,
+              *referrer_policy,
               content_rect,
               style_for_image,
               cache,
@@ -4706,6 +4715,10 @@ impl DisplayListBuilder {
           ReplacedType::Image { crossorigin, .. } => *crossorigin,
           _ => CrossOriginAttribute::None,
         };
+        let referrer_policy = match replaced_type {
+          ReplacedType::Image { referrer_policy, .. } => *referrer_policy,
+          _ => None,
+        };
         let reject_placeholder = matches!(
           replaced_type,
           ReplacedType::Embed { .. } | ReplacedType::Object { .. }
@@ -4716,6 +4729,7 @@ impl DisplayListBuilder {
             style_for_image,
             false,
             crossorigin,
+            referrer_policy,
             reject_placeholder,
           )
         }) {
@@ -4781,6 +4795,7 @@ impl DisplayListBuilder {
             };
             if let Some(image) = render_iframe_src(
               src,
+              None,
               content_rect,
               style_for_image,
               cache,
@@ -5972,7 +5987,7 @@ impl DisplayListBuilder {
       }
       BackgroundImage::Url(src) => {
         if let Some(image) =
-          self.decode_image(src, Some(style), true, CrossOriginAttribute::None, false)
+          self.decode_image(src, Some(style), true, CrossOriginAttribute::None, None, false)
         {
           let img_w = image.css_width;
           let img_h = image.css_height;
@@ -6325,7 +6340,7 @@ impl DisplayListBuilder {
       BorderImageSource::Image(bg) => {
         let source = match bg.as_ref() {
           BackgroundImage::Url(src) => self
-            .decode_image(src, Some(style), true, CrossOriginAttribute::None, false)
+            .decode_image(src, Some(style), true, CrossOriginAttribute::None, None, false)
             .map(|image| BorderImageSourceItem::Raster((*image).clone())),
           BackgroundImage::LinearGradient { .. }
           | BackgroundImage::RepeatingLinearGradient { .. }
@@ -8597,6 +8612,7 @@ impl DisplayListBuilder {
     let cache_key = ImageKey::new(
       inline_key,
       CrossOriginAttribute::None,
+      None,
       orientation,
       false,
       used_resolution,
@@ -8704,6 +8720,7 @@ impl DisplayListBuilder {
     style: Option<&ComputedStyle>,
     decorative: bool,
     crossorigin: CrossOriginAttribute,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
     reject_placeholder: bool,
   ) -> Option<Arc<ImageData>> {
     let image_cache = self.image_cache.as_ref()?;
@@ -8721,7 +8738,7 @@ impl DisplayListBuilder {
     } else {
       let resolved_src = image_cache.resolve_url(src);
       let image = image_cache
-        .load_with_crossorigin(&resolved_src, crossorigin)
+        .load_with_crossorigin_and_referrer_policy(&resolved_src, crossorigin, referrer_policy)
         .ok()?;
       (resolved_src, image)
     };
@@ -8739,6 +8756,7 @@ impl DisplayListBuilder {
     let key = ImageKey::new(
       resolved_src,
       crossorigin,
+      referrer_policy,
       orientation,
       decorative,
       used_resolution,
@@ -9024,6 +9042,7 @@ mod tests {
     let key = ImageKey::new(
       "https://example.com/image.png".to_string(),
       CrossOriginAttribute::None,
+      None,
       OrientationTransform::IDENTITY,
       false,
       0.0,
@@ -9032,6 +9051,7 @@ mod tests {
     let key_neg = ImageKey::new(
       "https://example.com/image.png".to_string(),
       CrossOriginAttribute::None,
+      None,
       OrientationTransform::IDENTITY,
       false,
       -0.0,
@@ -9262,6 +9282,7 @@ mod tests {
         src: src.to_string(),
         alt: None,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -10836,6 +10857,7 @@ mod tests {
         src: chosen,
         alt: None,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -10891,6 +10913,7 @@ mod tests {
         src: chosen,
         alt: None,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -11196,10 +11219,10 @@ mod tests {
     let mut builder = DisplayListBuilder::new();
 
     let first = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
       .expect("first decode");
     let second = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
       .expect("cached decode");
     assert!(Arc::ptr_eq(&first, &second));
 
@@ -11214,6 +11237,7 @@ mod tests {
         Some(&rotated_style),
         false,
         CrossOriginAttribute::None,
+        None,
         false,
       )
       .expect("rotated decode");
@@ -11221,11 +11245,11 @@ mod tests {
 
     builder.set_device_pixel_ratio(2.0);
     let hidpi = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
       .expect("hi-dpi decode");
     assert!(!Arc::ptr_eq(&first, &hidpi));
     let hidpi_cached = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, None, false)
       .expect("cached hi-dpi decode");
     assert!(Arc::ptr_eq(&hidpi, &hidpi_cached));
   }
@@ -11305,7 +11329,7 @@ mod tests {
         // Baseline: no-cors loads should succeed and populate the decode cache.
         assert!(
           builder
-            .decode_image(url, None, false, CrossOriginAttribute::None, false)
+            .decode_image(url, None, false, CrossOriginAttribute::None, None, false)
             .is_some(),
           "expected no-cors decode to succeed"
         );
@@ -11314,7 +11338,7 @@ mod tests {
         // enforcement is enabled; missing ACAO should surface as a load failure.
         assert!(
           builder
-            .decode_image(url, None, false, CrossOriginAttribute::Anonymous, false)
+            .decode_image(url, None, false, CrossOriginAttribute::Anonymous, None, false)
             .is_none(),
           "expected crossorigin decode to fail without ACAO"
         );
@@ -11393,6 +11417,7 @@ mod tests {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11445,6 +11470,7 @@ mod tests {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11530,6 +11556,7 @@ mod tests {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11586,6 +11613,7 @@ mod tests {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%222%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11657,6 +11685,7 @@ mod tests {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%222%22%3E%3C/svg%3E".to_string(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11726,6 +11755,7 @@ mod tests {
         replaced_type: ReplacedType::Iframe {
           src: "about:blank".to_string(),
           srcdoc: Some("<html></html>".to_string()),
+          referrer_policy: None,
         },
       },
       vec![],
@@ -11813,6 +11843,7 @@ mod tests {
         replaced_type: ReplacedType::Iframe {
           src: "about:blank".to_string(),
           srcdoc: Some("<html></html>".to_string()),
+          referrer_policy: None,
         },
       },
       vec![],
@@ -11869,6 +11900,7 @@ mod tests {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11906,6 +11938,7 @@ mod tests {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11939,6 +11972,7 @@ mod tests {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12132,6 +12166,7 @@ mod tests {
           src: String::new(),
           alt: Some("alt text".to_string()),
           crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12159,6 +12194,7 @@ mod tests {
         src: String::new(),
         alt: None,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

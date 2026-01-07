@@ -1133,6 +1133,7 @@ fn build_margin_box_children(
                 src: url.clone(),
                 alt: None,
                 crossorigin: CrossOriginAttribute::None,
+                referrer_policy: None,
                 srcset: Vec::new(),
                 sizes: None,
                 picture_sources: Vec::new(),
