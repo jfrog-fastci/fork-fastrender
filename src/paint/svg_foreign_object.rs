@@ -23,9 +23,44 @@ fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacemen
     svg.replace_range(pos..end, replacement);
   } else if let Some(close_pos) = svg.rfind("</svg>") {
     svg.insert_str(close_pos, replacement);
+  } else if let Some(close_pos) = find_self_closing_root_svg_end(svg) {
+    let suffix = format!(">{replacement}</svg>");
+    svg.replace_range(close_pos..close_pos + 2, &suffix);
   } else {
     svg.push_str(replacement);
   }
+}
+
+fn find_self_closing_root_svg_end(svg: &str) -> Option<usize> {
+  let trimmed = svg.trim_end();
+  if !trimmed.ends_with("/>") {
+    return None;
+  }
+
+  // Only treat the SVG root as self-closing if it contains no other tags besides the `<svg .../>`
+  // element. This avoids corrupting markup like `<svg><rect/>` where the last `/>` belongs to a
+  // child element.
+  let bytes = trimmed.as_bytes();
+  if bytes.len() < 4 {
+    return None;
+  }
+  let mut svg_start: Option<usize> = None;
+  for i in 0..=bytes.len() - 4 {
+    if bytes[i] == b'<'
+      && bytes[i + 1].to_ascii_lowercase() == b's'
+      && bytes[i + 2].to_ascii_lowercase() == b'v'
+      && bytes[i + 3].to_ascii_lowercase() == b'g'
+    {
+      svg_start = Some(i);
+      break;
+    }
+  }
+  let svg_start = svg_start?;
+  if bytes[svg_start + 1..].iter().any(|b| *b == b'<') {
+    return None;
+  }
+
+  Some(trimmed.len() - 2)
 }
 
 pub(crate) fn inline_svg_with_foreign_objects(
@@ -375,6 +410,13 @@ mod tests {
     let mut svg = "<svg>".to_string();
     replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
     assert_eq!(svg, "<svg><image/>");
+  }
+
+  #[test]
+  fn expands_self_closing_root_svg_when_placeholder_missing() {
+    let mut svg = "<svg/>".to_string();
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
+    assert_eq!(svg, "<svg><image/></svg>");
   }
 
   #[test]
