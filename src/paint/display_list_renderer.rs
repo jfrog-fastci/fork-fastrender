@@ -7463,6 +7463,20 @@ impl DisplayListRenderer {
       return Ok(());
     }
     let (root_depth, parent_depth) = backdrop_root_range(layer_stack);
+    let trace_cache_hit = if self.trace_backdrop_stack
+      && self.backdrop_composite_cache_enabled
+      && root_depth < parent_depth
+    {
+      Self::backdrop_composite_cache_key(layer_stack, root_depth, parent_depth).is_some_and(|key| {
+        let fingerprint = self.backdrop_composite_mutation_fingerprint(root_depth, parent_depth);
+        self
+          .backdrop_composite_cache
+          .peek(&key)
+          .is_some_and(|entry| entry.mutation_fingerprint == fingerprint)
+      })
+    } else {
+      false
+    };
 
     let cached_key = self.ensure_backdrop_composite_cached(root_depth, parent_depth)?;
 
@@ -7479,11 +7493,12 @@ impl DisplayListRenderer {
     let backdrop_diag = self.backdrop_composite_diagnostics.clone();
     if self.trace_backdrop_stack {
       eprintln!(
-        "backdrop_stack apply_backdrop_filter range={}..{} composite_steps={} cache_hit={}",
+        "backdrop_stack apply_backdrop_filter range={}..{} composite_allocated={} cache_hit={} composite_steps={}",
         root_depth,
         parent_depth,
-        composite_steps,
-        cached_backdrop.is_some()
+        cached_backdrop.is_some(),
+        trace_cache_hit,
+        composite_steps
       );
     }
     let clip_origin = (0, 0);
@@ -8671,11 +8686,12 @@ impl DisplayListRenderer {
                 if renderer.trace_backdrop_stack {
                   let (root_depth, parent_depth) = backdrop_root_range(layer_stack);
                   eprintln!(
-                    "backdrop_stack apply_backdrop_filter preserve3d range={}..{} composite_steps={} cache_hit={}",
+                    "backdrop_stack apply_backdrop_filter preserve3d range={}..{} composite_allocated={} cache_hit={} composite_steps={}",
                     root_depth,
                     parent_depth,
-                    parent_depth.saturating_sub(root_depth),
-                    false
+                    false,
+                    false,
+                    parent_depth.saturating_sub(root_depth)
                   );
                 }
                 let scale = renderer.scale;
