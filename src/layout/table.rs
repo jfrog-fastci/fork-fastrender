@@ -2415,7 +2415,10 @@ impl TableStructure {
     if self.column_count == 0 {
       return 0.0;
     }
-    self.border_spacing.0 * self.column_count as f32
+    // CSS 2.1 §17.6.1: in the separated border model, border-spacing exists
+    // between all adjacent cells *and* between the table border and the edge
+    // cells. This means there are (N - 1) internal gaps plus 2 edge gaps.
+    self.border_spacing.0 * (self.column_count as f32 + 1.0)
   }
 
   /// Returns the total height of border spacing
@@ -2423,7 +2426,8 @@ impl TableStructure {
     if self.row_count == 0 {
       return 0.0;
     }
-    self.border_spacing.1 * self.row_count as f32
+    // CSS 2.1 §17.6.1: see `total_horizontal_spacing`.
+    self.border_spacing.1 * (self.row_count as f32 + 1.0)
   }
 
   fn length_to_specified_width(length: &crate::style::values::Length) -> SpecifiedWidth {
@@ -3947,7 +3951,7 @@ pub fn calculate_row_heights(structure: &mut TableStructure, available_height: O
     structure.border_spacing.1
   };
   let content_available =
-    available_height.map(|h| (h - spacing * structure.row_count as f32).max(0.0));
+    available_height.map(|h| (h - spacing * (structure.row_count as f32 + 1.0)).max(0.0));
 
   let row_floor = |row: &RowInfo| -> f32 {
     let mut floor = row.min_height;
@@ -6237,7 +6241,7 @@ impl FormattingContext for TableFormattingContext {
       let content_width = if col_widths.is_empty() {
         available_content
       } else {
-        col_widths.iter().sum::<f32>() + h_spacing * structure.column_count as f32
+        col_widths.iter().sum::<f32>() + structure.total_horizontal_spacing()
       };
       let padding_width = if structure.border_collapse == BorderCollapse::Collapse {
         content_width
@@ -6807,7 +6811,12 @@ impl FormattingContext for TableFormattingContext {
         }
         None => {
           let content_origin_y = border_top + pad_top;
-          let mut y = content_origin_y + v_spacing * 0.5;
+          // CSS 2.1 §17.6.1: in the separated border model, the edge cells are offset from the
+          // table's padding edge by a *full* border-spacing, not half.
+          let mut y = content_origin_y;
+          if structure.row_count > 0 {
+            y += v_spacing;
+          }
 
           if dump {
             let preview: String = row_metrics
@@ -6853,7 +6862,10 @@ impl FormattingContext for TableFormattingContext {
 
           // Precompute column offsets for positioning in the separated model.
           let start_x = border_left + pad_left;
-          let mut x = start_x + h_spacing * 0.5;
+          let mut x = start_x;
+          if structure.column_count > 0 {
+            x += h_spacing;
+          }
           for width in col_widths.iter().take(structure.column_count) {
             col_offsets.push(x);
             x += width + h_spacing;
@@ -6879,17 +6891,10 @@ impl FormattingContext for TableFormattingContext {
           let width = if col_widths.is_empty() {
             available_content
           } else {
-            let total_spacing = h_spacing * structure.column_count as f32;
-            col_widths.iter().sum::<f32>() + total_spacing
+            col_widths.iter().sum::<f32>() + structure.total_horizontal_spacing()
           };
           let height = if structure.row_count > 0 {
-            row_offsets
-              .last()
-              .map(|start| {
-                start + row_metrics.last().map(|r| r.height).unwrap_or(0.0) + v_spacing * 0.5
-              })
-              .unwrap_or(0.0)
-              - content_origin_y
+            (y - content_origin_y).max(0.0)
           } else {
             0.0
           };
@@ -7022,8 +7027,9 @@ impl FormattingContext for TableFormattingContext {
         col_offsets.get(start).copied().unwrap_or(0.0)
           - vertical_line_max.get(start).copied().unwrap_or(0.0)
       } else {
-        (col_offsets.get(start).copied().unwrap_or(content_origin_x) - h_spacing * 0.5)
-          .max(content_origin_x)
+        let base = col_offsets.get(start).copied().unwrap_or(content_origin_x);
+        let edge = if start == 0 { h_spacing } else { h_spacing * 0.5 };
+        (base - edge).max(content_origin_x)
       };
       let mut right = if structure.border_collapse == BorderCollapse::Collapse {
         let base = col_offsets.get(end.saturating_sub(1)).copied().unwrap_or(x)
@@ -7038,7 +7044,12 @@ impl FormattingContext for TableFormattingContext {
             .get(end.saturating_sub(1))
             .copied()
             .unwrap_or(0.0);
-        base + h_spacing * 0.5
+        let edge = if end >= structure.column_count {
+          h_spacing
+        } else {
+          h_spacing * 0.5
+        };
+        base + edge
       };
       let max_x = content_origin_x + content_width;
       x = x.max(content_origin_x);
@@ -7127,13 +7138,23 @@ impl FormattingContext for TableFormattingContext {
       let bottom = if end < row_offsets.len() {
         row_offsets[end]
       } else {
+        let last_row_idx = row_offsets.len().saturating_sub(1);
+        let trailing_spacing = if structure.border_collapse != BorderCollapse::Collapse {
+          if rows_collapse_due_to_empty_cells
+            .get(last_row_idx)
+            .copied()
+            .unwrap_or(false)
+          {
+            0.0
+          } else {
+            v_spacing
+          }
+        } else {
+          0.0
+        };
         row_offsets.last().copied().unwrap_or(top)
           + row_metrics.last().map(|r| r.height).unwrap_or(0.0)
-          + if structure.border_collapse != BorderCollapse::Collapse {
-            v_spacing
-          } else {
-            0.0
-          }
+          + trailing_spacing
       };
       let height = (bottom - top).max(0.0);
       let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
@@ -13224,8 +13245,8 @@ mod tests {
     structure.column_count = 3;
     structure.border_spacing = (5.0, 5.0);
 
-    // Total spacing = column_count * spacing (includes both edges)
-    assert_eq!(structure.total_horizontal_spacing(), 15.0);
+    // Total spacing = (column_count + 1) * spacing (includes both edges)
+    assert_eq!(structure.total_horizontal_spacing(), 20.0);
   }
 
   #[test]
@@ -13234,8 +13255,8 @@ mod tests {
     structure.row_count = 2;
     structure.border_spacing = (5.0, 10.0);
 
-    // Total spacing = row_count * spacing (includes both edges)
-    assert_eq!(structure.total_vertical_spacing(), 20.0);
+    // Total spacing = (row_count + 1) * spacing (includes both edges)
+    assert_eq!(structure.total_vertical_spacing(), 30.0);
   }
 
   #[test]

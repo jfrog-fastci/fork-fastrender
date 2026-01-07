@@ -65,26 +65,26 @@ fn table_cell_offsets_and_spans_use_cached_metrics() {
           col.col1 { width: 40px; }
           col.col2 { width: 60px; }
           col.col3 { width: 50px; }
-          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; vertical-align: baseline; }
         </style>
       </head>
       <body>
         <table>
-          <col class=\"col1\" />
-          <col class=\"col2\" />
-          <col class=\"col3\" />
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
           <tr>
-            <td style=\"height: 14px;\">A</td>
-            <td style=\"height: 14px;\">B</td>
-            <td style=\"height: 14px;\">C</td>
+            <td style="height: 14px;">A</td>
+            <td style="height: 14px;">B</td>
+            <td style="height: 14px;">C</td>
           </tr>
           <tr>
-            <td rowspan=\"2\" style=\"height: 22px;\">D</td>
-            <td colspan=\"2\" style=\"height: 16px;\">E</td>
+            <td rowspan="2" style="height: 22px;">D</td>
+            <td colspan="2" style="height: 16px;">E</td>
           </tr>
           <tr>
-            <td style=\"height: 12px;\">F</td>
-            <td style=\"height: 18px;\">G</td>
+            <td style="height: 12px;">F</td>
+            <td style="height: 18px;">G</td>
           </tr>
         </table>
       </body>
