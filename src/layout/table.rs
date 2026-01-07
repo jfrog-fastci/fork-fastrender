@@ -69,6 +69,7 @@ use crate::style::types::EmptyCells;
 use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::TableLayout;
 use crate::style::types::VerticalAlign;
+use crate::style::types::WhiteSpace;
 use crate::style::values::CalcLength;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
@@ -1102,29 +1103,57 @@ fn with_cell_emptiness_cache<R>(
   })
 }
 
-fn node_has_visible_content(node: &BoxNode) -> bool {
+fn whitespace_has_visible_glyphs(text: &str, white_space: WhiteSpace) -> bool {
+  if text.is_empty() {
+    return false;
+  }
+  if !text.trim().is_empty() {
+    return true;
+  }
+  match white_space {
+    // Preserve spaces/newlines verbatim.
+    WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::BreakSpaces => true,
+    // `pre-line` preserves line breaks but collapses runs of spaces.
+    WhiteSpace::PreLine => text.contains('\n') || text.contains('\r'),
+    // `normal`/`nowrap` collapse whitespace; whitespace-only text does not count as visible content.
+    WhiteSpace::Normal | WhiteSpace::Nowrap => false,
+  }
+}
+
+fn node_counts_as_table_cell_content(node: &BoxNode) -> bool {
+  // CSS2.1 §17.6.1 considers only floating + in-flow content when deciding whether a cell has
+  // "visible content"; out-of-flow positioned descendants do not count.
+  if matches!(
+    node.style.position,
+    crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+  ) {
+    return false;
+  }
+
   match &node.box_type {
-    BoxType::Text(text) => !text.text.trim().is_empty(),
+    BoxType::Text(text) => whitespace_has_visible_glyphs(&text.text, node.style.white_space),
     BoxType::Marker(marker) => match &marker.content {
-      MarkerContent::Text(t) => !t.trim().is_empty(),
+      MarkerContent::Text(t) => whitespace_has_visible_glyphs(t, node.style.white_space),
       MarkerContent::Image(_) => true,
     },
-    BoxType::Replaced(_) => true,
-    _ => node.children.iter().any(node_has_visible_content),
+    // Replaced + element boxes (including empty elements) count as content.
+    BoxType::Replaced(_) | BoxType::LineBreak(_) | BoxType::Block(_) | BoxType::Inline(_) => true,
+    // Anonymous boxes are not "elements"; defer to their descendants.
+    BoxType::Anonymous(_) => node.children.iter().any(node_counts_as_table_cell_content),
   }
 }
 
 fn compute_cell_is_visually_empty(cell: &BoxNode) -> bool {
-  if cell
-    .style
-    .background_layers
-    .iter()
-    .any(|l| l.image.is_some())
-    || !cell.style.background_color.is_transparent()
-  {
-    return false;
+  // CSS2.1 §17.6.1: cells with `visibility: hidden` are considered to have no visible content.
+  if !matches!(cell.style.visibility, Visibility::Visible) {
+    return true;
   }
-  !node_has_visible_content(cell)
+
+  // Ignore the cell's own background/borders: `empty-cells` controls whether those paint.
+  !cell
+    .children
+    .iter()
+    .any(|child| node_counts_as_table_cell_content(child))
 }
 
 fn cell_is_visually_empty(cell: &BoxNode) -> bool {
@@ -1138,6 +1167,55 @@ fn cell_is_visually_empty(cell: &BoxNode) -> bool {
     cache.insert(key, computed);
   });
   computed
+}
+
+fn compute_rows_that_collapse_due_to_empty_cells(
+  structure: &TableStructure,
+  source_rows: &[&BoxNode],
+) -> Vec<bool> {
+  if structure.border_collapse != BorderCollapse::Separate {
+    return vec![false; structure.row_count];
+  }
+
+  // Cache the `empty-cells: hide && no visible content` predicate per cell so row checks can be
+  // done in a simple grid scan.
+  let mut cell_hides_and_is_empty: Vec<bool> = vec![false; structure.cells.len()];
+  for cell in &structure.cells {
+    let Some(row) = source_rows.get(cell.source_row) else {
+      continue;
+    };
+    let Some(cell_box) = row.children.get(cell.box_index) else {
+      continue;
+    };
+    cell_hides_and_is_empty[cell.index] =
+      cell_box.style.empty_cells == EmptyCells::Hide && cell_is_visually_empty(cell_box);
+  }
+
+  let mut rows_collapse: Vec<bool> = Vec::with_capacity(structure.row_count);
+  for row_idx in 0..structure.row_count {
+    let mut any_cells = false;
+    let mut all_cells_hide_and_empty = true;
+    if let Some(grid_row) = structure.grid.get(row_idx) {
+      let mut last_cell = None;
+      for cell_idx in grid_row.iter().copied().flatten() {
+        // Cell indices repeat for colspans/rowspans; avoid redundant checks while scanning.
+        if last_cell == Some(cell_idx) {
+          continue;
+        }
+        last_cell = Some(cell_idx);
+        any_cells = true;
+        if cell_idx >= cell_hides_and_is_empty.len() || !cell_hides_and_is_empty[cell_idx] {
+          all_cells_hide_and_empty = false;
+          break;
+        }
+      }
+    }
+    // CSS 2.1 §17.6.1: the row collapses only when *all* cells use `empty-cells: hide` and have no
+    // visible content. Treat rows with no cell boxes as non-collapsing.
+    rows_collapse.push(any_cells && all_cells_hide_and_empty);
+  }
+
+  rows_collapse
 }
 
 fn style_paints_background_or_border(style: &ComputedStyle, allow_borders: bool) -> bool {
@@ -6526,6 +6604,9 @@ impl FormattingContext for TableFormattingContext {
             );
     }
 
+    let rows_collapse_due_to_empty_cells =
+      compute_rows_that_collapse_due_to_empty_cells(&structure, &source_rows);
+
     let mut row_metrics: Vec<RowMetrics> =
       row_heights.iter().map(|h| RowMetrics::new(*h)).collect();
 
@@ -6558,6 +6639,15 @@ impl FormattingContext for TableFormattingContext {
     }
 
     for (idx, row) in row_metrics.iter_mut().enumerate() {
+      if rows_collapse_due_to_empty_cells.get(idx).copied().unwrap_or(false) {
+        // CSS 2.1 §17.6.1: fully empty rows collapse to zero height.
+        row.height = 0.0;
+        row.max_cell_height = 0.0;
+        row.baseline_top = 0.0;
+        row.baseline_bottom = 0.0;
+        row.has_baseline = false;
+        continue;
+      }
       let baseline_height = row.baseline_height();
       let max_required = row.max_cell_height.max(baseline_height);
       if max_required > row.height {
@@ -6588,11 +6678,19 @@ impl FormattingContext for TableFormattingContext {
           .enumerate()
           .filter_map(|(idx, row)| match row.specified_height {
             Some(SpecifiedHeight::Fixed(_)) | Some(SpecifiedHeight::Percent(_)) => None,
-            _ => Some(idx),
+            _ => {
+              if rows_collapse_due_to_empty_cells.get(idx).copied().unwrap_or(false) {
+                None
+              } else {
+                Some(idx)
+              }
+            }
           })
           .collect();
         let targets = if flex_indices.is_empty() {
-          (0..structure.row_count).collect::<Vec<_>>()
+          (0..structure.row_count)
+            .filter(|idx| !rows_collapse_due_to_empty_cells.get(*idx).copied().unwrap_or(false))
+            .collect::<Vec<_>>()
         } else {
           flex_indices
         };
@@ -6701,10 +6799,16 @@ impl FormattingContext for TableFormattingContext {
             );
           }
 
-          for row in &row_metrics {
+          for (idx, row) in row_metrics.iter().enumerate() {
             row_offsets.push(y);
             y += row.height;
-            y += v_spacing;
+            if !rows_collapse_due_to_empty_cells
+              .get(idx)
+              .copied()
+              .unwrap_or(false)
+            {
+              y += v_spacing;
+            }
           }
 
           if dump {
@@ -6732,8 +6836,17 @@ impl FormattingContext for TableFormattingContext {
 
           let mut prefix = Vec::with_capacity(row_metrics.len().saturating_add(1));
           prefix.push(0.0);
-          for row in &row_metrics {
-            let next = prefix.last().copied().unwrap_or(0.0) + row.height + v_spacing;
+          for (idx, row) in row_metrics.iter().enumerate() {
+            let spacing_after = if rows_collapse_due_to_empty_cells
+              .get(idx)
+              .copied()
+              .unwrap_or(false)
+            {
+              0.0
+            } else {
+              v_spacing
+            };
+            let next = prefix.last().copied().unwrap_or(0.0) + row.height + spacing_after;
             prefix.push(next);
           }
           row_prefix_heights = Some(prefix);
@@ -7079,13 +7192,28 @@ impl FormattingContext for TableFormattingContext {
       } else if let Some(prefix) = &row_prefix_heights {
         let start = prefix.get(row_start).copied().unwrap_or(0.0);
         let end = prefix.get(span_end).copied().unwrap_or(start);
-        (end - start - v_spacing).max(0.0)
+        let trailing_spacing = if span_end > 0
+          && rows_collapse_due_to_empty_cells
+            .get(span_end.saturating_sub(1))
+            .copied()
+            .unwrap_or(false)
+        {
+          0.0
+        } else {
+          v_spacing
+        };
+        (end - start - trailing_spacing).max(0.0)
       } else {
-        row_metrics[row_start..span_end]
-          .iter()
-          .map(|r| r.height)
-          .sum::<f32>()
-          + v_spacing * cell.rowspan.saturating_sub(1) as f32
+        let mut total = 0.0;
+        for idx in row_start..span_end {
+          total += row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
+          if idx + 1 < span_end
+            && !rows_collapse_due_to_empty_cells.get(idx).copied().unwrap_or(false)
+          {
+            total += v_spacing;
+          }
+        }
+        total
       };
 
       let (y_offset, aligned_baseline) = match laid.vertical_align {
@@ -9044,7 +9172,7 @@ mod tests {
   }
 
   #[test]
-  fn empty_cells_hide_keeps_padding_and_borders_in_layout() {
+  fn empty_cells_hide_row_collapse_requires_all_cells_hide() {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.border_spacing_horizontal = Length::px(0.0);
@@ -9059,12 +9187,8 @@ mod tests {
     padded_cell_style.padding_bottom = Length::px(10.0);
     padded_cell_style.border_top_width = Length::px(5.0);
     padded_cell_style.border_bottom_width = Length::px(5.0);
-    padded_cell_style.empty_cells = EmptyCells::Hide;
-    let padded_cell = BoxNode::new_block(
-      Arc::new(padded_cell_style),
-      FormattingContextType::Block,
-      vec![],
-    );
+    padded_cell_style.border_top_style = BorderStyle::Solid;
+    padded_cell_style.border_bottom_style = BorderStyle::Solid;
 
     let mut visible_cell_style = ComputedStyle::default();
     visible_cell_style.display = Display::TableCell;
@@ -9072,46 +9196,85 @@ mod tests {
     visible_cell_style.padding_bottom = Length::px(10.0);
     visible_cell_style.border_top_width = Length::px(5.0);
     visible_cell_style.border_bottom_width = Length::px(5.0);
+    visible_cell_style.border_top_style = BorderStyle::Solid;
+    visible_cell_style.border_bottom_style = BorderStyle::Solid;
     visible_cell_style.empty_cells = EmptyCells::Show;
-    let visible_cell = BoxNode::new_block(
-      Arc::new(visible_cell_style),
-      FormattingContextType::Block,
-      vec![],
-    );
+    let visible_cell = BoxNode::new_block(Arc::new(visible_cell_style), FormattingContextType::Block, vec![]);
 
-    let padded_row = BoxNode::new_block(
+    let mut hidden_cell_style = padded_cell_style.clone();
+    hidden_cell_style.empty_cells = EmptyCells::Hide;
+    let hidden_cell = BoxNode::new_block(Arc::new(hidden_cell_style), FormattingContextType::Block, vec![]);
+
+    // Mixed `empty-cells` values should not trigger the special row-collapsing behavior.
+    let mixed_row = BoxNode::new_block(
       Arc::new(row_style.clone()),
       FormattingContextType::Block,
-      vec![padded_cell],
+      vec![hidden_cell, visible_cell.clone()],
     );
-    let visible_row = BoxNode::new_block(
-      Arc::new(row_style),
-      FormattingContextType::Block,
-      vec![visible_cell],
-    );
-
-    let padded_table = BoxNode::new_block(
+    let mixed_table = BoxNode::new_block(
       Arc::new(table_style.clone()),
       FormattingContextType::Table,
-      vec![padded_row],
+      vec![mixed_row],
     );
-    let visible_table = BoxNode::new_block(
+
+    // All `empty-cells: show` is the baseline: the row should take up space due to padding/borders.
+    let shown_row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![visible_cell.clone(), visible_cell],
+    );
+    let shown_table = BoxNode::new_block(
       Arc::new(table_style),
       FormattingContextType::Table,
-      vec![visible_row],
+      vec![shown_row],
     );
 
     let tfc = TableFormattingContext::new();
-    let padded_fragment = tfc
-      .layout(&padded_table, &LayoutConstraints::definite(200.0, 200.0))
+    let mixed_fragment = tfc
+      .layout(&mixed_table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout mixed");
+    let shown_fragment = tfc
+      .layout(&shown_table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout shown");
+    assert!(
+      (mixed_fragment.bounds.height() - shown_fragment.bounds.height()).abs() < 0.5,
+      "row with mixed `empty-cells` values should not collapse"
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_all_cells_row_collapses_to_zero_height() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
       .expect("layout hide");
-    let visible_fragment = tfc
-      .layout(&visible_table, &LayoutConstraints::definite(200.0, 200.0))
-      .expect("layout show");
 
     assert!(
-      (padded_fragment.bounds.height() - visible_fragment.bounds.height()).abs() < 0.5,
-      "empty_cells: hide should not affect layout sizing (only painting)"
+      fragment.bounds.height() < 0.5,
+      "fully empty `empty-cells: hide` rows should collapse to zero height (got {:.2})",
+      fragment.bounds.height()
     );
   }
 
