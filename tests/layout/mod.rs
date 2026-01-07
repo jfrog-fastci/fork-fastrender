@@ -87,6 +87,7 @@ mod table_cell_placement;
 mod table_caption_layout;
 mod table_collapsed_borders;
 mod table_collapsed_border_conflict_resolution;
+mod table_caption_wrapper_baseline_uses_grid_baseline;
 mod table_colgroup_span_background;
 mod table_column_span_backgrounds;
 mod table_columns_test;
