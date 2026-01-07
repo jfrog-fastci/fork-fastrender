@@ -13,6 +13,7 @@ mod backdrop_root_nested_backdrop_filter_test;
 mod backdrop_root_non_trigger_stacking_contexts_test;
 mod backend_parity;
 mod backface_culling_test;
+mod border_image_outset_bounds;
 mod canvas_background_propagation_test;
 mod canvas_test;
 mod color_bitmap_glyph_test;

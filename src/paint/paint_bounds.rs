@@ -1,4 +1,15 @@
+//! Paint bounds helpers shared across the paint pipeline.
+//!
+//! These helpers compute conservative paint bounds for a fragment's border box. They are used
+//! for display-list culling as well as allocating bounded offscreen layers (e.g. stacking context
+//! isolation layers). Any paint effect that can extend pixels outside the border box must be
+//! reflected here to avoid clipping.
+
 use crate::geometry::Rect;
+use crate::style::types::{
+  BorderImageOutset, BorderImageOutsetValue, BorderImageSource, BorderImageWidth,
+  BorderImageWidthValue,
+};
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
@@ -66,6 +77,10 @@ pub(crate) fn fragment_paint_bounds(
     bounds = bounds.union(borders.paint_bounds.translate(rect.origin));
   }
 
+  if let Some(border_image_bounds) = border_image_paint_bounds(rect, style, viewport) {
+    bounds = bounds.union(border_image_bounds);
+  }
+
   bounds
 }
 
@@ -114,9 +129,7 @@ pub(crate) fn resolve_length_for_paint(
     }
   } else if len.unit.is_viewport_relative() {
     if let Some((vw, vh)) = viewport {
-      len
-        .resolve_with_viewport(vw, vh)
-        .unwrap_or(len.value * font_size)
+      len.resolve_with_viewport(vw, vh).unwrap_or(len.value * font_size)
     } else {
       len.value * font_size
     }
@@ -266,4 +279,213 @@ fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect 
   let new_w = (rect.width() - left - right).max(0.0);
   let new_h = (rect.height() - top - bottom).max(0.0);
   Rect::from_xywh(new_x, new_y, new_w, new_h)
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+struct BorderImageWidths {
+  top: f32,
+  right: f32,
+  bottom: f32,
+  left: f32,
+}
+
+#[inline]
+fn clamp_non_negative_finite(value: f32) -> f32 {
+  if value.is_finite() {
+    value.max(0.0)
+  } else {
+    0.0
+  }
+}
+
+// NOTE: These length resolution routines intentionally mirror the behaviour of
+// `DisplayListRenderer`'s border-image implementation so that layer bounds match
+// the actual pixels the renderer will produce.
+fn resolve_length_for_border_image(
+  len: &Length,
+  percentage_base: f32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Option<(f32, f32)>,
+) -> f32 {
+  let needs_viewport = len.unit.is_viewport_relative()
+    || len
+      .calc
+      .as_ref()
+      .map(|c| c.has_viewport_relative())
+      .unwrap_or(false);
+  let (vw, vh) = match viewport {
+    Some(vp) => vp,
+    None if needs_viewport => (f32::NAN, f32::NAN),
+    None => (0.0, 0.0),
+  };
+
+  len
+    .resolve_with_context(Some(percentage_base), vw, vh, font_size, root_font_size)
+    .unwrap_or_else(|| {
+      if len.unit.is_absolute() {
+        len.to_px()
+      } else {
+        len.value * font_size
+      }
+    })
+}
+
+fn resolve_border_image_widths(
+  widths: &BorderImageWidth,
+  border: BorderImageWidths,
+  box_width: f32,
+  box_height: f32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Option<(f32, f32)>,
+) -> BorderImageWidths {
+  let resolve_single = |value: BorderImageWidthValue, border: f32, axis: f32| -> f32 {
+    match value {
+      BorderImageWidthValue::Auto => border,
+      BorderImageWidthValue::Number(n) => clamp_non_negative_finite(n * border),
+      BorderImageWidthValue::Length(len) => clamp_non_negative_finite(resolve_length_for_border_image(
+        &len,
+        axis,
+        font_size,
+        root_font_size,
+        viewport,
+      )),
+      BorderImageWidthValue::Percentage(p) => {
+        let axis = if axis.is_finite() && axis > 0.0 { axis } else { 0.0 };
+        clamp_non_negative_finite((p / 100.0) * axis)
+      }
+    }
+  };
+
+  BorderImageWidths {
+    top: resolve_single(widths.top, border.top, box_height),
+    right: resolve_single(widths.right, border.right, box_width),
+    bottom: resolve_single(widths.bottom, border.bottom, box_height),
+    left: resolve_single(widths.left, border.left, box_width),
+  }
+}
+
+fn resolve_border_image_outset(
+  outset: &BorderImageOutset,
+  border: BorderImageWidths,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Option<(f32, f32)>,
+) -> BorderImageWidths {
+  let resolve_single = |value: BorderImageOutsetValue, border: f32| -> f32 {
+    match value {
+      BorderImageOutsetValue::Number(n) => clamp_non_negative_finite(n * border),
+      BorderImageOutsetValue::Length(len) => clamp_non_negative_finite(resolve_length_for_border_image(
+        &len,
+        border.max(1.0),
+        font_size,
+        root_font_size,
+        viewport,
+      )),
+    }
+  };
+
+  BorderImageWidths {
+    top: resolve_single(outset.top, border.top),
+    right: resolve_single(outset.right, border.right),
+    bottom: resolve_single(outset.bottom, border.bottom),
+    left: resolve_single(outset.left, border.left),
+  }
+}
+
+/// Returns the rectangle the border image could paint into, accounting for
+/// `border-image-outset`.
+///
+/// The returned rectangle is in the same coordinate space as `border_rect`.
+pub(crate) fn border_image_paint_bounds(
+  border_rect: Rect,
+  style: &ComputedStyle,
+  viewport: Option<(f32, f32)>,
+) -> Option<Rect> {
+  if matches!(style.border_image.source, BorderImageSource::None) {
+    return None;
+  }
+
+  let border_box_w = border_rect.width().max(0.0);
+  let border_box_h = border_rect.height().max(0.0);
+
+  let border_widths = BorderImageWidths {
+    top: resolve_length_for_paint(
+      &style.used_border_top_width(),
+      style.font_size,
+      style.root_font_size,
+      border_box_w,
+      viewport,
+    )
+    .max(0.0),
+    right: resolve_length_for_paint(
+      &style.used_border_right_width(),
+      style.font_size,
+      style.root_font_size,
+      border_box_w,
+      viewport,
+    )
+    .max(0.0),
+    bottom: resolve_length_for_paint(
+      &style.used_border_bottom_width(),
+      style.font_size,
+      style.root_font_size,
+      border_box_w,
+      viewport,
+    )
+    .max(0.0),
+    left: resolve_length_for_paint(
+      &style.used_border_left_width(),
+      style.font_size,
+      style.root_font_size,
+      border_box_w,
+      viewport,
+    )
+    .max(0.0),
+  };
+
+  let target_widths = resolve_border_image_widths(
+    &style.border_image.width,
+    border_widths,
+    border_box_w,
+    border_box_h,
+    style.font_size,
+    style.root_font_size,
+    viewport,
+  );
+  let outsets = resolve_border_image_outset(
+    &style.border_image.outset,
+    target_widths,
+    style.font_size,
+    style.root_font_size,
+    viewport,
+  );
+
+  let left = clamp_non_negative_finite(outsets.left).min(1e6);
+  let top = clamp_non_negative_finite(outsets.top).min(1e6);
+  let right = clamp_non_negative_finite(outsets.right).min(1e6);
+  let bottom = clamp_non_negative_finite(outsets.bottom).min(1e6);
+
+  if left <= 0.0 && top <= 0.0 && right <= 0.0 && bottom <= 0.0 {
+    return None;
+  }
+
+  let expanded = Rect::from_xywh(
+    border_rect.x() - left,
+    border_rect.y() - top,
+    (border_rect.width() + left + right).max(0.0),
+    (border_rect.height() + top + bottom).max(0.0),
+  );
+  if expanded.width() <= 0.0
+    || expanded.height() <= 0.0
+    || !expanded.x().is_finite()
+    || !expanded.y().is_finite()
+    || !expanded.width().is_finite()
+    || !expanded.height().is_finite()
+  {
+    return None;
+  }
+
+  Some(expanded)
 }
