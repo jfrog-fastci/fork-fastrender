@@ -4518,13 +4518,22 @@ impl<'a> ElementRef<'a> {
   }
 
   fn subtree_has_content(node: &DomNode) -> bool {
-    match node.node_type {
-      DomNodeType::Text { .. } => true,
-      DomNodeType::Element { .. } | DomNodeType::Slot { .. } => true,
-      DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. } => {
-        node.children.iter().any(Self::subtree_has_content)
+    // Avoid recursion to prevent stack overflows in pathological trees (e.g., fuzzing or malformed
+    // DOM inputs that violate our usual structural assumptions about where shadow roots/documents
+    // can appear).
+    let mut stack: Vec<&DomNode> = vec![node];
+    while let Some(current) = stack.pop() {
+      match &current.node_type {
+        DomNodeType::Text { .. } => return true,
+        DomNodeType::Element { .. } | DomNodeType::Slot { .. } => return true,
+        DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. } => {
+          for child in current.children.iter().rev() {
+            stack.push(child);
+          }
+        }
       }
     }
+    false
   }
 
   fn sibling_position(
@@ -8229,6 +8238,31 @@ mod tests {
     let without_bloom = eval_relative_selector_with_ancestor_bloom(&dom, &selectors[0], false);
     assert!(with_bloom);
     assert_eq!(with_bloom, without_bloom);
+  }
+
+  #[test]
+  fn deep_subtree_has_content_does_not_overflow_stack() {
+    // `:empty` uses `subtree_has_content` to treat shadow roots/documents as transparent wrappers
+    // while still short-circuiting for normal element/text nodes. Keep this non-recursive so
+    // pathological DOM shapes cannot overflow the call stack.
+    let depth = 20_000usize;
+    let mut node = DomNode {
+      node_type: DomNodeType::Text {
+        content: "x".to_string(),
+      },
+      children: vec![],
+    };
+    for _ in 0..depth {
+      node = DomNode {
+        node_type: DomNodeType::ShadowRoot {
+          mode: ShadowRootMode::Open,
+          delegates_focus: false,
+        },
+        children: vec![node],
+      };
+    }
+
+    assert!(ElementRef::subtree_has_content(&node));
   }
 
   #[test]
