@@ -4871,6 +4871,50 @@ mod tests {
   }
 
   #[test]
+  fn select_option_label_prefers_label_attribute_over_text() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option label=\"L\" value=\"v\">Text</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert_eq!(select.items.len(), 1);
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, value, .. }) if label == "L" && value == "v"
+    ));
+  }
+
+  #[test]
+  fn select_option_label_does_not_fallback_to_value() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option value=\"v\"></option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert_eq!(select.items.len(), 1);
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, value, .. }) if label.is_empty() && value == "v"
+    ));
+  }
+
+  #[test]
+  fn select_option_label_trims_text_content() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option>  Foo \n</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, .. }) if label == "Foo"
+    ));
+  }
+
+  #[test]
   fn new_form_control_input_types_are_identified() {
     let html = "<html><body>
       <input type=\"password\" value=\"abc\">
