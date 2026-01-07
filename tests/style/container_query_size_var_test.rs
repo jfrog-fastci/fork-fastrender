@@ -58,6 +58,17 @@ fn make_container_style(query_value: Option<&str>) -> Arc<ComputedStyle> {
   Arc::new(style)
 }
 
+fn make_container_style_with_properties(entries: &[(&str, &str)]) -> Arc<ComputedStyle> {
+  let mut style = ComputedStyle::default();
+  for (name, value) in entries {
+    style.custom_properties.insert(
+      (*name).into(),
+      CustomPropertyValue::new((*value).to_string(), None),
+    );
+  }
+  Arc::new(style)
+}
+
 #[test]
 fn container_size_query_var_resolves_per_container() {
   let css = r#"
@@ -362,6 +373,54 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
       names: Vec::new(),
       font_size: 16.0,
       styles: make_container_style(Some("4/3")),
+    },
+  );
+  let ctx = ContainerQueryContext {
+    base_media: base_media.clone(),
+    containers,
+  };
+  let stylesheet = parse_stylesheet(css).unwrap();
+
+  let styled = apply_styles_with_media_target_and_imports(
+    &dom,
+    &stylesheet,
+    &base_media,
+    None,
+    None,
+    None,
+    Some(&ctx),
+    None,
+    None,
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t1").expect("target")), "inline");
+}
+
+#[test]
+fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
+  let css = r#"
+    .target { display: block; }
+    @container ((min-width: var(--min)) and (orientation: var(--orient))) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let dom = dom::parse_html(HTML_ONE_CONTAINER).unwrap();
+  let ids = dom::enumerate_dom_ids(&dom);
+  let container = find_dom_by_id(&dom, "c1").expect("container");
+  let container_id = *ids.get(&(container as *const DomNode)).expect("id for container");
+
+  let base_media = MediaContext::screen(800.0, 600.0);
+  let mut containers = HashMap::new();
+  containers.insert(
+    container_id,
+    ContainerQueryInfo {
+      inline_size: 200.0,
+      block_size: 300.0,
+      container_type: ContainerType::Size,
+      names: Vec::new(),
+      font_size: 16.0,
+      styles: make_container_style_with_properties(&[("--min", "150px"), ("--orient", "portrait")]),
     },
   );
   let ctx = ContainerQueryContext {

@@ -1332,104 +1332,129 @@ impl SizeQueryVarPlaceholder {
   }
 }
 
-fn detect_size_query_var_placeholder_in_block<'i, 't>(
-  parser: &mut Parser<'i, 't>,
-) -> Option<SizeQueryVarPlaceholder> {
-  while !parser.is_exhausted() {
-    if !css_deadline_allows_progress() {
-      break;
-    }
-
-    let Ok(token) = parser.next_including_whitespace() else {
-      break;
-    };
-
-    match token {
-      Token::Ident(id) => {
-        let name = id.as_ref();
-        if name.eq_ignore_ascii_case("orientation") {
-          return Some(SizeQueryVarPlaceholder::Orientation);
-        }
-        if name.eq_ignore_ascii_case("aspect-ratio")
-          || name.eq_ignore_ascii_case("min-aspect-ratio")
-          || name.eq_ignore_ascii_case("max-aspect-ratio")
-        {
-          return Some(SizeQueryVarPlaceholder::AspectRatio);
-        }
-        if name.eq_ignore_ascii_case("width")
-          || name.eq_ignore_ascii_case("min-width")
-          || name.eq_ignore_ascii_case("max-width")
-          || name.eq_ignore_ascii_case("inline-size")
-          || name.eq_ignore_ascii_case("min-inline-size")
-          || name.eq_ignore_ascii_case("max-inline-size")
-          || name.eq_ignore_ascii_case("height")
-          || name.eq_ignore_ascii_case("min-height")
-          || name.eq_ignore_ascii_case("max-height")
-          || name.eq_ignore_ascii_case("block-size")
-          || name.eq_ignore_ascii_case("min-block-size")
-          || name.eq_ignore_ascii_case("max-block-size")
-        {
-          return Some(SizeQueryVarPlaceholder::Length);
-        }
-      }
-      Token::Function(_)
-      | Token::ParenthesisBlock
-      | Token::SquareBracketBlock
-      | Token::CurlyBracketBlock => {
-        let _: std::result::Result<(), ParseError<'i, ()>> =
-          parser.parse_nested_block(consume_nested_tokens);
-      }
-      _ => {}
-    }
+fn size_query_placeholder_for_ident(name: &str) -> Option<SizeQueryVarPlaceholder> {
+  if name.eq_ignore_ascii_case("orientation") {
+    return Some(SizeQueryVarPlaceholder::Orientation);
   }
-
+  if name.eq_ignore_ascii_case("aspect-ratio")
+    || name.eq_ignore_ascii_case("min-aspect-ratio")
+    || name.eq_ignore_ascii_case("max-aspect-ratio")
+  {
+    return Some(SizeQueryVarPlaceholder::AspectRatio);
+  }
+  if name.eq_ignore_ascii_case("width")
+    || name.eq_ignore_ascii_case("min-width")
+    || name.eq_ignore_ascii_case("max-width")
+    || name.eq_ignore_ascii_case("inline-size")
+    || name.eq_ignore_ascii_case("min-inline-size")
+    || name.eq_ignore_ascii_case("max-inline-size")
+    || name.eq_ignore_ascii_case("height")
+    || name.eq_ignore_ascii_case("min-height")
+    || name.eq_ignore_ascii_case("max-height")
+    || name.eq_ignore_ascii_case("block-size")
+    || name.eq_ignore_ascii_case("min-block-size")
+    || name.eq_ignore_ascii_case("max-block-size")
+  {
+    return Some(SizeQueryVarPlaceholder::Length);
+  }
   None
 }
 
-fn detect_size_query_var_placeholder(value: &str) -> SizeQueryVarPlaceholder {
-  let mut input = ParserInput::new(value);
-  let mut parser = Parser::new(&mut input);
-
+fn stringify_nested_tokens_with_size_query_var_placeholders<'i, 't, E>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<String, ParseError<'i, E>> {
+  let mut parts = Vec::new();
   while !parser.is_exhausted() {
     if !css_deadline_allows_progress() {
       break;
     }
-    let Ok(token) = parser.next_including_whitespace() else {
-      break;
-    };
 
+    let token = parser.next_including_whitespace()?;
     match token {
+      Token::WhiteSpace(ws) => parts.push((*ws).to_string()),
+      Token::Ident(id) => parts.push(id.to_string()),
+      Token::Number { value, .. } => parts.push(value.to_string()),
+      Token::Dimension { value, unit, .. } => parts.push(format!("{}{}", value, unit)),
+      Token::Colon => parts.push(":".to_string()),
+      Token::Delim(c) => parts.push(c.to_string()),
+      Token::Function(name) if name.eq_ignore_ascii_case("var") => {
+        // `var()` should appear inside media feature expressions. Use a length placeholder as a
+        // conservative fallback so callers can still attempt template parsing.
+        parser.parse_nested_block(consume_nested_tokens)?;
+        parts.push(SizeQueryVarPlaceholder::Length.as_str().to_string());
+      }
+      Token::Function(f) => {
+        let name = f.to_string();
+        let inner = parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
+        parts.push(format!("{name}({inner})"));
+      }
       Token::ParenthesisBlock => {
-        let found = parser
-          .parse_nested_block(|nested| {
-            Ok::<_, ParseError<'_, ()>>(detect_size_query_var_placeholder_in_block(nested))
-          })
-          .ok()
-          .flatten();
-        if let Some(found) = found {
-          return found;
-        }
+        let inner = parser.parse_nested_block(|nested| {
+          let state = nested.state();
+          let mut contains_paren_blocks = false;
+          let mut placeholder = SizeQueryVarPlaceholder::Length;
+
+          while !nested.is_exhausted() {
+            if !css_deadline_allows_progress() {
+              break;
+            }
+            let token = nested.next_including_whitespace()?;
+            match token {
+              Token::ParenthesisBlock => {
+                contains_paren_blocks = true;
+                nested.parse_nested_block(consume_nested_tokens)?;
+              }
+              Token::Ident(id) => {
+                if let Some(found) = size_query_placeholder_for_ident(id.as_ref()) {
+                  match found {
+                    SizeQueryVarPlaceholder::Orientation => placeholder = found,
+                    SizeQueryVarPlaceholder::AspectRatio => {
+                      if placeholder != SizeQueryVarPlaceholder::Orientation {
+                        placeholder = found;
+                      }
+                    }
+                    SizeQueryVarPlaceholder::Length => {}
+                  }
+                }
+              }
+              Token::Function(_)
+              | Token::SquareBracketBlock
+              | Token::CurlyBracketBlock => {
+                nested.parse_nested_block(consume_nested_tokens)?;
+              }
+              _ => {}
+            }
+          }
+
+          nested.reset(&state);
+
+          if contains_paren_blocks {
+            stringify_nested_tokens_with_size_query_var_placeholders(nested)
+          } else {
+            stringify_nested_tokens_with_var_placeholder(nested, placeholder.as_str())
+          }
+        })?;
+        parts.push(format!("({inner})"));
       }
-      Token::Function(_) | Token::SquareBracketBlock | Token::CurlyBracketBlock => {
-        let _: std::result::Result<(), ParseError<'_, ()>> =
-          parser.parse_nested_block(consume_nested_tokens);
+      Token::SquareBracketBlock => {
+        let inner = parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
+        parts.push(format!("[{inner}]"));
       }
-      _ => {}
+      Token::CurlyBracketBlock => {
+        let inner = parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
+        parts.push(format!("{{{inner}}}"));
+      }
+      other => parts.push(other.to_css_string()),
     }
   }
 
-  SizeQueryVarPlaceholder::Length
-}
-
-fn replace_var_calls_with_placeholder(value: &str, placeholder: &str) -> Option<String> {
-  let mut input = ParserInput::new(value);
-  let mut parser = Parser::new(&mut input);
-  stringify_nested_tokens_with_var_placeholder::<()>(&mut parser, placeholder).ok()
+  Ok(parts.join(""))
 }
 
 fn replace_var_calls_with_size_query_placeholder(value: &str) -> Option<String> {
-  let placeholder = detect_size_query_var_placeholder(value).as_str();
-  replace_var_calls_with_placeholder(value, placeholder)
+  let mut input = ParserInput::new(value);
+  let mut parser = Parser::new(&mut input);
+  stringify_nested_tokens_with_size_query_var_placeholders::<()>(&mut parser).ok()
 }
 
 fn normalize_style_query_value(value: &str) -> String {
