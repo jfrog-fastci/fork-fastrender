@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CSS Grid named span auto-placement reference</title>
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+  }
+
+  .grid {
+    display: grid;
+    width: 100px;
+    height: 80px;
+    grid-template-columns: [foo] 50px [foo] 50px [foo];
+    grid-template-rows: [foo] 40px [foo] 40px [foo];
+  }
+
+  .item {
+    background: green;
+    grid-column: 1 / 3;
+    grid-row: 1 / 3;
+  }
+</style>
+<div class="grid">
+  <div class="item"></div>
+</div>
+

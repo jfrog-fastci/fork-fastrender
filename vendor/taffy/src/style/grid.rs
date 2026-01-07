@@ -371,6 +371,114 @@ pub(crate) type OriginZeroGridPlacement = GenericGridPlacement<OriginZeroLine>;
 /// been resolved by the time values of this type are constructed).
 pub(crate) type NonNamedGridPlacement = GenericGridPlacement<GridLine>;
 
+/// A grid line placement using CSS grid line coordinates to specify line positions.
+///
+/// This mirrors [`NonNamedGridPlacement`] but preserves [`GridPlacement::NamedSpan`] so that it can be
+/// resolved per-candidate during auto-placement.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum GenericGridPlacementWithNamedSpan<LineType: GridCoordinate, S: CheapCloneStr> {
+  /// Place item according to the auto-placement algorithm
+  Auto,
+  /// Place item at specified line (column or row) index
+  Line(LineType),
+  /// Item should span specified number of tracks (columns or rows)
+  Span(u16),
+  /// Item should span until the nth line named <name>.
+  ///
+  /// This is preserved during auto-placement because it must be resolved relative to a candidate
+  /// placement position.
+  NamedSpan(S, u16),
+}
+
+pub(crate) type NonNamedGridPlacementWithNamedSpan<S> =
+  GenericGridPlacementWithNamedSpan<GridLine, S>;
+pub(crate) type OriginZeroGridPlacementWithNamedSpan<S> =
+  GenericGridPlacementWithNamedSpan<OriginZeroLine, S>;
+
+impl<S: CheapCloneStr> GenericGridPlacementWithNamedSpan<GridLine, S> {
+  pub fn into_origin_zero_placement(
+    self,
+    explicit_track_count: u16,
+  ) -> GenericGridPlacementWithNamedSpan<OriginZeroLine, S> {
+    match self {
+      Self::Auto => GenericGridPlacementWithNamedSpan::Auto,
+      Self::Span(span) => GenericGridPlacementWithNamedSpan::Span(span),
+      Self::NamedSpan(name, span) => GenericGridPlacementWithNamedSpan::NamedSpan(name, span),
+      // Grid line zero is an invalid index, so it gets treated as Auto
+      // See: https://developer.mozilla.org/en-US/docs/Web/CSS/grid-row-start#values
+      Self::Line(line) => match line.as_i16() {
+        0 => GenericGridPlacementWithNamedSpan::Auto,
+        _ => GenericGridPlacementWithNamedSpan::Line(line.into_origin_zero_line(explicit_track_count)),
+      },
+    }
+  }
+}
+
+impl<S: CheapCloneStr> Line<NonNamedGridPlacementWithNamedSpan<S>> {
+  /// Convert a `Line<NonNamedGridPlacementWithNamedSpan>` from CSS grid line coordinates into
+  /// origin-zero coordinates.
+  ///
+  /// Unlike [`Line<NonNamedGridPlacement>::into_origin_zero`], this preserves
+  /// [`GridPlacement::NamedSpan`] so that it can be resolved per-candidate during auto-placement.
+  pub fn into_origin_zero(
+    self,
+    explicit_track_count: u16,
+  ) -> Line<OriginZeroGridPlacementWithNamedSpan<S>> {
+    self.map(|placement| placement.into_origin_zero_placement(explicit_track_count))
+  }
+}
+
+impl<S: CheapCloneStr> Line<OriginZeroGridPlacementWithNamedSpan<S>> {
+  /// For absolutely positioned items:
+  ///   - Tracks resolve to definite tracks
+  ///   - For Spans:
+  ///      - If the other position is a Track, they resolve to a definite track relative to the other track
+  ///      - Else resolve to None
+  ///   - Auto resolves to None
+  ///   - NamedSpan resolves to None (it must be resolved relative to an auto-placement candidate)
+  ///
+  /// When finally positioning the item, a value of None means that the item's grid area is bounded by the grid
+  /// container's border box on that side.
+  pub fn resolve_absolutely_positioned_grid_tracks(&self) -> Line<Option<OriginZeroLine>> {
+    use GenericGridPlacementWithNamedSpan as GP;
+    match (&self.start, &self.end) {
+      (GP::Line(track1), GP::Line(track2)) => {
+        if track1 == track2 {
+          Line {
+            start: Some(*track1),
+            end: Some(*track1 + 1),
+          }
+        } else {
+          Line {
+            start: Some(min(*track1, *track2)),
+            end: Some(max(*track1, *track2)),
+          }
+        }
+      }
+      (GP::Line(track), GP::Span(span)) => Line {
+        start: Some(*track),
+        end: Some(*track + *span),
+      },
+      (GP::Line(track), GP::Auto) | (GP::Line(track), GP::NamedSpan(_, _)) => Line {
+        start: Some(*track),
+        end: None,
+      },
+      (GP::Span(span), GP::Line(track)) => Line {
+        start: Some(*track - *span),
+        end: Some(*track),
+      },
+      (GP::Auto, GP::Line(track)) | (GP::NamedSpan(_, _), GP::Line(track)) => Line {
+        start: None,
+        end: Some(*track),
+      },
+      _ => Line {
+        start: None,
+        end: None,
+      },
+    }
+  }
+}
+
 /// A grid line placement specification. Used for grid-[row/column]-[start/end]. Named tracks are not implemented.
 ///
 /// Defaults to `GridPlacement::Auto`

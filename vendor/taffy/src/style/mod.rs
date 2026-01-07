@@ -34,7 +34,9 @@ pub(crate) use self::grid::{GridAreaAxis, GridAreaEnd};
 #[cfg(feature = "grid")]
 pub use self::grid::{GridTemplateArea, NamedGridLine, TemplateLineNames};
 #[cfg(feature = "grid")]
-pub(crate) use self::grid::{NonNamedGridPlacement, OriginZeroGridPlacement};
+pub(crate) use self::grid::{
+  NonNamedGridPlacementWithNamedSpan, OriginZeroGridPlacementWithNamedSpan,
+};
 
 use crate::geometry::{Point, Rect, Size};
 use crate::style_helpers::TaffyAuto as _;

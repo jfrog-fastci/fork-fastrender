@@ -2,12 +2,16 @@
 
 use crate::{
   CheapCloneStr, GenericGridTemplateComponent, GenericRepetition as _, GridAreaAxis, GridAreaEnd,
-  GridContainerStyle, GridPlacement, GridTemplateArea, Line, NonNamedGridPlacement,
-  RepetitionCount,
+  GridContainerStyle, GridPlacement, GridTemplateArea, Line,
+  NonNamedGridPlacementWithNamedSpan, RepetitionCount,
 };
-use core::{borrow::Borrow, cmp::Ordering, fmt::Debug};
+use core::{
+  borrow::Borrow,
+  cmp::{max, min, Ordering},
+  fmt::Debug,
+};
 
-use super::GridLine;
+use super::{GridLine, OriginZeroLine};
 // use alloc::fmt::format;
 use crate::sys::{format, single_value_vec, Map, Vec};
 
@@ -79,6 +83,43 @@ fn upsert_line_name_map<S: CheapCloneStr>(
 }
 
 impl<S: CheapCloneStr> NamedLineResolver<S> {
+  fn axis_line_maps(&self, axis: GridAreaAxis) -> (&Map<StrHasher<S>, Vec<u16>>, u16) {
+    match axis {
+      GridAreaAxis::Row => (&self.row_lines, self.explicit_row_count),
+      GridAreaAxis::Column => (&self.column_lines, self.explicit_column_count),
+    }
+  }
+
+  fn lookup_named_lines(
+    &self,
+    name: &S,
+    axis: GridAreaAxis,
+    end: GridAreaEnd,
+  ) -> Option<&[u16]> {
+    let (line_lookup, _) = self.axis_line_maps(axis);
+    if let Some(lines) = line_lookup.get(name.as_ref()) {
+      return Some(lines.as_slice());
+    }
+
+    let implicit_name = match end {
+      GridAreaEnd::Start => format!("{}-start", name.as_ref()),
+      GridAreaEnd::End => format!("{}-end", name.as_ref()),
+    };
+    line_lookup
+      .get(implicit_name.as_str())
+      .map(|lines| lines.as_slice())
+  }
+
+  fn origin_zero_to_grid_line(line: OriginZeroLine, explicit_track_count: u16) -> GridLine {
+    let explicit_line_count = explicit_track_count + 1;
+    let line = if line.0 >= 0 {
+      line.0 as i32 + 1
+    } else {
+      line.0 as i32 - explicit_line_count as i32
+    };
+    GridLine::from(line.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+  }
+
   /// Create a resolver from explicit line name vectors for rows and columns
   pub(crate) fn from_line_names(
     row_line_names: Vec<Vec<S>>,
@@ -251,7 +292,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
   pub(crate) fn resolve_row_names(
     &self,
     line: &Line<GridPlacement<S>>,
-  ) -> Line<NonNamedGridPlacement> {
+  ) -> Line<NonNamedGridPlacementWithNamedSpan<S>> {
     self.resolve_line_names(line, GridAreaAxis::Row)
   }
 
@@ -260,7 +301,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
   pub(crate) fn resolve_column_names(
     &self,
     line: &Line<GridPlacement<S>>,
-  ) -> Line<NonNamedGridPlacement> {
+  ) -> Line<NonNamedGridPlacementWithNamedSpan<S>> {
     self.resolve_line_names(line, GridAreaAxis::Column)
   }
 
@@ -270,7 +311,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     &self,
     line: &Line<GridPlacement<S>>,
     axis: GridAreaAxis,
-  ) -> Line<NonNamedGridPlacement> {
+  ) -> Line<NonNamedGridPlacementWithNamedSpan<S>> {
     let start_holder;
     let start_line_resolved = if let GridPlacement::NamedLine(name, idx) = &line.start {
       start_holder =
@@ -301,62 +342,138 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     //
     // <https://drafts.csswg.org/css-grid-2/#grid-span>
     match (&start_line_resolved, &end_line_resolved) {
-      (GridPlacement::Line(start_line), GridPlacement::NamedSpan(name, idx)) => {
+      (GridPlacement::Line(start_line), GridPlacement::NamedSpan(name, idx))
+        if start_line.as_i16() != 0 =>
+      {
         let explicit_track_count = match axis {
-          GridAreaAxis::Row => self.explicit_row_count as i16,
-          GridAreaAxis::Column => self.explicit_column_count as i16,
+          GridAreaAxis::Row => self.explicit_row_count,
+          GridAreaAxis::Column => self.explicit_column_count,
         };
-        let normalized_start_line = if start_line.as_i16() > 0 {
-          start_line.as_i16() as u16
-        } else {
-          (explicit_track_count + 1 + start_line.as_i16()).max(0) as u16
-        };
-        let end_line = self.find_line_index(name, *idx as i16, axis, GridAreaEnd::End, &|lines| {
-          let point = lines.partition_point(|line| *line <= normalized_start_line);
-          &lines[point..]
-        });
+        let start_line_oz = start_line.into_origin_zero_line(explicit_track_count);
+        let end_line_oz = self.resolve_named_span_end_line(name, *idx, axis, start_line_oz);
+        let end_line = Self::origin_zero_to_grid_line(end_line_oz, explicit_track_count);
         Line {
-          start: NonNamedGridPlacement::Line(*start_line),
-          end: NonNamedGridPlacement::Line(end_line),
+          start: NonNamedGridPlacementWithNamedSpan::Line(*start_line),
+          end: NonNamedGridPlacementWithNamedSpan::Line(end_line),
         }
       }
-      (GridPlacement::NamedSpan(name, idx), GridPlacement::Line(end_line)) => {
+      (GridPlacement::NamedSpan(name, idx), GridPlacement::Line(end_line))
+        if end_line.as_i16() != 0 =>
+      {
         let explicit_track_count = match axis {
-          GridAreaAxis::Row => self.explicit_row_count as i16,
-          GridAreaAxis::Column => self.explicit_column_count as i16,
+          GridAreaAxis::Row => self.explicit_row_count,
+          GridAreaAxis::Column => self.explicit_column_count,
         };
-        let normalized_end_line = if end_line.as_i16() > 0 {
-          end_line.as_i16() as u16
-        } else {
-          (explicit_track_count + 1 + end_line.as_i16()).max(0) as u16
-        };
-        let start_line =
-          self.find_line_index(name, *idx as i16, axis, GridAreaEnd::Start, &|lines| {
-            let point = lines.partition_point(|line| *line < normalized_end_line);
-            &lines[..point]
-          });
+        let end_line_oz = end_line.into_origin_zero_line(explicit_track_count);
+        let start_line_oz = self.resolve_named_span_start_line(name, *idx, axis, end_line_oz);
+        let start_line = Self::origin_zero_to_grid_line(start_line_oz, explicit_track_count);
         Line {
-          start: NonNamedGridPlacement::Line(start_line),
-          end: NonNamedGridPlacement::Line(*end_line),
+          start: NonNamedGridPlacementWithNamedSpan::Line(start_line),
+          end: NonNamedGridPlacementWithNamedSpan::Line(*end_line),
         }
       }
       (start, end) => Line {
         start: match start {
-          GridPlacement::Auto => NonNamedGridPlacement::Auto,
-          GridPlacement::Line(grid_line) => NonNamedGridPlacement::Line(*grid_line),
-          GridPlacement::Span(span) => NonNamedGridPlacement::Span(*span),
-          GridPlacement::NamedSpan(_, _) => NonNamedGridPlacement::Span(1),
+          GridPlacement::Auto => NonNamedGridPlacementWithNamedSpan::Auto,
+          GridPlacement::Line(grid_line) => NonNamedGridPlacementWithNamedSpan::Line(*grid_line),
+          GridPlacement::Span(span) => NonNamedGridPlacementWithNamedSpan::Span(*span),
+          GridPlacement::NamedSpan(name, span) => {
+            NonNamedGridPlacementWithNamedSpan::NamedSpan(name.clone(), *span)
+          }
           _ => unreachable!(),
         },
         end: match end {
-          GridPlacement::Auto => NonNamedGridPlacement::Auto,
-          GridPlacement::Line(grid_line) => NonNamedGridPlacement::Line(*grid_line),
-          GridPlacement::Span(span) => NonNamedGridPlacement::Span(*span),
-          GridPlacement::NamedSpan(_, _) => NonNamedGridPlacement::Span(1),
+          GridPlacement::Auto => NonNamedGridPlacementWithNamedSpan::Auto,
+          GridPlacement::Line(grid_line) => NonNamedGridPlacementWithNamedSpan::Line(*grid_line),
+          GridPlacement::Span(span) => NonNamedGridPlacementWithNamedSpan::Span(*span),
+          GridPlacement::NamedSpan(name, span) => {
+            NonNamedGridPlacementWithNamedSpan::NamedSpan(name.clone(), *span)
+          }
           _ => unreachable!(),
         },
       },
     }
+  }
+
+  /// Resolve the end edge of an item whose start edge is known and end edge is a `NamedSpan(...)`.
+  pub(crate) fn resolve_named_span_end_line(
+    &self,
+    name: &S,
+    idx: u16,
+    axis: GridAreaAxis,
+    start_line: OriginZeroLine,
+  ) -> OriginZeroLine {
+    let idx = idx.min(i16::MAX as u16).max(1);
+    let (_, explicit_track_count) = self.axis_line_maps(axis);
+    let explicit_end_line = OriginZeroLine(explicit_track_count as i16);
+
+    let normalized_start_line = if start_line.0 >= 0 {
+      (start_line.0 as i32 + 1).clamp(0, u16::MAX as i32) as u16
+    } else {
+      0
+    };
+
+    let named_lines = self.lookup_named_lines(name, axis, GridAreaEnd::End);
+    let named_lines_after_start = named_lines.map(|lines| {
+      let point = lines.partition_point(|line| *line <= normalized_start_line);
+      &lines[point..]
+    });
+
+    if let Some(after) = named_lines_after_start {
+      let after_len = after.len();
+      let idx_usize = idx as usize;
+      if after_len >= idx_usize {
+        let line_index = after[idx_usize - 1];
+        let oz = (line_index as i32 - 1).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        return OriginZeroLine(oz);
+      }
+
+      let remaining = idx - after_len as u16;
+      let baseline = max(start_line, explicit_end_line);
+      return OriginZeroLine((baseline.0 as i32 + remaining as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+    }
+
+    let baseline = max(start_line, explicit_end_line);
+    OriginZeroLine((baseline.0 as i32 + idx as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+  }
+
+  /// Resolve the start edge of an item whose end edge is known and start edge is a `NamedSpan(...)`.
+  pub(crate) fn resolve_named_span_start_line(
+    &self,
+    name: &S,
+    idx: u16,
+    axis: GridAreaAxis,
+    end_line: OriginZeroLine,
+  ) -> OriginZeroLine {
+    let idx = idx.min(i16::MAX as u16).max(1);
+    let normalized_end_line = if end_line.0 >= 0 {
+      (end_line.0 as i32 + 1).clamp(0, u16::MAX as i32) as u16
+    } else {
+      0
+    };
+
+    let named_lines = self.lookup_named_lines(name, axis, GridAreaEnd::Start);
+    let named_lines_before_end = named_lines.map(|lines| {
+      let point = lines.partition_point(|line| *line < normalized_end_line);
+      &lines[..point]
+    });
+
+    if let Some(before) = named_lines_before_end {
+      let before_len = before.len();
+      let idx_usize = idx as usize;
+      if before_len >= idx_usize {
+        let line_index = before[before_len - idx_usize];
+        let oz = (line_index as i32 - 1).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        return OriginZeroLine(oz);
+      }
+
+      let remaining = idx - before_len as u16;
+      let baseline = min(end_line, OriginZeroLine(0));
+      return OriginZeroLine((baseline.0 as i32 - remaining as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+    }
+
+    let baseline = min(end_line, OriginZeroLine(0));
+    OriginZeroLine((baseline.0 as i32 - idx as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16)
   }
 
   /// Resolve the grid line for a named grid line or span

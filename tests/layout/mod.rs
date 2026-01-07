@@ -19,6 +19,7 @@ mod fragmentation_widows_orphans;
 mod grid_box_sizing_test;
 mod grid_fragmentation;
 mod grid_intrinsic_sizing_keywords;
+mod grid_named_span_autoplacement;
 mod grid_overflow_auto_min_size;
 mod grid_span_token_order;
 mod grid_writing_mode_in_block;
