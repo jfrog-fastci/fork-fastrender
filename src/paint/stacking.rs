@@ -578,7 +578,7 @@ impl StackingContext {
 
     // Union child stacking context bounds
     for child in &self.children {
-      accumulate(apply_self_transform(child, child.bounds), &mut bounds);
+      accumulate(translate(apply_self_transform(child, child.bounds)), &mut bounds);
     }
 
     self.bounds = bounds.unwrap_or_else(|| {
@@ -2556,6 +2556,26 @@ mod tests {
     parent.compute_bounds(None);
 
     assert_eq!(parent.bounds, Rect::from_xywh(5.0, 5.0, 10.0, 10.0));
+  }
+
+  #[test]
+  fn test_compute_bounds_translates_children_by_parent_offset() {
+    let mut parent = StackingContext::new(0);
+    parent.offset_from_parent_context = Point::new(50.0, 50.0);
+    parent
+      .fragments
+      .push(create_block_fragment(0.0, 0.0, 20.0, 20.0));
+
+    let mut child = StackingContext::new(0);
+    child.offset_from_parent_context = Point::new(10.0, 10.0);
+    child
+      .fragments
+      .push(create_block_fragment(0.0, 0.0, 100.0, 10.0));
+
+    parent.children.push(child);
+    parent.compute_bounds(None);
+
+    assert_eq!(parent.bounds, Rect::from_xywh(50.0, 50.0, 110.0, 20.0));
   }
 
   // Layer classification tests
