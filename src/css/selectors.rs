@@ -1060,12 +1060,20 @@ mod tests {
   use precomputed_hash::PrecomputedHash;
   use selectors::context::QuirksMode;
   use selectors::parser::ParseRelative;
+  use selectors::parser::NonTSPseudoClass;
   use selectors::parser::Parser as SelectorParser;
 
   fn parse(expr: &str) -> (i32, i32) {
     let mut input = ParserInput::new(expr);
     let mut parser = Parser::new(&mut input);
     parse_nth(&mut parser).expect("should parse nth expression")
+  }
+
+  fn parse_selector_list(selector_list: &str) -> SelectorList<FastRenderSelectorImpl> {
+    let mut input = ParserInput::new(selector_list);
+    let mut parser = Parser::new(&mut input);
+    SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+      .expect("selector list should parse")
   }
 
   #[test]
@@ -1111,6 +1119,48 @@ mod tests {
       )
       .expect("nth-child pseudo should parse");
     assert!(matches!(nth, PseudoClass::NthChild(_, _, _)));
+  }
+
+  #[test]
+  fn nth_child_of_specificity_includes_of_selector_list_specificity() {
+    let pseudo_class_weight = PseudoClass::Root.specificity();
+    let of_list = parse_selector_list("#target, .foo");
+    let max_arg_spec = of_list
+      .slice()
+      .iter()
+      .map(|selector| selector.specificity())
+      .max()
+      .unwrap_or(0);
+
+    assert_eq!(
+      PseudoClass::NthChild(0, 1, None).specificity(),
+      pseudo_class_weight
+    );
+    assert_eq!(
+      PseudoClass::NthChild(0, 1, Some(of_list)).specificity(),
+      pseudo_class_weight + max_arg_spec
+    );
+  }
+
+  #[test]
+  fn nth_last_child_of_specificity_includes_of_selector_list_specificity() {
+    let pseudo_class_weight = PseudoClass::Root.specificity();
+    let of_list = parse_selector_list("#target, .foo");
+    let max_arg_spec = of_list
+      .slice()
+      .iter()
+      .map(|selector| selector.specificity())
+      .max()
+      .unwrap_or(0);
+
+    assert_eq!(
+      PseudoClass::NthLastChild(0, 1, None).specificity(),
+      pseudo_class_weight
+    );
+    assert_eq!(
+      PseudoClass::NthLastChild(0, 1, Some(of_list)).specificity(),
+      pseudo_class_weight + max_arg_spec
+    );
   }
 
   #[test]
