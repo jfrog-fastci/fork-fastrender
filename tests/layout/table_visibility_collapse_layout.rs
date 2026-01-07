@@ -92,6 +92,74 @@ fn column_visibility_collapse_removes_column_from_layout() {
     "cells adjacent after collapsing column (gap={gap})"
   );
   assert!(
+   (c.rect.width() - 50.0).abs() < 0.1,
+    "collapsed column should not affect subsequent column width (got {})",
+    c.rect.width()
+  );
+}
+
+#[test]
+fn column_visibility_collapse_removes_column_from_layout_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <col style="width: 40px; visibility: collapse" />
+          <col style="width: 50px" />
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(!cells.contains_key(&'B'), "collapsed column cell should not be laid out");
+
+  let a = cells.get(&'A').expect("cell A present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  assert!(
+    a.rect.x() > c.rect.x(),
+    "expected RTL order A (right) > C (left), got A.x={} C.x={}",
+    a.rect.x(),
+    c.rect.x()
+  );
+  let gap = a.rect.x() - (c.rect.x() + c.rect.width());
+  assert!(
+    gap.abs() < 0.1,
+    "cells adjacent after collapsing column in RTL (gap={gap})"
+  );
+  assert!(
+    (a.rect.width() - 30.0).abs() < 0.1,
+    "expected first source column width 30px (got {})",
+    a.rect.width()
+  );
+  assert!(
     (c.rect.width() - 50.0).abs() < 0.1,
     "collapsed column should not affect subsequent column width (got {})",
     c.rect.width()
@@ -238,6 +306,66 @@ fn colspan_over_collapsed_column_is_shortened() {
   assert!(
     gap.abs() < 0.1,
     "cells adjacent after collapsing column (gap={gap})"
+  );
+}
+
+#[test]
+fn colspan_over_collapsed_column_is_shortened_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <col style="width: 40px; visibility: collapse" />
+          <col style="width: 50px" />
+          <tr>
+            <td colspan="2">A</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  let a = cells.get(&'A').expect("cell A present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  assert!(
+    (a.rect.width() - 30.0).abs() < 0.1,
+    "colspan should not include collapsed column in RTL (got {})",
+    a.rect.width()
+  );
+  assert!(
+    a.rect.x() > c.rect.x(),
+    "expected RTL order A (right) > C (left), got A.x={} C.x={}",
+    a.rect.x(),
+    c.rect.x()
+  );
+  let gap = a.rect.x() - (c.rect.x() + c.rect.width());
+  assert!(
+    gap.abs() < 0.1,
+    "cells adjacent after collapsing column in RTL (gap={gap})"
   );
 }
 

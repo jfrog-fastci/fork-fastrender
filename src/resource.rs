@@ -704,7 +704,7 @@ fn http_browser_schemeful_same_site_from_origins(
   referrer_site == target_site
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FetchDestination {
   Document,
   /// Subframe document navigation (e.g. `<iframe src=...>`).
