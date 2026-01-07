@@ -3770,7 +3770,12 @@ fn collect_scene_items(
     items.push(Preserve3dSceneItem {
       source: Preserve3dSceneItemSource::FlattenedSubtree(node.clone()),
       transform: combined_transform,
-      bounds: computed_bounds.unwrap_or(node.context.bounds),
+      // When flattening a subtree into a single preserve-3d plane, the raster surface must be at
+      // least as large as the stacking context bounds. Otherwise nested preserve-3d warps inside
+      // the flattened subtree can project outside the raw paint bounds and get clipped.
+      bounds: computed_bounds
+        .map(|bounds| bounds.union(node.context.bounds))
+        .unwrap_or(node.context.bounds),
       plane_rect: node.context.plane_rect,
       backface_visibility: node.context.backface_visibility,
       paint_order: order,
