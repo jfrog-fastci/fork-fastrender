@@ -1060,7 +1060,9 @@ fn parse_slotted_pseudo_element<'i, 't>(
   parser: &mut Parser<'i, 't>,
   name: &cssparser::CowRcStr<'i>,
 ) -> std::result::Result<PseudoElement, ParseError<'i, SelectorParseErrorKind<'i>>> {
-  let list = SelectorList::parse(
+  // Per CSS Scoping, ::slotted() accepts a single <compound-selector>.
+  // Reject selector lists (commas), combinators, and pseudo-elements inside the argument.
+  let list = SelectorList::parse_disallow_pseudo(
     &PseudoClassParser,
     parser,
     selectors::parser::ParseRelative::No,
@@ -1072,7 +1074,7 @@ fn parse_slotted_pseudo_element<'i, 't>(
   })?;
 
   let selectors: Vec<_> = list.slice().iter().cloned().collect();
-  if selectors.is_empty() || selectors.iter().any(selector_has_combinators) {
+  if selectors.len() != 1 || selectors.iter().any(selector_has_combinators) {
     return Err(
       parser.new_custom_error(SelectorParseErrorKind::UnsupportedPseudoClassOrElement(
         name.clone(),
@@ -1677,6 +1679,18 @@ mod tests {
     let mut input = ParserInput::new("div::slotted(.a .b)");
     let mut parser = Parser::new(&mut input);
     assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_err());
+  }
+
+  #[test]
+  fn rejects_slotted_selector_list_and_pseudo_elements() {
+    for selector_text in ["div::slotted(.a, .b)", "div::slotted(::before)"] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_err(),
+        "{selector_text} should be rejected"
+      );
+    }
   }
 
   #[test]
