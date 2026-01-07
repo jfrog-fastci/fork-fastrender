@@ -417,7 +417,36 @@ pub fn diff_png_with_alpha(
   let max_height = rendered_img.height().max(expected_img.height());
   let total_pixels = (max_width as u64) * (max_height as u64);
 
-  let mut diff_image = RgbaImage::new(max_width, max_height);
+  let diff_bytes = u64::from(max_width)
+    .checked_mul(u64::from(max_height))
+    .and_then(|px| px.checked_mul(4))
+    .ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: format!("diff_png_with_alpha: diff image dimensions overflow ({max_width}x{max_height})"),
+      })
+    })?;
+  if diff_bytes > MAX_PIXMAP_BYTES {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!(
+        "diff_png_with_alpha: diff image {}x{} is {} bytes (limit {})",
+        max_width, max_height, diff_bytes, MAX_PIXMAP_BYTES
+      ),
+    }));
+  }
+
+  let diff_len = usize::try_from(diff_bytes).map_err(|_| {
+    Error::Render(RenderError::InvalidParameters {
+      message: format!("diff_png_with_alpha: diff image byte size does not fit in usize ({max_width}x{max_height})"),
+    })
+  })?;
+  let mut diff_buf = reserve_buffer(diff_bytes, "diff_png_with_alpha: diff image buffer")
+    .map_err(Error::Render)?;
+  diff_buf.resize(diff_len, 0);
+  let mut diff_image = RgbaImage::from_raw(max_width, max_height, diff_buf).ok_or_else(|| {
+    Error::Render(RenderError::InvalidParameters {
+      message: "diff_png_with_alpha: invalid diff image buffer".to_string(),
+    })
+  })?;
   let mut different_pixels = 0u64;
   let mut max_channel_diff = 0u8;
 

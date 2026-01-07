@@ -234,7 +234,7 @@ pub fn compare_images(
   let total_pixels = (width as u64) * (height as u64);
 
   let mut diff_image = if config.generate_diff_image {
-    Some(RgbaImage::new(width, height))
+    allocate_diff_image(width, height)
   } else {
     None
   };
@@ -245,9 +245,7 @@ pub fn compare_images(
   let mut max_blue_diff = 0u8;
   let mut max_alpha_diff = 0u8;
   let mut sum_squared_error = 0.0f64;
-
-  let mut actual_luma = Vec::with_capacity(total_pixels as usize);
-  let mut expected_luma = Vec::with_capacity(total_pixels as usize);
+  let mut ssim = SsimAccumulator::default();
 
   let tolerance = config.channel_tolerance as i16;
 
@@ -322,8 +320,7 @@ pub fn compare_images(
       + 0.0722 * expected_px[2] as f64)
       * alpha_expected;
 
-    actual_luma.push(luma_actual);
-    expected_luma.push(luma_expected);
+    ssim.push(luma_actual, luma_expected);
   }
 
   let different_percent = if total_pixels > 0 {
@@ -344,7 +341,7 @@ pub fn compare_images(
     f64::INFINITY
   };
 
-  let perceptual_similarity = compute_ssim(&actual_luma, &expected_luma);
+  let perceptual_similarity = ssim.finish();
   let perceptual_distance = 1.0 - perceptual_similarity.clamp(0.0, 1.0);
 
   let statistics = DiffStatistics {
@@ -472,45 +469,71 @@ pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, Error> {
   Ok(buffer.into_inner())
 }
 
-fn compute_ssim(actual: &[f64], expected: &[f64]) -> f64 {
-  let len = actual.len().min(expected.len());
-  if len == 0 {
-    return 1.0;
+#[derive(Debug, Clone, Copy, Default)]
+struct SsimAccumulator {
+  n: u64,
+  mean_actual: f64,
+  mean_expected: f64,
+  m2_actual: f64,
+  m2_expected: f64,
+  c: f64,
+}
+
+impl SsimAccumulator {
+  fn push(&mut self, actual: f64, expected: f64) {
+    self.n += 1;
+    let n = self.n as f64;
+
+    // Welford update for means, variances, and covariance (population form).
+    let delta_actual = actual - self.mean_actual;
+    let delta_expected = expected - self.mean_expected;
+
+    self.mean_actual += delta_actual / n;
+    self.mean_expected += delta_expected / n;
+
+    self.m2_actual += delta_actual * (actual - self.mean_actual);
+    self.m2_expected += delta_expected * (expected - self.mean_expected);
+    self.c += delta_actual * (expected - self.mean_expected);
   }
 
-  let len_f = len as f64;
+  fn finish(self) -> f64 {
+    if self.n == 0 {
+      return 1.0;
+    }
 
-  let mean_actual: f64 = actual.iter().take(len).sum::<f64>() / len_f;
-  let mean_expected: f64 = expected.iter().take(len).sum::<f64>() / len_f;
+    let n = self.n as f64;
+    let variance_actual = self.m2_actual / n;
+    let variance_expected = self.m2_expected / n;
+    let covariance = self.c / n;
 
-  let mut variance_actual = 0.0;
-  let mut variance_expected = 0.0;
-  let mut covariance = 0.0;
+    let c1 = (0.01f64 * 255.0f64).powi(2);
+    let c2 = (0.03f64 * 255.0f64).powi(2);
 
-  for i in 0..len {
-    let da = actual[i] - mean_actual;
-    let de = expected[i] - mean_expected;
-    variance_actual += da * da;
-    variance_expected += de * de;
-    covariance += da * de;
+    let numerator = (2.0 * self.mean_actual * self.mean_expected + c1) * (2.0 * covariance + c2);
+    let denominator = (self.mean_actual.powi(2) + self.mean_expected.powi(2) + c1)
+      * (variance_actual + variance_expected + c2);
+
+    if denominator == 0.0 {
+      1.0
+    } else {
+      (numerator / denominator).clamp(-1.0, 1.0)
+    }
+  }
+}
+
+fn allocate_diff_image(width: u32, height: u32) -> Option<RgbaImage> {
+  let bytes = u64::from(width)
+    .checked_mul(u64::from(height))?
+    .checked_mul(4)?;
+  if bytes > MAX_PIXMAP_BYTES {
+    return None;
   }
 
-  variance_actual /= len_f;
-  variance_expected /= len_f;
-  covariance /= len_f;
-
-  let c1 = (0.01f64 * 255.0f64).powi(2);
-  let c2 = (0.03f64 * 255.0f64).powi(2);
-
-  let numerator = (2.0 * mean_actual * mean_expected + c1) * (2.0 * covariance + c2);
-  let denominator =
-    (mean_actual.powi(2) + mean_expected.powi(2) + c1) * (variance_actual + variance_expected + c2);
-
-  if denominator == 0.0 {
-    1.0
-  } else {
-    (numerator / denominator).clamp(-1.0, 1.0)
-  }
+  let len = usize::try_from(bytes).ok()?;
+  let mut buf = Vec::new();
+  buf.try_reserve_exact(len).ok()?;
+  buf.resize(len, 0);
+  RgbaImage::from_raw(width, height, buf)
 }
 
 #[cfg(test)]
@@ -581,5 +604,10 @@ mod tests {
     let encoded = encode_png(&img).unwrap();
     let decoded = decode_png(&encoded).unwrap();
     assert_eq!(decoded.get_pixel(0, 0), img.get_pixel(0, 0));
+  }
+
+  #[test]
+  fn allocate_diff_image_rejects_oversized_buffers() {
+    assert!(allocate_diff_image(u32::MAX, u32::MAX).is_none());
   }
 }
