@@ -10,6 +10,7 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
+  crate::rayon_test_util::init_rayon_for_tests(2);
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
   let fragment_tree = renderer
