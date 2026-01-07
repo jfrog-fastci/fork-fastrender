@@ -1087,6 +1087,7 @@ fn snapshot_stacking_context(
   serde_json::json!({
     "z_index": ctx.z_index,
     "creates_stacking_context": ctx.creates_stacking_context,
+    "establishes_backdrop_root": ctx.establishes_backdrop_root,
     "bounds": snapshot_rect(ctx.bounds),
     "mix_blend_mode": snapshot_blend_mode(ctx.mix_blend_mode),
     "is_isolated": ctx.is_isolated,
@@ -1095,6 +1096,7 @@ fn snapshot_stacking_context(
     "backface_visibility": format!("{:?}", ctx.backface_visibility),
     "filters": ctx.filters.len(),
     "backdrop_filters": ctx.backdrop_filters.len(),
+    "has_clip_path": ctx.has_clip_path,
     "has_mask": ctx.mask.is_some(),
     "radii": snapshot_radii(ctx.radii),
   })

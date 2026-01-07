@@ -1600,13 +1600,13 @@
           "x": 0.0,
           "y": 0.0,
           "width": 200.0,
-          "height": 80.0
+          "height": 88.0
         },
         "scroll_overflow": {
           "x": 0.0,
           "y": 0.0,
           "width": 200.0,
-          "height": 80.0
+          "height": 88.0
         },
         "fragment_index": 0,
         "fragment_count": 1,
@@ -1669,15 +1669,15 @@
             "fragment_id": 2,
             "bounds": {
               "x": 0.0,
-              "y": 0.0,
+              "y": 8.0,
               "width": 200.0,
-              "height": 80.0
+              "height": 72.0
             },
             "scroll_overflow": {
               "x": 0.0,
               "y": 0.0,
               "width": 200.0,
-              "height": 80.0
+              "height": 72.0
             },
             "fragment_index": 0,
             "fragment_count": 1,
@@ -1742,13 +1742,13 @@
                   "x": 0.0,
                   "y": 0.0,
                   "width": 200.0,
-                  "height": 80.0
+                  "height": 72.0
                 },
                 "scroll_overflow": {
                   "x": 0.0,
                   "y": 0.0,
                   "width": 200.0,
-                  "height": 80.0
+                  "height": 72.0
                 },
                 "fragment_index": 0,
                 "fragment_count": 1,
@@ -1811,7 +1811,7 @@
                     "fragment_id": 4,
                     "bounds": {
                       "x": 8.0,
-                      "y": 8.0,
+                      "y": 0.0,
                       "width": 132.0,
                       "height": 72.0
                     },
@@ -2443,7 +2443,9 @@
             "y": 8.0
           },
           "creates_stacking_context": true,
+          "establishes_backdrop_root": false,
           "filters": 0,
+          "has_clip_path": false,
           "has_mask": false,
           "is_isolated": false,
           "mix_blend_mode": "Normal",
