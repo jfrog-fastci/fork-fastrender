@@ -61,6 +61,7 @@ use crate::style::types::FontKerning;
 use crate::style::types::FontLanguageOverride;
 use crate::style::types::FontPalette;
 use crate::style::types::FontSizeAdjust;
+use crate::style::types::FontSizeAdjustMetric;
 use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::FontVariant;
 use crate::style::types::FontVariantCaps;
@@ -76,6 +77,7 @@ use crate::text::emoji_presentation::font_is_emoji_font;
 use crate::text::font_db::FontDatabase;
 use crate::text::font_db::FontStretch as DbFontStretch;
 use crate::text::font_db::FontStyle;
+use crate::text::font_db::compute_font_size_adjusted_size;
 use crate::text::font_db::LoadedFont;
 use crate::text::font_fallback::families_signature;
 use crate::text::font_fallback::ClusterFallbackCacheKey;
@@ -2443,17 +2445,17 @@ fn collect_opentype_features(style: &ComputedStyle) -> Vec<Feature> {
   features
 }
 
-fn font_aspect_ratio(font: &LoadedFont) -> Option<f32> {
-  font.metrics().ok().and_then(|m| m.aspect_ratio())
+fn font_metric_ratio(font: &LoadedFont, metric: FontSizeAdjustMetric) -> Option<f32> {
+  font.font_size_adjust_metric_ratio(metric)
 }
 
 /// Returns the author-preferred aspect ratio for font-size-adjust, if any.
 pub fn preferred_font_aspect(style: &ComputedStyle, font_context: &FontContext) -> Option<f32> {
   match style.font_size_adjust {
     FontSizeAdjust::None => None,
-    FontSizeAdjust::Number(n) if n > 0.0 => Some(n),
-    FontSizeAdjust::Number(_) => None,
-    FontSizeAdjust::FromFont => {
+    FontSizeAdjust::Number { ratio, .. } if ratio > 0.0 => Some(ratio),
+    FontSizeAdjust::Number { .. } => None,
+    FontSizeAdjust::FromFont { metric } => {
       let font_style = match style.font_style {
         CssFontStyle::Normal => FontStyle::Normal,
         CssFontStyle::Italic => FontStyle::Italic,
@@ -2467,7 +2469,7 @@ pub fn preferred_font_aspect(style: &ComputedStyle, font_context: &FontContext) 
           font_style,
           font_stretch,
         )
-        .and_then(|font| font_aspect_ratio(&font))
+        .and_then(|font| font_metric_ratio(&font, metric))
     }
   }
 }
@@ -2478,22 +2480,7 @@ pub fn compute_adjusted_font_size(
   font: &LoadedFont,
   preferred_aspect: Option<f32>,
 ) -> f32 {
-  let base_size = style.font_size;
-  let desired_aspect = match style.font_size_adjust {
-    FontSizeAdjust::None => None,
-    FontSizeAdjust::Number(n) if n > 0.0 => Some(n),
-    FontSizeAdjust::Number(_) => None,
-    FontSizeAdjust::FromFont => preferred_aspect.or_else(|| font_aspect_ratio(font)),
-  };
-
-  if let Some(desired) = desired_aspect {
-    let actual = font_aspect_ratio(font).unwrap_or(0.5);
-    if actual > 0.0 {
-      return base_size * (desired / actual);
-    }
-  }
-
-  base_size
+  compute_font_size_adjusted_size(style.font_size, style.font_size_adjust, font, preferred_aspect)
 }
 
 fn is_non_rendering_for_coverage(ch: char) -> bool {
@@ -5557,11 +5544,15 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
 
   match style.font_size_adjust {
     FontSizeAdjust::None => 0u8.hash(&mut hasher),
-    FontSizeAdjust::Number(v) => {
+    FontSizeAdjust::Number { ratio, metric } => {
       1u8.hash(&mut hasher);
-      f32_to_canonical_bits(v).hash(&mut hasher);
+      f32_to_canonical_bits(ratio).hash(&mut hasher);
+      std::mem::discriminant(&metric).hash(&mut hasher);
     }
-    FontSizeAdjust::FromFont => 2u8.hash(&mut hasher),
+    FontSizeAdjust::FromFont { metric } => {
+      2u8.hash(&mut hasher);
+      std::mem::discriminant(&metric).hash(&mut hasher);
+    }
   }
 
   for setting in style.font_feature_settings.iter() {
@@ -7489,7 +7480,10 @@ mod tests {
     let mut positive = ComputedStyle::default();
     positive.font_size = 0.0;
     positive.font_style = CssFontStyle::Oblique(Some(0.0));
-    positive.font_size_adjust = FontSizeAdjust::Number(0.0);
+    positive.font_size_adjust = FontSizeAdjust::Number {
+      ratio: 0.0,
+      metric: FontSizeAdjustMetric::ExHeight,
+    };
     positive.font_variation_settings = vec![FontVariationSetting {
       tag: *b"wght",
       value: 0.0,
@@ -7500,7 +7494,10 @@ mod tests {
     let mut negative = positive.clone();
     negative.font_size = -0.0;
     negative.font_style = CssFontStyle::Oblique(Some(-0.0));
-    negative.font_size_adjust = FontSizeAdjust::Number(-0.0);
+    negative.font_size_adjust = FontSizeAdjust::Number {
+      ratio: -0.0,
+      metric: FontSizeAdjustMetric::ExHeight,
+    };
     negative.font_variation_settings = vec![FontVariationSetting {
       tag: *b"wght",
       value: -0.0,
@@ -7538,7 +7535,10 @@ mod tests {
     style.font_family = vec![font.family.clone()].into();
     style.font_size = 20.0;
     let desired = aspect * 2.0;
-    style.font_size_adjust = FontSizeAdjust::Number(desired);
+    style.font_size_adjust = FontSizeAdjust::Number {
+      ratio: desired,
+      metric: FontSizeAdjustMetric::ExHeight,
+    };
 
     let pipeline = ShapingPipeline::new();
     let runs = pipeline
@@ -7563,7 +7563,9 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.font_family = vec![font.family.clone()].into();
     style.font_size = 18.0;
-    style.font_size_adjust = FontSizeAdjust::FromFont;
+    style.font_size_adjust = FontSizeAdjust::FromFont {
+      metric: FontSizeAdjustMetric::ExHeight,
+    };
 
     let pipeline = ShapingPipeline::new();
     let runs = pipeline

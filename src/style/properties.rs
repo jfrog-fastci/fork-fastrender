@@ -9388,13 +9388,53 @@ fn apply_declaration_with_base_internal_with_order(
       _ => {}
     },
     "font-size-adjust" => match resolved_value {
-      PropertyValue::Keyword(kw) => match kw.as_str() {
-        "none" => styles.font_size_adjust = FontSizeAdjust::None,
-        "from-font" => styles.font_size_adjust = FontSizeAdjust::FromFont,
-        _ => {}
-      },
       PropertyValue::Number(n) if *n >= 0.0 => {
-        styles.font_size_adjust = FontSizeAdjust::Number(*n);
+        styles.font_size_adjust = FontSizeAdjust::Number {
+          ratio: *n,
+          metric: FontSizeAdjustMetric::ExHeight,
+        };
+      }
+      PropertyValue::Keyword(raw) => {
+        let tokens: Vec<&str> = raw.split_whitespace().collect();
+        let parsed = match tokens.as_slice() {
+          [] => None,
+          [single] => {
+            if single.eq_ignore_ascii_case("none") {
+              Some(FontSizeAdjust::None)
+            } else if single.eq_ignore_ascii_case("from-font") {
+              Some(FontSizeAdjust::FromFont {
+                metric: FontSizeAdjustMetric::ExHeight,
+              })
+            } else if let Ok(ratio) = single.parse::<f32>() {
+              (ratio.is_finite() && ratio >= 0.0).then_some(FontSizeAdjust::Number {
+                ratio,
+                metric: FontSizeAdjustMetric::ExHeight,
+              })
+            } else {
+              None
+            }
+          }
+          [first, metric_kw] => {
+            if first.eq_ignore_ascii_case("none") {
+              None
+            } else {
+              FontSizeAdjustMetric::parse(metric_kw).and_then(|metric| {
+                if first.eq_ignore_ascii_case("from-font") {
+                  Some(FontSizeAdjust::FromFont { metric })
+                } else if let Ok(ratio) = first.parse::<f32>() {
+                  (ratio.is_finite() && ratio >= 0.0)
+                    .then_some(FontSizeAdjust::Number { ratio, metric })
+                } else {
+                  None
+                }
+              })
+            }
+          }
+          _ => None,
+        };
+        if let Some(adjust) = parsed {
+          styles.font_size_adjust = adjust;
+        }
       }
       _ => {}
     },
@@ -27420,17 +27460,75 @@ mod tests {
       important: false,
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
-    assert!(matches!(style.font_size_adjust, FontSizeAdjust::Number(v) if (v - 0.7).abs() < 1e-6));
+    assert!(matches!(
+      style.font_size_adjust,
+      FontSizeAdjust::Number {
+        ratio,
+        metric: FontSizeAdjustMetric::ExHeight
+      } if (ratio - 0.7).abs() < 1e-6
+    ));
 
     let decl = Declaration {
       property: "font-size-adjust".into(),
-      value: PropertyValue::Keyword("from-font".to_string()),
+      value: PropertyValue::Keyword("0.7 cap-height".to_string()),
       contains_var: false,
       raw_value: String::new(),
       important: false,
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
-    assert!(matches!(style.font_size_adjust, FontSizeAdjust::FromFont));
+    assert!(matches!(
+      style.font_size_adjust,
+      FontSizeAdjust::Number {
+        ratio,
+        metric: FontSizeAdjustMetric::CapHeight
+      } if (ratio - 0.7).abs() < 1e-6
+    ));
+
+    let decl = Declaration {
+      property: "font-size-adjust".into(),
+      value: PropertyValue::Keyword("from-font ch-width".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!(matches!(
+      style.font_size_adjust,
+      FontSizeAdjust::FromFont {
+        metric: FontSizeAdjustMetric::ChWidth
+      }
+    ));
+
+    // Invalid combinations should be ignored and keep the prior value.
+    let decl = Declaration {
+      property: "font-size-adjust".into(),
+      value: PropertyValue::Keyword("none cap-height".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!(matches!(
+      style.font_size_adjust,
+      FontSizeAdjust::FromFont {
+        metric: FontSizeAdjustMetric::ChWidth
+      }
+    ));
+
+    let decl = Declaration {
+      property: "font-size-adjust".into(),
+      value: PropertyValue::Keyword("0.7 cap-height ch-width".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!(matches!(
+      style.font_size_adjust,
+      FontSizeAdjust::FromFont {
+        metric: FontSizeAdjustMetric::ChWidth
+      }
+    ));
 
     let decl = Declaration {
       property: "font-size-adjust".into(),

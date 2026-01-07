@@ -31,6 +31,7 @@ mod font_fallback;
 mod font_metrics_test;
 mod font_palette;
 mod font_palette_test;
+mod font_size_adjust_metrics;
 mod font_variant_emoji_monochrome_test;
 mod font_variation_backend;
 mod generic_family_mapping_test;

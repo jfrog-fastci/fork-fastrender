@@ -2515,11 +2515,52 @@ impl Default for FontSynthesis {
 }
 
 /// Font size adjustment ratio (`font-size-adjust`)
+///
+/// CSS Fonts 4 extends `font-size-adjust` to allow selecting which font metric the ratio applies
+/// to (ex-height, cap-height, ch-width, ic-width, ic-height).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FontSizeAdjustMetric {
+  /// `ex-height` (x-height). This is the default when the metric is omitted.
+  ExHeight,
+  /// `cap-height` (cap height).
+  CapHeight,
+  /// `ch-width` (advance width of U+0030 '0').
+  ChWidth,
+  /// `ic-width` (advance width of a representative ideograph, typically U+6C34 '水').
+  IcWidth,
+  /// `ic-height` (advance height of a representative ideograph, typically U+6C34 '水').
+  IcHeight,
+}
+
+impl Default for FontSizeAdjustMetric {
+  fn default() -> Self {
+    Self::ExHeight
+  }
+}
+
+impl FontSizeAdjustMetric {
+  pub fn parse(keyword: &str) -> Option<Self> {
+    if keyword.eq_ignore_ascii_case("ex-height") {
+      Some(Self::ExHeight)
+    } else if keyword.eq_ignore_ascii_case("cap-height") {
+      Some(Self::CapHeight)
+    } else if keyword.eq_ignore_ascii_case("ch-width") {
+      Some(Self::ChWidth)
+    } else if keyword.eq_ignore_ascii_case("ic-width") {
+      Some(Self::IcWidth)
+    } else if keyword.eq_ignore_ascii_case("ic-height") {
+      Some(Self::IcHeight)
+    } else {
+      None
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FontSizeAdjust {
   None,
-  Number(f32),
-  FromFont,
+  Number { ratio: f32, metric: FontSizeAdjustMetric },
+  FromFont { metric: FontSizeAdjustMetric },
 }
 
 impl Default for FontSizeAdjust {

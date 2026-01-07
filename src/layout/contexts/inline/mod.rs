@@ -11950,6 +11950,7 @@ mod tests {
   use crate::style::types::BorderStyle;
   use crate::style::types::CaseTransform;
   use crate::style::types::FontSizeAdjust;
+  use crate::style::types::FontSizeAdjustMetric;
   use crate::style::types::HyphensMode;
   use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::LineClampSource;
@@ -21747,7 +21748,10 @@ mod tests {
     let Some(aspect) = metrics.aspect_ratio() else {
       return;
     };
-    style.font_size_adjust = FontSizeAdjust::Number(aspect * 1.5);
+    style.font_size_adjust = FontSizeAdjust::Number {
+      ratio: aspect * 1.5,
+      metric: FontSizeAdjustMetric::ExHeight,
+    };
     let adjusted_size = compute_adjusted_font_size(&style, &font, Some(aspect * 1.5));
     let adjusted_scaled = metrics.scale(adjusted_size);
     let Some(adj_x) = adjusted_scaled.x_height else {

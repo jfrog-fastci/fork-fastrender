@@ -11145,16 +11145,17 @@ fn hash_grid_template_areas(areas: &[Vec<Option<String>>], hasher: &mut DefaultH
 }
 
 fn hash_font_size_adjust(value: &crate::style::types::FontSizeAdjust, hasher: &mut DefaultHasher) {
-  use crate::style::types::FontSizeAdjust::FromFont;
-  use crate::style::types::FontSizeAdjust::None;
-  use crate::style::types::FontSizeAdjust::Number;
   match value {
-    None => 0u8.hash(hasher),
-    Number(n) => {
+    crate::style::types::FontSizeAdjust::None => 0u8.hash(hasher),
+    crate::style::types::FontSizeAdjust::Number { ratio, metric } => {
       1u8.hash(hasher);
-      hash_f32(*n, hasher);
+      hash_f32(*ratio, hasher);
+      std::mem::discriminant(metric).hash(hasher);
     }
-    FromFont => 2u8.hash(hasher),
+    crate::style::types::FontSizeAdjust::FromFont { metric } => {
+      2u8.hash(hasher);
+      std::mem::discriminant(metric).hash(hasher);
+    }
   }
 }
 

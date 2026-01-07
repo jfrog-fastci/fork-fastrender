@@ -6,6 +6,7 @@ use crate::geometry::Size;
 use crate::style::computed::PositionedStyle;
 use crate::style::types::BoxSizing;
 use crate::style::types::ContainIntrinsicSizeAxis;
+use crate::style::types::FontSizeAdjustMetric;
 use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::ScrollbarWidth;
@@ -14,6 +15,7 @@ use crate::style::values::Length;
 use crate::style::values::LengthOrAuto;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
+use crate::text::font_db::compute_font_size_adjusted_size;
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle as FontFaceStyle;
 use crate::text::font_db::ScaledMetrics;
@@ -457,60 +459,11 @@ fn resolve_font_relative_length_with_params(
     .get_font_full(font_family, font_weight, face_style, face_stretch)
     .or_else(|| font_context.get_sans_serif());
 
-  let mut desired_aspect = match font_size_adjust {
-    crate::style::types::FontSizeAdjust::Number(n) if n > 0.0 => Some(n),
-    _ => None,
-  };
-
   let (used_size, x_height, ch_width) = if let Some(font) = maybe_font {
-    if desired_aspect.is_none() {
-      desired_aspect = match font_size_adjust {
-        crate::style::types::FontSizeAdjust::FromFont => {
-          font.metrics().ok().and_then(|m| m.aspect_ratio())
-        }
-        _ => None,
-      };
-    }
-
-    let used_size = if let Some(desired) = desired_aspect {
-      let actual = font
-        .metrics()
-        .ok()
-        .and_then(|m| m.aspect_ratio())
-        .unwrap_or(0.5);
-      if actual > 0.0 {
-        font_size * (desired / actual)
-      } else {
-        font_size
-      }
-    } else {
-      font_size
-    };
-
-    let mut x_height = None;
-    let mut ch_width = None;
-    if let Ok(metrics) = font.metrics() {
-      let scaled = metrics.scale(used_size);
-      x_height = scaled.x_height;
-    }
-    if let Some(face) = crate::text::face_cache::get_ttf_face(&font) {
-      let face = face.face();
-      if let Some(advance) = face
-        .glyph_index('0')
-        .and_then(|g| face.glyph_hor_advance(g))
-      {
-        let units_per_em = face.units_per_em();
-        if units_per_em != 0 {
-          let scale = used_size / (units_per_em as f32);
-          ch_width = Some(advance as f32 * scale);
-        }
-      }
-    }
-    (
-      used_size,
-      x_height.unwrap_or(used_size * 0.5),
-      ch_width.unwrap_or(used_size * 0.5),
-    )
+    let used_size = compute_font_size_adjusted_size(font_size, font_size_adjust, &font, None);
+    let x_height = font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ExHeight) * used_size;
+    let ch_width = font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ChWidth) * used_size;
+    (used_size, x_height, ch_width)
   } else {
     let used_size = font_size;
     (used_size, used_size * 0.5, used_size * 0.5)

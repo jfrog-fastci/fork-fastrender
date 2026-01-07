@@ -21,6 +21,7 @@ use fastrender::paint::stacking::StackingContextReason;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::Direction;
 use fastrender::style::types::FontSizeAdjust;
+use fastrender::style::types::FontSizeAdjustMetric;
 use fastrender::style::types::IntrinsicSizeKeyword;
 use fastrender::text::font_loader::FontContext;
 use fastrender::BoxNode;
@@ -761,7 +762,10 @@ fn relative_offsets_use_font_metrics_and_adjust() {
   style.font_family = vec![font.family.clone()].into();
   style.font_size = font_size;
   style.root_font_size = font_size;
-  style.font_size_adjust = FontSizeAdjust::Number(adjust);
+  style.font_size_adjust = FontSizeAdjust::Number {
+    ratio: adjust,
+    metric: FontSizeAdjustMetric::ExHeight,
+  };
   style.top = LengthOrAuto::Length(Length::new(1.0, LengthUnit::Ex));
 
   let cb = create_containing_block(800.0, 600.0);

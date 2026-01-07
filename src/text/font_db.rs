@@ -34,6 +34,8 @@
 
 use crate::error::FontError;
 use crate::error::Result;
+use crate::style::types::FontSizeAdjust;
+use crate::style::types::FontSizeAdjustMetric;
 use crate::text::emoji;
 use crate::text::font_fallback::FontId;
 use fontdb::Database as FontDbDatabase;
@@ -862,6 +864,114 @@ impl LoadedFont {
       }
       .into()
     })
+  }
+
+  /// Returns the metric ratio used by CSS Fonts 4 `font-size-adjust`.
+  ///
+  /// The ratio is always expressed relative to the font's em square (i.e. design units divided by
+  /// units-per-em).
+  pub fn font_size_adjust_metric_ratio(&self, metric: FontSizeAdjustMetric) -> Option<f32> {
+    const IDEOGRAPH: char = '\u{6C34}'; // U+6C34 '水'
+
+    fn ratio_from_units(units_per_em: u16, units: i16) -> Option<f32> {
+      if units_per_em == 0 {
+        return None;
+      }
+      let ratio = units as f32 / (units_per_em as f32);
+      (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+    }
+
+    fn glyph_h_advance_ratio(face: &ttf_parser::Face<'_>, ch: char) -> Option<f32> {
+      let units_per_em = face.units_per_em();
+      if units_per_em == 0 {
+        return None;
+      }
+      let glyph_id = face.glyph_index(ch)?;
+      if glyph_id.0 == 0 {
+        return None;
+      }
+      let advance = face.glyph_hor_advance(glyph_id)?;
+      let ratio = advance as f32 / (units_per_em as f32);
+      (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+    }
+
+    fn glyph_v_advance_ratio(face: &ttf_parser::Face<'_>, ch: char) -> Option<f32> {
+      let units_per_em = face.units_per_em();
+      if units_per_em == 0 {
+        return None;
+      }
+      let glyph_id = face.glyph_index(ch)?;
+      if glyph_id.0 == 0 {
+        return None;
+      }
+      let advance = face.glyph_ver_advance(glyph_id)?;
+      let ratio = advance as f32 / (units_per_em as f32);
+      (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+    }
+
+    match metric {
+      FontSizeAdjustMetric::ExHeight => self
+        .metrics()
+        .ok()
+        .and_then(|m| m.x_height.and_then(|xh| ratio_from_units(m.units_per_em, xh))),
+      FontSizeAdjustMetric::CapHeight => self.metrics().ok().and_then(|m| {
+        m.cap_height
+          .and_then(|ch| ratio_from_units(m.units_per_em, ch))
+          .or_else(|| ratio_from_units(m.units_per_em, m.ascent))
+      }),
+      FontSizeAdjustMetric::ChWidth => {
+        face_cache::with_face(self, |face| glyph_h_advance_ratio(face, '0')).flatten()
+      }
+      FontSizeAdjustMetric::IcWidth => {
+        face_cache::with_face(self, |face| glyph_h_advance_ratio(face, IDEOGRAPH)).flatten()
+      }
+      FontSizeAdjustMetric::IcHeight => face_cache::with_face(self, |face| {
+        glyph_v_advance_ratio(face, IDEOGRAPH).or_else(|| glyph_h_advance_ratio(face, IDEOGRAPH))
+      })
+      .flatten(),
+    }
+  }
+
+  pub fn font_size_adjust_metric_ratio_or_fallback(&self, metric: FontSizeAdjustMetric) -> f32 {
+    let fallback = match metric {
+      FontSizeAdjustMetric::ExHeight => 0.5,
+      FontSizeAdjustMetric::CapHeight => 0.7,
+      FontSizeAdjustMetric::ChWidth => 0.5,
+      FontSizeAdjustMetric::IcWidth | FontSizeAdjustMetric::IcHeight => 1.0,
+    };
+    self.font_size_adjust_metric_ratio(metric).unwrap_or(fallback)
+  }
+}
+
+/// Computes the used font size after applying CSS Fonts 4 `font-size-adjust`.
+///
+/// `preferred_ratio` is the metric ratio extracted from the *base font* when using `from-font`.
+/// When it is `None`, `from-font` falls back to the current font's ratio, effectively disabling
+/// adjustment (matching browser behavior when the base font cannot provide the metric).
+pub fn compute_font_size_adjusted_size(
+  base_size: f32,
+  font_size_adjust: FontSizeAdjust,
+  font: &LoadedFont,
+  preferred_ratio: Option<f32>,
+) -> f32 {
+  let (metric, desired) = match font_size_adjust {
+    FontSizeAdjust::None => return base_size,
+    FontSizeAdjust::Number { ratio, metric } => (metric, (ratio.is_finite() && ratio > 0.0).then_some(ratio)),
+    FontSizeAdjust::FromFont { metric } => (
+      metric,
+      preferred_ratio.or_else(|| font.font_size_adjust_metric_ratio(metric)),
+    ),
+  };
+
+  let Some(desired) = desired.filter(|ratio| ratio.is_finite() && *ratio > 0.0) else {
+    return base_size;
+  };
+
+  let actual = font.font_size_adjust_metric_ratio_or_fallback(metric);
+  if actual > 0.0 {
+    base_size * (desired / actual)
+  } else {
+    base_size
   }
 }
 

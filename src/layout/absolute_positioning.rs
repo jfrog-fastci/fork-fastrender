@@ -1005,16 +1005,17 @@ impl AbsoluteLayout {
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::geometry::EdgeOffsets;
-  use crate::layout::utils::resolve_offset;
-  use crate::style::types::FontSizeAdjust;
-  use crate::style::values::Length;
-  use crate::style::values::LengthOrAuto;
-  use crate::style::values::LengthUnit;
-  use crate::style::ComputedStyle;
-  use crate::text::font_loader::FontContext;
+  mod tests {
+    use super::*;
+    use crate::geometry::EdgeOffsets;
+    use crate::layout::utils::resolve_offset;
+    use crate::style::types::FontSizeAdjust;
+    use crate::style::types::FontSizeAdjustMetric;
+    use crate::style::values::Length;
+    use crate::style::values::LengthOrAuto;
+    use crate::style::values::LengthUnit;
+    use crate::style::ComputedStyle;
+    use crate::text::font_loader::FontContext;
 
   fn default_style() -> PositionedStyle {
     let mut style = PositionedStyle::default();
@@ -1747,7 +1748,10 @@ mod tests {
     style.font_family = vec![font.family.clone()];
     style.font_size = font_size;
     style.root_font_size = font_size;
-    style.font_size_adjust = FontSizeAdjust::Number(adjust);
+    style.font_size_adjust = FontSizeAdjust::Number {
+      ratio: adjust,
+      metric: FontSizeAdjustMetric::ExHeight,
+    };
     style.top = LengthOrAuto::Length(Length::new(1.0, LengthUnit::Ex));
 
     let input = AbsoluteLayoutInput::new(style, Size::new(10.0, 10.0), Point::ZERO);
