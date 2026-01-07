@@ -223,7 +223,20 @@ id = "layout/grid-named-span-autoplacement-001"
 path = "layout/grid-named-span-autoplacement-001.html"
 reference = "layout/grid-named-span-autoplacement-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "layout/grid-named-span-autoplacement-002"
+path = "layout/grid-named-span-autoplacement-002.html"
+reference = "layout/grid-named-span-autoplacement-002-ref.html"
+test_type = "reftest"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 
