@@ -1982,6 +1982,16 @@ fn serialize_svg_subtree(
     fallback_out: &mut Option<String>,
     foreign_objects: &mut Vec<ForeignObjectInfo>,
   ) -> bool {
+    if styled.styles.display == Display::None
+      || matches!(
+        styled.styles.visibility,
+        Visibility::Hidden | Visibility::Collapse
+      )
+      || (styled.styles.opacity.is_finite() && styled.styles.opacity <= 0.0)
+    {
+      return true;
+    }
+
     // ForeignObject output can diverge between the primary SVG (placeholder comment for later
     // replacement) and the fallback SVG (best-effort placeholder rendering). Only allocate and
     // populate the fallback buffer once we know we need it.

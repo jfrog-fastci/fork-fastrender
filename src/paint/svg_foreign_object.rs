@@ -217,8 +217,11 @@ fn build_foreign_object_document(
 }
 
 fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
-  let mut style =
-    String::from("margin:0;padding:0;width:100%;height:100%;display:block;box-sizing:border-box;");
+  let width = info.width.max(1.0).round() as u32;
+  let height = info.height.max(1.0).round() as u32;
+  let mut style = format!(
+    "margin:0;padding:0;width:{width}px;height:{height}px;display:block;box-sizing:border-box;"
+  );
   let overflow_keyword = |overflow: Overflow| match overflow {
     Overflow::Visible => "visible",
     Overflow::Hidden => "hidden",

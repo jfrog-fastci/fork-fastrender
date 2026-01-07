@@ -427,6 +427,37 @@ fn display_list_backend_renders_foreign_object_html_not_placeholder() {
 }
 
 #[test]
+fn foreign_object_display_none_prevents_replacement_rendering() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body{margin:0;background:white}
+        svg{display:block}
+        foreignObject{display:none}
+      </style>
+      <svg width="16" height="12" viewBox="0 0 16 12">
+        <foreignObject x="0" y="0" width="10" height="12">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:10px;height:12px;background: rgb(0,0,255);"></div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 5, 6),
+        [255, 255, 255, 255],
+        "display:none foreignObject should not paint"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn foreign_object_without_dimensions_uses_placeholder_comment() {
   let html = r#"
   <svg width="16" height="12" viewBox="0 0 16 12">
@@ -465,6 +496,30 @@ fn foreign_object_with_dimensions_emits_marker() {
       .svg
       .contains("FASTRENDER_FOREIGN_OBJECT_UNRESOLVED"),
     "valid dimensions should avoid unresolved placeholder comments"
+  );
+}
+
+#[test]
+fn foreign_object_display_none_does_not_emit_foreign_object_info() {
+  let html = r#"
+  <style>
+    foreignObject{display:none}
+  </style>
+  <svg width="16" height="12" viewBox="0 0 16 12">
+    <foreignObject x="0" y="0" width="10" height="12">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="width:10px;height:12px;background: rgb(0, 0, 255);"></div>
+    </foreignObject>
+  </svg>
+  "#;
+
+  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+  assert!(
+    serialized.foreign_objects.is_empty(),
+    "display:none foreignObject should not allocate foreign object info"
+  );
+  assert!(
+    !serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
+    "display:none foreignObject should not emit a placeholder marker"
   );
 }
 
