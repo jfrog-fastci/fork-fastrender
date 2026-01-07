@@ -9,6 +9,7 @@ mod backdrop_filter_mask_image_test;
 mod backdrop_filter_parallel_test;
 mod backdrop_root_clip_path_test;
 mod backdrop_root_filter_and_mask_test;
+mod backdrop_root_non_trigger_stacking_contexts_test;
 mod backend_parity;
 mod backface_culling_test;
 mod canvas_background_propagation_test;
