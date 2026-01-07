@@ -2160,6 +2160,9 @@ fn collect_line_baselines(
 /// A replaced element item (img, canvas, etc.)
 #[derive(Debug, Clone)]
 pub struct ReplacedItem {
+  /// Identifier for the source box node (0 when unknown/anonymous)
+  pub box_id: usize,
+
   /// Width of the element
   pub width: f32,
 
@@ -2201,6 +2204,7 @@ pub struct ReplacedItem {
 impl ReplacedItem {
   /// Creates a new replaced item
   pub fn new(
+    box_id: usize,
     size: Size,
     replaced_type: ReplacedType,
     style: Arc<ComputedStyle>,
@@ -2209,6 +2213,7 @@ impl ReplacedItem {
   ) -> Self {
     let metrics = BaselineMetrics::for_replaced(size.height);
     Self {
+      box_id,
       width: size.width,
       height: size.height,
       margin_left,
@@ -5736,6 +5741,7 @@ mod tests {
     let mut builder = make_builder(200.0);
 
     let replaced = ReplacedItem::new(
+      1,
       Size::new(100.0, 50.0),
       ReplacedType::Image {
         src: String::new(),

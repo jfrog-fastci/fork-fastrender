@@ -4345,6 +4345,7 @@ impl InlineFormattingContext {
     );
 
     let mut item = ReplacedItem::new(
+      box_node.id,
       Size::new(box_width, box_height),
       replaced_box.replaced_type.clone(),
       box_node.style.clone(),
@@ -5864,6 +5865,7 @@ impl InlineFormattingContext {
       }
       InlineItem::Replaced(replaced_item) => {
         let paint_offset = replaced_item.paint_offset;
+        let box_id = (replaced_item.box_id != 0).then_some(replaced_item.box_id);
         if inline_vertical {
           let bounds = Rect::from_xywh(
             block_pos + replaced_item.margin_left,
@@ -5875,7 +5877,7 @@ impl InlineFormattingContext {
             bounds,
             FragmentContent::Replaced {
               replaced_type: replaced_item.replaced_type.clone(),
-              box_id: None,
+              box_id,
             },
             vec![],
             replaced_item.style.clone(),
@@ -5891,7 +5893,7 @@ impl InlineFormattingContext {
             bounds,
             FragmentContent::Replaced {
               replaced_type: replaced_item.replaced_type.clone(),
-              box_id: None,
+              box_id,
             },
             vec![],
             replaced_item.style.clone(),
@@ -6148,11 +6150,12 @@ impl InlineFormattingContext {
           replaced_item.width,
           replaced_item.height,
         );
+        let box_id = (replaced_item.box_id != 0).then_some(replaced_item.box_id);
         FragmentNode::new_with_style(
           bounds,
           FragmentContent::Replaced {
             replaced_type: replaced_item.replaced_type.clone(),
-            box_id: None,
+            box_id,
           },
           vec![],
           replaced_item.style.clone(),
@@ -12163,6 +12166,65 @@ mod tests {
       Some(Size::new(width, height)),
       None,
     )
+  }
+
+  #[test]
+  fn inline_replaced_fragment_includes_box_id() {
+    let ifc = InlineFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::InlineBlock;
+
+    let select_id = 2;
+    let mut select = BoxNode::new_replaced(
+      Arc::new(replaced_style),
+      ReplacedType::FormControl(box_tree::FormControl {
+        control: box_tree::FormControlKind::Select {
+          label: "Option".to_string(),
+          multiple: true,
+        },
+        appearance: crate::style::types::Appearance::Auto,
+        disabled: false,
+        focused: false,
+        focus_visible: false,
+        required: false,
+        invalid: false,
+      }),
+      Some(Size::new(120.0, 40.0)),
+      None,
+    );
+    select.id = select_id;
+
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Inline,
+      vec![select],
+    );
+    root.id = 1;
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = ifc
+      .layout(&root, &constraints)
+      .expect("inline layout should succeed");
+
+    fn collect_replaced_box_ids(fragment: &FragmentNode, out: &mut Vec<Option<usize>>) {
+      if let FragmentContent::Replaced { box_id, .. } = &fragment.content {
+        out.push(*box_id);
+      }
+      for child in fragment.children.iter() {
+        collect_replaced_box_ids(child, out);
+      }
+    }
+
+    let mut box_ids = Vec::new();
+    collect_replaced_box_ids(&fragment, &mut box_ids);
+    assert!(
+      box_ids.contains(&Some(select_id)),
+      "expected replaced fragment to carry box_id Some({select_id}); got {box_ids:?}"
+    );
   }
 
   fn build_lines_for_text(style: Arc<ComputedStyle>, text: &str) -> (Vec<Line>, BaselineMetrics) {
