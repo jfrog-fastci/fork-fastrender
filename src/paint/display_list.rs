@@ -2118,7 +2118,54 @@ pub enum BlendMode {
   LuminosityOklch,
 }
 
-/// Stacking context
+/// Stacking context metadata emitted into the display list.
+///
+/// ## `is_isolated` vs `establishes_backdrop_root`
+///
+/// FastRender tracks **two similarly-named but distinct boundaries**:
+///
+/// - **Isolated group** (`is_isolated`): whether this stacking context is composited as an
+///   *isolated group surface* whose initial backdrop is fully transparent. This confines how
+///   descendant `mix-blend-mode` blending behaves (CSS Compositing & Blending).
+/// - **Backdrop Root** (`establishes_backdrop_root`): whether this element establishes a Filter
+///   Effects Level 2 *Backdrop Root* boundary for descendant backdrop sampling. This scopes what
+///   contributes to a descendant's "Backdrop Root Image" for `backdrop-filter`.
+///
+/// These are intentionally **not equivalent**. In particular, do **not** treat an isolated group
+/// as a Backdrop Root barrier. For example, `isolation: isolate` sets `is_isolated` but does not
+/// establish a Backdrop Root (per Filter Effects Level 2), so a descendant `backdrop-filter` may
+/// still sample content above it.
+///
+/// ### Rules of thumb
+///
+/// - `is_isolated` (isolated group; Compositing & Blending):
+///   - **Set when**: `isolation:isolate`, `backdrop-filter`, `mix-blend-mode != normal`, or when
+///     we force isolation because there are blend-mode descendants.
+///   - **Layer allocation**: generally forces an offscreen layer so the group starts from a
+///     transparent backdrop.
+///   - **`mix-blend-mode`**: confines descendant blending to the group (but the group itself still
+///     composites into its parent using `mix_blend_mode`).
+///   - **`backdrop-filter`**: `backdrop-filter` implies `is_isolated` (it needs an intermediate
+///     surface), but isolation alone does **not** stop backdrop sampling.
+///   - **Parallel paint**: isolation is a compositing semantic, not a tiling constraint; the
+///     tile-parallel renderer supports isolated groups (and currently only preserve-3d forces a
+///     serial fallback).
+///
+/// - `establishes_backdrop_root` (Backdrop Root; Filter Effects Level 2):
+///   - **Set when**: root element; non-`none` `filter`, `backdrop-filter`, `mask`/`clip-path`;
+///     `opacity < 1`; non-`normal` `mix-blend-mode`; or `will-change` of those.
+///   - **`backdrop-filter` sampling**: descendants must not sample DOM ancestors above this
+///     element when computing the Backdrop Root Image.
+///   - **Layer allocation**: can force a layer boundary even when the subtree is otherwise
+///     "no-op", because Backdrop Root scoping is implemented via the canvas layer stack.
+///   - **`mix-blend-mode`**: `mix-blend-mode` is a Backdrop Root trigger, but a Backdrop Root
+///     boundary does not imply isolated blending (use `is_isolated` for that).
+///   - **Parallel paint**: Backdrop Root boundaries are compatible with tile-parallel painting
+///     (and do not, by themselves, force a serial fallback).
+///
+/// Spec references:
+/// - Filter Effects Level 2: Backdrop Root (<https://drafts.fxtf.org/filter-effects-2/#BackdropRoot>)
+/// - CSS Compositing and Blending: isolated groups (<https://www.w3.org/TR/compositing-1/#isolatedgroups>)
 #[derive(Debug, Clone)]
 pub struct StackingContextItem {
   /// Z-index for ordering
@@ -2127,11 +2174,21 @@ pub struct StackingContextItem {
   /// Whether this element creates a new stacking context
   pub creates_stacking_context: bool,
 
-  /// Whether this element establishes a Filter Effects Level 2 *Backdrop Root* for its descendants.
+  /// Whether this element establishes a Filter Effects Level 2 *Backdrop Root* boundary.
   ///
-  /// Backdrop roots control the backdrop scope used by effects like `backdrop-filter` and
-  /// `mix-blend-mode`. This is distinct from "creates a stacking context": some stacking contexts
-  /// (e.g. transforms) do **not** establish a backdrop root.
+  /// This flag scopes backdrop sampling for descendant `backdrop-filter` effects (see the
+  /// definition of the "Backdrop Root Image" in Filter Effects Level 2).
+  ///
+  /// This is **not** the same thing as `is_isolated`:
+  /// - `establishes_backdrop_root` is about *how far up the tree* backdrop sampling is allowed to
+  ///   see.
+  /// - `is_isolated` is about *how the subtree is composited* (isolated group vs non-isolated).
+  ///
+  /// In the renderer, this can force an offscreen layer boundary even when the stacking context
+  /// is otherwise visually "no-op", because Backdrop Root scoping is represented via the canvas
+  /// layer stack.
+  ///
+  /// Some stacking contexts (e.g. transforms) do **not** establish a backdrop root.
   pub establishes_backdrop_root: bool,
 
   /// Bounds of the stacking context
@@ -2153,10 +2210,16 @@ pub struct StackingContextItem {
   /// surface instead of the already-painted backdrop.
   pub opacity: f32,
 
-  /// Whether this stacking context is rendered as an isolated group surface.
+  /// Whether this stacking context is composited as an *isolated group*.
+  ///
+  /// In an isolated group, the initial backdrop is fully transparent (Compositing & Blending),
+  /// which confines descendant `mix-blend-mode` blending to the group.
   ///
   /// Used for `isolation: isolate`, for `backdrop-filter` (which needs an intermediate surface),
   /// and to confine descendant `mix-blend-mode` blending to this stacking context's backdrop.
+  ///
+  /// This is distinct from `establishes_backdrop_root`, which is a Filter Effects Level 2 concept
+  /// for scoping `backdrop-filter` sampling.
   pub is_isolated: bool,
 
   /// Optional transform applied to this stacking context

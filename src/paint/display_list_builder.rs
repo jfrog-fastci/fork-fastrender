@@ -2019,6 +2019,65 @@ impl DisplayListBuilder {
     }
   }
 
+  /// Computes whether a stacking context should be rendered as an *isolated group*.
+  ///
+  /// This corresponds to [`StackingContextItem::is_isolated`] (CSS Compositing & Blending isolated
+  /// groups), and is **not** the same thing as a Filter Effects Level 2 Backdrop Root.
+  ///
+  /// Rules of thumb:
+  /// - Set for explicit `isolation:isolate`.
+  /// - Also set for `backdrop-filter` and `mix-blend-mode != normal` (both require group
+  ///   compositing), and when we need to confine blend-mode descendants.
+  ///
+  /// Spec: <https://www.w3.org/TR/compositing-1/#isolatedgroups>
+  fn stacking_context_is_isolated(
+    mix_blend_mode: BlendMode,
+    root_style: Option<&ComputedStyle>,
+    has_blend_mode_children: bool,
+  ) -> bool {
+    mix_blend_mode != BlendMode::Normal
+      || root_style
+        .map(|style| {
+          matches!(style.isolation, Isolation::Isolate) || !style.backdrop_filter.is_empty()
+        })
+        .unwrap_or(false)
+      || has_blend_mode_children
+  }
+
+  /// Computes whether a stacking context establishes a Filter Effects Level 2 *Backdrop Root*.
+  ///
+  /// This corresponds to [`StackingContextItem::establishes_backdrop_root`] and is used to scope
+  /// descendant `backdrop-filter` sampling (Backdrop Root Image). It does **not** imply the
+  /// subtree is composited as an isolated group (see [`Self::stacking_context_is_isolated`]).
+  ///
+  /// Rules of thumb:
+  /// - Set for the root element.
+  /// - Set for Backdrop Root triggers like `filter`, `backdrop-filter`, `opacity < 1`,
+  ///   `mask`/`clip-path`, and non-`normal` `mix-blend-mode`.
+  /// - Also set for `will-change` hints of the above (so the renderer can allocate boundaries
+  ///   proactively).
+  ///
+  /// Spec: <https://drafts.fxtf.org/filter-effects-2/#BackdropRoot>
+  fn stacking_context_establishes_backdrop_root(
+    is_root: bool,
+    root_style: Option<&ComputedStyle>,
+    mix_blend_mode: BlendMode,
+    filters: &[ResolvedFilter],
+    backdrop_filters: &[ResolvedFilter],
+    has_opacity: bool,
+    has_mask: bool,
+    has_clip_path: bool,
+  ) -> bool {
+    is_root
+      || !filters.is_empty()
+      || has_opacity
+      || has_mask
+      || has_clip_path
+      || !backdrop_filters.is_empty()
+      || mix_blend_mode != BlendMode::Normal
+      || root_style.is_some_and(|style| style.will_change.establishes_backdrop_root())
+  }
+
   fn build_stacking_context(
     &mut self,
     context: &StackingContext,
@@ -2131,11 +2190,8 @@ impl DisplayListBuilder {
           .and_then(|fragment| fragment.style.as_deref())
           .is_some_and(|style| !matches!(style.mix_blend_mode, MixBlendMode::Normal))
       });
-    let is_isolated = !matches!(mix_blend_mode, BlendMode::Normal)
-      || root_style
-        .map(|s| matches!(s.isolation, Isolation::Isolate) || !s.backdrop_filter.is_empty())
-        .unwrap_or(false)
-      || has_blend_mode_children;
+    let is_isolated =
+      Self::stacking_context_is_isolated(mix_blend_mode, root_style, has_blend_mode_children);
     let (filters, backdrop_filters, radii) = root_style
       .map(|style| {
         let breakdown = self.build_breakdown.as_deref();
@@ -2337,14 +2393,16 @@ impl DisplayListBuilder {
       || mask.is_some()
       || has_opacity;
 
-    let establishes_backdrop_root = is_root
-      || !filters.is_empty()
-      || has_opacity
-      || mask.is_some()
-      || clip_path.is_some()
-      || !backdrop_filters.is_empty()
-      || mix_blend_mode != BlendMode::Normal
-      || root_style.is_some_and(|style| style.will_change.establishes_backdrop_root());
+    let establishes_backdrop_root = Self::stacking_context_establishes_backdrop_root(
+      is_root,
+      root_style,
+      mix_blend_mode,
+      &filters,
+      &backdrop_filters,
+      has_opacity,
+      mask.is_some(),
+      clip_path.is_some(),
+    );
     let ancestor_clips_pushed = self.push_clip_chain(&context.clip_chain, offset);
 
     if is_root && !has_effects {

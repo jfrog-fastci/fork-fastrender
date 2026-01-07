@@ -6887,6 +6887,15 @@ impl DisplayListRenderer {
     Ok(())
   }
 
+  /// Returns `true` if the display list contains effects that are not currently supported by the
+  /// tile-parallel renderer.
+  ///
+  /// Today this is limited to `transform-style: preserve-3d` stacking contexts, which require
+  /// depth sorting and compositing across the full scene.
+  ///
+  /// Note that isolated groups, blend modes, and Filter Effects Level 2 *Backdrop Roots* only
+  /// affect compositing/sampling semantics and do not by themselves make a subtree
+  /// parallel-incompatible.
   fn has_parallel_incompatible_effects(
     &self,
     items: &[DisplayItem],
@@ -7742,6 +7751,9 @@ impl DisplayListRenderer {
       return Ok(end_idx);
     }
 
+    // Preserve-3d scenes still respect isolated-group semantics: when `is_isolated` is set we
+    // render the entire 3D scene into a transparent group surface before compositing it into the
+    // parent.
     let push_isolation_layer = node.context.is_isolated;
 
     let mut order = 0;
@@ -8931,6 +8943,26 @@ impl DisplayListRenderer {
     Ok(())
   }
 
+  /// Render a single display list item.
+  ///
+  /// ### Stacking-context compositing flags
+  ///
+  /// When consuming a [`StackingContextItem`], keep the following model in mind:
+  ///
+  /// - [`StackingContextItem::is_isolated`] is the Compositing & Blending concept: render the
+  ///   subtree into an offscreen surface whose initial backdrop is transparent (an "isolated
+  ///   group"). This confines descendant `mix-blend-mode` blending.
+  /// - [`StackingContextItem::establishes_backdrop_root`] is the Filter Effects Level 2 concept:
+  ///   a *Backdrop Root* boundary that scopes descendant `backdrop-filter` sampling (Backdrop
+  ///   Root Image). Backdrop Root scoping is implemented via the canvas layer stack, so this flag
+  ///   can force a layer boundary even when the stacking context is otherwise visually "no-op".
+  ///
+  /// These flags describe compositing/sampling semantics; tile-parallel paint eligibility is
+  /// determined separately (see [`Self::has_parallel_incompatible_effects`]).
+  ///
+  /// Spec references:
+  /// - Filter Effects Level 2: Backdrop Root (<https://drafts.fxtf.org/filter-effects-2/#BackdropRoot>)
+  /// - CSS Compositing and Blending: isolated groups (<https://www.w3.org/TR/compositing-1/#isolatedgroups>)
   fn render_item(&mut self, item: &DisplayItem) -> Result<()> {
     if self.culled_depth > 0 {
       match item {
@@ -9056,6 +9088,12 @@ impl DisplayListRenderer {
         let radii = self.ds_radii(item.radii);
         let mask = item.mask.clone();
 
+        // `backdrop-filter` always needs an isolated group surface: we first draw the filtered
+        // backdrop image *into* the current stacking context before painting its own contents.
+        //
+        // The display-list builder already sets `StackingContextItem::is_isolated` for
+        // `backdrop-filter`, but the renderer also enforces this invariant so hand-constructed
+        // display lists (tests) behave correctly.
         let is_isolated = item.is_isolated || has_backdrop;
         let manual_blend = if is_manual_blend(item.mix_blend_mode) {
           Some(item.mix_blend_mode)
@@ -9122,6 +9160,8 @@ impl DisplayListRenderer {
           transform_rect(bounds, &combined_transform)
         };
 
+        // Tracks whether this stacking context should be treated as a Backdrop Root for sampling
+        // the Backdrop Root Image (Filter Effects Level 2).
         let creates_backdrop_root = !scaled_filters.is_empty()
           || has_backdrop
           || opacity < 1.0 - f32::EPSILON
