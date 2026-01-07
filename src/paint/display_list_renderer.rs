@@ -10633,7 +10633,31 @@ impl DisplayListRenderer {
       DisplayItem::PushOpacity(OpacityItem { opacity }) => {
         let canvas_layer_depth_before = self.trace_backdrop_stack.then(|| self.canvas.layer_stack_len());
         let is_backdrop_root = *opacity < 1.0 - f32::EPSILON;
-        self.push_layer_tracked(*opacity, is_backdrop_root)?;
+        let clip_bounds = self.canvas.clip_bounds().filter(|bounds| {
+          bounds.x().is_finite()
+            && bounds.y().is_finite()
+            && bounds.width().is_finite()
+            && bounds.height().is_finite()
+        });
+        let has_clip_bounds = clip_bounds.is_some();
+        let layer_bounds = clip_bounds
+          .and_then(|bounds| bounds.intersection(self.canvas.bounds()))
+          .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0);
+        if let Some(bounds) = layer_bounds {
+          self.push_layer_bounded_tracked(*opacity, None, bounds, is_backdrop_root)?;
+        } else if has_clip_bounds {
+          // Clip rect exists but does not cover any pixels in the current canvas. Avoid allocating a
+          // full-size opacity layer for a fully clipped subtree; a minimal placeholder layer keeps
+          // stack bookkeeping intact.
+          self.push_layer_bounded_tracked(
+            *opacity,
+            None,
+            Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+            is_backdrop_root,
+          )?;
+        } else {
+          self.push_layer_tracked(*opacity, is_backdrop_root)?;
+        }
         self.record_layer_allocation(self.canvas.width(), self.canvas.height());
         if self.trace_backdrop_stack {
           let depth_after = self.canvas.layer_stack_len();
@@ -10681,23 +10705,39 @@ impl DisplayListRenderer {
         let canvas_layer_depth_before = self.trace_backdrop_stack.then(|| self.canvas.layer_stack_len());
         let is_backdrop_root = !matches!(mode.mode, BlendMode::Normal);
         let clip_bounds = self.canvas.clip_bounds().filter(|bounds| {
-          bounds.width() > 0.0
-            && bounds.height() > 0.0
-            && bounds.x().is_finite()
+          bounds.x().is_finite()
             && bounds.y().is_finite()
             && bounds.width().is_finite()
             && bounds.height().is_finite()
         });
+        let has_clip_bounds = clip_bounds.is_some();
+        let layer_bounds = clip_bounds
+          .and_then(|bounds| bounds.intersection(self.canvas.bounds()))
+          .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0);
         if is_manual_blend(mode.mode) {
-          if let Some(bounds) = clip_bounds {
+          if let Some(bounds) = layer_bounds {
             self.push_layer_bounded_tracked(1.0, None, bounds, is_backdrop_root)?;
+          } else if has_clip_bounds {
+            self.push_layer_bounded_tracked(
+              1.0,
+              None,
+              Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+              is_backdrop_root,
+            )?;
           } else {
             self.push_layer_tracked(1.0, is_backdrop_root)?;
           }
         } else {
           let blend = map_blend_mode(mode.mode);
-          if let Some(bounds) = clip_bounds {
+          if let Some(bounds) = layer_bounds {
             self.push_layer_bounded_tracked(1.0, Some(blend), bounds, is_backdrop_root)?;
+          } else if has_clip_bounds {
+            self.push_layer_bounded_tracked(
+              1.0,
+              Some(blend),
+              Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+              is_backdrop_root,
+            )?;
           } else {
             self.push_layer_with_blend_tracked(1.0, Some(blend), is_backdrop_root)?;
           }
@@ -18745,6 +18785,111 @@ mod tests {
     assert_eq!(
       report.layer_alloc_bytes, expected_bytes,
       "expected PushBlendMode layers to be allocated at the clip bounds"
+    );
+  }
+
+  #[test]
+  fn push_opacity_allocates_bounded_layer_when_clipped() {
+    crate::paint::painter::enable_paint_diagnostics();
+    struct DiagnosticsGuard;
+    impl Drop for DiagnosticsGuard {
+      fn drop(&mut self) {
+        let _ = crate::paint::painter::take_paint_diagnostics();
+      }
+    }
+    let _guard = DiagnosticsGuard;
+
+    const SIZE: u32 = 1024;
+    let renderer = DisplayListRenderer::new(SIZE, SIZE, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled());
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(30, 120, 220, 255),
+    }));
+
+    let clip1 = Rect::from_xywh(128.0, 256.0, 64.0, 32.0);
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect { rect: clip1, radii: None },
+    }));
+    list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 0.5 }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(200, 200, 40, 255),
+    }));
+    list.push(DisplayItem::PopOpacity);
+    list.push(DisplayItem::PopClip);
+
+    let clip2 = Rect::from_xywh(64.0, 64.0, 32.0, 16.0);
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect { rect: clip2, radii: None },
+    }));
+    list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 1.0 }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(200, 40, 60, 255),
+    }));
+    list.push(DisplayItem::PopOpacity);
+    list.push(DisplayItem::PopClip);
+
+    let report = renderer.render_with_report(&list).unwrap();
+    assert_eq!(
+      report.layer_allocations, 2,
+      "expected each clipped PushOpacity to allocate its own layer"
+    );
+    let expected_bytes =
+      (64u64 * 32u64).saturating_add(32u64 * 16u64).saturating_mul(4);
+    assert_eq!(
+      report.layer_alloc_bytes, expected_bytes,
+      "expected PushOpacity layers to be allocated at the clip bounds"
+    );
+  }
+
+  #[test]
+  fn push_opacity_avoids_full_size_layer_when_fully_clipped() {
+    crate::paint::painter::enable_paint_diagnostics();
+    struct DiagnosticsGuard;
+    impl Drop for DiagnosticsGuard {
+      fn drop(&mut self) {
+        let _ = crate::paint::painter::take_paint_diagnostics();
+      }
+    }
+    let _guard = DiagnosticsGuard;
+
+    const SIZE: u32 = 64;
+    let renderer = DisplayListRenderer::new(SIZE, SIZE, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled());
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(30, 120, 220, 255),
+    }));
+
+    // Clip fully outside the canvas so the subtree paints nothing.
+    let clip = Rect::from_xywh(200.0, 200.0, 10.0, 10.0);
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect { rect: clip, radii: None },
+    }));
+    list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 0.5 }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(200, 200, 40, 255),
+    }));
+    list.push(DisplayItem::PopOpacity);
+    list.push(DisplayItem::PopClip);
+
+    let report = renderer.render_with_report(&list).unwrap();
+    assert_eq!(
+      report.layer_allocations, 1,
+      "expected the clipped PushOpacity to still allocate a placeholder layer"
+    );
+    assert_eq!(
+      report.layer_alloc_bytes, 4,
+      "expected PushOpacity to allocate a minimal placeholder layer for an empty clip"
     );
   }
 
