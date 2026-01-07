@@ -5685,6 +5685,40 @@ impl FlexFormattingContext {
           }
           Some(value.max(0.0))
         });
+        let transferred_size_suggestion = match style.aspect_ratio {
+          AspectRatio::Ratio(ratio) if ratio > 0.0 && ratio.is_finite() => style.height.as_ref().and_then(|len| {
+            let cross_px = self.resolve_length_px(len, style)?;
+            if !cross_px.is_finite() {
+              return None;
+            }
+            let mut cross_border_box = cross_px.max(0.0);
+            if style.box_sizing == BoxSizing::ContentBox {
+              cross_border_box += self.vertical_edges_px(style)?;
+            }
+            if !cross_border_box.is_finite() {
+              return None;
+            }
+            let transferred = cross_border_box * ratio;
+            if transferred.is_finite() {
+              Some(transferred.max(0.0))
+            } else {
+              None
+            }
+          }),
+          _ => None,
+        };
+        let max_main_size = style.max_width.as_ref().and_then(|len| {
+          let px = self.resolve_length_px(len, style)?;
+          if !px.is_finite() {
+            return None;
+          }
+          let mut value = px.max(0.0);
+          if style.box_sizing == BoxSizing::ContentBox {
+            value += self.horizontal_edges_px(style)?;
+          }
+          value = value.max(0.0);
+          value.is_finite().then_some(value)
+        });
 
         if skip_contents {
           let mut content_size_suggestion = style
@@ -5699,8 +5733,18 @@ impl FlexFormattingContext {
           content_size_suggestion = content_size_suggestion.max(0.0);
 
           let mut min_candidate = content_size_suggestion;
+          if let Some(transferred) = transferred_size_suggestion {
+            if box_node.is_replaced() {
+              min_candidate = min_candidate.min(transferred);
+            } else {
+              min_candidate = min_candidate.max(transferred);
+            }
+          }
           if let Some(specified) = specified_size_suggestion {
             min_candidate = min_candidate.min(specified);
+          }
+          if let Some(max_main) = max_main_size {
+            min_candidate = min_candidate.min(max_main);
           }
           if min_candidate.is_finite() && min_candidate > 0.0 {
             taffy_style.min_size.width = Dimension::length(min_candidate);
@@ -5751,8 +5795,18 @@ impl FlexFormattingContext {
         match intrinsic_result {
           Ok(content_size_suggestion) => {
             let mut min_candidate = content_size_suggestion;
+            if let Some(transferred) = transferred_size_suggestion {
+              if box_node.is_replaced() {
+                min_candidate = min_candidate.min(transferred);
+              } else {
+                min_candidate = min_candidate.max(transferred);
+              }
+            }
             if let Some(specified) = specified_size_suggestion {
               min_candidate = min_candidate.min(specified);
+            }
+            if let Some(max_main) = max_main_size {
+              min_candidate = min_candidate.min(max_main);
             }
             if min_candidate.is_finite() && min_candidate > 0.0 {
               taffy_style.min_size.width = Dimension::length(min_candidate);
@@ -5793,6 +5847,40 @@ impl FlexFormattingContext {
         }
         Some(value.max(0.0))
       });
+      let transferred_size_suggestion = match style.aspect_ratio {
+        AspectRatio::Ratio(ratio) if ratio > 0.0 && ratio.is_finite() => style.width.as_ref().and_then(|len| {
+          let cross_px = self.resolve_length_px(len, style)?;
+          if !cross_px.is_finite() {
+            return None;
+          }
+          let mut cross_border_box = cross_px.max(0.0);
+          if style.box_sizing == BoxSizing::ContentBox {
+            cross_border_box += self.horizontal_edges_px(style)?;
+          }
+          if !cross_border_box.is_finite() {
+            return None;
+          }
+          let transferred = cross_border_box / ratio;
+          if transferred.is_finite() {
+            Some(transferred.max(0.0))
+          } else {
+            None
+          }
+        }),
+        _ => None,
+      };
+      let max_main_size = style.max_height.as_ref().and_then(|len| {
+        let px = self.resolve_length_px(len, style)?;
+        if !px.is_finite() {
+          return None;
+        }
+        let mut value = px.max(0.0);
+        if style.box_sizing == BoxSizing::ContentBox {
+          value += self.vertical_edges_px(style)?;
+        }
+        value = value.max(0.0);
+        value.is_finite().then_some(value)
+      });
 
       if skip_contents {
         let mut content_size_suggestion = style
@@ -5807,8 +5895,18 @@ impl FlexFormattingContext {
         content_size_suggestion = content_size_suggestion.max(0.0);
 
         let mut min_candidate = content_size_suggestion;
+        if let Some(transferred) = transferred_size_suggestion {
+          if box_node.is_replaced() {
+            min_candidate = min_candidate.min(transferred);
+          } else {
+            min_candidate = min_candidate.max(transferred);
+          }
+        }
         if let Some(specified) = specified_size_suggestion {
           min_candidate = min_candidate.min(specified);
+        }
+        if let Some(max_main) = max_main_size {
+          min_candidate = min_candidate.min(max_main);
         }
         if min_candidate.is_finite() && min_candidate > 0.0 {
           taffy_style.min_size.height = Dimension::length(min_candidate);
@@ -5850,8 +5948,18 @@ impl FlexFormattingContext {
       match intrinsic_result {
         Ok(content_size_suggestion) => {
           let mut min_candidate = content_size_suggestion;
+          if let Some(transferred) = transferred_size_suggestion {
+            if box_node.is_replaced() {
+              min_candidate = min_candidate.min(transferred);
+            } else {
+              min_candidate = min_candidate.max(transferred);
+            }
+          }
           if let Some(specified) = specified_size_suggestion {
             min_candidate = min_candidate.min(specified);
+          }
+          if let Some(max_main) = max_main_size {
+            min_candidate = min_candidate.min(max_main);
           }
           if min_candidate.is_finite() && min_candidate > 0.0 {
             taffy_style.min_size.height = Dimension::length(min_candidate);
