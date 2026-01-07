@@ -4298,6 +4298,49 @@ impl InlineFormattingContext {
     )
     .with_vertical_align(va);
 
+    if let ReplacedType::FormControl(control) = &replaced_box.replaced_type {
+      use crate::tree::box_tree::FormControlKind;
+
+      let text_like = matches!(
+        &control.control,
+        FormControlKind::Text { .. }
+          | FormControlKind::TextArea { .. }
+          | FormControlKind::Select { .. }
+          | FormControlKind::Button { .. }
+          | FormControlKind::Unknown { label: Some(_) }
+      );
+
+      if text_like && box_height.is_finite() && box_height > 0.0 {
+        let (font_ascent, font_descent, line_gap, x_height) = match metrics.as_ref() {
+          Some(metrics) => (metrics.ascent, metrics.descent, metrics.line_gap, metrics.x_height),
+          None => {
+            let ascent = style.font_size * 0.8;
+            let descent = style.font_size * 0.2;
+            (ascent, descent, 0.0, Some(ascent * 0.5))
+          }
+        };
+
+        // Text-like form controls baseline-align to the baseline of their internal text rather than
+        // using the CSS replaced-element default of "bottom edge".
+        let half_leading = (line_height - (font_ascent + font_descent)) / 2.0;
+        let text_baseline_from_content_top = font_ascent + half_leading;
+        let baseline_offset_from_box_top =
+          (border_top + padding_top + text_baseline_from_content_top).max(0.0);
+        let baseline_offset_from_box_top = baseline_offset_from_box_top.min(box_height);
+        let descent = (box_height - baseline_offset_from_box_top).max(0.0);
+
+        item = item.with_metrics(BaselineMetrics {
+          baseline_offset: baseline_offset_from_box_top,
+          height: box_height,
+          ascent: baseline_offset_from_box_top,
+          descent,
+          line_gap,
+          line_height,
+          x_height,
+        });
+      }
+    }
+
     if let ReplacedType::Math(math) = &replaced_box.replaced_type {
       if let Some(layout) = &math.layout {
         let content_scale_y = if layout.height > 0.0 {

@@ -15,6 +15,7 @@ mod flex_box_sizing_test;
 mod flex_intrinsic_sizing_keywords;
 mod flex_positioned_relayout;
 mod float_shrink_to_min;
+mod form_control_baseline;
 mod fragmentation;
 mod fragmentation_widows_orphans;
 mod grid_box_sizing_test;
