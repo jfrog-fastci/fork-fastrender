@@ -1021,6 +1021,231 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
   }
 }
 
+fn svg_transform_attribute(style: &ComputedStyle) -> Option<String> {
+  use crate::css::types::{RotateValue, ScaleValue, Transform as CssTransform, TranslateValue};
+  use crate::style::values::Length;
+  use std::fmt::Write as _;
+
+  fn resolve_transform_length(len: Length, style: &ComputedStyle) -> Option<f32> {
+    if len.is_zero() {
+      return Some(0.0);
+    }
+    if let Some(calc) = len.calc {
+      if calc.has_percentage() || calc.has_viewport_relative() {
+        return None;
+      }
+      // A calc() with only absolute/font-relative terms can be resolved with a zero viewport base.
+      return calc.resolve(None, 0.0, 0.0, style.font_size, style.root_font_size);
+    }
+    if len.unit.is_absolute() {
+      return Some(len.to_px());
+    }
+    if len.unit.is_font_relative() {
+      return len.resolve_with_context(None, 0.0, 0.0, style.font_size, style.root_font_size);
+    }
+    None
+  }
+
+  if !style.has_transform() {
+    return None;
+  }
+
+  let mut out = String::new();
+  let mut push_sep = |out: &mut String| {
+    if !out.is_empty() {
+      out.push(' ');
+    }
+  };
+
+  // CSS Transforms Level 2: translate → rotate → scale → transform list.
+  if let TranslateValue::Values { x, y, z } = style.translate {
+    let z_is_zero = z.is_zero();
+    let tx = resolve_transform_length(x, style)?;
+    let ty = resolve_transform_length(y, style)?;
+    if !z_is_zero {
+      return None;
+    }
+    push_sep(&mut out);
+    let _ = write!(&mut out, "translate({tx} {ty})");
+  }
+
+  match style.rotate {
+    RotateValue::None => {}
+    RotateValue::Angle(deg) => {
+      if !deg.is_finite() {
+        return None;
+      }
+      push_sep(&mut out);
+      let _ = write!(&mut out, "rotate({deg})");
+    }
+    RotateValue::AxisAngle { x, y, z, angle } => {
+      if !x.is_finite() || !y.is_finite() || !z.is_finite() || !angle.is_finite() {
+        return None;
+      }
+      // SVG only supports 2D rotate (about the z axis). Treat (0, 0, -1) as rotate(-angle).
+      if x.abs() > 1e-6 || y.abs() > 1e-6 || z.abs() <= 1e-6 {
+        return None;
+      }
+      let signed = if z.is_sign_negative() { -angle } else { angle };
+      push_sep(&mut out);
+      let _ = write!(&mut out, "rotate({signed})");
+    }
+  }
+
+  if let ScaleValue::Values { x, y, z } = style.scale {
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+      return None;
+    }
+    if (z - 1.0).abs() > 1e-6 {
+      return None;
+    }
+    push_sep(&mut out);
+    let _ = write!(&mut out, "scale({x} {y})");
+  }
+
+  for component in &style.transform {
+    match *component {
+      CssTransform::Translate(x, y) => {
+        let tx = resolve_transform_length(x, style)?;
+        let ty = resolve_transform_length(y, style)?;
+        push_sep(&mut out);
+        let _ = write!(&mut out, "translate({tx} {ty})");
+      }
+      CssTransform::TranslateX(x) => {
+        let tx = resolve_transform_length(x, style)?;
+        push_sep(&mut out);
+        let _ = write!(&mut out, "translate({tx} 0)");
+      }
+      CssTransform::TranslateY(y) => {
+        let ty = resolve_transform_length(y, style)?;
+        push_sep(&mut out);
+        let _ = write!(&mut out, "translate(0 {ty})");
+      }
+      CssTransform::TranslateZ(z) => {
+        if !z.is_zero() {
+          return None;
+        }
+      }
+      CssTransform::Translate3d(x, y, z) => {
+        if !z.is_zero() {
+          return None;
+        }
+        let tx = resolve_transform_length(x, style)?;
+        let ty = resolve_transform_length(y, style)?;
+        push_sep(&mut out);
+        let _ = write!(&mut out, "translate({tx} {ty})");
+      }
+      CssTransform::Scale(x, y) => {
+        if !x.is_finite() || !y.is_finite() {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "scale({x} {y})");
+      }
+      CssTransform::ScaleX(x) => {
+        if !x.is_finite() {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "scale({x} 1)");
+      }
+      CssTransform::ScaleY(y) => {
+        if !y.is_finite() {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "scale(1 {y})");
+      }
+      CssTransform::ScaleZ(z) => {
+        if !z.is_finite() {
+          return None;
+        }
+        if (z - 1.0).abs() > 1e-6 {
+          return None;
+        }
+      }
+      CssTransform::Scale3d(x, y, z) => {
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+          return None;
+        }
+        if (z - 1.0).abs() > 1e-6 {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "scale({x} {y})");
+      }
+      CssTransform::Rotate(deg) | CssTransform::RotateZ(deg) => {
+        if !deg.is_finite() {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "rotate({deg})");
+      }
+      CssTransform::RotateX(deg) | CssTransform::RotateY(deg) => {
+        if !deg.is_finite() {
+          return None;
+        }
+        if deg.abs() > 1e-6 {
+          return None;
+        }
+      }
+      CssTransform::Rotate3d(x, y, z, angle) => {
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() || !angle.is_finite() {
+          return None;
+        }
+        if angle.abs() <= 1e-6 {
+          continue;
+        }
+        if x.abs() > 1e-6 || y.abs() > 1e-6 || z.abs() <= 1e-6 {
+          return None;
+        }
+        let signed = if z.is_sign_negative() { -angle } else { angle };
+        push_sep(&mut out);
+        let _ = write!(&mut out, "rotate({signed})");
+      }
+      CssTransform::SkewX(deg) => {
+        if !deg.is_finite() {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "skewX({deg})");
+      }
+      CssTransform::SkewY(deg) => {
+        if !deg.is_finite() {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "skewY({deg})");
+      }
+      CssTransform::Skew(ax, ay) => {
+        if !ax.is_finite() || !ay.is_finite() {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "skewX({ax})");
+        push_sep(&mut out);
+        let _ = write!(&mut out, "skewY({ay})");
+      }
+      CssTransform::Matrix(a, b, c, d, e, f) => {
+        if !a.is_finite()
+          || !b.is_finite()
+          || !c.is_finite()
+          || !d.is_finite()
+          || !e.is_finite()
+          || !f.is_finite()
+        {
+          return None;
+        }
+        push_sep(&mut out);
+        let _ = write!(&mut out, "matrix({a} {b} {c} {d} {e} {f})");
+      }
+      CssTransform::Perspective(_) | CssTransform::Matrix3d(_) => return None,
+    }
+  }
+
+  (!out.is_empty()).then_some(out)
+}
+
 fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
   use crate::style::types::ColorOrNone;
   use crate::style::types::FillRule;
@@ -1323,6 +1548,15 @@ fn serialize_svg_mask_subtree_with_namespaces(
       };
 
       let mut attrs = attributes.clone();
+      if current_ns == SVG_NAMESPACE
+        && !attrs
+          .iter()
+          .any(|(name, _)| name.eq_ignore_ascii_case("transform"))
+      {
+        if let Some(transform) = svg_transform_attribute(&styled.styles) {
+          attrs.push(("transform".to_string(), transform));
+        }
+      }
       let mut namespaces: Vec<(String, String)> = inherited_xmlns.to_vec();
       for (name, value) in &attrs {
         if name.starts_with("xmlns")
