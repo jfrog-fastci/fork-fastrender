@@ -1,5 +1,16 @@
-use fastrender::FastRender;
+use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::{FastRender, FastRenderConfig};
 use resvg::tiny_skia::Pixmap;
+use std::collections::HashMap;
+
+fn create_renderer() -> FastRender {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  FastRender::with_config(config).expect("renderer")
+}
 
 fn color_at(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
   let pixel = pixmap.pixel(x, y).expect("pixel");
@@ -66,7 +77,7 @@ fn blurred_box_object_bounding_box_numbers_fixture(left: i32, top: i32, size: i3
 fn svg_filter_blur_bleeds_outside_bounds() {
   let html = blurred_box_fixture(20, 20, 40);
 
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = create_renderer();
   let pixmap = renderer.render_html(&html, 120, 120).expect("render");
 
   let outside = color_at(&pixmap, 15, 40);
@@ -81,7 +92,7 @@ fn svg_filter_blur_bleeds_outside_bounds() {
 fn svg_filter_default_primitive_region_inherits_filter_region_with_object_bbox_numbers() {
   let html = blurred_box_object_bounding_box_numbers_fixture(20, 20, 40);
 
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = create_renderer();
   let pixmap = renderer.render_html(&html, 120, 120).expect("render");
 
   let center = color_at(&pixmap, 40, 40);
@@ -103,7 +114,7 @@ fn svg_filter_default_primitive_region_inherits_filter_region_with_object_bbox_n
 fn svg_filter_blur_near_viewport_edge_expands_layer() {
   let html = blurred_box_fixture(0, 0, 20);
 
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = create_renderer();
   let pixmap = renderer.render_html(&html, 60, 40).expect("render");
 
   let outside = color_at(&pixmap, 10, 25);
