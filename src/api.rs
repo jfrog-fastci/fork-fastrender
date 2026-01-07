@@ -16074,6 +16074,8 @@ mod tests {
       custom_properties,
       include_color: false,
       include_background_color: false,
+      include_display: false,
+      include_font_size: false,
     };
 
     fn ctx_with_query_value(media_ctx: &MediaContext, value: &str) -> ContainerQueryContext {
