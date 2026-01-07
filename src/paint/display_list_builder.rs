@@ -1805,12 +1805,12 @@ impl DisplayListBuilder {
           absolute_rect.origin.x - element_scroll.x,
           absolute_rect.origin.y - element_scroll.y,
         );
-        let mut counter = 0usize;
         let before_children = self.list.len();
-        for child in fragment.children.iter() {
-          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-            break;
-          }
+        let mut blocks = Vec::new();
+        let mut floats = Vec::new();
+        let mut inlines = Vec::new();
+        let mut positioned = Vec::new();
+        for (idx, child) in fragment.children.iter().enumerate() {
           if self.skip_stacking_context_children {
             if let Some(child_style) = child.style.as_deref() {
               if crate::paint::stacking::creates_stacking_context(child_style, style_opt, false) {
@@ -1823,6 +1823,46 @@ impl DisplayListBuilder {
               }
             }
           }
+
+          match child.style.as_deref() {
+            Some(child_style) if !matches!(child_style.position, Position::Static) => {
+              positioned.push(idx);
+            }
+            Some(child_style) if child_style.float.is_floating() => floats.push(idx),
+            Some(child_style)
+              if matches!(
+                child_style.display,
+                crate::style::display::Display::Inline
+                  | crate::style::display::Display::InlineBlock
+                  | crate::style::display::Display::InlineFlex
+                  | crate::style::display::Display::InlineGrid
+                  | crate::style::display::Display::InlineTable
+              ) =>
+            {
+              inlines.push(idx);
+            }
+            Some(_) => blocks.push(idx),
+            None => match child.content {
+              FragmentContent::Text { .. }
+              | FragmentContent::Inline { .. }
+              | FragmentContent::Line { .. } => inlines.push(idx),
+              _ => blocks.push(idx),
+            },
+          }
+        }
+
+        // CSS2.1 stacking levels 3-6: blocks → floats → inlines → positioned.
+        let mut counter = 0usize;
+        for idx in blocks
+          .into_iter()
+          .chain(floats)
+          .chain(inlines)
+          .chain(positioned)
+        {
+          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+            break;
+          }
+          let child = &fragment.children[idx];
           self.build_fragment_internal(child, child_offset, true, false, child_visibility);
         }
         children_painted = self.list.len() != before_children;
@@ -1967,12 +2007,51 @@ impl DisplayListBuilder {
         absolute_rect.origin.x - element_scroll.x,
         absolute_rect.origin.y - element_scroll.y,
       );
-      let mut counter = 0usize;
       let before_children = self.list.len();
-      for child in fragment.children.iter() {
+      let mut blocks = Vec::new();
+      let mut floats = Vec::new();
+      let mut inlines = Vec::new();
+      let mut positioned = Vec::new();
+      for (idx, child) in fragment.children.iter().enumerate() {
+        match child.style.as_deref() {
+          Some(child_style) if !matches!(child_style.position, Position::Static) => {
+            positioned.push(idx);
+          }
+          Some(child_style) if child_style.float.is_floating() => floats.push(idx),
+          Some(child_style)
+            if matches!(
+              child_style.display,
+              crate::style::display::Display::Inline
+                | crate::style::display::Display::InlineBlock
+                | crate::style::display::Display::InlineFlex
+                | crate::style::display::Display::InlineGrid
+                | crate::style::display::Display::InlineTable
+            ) =>
+          {
+            inlines.push(idx);
+          }
+          Some(_) => blocks.push(idx),
+          None => match child.content {
+            FragmentContent::Text { .. }
+            | FragmentContent::Inline { .. }
+            | FragmentContent::Line { .. } => inlines.push(idx),
+            _ => blocks.push(idx),
+          },
+        }
+      }
+
+      // CSS2.1 stacking levels 3-6: blocks → floats → inlines → positioned.
+      let mut counter = 0usize;
+      for idx in blocks
+        .into_iter()
+        .chain(floats)
+        .chain(inlines)
+        .chain(positioned)
+      {
         if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
           break;
         }
+        let child = &fragment.children[idx];
         self.build_fragment_with_clips(child, child_offset, clips, visibility);
       }
       children_painted = self.list.len() != before_children;
@@ -9605,6 +9684,70 @@ mod tests {
     let list = builder.build(&fragment);
 
     assert!(list.is_empty());
+  }
+
+  #[test]
+  fn builder_paints_floats_above_following_block_backgrounds() {
+    // Floats should be painted in CSS2 stacking layer 4 (after in-flow blocks).
+    // This matters even when the float comes earlier in tree order, because later
+    // in-flow block backgrounds must not cover it.
+    let bounds = Rect::from_xywh(0.0, 0.0, 200.0, 200.0);
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = crate::style::float::Float::Left;
+    float_style.background_color = Rgba::RED;
+    let float_style = Arc::new(float_style);
+    let float_fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 40.0, 120.0, 120.0),
+      vec![],
+      float_style,
+    );
+
+    let mut block_style = ComputedStyle::default();
+    block_style.display = Display::Block;
+    block_style.background_color = Rgba::GREEN;
+    let block_style = Arc::new(block_style);
+    let block_fragment = FragmentNode::new_block_styled(bounds, vec![], block_style);
+
+    // Use a non-stacking-context container so the paint order comes from
+    // `build_fragment_internal` child ordering (not from the stacking tree layers).
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Block;
+    let container_style = Arc::new(container_style);
+    let container = FragmentNode::new_block_styled(
+      bounds,
+      vec![float_fragment, block_fragment],
+      container_style,
+    );
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let root = FragmentNode::new_block_styled(bounds, vec![container], Arc::new(root_style));
+
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+
+    let mut red_idx = None;
+    let mut green_idx = None;
+    for (idx, item) in list.items().iter().enumerate() {
+      let color = match item {
+        DisplayItem::FillRect(fill) => Some(fill.color),
+        DisplayItem::FillRoundedRect(fill) => Some(fill.color),
+        _ => None,
+      };
+      match color {
+        Some(c) if c == Rgba::RED && red_idx.is_none() => red_idx = Some(idx),
+        Some(c) if c == Rgba::GREEN && green_idx.is_none() => green_idx = Some(idx),
+        _ => {}
+      }
+    }
+
+    let red_idx = red_idx.expect("expected a red background fill for the float");
+    let green_idx = green_idx.expect("expected a green background fill for the block");
+    assert!(
+      green_idx < red_idx,
+      "expected in-flow block backgrounds to be painted before floats"
+    );
   }
 
   #[test]

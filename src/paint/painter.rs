@@ -1864,7 +1864,8 @@ impl Painter {
       let mut negative_contexts = Vec::new();
       let mut zero_contexts = Vec::new();
       let mut positive_contexts = Vec::new();
-      let mut blocks_and_floats = Vec::new();
+      let mut blocks = Vec::new();
+      let mut floats = Vec::new();
       let mut inlines = Vec::new();
       let mut positioned_auto = Vec::new();
 
@@ -1881,10 +1882,12 @@ impl Painter {
           }
           if is_positioned(style) {
             positioned_auto.push(idx);
+          } else if style.float.is_floating() {
+            floats.push(idx);
           } else if is_inline_level(style, child) {
             inlines.push(idx);
           } else {
-            blocks_and_floats.push(idx);
+            blocks.push(idx);
           }
         } else if matches!(
           child.content,
@@ -1896,7 +1899,7 @@ impl Painter {
         }
         // Children without style default to block-level when not inline-like.
         else {
-          blocks_and_floats.push(idx);
+          blocks.push(idx);
         }
       }
 
@@ -1913,7 +1916,19 @@ impl Painter {
         )?;
       }
 
-      for idx in blocks_and_floats {
+      // Paint in-flow blocks before floats (CSS2 stacking levels 3 and 4).
+      for idx in blocks {
+        self.collect_stacking_context(
+          &fragment.children[idx],
+          child_offset,
+          style_ref,
+          false,
+          root_paint,
+          &mut local_commands,
+          svg_filters,
+        )?;
+      }
+      for idx in floats {
         self.collect_stacking_context(
           &fragment.children[idx],
           child_offset,
@@ -1984,8 +1999,10 @@ impl Painter {
     let mut negative_contexts = Vec::new();
     let mut zero_contexts = Vec::new();
     let mut positive_contexts = Vec::new();
-    // Paint in-flow blocks and floats together in DOM order (CSS2 stacking level 4)
-    let mut blocks_and_floats = Vec::new();
+    // In-flow, non-inline-level descendants (CSS2 stacking level 3).
+    let mut blocks = Vec::new();
+    // Non-positioned floats (CSS2 stacking level 4).
+    let mut floats = Vec::new();
     // Paint in-flow inline-level content after blocks/floats (CSS2 stacking level 5)
     let mut inlines = Vec::new();
     // Positioned elements with auto/0 z-index but not establishing a stacking context (CSS2 level 6)
@@ -2004,10 +2021,12 @@ impl Painter {
         }
         if is_positioned(style) {
           positioned_auto.push(idx);
+        } else if style.float.is_floating() {
+          floats.push(idx);
         } else if is_inline_level(style, child) {
           inlines.push(idx);
         } else {
-          blocks_and_floats.push(idx);
+          blocks.push(idx);
         }
       } else if matches!(
         child.content,
@@ -2017,7 +2036,7 @@ impl Painter {
       ) {
         inlines.push(idx);
       } else {
-        blocks_and_floats.push(idx);
+        blocks.push(idx);
       }
     }
 
@@ -2036,7 +2055,18 @@ impl Painter {
 
     // In-flow/non-positioned content for this context
     self.enqueue_content(fragment, abs_bounds, &mut local_commands);
-    for idx in blocks_and_floats {
+    for idx in blocks {
+      self.collect_stacking_context(
+        &fragment.children[idx],
+        child_offset,
+        style_ref,
+        false,
+        root_paint,
+        &mut local_commands,
+        svg_filters,
+      )?;
+    }
+    for idx in floats {
       self.collect_stacking_context(
         &fragment.children[idx],
         child_offset,
@@ -14453,7 +14483,8 @@ mod tests {
 
   #[test]
   fn stacking_order_places_floats_between_blocks_and_inlines() {
-    // Build four children that should paint in block → float → inline → positioned order.
+    // Build four children that should paint in block → float → inline → positioned order,
+    // regardless of tree order between blocks and floats.
     let mut block_style = ComputedStyle::default();
     block_style.display = Display::Block;
     block_style.background_color = Rgba::RED;
@@ -14483,7 +14514,7 @@ mod tests {
 
     let root = FragmentNode::new_block(
       Rect::from_xywh(0.0, 0.0, 100.0, 10.0),
-      vec![block, float_frag, inline, positioned],
+      vec![float_frag, block, inline, positioned],
     );
 
     let painter = Painter::new(100, 10, Rgba::WHITE).expect("painter");
