@@ -3919,7 +3919,14 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
     return true;
   }
 
+  // FastRender supports rendering `<object>` external resources when they are images, or when the
+  // resource is an HTML document that can be rendered as an embedded iframe.
   crate::html::images::is_supported_image_mime(&normalized_type)
+    || matches!(
+      normalized_type.as_str(),
+      "text/html" | "application/xhtml+xml" | "application/html"
+    )
+    || normalized_type.contains("+html")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4755,6 +4762,20 @@ mod tests {
       count_object_replacements(&box_tree.root),
       1,
       "object with supported image type should render as replaced content"
+    );
+  }
+
+  #[test]
+  fn object_with_supported_html_type_still_replaced() {
+    let html = "<html><body><object data=\"doc.html\" type=\"text/html\"></object></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      count_object_replacements(&box_tree.root),
+      1,
+      "object with supported HTML type should render as replaced content"
     );
   }
 
