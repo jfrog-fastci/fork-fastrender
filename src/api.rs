@@ -9340,7 +9340,7 @@ impl FastRender {
     jobs: &mut HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>>,
   ) {
     fn should_skip_image_probe(style: &ComputedStyle) -> bool {
-      matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r > 0.0)
+      matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r.is_finite() && r > 0.0)
         && (style.width.is_some() || style.height.is_some())
     }
 
@@ -9624,7 +9624,7 @@ impl FastRender {
     if style.width.is_some() && style.height.is_some() {
       return;
     }
-    if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r > 0.0)
+    if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r.is_finite() && r > 0.0)
       && (style.width.is_some() || style.height.is_some())
     {
       return;
@@ -10021,7 +10021,7 @@ impl FastRender {
         }
         // If an explicit CSS aspect ratio is provided and at least one dimension is specified,
         // replaced sizing does not need the resource's intrinsic ratio. Skip probing in that case.
-        if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r > 0.0)
+        if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r.is_finite() && r > 0.0)
           && (style.width.is_some() || style.height.is_some())
         {
           return;
@@ -10922,6 +10922,10 @@ fn hash_aspect_ratio(ratio: &crate::style::types::AspectRatio, hasher: &mut Defa
     crate::style::types::AspectRatio::Auto => 0u8.hash(hasher),
     crate::style::types::AspectRatio::Ratio(v) => {
       1u8.hash(hasher);
+      hash_f32(*v, hasher);
+    }
+    crate::style::types::AspectRatio::AutoRatio(v) => {
+      2u8.hash(hasher);
       hash_f32(*v, hasher);
     }
   }

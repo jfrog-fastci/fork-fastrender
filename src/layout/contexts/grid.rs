@@ -3288,6 +3288,7 @@ impl GridFormattingContext {
     match aspect_ratio {
       AspectRatio::Auto => None,
       AspectRatio::Ratio(ratio) => Some(ratio),
+      AspectRatio::AutoRatio(ratio) => Some(ratio),
     }
   }
 

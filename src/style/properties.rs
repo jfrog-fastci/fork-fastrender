@@ -12661,34 +12661,84 @@ fn parse_border_image_shorthand(value: &PropertyValue) -> Option<BorderImage> {
 }
 
 fn parse_aspect_ratio(value: &PropertyValue) -> Option<AspectRatio> {
+  #[derive(Clone, Copy)]
+  enum Tok<'a> {
+    Ident(&'a str),
+    Number(f32),
+  }
+
+  fn parse_ratio_token(token: Tok<'_>) -> Option<f32> {
+    match token {
+      Tok::Number(n) => (n.is_finite() && n > 0.0).then_some(n),
+      Tok::Ident(s) => parse_ratio_string(s),
+    }
+  }
+
+  fn parse_number_token(token: Tok<'_>) -> Option<f32> {
+    match token {
+      Tok::Number(n) => (n.is_finite() && n > 0.0).then_some(n),
+      Tok::Ident(s) => {
+        let parsed = s.trim().parse::<f32>().ok()?;
+        (parsed.is_finite() && parsed > 0.0).then_some(parsed)
+      }
+    }
+  }
+
+  fn parse_tokens(tokens: &[Tok<'_>]) -> Option<AspectRatio> {
+    if tokens.is_empty() {
+      return None;
+    }
+
+    let mut auto = false;
+    let mut ratio_tokens: Vec<Tok<'_>> = Vec::new();
+    for token in tokens {
+      match token {
+        Tok::Ident(ident) if ident.eq_ignore_ascii_case("auto") => {
+          if auto {
+            return None;
+          }
+          auto = true;
+        }
+        _ => ratio_tokens.push(*token),
+      }
+    }
+
+    let ratio = match ratio_tokens.as_slice() {
+      [] => None,
+      [tok] => Some(parse_ratio_token(*tok)?),
+      [lhs, Tok::Ident(op), rhs] if *op == "/" => {
+        let num = parse_number_token(*lhs)?;
+        let denom = parse_number_token(*rhs)?;
+        Some(num / denom)
+      }
+      _ => None,
+    };
+
+    match (auto, ratio) {
+      (true, None) => Some(AspectRatio::Auto),
+      (false, Some(ratio)) => Some(AspectRatio::Ratio(ratio)),
+      (true, Some(ratio)) => Some(AspectRatio::AutoRatio(ratio)),
+      (false, None) => None,
+    }
+  }
+
   match value {
     PropertyValue::Keyword(kw) => {
-      if kw.eq_ignore_ascii_case("auto") {
-        return Some(AspectRatio::Auto);
-      }
-      parse_ratio_string(kw).map(AspectRatio::Ratio)
+      let parts: Vec<_> = kw.split_whitespace().collect();
+      let tokens: Vec<_> = parts.into_iter().map(Tok::Ident).collect();
+      parse_tokens(&tokens)
     }
-    PropertyValue::Number(n) => (*n > 0.0).then_some(AspectRatio::Ratio(*n)),
+    PropertyValue::Number(n) => parse_tokens(&[Tok::Number(*n)]),
     PropertyValue::Multiple(values) => {
-      let mut nums: Vec<f32> = Vec::new();
+      let mut tokens: Vec<Tok<'_>> = Vec::with_capacity(values.len());
       for v in values {
         match v {
-          PropertyValue::Number(n) if *n > 0.0 => nums.push(*n),
-          PropertyValue::Keyword(kw) => {
-            if let Ok(n) = kw.parse::<f32>() {
-              if n > 0.0 {
-                nums.push(n);
-              }
-            }
-          }
-          _ => {}
+          PropertyValue::Keyword(kw) => tokens.push(Tok::Ident(kw.as_str())),
+          PropertyValue::Number(n) => tokens.push(Tok::Number(*n)),
+          _ => return None,
         }
       }
-      match nums.as_slice() {
-        [num] => Some(AspectRatio::Ratio(*num)),
-        [num, denom, ..] if *denom > 0.0 => Some(AspectRatio::Ratio(*num / *denom)),
-        _ => None,
-      }
+      parse_tokens(&tokens)
     }
     _ => None,
   }
@@ -12700,12 +12750,12 @@ fn parse_ratio_string(raw: &str) -> Option<f32> {
     return None;
   }
   if let Ok(val) = trimmed.parse::<f32>() {
-    return (val > 0.0).then_some(val);
+    return (val.is_finite() && val > 0.0).then_some(val);
   }
   if let Some((num_str, denom_str)) = trimmed.split_once('/') {
     let num = num_str.trim().parse::<f32>().ok()?;
     let denom = denom_str.trim().parse::<f32>().ok()?;
-    if num > 0.0 && denom > 0.0 {
+    if num.is_finite() && denom.is_finite() && num > 0.0 && denom > 0.0 {
       return Some(num / denom);
     }
   }
@@ -20458,6 +20508,36 @@ mod tests {
       16.0,
     );
     assert!(matches!(style.aspect_ratio, AspectRatio::Ratio(r) if (r - (16.0/9.0)).abs() < 0.0001));
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "aspect-ratio".into(),
+        value: PropertyValue::Keyword("auto 16/9".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert!(matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001));
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "aspect-ratio".into(),
+        value: PropertyValue::Keyword("16/9 auto".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert!(matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001));
 
     apply_declaration(
       &mut style,

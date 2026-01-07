@@ -726,9 +726,14 @@ impl BlockFormattingContext {
             );
     }
     if width_auto {
-      if let (crate::style::types::AspectRatio::Ratio(ratio), Some(h)) =
-        (style.aspect_ratio, specified_height)
-      {
+      if let (Some(ratio), Some(h)) = (
+        match style.aspect_ratio {
+          crate::style::types::AspectRatio::Ratio(ratio)
+          | crate::style::types::AspectRatio::AutoRatio(ratio) => Some(ratio),
+          crate::style::types::AspectRatio::Auto => None,
+        },
+        specified_height,
+      ) {
         if ratio > 0.0 {
           computed_width.content_width = h * ratio;
         }
@@ -1308,7 +1313,9 @@ impl BlockFormattingContext {
     // Height computation (CSS 2.1 Section 10.6.3) with aspect-ratio adjustment (CSS Sizing L4)
     let mut height = specified_height.unwrap_or(content_height);
     if specified_height.is_none() {
-      if let crate::style::types::AspectRatio::Ratio(ratio) = style.aspect_ratio {
+      if let crate::style::types::AspectRatio::Ratio(ratio)
+      | crate::style::types::AspectRatio::AutoRatio(ratio) = style.aspect_ratio
+      {
         if ratio > 0.0 && computed_width.content_width.is_finite() {
           let ratio_height = computed_width.content_width / ratio;
           // Do not shrink below content-based height

@@ -564,16 +564,18 @@ pub fn compute_replaced_size(
   let intrinsic = replaced.intrinsic_size;
   let intrinsic_w = intrinsic.and_then(|s| (s.width > 0.0).then_some(s.width));
   let intrinsic_h = intrinsic.and_then(|s| (s.height > 0.0).then_some(s.height));
-  let specified_ratio = match style.aspect_ratio {
-    crate::style::types::AspectRatio::Ratio(r) if r > 0.0 => Some(r),
-    _ => None,
+  let (uses_auto, specified_ratio) = match style.aspect_ratio {
+    crate::style::types::AspectRatio::Auto => (true, None),
+    crate::style::types::AspectRatio::Ratio(r) if r > 0.0 && r.is_finite() => (false, Some(r)),
+    crate::style::types::AspectRatio::AutoRatio(r) if r > 0.0 && r.is_finite() => (true, Some(r)),
+    _ => (true, None),
   };
   let allow_intrinsic_ratio_from_size = !matches!(
     &replaced.replaced_type,
     crate::tree::box_tree::ReplacedType::FormControl(_)
   );
 
-  let intrinsic_ratio = specified_ratio.or(replaced.aspect_ratio).or_else(|| {
+  let natural_ratio = replaced.aspect_ratio.or_else(|| {
     if !allow_intrinsic_ratio_from_size {
       return None;
     }
@@ -582,6 +584,12 @@ pub fn compute_replaced_size(
       _ => None,
     }
   });
+
+  let intrinsic_ratio = if uses_auto {
+    natural_ratio.or(specified_ratio)
+  } else {
+    specified_ratio
+  };
 
   // When only one intrinsic axis is available, the other can be derived from an intrinsic ratio.
   // Keep these as content-box sizes; callers apply padding/border separately.
@@ -1352,6 +1360,60 @@ mod tests {
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
     assert!((size.width - 120.0).abs() < 0.01);
     assert!((size.height - 80.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn replaced_aspect_ratio_auto_ratio_prefers_intrinsic_ratio() {
+    let mut style = ComputedStyle::default();
+    style.width = Some(Length::px(200.0));
+    style.width_keyword = None;
+    style.height = None;
+    style.height_keyword = None;
+    style.aspect_ratio = crate::style::types::AspectRatio::AutoRatio(16.0 / 9.0);
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: String::new(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(100.0, 50.0)),
+      aspect_ratio: None,
+    };
+
+    let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
+    assert!((size.width - 200.0).abs() < 0.01);
+    assert!((size.height - 100.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn replaced_aspect_ratio_auto_ratio_falls_back_without_intrinsic_ratio() {
+    let mut style = ComputedStyle::default();
+    style.width = Some(Length::px(200.0));
+    style.width_keyword = None;
+    style.height = None;
+    style.height_keyword = None;
+    style.aspect_ratio = crate::style::types::AspectRatio::AutoRatio(16.0 / 9.0);
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: String::new(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: None,
+      aspect_ratio: None,
+    };
+
+    let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
+    assert!((size.width - 200.0).abs() < 0.01);
+    assert!((size.height - 112.5).abs() < 0.01);
   }
 
   #[test]

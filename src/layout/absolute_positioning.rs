@@ -313,7 +313,9 @@ impl AbsoluteLayout {
       )?;
 
     // Apply aspect-ratio if authored (CSS Sizing L4).
-    if let crate::style::types::AspectRatio::Ratio(ratio) = style.aspect_ratio {
+    if let crate::style::types::AspectRatio::Ratio(ratio)
+    | crate::style::types::AspectRatio::AutoRatio(ratio) = style.aspect_ratio
+    {
       if ratio > 0.0 {
         let width_auto = matches!(style.width, crate::style::values::LengthOrAuto::Auto)
           && style.width_keyword.is_none();

@@ -560,6 +560,10 @@ fn hash_aspect_ratio(value: &AspectRatio, hasher: &mut FxHasher) {
       1u8.hash(hasher);
       f32_to_canonical_bits(*ratio).hash(hasher);
     }
+    AspectRatio::AutoRatio(ratio) => {
+      2u8.hash(hasher);
+      f32_to_canonical_bits(*ratio).hash(hasher);
+    }
   }
 }
 

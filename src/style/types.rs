@@ -621,6 +621,7 @@ impl ImageOrientation {
 pub enum AspectRatio {
   Auto,
   Ratio(f32),
+  AutoRatio(f32),
 }
 
 /// Logical alignment for object-position

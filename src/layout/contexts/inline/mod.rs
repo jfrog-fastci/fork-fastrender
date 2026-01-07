@@ -2386,9 +2386,14 @@ impl InlineFormattingContext {
       } else {
         used
       }
-    } else if let (crate::style::types::AspectRatio::Ratio(ratio), Some(h)) =
-      (style.aspect_ratio, resolved_specified_height)
-    {
+    } else if let (Some(ratio), Some(h)) = (
+      match style.aspect_ratio {
+        crate::style::types::AspectRatio::Ratio(ratio)
+        | crate::style::types::AspectRatio::AutoRatio(ratio) => Some(ratio),
+        crate::style::types::AspectRatio::Auto => None,
+      },
+      resolved_specified_height,
+    ) {
       if ratio > 0.0 {
         let target = h * ratio;
         let used = crate::layout::utils::clamp_with_order(target, min_width, max_width);
@@ -2485,11 +2490,11 @@ impl InlineFormattingContext {
 
     let va = self.convert_vertical_align(style.vertical_align, style.font_size, line_height);
 
-    if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r > 0.0)
+    if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) | crate::style::types::AspectRatio::AutoRatio(r) if r > 0.0)
       && style.height.is_none()
       && style.height_keyword.is_none()
     {
-      if let crate::style::types::AspectRatio::Ratio(r) = style.aspect_ratio {
+      if let crate::style::types::AspectRatio::Ratio(r) | crate::style::types::AspectRatio::AutoRatio(r) = style.aspect_ratio {
         if r > 0.0 && fragment.bounds.width().is_finite() {
           let target_height = fragment.bounds.width() / r;
           if target_height > fragment.bounds.height() {
