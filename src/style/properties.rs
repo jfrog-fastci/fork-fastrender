@@ -13128,13 +13128,27 @@ fn parse_aspect_ratio(value: &PropertyValue) -> Option<AspectRatio> {
 
     let ratio = match ratio_tokens.as_slice() {
       [] => None,
-      [tok] => Some(parse_ratio_token(*tok)?),
+      [tok] => parse_ratio_token(*tok),
       [lhs, Tok::Ident(op), rhs] if *op == "/" => {
         let num = parse_number_token(*lhs)?;
         let denom = parse_number_token(*rhs)?;
         Some(num / denom)
       }
-      _ => None,
+      other => {
+        // Accept loosely-tokenized ratios such as `16/ 9` / `16 /9` by rebuilding the original
+        // string representation and parsing it as a ratio.
+        let mut joined = String::new();
+        for (idx, token) in other.iter().enumerate() {
+          if idx > 0 {
+            joined.push(' ');
+          }
+          match token {
+            Tok::Ident(s) => joined.push_str(s),
+            Tok::Number(n) => joined.push_str(&n.to_string()),
+          }
+        }
+        parse_ratio_string(&joined)
+      }
     };
 
     match (auto, ratio) {
@@ -21633,7 +21647,37 @@ mod tests {
       &mut style,
       &Declaration {
         property: "aspect-ratio".into(),
+        value: PropertyValue::Keyword("16/ 9".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert!(matches!(style.aspect_ratio, AspectRatio::Ratio(r) if (r - (16.0/9.0)).abs() < 0.0001));
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "aspect-ratio".into(),
         value: PropertyValue::Keyword("auto 16/9".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert!(matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001));
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "aspect-ratio".into(),
+        value: PropertyValue::Keyword("auto 16/ 9".to_string()),
         contains_var: false,
         raw_value: String::new(),
         important: false,
