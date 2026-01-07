@@ -76,6 +76,8 @@ This work is tracked in the capability map under `alg.forms.appearance-none`.
 - Box-generation unit tests:
   - `src/tree/box_generation.rs::appearance_none_does_not_disable_form_control_replacement`
   - `src/tree/box_generation.rs::webkit_appearance_none_propagates_to_form_control`
+- Offline page fixtures:
+  - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including `::-webkit-slider-thumb` for ranges).
 
 The offline page regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
 so we can catch large visual diffs caused by missing UA form control styling/painting. Regenerate
