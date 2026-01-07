@@ -444,6 +444,17 @@ pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
     }
   }
 
+  // Small form variants (compatibility characters that NFKD-map to ASCII punctuation).
+  if matches!(
+    ch,
+    '\u{FE5F}' // SMALL NUMBER SIGN
+      | '\u{FE6A}' // SMALL PERCENT SIGN
+      | '\u{FE60}' // SMALL AMPERSAND
+      | '\u{FE6B}' // SMALL COMMERCIAL AT
+  ) {
+    return false;
+  }
+
   true
 }
 
