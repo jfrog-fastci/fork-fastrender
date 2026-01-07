@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use fastrender::style::types::InsetValue;
 use fastrender::{
   ComputedStyle, FastRender, FragmentContent, FragmentNode, FragmentTree, Length, Point, Position,
   Rect, Size,
@@ -11,11 +12,11 @@ fn nested_sticky_descendants_use_updated_containing_rect() {
 
   let mut outer_style = ComputedStyle::default();
   outer_style.position = Position::Sticky;
-  outer_style.top = Some(Length::px(0.0));
+  outer_style.top = InsetValue::Length(Length::px(0.0));
 
   let mut inner_style = ComputedStyle::default();
   inner_style.position = Position::Sticky;
-  inner_style.top = Some(Length::px(5.0));
+  inner_style.top = InsetValue::Length(Length::px(5.0));
 
   let inner = FragmentNode::new_with_style(
     Rect::from_xywh(0.0, 10.0, 100.0, 20.0),

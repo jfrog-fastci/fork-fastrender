@@ -3,6 +3,7 @@ use fastrender::css::types::PropertyValue;
 use fastrender::style::properties::apply_declaration;
 use fastrender::style::properties::resolve_pending_logical_properties;
 use fastrender::style::types::BorderCornerRadius;
+use fastrender::style::types::InsetValue;
 use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -108,8 +109,8 @@ fn logical_inset_maps_in_sideways_lr_writing_mode() {
   resolve_pending_logical_properties(&mut style);
 
   // Sideways-lr: inline axis vertical -> start maps to top; block axis horizontal left→right -> end maps to right.
-  assert_eq!(style.top, Some(Length::px(5.0)));
-  assert_eq!(style.right, Some(Length::px(7.0)));
+  assert_eq!(style.top, InsetValue::Length(Length::px(5.0)));
+  assert_eq!(style.right, InsetValue::Length(Length::px(7.0)));
 }
 
 #[test]

@@ -27736,6 +27736,21 @@ fn resolve_container_query_lengths(
     }
   }
 
+  fn resolve_inset_value(
+    value: &mut crate::style::types::InsetValue,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match value {
+      crate::style::types::InsetValue::Auto => {}
+      crate::style::types::InsetValue::Length(len) => resolve_len(len),
+      crate::style::types::InsetValue::Anchor(anchor) => {
+        if let Some(fallback) = anchor.fallback.as_mut() {
+          resolve_len(fallback);
+        }
+      }
+    }
+  }
+
   fn resolve_intrinsic_size_keyword(
     keyword: &mut Option<crate::style::types::IntrinsicSizeKeyword>,
     resolve_len: &mut impl FnMut(&mut Length),
@@ -28127,10 +28142,10 @@ fn resolve_container_query_lengths(
   resolve_len(&mut styles.scroll_margin_bottom);
   resolve_len(&mut styles.scroll_margin_left);
 
-  resolve_opt_len(&mut styles.top, &mut resolve_len);
-  resolve_opt_len(&mut styles.right, &mut resolve_len);
-  resolve_opt_len(&mut styles.bottom, &mut resolve_len);
-  resolve_opt_len(&mut styles.left, &mut resolve_len);
+  resolve_inset_value(&mut styles.top, &mut resolve_len);
+  resolve_inset_value(&mut styles.right, &mut resolve_len);
+  resolve_inset_value(&mut styles.bottom, &mut resolve_len);
+  resolve_inset_value(&mut styles.left, &mut resolve_len);
 
   resolve_len(&mut styles.shape_margin);
   resolve_len(&mut styles.outline_width);
@@ -28984,10 +28999,10 @@ fn compute_pseudo_element_styles(
       PseudoElement::Backdrop => {
         styles.display = Display::Block;
         styles.position = Position::Fixed;
-        styles.top = Some(Length::px(0.0));
-        styles.right = Some(Length::px(0.0));
-        styles.bottom = Some(Length::px(0.0));
-        styles.left = Some(Length::px(0.0));
+        styles.top = crate::style::types::InsetValue::Length(Length::px(0.0));
+        styles.right = crate::style::types::InsetValue::Length(Length::px(0.0));
+        styles.bottom = crate::style::types::InsetValue::Length(Length::px(0.0));
+        styles.left = crate::style::types::InsetValue::Length(Length::px(0.0));
       }
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
         styles.display = Display::Block;
@@ -29625,10 +29640,10 @@ fn compute_marker_styles(
 pub(crate) fn reset_marker_box_properties(styles: &mut ComputedStyle) {
   let defaults = ComputedStyle::default();
   styles.position = defaults.position;
-  styles.top = None;
-  styles.right = None;
-  styles.bottom = None;
-  styles.left = None;
+  styles.top = defaults.top.clone();
+  styles.right = defaults.right.clone();
+  styles.bottom = defaults.bottom.clone();
+  styles.left = defaults.left.clone();
   styles.z_index = defaults.z_index;
 
   styles.width = None;

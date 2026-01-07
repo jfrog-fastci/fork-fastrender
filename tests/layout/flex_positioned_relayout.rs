@@ -4,6 +4,7 @@ use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
+use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -14,9 +15,9 @@ fn positioned_child(position: Position, left: f32, right: f32, top: f32, text: &
   let mut style = ComputedStyle::default();
   style.display = Display::Block;
   style.position = position;
-  style.left = Some(Length::px(left));
-  style.right = Some(Length::px(right));
-  style.top = Some(Length::px(top));
+  style.left = InsetValue::Length(Length::px(left));
+  style.right = InsetValue::Length(Length::px(right));
+  style.top = InsetValue::Length(Length::px(top));
 
   let text_node = BoxNode::new_text(Arc::new(ComputedStyle::default()), text.to_string());
   BoxNode::new_block(

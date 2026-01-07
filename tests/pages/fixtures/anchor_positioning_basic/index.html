@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>CSS Anchor Positioning (baseline)</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  #container {
+    position: relative;
+    margin: 40px;
+    padding: 20px 10px;
+    width: 300px;
+    height: 150px;
+    background: rgb(240, 240, 240);
+  }
+
+  #anchor {
+    width: 80px;
+    height: 30px;
+    background: rgb(255, 0, 0);
+    anchor-name: --a;
+  }
+
+  /* Uses `position-anchor` and unnamed `anchor(<side>)`. */
+  #popup {
+    position: absolute;
+    position-anchor: --a;
+    top: anchor(bottom);
+    left: anchor(left);
+    width: 80px;
+    height: 20px;
+    background: rgb(0, 0, 255);
+  }
+
+  /* Uses an explicit anchor name inside `anchor(--a <side>)`. */
+  #popup2 {
+    position: absolute;
+    top: anchor(--a top);
+    left: anchor(--a right);
+    width: 40px;
+    height: 20px;
+    background: rgb(0, 255, 0);
+  }
+</style>
+
+<div id="container">
+  <div id="anchor"></div>
+  <div id="popup"></div>
+  <div id="popup2"></div>
+</div>
+

@@ -12,6 +12,7 @@ use fastrender::layout::contexts::inline::InlineFormattingContext;
 use fastrender::layout::taffy_integration::{taffy_perf_counters, TaffyPerfCountersGuard};
 use fastrender::style::display::Display;
 use fastrender::style::position::Position;
+use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::text::ShapingPipeline;
 use fastrender::{
@@ -211,8 +212,8 @@ fn flex_positioned_children_do_not_churn_factories_or_inline_contexts() {
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(0.0));
-  abs_style.top = Some(Length::px(0.0));
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
   let abs_style = Arc::new(abs_style);
 
   let mut text_style = ComputedStyle::default();
@@ -301,8 +302,8 @@ fn grid_positioned_children_do_not_churn_factories_or_inline_contexts() {
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(0.0));
-  abs_style.top = Some(Length::px(0.0));
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
   let abs_style = Arc::new(abs_style);
 
   let mut text_style = ComputedStyle::default();
@@ -385,8 +386,8 @@ fn inline_positioned_children_do_not_churn_detached_factories() {
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(0.0));
-  abs_style.top = Some(Length::px(0.0));
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
   let abs_style = Arc::new(abs_style);
 
   let mut text_style = ComputedStyle::default();
@@ -474,8 +475,8 @@ fn block_positioned_children_do_not_churn_detached_factories() {
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(0.0));
-  abs_style.top = Some(Length::px(0.0));
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
   let abs_style = Arc::new(abs_style);
 
   let mut text_style = ComputedStyle::default();
@@ -599,8 +600,8 @@ fn table_positioned_children_do_not_churn_detached_factories() {
     } else {
       Position::Fixed
     };
-    positioned_style.left = Some(Length::px(0.0));
-    positioned_style.top = Some(Length::px(0.0));
+    positioned_style.left = InsetValue::Length(Length::px(0.0));
+    positioned_style.top = InsetValue::Length(Length::px(0.0));
     positioned_style.width = Some(Length::px(7.0));
     positioned_style.height = Some(Length::px(3.0));
     let mut positioned = BoxNode::new_block(

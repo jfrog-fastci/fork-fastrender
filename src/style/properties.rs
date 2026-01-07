@@ -3200,7 +3200,7 @@ fn push_logical(styles: &mut ComputedStyle, property: crate::style::LogicalPrope
 fn set_inset_side(
   styles: &mut ComputedStyle,
   side: crate::style::PhysicalSide,
-  value: Option<Length>,
+  value: InsetValue,
   order: i32,
 ) {
   if order < side_order(&styles.logical.inset_orders, side) {
@@ -3858,12 +3858,12 @@ fn global_keyword_source<'a>(
   }
 }
 
-fn inset_for_side(style: &ComputedStyle, side: crate::style::PhysicalSide) -> Option<Length> {
+fn inset_for_side(style: &ComputedStyle, side: crate::style::PhysicalSide) -> InsetValue {
   match side {
-    crate::style::PhysicalSide::Top => style.top,
-    crate::style::PhysicalSide::Right => style.right,
-    crate::style::PhysicalSide::Bottom => style.bottom,
-    crate::style::PhysicalSide::Left => style.left,
+    crate::style::PhysicalSide::Top => style.top.clone(),
+    crate::style::PhysicalSide::Right => style.right.clone(),
+    crate::style::PhysicalSide::Bottom => style.bottom.clone(),
+    crate::style::PhysicalSide::Left => style.left.clone(),
   }
 }
 
@@ -3968,35 +3968,55 @@ fn apply_property_from_source(
       styles.container_type = source.container_type;
       styles.container_name = source.container_name.clone();
     }
-    "top" => set_inset_side(styles, crate::style::PhysicalSide::Top, source.top, order),
+    "top" => set_inset_side(
+      styles,
+      crate::style::PhysicalSide::Top,
+      source.top.clone(),
+      order,
+    ),
     "right" => set_inset_side(
       styles,
       crate::style::PhysicalSide::Right,
-      source.right,
+      source.right.clone(),
       order,
     ),
     "bottom" => set_inset_side(
       styles,
       crate::style::PhysicalSide::Bottom,
-      source.bottom,
+      source.bottom.clone(),
       order,
     ),
-    "left" => set_inset_side(styles, crate::style::PhysicalSide::Left, source.left, order),
+    "left" => set_inset_side(
+      styles,
+      crate::style::PhysicalSide::Left,
+      source.left.clone(),
+      order,
+    ),
     "inset" => {
-      set_inset_side(styles, crate::style::PhysicalSide::Top, source.top, order);
+      set_inset_side(
+        styles,
+        crate::style::PhysicalSide::Top,
+        source.top.clone(),
+        order,
+      );
       set_inset_side(
         styles,
         crate::style::PhysicalSide::Right,
-        source.right,
+        source.right.clone(),
         order,
       );
       set_inset_side(
         styles,
         crate::style::PhysicalSide::Bottom,
-        source.bottom,
+        source.bottom.clone(),
         order,
       );
-      set_inset_side(styles, crate::style::PhysicalSide::Left, source.left, order);
+      set_inset_side(
+        styles,
+        crate::style::PhysicalSide::Left,
+        source.left.clone(),
+        order,
+      );
     }
     "inset-inline-start" => {
       let start_side = inline_sides.0;
@@ -4076,6 +4096,9 @@ fn apply_property_from_source(
         order,
       );
     }
+    "anchor-name" => styles.anchor_names = source.anchor_names.clone(),
+    "anchor-scope" => styles.anchor_scope = source.anchor_scope.clone(),
+    "position-anchor" => styles.position_anchor = source.position_anchor.clone(),
     "z-index" => styles.z_index = source.z_index,
     "outline-color" => styles.outline_color = source.outline_color,
     "outline-style" => styles.outline_style = source.outline_style,
@@ -7416,115 +7439,181 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
 
-    "top" => set_inset_side(
-      styles,
-      crate::style::PhysicalSide::Top,
-      extract_length(resolved_value),
-      order,
-    ),
-    "right" => set_inset_side(
-      styles,
-      crate::style::PhysicalSide::Right,
-      extract_length(resolved_value),
-      order,
-    ),
-    "bottom" => set_inset_side(
-      styles,
-      crate::style::PhysicalSide::Bottom,
-      extract_length(resolved_value),
-      order,
-    ),
-    "left" => set_inset_side(
-      styles,
-      crate::style::PhysicalSide::Left,
-      extract_length(resolved_value),
-      order,
-    ),
+    "top" => {
+      if let Some(value) = extract_inset_value(resolved_value) {
+        set_inset_side(styles, crate::style::PhysicalSide::Top, value, order);
+      }
+    }
+    "right" => {
+      if let Some(value) = extract_inset_value(resolved_value) {
+        set_inset_side(styles, crate::style::PhysicalSide::Right, value, order);
+      }
+    }
+    "bottom" => {
+      if let Some(value) = extract_inset_value(resolved_value) {
+        set_inset_side(styles, crate::style::PhysicalSide::Bottom, value, order);
+      }
+    }
+    "left" => {
+      if let Some(value) = extract_inset_value(resolved_value) {
+        set_inset_side(styles, crate::style::PhysicalSide::Left, value, order);
+      }
+    }
     "inset" => {
-      if let Some(lengths) = extract_margin_values(resolved_value) {
-        let mut top = styles.top;
-        let mut right = styles.right;
-        let mut bottom = styles.bottom;
-        let mut left = styles.left;
-        apply_margin_values(&mut top, &mut right, &mut bottom, &mut left, lengths);
-        set_inset_side(styles, crate::style::PhysicalSide::Top, top, order);
-        set_inset_side(styles, crate::style::PhysicalSide::Right, right, order);
-        set_inset_side(styles, crate::style::PhysicalSide::Bottom, bottom, order);
-        set_inset_side(styles, crate::style::PhysicalSide::Left, left, order);
+      if let Some(values) = extract_inset_values(resolved_value) {
+        if values.len() <= 4 {
+          let mut top = styles.top.clone();
+          let mut right = styles.right.clone();
+          let mut bottom = styles.bottom.clone();
+          let mut left = styles.left.clone();
+          apply_inset_values(&mut top, &mut right, &mut bottom, &mut left, values);
+          set_inset_side(styles, crate::style::PhysicalSide::Top, top, order);
+          set_inset_side(styles, crate::style::PhysicalSide::Right, right, order);
+          set_inset_side(styles, crate::style::PhysicalSide::Bottom, bottom, order);
+          set_inset_side(styles, crate::style::PhysicalSide::Left, left, order);
+        }
       }
     }
     "inset-inline-start" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::Inset {
-          axis: crate::style::LogicalAxis::Inline,
-          start: Some(extract_length(resolved_value)),
-          end: None,
-        },
-        order,
-      );
-    }
-    "inset-inline-end" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::Inset {
-          axis: crate::style::LogicalAxis::Inline,
-          start: None,
-          end: Some(extract_length(resolved_value)),
-        },
-        order,
-      );
-    }
-    "inset-block-start" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::Inset {
-          axis: crate::style::LogicalAxis::Block,
-          start: Some(extract_length(resolved_value)),
-          end: None,
-        },
-        order,
-      );
-    }
-    "inset-block-end" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::Inset {
-          axis: crate::style::LogicalAxis::Block,
-          start: None,
-          end: Some(extract_length(resolved_value)),
-        },
-        order,
-      );
-    }
-    "inset-inline" => {
-      if let Some(values) = extract_margin_values(resolved_value) {
-        let start = values.first().copied().flatten();
-        let end = values.get(1).copied().flatten().or(start);
+      if let Some(start) = extract_inset_value(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::Inset {
             axis: crate::style::LogicalAxis::Inline,
             start: Some(start),
+            end: None,
+          },
+          order,
+        );
+      }
+    }
+    "inset-inline-end" => {
+      if let Some(end) = extract_inset_value(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::Inset {
+            axis: crate::style::LogicalAxis::Inline,
+            start: None,
             end: Some(end),
           },
           order,
         );
       }
     }
-    "inset-block" => {
-      if let Some(values) = extract_margin_values(resolved_value) {
-        let start = values.first().copied().flatten();
-        let end = values.get(1).copied().flatten().or(start);
+    "inset-block-start" => {
+      if let Some(start) = extract_inset_value(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::Inset {
             axis: crate::style::LogicalAxis::Block,
             start: Some(start),
+            end: None,
+          },
+          order,
+        );
+      }
+    }
+    "inset-block-end" => {
+      if let Some(end) = extract_inset_value(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::Inset {
+            axis: crate::style::LogicalAxis::Block,
+            start: None,
             end: Some(end),
           },
           order,
         );
+      }
+    }
+    "inset-inline" => {
+      if let Some(values) = extract_inset_values(resolved_value) {
+        if values.len() <= 2 {
+          let start = values.first().cloned().unwrap_or(InsetValue::Auto);
+          let end = values.get(1).cloned().unwrap_or_else(|| start.clone());
+          push_logical(
+            styles,
+            crate::style::LogicalProperty::Inset {
+              axis: crate::style::LogicalAxis::Inline,
+              start: Some(start),
+              end: Some(end),
+            },
+            order,
+          );
+        }
+      }
+    }
+    "inset-block" => {
+      if let Some(values) = extract_inset_values(resolved_value) {
+        if values.len() <= 2 {
+          let start = values.first().cloned().unwrap_or(InsetValue::Auto);
+          let end = values.get(1).cloned().unwrap_or_else(|| start.clone());
+          push_logical(
+            styles,
+            crate::style::LogicalProperty::Inset {
+              axis: crate::style::LogicalAxis::Block,
+              start: Some(start),
+              end: Some(end),
+            },
+            order,
+          );
+        }
+      }
+    }
+    "anchor-name" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("none") {
+          styles.anchor_names.clear();
+          return;
+        }
+      }
+      if let Some(names) = extract_dashed_ident_list(resolved_value) {
+        styles.anchor_names = names;
+      }
+    }
+    "position-anchor" => {
+      let token = match resolved_value {
+        PropertyValue::Keyword(kw) => Some(kw.trim()),
+        PropertyValue::Multiple(parts) => {
+          if parts.len() == 1 {
+            if let PropertyValue::Keyword(kw) = &parts[0] {
+              Some(kw.trim())
+            } else {
+              None
+            }
+          } else {
+            None
+          }
+        }
+        _ => None,
+      };
+      if let Some(token) = token {
+        if token.eq_ignore_ascii_case("none") {
+          styles.position_anchor = PositionAnchor::None;
+        } else if token.eq_ignore_ascii_case("auto") {
+          styles.position_anchor = PositionAnchor::Auto;
+        } else if token.starts_with("--") && token.len() > 2 {
+          styles.position_anchor = PositionAnchor::Name(token.to_string());
+        }
+      }
+    }
+    "anchor-scope" => {
+      let token = match resolved_value {
+        PropertyValue::Keyword(kw) => Some(kw.trim()),
+        _ => None,
+      };
+      if let Some(token) = token {
+        if token.eq_ignore_ascii_case("none") {
+          styles.anchor_scope = AnchorScope::None;
+          return;
+        }
+        if token.eq_ignore_ascii_case("all") {
+          styles.anchor_scope = AnchorScope::All;
+          return;
+        }
+      }
+      if let Some(names) = extract_dashed_ident_list(resolved_value) {
+        styles.anchor_scope = AnchorScope::Names(names);
       }
     }
     "z-index" => match resolved_value {
@@ -12088,6 +12177,176 @@ pub fn extract_length(value: &PropertyValue) -> Option<Length> {
     PropertyValue::Keyword(kw) => parse_length(kw),
     _ => None,
   }
+}
+
+fn parse_anchor_side(token: &str) -> Option<AnchorSide> {
+  match token {
+    t if t.eq_ignore_ascii_case("top") => Some(AnchorSide::Top),
+    t if t.eq_ignore_ascii_case("right") => Some(AnchorSide::Right),
+    t if t.eq_ignore_ascii_case("bottom") => Some(AnchorSide::Bottom),
+    t if t.eq_ignore_ascii_case("left") => Some(AnchorSide::Left),
+    _ => None,
+  }
+}
+
+fn parse_anchor_function_str(input: &str) -> Option<AnchorFunction> {
+  let trimmed = input.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // Keep parsing small and deterministic: only accept a single `anchor(...)` function call.
+  let (head, tail) = trimmed.split_once('(')?;
+  if !head.eq_ignore_ascii_case("anchor") {
+    return None;
+  }
+  let tail = tail.strip_suffix(')')?;
+
+  // Split the argument list on a top-level comma to separate the fallback.
+  let mut depth: i32 = 0;
+  let mut comma_idx: Option<usize> = None;
+  for (idx, ch) in tail.char_indices() {
+    match ch {
+      '(' => depth += 1,
+      ')' => depth -= 1,
+      ',' if depth == 0 => {
+        comma_idx = Some(idx);
+        break;
+      }
+      _ => {}
+    }
+  }
+
+  let (args_part, fallback_part) = match comma_idx {
+    Some(idx) => {
+      let (before, after) = tail.split_at(idx);
+      (before.trim(), after.get(1..)?.trim())
+    }
+    None => (tail.trim(), ""),
+  };
+
+  let fallback = if fallback_part.is_empty() {
+    None
+  } else {
+    Some(parse_length(fallback_part)?)
+  };
+
+  let tokens: Vec<&str> = args_part.split_whitespace().collect();
+  if tokens.is_empty() {
+    return None;
+  }
+
+  let (name, side_token) = match tokens.len() {
+    1 => (None, tokens[0]),
+    2 => {
+      let first_is_name = tokens[0].starts_with("--");
+      let second_is_name = tokens[1].starts_with("--");
+      match (first_is_name, second_is_name) {
+        (true, false) => (Some(tokens[0].to_string()), tokens[1]),
+        (false, true) => (Some(tokens[1].to_string()), tokens[0]),
+        _ => return None,
+      }
+    }
+    _ => return None,
+  };
+
+  let side = parse_anchor_side(side_token)?;
+
+  Some(AnchorFunction {
+    name,
+    side,
+    fallback,
+  })
+}
+
+pub fn extract_inset_value(value: &PropertyValue) -> Option<InsetValue> {
+  match value {
+    PropertyValue::Length(len) => Some(InsetValue::Length(*len)),
+    PropertyValue::Number(n) if *n == 0.0 => Some(InsetValue::Length(Length::px(0.0))),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => Some(InsetValue::Auto),
+    PropertyValue::Keyword(kw) => {
+      if let Some(anchor) = parse_anchor_function_str(kw) {
+        return Some(InsetValue::Anchor(anchor));
+      }
+      parse_length(kw).map(InsetValue::Length)
+    }
+    _ => None,
+  }
+}
+
+fn extract_inset_values(value: &PropertyValue) -> Option<Vec<InsetValue>> {
+  match value {
+    PropertyValue::Multiple(values) => values.iter().map(extract_inset_value).collect(),
+    _ => extract_inset_value(value).map(|v| vec![v]),
+  }
+}
+
+fn apply_inset_values(
+  top: &mut InsetValue,
+  right: &mut InsetValue,
+  bottom: &mut InsetValue,
+  left: &mut InsetValue,
+  values: Vec<InsetValue>,
+) {
+  match values.len() {
+    1 => {
+      *top = values[0].clone();
+      *right = values[0].clone();
+      *bottom = values[0].clone();
+      *left = values[0].clone();
+    }
+    2 => {
+      *top = values[0].clone();
+      *bottom = values[0].clone();
+      *right = values[1].clone();
+      *left = values[1].clone();
+    }
+    3 => {
+      *top = values[0].clone();
+      *right = values[1].clone();
+      *left = values[1].clone();
+      *bottom = values[2].clone();
+    }
+    4 => {
+      *top = values[0].clone();
+      *right = values[1].clone();
+      *bottom = values[2].clone();
+      *left = values[3].clone();
+    }
+    _ => {}
+  }
+}
+
+fn extract_dashed_ident_list(value: &PropertyValue) -> Option<Vec<String>> {
+  let tokens: Vec<&str> = match value {
+    PropertyValue::Keyword(kw) => kw.split_whitespace().collect(),
+    PropertyValue::Multiple(parts) => {
+      let mut tokens = Vec::with_capacity(parts.len());
+      for part in parts {
+        match part {
+          PropertyValue::Keyword(kw) => tokens.push(kw.trim()),
+          _ => return None,
+        }
+      }
+      tokens
+    }
+    _ => return None,
+  };
+
+  if tokens.is_empty() {
+    return None;
+  }
+  let mut out = Vec::with_capacity(tokens.len());
+  for token in tokens {
+    if token.is_empty() {
+      return None;
+    }
+    if !token.starts_with("--") || token.len() <= 2 {
+      return None;
+    }
+    out.push(token.to_string());
+  }
+  Some(out)
 }
 
 pub fn extract_length_pair(value: &PropertyValue) -> Option<(Length, Length)> {
@@ -22822,10 +23081,10 @@ mod tests {
   #[test]
   fn inset_shorthand_accepts_calc_zero() {
     let mut style = ComputedStyle {
-      top: Some(Length::px(5.0)),
-      right: Some(Length::px(6.0)),
-      bottom: Some(Length::px(7.0)),
-      left: Some(Length::px(8.0)),
+      top: InsetValue::Length(Length::px(5.0)),
+      right: InsetValue::Length(Length::px(6.0)),
+      bottom: InsetValue::Length(Length::px(7.0)),
+      left: InsetValue::Length(Length::px(8.0)),
       ..ComputedStyle::default()
     };
 
@@ -22844,10 +23103,10 @@ mod tests {
       16.0,
     );
 
-    assert_eq!(style.top, Some(Length::px(0.0)));
-    assert_eq!(style.right, Some(Length::px(0.0)));
-    assert_eq!(style.bottom, Some(Length::px(0.0)));
-    assert_eq!(style.left, Some(Length::px(0.0)));
+    assert_eq!(style.top, InsetValue::Length(Length::px(0.0)));
+    assert_eq!(style.right, InsetValue::Length(Length::px(0.0)));
+    assert_eq!(style.bottom, InsetValue::Length(Length::px(0.0)));
+    assert_eq!(style.left, InsetValue::Length(Length::px(0.0)));
   }
 
   #[test]
@@ -27807,10 +28066,10 @@ mod tests {
       16.0,
       16.0,
     );
-    assert_eq!(style.top, Some(Length::px(0.0)));
-    assert_eq!(style.right, Some(Length::px(0.0)));
-    assert_eq!(style.bottom, Some(Length::px(0.0)));
-    assert_eq!(style.left, Some(Length::px(0.0)));
+    assert_eq!(style.top, InsetValue::Length(Length::px(0.0)));
+    assert_eq!(style.right, InsetValue::Length(Length::px(0.0)));
+    assert_eq!(style.bottom, InsetValue::Length(Length::px(0.0)));
+    assert_eq!(style.left, InsetValue::Length(Length::px(0.0)));
   }
 
   #[test]

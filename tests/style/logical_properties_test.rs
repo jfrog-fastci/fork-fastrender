@@ -7,6 +7,7 @@ use fastrender::style::properties::apply_declaration;
 use fastrender::style::properties::resolve_pending_logical_properties;
 use fastrender::style::types::BorderCornerRadius;
 use fastrender::style::types::Direction;
+use fastrender::style::types::InsetValue;
 use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -172,10 +173,10 @@ fn margin_and_inset_accept_calc_zero() {
     16.0,
     16.0,
   );
-  assert_eq!(style.top, Some(Length::px(0.0)));
-  assert_eq!(style.right, Some(Length::px(0.0)));
-  assert_eq!(style.bottom, Some(Length::px(0.0)));
-  assert_eq!(style.left, Some(Length::px(0.0)));
+  assert_eq!(style.top, InsetValue::Length(Length::px(0.0)));
+  assert_eq!(style.right, InsetValue::Length(Length::px(0.0)));
+  assert_eq!(style.bottom, InsetValue::Length(Length::px(0.0)));
+  assert_eq!(style.left, InsetValue::Length(Length::px(0.0)));
 }
 
 #[test]
@@ -394,8 +395,8 @@ fn logical_inset_maps_to_physical_sides() {
   resolve_pending_logical_properties(&mut style);
 
   // Vertical-rl: inline axis is vertical -> start at top, block axis horizontal right->left -> end is left.
-  assert_eq!(style.top, Some(Length::px(5.0)));
-  assert_eq!(style.left, Some(Length::px(7.0)));
+  assert_eq!(style.top, InsetValue::Length(Length::px(5.0)));
+  assert_eq!(style.left, InsetValue::Length(Length::px(7.0)));
 }
 
 #[test]

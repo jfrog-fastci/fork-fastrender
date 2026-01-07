@@ -6,7 +6,7 @@ use fastrender::layout::fragmentation::{
 };
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
-use fastrender::style::types::{BreakBetween, BreakInside, WritingMode};
+use fastrender::style::types::{BreakBetween, BreakInside, InsetValue, WritingMode};
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::{
@@ -731,7 +731,7 @@ fn sticky_offsets_apply_to_additional_fragments() {
 
   let mut sticky_style = ComputedStyle::default();
   sticky_style.position = Position::Sticky;
-  sticky_style.top = Some(Length::px(0.0));
+  sticky_style.top = InsetValue::Length(Length::px(0.0));
   sticky_style.height = Some(Length::px(20.0));
   let sticky = BoxNode::new_block(Arc::new(sticky_style), FormattingContextType::Block, vec![]);
 

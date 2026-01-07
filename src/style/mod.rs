@@ -148,6 +148,9 @@ use types::OutlineStyle;
 use types::Overflow;
 use types::OverflowAnchor;
 use types::OverflowWrap;
+use types::AnchorScope;
+use types::InsetValue;
+use types::PositionAnchor;
 use types::OverscrollBehavior;
 use types::PointerEvents;
 use types::Resize;
@@ -357,8 +360,8 @@ pub enum LogicalProperty {
   },
   Inset {
     axis: LogicalAxis,
-    start: Option<Option<Length>>,
-    end: Option<Option<Length>>,
+    start: Option<InsetValue>,
+    end: Option<InsetValue>,
   },
   BorderWidth {
     axis: LogicalAxis,
@@ -583,10 +586,16 @@ pub struct ComputedStyle {
   pub transition_timing_functions: Arc<[TransitionTimingFunction]>,
   /// Behaviors used by transitions (CSS Transitions Level 2).
   pub transition_behaviors: Arc<[TransitionBehavior]>,
-  pub top: Option<Length>,
-  pub right: Option<Length>,
-  pub bottom: Option<Length>,
-  pub left: Option<Length>,
+  /// Anchor names exposed by this element (CSS `anchor-name`).
+  pub anchor_names: Vec<String>,
+  /// Anchor scoping for this element's subtree (CSS `anchor-scope`).
+  pub anchor_scope: AnchorScope,
+  /// Default anchor element for this positioned box (CSS `position-anchor`).
+  pub position_anchor: PositionAnchor,
+  pub top: InsetValue,
+  pub right: InsetValue,
+  pub bottom: InsetValue,
+  pub left: InsetValue,
   pub float: Float,
   pub clear: Clear,
   pub shape_outside: ShapeOutside,
@@ -996,10 +1005,13 @@ impl Default for ComputedStyle {
       transition_delays: vec![0.0].into(),
       transition_timing_functions: vec![TransitionTimingFunction::Ease].into(),
       transition_behaviors: vec![TransitionBehavior::Normal].into(),
-      top: None,
-      right: None,
-      bottom: None,
-      left: None,
+      anchor_names: Vec::new(),
+      anchor_scope: AnchorScope::None,
+      position_anchor: PositionAnchor::None,
+      top: InsetValue::Auto,
+      right: InsetValue::Auto,
+      bottom: InsetValue::Auto,
+      left: InsetValue::Auto,
       float: Float::None,
       clear: Clear::None,
       shape_outside: ShapeOutside::None,

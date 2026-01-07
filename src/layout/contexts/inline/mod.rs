@@ -44,6 +44,7 @@ use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::layout::absolute_positioning::resolve_positioned_style;
+use crate::layout::absolute_positioning::resolve_positioned_style_with_anchors;
 use crate::layout::absolute_positioning::AbsoluteLayout;
 use crate::layout::absolute_positioning::AbsoluteLayoutInput;
 use crate::layout::constraints::AvailableSpace;
@@ -10361,6 +10362,9 @@ impl InlineFormattingContext {
 
     // Position out-of-flow abs/fixed children against the containing block.
     if !positioned_children.is_empty() {
+      let mut anchor_index =
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments(merged_children.as_slice());
+      anchor_index.insert_names(&style.anchor_names, Rect::new(Point::ZERO, bounds.size));
       let percentage_base_px = inline_percent_base.unwrap_or(available_inline);
       let padding_left = resolve_length_for_width(
         style.padding_left,
@@ -10552,10 +10556,10 @@ impl InlineFormattingContext {
         layout_child.id = box_id;
         let mut child_style = (*layout_child.style).clone();
         child_style.position = crate::style::position::Position::Relative;
-        child_style.top = None;
-        child_style.right = None;
-        child_style.bottom = None;
-        child_style.left = None;
+        child_style.top = crate::style::types::InsetValue::Auto;
+        child_style.right = crate::style::types::InsetValue::Auto;
+        child_style.bottom = crate::style::types::InsetValue::Auto;
+        child_style.left = crate::style::types::InsetValue::Auto;
         layout_child.style = Arc::new(child_style);
 
         let factory = if matches!(
@@ -10588,8 +10592,14 @@ impl InlineFormattingContext {
             .unwrap_or(AvailableSpace::Indefinite),
         );
         let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
-        let positioned_style =
-          resolve_positioned_style(&original_style, &child_cb, viewport_size, &font_context);
+        let anchors_for_cb = (child_cb == cb).then_some(&anchor_index);
+        let positioned_style = resolve_positioned_style_with_anchors(
+          &original_style,
+          &child_cb,
+          viewport_size,
+          &font_context,
+          anchors_for_cb,
+        );
         let is_replaced = child.is_replaced();
         let has_inline_keyword = original_style.width_keyword.is_some()
           || original_style.min_width_keyword.is_some()
@@ -13195,8 +13205,8 @@ mod tests {
       let mut style = ComputedStyle::default();
       style.font_size = 16.0;
       style.position = Position::Absolute;
-      style.left = Some(Length::px(idx as f32));
-      style.top = Some(Length::px(0.0));
+      style.left = crate::style::types::InsetValue::Length(Length::px(idx as f32));
+      style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
       style.width = Some(Length::px(1.0));
       style.height = Some(Length::px(1.0));
       style.width_keyword = None;
@@ -13265,9 +13275,9 @@ mod tests {
     abs_style.display = Display::Block;
     abs_style.font_size = 16.0;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::px(80.0));
-    abs_style.right = Some(Length::px(80.0));
-    abs_style.top = Some(Length::px(0.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(80.0));
+    abs_style.right = crate::style::types::InsetValue::Length(Length::px(80.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     abs_style.margin_left = None;
     abs_style.margin_right = None;
     abs_style.width = None;
@@ -13325,8 +13335,8 @@ mod tests {
       let mut style = ComputedStyle::default();
       style.font_size = 16.0;
       style.position = Position::Absolute;
-      style.left = Some(Length::px(idx as f32));
-      style.top = Some(Length::px(0.0));
+      style.left = crate::style::types::InsetValue::Length(Length::px(idx as f32));
+      style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
       style.width = Some(Length::px(1.0));
       style.height = Some(Length::px(1.0));
       style.width_keyword = None;
@@ -13395,8 +13405,8 @@ mod tests {
     abs_style.display = Display::Block;
     abs_style.font_size = 16.0;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::percent(50.0));
-    abs_style.top = Some(Length::px(0.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::percent(50.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(10.0));
     abs_style.width_keyword = None;
@@ -13442,8 +13452,8 @@ mod tests {
     fixed_style.display = Display::Block;
     fixed_style.font_size = 16.0;
     fixed_style.position = Position::Fixed;
-    fixed_style.left = Some(Length::percent(50.0));
-    fixed_style.top = Some(Length::px(0.0));
+    fixed_style.left = crate::style::types::InsetValue::Length(Length::percent(50.0));
+    fixed_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     fixed_style.width = Some(Length::px(10.0));
     fixed_style.height = Some(Length::px(10.0));
     fixed_style.width_keyword = None;
@@ -13495,8 +13505,8 @@ mod tests {
     abs_style.display = Display::Block;
     abs_style.font_size = 16.0;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::percent(50.0));
-    abs_style.top = Some(Length::px(0.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::percent(50.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(10.0));
     abs_style.width_keyword = None;
@@ -13546,8 +13556,8 @@ mod tests {
     fixed_style.display = Display::Block;
     fixed_style.font_size = 16.0;
     fixed_style.position = Position::Fixed;
-    fixed_style.left = Some(Length::percent(50.0));
-    fixed_style.top = Some(Length::px(0.0));
+    fixed_style.left = crate::style::types::InsetValue::Length(Length::percent(50.0));
+    fixed_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     fixed_style.width = Some(Length::px(10.0));
     fixed_style.height = Some(Length::px(10.0));
     fixed_style.width_keyword = None;
@@ -21299,8 +21309,8 @@ mod tests {
 
     let mut abs_style = ComputedStyle::default();
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::px(5.0));
-    abs_style.top = Some(Length::px(7.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(5.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(7.0));
     abs_style.width = Some(Length::px(6.0));
     abs_style.height = Some(Length::px(6.0));
     abs_style.width_keyword = None;

@@ -122,6 +122,35 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut FxHasher) {
   }
 }
 
+fn hash_anchor_function(
+  func: &crate::style::types::AnchorFunction,
+  hasher: &mut FxHasher,
+) {
+  match &func.name {
+    Some(name) => {
+      1u8.hash(hasher);
+      name.hash(hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+  hash_enum_discriminant(&func.side, hasher);
+  hash_option_length(&func.fallback, hasher);
+}
+
+fn hash_inset_value(value: &crate::style::types::InsetValue, hasher: &mut FxHasher) {
+  match value {
+    crate::style::types::InsetValue::Auto => 0u8.hash(hasher),
+    crate::style::types::InsetValue::Length(len) => {
+      1u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+    crate::style::types::InsetValue::Anchor(func) => {
+      2u8.hash(hasher);
+      hash_anchor_function(func, hasher);
+    }
+  }
+}
+
 fn hash_intrinsic_size_keyword(keyword: &IntrinsicSizeKeyword, hasher: &mut FxHasher) {
   hash_enum_discriminant(keyword, hasher);
   if let IntrinsicSizeKeyword::FitContent { limit } = keyword {
@@ -152,10 +181,10 @@ fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   let mut h = FxHasher::default();
   hash_enum_discriminant(&style.display, &mut h);
   hash_enum_discriminant(&style.position, &mut h);
-  hash_option_length(&style.top, &mut h);
-  hash_option_length(&style.right, &mut h);
-  hash_option_length(&style.bottom, &mut h);
-  hash_option_length(&style.left, &mut h);
+  hash_inset_value(&style.top, &mut h);
+  hash_inset_value(&style.right, &mut h);
+  hash_inset_value(&style.bottom, &mut h);
+  hash_inset_value(&style.left, &mut h);
   hash_enum_discriminant(&style.float, &mut h);
   hash_enum_discriminant(&style.clear, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);

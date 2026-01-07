@@ -8,6 +8,7 @@ use fastrender::render_control::{RenderDeadline, StageGuard};
 use fastrender::snapshot_fragment_tree;
 use fastrender::style::display::Display;
 use fastrender::style::position::Position;
+use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::text::font_loader::FontContext;
@@ -221,8 +222,8 @@ fn build_flex_container(children: usize) -> BoxNode {
 
   let mut overlay_style = (*item_style).clone();
   overlay_style.position = Position::Absolute;
-  overlay_style.top = Some(Length::px(6.0));
-  overlay_style.left = Some(Length::px(8.0));
+  overlay_style.top = InsetValue::Length(Length::px(6.0));
+  overlay_style.left = InsetValue::Length(Length::px(8.0));
   let overlay_style = Arc::new(overlay_style);
   let overlay_text = BoxNode::new_text(overlay_style.clone(), "overlay".to_string());
   items.push(BoxNode::new_block(

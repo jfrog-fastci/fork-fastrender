@@ -5,6 +5,7 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
+use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -26,7 +27,7 @@ fn nested_absolute_descendant_uses_positioned_parent_padding_block_in_block_layo
 
   let mut child_style = ComputedStyle::default();
   child_style.position = Position::Absolute;
-  child_style.left = Some(Length::percent(50.0));
+  child_style.left = InsetValue::Length(Length::percent(50.0));
   child_style.width = Some(Length::px(10.0));
   child_style.height = Some(Length::px(10.0));
 
@@ -81,7 +82,7 @@ fn nested_absolute_descendant_uses_positioned_parent_padding_block_in_flex_layou
 
   let mut child_style = ComputedStyle::default();
   child_style.position = Position::Absolute;
-  child_style.left = Some(Length::percent(50.0));
+  child_style.left = InsetValue::Length(Length::percent(50.0));
   child_style.width = Some(Length::px(8.0));
   child_style.height = Some(Length::px(8.0));
 
@@ -130,9 +131,9 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_block_layout() {
 
   let mut img_style = ComputedStyle::default();
   img_style.position = Position::Absolute;
-  img_style.left = Some(Length::px(10.0));
-  img_style.right = Some(Length::px(10.0));
-  img_style.top = Some(Length::px(0.0));
+  img_style.left = InsetValue::Length(Length::px(10.0));
+  img_style.right = InsetValue::Length(Length::px(10.0));
+  img_style.top = InsetValue::Length(Length::px(0.0));
 
   let img = BoxNode::new_replaced(
     Arc::new(img_style),
@@ -182,9 +183,9 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_flex_layout() {
 
   let mut img_style = ComputedStyle::default();
   img_style.position = Position::Absolute;
-  img_style.left = Some(Length::px(10.0));
-  img_style.right = Some(Length::px(10.0));
-  img_style.top = Some(Length::px(0.0));
+  img_style.left = InsetValue::Length(Length::px(10.0));
+  img_style.right = InsetValue::Length(Length::px(10.0));
+  img_style.top = InsetValue::Length(Length::px(0.0));
 
   let img = BoxNode::new_replaced(
     Arc::new(img_style),

@@ -22,6 +22,7 @@ use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::Direction;
 use fastrender::style::types::FontSizeAdjust;
 use fastrender::style::types::FontSizeAdjustMetric;
+use fastrender::style::types::InsetValue;
 use fastrender::style::types::IntrinsicSizeKeyword;
 use fastrender::style::types::WritingMode;
 use fastrender::text::font_loader::FontContext;
@@ -311,8 +312,8 @@ fn absolute_inline_child_reflows_to_used_width() {
 
   let mut abs_style = ComputedStyle::default();
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(70.0));
-  abs_style.right = Some(Length::px(70.0));
+  abs_style.left = InsetValue::Length(Length::px(70.0));
+  abs_style.right = InsetValue::Length(Length::px(70.0));
   abs_style.font_size = 10.0;
   let abs_style = Arc::new(abs_style);
 
@@ -378,8 +379,8 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
 
   let mut abs_style = ComputedStyle::default();
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(70.0));
-  abs_style.right = Some(Length::px(70.0));
+  abs_style.left = InsetValue::Length(Length::px(70.0));
+  abs_style.right = InsetValue::Length(Length::px(70.0));
   abs_style.width = None;
   abs_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
   abs_style.font_size = 10.0;
@@ -413,10 +414,10 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
   let mut intrinsic_child = abs_child.clone();
   let mut intrinsic_style = (*intrinsic_child.style).clone();
   intrinsic_style.position = Position::Relative;
-  intrinsic_style.top = None;
-  intrinsic_style.right = None;
-  intrinsic_style.bottom = None;
-  intrinsic_style.left = None;
+  intrinsic_style.top = InsetValue::Auto;
+  intrinsic_style.right = InsetValue::Auto;
+  intrinsic_style.bottom = InsetValue::Auto;
+  intrinsic_style.left = InsetValue::Auto;
   intrinsic_child.style = Arc::new(intrinsic_style);
 
   let constraints = LayoutConstraints::definite_width(200.0);
@@ -463,8 +464,8 @@ fn absolute_flex_child_reflows_to_used_width() {
 
   let mut abs_style = ComputedStyle::default();
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(60.0));
-  abs_style.right = Some(Length::px(60.0));
+  abs_style.left = InsetValue::Length(Length::px(60.0));
+  abs_style.right = InsetValue::Length(Length::px(60.0));
   abs_style.font_size = 10.0;
   let abs_style = Arc::new(abs_style);
 
@@ -527,8 +528,8 @@ fn absolute_grid_child_reflows_to_used_width() {
 
   let mut abs_style = ComputedStyle::default();
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(60.0));
-  abs_style.right = Some(Length::px(60.0));
+  abs_style.left = InsetValue::Length(Length::px(60.0));
+  abs_style.right = InsetValue::Length(Length::px(60.0));
   abs_style.font_size = 10.0;
   let abs_style = Arc::new(abs_style);
 

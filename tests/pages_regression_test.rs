@@ -84,6 +84,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "anchor_positioning_basic",
+    html: "anchor_positioning_basic/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "table_financial",
     html: "table_financial/index.html",
     shots: DEFAULT_SHOTS,

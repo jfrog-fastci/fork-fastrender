@@ -12,6 +12,7 @@ use fastrender::geometry::Point;
 use fastrender::geometry::Rect;
 use fastrender::geometry::Size;
 use fastrender::style::types::Direction;
+use fastrender::style::types::InsetValue;
 use fastrender::AbsoluteLayout;
 use fastrender::AbsoluteLayoutInput;
 use fastrender::AbsoluteLayoutResult;
@@ -719,8 +720,8 @@ fn test_absolute_explicit_zero_margins_do_not_center() {
 
   let mut style = ComputedStyle::default();
   style.position = Position::Absolute;
-  style.left = Some(Length::px(0.0));
-  style.right = Some(Length::px(0.0));
+  style.left = InsetValue::Length(Length::px(0.0));
+  style.right = InsetValue::Length(Length::px(0.0));
   style.width = Some(Length::px(100.0));
   style.margin_left = Some(Length::px(0.0));
   style.margin_right = Some(Length::px(0.0));
@@ -746,8 +747,8 @@ fn test_absolute_auto_margins_center_horizontally() {
 
   let mut style = ComputedStyle::default();
   style.position = Position::Absolute;
-  style.left = Some(Length::px(0.0));
-  style.right = Some(Length::px(0.0));
+  style.left = InsetValue::Length(Length::px(0.0));
+  style.right = InsetValue::Length(Length::px(0.0));
   style.width = Some(Length::px(100.0));
   style.margin_left = None;
   style.margin_right = None;
@@ -773,8 +774,8 @@ fn test_absolute_single_auto_margin_takes_remaining_space() {
 
   let mut style = ComputedStyle::default();
   style.position = Position::Absolute;
-  style.left = Some(Length::px(30.0));
-  style.right = Some(Length::px(40.0));
+  style.left = InsetValue::Length(Length::px(30.0));
+  style.right = InsetValue::Length(Length::px(40.0));
   style.width = Some(Length::px(100.0));
   style.margin_left = Some(Length::px(20.0));
   style.margin_right = None;
@@ -799,8 +800,8 @@ fn test_absolute_vertical_auto_margins_center() {
 
   let mut style = ComputedStyle::default();
   style.position = Position::Absolute;
-  style.top = Some(Length::px(10.0));
-  style.bottom = Some(Length::px(10.0));
+  style.top = InsetValue::Length(Length::px(10.0));
+  style.bottom = InsetValue::Length(Length::px(10.0));
   style.height = Some(Length::px(50.0));
   style.margin_top = None;
   style.margin_bottom = None;
@@ -826,8 +827,8 @@ fn test_absolute_overconstrained_with_auto_margins_centers() {
 
   let mut style = ComputedStyle::default();
   style.position = Position::Absolute;
-  style.left = Some(Length::px(20.0));
-  style.right = Some(Length::px(30.0));
+  style.left = InsetValue::Length(Length::px(20.0));
+  style.right = InsetValue::Length(Length::px(30.0));
   style.width = Some(Length::px(100.0));
   // Auto margins (None) should absorb remaining space even when left/right/width are specified.
   style.margin_left = None;

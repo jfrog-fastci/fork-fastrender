@@ -54,6 +54,7 @@ use crate::geometry::Size;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
+use crate::layout::anchor_positioning::AnchorIndex;
 use crate::layout::utils::content_size_from_box_sizing;
 use crate::layout::utils::resolve_font_relative_length_for_positioned;
 use crate::layout::utils::resolve_offset_for_positioned;
@@ -1544,8 +1545,8 @@ impl AbsoluteLayout {
 
     let mut style = ComputedStyle::default();
     style.position = Position::Absolute;
-    style.left = Some(Length::px(0.0));
-    style.top = Some(Length::px(0.0));
+    style.left = crate::style::types::InsetValue::Length(Length::px(0.0));
+    style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     style.width = Some(Length::px(50.0));
     style.height = Some(Length::px(50.0));
     style.width_keyword = None;
@@ -2209,14 +2210,89 @@ pub fn resolve_positioned_style(
   viewport: Size,
   font_context: &FontContext,
 ) -> PositionedStyle {
+  resolve_positioned_style_with_anchors(
+    style,
+    containing_block,
+    viewport,
+    font_context,
+    None,
+  )
+}
+
+/// Resolve a computed style into a positioned style with pixel-resolved edges.
+///
+/// When `anchors` is provided, `anchor()` inset functions are resolved using the collected
+/// anchor rectangles.
+pub(crate) fn resolve_positioned_style_with_anchors(
+  style: &ComputedStyle,
+  containing_block: &ContainingBlock,
+  viewport: Size,
+  font_context: &FontContext,
+  anchors: Option<&AnchorIndex>,
+) -> PositionedStyle {
   let mut resolved = PositionedStyle::default();
   resolved.position = style.position;
-  resolved.left = style.left.map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
-  resolved.right = style.right.map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
-  resolved.top = style.top.map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
-  resolved.bottom = style
-    .bottom
-    .map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
+  #[derive(Clone, Copy)]
+  enum InsetEdge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+  }
+
+  let fallback_or_auto = |func: &crate::style::types::AnchorFunction| -> LengthOrAuto {
+    func
+      .fallback
+      .as_ref()
+      .copied()
+      .map_or(LengthOrAuto::Auto, LengthOrAuto::Length)
+  };
+
+  let resolve_anchor_inset = |func: &crate::style::types::AnchorFunction,
+                               edge: InsetEdge|
+   -> Option<f32> {
+    let anchor_name = func.name.as_deref().or_else(|| match &style.position_anchor {
+      crate::style::types::PositionAnchor::Name(name) => Some(name.as_str()),
+      _ => None,
+    })?;
+    let anchor_rect = anchors?.get(anchor_name)?;
+    let cb_rect = containing_block.rect;
+
+    let axis_value = match (edge, func.side) {
+      (InsetEdge::Top, crate::style::types::AnchorSide::Top) => Some(anchor_rect.y()),
+      (InsetEdge::Top, crate::style::types::AnchorSide::Bottom) => Some(anchor_rect.max_y()),
+      (InsetEdge::Bottom, crate::style::types::AnchorSide::Top) => Some(anchor_rect.y()),
+      (InsetEdge::Bottom, crate::style::types::AnchorSide::Bottom) => Some(anchor_rect.max_y()),
+      (InsetEdge::Left, crate::style::types::AnchorSide::Left) => Some(anchor_rect.x()),
+      (InsetEdge::Left, crate::style::types::AnchorSide::Right) => Some(anchor_rect.max_x()),
+      (InsetEdge::Right, crate::style::types::AnchorSide::Left) => Some(anchor_rect.x()),
+      (InsetEdge::Right, crate::style::types::AnchorSide::Right) => Some(anchor_rect.max_x()),
+      _ => None,
+    }?;
+
+    let inset = match edge {
+      InsetEdge::Top => axis_value - cb_rect.y(),
+      InsetEdge::Bottom => cb_rect.max_y() - axis_value,
+      InsetEdge::Left => axis_value - cb_rect.x(),
+      InsetEdge::Right => cb_rect.max_x() - axis_value,
+    };
+
+    inset.is_finite().then_some(inset)
+  };
+
+  let inset_to_offset = |value: &crate::style::types::InsetValue, edge: InsetEdge| -> LengthOrAuto {
+    match value {
+      crate::style::types::InsetValue::Auto => LengthOrAuto::Auto,
+      crate::style::types::InsetValue::Length(len) => LengthOrAuto::Length(*len),
+      crate::style::types::InsetValue::Anchor(func) => resolve_anchor_inset(func, edge)
+        .map(|px| LengthOrAuto::Length(Length::px(px)))
+        .unwrap_or_else(|| fallback_or_auto(func)),
+    }
+  };
+  resolved.left = inset_to_offset(&style.left, InsetEdge::Left);
+  resolved.right = inset_to_offset(&style.right, InsetEdge::Right);
+  resolved.top = inset_to_offset(&style.top, InsetEdge::Top);
+  resolved.bottom = inset_to_offset(&style.bottom, InsetEdge::Bottom);
   resolved.width = style.width.map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
   resolved.width_keyword = style.width_keyword;
   resolved.height = style

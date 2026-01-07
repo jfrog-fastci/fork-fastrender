@@ -161,7 +161,18 @@ then
   fi
 fi
 
+prlimit_ok=0
 if command -v prlimit >/dev/null 2>&1; then
+  # Some CI/container environments ship a broken `prlimit` binary that immediately segfaults. Run a
+  # cheap self-test and fall back to `ulimit` when `prlimit` is unusable.
+  #
+  # Use explicit byte counts to avoid any suffix parsing differences across `prlimit` builds.
+  if prlimit --as=67108864 --cpu=1 -- true >/dev/null 2>&1; then
+    prlimit_ok=1
+  fi
+fi
+
+if [[ "${prlimit_ok}" -eq 1 ]]; then
   # Apply limits to the current process (inherited by `exec`). We normalize size inputs to bytes
   # because `prlimit` expects byte counts and some builds mis-handle suffix parsing.
   pl=(prlimit --pid $$)

@@ -498,10 +498,10 @@ fn snapshot_style(style: &ComputedStyle) -> StyleSnapshot {
     opacity: style.opacity,
     overflow_x: format_overflow(style.overflow_x),
     overflow_y: format_overflow(style.overflow_y),
-    top: format_length_opt(style.top.as_ref()),
-    right: format_length_opt(style.right.as_ref()),
-    bottom: format_length_opt(style.bottom.as_ref()),
-    left: format_length_opt(style.left.as_ref()),
+    top: format_inset_value(&style.top),
+    right: format_inset_value(&style.right),
+    bottom: format_inset_value(&style.bottom),
+    left: format_inset_value(&style.left),
     margin: EdgeSnapshot {
       top: format_length_opt(style.margin_top.as_ref()),
       right: format_length_opt(style.margin_right.as_ref()),
@@ -539,6 +539,33 @@ fn format_length_opt(value: Option<&Length>) -> String {
   match value {
     Some(len) => format_length(len),
     None => "auto".to_string(),
+  }
+}
+
+fn format_inset_value(value: &crate::style::types::InsetValue) -> String {
+  match value {
+    crate::style::types::InsetValue::Auto => "auto".to_string(),
+    crate::style::types::InsetValue::Length(len) => format_length(len),
+    crate::style::types::InsetValue::Anchor(anchor) => {
+      let side = match anchor.side {
+        crate::style::types::AnchorSide::Top => "top",
+        crate::style::types::AnchorSide::Right => "right",
+        crate::style::types::AnchorSide::Bottom => "bottom",
+        crate::style::types::AnchorSide::Left => "left",
+      };
+      let mut out = String::from("anchor(");
+      if let Some(name) = &anchor.name {
+        out.push_str(name);
+        out.push(' ');
+      }
+      out.push_str(side);
+      if let Some(fallback) = anchor.fallback {
+        out.push_str(", ");
+        out.push_str(&format_length(&fallback));
+      }
+      out.push(')');
+      out
+    }
   }
 }
 

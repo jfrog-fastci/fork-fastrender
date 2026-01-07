@@ -31,7 +31,6 @@ use crate::error::{Error, RenderError, RenderStage};
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
-use crate::layout::absolute_positioning::resolve_positioned_style;
 use crate::layout::absolute_positioning::AbsoluteLayout;
 use crate::layout::absolute_positioning::AbsoluteLayoutInput;
 use crate::layout::constraints::AvailableSpace;
@@ -5603,6 +5602,14 @@ impl FormattingContext for TableFormattingContext {
       if positioned_children.is_empty() {
         return Ok(());
       }
+      let mut anchor_index =
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments(fragment.children_ref());
+      if let Some(style) = fragment.style.as_ref() {
+        anchor_index.insert_names(
+          &style.anchor_names,
+          Rect::new(Point::ZERO, fragment.bounds.size),
+        );
+      }
       let abs = AbsoluteLayout::with_font_context(self.factory.font_context().clone());
       // `FormattingContextFactory::with_positioned_cb` and `with_fixed_cb` reset the per-factory
       // cached formatting contexts store. Build factory variants once so we can reuse cached
@@ -5622,10 +5629,10 @@ impl FormattingContext for TableFormattingContext {
         let original_style = child.style.clone();
         let mut static_style = (*child.style).clone();
         static_style.position = crate::style::position::Position::Relative;
-        static_style.top = None;
-        static_style.right = None;
-        static_style.bottom = None;
-        static_style.left = None;
+        static_style.top = crate::style::types::InsetValue::Auto;
+        static_style.right = crate::style::types::InsetValue::Auto;
+        static_style.bottom = crate::style::types::InsetValue::Auto;
+        static_style.left = crate::style::types::InsetValue::Auto;
         let static_style = Arc::new(static_style);
 
         let cb = match child.style.position {
@@ -5640,11 +5647,12 @@ impl FormattingContext for TableFormattingContext {
           AvailableSpace::Definite(cb.rect.size.width),
           AvailableSpace::Definite(cb.rect.size.height),
         );
-        let positioned_style = resolve_positioned_style(
+        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &child.style,
           &cb,
           self.viewport_size,
           self.factory.font_context(),
+          Some(&anchor_index),
         );
         let is_replaced = child.is_replaced();
         let has_inline_keyword = positioned_style.width_keyword.is_some()
@@ -13515,8 +13523,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::px(5.0));
-    abs_style.top = Some(Length::px(7.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(5.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(7.0));
     abs_style.width = Some(Length::px(12.0));
     abs_style.height = Some(Length::px(9.0));
     abs_style.width_keyword = None;
@@ -17214,8 +17222,8 @@ mod tests {
     let mut positioned_style = ComputedStyle::default();
     positioned_style.display = Display::Block;
     positioned_style.position = Position::Absolute;
-    positioned_style.left = Some(Length::px(5.0));
-    positioned_style.top = Some(Length::px(7.0));
+    positioned_style.left = crate::style::types::InsetValue::Length(Length::px(5.0));
+    positioned_style.top = crate::style::types::InsetValue::Length(Length::px(7.0));
     positioned_style.width = Some(Length::px(7.0));
     positioned_style.height = Some(Length::px(3.0));
     positioned_style.width_keyword = None;

@@ -7,7 +7,7 @@ use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::paint::painter::paint_tree_display_list_with_resources_scaled_offset;
 use fastrender::scroll::ScrollState;
 use fastrender::style::color::Rgba;
-use fastrender::style::types::Overflow;
+use fastrender::style::types::{InsetValue, Overflow};
 use fastrender::style::ComputedStyle;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::box_tree::BoxNode;
@@ -99,7 +99,7 @@ fn element_scroll_translates_descendants() {
 fn sticky_offsets_use_element_scroll_containers() {
   let mut sticky_style = ComputedStyle::default();
   sticky_style.position = Position::Sticky;
-  sticky_style.top = Some(Length::px(0.0));
+  sticky_style.top = InsetValue::Length(Length::px(0.0));
   let sticky_style = Arc::new(sticky_style);
 
   let mut scroller_style = ComputedStyle::default();

@@ -1,0 +1,68 @@
+//! CSS Anchor Positioning (css-anchor-position-1) helpers.
+//!
+//! This module provides the minimal plumbing needed to support `anchor()` inside inset
+//! properties (`top/right/bottom/left`).
+//!
+//! Baseline semantics:
+//! - Anchors are collected from the already-laid-out fragment subtree that is available when
+//!   positioning out-of-flow children (absolute/fixed).
+//! - The anchor rectangle is the fragment's border box (`FragmentNode::bounds`).
+//! - If multiple fragments expose the same anchor name, the **last fragment visited** wins. This
+//!   matches the spec's "last in tree order wins" rule for multiple anchors with the same name and
+//!   provides a deterministic policy for fragmentation (we currently do not attempt to merge
+//!   fragmented boxes).
+//! - Scoping (`anchor-scope`) is parsed/stored on styles but not enforced yet; callers decide which
+//!   fragment subtree to index.
+
+use crate::geometry::Point;
+use crate::geometry::Rect;
+use crate::tree::fragment_tree::FragmentNode;
+use std::collections::HashMap;
+
+/// Lookup table mapping `anchor-name` identifiers (e.g. `--tooltip`) to anchor rectangles.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct AnchorIndex {
+  by_name: HashMap<String, Rect>,
+}
+
+impl AnchorIndex {
+  pub(crate) fn new() -> Self {
+    Self {
+      by_name: HashMap::new(),
+    }
+  }
+
+  pub(crate) fn from_fragments(fragments: &[FragmentNode]) -> Self {
+    let mut index = Self::new();
+    index.collect_from_fragments(fragments, Point::ZERO);
+    index
+  }
+
+  pub(crate) fn get(&self, name: &str) -> Option<Rect> {
+    self.by_name.get(name).copied()
+  }
+
+  pub(crate) fn insert_names(&mut self, names: &[String], rect: Rect) {
+    for name in names {
+      self.by_name.insert(name.clone(), rect);
+    }
+  }
+
+  fn collect_from_fragments(&mut self, fragments: &[FragmentNode], parent_origin: Point) {
+    for fragment in fragments {
+      self.collect_from_fragment(fragment, parent_origin);
+    }
+  }
+
+  fn collect_from_fragment(&mut self, fragment: &FragmentNode, parent_origin: Point) {
+    let abs_bounds = fragment.bounds.translate(parent_origin);
+
+    if let Some(style) = fragment.style.as_ref() {
+      self.insert_names(&style.anchor_names, abs_bounds);
+    }
+
+    let child_origin = parent_origin.translate(fragment.bounds.origin);
+    self.collect_from_fragments(fragment.children.as_ref(), child_origin);
+  }
+}
+

@@ -26,6 +26,7 @@ use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::layout::absolute_positioning::resolve_positioned_style;
+use crate::layout::absolute_positioning::resolve_positioned_style_with_anchors;
 use crate::layout::absolute_positioning::AbsoluteLayout;
 use crate::layout::absolute_positioning::AbsoluteLayoutInput;
 use crate::layout::axis::{FragmentAxes, PhysicalAxis};
@@ -3467,6 +3468,12 @@ impl FormattingContext for FlexFormattingContext {
         Some(padding_rect.size.width),
         block_base,
       );
+      let mut anchor_index =
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments(fragment.children_ref());
+      anchor_index.insert_names(
+        &box_node.style.anchor_names,
+        Rect::new(Point::ZERO, fragment.bounds.size),
+      );
       let cb_for_absolute = if establishes_abs_cb {
         padding_cb
       } else {
@@ -3506,10 +3513,10 @@ impl FormattingContext for FlexFormattingContext {
         let mut layout_child = child.clone();
         let mut style = (*layout_child.style).clone();
         style.position = crate::style::position::Position::Relative;
-        style.top = None;
-        style.right = None;
-        style.bottom = None;
-        style.left = None;
+        style.top = crate::style::types::InsetValue::Auto;
+        style.right = crate::style::types::InsetValue::Auto;
+        style.bottom = crate::style::types::InsetValue::Auto;
+        style.left = crate::style::types::InsetValue::Auto;
         // Keep a distinct style Arc so cache keys that hash the style fingerprint do not share
         // entries with the real positioned variant.
         layout_child.style = Arc::new(style);
@@ -3526,8 +3533,14 @@ impl FormattingContext for FlexFormattingContext {
         );
         let child_fragment = fc.layout(&layout_child, &child_constraints)?;
 
-        let positioned_style =
-          resolve_positioned_style(&original_style, &cb, self.viewport_size, &self.font_context);
+        let anchors_for_cb = (cb == padding_cb).then_some(&anchor_index);
+        let positioned_style = resolve_positioned_style_with_anchors(
+          &original_style,
+          &cb,
+          self.viewport_size,
+          &self.font_context,
+          anchors_for_cb,
+        );
         let has_inline_keyword = positioned_style.width_keyword.is_some()
           || positioned_style.min_width_keyword.is_some()
           || positioned_style.max_width_keyword.is_some();
@@ -11043,8 +11056,8 @@ mod tests {
         let mut child_style = ComputedStyle::default();
         child_style.display = Display::Block;
         child_style.position = Position::Relative;
-        child_style.left = Some(Length::px(9.0));
-        child_style.top = Some(Length::px(11.0));
+        child_style.left = crate::style::types::InsetValue::Length(Length::px(9.0));
+        child_style.top = crate::style::types::InsetValue::Length(Length::px(11.0));
         child_style.width = Some(Length::px(40.0));
         child_style.height = Some(Length::px(20.0));
         child_style.width_keyword = None;
@@ -11226,8 +11239,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::px(5.0));
-    abs_style.top = Some(Length::px(7.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(5.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(7.0));
     abs_style.width = Some(Length::px(20.0));
     abs_style.height = Some(Length::px(10.0));
     abs_style.width_keyword = None;
@@ -11255,8 +11268,14 @@ mod tests {
     assert_eq!(abs_fragment.bounds.height(), 10.0);
     let abs_fragment_style = abs_fragment.style.as_ref().expect("abs style preserved");
     assert_eq!(abs_fragment_style.position, Position::Absolute);
-    assert_eq!(abs_fragment_style.left, Some(Length::px(5.0)));
-    assert_eq!(abs_fragment_style.top, Some(Length::px(7.0)));
+    assert_eq!(
+      abs_fragment_style.left,
+      crate::style::types::InsetValue::Length(Length::px(5.0))
+    );
+    assert_eq!(
+      abs_fragment_style.top,
+      crate::style::types::InsetValue::Length(Length::px(7.0))
+    );
   }
 
   #[test]
@@ -11268,8 +11287,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::px(5.0));
-    abs_style.top = Some(Length::px(7.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(5.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(7.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(6.0));
     abs_style.width_keyword = None;
@@ -11301,8 +11320,14 @@ mod tests {
     assert_eq!(abs_fragment.bounds.y(), 37.0);
     let abs_fragment_style = abs_fragment.style.as_ref().expect("abs style preserved");
     assert_eq!(abs_fragment_style.position, Position::Absolute);
-    assert_eq!(abs_fragment_style.left, Some(Length::px(5.0)));
-    assert_eq!(abs_fragment_style.top, Some(Length::px(7.0)));
+    assert_eq!(
+      abs_fragment_style.left,
+      crate::style::types::InsetValue::Length(Length::px(5.0))
+    );
+    assert_eq!(
+      abs_fragment_style.top,
+      crate::style::types::InsetValue::Length(Length::px(7.0))
+    );
   }
 
   #[test]

@@ -3,7 +3,7 @@ use fastrender::dom;
 use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
-use fastrender::style::types::BorderStyle;
+use fastrender::style::types::{BorderStyle, InsetValue};
 use fastrender::{Length, Rgba};
 
 fn find_by_tag<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
@@ -29,10 +29,10 @@ fn parses_inset_shorthand_four_values() {
   let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
   let div = find_by_tag(&styled, "div").expect("div present");
 
-  assert_eq!(div.styles.top, Some(Length::px(1.0)));
-  assert_eq!(div.styles.right, Some(Length::px(2.0)));
-  assert_eq!(div.styles.bottom, Some(Length::px(3.0)));
-  assert_eq!(div.styles.left, Some(Length::px(4.0)));
+  assert_eq!(div.styles.top, InsetValue::Length(Length::px(1.0)));
+  assert_eq!(div.styles.right, InsetValue::Length(Length::px(2.0)));
+  assert_eq!(div.styles.bottom, InsetValue::Length(Length::px(3.0)));
+  assert_eq!(div.styles.left, InsetValue::Length(Length::px(4.0)));
 }
 
 #[test]

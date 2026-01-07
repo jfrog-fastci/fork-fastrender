@@ -5,7 +5,7 @@ use fastrender::layout::formatting_context::IntrinsicSizingMode;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
-use fastrender::style::types::IntrinsicSizeKeyword;
+use fastrender::style::types::{InsetValue, IntrinsicSizeKeyword};
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -51,8 +51,8 @@ fn abspos_width_max_content_shrinkwraps_text() {
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(0.0));
-  abs_style.top = Some(Length::px(0.0));
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
   abs_style.width = None;
   abs_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
 
@@ -106,9 +106,9 @@ fn abspos_width_fit_content_clamps_to_available_between_insets() {
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
   abs_style.position = Position::Absolute;
-  abs_style.left = Some(Length::px(left));
-  abs_style.right = Some(Length::px(right));
-  abs_style.top = Some(Length::px(0.0));
+  abs_style.left = InsetValue::Length(Length::px(left));
+  abs_style.right = InsetValue::Length(Length::px(right));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
   abs_style.width = None;
   abs_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
 

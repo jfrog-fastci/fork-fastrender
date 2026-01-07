@@ -1438,6 +1438,14 @@ impl BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
+      let mut anchor_index = crate::layout::anchor_positioning::AnchorIndex::from_fragments(
+        child_fragments.as_slice(),
+      );
+      // Allow descendants to anchor against the containing block element itself.
+      anchor_index.insert_names(
+        &style.anchor_names,
+        Rect::from_xywh(0.0, 0.0, box_width, box_height),
+      );
       let padding_origin = Point::new(computed_width.border_left, border_top);
       let padding_size = Size::new(
         computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
@@ -1501,10 +1509,10 @@ impl BlockFormattingContext {
         // Layout the child as if it were in normal flow to obtain its intrinsic size.
         let mut static_style = (*pos_child.style).clone();
         static_style.position = Position::Relative;
-        static_style.top = None;
-        static_style.right = None;
-        static_style.bottom = None;
-        static_style.left = None;
+        static_style.top = crate::style::types::InsetValue::Auto;
+        static_style.right = crate::style::types::InsetValue::Auto;
+        static_style.bottom = crate::style::types::InsetValue::Auto;
+        static_style.left = crate::style::types::InsetValue::Auto;
         let static_style = Arc::new(static_style);
 
         let fc_type = pos_child
@@ -1521,11 +1529,13 @@ impl BlockFormattingContext {
         );
 
         // Resolve positioned style against the containing block.
-        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
+        let anchors_for_cb = (cb == parent_padding_cb).then_some(&anchor_index);
+        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &pos_child.style,
           &cb,
           self.viewport_size,
           &self.font_context,
+          anchors_for_cb,
         );
 
         let mut static_pos = static_position.unwrap_or(Point::ZERO);
@@ -5587,6 +5597,14 @@ impl FormattingContext for BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
+      let mut anchor_index = crate::layout::anchor_positioning::AnchorIndex::from_fragments(
+        child_fragments.as_slice(),
+      );
+      // Allow descendants to anchor against the containing block element itself.
+      anchor_index.insert_names(
+        &style.anchor_names,
+        Rect::from_xywh(0.0, 0.0, box_width, box_height),
+      );
       let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
         padding_rect,
         self.viewport_size,
@@ -5633,10 +5651,10 @@ impl FormattingContext for BlockFormattingContext {
         // Layout the child as if it were in normal flow to obtain its intrinsic size.
         let mut static_style = (*child.style).clone();
         static_style.position = Position::Relative;
-        static_style.top = None;
-        static_style.right = None;
-        static_style.bottom = None;
-        static_style.left = None;
+        static_style.top = crate::style::types::InsetValue::Auto;
+        static_style.right = crate::style::types::InsetValue::Auto;
+        static_style.bottom = crate::style::types::InsetValue::Auto;
+        static_style.left = crate::style::types::InsetValue::Auto;
         let static_style = Arc::new(static_style);
 
         let fc_type = child
@@ -5653,11 +5671,13 @@ impl FormattingContext for BlockFormattingContext {
         );
 
         // Resolve positioned style against the containing block.
-        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
+        let anchors_for_cb = (cb == parent_padding_cb).then_some(&anchor_index);
+        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &original_style,
           &cb,
           self.viewport_size,
           &self.font_context,
+          anchors_for_cb,
         );
 
         let mut static_pos = static_position.unwrap_or(Point::ZERO);
@@ -7916,8 +7936,8 @@ mod tests {
     let mut relative_style = ComputedStyle::default();
     relative_style.display = Display::Block;
     relative_style.position = Position::Relative;
-    relative_style.left = Some(Length::px(30.0));
-    relative_style.top = Some(Length::px(20.0));
+    relative_style.left = crate::style::types::InsetValue::Length(Length::px(30.0));
+    relative_style.top = crate::style::types::InsetValue::Length(Length::px(20.0));
     relative_style.width = Some(Length::px(100.0));
     relative_style.height = Some(Length::px(40.0));
     relative_style.width_keyword = None;
@@ -7948,8 +7968,8 @@ mod tests {
     let mut relative_style = ComputedStyle::default();
     relative_style.display = Display::Block;
     relative_style.position = Position::Relative;
-    relative_style.left = Some(Length::percent(50.0)); // 50% of 200 = 100
-    relative_style.top = Some(Length::percent(25.0)); // 25% of 120 = 30
+    relative_style.left = crate::style::types::InsetValue::Length(Length::percent(50.0)); // 50% of 200 = 100
+    relative_style.top = crate::style::types::InsetValue::Length(Length::percent(25.0)); // 25% of 120 = 30
     relative_style.width = Some(Length::px(40.0));
     relative_style.height = Some(Length::px(10.0));
     relative_style.width_keyword = None;
@@ -8702,8 +8722,8 @@ mod tests {
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.position = Position::Absolute;
-    child_style.left = Some(Length::px(5.0));
-    child_style.top = Some(Length::px(7.0));
+    child_style.left = crate::style::types::InsetValue::Length(Length::px(5.0));
+    child_style.top = crate::style::types::InsetValue::Length(Length::px(7.0));
     child_style.width = Some(Length::px(50.0));
     child_style.height = Some(Length::px(20.0));
     child_style.width_keyword = None;
@@ -8747,8 +8767,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::px(0.0));
-    abs_style.top = Some(Length::percent(50.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(0.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::percent(50.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(10.0));
     abs_style.width_keyword = None;
@@ -8801,9 +8821,9 @@ mod tests {
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.position = Position::Absolute;
-    child_style.left = Some(Length::px(0.0));
-    child_style.right = Some(Length::px(0.0));
-    child_style.top = Some(Length::px(0.0));
+    child_style.left = crate::style::types::InsetValue::Length(Length::px(0.0));
+    child_style.right = crate::style::types::InsetValue::Length(Length::px(0.0));
+    child_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     child_style.height = Some(Length::px(20.0));
     child_style.height_keyword = None;
     child_style.margin_left = None;
@@ -8864,8 +8884,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::px(5.0));
-    abs_style.top = Some(Length::px(7.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(5.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(7.0));
     abs_style.width = Some(Length::px(30.0));
     abs_style.height = Some(Length::px(12.0));
     abs_style.width_keyword = None;
@@ -8927,8 +8947,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::percent(50.0));
-    abs_style.top = Some(Length::px(0.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::percent(50.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(10.0));
     abs_style.width_keyword = None;
@@ -9016,8 +9036,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;
     abs_style.position = Position::Absolute;
-    abs_style.left = Some(Length::percent(50.0));
-    abs_style.top = Some(Length::px(0.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::percent(50.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     abs_style.width = Some(Length::px(20.0));
     abs_style.height = Some(Length::px(10.0));
     abs_style.width_keyword = None;

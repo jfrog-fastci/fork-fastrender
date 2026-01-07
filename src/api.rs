@@ -11224,6 +11224,60 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut DefaultHasher) {
   }
 }
 
+fn hash_anchor_function(
+  func: &crate::style::types::AnchorFunction,
+  hasher: &mut DefaultHasher,
+) {
+  match &func.name {
+    Some(name) => {
+      1u8.hash(hasher);
+      name.hash(hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+  hash_enum_discriminant(&func.side, hasher);
+  hash_option_length(&func.fallback, hasher);
+}
+
+fn hash_inset_value(value: &crate::style::types::InsetValue, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::InsetValue::Auto => 0u8.hash(hasher),
+    crate::style::types::InsetValue::Length(len) => {
+      1u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+    crate::style::types::InsetValue::Anchor(func) => {
+      2u8.hash(hasher);
+      hash_anchor_function(func, hasher);
+    }
+  }
+}
+
+fn hash_position_anchor(anchor: &crate::style::types::PositionAnchor, hasher: &mut DefaultHasher) {
+  match anchor {
+    crate::style::types::PositionAnchor::None => 0u8.hash(hasher),
+    crate::style::types::PositionAnchor::Auto => 1u8.hash(hasher),
+    crate::style::types::PositionAnchor::Name(name) => {
+      2u8.hash(hasher);
+      name.hash(hasher);
+    }
+  }
+}
+
+fn hash_anchor_scope(scope: &crate::style::types::AnchorScope, hasher: &mut DefaultHasher) {
+  match scope {
+    crate::style::types::AnchorScope::None => 0u8.hash(hasher),
+    crate::style::types::AnchorScope::All => 1u8.hash(hasher),
+    crate::style::types::AnchorScope::Names(names) => {
+      2u8.hash(hasher);
+      names.len().hash(hasher);
+      for name in names {
+        name.hash(hasher);
+      }
+    }
+  }
+}
+
 fn hash_flex_basis(basis: &crate::style::types::FlexBasis, hasher: &mut DefaultHasher) {
   match basis {
     crate::style::types::FlexBasis::Auto => 0u8.hash(hasher),
@@ -11826,11 +11880,14 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_string_vec(&style.container_name, &mut h);
   hash_enum_discriminant(&style.containment, &mut h);
   hash_enum_discriminant(&style.position, &mut h);
+  hash_position_anchor(&style.position_anchor, &mut h);
+  style.anchor_names.hash(&mut h);
+  hash_anchor_scope(&style.anchor_scope, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);
-  hash_option_length(&style.top, &mut h);
-  hash_option_length(&style.right, &mut h);
-  hash_option_length(&style.bottom, &mut h);
-  hash_option_length(&style.left, &mut h);
+  hash_inset_value(&style.top, &mut h);
+  hash_inset_value(&style.right, &mut h);
+  hash_inset_value(&style.bottom, &mut h);
+  hash_inset_value(&style.left, &mut h);
   hash_enum_discriminant(&style.float, &mut h);
   hash_enum_discriminant(&style.clear, &mut h);
   hash_option_length(&style.width, &mut h);
@@ -14886,7 +14943,7 @@ mod tests {
     let mut sticky_style = ComputedStyle::default();
     sticky_style.display = Display::Block;
     sticky_style.position = Position::Sticky;
-    sticky_style.top = Some(Length::px(0.0));
+    sticky_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     sticky_style.border_top_width = Length::px(0.0);
     sticky_style.border_right_width = Length::px(0.0);
     sticky_style.border_bottom_width = Length::px(0.0);
@@ -14982,7 +15039,7 @@ mod tests {
     let mut sticky_style = ComputedStyle::default();
     sticky_style.display = Display::Block;
     sticky_style.position = Position::Sticky;
-    sticky_style.top = Some(Length::px(0.0));
+    sticky_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     sticky_style.border_top_width = Length::px(0.0);
     sticky_style.border_right_width = Length::px(0.0);
     sticky_style.border_bottom_width = Length::px(0.0);
@@ -15053,7 +15110,7 @@ mod tests {
     let mut sticky_style = ComputedStyle::default();
     sticky_style.display = Display::Block;
     sticky_style.position = Position::Sticky;
-    sticky_style.top = Some(Length::px(0.0));
+    sticky_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     let sticky_style = Arc::new(sticky_style);
 
     let sticky = FragmentNode::new_with_style(

@@ -4358,10 +4358,10 @@ impl GridFormattingContext {
           && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
       let mut static_style = (*child.style).clone();
       static_style.position = crate::style::position::Position::Relative;
-      static_style.top = None;
-      static_style.right = None;
-      static_style.bottom = None;
-      static_style.left = None;
+      static_style.top = crate::style::types::InsetValue::Auto;
+      static_style.right = crate::style::types::InsetValue::Auto;
+      static_style.bottom = crate::style::types::InsetValue::Auto;
+      static_style.left = crate::style::types::InsetValue::Auto;
       let static_style = Arc::new(static_style);
 
       let (
@@ -7907,6 +7907,12 @@ impl FormattingContext for GridFormattingContext {
           Some(padding_rect.size.width),
           block_base,
         );
+      let mut anchor_index =
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments(fragment.children_ref());
+      anchor_index.insert_names(
+        &box_node.style.anchor_names,
+        crate::geometry::Rect::new(crate::geometry::Point::ZERO, fragment.bounds.size),
+      );
       let cb_for_absolute = if establishes_abs_cb {
         padding_cb
       } else {
@@ -8016,11 +8022,13 @@ impl FormattingContext for GridFormattingContext {
             .unwrap_or(CrateAvailableSpace::Indefinite),
         );
 
-        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
+        let anchors_for_cb = (cb == padding_cb).then_some(&anchor_index);
+        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &child.style,
           &cb,
           ctx.viewport_size,
           &ctx.font_context,
+          anchors_for_cb,
         );
         // Static position resolves to where the element would be in flow, relative to the containing
         // block origin (padding edge).
@@ -8048,10 +8056,10 @@ impl FormattingContext for GridFormattingContext {
             && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
         let mut static_style = (*child.style).clone();
         static_style.position = crate::style::position::Position::Relative;
-        static_style.top = None;
-        static_style.right = None;
-        static_style.bottom = None;
-        static_style.left = None;
+        static_style.top = crate::style::types::InsetValue::Auto;
+        static_style.right = crate::style::types::InsetValue::Auto;
+        static_style.bottom = crate::style::types::InsetValue::Auto;
+        static_style.left = crate::style::types::InsetValue::Auto;
         let static_style = Arc::new(static_style);
 
         let (
@@ -11749,8 +11757,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = CssDisplay::Block;
     abs_style.position = crate::style::position::Position::Absolute;
-    abs_style.left = Some(Length::px(5.0));
-    abs_style.top = Some(Length::px(7.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(5.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(7.0));
     abs_style.width = Some(Length::px(12.0));
     abs_style.height = Some(Length::px(9.0));
     abs_style.width_keyword = None;
@@ -11809,8 +11817,8 @@ mod tests {
     let mut abs_style = ComputedStyle::default();
     abs_style.display = CssDisplay::Block;
     abs_style.position = crate::style::position::Position::Absolute;
-    abs_style.left = Some(Length::px(0.0));
-    abs_style.top = Some(Length::px(0.0));
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(0.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(10.0));
 

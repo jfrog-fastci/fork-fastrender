@@ -3336,6 +3336,80 @@ impl Default for OverflowAnchor {
   }
 }
 
+// === CSS Anchor Positioning (css-anchor-position-1) ===
+
+/// Anchor side keywords supported by the `anchor()` inset function.
+///
+/// Baseline support: only the physical sides used by common tooltip/popover patterns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnchorSide {
+  Top,
+  Right,
+  Bottom,
+  Left,
+}
+
+/// Parsed `anchor()` function as used in inset properties (top/right/bottom/left, inset-*).
+///
+/// Note: In the spec, `anchor()` resolves at computed value time using style/layout interleaving.
+/// FastRender resolves it during positioned layout from the already-laid-out fragment tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnchorFunction {
+  /// Optional explicit anchor name (`anchor(--foo top)`); when absent, use `position-anchor`.
+  pub name: Option<String>,
+  pub side: AnchorSide,
+  /// Optional fallback value (`anchor(top, 12px)`).
+  pub fallback: Option<Length>,
+}
+
+/// Computed inset value (`top/right/bottom/left`) supporting `anchor()`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InsetValue {
+  Auto,
+  Length(Length),
+  Anchor(AnchorFunction),
+}
+
+impl Default for InsetValue {
+  fn default() -> Self {
+    Self::Auto
+  }
+}
+
+impl InsetValue {
+  pub fn is_auto(&self) -> bool {
+    matches!(self, Self::Auto)
+  }
+}
+
+/// Computed value for the `position-anchor` property.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PositionAnchor {
+  None,
+  Auto,
+  Name(String),
+}
+
+impl Default for PositionAnchor {
+  fn default() -> Self {
+    Self::None
+  }
+}
+
+/// Computed value for the `anchor-scope` property.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnchorScope {
+  None,
+  All,
+  Names(Vec<String>),
+}
+
+impl Default for AnchorScope {
+  fn default() -> Self {
+    Self::None
+  }
+}
+
 /// CSS `overflow-wrap` (formerly `word-wrap`)
 ///
 /// Reference: CSS Text Module Level 3

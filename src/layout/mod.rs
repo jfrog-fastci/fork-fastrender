@@ -93,6 +93,9 @@ pub mod running_strings;
 // W3.T13 - Absolute positioning algorithm
 pub mod absolute_positioning;
 
+// CSS Anchor Positioning helpers (used by absolute/fixed positioning).
+pub(crate) mod anchor_positioning;
+
 // W3.T06 - Table layout algorithm
 pub mod table;
 

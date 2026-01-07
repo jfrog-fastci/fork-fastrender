@@ -4,6 +4,7 @@ mod absolute_position_body;
 mod abspos_intrinsic_sizing_keywords;
 mod abspos_static_position;
 mod abspos_static_position_subgrid;
+mod anchor_positioning;
 mod aria_hidden_has_no_effect;
 mod aria_hidden_layout;
 mod br_linebreak;
