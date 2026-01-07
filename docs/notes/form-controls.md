@@ -76,7 +76,7 @@ The CSS UI “fallback rendering model” for form controls is that `appearance:
 FastRender does **not** implement that model yet (see limitations above). Implementing it would likely involve:
 
 - Changing box generation so `appearance:none` (and `-webkit-appearance:none`) no longer forces `ReplacedType::FormControl`, allowing children/pseudo-elements to lay out normally.
-- Supporting vendor pseudo-elements used for custom controls (e.g. `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`).
+- Exposing vendor pseudo-elements used for custom controls as real pseudo-element boxes and/or broadening the existing style-capture/paint hooks (today we capture placeholder + range slider thumb/track styles, but painters still only consume a subset of those hooks).
 
 This work is tracked in the capability map under `alg.forms.appearance-none`.
 
