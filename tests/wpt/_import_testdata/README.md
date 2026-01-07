@@ -2,6 +2,7 @@ Synthetic WPT-like test data used by `import_wpt` tests.
 
 The layout mirrors a tiny subset of upstream WPT with:
 - a reftest under `css/simple/` that depends on `/resources` and a support stylesheet
+- an unquoted-attribute reftest under `css/simple/` (`<link rel=match href=...>`)
 - a mismatch reftest under `css/simple/` with `.html.ini` sidecars (and whitespace-separated `rel` tokens)
 - absolute-origin resource URL fixtures under `css/simple/` (`http(s)://web-platform.test/...`)
 - `srcset` rewriter fixtures under `css/simple/` (quoted + unquoted forms)

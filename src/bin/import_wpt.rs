@@ -1168,26 +1168,33 @@ fn resolve_reference(
 }
 
 fn find_reftest_link_in_html(content: &str) -> Option<(ReftestRelation, String)> {
-  let link_tag = Regex::new("(?i)<link\\b[^>]*>").ok()?;
-  let rel_attr = Regex::new("(?i)\\brel\\s*=\\s*['\"]([^'\"]+)['\"]").ok()?;
-  let href_attr = Regex::new("(?i)\\bhref\\s*=\\s*['\"]([^'\"]+)['\"]").ok()?;
+  let link_tag = Regex::new("(?is)<link\\b[^>]*>").ok()?;
+  let rel_attr =
+    Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").ok()?;
+  let href_attr =
+    Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").ok()?;
 
   for link in link_tag.find_iter(content) {
     let tag = link.as_str();
-    let Some(rel) = rel_attr
-      .captures(tag)
-      .and_then(|c| c.get(1))
-      .map(|m| m.as_str())
-    else {
+    let Some(rel_caps) = rel_attr.captures(tag) else {
       continue;
     };
-    let Some(href) = href_attr
-      .captures(tag)
-      .and_then(|c| c.get(1))
+    let rel = rel_caps
+      .get(1)
+      .or_else(|| rel_caps.get(2))
+      .or_else(|| rel_caps.get(3))
       .map(|m| m.as_str())
-    else {
+      .unwrap_or("");
+
+    let Some(href_caps) = href_attr.captures(tag) else {
       continue;
     };
+    let href = href_caps
+      .get(1)
+      .or_else(|| href_caps.get(2))
+      .or_else(|| href_caps.get(3))
+      .map(|m| m.as_str())
+      .unwrap_or("");
 
     for token in rel.split_whitespace() {
       if token.eq_ignore_ascii_case("match") {
@@ -1844,6 +1851,14 @@ mod tests {
     assert!(!test_html.contains("src='/resources/"));
     assert!(test_html.contains("reftest-ref.html"));
 
+    let unquoted = fs::read_to_string(out_dir.path().join("wpt/css/simple/reftest-unquoted.html"))
+      .unwrap();
+    assert!(!unquoted.contains("href=\"/resources/"));
+    assert!(!unquoted.contains("href='/resources/"));
+    assert!(!unquoted.contains("src=\"/resources/"));
+    assert!(!unquoted.contains("src='/resources/"));
+    assert!(unquoted.contains("reftest-unquoted-ref.html"));
+
     let css =
       fs::read_to_string(out_dir.path().join("wpt/css/simple/support/relative.css")).unwrap();
     assert!(css.contains("resources/green.png"));
@@ -1851,8 +1866,17 @@ mod tests {
     assert!(!css.contains("url('/resources/"));
 
     let manifest = fs::read_to_string(manifest_path).unwrap();
-    assert!(manifest.contains("reftest-ref.html"));
-    assert!(manifest.contains("test_type = \"reftest\""));
+    let parsed: ManifestFile = toml::from_str(&manifest).unwrap();
+    let unquoted_entry = parsed
+      .tests
+      .iter()
+      .find(|entry| entry.id == "css/simple/reftest-unquoted")
+      .expect("missing unquoted reftest entry");
+    assert_eq!(
+      unquoted_entry.reference.as_deref(),
+      Some("css/simple/reftest-unquoted-ref.html")
+    );
+    assert_eq!(unquoted_entry.test_type.as_deref(), Some("reftest"));
   }
 
   #[test]

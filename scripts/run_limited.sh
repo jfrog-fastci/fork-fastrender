@@ -139,7 +139,7 @@ then
       cargo_target="$(readlink "${cargo_shim}" 2>/dev/null || echo "${cargo_shim}")"
     fi
 
-    if [[ "${cargo_target}" == "rustup" || "${cargo_target}" == */rustup ]]; then
+    if [[ "${cargo_target}" == "rustup" || "${cargo_target}" == */rustup || "${cargo_shim}" == */.cargo/bin/cargo ]]; then
       toolchain=""
       if [[ ${#cmd[@]} -gt 1 && "${cmd[1]}" == +* ]]; then
         toolchain="${cmd[1]#+}"
@@ -147,9 +147,15 @@ then
       fi
 
       if [[ -n "${toolchain}" ]]; then
-        cmd[0]="$(rustup which --toolchain "${toolchain}" cargo)"
+        resolved="$(rustup which --toolchain "${toolchain}" cargo 2>/dev/null || true)"
       else
-        cmd[0]="$(rustup which cargo)"
+        resolved="$(rustup which cargo 2>/dev/null || true)"
+      fi
+
+      if [[ -n "${resolved}" ]]; then
+        cmd[0]="${resolved}"
+        toolchain_bin="$(dirname "${resolved}")"
+        export PATH="${toolchain_bin}:${PATH}"
       fi
     fi
   fi
