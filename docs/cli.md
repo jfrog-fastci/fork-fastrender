@@ -77,6 +77,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 `cargo xtask` is the preferred entry point for common workflows; it wraps the binaries below but keeps them usable directly.
 
 - Help: `cargo xtask --help`
+- Capability map (breadth-first roadmap): `cargo xtask capability-map` (writes `docs/capability_map.md` by default)
 - Tests: `cargo xtask test [core|style|fixtures|wpt|all]`
 - Refresh goldens: `cargo xtask update-goldens [all|fixtures|reference|wpt]` (sets the appropriate `UPDATE_*` env vars)
 - Pageset scoreboard (`fetch_pages` → `prefetch_assets` → `pageset_progress` when disk cache is enabled; bundled fonts by default): `cargo xtask pageset [--pages example.com,news.ycombinator.com] [--shard 0/4] [--no-fetch] [--refresh] [--allow-http-error-status] [--allow-collisions] [--timings] [--disk-cache] [--no-disk-cache] [--cache-dir <dir>] [--bundled-fonts|--system-fonts] [--cascade-diagnostics] [--cascade-diagnostics-slow-ms 500] [--accuracy] [--accuracy-baseline existing|chrome] [--accuracy-baseline-dir <dir>] [--accuracy-tolerance <u8>] [--accuracy-max-diff-percent <float>] [--accuracy-diff-dir <dir>] [--capture-missing-failure-fixtures] [-- <pageset_progress args...>]`

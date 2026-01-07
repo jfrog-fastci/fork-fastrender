@@ -9,7 +9,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Agent workflow & mindset: [`AGENTS.md`](../AGENTS.md)
 - Running the renderer: [running.md](running.md)
 - CLI tools & workflows: [cli.md](cli.md)
-- Evidence loop (deterministic fixtures vs Chrome): see [`AGENTS.md`](../AGENTS.md) “Accuracy triage loop” and the `render_fixtures` / `fixture-chrome-diff` entries in [cli.md](cli.md).
+- Evidence loop (spec → code → regression): see [`AGENTS.md`](../AGENTS.md) “The work loop” plus [testing.md](testing.md) (WPT harness) and [cli.md](cli.md) (fixture tooling).
 - Library API: [api.md](api.md)
 - Architecture overview: [architecture.md](architecture.md)
 - Conformance targets & support matrix: [conformance.md](conformance.md)

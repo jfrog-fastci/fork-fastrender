@@ -9,6 +9,7 @@ use tempfile::TempDir;
 use url::Url;
 
 mod chrome_baseline_fixtures;
+mod capability_map;
 mod fixture_chrome_diff;
 mod fixture_determinism;
 mod generate_emoji_tables;
@@ -29,6 +30,7 @@ fn main() -> Result<()> {
     Commands::Pageset(args) => run_pageset(args),
     Commands::PagesetDiff(args) => run_pageset_diff(args),
     Commands::DiffRenders(args) => run_diff_renders(args),
+    Commands::CapabilityMap(args) => capability_map::run_capability_map(args),
     Commands::FixtureChromeDiff(args) => fixture_chrome_diff::run_fixture_chrome_diff(args),
     Commands::FixtureDeterminism(args) => fixture_determinism::run_fixture_determinism(args),
     Commands::ImportPageFixture(args) => import_page_fixture::run_import_page_fixture(args),
@@ -82,6 +84,8 @@ enum Commands {
   PagesetDiff(PagesetDiffArgs),
   /// Compare two render outputs and write visual diffs
   DiffRenders(DiffRendersArgs),
+  /// Generate a systematic capability map (breadth-first roadmap)
+  CapabilityMap(capability_map::CapabilityMapArgs),
   /// Render offline fixtures in both Chrome and FastRender, then produce a diff report
   FixtureChromeDiff(fixture_chrome_diff::FixtureChromeDiffArgs),
   /// Render offline fixtures multiple times and report nondeterministic fixtures (pixel diffs between runs)
