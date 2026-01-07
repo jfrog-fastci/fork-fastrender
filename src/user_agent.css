@@ -410,6 +410,12 @@ select {
     padding-right: 20px;
 }
 
+select[multiple],
+select[size]:not([size="1"]) {
+    padding-right: 6px;
+    overflow: auto;
+}
+
 input[type="reset"] {
     cursor: pointer;
 }
