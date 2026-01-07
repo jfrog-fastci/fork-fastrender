@@ -14355,6 +14355,7 @@ mod tests {
       list.push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        is_root: false,
         establishes_backdrop_root: outer_backdrop_root,
         bounds,
         plane_rect: bounds,
@@ -14375,6 +14376,7 @@ mod tests {
       list.push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        is_root: false,
         establishes_backdrop_root: true,
         bounds: plane,
         plane_rect: plane,
