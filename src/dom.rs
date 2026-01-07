@@ -5793,6 +5793,36 @@ fn select_has_any_selected_option(select: &DomNode) -> bool {
   first_selected_option(select).is_some()
 }
 
+pub(crate) fn parse_select_size_attribute(node: &DomNode) -> Option<u32> {
+  let raw = node.get_attribute_ref("size")?;
+  let trimmed = raw.trim_matches(|c: char| c.is_ascii_whitespace());
+  if trimmed.is_empty() {
+    return None;
+  }
+  let parsed = trimmed.parse::<i64>().ok()?;
+  if parsed <= 0 {
+    return None;
+  }
+  u32::try_from(parsed).ok()
+}
+
+pub(crate) fn select_is_listbox(node: &DomNode) -> bool {
+  if node.get_attribute_ref("multiple").is_some() {
+    return true;
+  }
+  matches!(parse_select_size_attribute(node), Some(size) if size > 1)
+}
+
+pub(crate) fn select_effective_size(node: &DomNode) -> u32 {
+  let multiple = node.get_attribute_ref("multiple").is_some();
+  let size_attr = parse_select_size_attribute(node);
+  if multiple {
+    size_attr.unwrap_or(4)
+  } else {
+    size_attr.filter(|&size| size > 1).unwrap_or(1)
+  }
+}
+
 impl<'a> Element for ElementRef<'a> {
   type Impl = FastRenderSelectorImpl;
 
@@ -7515,6 +7545,88 @@ mod tests {
 
     let input = element_with_attrs("input", vec![("required", ""), ("value", " ")], vec![]);
     assert!(ElementRef::new(&input).accessibility_is_valid());
+  }
+
+  #[test]
+  fn single_select_falls_back_to_first_option_when_all_disabled() {
+    let select = element(
+      "select",
+      vec![
+        element_with_attrs(
+          "option",
+          vec![("disabled", ""), ("value", "a")],
+          vec![text("First")],
+        ),
+        element_with_attrs(
+          "option",
+          vec![("disabled", ""), ("value", "b")],
+          vec![text("Second")],
+        ),
+      ],
+    );
+
+    let first = &select.children[0];
+    let second = &select.children[1];
+    let ancestors = [&select];
+    assert!(ElementRef::with_ancestors(first, &ancestors).is_option_selected());
+    assert!(!ElementRef::with_ancestors(second, &ancestors).is_option_selected());
+
+    assert_eq!(ElementRef::new(&select).select_value().as_deref(), Some("a"));
+  }
+
+  #[test]
+  fn disabled_selected_option_remains_selected_in_single_select() {
+    let select = element_with_attrs(
+      "select",
+      vec![("required", "")],
+      vec![
+        element_with_attrs(
+          "option",
+          vec![("selected", ""), ("disabled", ""), ("value", "")],
+          vec![text("Choose")],
+        ),
+        element_with_attrs("option", vec![("value", "x")], vec![text("X")]),
+      ],
+    );
+
+    let placeholder = &select.children[0];
+    let enabled = &select.children[1];
+    let ancestors = [&select];
+    assert!(ElementRef::with_ancestors(placeholder, &ancestors).is_option_selected());
+    assert!(!ElementRef::with_ancestors(enabled, &ancestors).is_option_selected());
+
+    assert_eq!(ElementRef::new(&select).select_value().as_deref(), Some(""));
+    assert!(!ElementRef::new(&select).accessibility_is_valid());
+  }
+
+  #[test]
+  fn select_size_parsing_treats_zero_and_invalid_as_absent() {
+    let size0 = element_with_attrs("select", vec![("size", "0")], vec![]);
+    assert_eq!(parse_select_size_attribute(&size0), None);
+    assert!(!select_is_listbox(&size0));
+    assert_eq!(select_effective_size(&size0), 1);
+
+    let negative = element_with_attrs("select", vec![("size", "-3")], vec![]);
+    assert_eq!(parse_select_size_attribute(&negative), None);
+    assert!(!select_is_listbox(&negative));
+
+    let invalid = element_with_attrs("select", vec![("size", "abc")], vec![]);
+    assert_eq!(parse_select_size_attribute(&invalid), None);
+    assert!(!select_is_listbox(&invalid));
+
+    let multi_default = element_with_attrs("select", vec![("multiple", "")], vec![]);
+    assert!(select_is_listbox(&multi_default));
+    assert_eq!(select_effective_size(&multi_default), 4);
+
+    let multi_size0 =
+      element_with_attrs("select", vec![("multiple", ""), ("size", "0")], vec![]);
+    assert!(select_is_listbox(&multi_size0));
+    assert_eq!(select_effective_size(&multi_size0), 4);
+
+    let multi_size3 =
+      element_with_attrs("select", vec![("multiple", ""), ("size", "3")], vec![]);
+    assert!(select_is_listbox(&multi_size3));
+    assert_eq!(select_effective_size(&multi_size3), 3);
   }
 
   #[test]
@@ -11008,6 +11120,71 @@ mod tests {
     assert!(!matches(first, &ancestors, &PseudoClass::Checked));
     assert!(matches(second, &ancestors, &PseudoClass::Checked));
 
+    let select_all_disabled = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("disabled".to_string(), "disabled".to_string())],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("disabled".to_string(), "disabled".to_string())],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    let ancestors: Vec<&DomNode> = vec![&select_all_disabled];
+    let first = &select_all_disabled.children[0];
+    let second = &select_all_disabled.children[1];
+    assert!(matches(first, &ancestors, &PseudoClass::Checked));
+    assert!(!matches(second, &ancestors, &PseudoClass::Checked));
+
+    let select_disabled_selected_placeholder = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("disabled".to_string(), "disabled".to_string()),
+              ("selected".to_string(), "selected".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    let ancestors: Vec<&DomNode> = vec![&select_disabled_selected_placeholder];
+    let first = &select_disabled_selected_placeholder.children[0];
+    let second = &select_disabled_selected_placeholder.children[1];
+    assert!(matches(first, &ancestors, &PseudoClass::Checked));
+    assert!(!matches(second, &ancestors, &PseudoClass::Checked));
+
     let select_multiple = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "select".to_string(),
@@ -11157,6 +11334,119 @@ mod tests {
     ));
     let ancestors: Vec<&DomNode> = vec![&select_hidden_optgroup];
     assert!(matches(visible_option, &ancestors, &PseudoClass::Checked));
+  }
+
+  #[test]
+  fn select_value_falls_back_to_first_option_when_all_disabled() {
+    let select = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("disabled".to_string(), "disabled".to_string()),
+              ("value".to_string(), "a".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("disabled".to_string(), "disabled".to_string()),
+              ("value".to_string(), "b".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+      ],
+    };
+
+    let value = ElementRef::new(&select).control_value();
+    assert_eq!(value.as_deref(), Some("a"));
+  }
+
+  #[test]
+  fn select_size_parsing_edge_cases() {
+    let dropdown_size0 = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("size".to_string(), "0".to_string())],
+      },
+      children: vec![],
+    };
+    assert!(!select_is_listbox(&dropdown_size0));
+    assert_eq!(select_effective_size(&dropdown_size0), 1);
+
+    let dropdown_negative = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("size".to_string(), "-3".to_string())],
+      },
+      children: vec![],
+    };
+    assert!(!select_is_listbox(&dropdown_negative));
+    assert_eq!(select_effective_size(&dropdown_negative), 1);
+
+    let dropdown_invalid = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("size".to_string(), "abc".to_string())],
+      },
+      children: vec![],
+    };
+    assert!(!select_is_listbox(&dropdown_invalid));
+    assert_eq!(select_effective_size(&dropdown_invalid), 1);
+
+    let multi_default = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("multiple".to_string(), "multiple".to_string())],
+      },
+      children: vec![],
+    };
+    assert!(select_is_listbox(&multi_default));
+    assert_eq!(select_effective_size(&multi_default), 4);
+
+    let multi_invalid_size = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("multiple".to_string(), "multiple".to_string()),
+          ("size".to_string(), "0".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(select_is_listbox(&multi_invalid_size));
+    assert_eq!(select_effective_size(&multi_invalid_size), 4);
+
+    let multi_size3 = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("multiple".to_string(), "multiple".to_string()),
+          ("size".to_string(), "3".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(select_is_listbox(&multi_size3));
+    assert_eq!(select_effective_size(&multi_size3), 3);
   }
 
   #[test]

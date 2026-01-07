@@ -1216,20 +1216,11 @@ fn input_role(node: &DomNode) -> Option<String> {
 }
 
 fn select_role(node: &DomNode) -> String {
-  let multiple = node.get_attribute_ref("multiple").is_some();
-  if multiple {
-    return "listbox".to_string();
+  if crate::dom::select_is_listbox(node) {
+    "listbox".to_string()
+  } else {
+    "combobox".to_string()
   }
-
-  if let Some(size) = node.get_attribute_ref("size") {
-    if let Ok(val) = size.parse::<i32>() {
-      if val > 1 {
-        return "listbox".to_string();
-      }
-    }
-  }
-
-  "combobox".to_string()
 }
 
 fn header_role(node: &DomNode) -> Option<String> {

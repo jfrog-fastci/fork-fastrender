@@ -3909,21 +3909,9 @@ fn option_value_from_node(node: &StyledNode) -> String {
   option_text_from_node(node)
 }
 
-fn parse_select_size(node: &StyledNode, multiple: bool) -> u32 {
-  let parsed = node
-    .node
-    .get_attribute_ref("size")
-    .and_then(|value| value.trim().parse::<i32>().ok())
-    .filter(|value| *value > 0)
-    .map(|value| value as u32);
-  parsed
-    .unwrap_or_else(|| if multiple { 4 } else { 1 })
-    .max(1)
-}
-
 fn build_select_control(node: &StyledNode) -> SelectControl {
   let multiple = node.node.get_attribute_ref("multiple").is_some();
-  let size = parse_select_size(node, multiple);
+  let size = crate::dom::select_effective_size(&node.node);
 
   let mut items = Vec::new();
   let mut option_item_indices = Vec::new();
@@ -10401,6 +10389,180 @@ mod tests {
       select.items.get(idx),
       Some(SelectItem::Option { label, .. }) if label == "chosen"
     )));
+  }
+
+  #[test]
+  fn select_fallback_selects_first_option_when_all_disabled() {
+    fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
+      match &mut node.node.node_type {
+        DomNodeType::Element { attributes, .. } => {
+          attributes.push((name.to_string(), value.to_string()));
+        }
+        _ => panic!("expected element node"),
+      }
+    }
+
+    let mut first = styled_element("option");
+    set_attr(&mut first, "disabled", "");
+    set_attr(&mut first, "label", "First");
+    set_attr(&mut first, "value", "a");
+
+    let mut second = styled_element("option");
+    set_attr(&mut second, "disabled", "");
+    set_attr(&mut second, "label", "Second");
+    set_attr(&mut second, "value", "b");
+
+    let mut select = styled_element("select");
+    select.children = vec![first, second];
+
+    let control = create_form_control_replaced(&select).expect("select form control");
+    assert!(!control.invalid);
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select control kind");
+    };
+    assert!(!select.multiple);
+    assert_eq!(select.size, 1);
+
+    let idx = select.selected.first().copied().expect("selected option");
+    let SelectItem::Option {
+      label,
+      value,
+      selected,
+      disabled,
+      ..
+    } = &select.items[idx]
+    else {
+      panic!("expected option item");
+    };
+    assert_eq!(label, "First");
+    assert_eq!(value, "a");
+    assert!(*selected);
+    assert!(*disabled);
+    assert_eq!(select_selected_value(select).as_deref(), Some("a"));
+  }
+
+  #[test]
+  fn required_select_with_disabled_selected_placeholder_remains_selected_and_invalid() {
+    fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
+      match &mut node.node.node_type {
+        DomNodeType::Element { attributes, .. } => {
+          attributes.push((name.to_string(), value.to_string()));
+        }
+        _ => panic!("expected element node"),
+      }
+    }
+
+    let placeholder_text = StyledNode {
+      node_id: 0,
+      node: DomNode {
+        node_type: DomNodeType::Text {
+          content: "Choose".to_string(),
+        },
+        children: vec![],
+      },
+      styles: default_style(),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut placeholder = styled_element("option");
+    set_attr(&mut placeholder, "disabled", "");
+    set_attr(&mut placeholder, "selected", "");
+    set_attr(&mut placeholder, "value", "");
+    placeholder.children.push(placeholder_text);
+
+    let mut enabled = styled_element("option");
+    set_attr(&mut enabled, "value", "x");
+
+    let mut select = styled_element("select");
+    set_attr(&mut select, "required", "");
+    select.children = vec![placeholder, enabled];
+
+    let control = create_form_control_replaced(&select).expect("select form control");
+    assert!(control.required);
+    assert!(control.invalid);
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select control kind");
+    };
+    assert!(!select.multiple);
+    assert_eq!(select.size, 1);
+
+    let idx = select.selected.first().copied().expect("selected option");
+    let SelectItem::Option {
+      label,
+      value,
+      selected,
+      disabled,
+      ..
+    } = &select.items[idx]
+    else {
+      panic!("expected option item");
+    };
+    assert_eq!(label, "Choose");
+    assert_eq!(value, "");
+    assert!(*selected);
+    assert!(*disabled);
+    assert_eq!(select_selected_value(select).as_deref(), Some(""));
+  }
+
+  #[test]
+  fn select_size_parsing_controls_effective_row_count() {
+    fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
+      match &mut node.node.node_type {
+        DomNodeType::Element { attributes, .. } => {
+          attributes.push((name.to_string(), value.to_string()));
+        }
+        _ => panic!("expected element node"),
+      }
+    }
+
+    let mut dropdown_size0 = styled_element("select");
+    set_attr(&mut dropdown_size0, "size", "0");
+    let control = create_form_control_replaced(&dropdown_size0).expect("select form control");
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select control kind");
+    };
+    assert!(!select.multiple);
+    assert_eq!(select.size, 1);
+
+    let mut multi_default = styled_element("select");
+    set_attr(&mut multi_default, "multiple", "");
+    let control = create_form_control_replaced(&multi_default).expect("select form control");
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select control kind");
+    };
+    assert!(select.multiple);
+    assert_eq!(select.size, 4);
+
+    let mut multi_invalid = styled_element("select");
+    set_attr(&mut multi_invalid, "multiple", "");
+    set_attr(&mut multi_invalid, "size", "abc");
+    let control = create_form_control_replaced(&multi_invalid).expect("select form control");
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select control kind");
+    };
+    assert!(select.multiple);
+    assert_eq!(select.size, 4);
+
+    let mut multi_size3 = styled_element("select");
+    set_attr(&mut multi_size3, "multiple", "");
+    set_attr(&mut multi_size3, "size", "3");
+    let control = create_form_control_replaced(&multi_size3).expect("select form control");
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select control kind");
+    };
+    assert!(select.multiple);
+    assert_eq!(select.size, 3);
   }
 
   #[test]

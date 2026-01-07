@@ -25,7 +25,7 @@ fn aria_state_flags_cover_common_controls() {
         <div id="custom-option" role="option" aria-selected="true">Selected</div>
         <select id="list" multiple>
           <option id="list-opt1">One</option>
-          <option id="list-opt2" selected>Two</option>
+          <option id="list-opt2" selected disabled>Two</option>
         </select>
         <button id="menu-button" aria-expanded="false" aria-haspopup="menu">Menu</button>
         <details id="details" open>
@@ -61,6 +61,9 @@ fn aria_state_flags_cover_common_controls() {
   assert_eq!(list_opt1.states.selected, Some(false));
   let list_opt2 = find_by_id(&tree, "list-opt2").expect("list option two");
   assert_eq!(list_opt2.states.selected, Some(true));
+  let list = find_by_id(&tree, "list").expect("listbox select");
+  assert_eq!(list.role, "listbox");
+  assert_eq!(list.value.as_deref(), Some("Two"));
 
   let menu_button = find_by_id(&tree, "menu-button").expect("menu button");
   assert_eq!(menu_button.states.expanded, Some(false));
@@ -139,6 +142,13 @@ fn role_inference_and_heading_levels() {
         <select id="combo">
           <option id="combo-opt" selected>Combo option</option>
         </select>
+        <select id="combo-size0" size="0">
+          <option>Size zero</option>
+        </select>
+        <select id="combo-all-disabled">
+          <option disabled>First</option>
+          <option disabled>Second</option>
+        </select>
         <select id="listbox" multiple>
           <option id="list-opt">List option</option>
         </select>
@@ -187,6 +197,13 @@ fn role_inference_and_heading_levels() {
   assert_eq!(combo.value.as_deref(), Some("Combo option"));
   let combo_opt = find_by_id(&tree, "combo-opt").expect("combo option");
   assert_eq!(combo_opt.role, "option");
+
+  let combo_size0 = find_by_id(&tree, "combo-size0").expect("size=0 select");
+  assert_eq!(combo_size0.role, "combobox");
+
+  let combo_all_disabled = find_by_id(&tree, "combo-all-disabled").expect("all-disabled select");
+  assert_eq!(combo_all_disabled.role, "combobox");
+  assert_eq!(combo_all_disabled.value.as_deref(), Some("First"));
 
   let listbox = find_by_id(&tree, "listbox").expect("listbox");
   assert_eq!(listbox.role, "listbox");

@@ -15392,10 +15392,10 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
-          // For vertical writing modes, the query container's inline size maps to physical height
-          // while its block size maps to physical width.
           width: 300.0,
           height: 100.0,
+          // For vertical writing modes, the query container's inline size maps to physical height
+          // while its block size maps to physical width.
           inline_size: 100.0,
           block_size: 300.0,
           container_type: ContainerType::Size,
