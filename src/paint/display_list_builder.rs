@@ -7714,14 +7714,22 @@ impl DisplayListBuilder {
           }
         };
 
-        let placeholder_style = is_placeholder.then(|| control.placeholder_style.as_deref()).flatten();
-        let mut fallback_style;
-        let style_for_text = if let Some(pseudo_style) = placeholder_style {
-          pseudo_style
+        let placeholder_style = if is_placeholder {
+          control.placeholder_style.as_deref()
         } else {
-          fallback_style = style.clone();
-          fallback_style.color = fallback_color;
-          &fallback_style
+          None
+        };
+        let text_style = if let Some(pseudo_style) = placeholder_style {
+          let mut cloned = (*pseudo_style).clone();
+          let opacity = cloned.opacity.clamp(0.0, 1.0);
+          let alpha = (cloned.color.a * opacity).clamp(0.0, 1.0);
+          cloned.color = cloned.color.with_alpha(alpha);
+          cloned.opacity = 1.0;
+          cloned
+        } else {
+          let mut cloned = style.clone();
+          cloned.color = fallback_color;
+          cloned
         };
         let mut text_rect = content_rect;
         let mut affordance_space = 0.0;
@@ -7748,21 +7756,8 @@ impl DisplayListBuilder {
           );
         }
 
-        if let Some(pseudo_style) = placeholder_style {
-          let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
-          let pushed = opacity < 1.0 - f32::EPSILON;
-          if opacity <= f32::EPSILON {
-            return true;
-          }
-          if pushed {
-            self.push_opacity(opacity);
-          }
-          let _ = self.emit_text_with_style(text, Some(style_for_text), text_rect);
-          if pushed {
-            self.pop_opacity();
-          }
-        } else {
-          let _ = self.emit_text_with_style(text, Some(style_for_text), text_rect);
+        if text_style.color.a > f32::EPSILON {
+          let _ = self.emit_text_with_style(text, Some(&text_style), text_rect);
         }
         if let Some(affordance_rect) = affordance_rect {
           let mut affordance_style = style.clone();
@@ -7810,29 +7805,30 @@ impl DisplayListBuilder {
           return true;
         };
         let rect = content_rect;
-        let placeholder_style = is_placeholder.then(|| control.placeholder_style.as_deref()).flatten();
-        let mut fallback_style;
-        let style_for_text = if let Some(pseudo_style) = placeholder_style {
-          pseudo_style
+        let placeholder_style = if is_placeholder {
+          control.placeholder_style.as_deref()
         } else {
-          fallback_style = style.clone();
-          fallback_style.color = fallback_color;
-          &fallback_style
+          None
+        };
+        let text_style = if let Some(pseudo_style) = placeholder_style {
+          let mut cloned = (*pseudo_style).clone();
+          let opacity = cloned.opacity.clamp(0.0, 1.0);
+          let alpha = (cloned.color.a * opacity).clamp(0.0, 1.0);
+          cloned.color = cloned.color.with_alpha(alpha);
+          cloned.opacity = 1.0;
+          cloned
+        } else {
+          let mut cloned = style.clone();
+          cloned.color = fallback_color;
+          cloned
         };
         let line_height = compute_line_height_with_metrics_viewport(
-          style_for_text,
+          &text_style,
           None,
           self.viewport.map(|(w, h)| Size::new(w, h)),
         );
-        let opacity = placeholder_style.map(|style| style.opacity.clamp(0.0, 1.0));
-        let pushed = opacity.is_some_and(|o| o < 1.0 - f32::EPSILON);
-        if opacity.is_some_and(|o| o <= f32::EPSILON) {
+        if text_style.color.a <= f32::EPSILON {
           return true;
-        }
-        if let Some(opacity) = opacity {
-          if pushed {
-            self.push_opacity(opacity);
-          }
         }
 
         let mut y = rect.y();
@@ -7841,12 +7837,8 @@ impl DisplayListBuilder {
             break;
           }
           let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
-          let _ = self.emit_text_with_style(line.trim_end(), Some(style_for_text), line_rect);
+          let _ = self.emit_text_with_style(line.trim_end(), Some(&text_style), line_rect);
           y += line_height;
-        }
-
-        if pushed {
-          self.pop_opacity();
         }
         true
       }
@@ -8106,174 +8098,38 @@ impl DisplayListBuilder {
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
         let appearance_none = matches!(control.appearance, Appearance::None);
+        let track_style = control.slider_track_style.as_deref();
+        let thumb_style = control.slider_thumb_style.as_deref();
+        let viewport = self.viewport;
 
-        let abs_length_px = |len: Length| -> Option<f32> {
-          let px = if let Some(calc) = len.calc {
-            calc.absolute_sum()?
-          } else if len.unit.is_absolute() {
-            len.to_px()
-          } else {
-            return None;
-          };
-          (px.is_finite() && px > 0.0).then_some(px)
+        let resolve_px = |style: &ComputedStyle, len: Length, percentage_base: f32| -> f32 {
+          Self::resolve_length_for_paint(
+            &len,
+            style.font_size,
+            style.root_font_size,
+            percentage_base,
+            viewport,
+          )
         };
-
-        if !appearance_none {
-          let track_height = 4.0_f32.min(padding_rect.height());
-          let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
-          let track_rect =
-            Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
-          self
-            .list
-            .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-              rect: track_rect,
-              color: Rgba::rgb(190, 190, 190),
-              radii: BorderRadii::uniform(track_height / 2.0),
-            }));
-
-          let knob_radius = (padding_rect.height().min(16.0)) / 2.0;
-          let knob_center_x =
-            padding_rect.x() + knob_radius + clamped * (padding_rect.width() - 2.0 * knob_radius);
-          let knob_rect = Rect::from_xywh(
-            knob_center_x - knob_radius,
-            padding_rect.y() + (padding_rect.height() - knob_radius * 2.0) / 2.0,
-            knob_radius * 2.0,
-            knob_radius * 2.0,
-          );
-          let filled_rect = Rect::from_xywh(
-            track_rect.x(),
-            track_rect.y(),
-            (knob_center_x - track_rect.x()).max(0.0),
-            track_rect.height(),
-          );
-          if filled_rect.width() > 0.0 {
-            let radii = BorderRadii::uniform(track_height / 2.0)
-              .clamped(filled_rect.width(), filled_rect.height());
-            self
-              .list
-              .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-                rect: filled_rect,
-                color: muted_accent,
-                radii,
-              }));
-          }
-          self
-            .list
-            .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-              rect: knob_rect,
-              color: Rgba::rgb(255, 255, 255),
-              radii: BorderRadii::uniform(knob_radius),
-            }));
-          self
-            .list
-            .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
-              rect: knob_rect,
-              color: Rgba::rgb(130, 130, 130),
-              width: 1.0,
-              radii: BorderRadii::uniform(knob_radius),
-            }));
-          return true;
-        }
 
         let default_knob_diameter = padding_rect.height().min(16.0);
-        let (knob_width, knob_height) = if let Some(thumb_style) = control.slider_thumb_style.as_deref() {
-          (
-            thumb_style
-              .width
-              .and_then(abs_length_px)
-              .unwrap_or(default_knob_diameter),
-            thumb_style
-              .height
-              .and_then(abs_length_px)
-              .unwrap_or(default_knob_diameter),
-          )
-        } else {
-          (default_knob_diameter, default_knob_diameter)
-        };
-
-        if let Some(track_style) = control.slider_track_style.as_deref() {
-          let host_has_background_images = style.background_layers.iter().any(|l| l.image.is_some());
-          let host_background_empty = style.background_color.is_transparent() && !host_has_background_images;
-          let host_border_visible = if !matches!(style.border_image.source, BorderImageSource::None) {
-            true
-          } else {
-            let widths = (
-              Self::resolve_length_for_paint(
-                &style.used_border_top_width(),
-                style.font_size,
-                style.root_font_size,
-                rects.border.width(),
-                self.viewport,
-              ),
-              Self::resolve_length_for_paint(
-                &style.used_border_right_width(),
-                style.font_size,
-                style.root_font_size,
-                rects.border.width(),
-                self.viewport,
-              ),
-              Self::resolve_length_for_paint(
-                &style.used_border_bottom_width(),
-                style.font_size,
-                style.root_font_size,
-                rects.border.width(),
-                self.viewport,
-              ),
-              Self::resolve_length_for_paint(
-                &style.used_border_left_width(),
-                style.font_size,
-                style.root_font_size,
-                rects.border.width(),
-                self.viewport,
-              ),
-            );
-            let sides = (
-              BorderSide {
-                width: widths.0,
-                style: style.border_top_style,
-                color: style.border_top_color,
-              },
-              BorderSide {
-                width: widths.1,
-                style: style.border_right_style,
-                color: style.border_right_color,
-              },
-              BorderSide {
-                width: widths.2,
-                style: style.border_bottom_style,
-                color: style.border_bottom_color,
-              },
-              BorderSide {
-                width: widths.3,
-                style: style.border_left_style,
-                color: style.border_left_color,
-              },
-            );
-            Self::border_side_visible(&sides.0)
-              || Self::border_side_visible(&sides.1)
-              || Self::border_side_visible(&sides.2)
-              || Self::border_side_visible(&sides.3)
-          };
-
-          if host_background_empty && !host_border_visible {
-            let track_height = track_style
-              .height
-              .and_then(abs_length_px)
-              .unwrap_or_else(|| 4.0_f32.min(padding_rect.height()));
-            if track_height > 0.0 {
-              let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
-              let track_rect =
-                Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
-              self.emit_box_shadows_from_style(track_rect, track_style, false);
-              self.emit_background_from_style(track_rect, track_style);
-              self.emit_border_from_style(track_rect, track_style);
-            }
-          }
-        }
+        let knob_width = thumb_style
+          .and_then(|style| style.width.map(|len| resolve_px(style, len, padding_rect.width())))
+          .filter(|px| px.is_finite() && *px > 0.0)
+          .unwrap_or(default_knob_diameter);
+        let knob_height = thumb_style
+          .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
+          .filter(|px| px.is_finite() && *px > 0.0)
+          .unwrap_or(default_knob_diameter);
 
         let knob_travel = (padding_rect.width() - knob_width).max(0.0);
         let knob_center_x = padding_rect.x() + knob_width / 2.0 + clamped * knob_travel;
-        let knob_center_y = padding_rect.y() + padding_rect.height() / 2.0;
+        let mut knob_center_y = padding_rect.y() + padding_rect.height() / 2.0;
+        if let Some(thumb_style) = thumb_style {
+          if let Some(margin_top) = thumb_style.margin_top {
+            knob_center_y += resolve_px(thumb_style, margin_top, padding_rect.height());
+          }
+        }
         let knob_rect = Rect::from_xywh(
           knob_center_x - knob_width / 2.0,
           knob_center_y - knob_height / 2.0,
@@ -8281,12 +8137,74 @@ impl DisplayListBuilder {
           knob_height,
         );
 
-        if let Some(thumb_style) = control.slider_thumb_style.as_deref() {
-          self.emit_box_shadows_from_style(knob_rect, thumb_style, false);
-          self.emit_background_from_style(knob_rect, thumb_style);
-          self.emit_border_from_style(knob_rect, thumb_style);
+        if !appearance_none {
+          let track_height = track_style
+            .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
+            .filter(|px| px.is_finite() && *px > 0.0)
+            .unwrap_or_else(|| 4.0_f32.min(padding_rect.height()));
+          if track_height > 0.0 {
+            let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
+            let track_rect =
+              Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
+
+            if let Some(track_style) = track_style {
+              self.emit_box_shadows_from_style(track_rect, track_style, false);
+              self.emit_background_from_style(track_rect, track_style);
+            } else {
+              self
+                .list
+                .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+                  rect: track_rect,
+                  color: Rgba::rgb(190, 190, 190),
+                  radii: BorderRadii::uniform(track_height / 2.0),
+                }));
+            }
+
+            let filled_rect = Rect::from_xywh(
+              track_rect.x(),
+              track_rect.y(),
+              (knob_center_x - track_rect.x()).max(0.0),
+              track_rect.height(),
+            );
+            if filled_rect.width() > 0.0 {
+              let radii = BorderRadii::uniform(track_height / 2.0)
+                .clamped(filled_rect.width(), filled_rect.height());
+              self
+                .list
+                .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+                  rect: filled_rect,
+                  color: muted_accent,
+                  radii,
+                }));
+            }
+
+            if let Some(track_style) = track_style {
+              self.emit_border_from_style(track_rect, track_style);
+            }
+          }
+        }
+
+        if let Some(thumb_style) = thumb_style {
+          let mut style_for_thumb;
+          let style_for_thumb = if Self::border_radius_is_zero(thumb_style) {
+            style_for_thumb = (*thumb_style).clone();
+            let radius = knob_width.min(knob_height) / 2.0;
+            let corner =
+              crate::style::types::BorderCornerRadius::uniform(Length::px(radius.max(0.0)));
+            style_for_thumb.border_top_left_radius = corner;
+            style_for_thumb.border_top_right_radius = corner;
+            style_for_thumb.border_bottom_right_radius = corner;
+            style_for_thumb.border_bottom_left_radius = corner;
+            &style_for_thumb
+          } else {
+            thumb_style
+          };
+
+          self.emit_box_shadows_from_style(knob_rect, style_for_thumb, false);
+          self.emit_background_from_style(knob_rect, style_for_thumb);
+          self.emit_border_from_style(knob_rect, style_for_thumb);
         } else {
-          let knob_radius = (knob_width.min(knob_height)) / 2.0;
+          let knob_radius = knob_width.min(knob_height) / 2.0;
           self
             .list
             .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
