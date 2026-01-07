@@ -401,23 +401,13 @@ fn resolve_length(
   percentage_base: f32,
   viewport: Option<(f32, f32)>,
 ) -> f32 {
-  let needs_viewport = len.unit.is_viewport_relative()
-    || len
-      .calc
-      .as_ref()
-      .map(|c| c.has_viewport_relative())
-      .unwrap_or(false);
-  let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
-
-  len
-    .resolve_with_context(
-      Some(percentage_base),
-      if needs_viewport { vw } else { 0.0 },
-      if needs_viewport { vh } else { 0.0 },
-      style.font_size,
-      style.root_font_size,
-    )
-    .unwrap_or(len.value)
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    len,
+    style.font_size,
+    style.root_font_size,
+    percentage_base,
+    viewport,
+  )
 }
 
 fn resolve_background_position(
@@ -511,6 +501,56 @@ mod tests {
 
     assert!((transform.e - 50.0).abs() < 0.01);
     assert!(transform.f.abs() < 0.01);
+  }
+
+  #[test]
+  fn offset_distance_rem_uses_root_font_size() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    style.root_font_size = 20.0;
+    style.offset_path = OffsetPath::Path(vec![
+      MotionPathCommand::MoveTo(MotionPosition {
+        x: Length::px(0.0),
+        y: Length::px(0.0),
+      }),
+      MotionPathCommand::LineTo(MotionPosition {
+        x: Length::px(100.0),
+        y: Length::px(0.0),
+      }),
+    ]);
+    style.offset_anchor = OffsetAnchor::Position {
+      x: Length::px(0.0),
+      y: Length::px(0.0),
+    };
+    style.offset_distance = Length::rem(1.0);
+
+    let transform = compute_motion_transform(&style, Rect::from_xywh(0.0, 0.0, 10.0, 10.0), None)
+      .expect("transform");
+
+    assert!((transform.e - 20.0).abs() < 0.01);
+    assert!(transform.f.abs() < 0.01);
+  }
+
+  #[test]
+  fn viewport_relative_offset_distance_requires_viewport() {
+    let mut style = ComputedStyle::default();
+    style.offset_path = OffsetPath::Path(vec![
+      MotionPathCommand::MoveTo(MotionPosition {
+        x: Length::px(0.0),
+        y: Length::px(0.0),
+      }),
+      MotionPathCommand::LineTo(MotionPosition {
+        x: Length::px(100.0),
+        y: Length::px(0.0),
+      }),
+    ]);
+    style.offset_anchor = OffsetAnchor::Position {
+      x: Length::px(0.0),
+      y: Length::px(0.0),
+    };
+    style.offset_distance = Length::new(50.0, crate::style::values::LengthUnit::Vw);
+
+    assert!(compute_motion_transform(&style, Rect::from_xywh(0.0, 0.0, 10.0, 10.0), None).is_none());
   }
 
   #[test]

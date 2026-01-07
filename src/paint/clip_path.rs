@@ -491,15 +491,13 @@ fn resolve_clip_length(
   viewport: (f32, f32),
   _font_ctx: &FontContext,
 ) -> f32 {
-  len
-    .resolve_with_context(
-      Some(percentage_base),
-      viewport.0,
-      viewport.1,
-      style.font_size,
-      style.root_font_size,
-    )
-    .unwrap_or(len.value)
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    &len,
+    style.font_size,
+    style.root_font_size,
+    percentage_base,
+    Some(viewport),
+  )
 }
 
 fn resolve_clip_radii(
@@ -813,6 +811,36 @@ mod tests {
     assert!(radii.top_left.x > 0.0);
     assert!(radii.top_left.y > 0.0);
     assert!(!radii.is_zero());
+  }
+
+  #[test]
+  fn inset_clip_path_rem_uses_root_font_size() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    style.root_font_size = 20.0;
+    style.clip_path = ClipPath::BasicShape(
+      Box::new(BasicShape::Inset {
+        top: Length::rem(1.0),
+        right: Length::px(0.0),
+        bottom: Length::px(0.0),
+        left: Length::px(0.0),
+        border_radius: Box::new(None),
+      }),
+      None,
+    );
+
+    let bounds = Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+    let viewport = (100.0, 100.0);
+    let clip = resolve_clip_path(&style, bounds, viewport, &FontContext::new())
+      .expect("expected clip-path resolution to succeed")
+      .expect("expected clip-path to resolve");
+
+    let rect = match clip {
+      ResolvedClipPath::Inset { rect, .. } => rect,
+      _ => panic!("expected inset clip path"),
+    };
+
+    assert!((rect.y() - 20.0).abs() < 0.01);
   }
 
   #[test]
