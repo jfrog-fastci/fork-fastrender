@@ -2717,7 +2717,8 @@ fn parse_font_face_descriptors<'i, 't>(
         }
       }
       "font-named-instance" => {
-        if trimmed_value.eq_ignore_ascii_case("auto") {
+        if trimmed_value.eq_ignore_ascii_case("auto") || trimmed_value.eq_ignore_ascii_case("none")
+        {
           face.font_named_instance = None;
         } else if let Some(name) = parse_font_face_string_or_ident(trimmed_value) {
           if !name.trim().is_empty() {
@@ -5664,6 +5665,7 @@ mod tests {
     assert_eq!(face.descent_override, None);
     assert_eq!(face.line_gap_override, None);
   }
+
 
   #[test]
   fn resolve_imports_inlines_before_other_rules() {

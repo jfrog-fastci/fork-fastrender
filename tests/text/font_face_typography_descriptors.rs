@@ -594,3 +594,16 @@ fn font_language_override_descriptor_trims_and_ignores_invalid_values() {
     "expected invalid descriptor to fall back to style language"
   );
 }
+
+#[test]
+fn font_named_instance_none_keyword_is_treated_as_auto() {
+  let url = "https://example.test/named_none.ttf";
+  let faces = parse_faces(&format!(
+    "@font-face {{ font-family: NamedNone; src: url(\"{url}\"); font-named-instance: none; }}"
+  ));
+  assert_eq!(faces.len(), 1);
+  assert!(
+    faces[0].font_named_instance.is_none(),
+    "expected none keyword to be treated like auto"
+  );
+}
