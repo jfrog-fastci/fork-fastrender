@@ -8,7 +8,7 @@ FastRender treats native form controls as replaced elements so they participate 
 - Intrinsic sizing for form controls is handled in the replaced-element intrinsic sizing code and respects HTML defaults (e.g. ~`20ch` text inputs / `cols`+`rows` for `<textarea>`). It scales with the current font metrics so controls line up with surrounding text by default.
 - The painters draw a simplified UA-like control surface (value/placeholder text + a small set of affordances) inside the element’s content box.
 - `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing.
-- `-webkit-appearance` is intended to be treated as an alias of `appearance` once Task 94 lands (today it is only recognized for `@supports` feature queries).
+- `-webkit-appearance` is parsed/accepted today (so it can participate in `@supports`), but it does not currently affect computed styles; only the unprefixed `appearance` property is applied. Task 94 intends to treat `-webkit-appearance` as an alias of `appearance`.
 
 ## Key code paths
 
@@ -29,7 +29,7 @@ FastRender treats native form controls as replaced elements so they participate 
   - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs and the range track/thumb are still painted today).
   - Vendor pseudo-elements like `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`, etc. are not implemented yet, so fully custom range styling isn’t available.
 
-The pageset regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
+The offline page regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
 so we can catch large visual diffs caused by missing UA form control styling/painting. Regenerate
 their goldens with:
 
