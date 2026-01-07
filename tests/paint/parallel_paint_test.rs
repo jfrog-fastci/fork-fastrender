@@ -1779,6 +1779,7 @@ fn plus_lighter_mix_blend_mode_allows_parallel_tiling_without_isolation() {
   let stacking = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
