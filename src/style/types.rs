@@ -1768,8 +1768,8 @@ impl WillChange {
   /// Returns true if the hint set should proactively establish a Backdrop Root.
   ///
   /// Filter Effects Level 2 defines *Backdrop Roots* to scope the backdrop image used by
-  /// `backdrop-filter` and `mix-blend-mode`. `will-change` must behave as if the hinted property
-  /// were non-initial for this purpose.
+  /// `backdrop-filter` and `mix-blend-mode`. Backdrop roots are a strict subset of stacking context
+  /// triggers; notably `will-change: transform` should not establish a backdrop root.
   pub fn establishes_backdrop_root(&self) -> bool {
     match self {
       WillChange::Auto => false,

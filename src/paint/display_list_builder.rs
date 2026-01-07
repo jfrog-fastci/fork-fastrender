@@ -2383,18 +2383,22 @@ impl DisplayListBuilder {
 
     let local_child_visibility = child_visibility;
 
+    let will_change_backdrop_root =
+      root_style.is_some_and(|style| style.will_change.establishes_backdrop_root());
+
     let has_effects = is_isolated
       || transform.is_some()
       || child_perspective.is_some()
       || mix_blend_mode != BlendMode::Normal
       || !filters.is_empty()
       || !backdrop_filters.is_empty()
-      || clip_path.is_some()
+      || style_has_clip_path
       || clip_rect.is_some()
       || overflow_clip.is_some()
       || paint_contained
       || !radii.is_zero()
       || mask.is_some()
+      || will_change_backdrop_root
       || has_opacity;
 
     let establishes_backdrop_root = Self::stacking_context_establishes_backdrop_root(

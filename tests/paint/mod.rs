@@ -12,6 +12,7 @@ mod backdrop_root_clip_path_test;
 mod backdrop_root_filter_and_mask_test;
 mod backdrop_root_nested_backdrop_filter_test;
 mod backdrop_root_non_trigger_stacking_contexts_test;
+mod backdrop_root_semantics_test;
 mod backend_parity;
 mod backface_culling_test;
 mod border_image_outset_bounds;

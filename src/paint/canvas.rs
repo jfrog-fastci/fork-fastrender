@@ -180,6 +180,14 @@ impl LayerRecord {
   }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct LayerCompositeMetadata<'a> {
+  pub origin: (i32, i32),
+  pub opacity: f32,
+  pub blend_mode: SkiaBlendMode,
+  pub clip_mask: Option<&'a Mask>,
+}
+
 // ============================================================================
 // Canvas
 // ============================================================================
@@ -668,32 +676,48 @@ impl Canvas {
     composite_blend: Option<SkiaBlendMode>,
     origin: (i32, i32),
   ) {
-    let mut paint = PixmapPaint::default();
-    paint.opacity = opacity;
-    paint.blend_mode = composite_blend.unwrap_or(self.current_state.blend_mode);
-    let clip = self.current_state.clip_mask.as_deref();
-    // `push_layer[_bounded]` keeps the current transform active while painting into the offscreen
-    // pixmap, so the layer is already rasterized in the parent's device/pixmap coordinate space.
-    // When compositing back, we must not re-apply the transform, otherwise non-identity transforms
-    // (e.g. translated tile painters / bounded layers) would double-transform the content.
-    let transform = Transform::identity();
+    composite_layer_into_pixmap(
+      &mut self.pixmap,
+      layer,
+      opacity,
+      composite_blend.unwrap_or(self.current_state.blend_mode),
+      origin,
+      self.current_state.clip_mask.as_deref(),
+    );
+  }
 
-    if paint.blend_mode == SkiaBlendMode::Plus {
-      draw_pixmap_with_plus_blend(
-        &mut self.pixmap,
-        origin.0,
-        origin.1,
-        layer.as_ref(),
-        paint.opacity,
-        paint.quality,
-        transform,
-        clip,
-      );
-    } else {
-      self
-        .pixmap
-        .draw_pixmap(origin.0, origin.1, layer.as_ref(), &paint, transform, clip);
+  #[inline]
+  pub(crate) fn layer_depth(&self) -> usize {
+    self.layer_stack.len()
+  }
+
+  /// Returns the active pixmap at the given canvas layer depth.
+  ///
+  /// Depth 0 is the root canvas. Depth `layer_depth()` is the currently-active pixmap.
+  pub(crate) fn pixmap_at_depth(&self, depth: usize) -> Option<&Pixmap> {
+    let current_depth = self.layer_stack.len();
+    if depth > current_depth {
+      return None;
     }
+    if current_depth == 0 {
+      return (depth == 0).then_some(&self.pixmap);
+    }
+    if depth == current_depth {
+      return Some(&self.pixmap);
+    }
+    self.layer_stack.get(depth).map(|record| &record.pixmap)
+  }
+
+  /// Returns metadata for compositing the given layer depth into its parent.
+  pub(crate) fn layer_composite_metadata(&self, depth: usize) -> Option<LayerCompositeMetadata<'_>> {
+    let record = self.layer_stack.get(depth.checked_sub(1)?)?;
+    let opacity = (record.opacity * record.parent_opacity).clamp(0.0, 1.0);
+    Some(LayerCompositeMetadata {
+      origin: record.origin,
+      opacity,
+      blend_mode: record.composite_blend.unwrap_or(record.parent_blend_mode),
+      clip_mask: record.parent_clip_mask.as_deref(),
+    })
   }
 
   /// Snapshots the Backdrop Root Image into a scratch pixmap region.
@@ -2243,6 +2267,39 @@ impl Canvas {
 
     pb.close();
     pb.finish()
+  }
+}
+
+pub(crate) fn composite_layer_into_pixmap(
+  target: &mut Pixmap,
+  layer: &Pixmap,
+  opacity: f32,
+  blend_mode: SkiaBlendMode,
+  origin: (i32, i32),
+  clip: Option<&Mask>,
+) {
+  let mut paint = PixmapPaint::default();
+  paint.opacity = opacity;
+  paint.blend_mode = blend_mode;
+  // `push_layer[_bounded]` keeps the current transform active while painting into the offscreen
+  // pixmap, so the layer is already rasterized in the parent's device/pixmap coordinate space.
+  // When compositing back, we must not re-apply the transform, otherwise non-identity transforms
+  // (e.g. translated tile painters / bounded layers) would double-transform the content.
+  let transform = Transform::identity();
+
+  if paint.blend_mode == SkiaBlendMode::Plus {
+    draw_pixmap_with_plus_blend(
+      target,
+      origin.0,
+      origin.1,
+      layer.as_ref(),
+      paint.opacity,
+      paint.quality,
+      transform,
+      clip,
+    );
+  } else {
+    target.draw_pixmap(origin.0, origin.1, layer.as_ref(), &paint, transform, clip);
   }
 }
 

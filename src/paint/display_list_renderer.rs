@@ -6849,6 +6849,7 @@ impl DisplayListRenderer {
       // Without an active layer, there's nowhere to write the filtered backdrop.
       return Ok(());
     };
+
     let clip_origin = (0, 0);
     let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut() {
       Some(shared) => shared,
@@ -9160,19 +9161,6 @@ impl DisplayListRenderer {
           transform_rect(bounds, &combined_transform)
         };
 
-        // Tracks whether this stacking context should be treated as a Backdrop Root for sampling
-        // the Backdrop Root Image (Filter Effects Level 2).
-        let creates_backdrop_root = item.establishes_backdrop_root
-          || item.has_clip_path
-          || !scaled_filters.is_empty()
-          || has_backdrop
-          || opacity < 1.0 - f32::EPSILON
-          || mask.is_some()
-          || !matches!(
-            item.mix_blend_mode,
-            crate::paint::display_list::BlendMode::Normal
-          );
-
         let needs_layer = is_isolated
           || !matches!(
             item.mix_blend_mode,
@@ -9243,11 +9231,20 @@ impl DisplayListRenderer {
             if let Some(layer_rect) = bounded_rect {
               self
                 .canvas
-                .push_layer_bounded_with_backdrop_root(opacity, None, layer_rect, creates_backdrop_root)?;
+                .push_layer_bounded_with_backdrop_root(
+                  opacity,
+                  None,
+                  layer_rect,
+                  item.establishes_backdrop_root,
+                )?;
             } else {
               self
                 .canvas
-                .push_layer_with_blend_and_backdrop_root(opacity, None, creates_backdrop_root)?;
+                .push_layer_with_blend_and_backdrop_root(
+                  opacity,
+                  None,
+                  item.establishes_backdrop_root,
+                )?;
             }
           } else {
             let blend = map_blend_mode(item.mix_blend_mode);
@@ -9258,12 +9255,16 @@ impl DisplayListRenderer {
                   opacity,
                   Some(blend),
                   layer_rect,
-                  creates_backdrop_root,
+                  item.establishes_backdrop_root,
                 )?;
             } else {
               self
                 .canvas
-                .push_layer_with_blend_and_backdrop_root(opacity, Some(blend), creates_backdrop_root)?;
+                .push_layer_with_blend_and_backdrop_root(
+                  opacity,
+                  Some(blend),
+                  item.establishes_backdrop_root,
+                )?;
             }
           }
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
