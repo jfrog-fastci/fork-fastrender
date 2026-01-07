@@ -2498,6 +2498,15 @@ impl DisplayListBuilder {
       return;
     }
 
+    let needs_layer_bounds = is_isolated
+      || mix_blend_mode != BlendMode::Normal
+      || !filters.is_empty()
+      || !backdrop_filters.is_empty()
+      || has_opacity
+      || mask.is_some()
+      || clip_path.is_some();
+
+    let stacking_push_index = self.list.len();
     self
       .list
       .push(DisplayItem::PushStackingContext(StackingContextItem {
@@ -2546,6 +2555,9 @@ impl DisplayListBuilder {
     if skip_contents {
       for _ in 0..pushed_clips {
         self.list.push(DisplayItem::PopClip);
+      }
+      if needs_layer_bounds {
+        self.expand_stacking_context_bounds_from_items(stacking_push_index, context_bounds);
       }
       self.list.push(DisplayItem::PopStackingContext);
       self.pop_clips(ancestor_clips_pushed);
@@ -2634,8 +2646,59 @@ impl DisplayListBuilder {
     for _ in 0..pushed_clips {
       self.list.push(DisplayItem::PopClip);
     }
+    if needs_layer_bounds {
+      self.expand_stacking_context_bounds_from_items(stacking_push_index, context_bounds);
+    }
     self.list.push(DisplayItem::PopStackingContext);
     self.pop_clips(ancestor_clips_pushed);
+  }
+
+  fn expand_stacking_context_bounds_from_items(&mut self, push_index: usize, base_bounds: Rect) {
+    let end = self.list.len();
+    if push_index + 1 >= end {
+      return;
+    }
+
+    let mut paint_bounds: Option<Rect> = None;
+    {
+      let items = self.list.items();
+      let slice = &items[push_index + 1..end];
+      for item in slice {
+        let bounds = match item {
+          // Clips can be larger than the painted ink they restrict; avoid using them for layer
+          // bounds so we don't accidentally allocate massive layers.
+          DisplayItem::PushClip(_) => None,
+          _ => item.bounds(),
+        };
+        let Some(bounds) = bounds else {
+          continue;
+        };
+        if bounds.width() <= 0.0
+          || bounds.height() <= 0.0
+          || !bounds.x().is_finite()
+          || !bounds.y().is_finite()
+          || !bounds.width().is_finite()
+          || !bounds.height().is_finite()
+        {
+          continue;
+        }
+        paint_bounds = Some(match paint_bounds {
+          Some(existing) => existing.union(bounds),
+          None => bounds,
+        });
+      }
+    }
+
+    let Some(paint_bounds) = paint_bounds else {
+      return;
+    };
+    let expanded = base_bounds.union(paint_bounds);
+
+    if let Some(DisplayItem::PushStackingContext(sc)) =
+      self.list.items_mut().get_mut(push_index)
+    {
+      sc.bounds = expanded;
+    }
   }
 
   fn overflow_clip_from_style(
