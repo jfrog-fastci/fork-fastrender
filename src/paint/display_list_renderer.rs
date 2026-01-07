@@ -10572,13 +10572,29 @@ impl DisplayListRenderer {
       DisplayItem::PushBlendMode(mode) => {
         let canvas_layer_depth_before = self.trace_backdrop_stack.then(|| self.canvas.layer_stack_len());
         let is_backdrop_root = !matches!(mode.mode, BlendMode::Normal);
+        let clip_bounds = self.canvas.clip_bounds().filter(|bounds| {
+          bounds.width() > 0.0
+            && bounds.height() > 0.0
+            && bounds.x().is_finite()
+            && bounds.y().is_finite()
+            && bounds.width().is_finite()
+            && bounds.height().is_finite()
+        });
         if is_manual_blend(mode.mode) {
-          self.push_layer_tracked(1.0, is_backdrop_root)?;
-          self.record_layer_allocation(self.canvas.width(), self.canvas.height());
+          if let Some(bounds) = clip_bounds {
+            self.push_layer_bounded_tracked(1.0, None, bounds, is_backdrop_root)?;
+          } else {
+            self.push_layer_tracked(1.0, is_backdrop_root)?;
+          }
         } else {
-          self.push_layer_with_blend_tracked(1.0, Some(map_blend_mode(mode.mode)), is_backdrop_root)?;
-          self.record_layer_allocation(self.canvas.width(), self.canvas.height());
+          let blend = map_blend_mode(mode.mode);
+          if let Some(bounds) = clip_bounds {
+            self.push_layer_bounded_tracked(1.0, Some(blend), bounds, is_backdrop_root)?;
+          } else {
+            self.push_layer_with_blend_tracked(1.0, Some(blend), is_backdrop_root)?;
+          }
         }
+        self.record_layer_allocation(self.canvas.width(), self.canvas.height());
         self.blend_stack.push(mode.mode);
 
         if self.trace_backdrop_stack {
@@ -13983,6 +13999,7 @@ mod tests {
   use crate::geometry::Size;
   use crate::paint::clip_path::ResolvedClipPath;
   use crate::paint::display_list::BlendMode;
+  use crate::paint::display_list::BlendModeItem;
   use crate::paint::display_list::BorderImageItem;
   use crate::paint::display_list::BorderImageSourceItem;
   use crate::paint::display_list::BorderItem;
@@ -18559,6 +18576,67 @@ mod tests {
       "expected backdrop-filter to allocate a bounded layer; got {} bytes for a {}-byte canvas",
       report.layer_alloc_bytes,
       full_canvas_bytes
+    );
+  }
+
+  #[test]
+  fn push_blend_mode_allocates_bounded_layer_when_clipped() {
+    crate::paint::painter::enable_paint_diagnostics();
+    struct DiagnosticsGuard;
+    impl Drop for DiagnosticsGuard {
+      fn drop(&mut self) {
+        let _ = crate::paint::painter::take_paint_diagnostics();
+      }
+    }
+    let _guard = DiagnosticsGuard;
+
+    const SIZE: u32 = 1024;
+    let renderer = DisplayListRenderer::new(SIZE, SIZE, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled());
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(30, 120, 220, 255),
+    }));
+
+    let clip1 = Rect::from_xywh(128.0, 256.0, 64.0, 32.0);
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect { rect: clip1, radii: None },
+    }));
+    list.push(DisplayItem::PushBlendMode(BlendModeItem {
+      mode: BlendMode::Multiply,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(200, 200, 40, 255),
+    }));
+    list.push(DisplayItem::PopBlendMode);
+    list.push(DisplayItem::PopClip);
+
+    let clip2 = Rect::from_xywh(64.0, 64.0, 32.0, 16.0);
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect { rect: clip2, radii: None },
+    }));
+    list.push(DisplayItem::PushBlendMode(BlendModeItem { mode: BlendMode::Hue }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(200, 40, 60, 255),
+    }));
+    list.push(DisplayItem::PopBlendMode);
+    list.push(DisplayItem::PopClip);
+
+    let report = renderer.render_with_report(&list).unwrap();
+    assert_eq!(
+      report.layer_allocations, 2,
+      "expected each clipped PushBlendMode to allocate its own layer"
+    );
+    let expected_bytes =
+      (64u64 * 32u64).saturating_add(32u64 * 16u64).saturating_mul(4);
+    assert_eq!(
+      report.layer_alloc_bytes, expected_bytes,
+      "expected PushBlendMode layers to be allocated at the clip bounds"
     );
   }
 
