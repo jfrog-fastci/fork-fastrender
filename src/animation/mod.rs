@@ -54,6 +54,7 @@ use crate::style::types::ScrollTimelineScroller;
 use crate::style::types::ShapeRadius;
 use crate::style::types::TimelineAxis;
 use crate::style::types::TimelineOffset;
+use crate::style::types::TimelineScopeProperty;
 use crate::style::types::TransformOrigin;
 use crate::style::types::TransitionProperty;
 use crate::style::types::TransitionTimingFunction;
@@ -1180,10 +1181,7 @@ fn clip_path_to_resolved(path: &ClipPath) -> Option<ResolvedClipPath> {
       },
       BasicShape::Polygon { fill, points } => Some(ResolvedClipPath::Polygon {
         fill: *fill,
-        points: points
-          .iter()
-          .map(|(x, y)| (x.to_px(), y.to_px()))
-          .collect(),
+        points: points.iter().map(|(x, y)| (x.to_px(), y.to_px())).collect(),
         reference: *reference,
       }),
       BasicShape::Path { .. } => None,
@@ -4155,7 +4153,9 @@ fn accumulate_iteration_value(
   }
 }
 
+#[derive(Debug, Clone)]
 enum TimelineState {
+  Inactive,
   Scroll {
     timeline: ScrollTimeline,
     scroll_pos: f32,
@@ -4508,6 +4508,251 @@ fn timeline_scroll_context(
   scroll_container_context_for_node(node, origin, scroll_state).unwrap_or(root)
 }
 
+#[derive(Default)]
+struct TimelineScopePlanNode {
+  promotions: Vec<(String, TimelineState)>,
+  children: Vec<TimelineScopePlanNode>,
+  running_anchor_snapshot: Option<Box<TimelineScopePlanNode>>,
+}
+
+type TimelineCandidates = HashMap<String, Vec<TimelineState>>;
+
+fn merge_timeline_candidates(into: &mut TimelineCandidates, mut other: TimelineCandidates) {
+  for (name, mut candidates) in other.drain() {
+    into.entry(name).or_default().append(&mut candidates);
+  }
+}
+
+fn timeline_scope_blocks_name(scope: Option<&TimelineScopeProperty>, name: &str) -> bool {
+  match scope {
+    Some(TimelineScopeProperty::All) => true,
+    Some(TimelineScopeProperty::Names(names)) => names.iter().any(|n| n == name),
+    _ => false,
+  }
+}
+
+fn named_timeline_states_for_export(
+  node: &FragmentNode,
+  origin: Point,
+  abs: Rect,
+  root_context: ScrollContainerContext,
+  ancestor_scroll_containers: &[ScrollContainerContext],
+  scroll_state: &ScrollState,
+) -> HashMap<String, TimelineState> {
+  let Some(style) = node.style.as_deref() else {
+    return HashMap::new();
+  };
+
+  // When a scroll progress timeline and view progress timeline share the same name on
+  // an element, the scroll timeline should win (Scroll Animations §timeline-scoping).
+  //
+  // Store view timelines first so scroll timelines overwrite the entry for a shared name.
+  let mut map = HashMap::new();
+
+  let view_timeline_context = ancestor_scroll_containers
+    .last()
+    .copied()
+    .unwrap_or(root_context);
+  for tl in &style.view_timelines {
+    let Some(name) = &tl.name else {
+      continue;
+    };
+    let horizontal = axis_is_horizontal(tl.axis, view_timeline_context.writing_mode);
+    let target_start = if horizontal {
+      abs.x() - view_timeline_context.origin.x
+    } else {
+      abs.y() - view_timeline_context.origin.y
+    };
+    let target_end = if horizontal {
+      target_start + abs.width()
+    } else {
+      target_start + abs.height()
+    };
+    let view_size = if horizontal {
+      view_timeline_context.viewport.width
+    } else {
+      view_timeline_context.viewport.height
+    };
+    let scroll_offset = if horizontal {
+      view_timeline_context.scroll.x
+    } else {
+      view_timeline_context.scroll.y
+    };
+    map.insert(
+      name.clone(),
+      TimelineState::View {
+        timeline: tl.clone(),
+        target_start,
+        target_end,
+        view_size,
+        scroll_offset,
+      },
+    );
+  }
+
+  let scroll_timeline_context = timeline_scroll_context(node, origin, scroll_state, root_context);
+  for tl in &style.scroll_timelines {
+    let Some(name) = &tl.name else {
+      continue;
+    };
+    let (scroll_pos, scroll_range, viewport_size) = axis_scroll_state(
+      tl.axis,
+      scroll_timeline_context.writing_mode,
+      scroll_timeline_context.scroll.x,
+      scroll_timeline_context.scroll.y,
+      scroll_timeline_context.viewport.width,
+      scroll_timeline_context.viewport.height,
+      scroll_timeline_context.content.width,
+      scroll_timeline_context.content.height,
+    );
+    map.insert(
+      name.clone(),
+      TimelineState::Scroll {
+        timeline: tl.clone(),
+        scroll_pos,
+        scroll_range,
+        viewport_size,
+      },
+    );
+  }
+
+  map
+}
+
+fn build_timeline_scope_plan(
+  node: &FragmentNode,
+  origin: Point,
+  root_context: ScrollContainerContext,
+  scroll_state: &ScrollState,
+) -> TimelineScopePlanNode {
+  fn build_impl(
+    node: &FragmentNode,
+    origin: Point,
+    root_context: ScrollContainerContext,
+    scroll_state: &ScrollState,
+    ancestor_scroll_containers: &mut Vec<ScrollContainerContext>,
+  ) -> (TimelineScopePlanNode, TimelineCandidates) {
+    let abs = Rect::from_xywh(
+      origin.x,
+      origin.y,
+      node.bounds.width(),
+      node.bounds.height(),
+    );
+
+    let pushed_scroll_container = scroll_container_context_for_node(node, origin, scroll_state);
+    if let Some(ctx) = pushed_scroll_container {
+      ancestor_scroll_containers.push(ctx);
+    }
+
+    let mut children_plans = Vec::with_capacity(node.children_ref().len());
+    let mut descendant_candidates: TimelineCandidates = HashMap::new();
+    for child in node.children() {
+      let child_offset = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+      let (plan, exported) = build_impl(
+        child,
+        child_offset,
+        root_context,
+        scroll_state,
+        ancestor_scroll_containers,
+      );
+      children_plans.push(plan);
+      merge_timeline_candidates(&mut descendant_candidates, exported);
+    }
+
+    let mut running_anchor_snapshot = None;
+    if let FragmentContent::RunningAnchor { snapshot, .. } = &node.content {
+      let snapshot_node = snapshot.as_ref();
+      let snapshot_offset = Point::new(
+        origin.x + snapshot_node.bounds.x(),
+        origin.y + snapshot_node.bounds.y(),
+      );
+      let (plan, exported) = build_impl(
+        snapshot_node,
+        snapshot_offset,
+        root_context,
+        scroll_state,
+        ancestor_scroll_containers,
+      );
+      running_anchor_snapshot = Some(Box::new(plan));
+      merge_timeline_candidates(&mut descendant_candidates, exported);
+    }
+
+    if pushed_scroll_container.is_some() {
+      ancestor_scroll_containers.pop();
+    }
+
+    let scope_prop = node.style.as_deref().map(|s| &s.timeline_scope);
+    let mut promotions: Vec<(String, TimelineState)> = Vec::new();
+
+    match scope_prop {
+      Some(TimelineScopeProperty::Names(names)) => {
+        for name in names {
+          let binding = match descendant_candidates.remove(name) {
+            Some(mut candidates) if candidates.len() == 1 => {
+              candidates.pop().unwrap_or(TimelineState::Inactive)
+            }
+            _ => TimelineState::Inactive,
+          };
+          promotions.push((name.clone(), binding));
+        }
+      }
+      Some(TimelineScopeProperty::All) => {
+        // When multiple timelines with the same name exist under `timeline-scope: all`,
+        // this engine chooses a deterministic "inactive" binding rather than picking an
+        // arbitrary candidate.
+        let mut names: Vec<String> = descendant_candidates.keys().cloned().collect();
+        names.sort();
+        for name in names {
+          let binding = match descendant_candidates.remove(&name) {
+            Some(candidates) if candidates.len() == 1 => candidates
+              .into_iter()
+              .next()
+              .unwrap_or(TimelineState::Inactive),
+            _ => TimelineState::Inactive,
+          };
+          promotions.push((name, binding));
+        }
+      }
+      _ => {}
+    }
+
+    let mut exported = descendant_candidates;
+    let own = named_timeline_states_for_export(
+      node,
+      origin,
+      abs,
+      root_context,
+      ancestor_scroll_containers,
+      scroll_state,
+    );
+    for (name, state) in own {
+      if timeline_scope_blocks_name(scope_prop, &name) {
+        continue;
+      }
+      exported.entry(name).or_default().push(state);
+    }
+
+    (
+      TimelineScopePlanNode {
+        promotions,
+        children: children_plans,
+        running_anchor_snapshot,
+      },
+      exported,
+    )
+  }
+
+  let mut ancestor_scroll_containers = Vec::new();
+  let (plan, _) = build_impl(
+    node,
+    origin,
+    root_context,
+    scroll_state,
+    &mut ancestor_scroll_containers,
+  );
+  plan
+}
+
 type TimelineScope = HashMap<String, Vec<TimelineState>>;
 
 fn timeline_scope_push(scope: &mut TimelineScope, name: String, state: TimelineState) {
@@ -4712,6 +4957,7 @@ fn apply_animations_to_node_scoped(
   animation_time_ms: Option<f32>,
   scope: &mut TimelineScope,
   ancestor_scroll_containers: &mut Vec<ScrollContainerContext>,
+  plan: TimelineScopePlanNode,
 ) {
   let abs = Rect::from_xywh(
     origin.x,
@@ -4720,35 +4966,18 @@ fn apply_animations_to_node_scoped(
     node.bounds.height(),
   );
 
-  let mut pushed_names: Vec<String> = Vec::new();
-  if let Some(style) = node.style.as_ref() {
-    let scroll_timeline_context = timeline_scroll_context(node, origin, scroll_state, root_context);
-    for tl in &style.scroll_timelines {
-      if let Some(name) = &tl.name {
-        let (scroll_pos, scroll_range, viewport_size) = axis_scroll_state(
-          tl.axis,
-          scroll_timeline_context.writing_mode,
-          scroll_timeline_context.scroll.x,
-          scroll_timeline_context.scroll.y,
-          scroll_timeline_context.viewport.width,
-          scroll_timeline_context.viewport.height,
-          scroll_timeline_context.content.width,
-          scroll_timeline_context.content.height,
-        );
-        timeline_scope_push(
-          scope,
-          name.clone(),
-          TimelineState::Scroll {
-            timeline: tl.clone(),
-            scroll_pos,
-            scroll_range,
-            viewport_size,
-          },
-        );
-        pushed_names.push(name.clone());
-      }
-    }
+  let TimelineScopePlanNode {
+    promotions,
+    children: child_plans,
+    running_anchor_snapshot,
+  } = plan;
 
+  let mut pushed_names: Vec<String> = Vec::new();
+  for (name, state) in promotions {
+    timeline_scope_push(scope, name.clone(), state);
+    pushed_names.push(name);
+  }
+  if let Some(style) = node.style.as_ref() {
     let view_timeline_context = ancestor_scroll_containers
       .last()
       .copied()
@@ -4785,6 +5014,33 @@ fn apply_animations_to_node_scoped(
             target_end,
             view_size,
             scroll_offset,
+          },
+        );
+        pushed_names.push(name.clone());
+      }
+    }
+
+    let scroll_timeline_context = timeline_scroll_context(node, origin, scroll_state, root_context);
+    for tl in &style.scroll_timelines {
+      if let Some(name) = &tl.name {
+        let (scroll_pos, scroll_range, viewport_size) = axis_scroll_state(
+          tl.axis,
+          scroll_timeline_context.writing_mode,
+          scroll_timeline_context.scroll.x,
+          scroll_timeline_context.scroll.y,
+          scroll_timeline_context.viewport.width,
+          scroll_timeline_context.viewport.height,
+          scroll_timeline_context.content.width,
+          scroll_timeline_context.content.height,
+        );
+        timeline_scope_push(
+          scope,
+          name.clone(),
+          TimelineState::Scroll {
+            timeline: tl.clone(),
+            scroll_pos,
+            scroll_range,
+            viewport_size,
           },
         );
         pushed_names.push(name.clone());
@@ -4857,6 +5113,7 @@ fn apply_animations_to_node_scoped(
                       && scroll_offset.is_finite()
                       && (target_end - target_start).abs() > f32::EPSILON
                   }
+                  TimelineState::Inactive => false,
                 };
                 active.then_some(scroll_driven_effect_state(&*style_arc, idx, 0.0))
               })
@@ -4889,6 +5146,7 @@ fn apply_animations_to_node_scoped(
                     *scroll_offset,
                     &range,
                   ),
+                  TimelineState::Inactive => None,
                 });
               let fill = pick(
                 &style_arc.animation_fill_modes,
@@ -5126,7 +5384,9 @@ fn apply_animations_to_node_scoped(
     .or(parent_styles)
     .unwrap_or_else(|| default_parent_style());
   let viewport_size = Size::new(viewport.width(), viewport.height());
+  let mut child_plans = child_plans.into_iter();
   for child in node.children_mut() {
+    let child_plan = child_plans.next().unwrap_or_default();
     if let Some(child_style_arc) = child.style.as_mut() {
       let child_style = Arc::make_mut(child_style_arc);
       child_style.recompute_inherited_custom_properties(parent_for_children);
@@ -5144,9 +5404,17 @@ fn apply_animations_to_node_scoped(
       animation_time_ms,
       scope,
       ancestor_scroll_containers,
+      child_plan,
     );
   }
+  debug_assert!(
+    child_plans.next().is_none(),
+    "timeline scope plan children must match fragment children"
+  );
   if let FragmentContent::RunningAnchor { snapshot, .. } = &mut node.content {
+    let snapshot_plan = running_anchor_snapshot
+      .map(|plan| *plan)
+      .unwrap_or_default();
     let snapshot_node = Arc::make_mut(snapshot);
     if let Some(snapshot_style_arc) = snapshot_node.style.as_mut() {
       let snapshot_style = Arc::make_mut(snapshot_style_arc);
@@ -5168,6 +5436,7 @@ fn apply_animations_to_node_scoped(
       animation_time_ms,
       scope,
       ancestor_scroll_containers,
+      snapshot_plan,
     );
   }
 
@@ -5220,6 +5489,7 @@ pub fn apply_animations(
 
   {
     let root_offset = Point::new(tree.root.bounds.x(), tree.root.bounds.y());
+    let plan = build_timeline_scope_plan(&tree.root, root_offset, root_context, scroll_state);
     let mut scope = TimelineScope::new();
     let mut scroll_containers = Vec::new();
     apply_animations_to_node_scoped(
@@ -5233,11 +5503,13 @@ pub fn apply_animations(
       animation_time_ms,
       &mut scope,
       &mut scroll_containers,
+      plan,
     );
   }
 
   for frag in &mut tree.additional_fragments {
     let offset = Point::new(frag.bounds.x(), frag.bounds.y());
+    let plan = build_timeline_scope_plan(&*frag, offset, root_context, scroll_state);
     let mut scope = TimelineScope::new();
     let mut scroll_containers = Vec::new();
     apply_animations_to_node_scoped(
@@ -5251,6 +5523,7 @@ pub fn apply_animations(
       animation_time_ms,
       &mut scope,
       &mut scroll_containers,
+      plan,
     );
   }
 }
@@ -5417,8 +5690,10 @@ fn transition_pairs<'a>(
     }
   }
 
-  let mut ordered: Vec<(&'a str, usize, usize)> =
-    map.into_iter().map(|(name, (idx, order))| (name, idx, order)).collect();
+  let mut ordered: Vec<(&'a str, usize, usize)> = map
+    .into_iter()
+    .map(|(name, (idx, order))| (name, idx, order))
+    .collect();
   ordered.sort_by_key(|(_, _, order)| *order);
   Some(
     ordered

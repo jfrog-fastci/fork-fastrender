@@ -185,6 +185,7 @@ use types::TextTransform;
 use types::TextUnderlineOffset;
 use types::TextUnderlinePosition;
 use types::TextWrap;
+use types::TimelineScopeProperty;
 use types::TouchAction;
 use types::TransformBox;
 use types::TransformOrigin;
@@ -543,6 +544,8 @@ pub struct ComputedStyle {
   pub backdrop: Option<Arc<ComputedStyle>>,
   pub scrollbar_width: ScrollbarWidth,
   pub scrollbar_color: ScrollbarColor,
+  /// Scroll/view timeline scoping rules (CSS `timeline-scope`).
+  pub timeline_scope: TimelineScopeProperty,
   /// Scroll timeline definitions declared on this element.
   pub scroll_timelines: Vec<ScrollTimeline>,
   /// View timeline definitions declared on this element.
@@ -971,6 +974,7 @@ impl Default for ComputedStyle {
       backdrop: None,
       scrollbar_width: ScrollbarWidth::Auto,
       scrollbar_color: ScrollbarColor::Auto,
+      timeline_scope: TimelineScopeProperty::None,
       scroll_timelines: Vec::new(),
       view_timelines: Vec::new(),
       animation_timelines: Vec::new(),

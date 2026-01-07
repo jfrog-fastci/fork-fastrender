@@ -1012,6 +1012,20 @@ impl Default for TimelineAxis {
   }
 }
 
+/// CSS `timeline-scope`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimelineScopeProperty {
+  None,
+  All,
+  Names(Vec<String>),
+}
+
+impl Default for TimelineScopeProperty {
+  fn default() -> Self {
+    TimelineScopeProperty::None
+  }
+}
+
 /// Offset used to start or end a scroll timeline.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TimelineOffset {

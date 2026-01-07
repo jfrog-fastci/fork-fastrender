@@ -1142,6 +1142,39 @@ fn parse_scroll_timeline_scroller(token: &str) -> Option<ScrollTimelineScroller>
   }
 }
 
+fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+  if trimmed.eq_ignore_ascii_case("none") {
+    return Some(TimelineScopeProperty::None);
+  }
+  if trimmed.eq_ignore_ascii_case("all") {
+    return Some(TimelineScopeProperty::All);
+  }
+
+  let mut names = Vec::new();
+  for part in split_top_level_commas(trimmed) {
+    let name = part.trim();
+    if name.is_empty() {
+      continue;
+    }
+    // `timeline-scope` uses `<dashed-ident>`, but the engine is generally lenient
+    // about timeline names (e.g. it accepts non-dashed identifiers for `scroll-timeline`).
+    if name.eq_ignore_ascii_case("none") || name.eq_ignore_ascii_case("all") {
+      return None;
+    }
+    names.push(name.to_string());
+  }
+
+  if names.is_empty() {
+    None
+  } else {
+    Some(TimelineScopeProperty::Names(names))
+  }
+}
+
 fn parse_timeline_offset_token(token: &str) -> Option<TimelineOffset> {
   if token.eq_ignore_ascii_case("auto") {
     return Some(TimelineOffset::Auto);
@@ -10738,6 +10771,12 @@ fn apply_declaration_with_base_internal_with_order(
         } else {
           styles.scroll_snap_stop
         };
+      }
+    }
+    "timeline-scope" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      if let Some(scope) = parse_timeline_scope(css_text) {
+        styles.timeline_scope = scope;
       }
     }
     "scroll-timeline" => {
