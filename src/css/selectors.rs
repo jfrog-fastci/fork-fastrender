@@ -22,6 +22,7 @@ use selectors::parser::{
   RelativeSelectorMatchHint,
 };
 use selectors::OpaqueElement;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -615,6 +616,37 @@ impl ToCss for PseudoElement {
 /// canonical parser configuration without duplicating selector setup.
 pub struct PseudoClassParser;
 
+// Selectors Level 4:
+// - `:has()` cannot be nested; `:has()` is not valid within `:has()`.
+// - Pseudo-elements are not valid selectors within `:has()`, unless explicitly defined as
+//   `:has-allowed pseudo-elements` (none are defined by Selectors 4).
+//
+// We implement these as parse-time restrictions by tracking when we're parsing inside a `:has()`
+// argument and rejecting nested `:has()` / pseudo-elements at the point they're encountered. This
+// ensures invalid sub-selectors can still be dropped by forgiving list parsers like `:is()` / `:where()`.
+thread_local! {
+  static IN_HAS_ARGUMENT: Cell<u32> = const { Cell::new(0) };
+}
+
+fn parsing_has_argument() -> bool {
+  IN_HAS_ARGUMENT.with(|depth| depth.get() > 0)
+}
+
+struct HasArgumentScope;
+
+impl HasArgumentScope {
+  fn enter() -> Self {
+    IN_HAS_ARGUMENT.with(|depth| depth.set(depth.get() + 1));
+    Self
+  }
+}
+
+impl Drop for HasArgumentScope {
+  fn drop(&mut self) {
+    IN_HAS_ARGUMENT.with(|depth| depth.set(depth.get().saturating_sub(1)));
+  }
+}
+
 impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
   type Error = SelectorParseErrorKind<'i>;
   type Impl = FastRenderSelectorImpl;
@@ -714,6 +746,10 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
         Ok(PseudoClass::HostContext(selectors))
       }
       "has" => {
+        if parsing_has_argument() {
+          return Err(parser.new_custom_error(SelectorParseErrorKind::InvalidState));
+        }
+        let _scope = HasArgumentScope::enter();
         let list = SelectorList::parse(
           &PseudoClassParser,
           parser,
@@ -800,6 +836,12 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     _location: cssparser::SourceLocation,
     name: cssparser::CowRcStr<'i>,
   ) -> std::result::Result<PseudoElement, ParseError<'i, Self::Error>> {
+    if parsing_has_argument() {
+      return Err(ParseError {
+        kind: cssparser::ParseErrorKind::Custom(SelectorParseErrorKind::InvalidState),
+        location: _location,
+      });
+    }
     let lowered = name.to_ascii_lowercase();
     match lowered.as_str() {
       "before" => Ok(PseudoElement::Before),
@@ -830,6 +872,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     name: cssparser::CowRcStr<'i>,
     parser: &mut Parser<'i, 't>,
   ) -> std::result::Result<PseudoElement, ParseError<'i, Self::Error>> {
+    if parsing_has_argument() {
+      return Err(parser.new_custom_error(SelectorParseErrorKind::InvalidState));
+    }
     let lowered = name.to_ascii_lowercase();
     match lowered.as_str() {
       "slotted" => parse_slotted_pseudo_element(parser, &name),
