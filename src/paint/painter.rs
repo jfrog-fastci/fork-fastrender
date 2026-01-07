@@ -7548,117 +7548,43 @@ impl Painter {
       }
       FormControlKind::Range { value, min, max } => {
         let appearance_none = matches!(control.appearance, Appearance::None);
-        let track_height = 4.0_f32.min(content_rect.height());
-        let track_y = content_rect.y() + (content_rect.height() - track_height) / 2.0;
-        let radii = BorderRadii::uniform(track_height / 2.0);
-        let track_color = Rgba::rgb(190, 190, 190);
+        let track_style = control.slider_track_style.as_deref();
+        let thumb_style = control.slider_thumb_style.as_deref();
+        let viewport = (self.css_width, self.css_height);
 
         let min_val = *min;
         let max_val = *max;
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
-        let abs_length_px = |len: Length| -> Option<f32> {
-          let px = if let Some(calc) = len.calc {
-            calc.absolute_sum()?
-          } else if len.unit.is_absolute() {
-            len.to_px()
-          } else {
-            return None;
-          };
-          (px.is_finite() && px > 0.0).then_some(px)
+
+        let resolve_px = |style: &ComputedStyle, len: Length, percentage_base: f32| -> f32 {
+          resolve_length_for_paint(
+            &len,
+            style.font_size,
+            style.root_font_size,
+            percentage_base,
+            viewport,
+          )
         };
 
-        if !appearance_none {
-          let device_track_rect = self.device_rect(Rect::from_xywh(
-            content_rect.x(),
-            track_y,
-            content_rect.width(),
-            track_height,
-          ));
-          let device_radii = self.device_radii(radii);
-          fill_rounded_rect_masked(
-            &mut self.pixmap,
-            device_track_rect,
-            device_radii,
-            track_color,
-            clip_mask,
-          );
-
-          let knob_radius = (content_rect.height().min(16.0)) / 2.0;
-          let knob_center_x =
-            content_rect.x() + knob_radius + clamped * (content_rect.width() - 2.0 * knob_radius);
-          let knob_center_y = content_rect.y() + content_rect.height() / 2.0;
-
-          let fill_rect = Rect::from_xywh(
-            content_rect.x(),
-            track_y,
-            (knob_center_x - content_rect.x()).max(0.0),
-            track_height,
-          );
-          if fill_rect.width() > 0.0 {
-            let radii = radii.clamped(fill_rect.width(), fill_rect.height());
-            let device_fill_rect = self.device_rect(fill_rect);
-            let device_radii = self.device_radii(radii);
-            let _ = fill_rounded_rect(
-              &mut self.pixmap,
-              device_fill_rect.x(),
-              device_fill_rect.y(),
-              device_fill_rect.width(),
-              device_fill_rect.height(),
-              &device_radii,
-              muted_accent,
-            );
-          }
-
-          let knob_center_x = self.device_x(knob_center_x);
-          let knob_center_y = self.device_y(knob_center_y);
-          let knob_radius = self.device_length(knob_radius);
-          if let Some(path) = PathBuilder::from_circle(knob_center_x, knob_center_y, knob_radius) {
-            let mut paint = Paint::default();
-            paint.set_color_rgba8(255, 255, 255, 255);
-            paint.anti_alias = true;
-            self.pixmap.fill_path(
-              &path,
-              &paint,
-              tiny_skia::FillRule::Winding,
-              Transform::identity(),
-              clip_mask,
-            );
-
-            let mut stroke_paint = Paint::default();
-            stroke_paint.set_color_rgba8(130, 130, 130, 255);
-            stroke_paint.anti_alias = true;
-            let stroke = tiny_skia::Stroke {
-              width: 1.0 * self.scale,
-              ..Default::default()
-            };
-            self
-              .pixmap
-              .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
-          }
-          return true;
-        }
-
         let default_knob_diameter = content_rect.height().min(16.0);
-        let (knob_width, knob_height) =
-          if let Some(thumb_style) = control.slider_thumb_style.as_deref() {
-            (
-              thumb_style
-                .width
-                .and_then(abs_length_px)
-                .unwrap_or(default_knob_diameter),
-              thumb_style
-                .height
-                .and_then(abs_length_px)
-                .unwrap_or(default_knob_diameter),
-            )
-          } else {
-            (default_knob_diameter, default_knob_diameter)
-          };
+        let knob_width = thumb_style
+          .and_then(|style| style.width.map(|len| resolve_px(style, len, content_rect.width())))
+          .filter(|px| px.is_finite() && *px > 0.0)
+          .unwrap_or(default_knob_diameter);
+        let knob_height = thumb_style
+          .and_then(|style| style.height.map(|len| resolve_px(style, len, content_rect.height())))
+          .filter(|px| px.is_finite() && *px > 0.0)
+          .unwrap_or(default_knob_diameter);
 
         let knob_travel = (content_rect.width() - knob_width).max(0.0);
         let knob_center_x = content_rect.x() + knob_width / 2.0 + clamped * knob_travel;
-        let knob_center_y = content_rect.y() + content_rect.height() / 2.0;
+        let mut knob_center_y = content_rect.y() + content_rect.height() / 2.0;
+        if let Some(thumb_style) = thumb_style {
+          if let Some(margin_top) = thumb_style.margin_top {
+            knob_center_y += resolve_px(thumb_style, margin_top, content_rect.height());
+          }
+        }
         let knob_rect = Rect::from_xywh(
           knob_center_x - knob_width / 2.0,
           knob_center_y - knob_height / 2.0,
@@ -7666,9 +7592,116 @@ impl Painter {
           knob_height,
         );
 
-        if let Some(thumb_style) = control.slider_thumb_style.as_deref() {
+        if !appearance_none {
+          let default_track_height = 4.0_f32.min(content_rect.height());
+          let track_height = track_style
+            .and_then(|style| style.height.map(|len| resolve_px(style, len, content_rect.height())))
+            .filter(|px| px.is_finite() && *px > 0.0)
+            .unwrap_or(default_track_height);
+
+          if track_height > 0.0 {
+            let track_y = content_rect.y() + (content_rect.height() - track_height) / 2.0;
+            let track_rect =
+              Rect::from_xywh(content_rect.x(), track_y, content_rect.width(), track_height);
+
+            if let Some(track_style) = track_style {
+              let device_track_rect = self.device_rect(track_rect);
+              let radii = self.device_radii(resolve_border_radii(Some(track_style), track_rect));
+              fill_rounded_rect_masked(
+                &mut self.pixmap,
+                device_track_rect,
+                radii,
+                track_style.background_color,
+                clip_mask,
+              );
+            } else {
+              let device_track_rect = self.device_rect(track_rect);
+              let radii = self.device_radii(BorderRadii::uniform(track_height / 2.0));
+              fill_rounded_rect_masked(
+                &mut self.pixmap,
+                device_track_rect,
+                radii,
+                Rgba::rgb(190, 190, 190),
+                clip_mask,
+              );
+            }
+
+            let fill_rect = Rect::from_xywh(
+              track_rect.x(),
+              track_rect.y(),
+              (knob_center_x - track_rect.x()).max(0.0),
+              track_rect.height(),
+            );
+            if fill_rect.width() > 0.0 {
+              let radii = BorderRadii::uniform(track_height / 2.0)
+                .clamped(fill_rect.width(), fill_rect.height());
+              let device_fill_rect = self.device_rect(fill_rect);
+              let device_radii = self.device_radii(radii);
+              fill_rounded_rect_masked(
+                &mut self.pixmap,
+                device_fill_rect,
+                device_radii,
+                muted_accent,
+                clip_mask,
+              );
+            }
+
+            if let Some(track_style) = track_style {
+              let border_width = resolve_length_for_paint(
+                &track_style.used_border_top_width(),
+                track_style.font_size,
+                track_style.root_font_size,
+                track_rect.width().max(0.0),
+                viewport,
+              )
+              .max(0.0);
+              let border_style = track_style.border_top_style;
+              let border_color = track_style.border_top_color;
+              if border_width > 0.0
+                && !matches!(
+                  border_style,
+                  crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden
+                )
+                && !border_color.is_transparent()
+              {
+                let device_track_rect = self.device_rect(track_rect);
+                let radii = self.device_radii(resolve_border_radii(Some(track_style), track_rect));
+                let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+                  device_track_rect.x(),
+                  device_track_rect.y(),
+                  device_track_rect.width(),
+                  device_track_rect.height(),
+                  &radii,
+                ) else {
+                  return true;
+                };
+                let mut paint = Paint::default();
+                paint.set_color(tiny_skia::Color::from_rgba8(
+                  border_color.r,
+                  border_color.g,
+                  border_color.b,
+                  border_color.alpha_u8(),
+                ));
+                paint.anti_alias = true;
+                let stroke = tiny_skia::Stroke {
+                  width: border_width * self.scale,
+                  ..Default::default()
+                };
+                self
+                  .pixmap
+                  .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+              }
+            }
+          }
+        }
+
+        if let Some(thumb_style) = thumb_style {
           let device_knob_rect = self.device_rect(knob_rect);
-          let radii = self.device_radii(resolve_border_radii(Some(thumb_style), knob_rect));
+          let mut radii = resolve_border_radii(Some(thumb_style), knob_rect);
+          if radii.is_zero() {
+            radii = BorderRadii::uniform((knob_width.min(knob_height)) / 2.0);
+          }
+          let radii = self.device_radii(radii);
           fill_rounded_rect_masked(
             &mut self.pixmap,
             device_knob_rect,
@@ -7682,15 +7715,19 @@ impl Painter {
             thumb_style.font_size,
             thumb_style.root_font_size,
             knob_rect.width().max(0.0),
-            (self.css_width, self.css_height),
+            viewport,
           )
           .max(0.0);
           let border_style = thumb_style.border_top_style;
           let border_color = thumb_style.border_top_color;
           if border_width > 0.0
-            && !matches!(border_style, crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden)
+            && !matches!(
+              border_style,
+              crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden
+            )
             && !border_color.is_transparent()
           {
+            let border_clip = if appearance_none { clip_mask } else { None };
             let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
               device_knob_rect.x(),
               device_knob_rect.y(),
@@ -7714,7 +7751,7 @@ impl Painter {
             };
             self
               .pixmap
-              .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+              .stroke_path(&path, &paint, &stroke, Transform::identity(), border_clip);
           }
         } else {
           let knob_radius = (knob_width.min(knob_height)) / 2.0;
@@ -15912,6 +15949,70 @@ mod tests {
     assert!(
       red_bbox.1 < black_bbox.1,
       "emphasis mark should appear above the glyphs when positioned over the text"
+    );
+  }
+
+  #[test]
+  fn legacy_range_control_uses_slider_pseudo_styles() {
+    let mut style = ComputedStyle::default();
+    style.accent_color = AccentColor::Color(Rgba::TRANSPARENT);
+
+    let mut track_style = ComputedStyle::default();
+    track_style.height = Some(Length::px(8.0));
+    track_style.background_color = Rgba::GREEN;
+    track_style.border_top_width = Length::px(0.0);
+    track_style.border_right_width = Length::px(0.0);
+    track_style.border_bottom_width = Length::px(0.0);
+    track_style.border_left_width = Length::px(0.0);
+
+    let mut thumb_style = ComputedStyle::default();
+    thumb_style.width = Some(Length::px(20.0));
+    thumb_style.height = Some(Length::px(20.0));
+    thumb_style.background_color = Rgba::RED;
+    thumb_style.border_top_width = Length::px(0.0);
+    thumb_style.border_right_width = Length::px(0.0);
+    thumb_style.border_bottom_width = Length::px(0.0);
+    thumb_style.border_left_width = Length::px(0.0);
+
+    let control = FormControl {
+      control: FormControlKind::Range {
+        value: 50.0,
+        min: 0.0,
+        max: 100.0,
+      },
+      appearance: Appearance::Auto,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+      placeholder_style: None,
+      slider_thumb_style: Some(Arc::new(thumb_style)),
+      slider_track_style: Some(Arc::new(track_style)),
+    };
+
+    let mut painter = Painter::new(100, 30, Rgba::WHITE).expect("painter");
+    painter.fill_background();
+    let content_rect = Rect::from_xywh(0.0, 0.0, 100.0, 30.0);
+    painter.paint_form_control(&control, &style, content_rect, None, None);
+
+    let pixmap = painter.pixmap;
+    let thumb_px = color_at(&pixmap, 50, 15);
+    assert!(
+      thumb_px.0 > 200 && thumb_px.1 < 80 && thumb_px.2 < 80,
+      "expected thumb to use slider pseudo background color, got rgba={thumb_px:?}"
+    );
+
+    let track_px = color_at(&pixmap, 10, 15);
+    assert!(
+      track_px.1 > 200 && track_px.0 < 80 && track_px.2 < 80,
+      "expected track to use slider pseudo background color, got rgba={track_px:?}"
+    );
+
+    assert_eq!(
+      color_at(&pixmap, 10, 5),
+      (255, 255, 255, 255),
+      "expected background pixels outside the track"
     );
   }
 
