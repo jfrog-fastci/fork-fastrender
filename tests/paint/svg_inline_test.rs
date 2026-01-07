@@ -426,6 +426,35 @@ fn foreign_object_background_alpha_is_applied_once() {
 }
 
 #[test]
+fn foreign_object_background_from_svg_style_attribute_is_captured() {
+  let html = r#"
+  <svg width="16" height="16" viewBox="0 0 16 16">
+    <foreignObject x="0" y="0" width="16" height="16" style="background: rgba(255, 0, 0, 0.5);">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;"></div>
+    </foreignObject>
+  </svg>
+  "#;
+
+  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+  assert_eq!(
+    serialized.foreign_objects.len(),
+    1,
+    "expected one foreignObject to be captured"
+  );
+  let bg = serialized.foreign_objects[0]
+    .background
+    .expect("foreignObject background should be captured");
+  assert_eq!(bg.r, 255);
+  assert_eq!(bg.g, 0);
+  assert_eq!(bg.b, 0);
+  assert!(
+    (bg.a - 0.5).abs() < 0.01,
+    "expected alpha ~0.5, got {:?}",
+    bg
+  );
+}
+
+#[test]
 fn foreign_object_renders_nested_html_children() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

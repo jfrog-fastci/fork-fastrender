@@ -300,7 +300,7 @@ fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
   if let Some(bg) = info.background {
     style.push_str("background:");
     style.push_str(&format_css_color(bg));
-    style.push(';');
+    style.push_str(" !important;");
   }
 
   style.push_str("color:");
