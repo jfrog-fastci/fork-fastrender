@@ -4950,7 +4950,9 @@ impl GridFormattingContext {
           ),
         };
         if offsets.len() >= 2 {
-          return Some((offsets[1], *offsets.last().unwrap()));
+          let start = *offsets.get(1)?;
+          let end = *offsets.last()?;
+          return Some((start, end));
         }
       }
 

@@ -794,13 +794,23 @@ impl TextItem {
       match (base_iter.peek(), additional_iter.peek()) {
         (Some(a), Some(b)) => {
           if a.byte_offset < b.byte_offset {
-            merged.push(base_iter.next().unwrap());
+            let Some(next) = base_iter.next() else {
+              break;
+            };
+            merged.push(next);
           } else if a.byte_offset > b.byte_offset {
-            merged.push(additional_iter.next().unwrap());
+            let Some(next) = additional_iter.next() else {
+              break;
+            };
+            merged.push(next);
           } else {
             // Same byte offset: merge so normal/mandatory/hyphen metadata wins.
-            let mut existing = base_iter.next().unwrap();
-            let added = additional_iter.next().unwrap();
+            let Some(mut existing) = base_iter.next() else {
+              break;
+            };
+            let Some(added) = additional_iter.next() else {
+              break;
+            };
             if matches!(added.break_type, BreakType::Mandatory)
               || matches!(existing.break_type, BreakType::Mandatory)
             {
@@ -813,8 +823,18 @@ impl TextItem {
             merged.push(existing);
           }
         }
-        (Some(_), None) => merged.push(base_iter.next().unwrap()),
-        (None, Some(_)) => merged.push(additional_iter.next().unwrap()),
+        (Some(_), None) => {
+          let Some(next) = base_iter.next() else {
+            break;
+          };
+          merged.push(next);
+        }
+        (None, Some(_)) => {
+          let Some(next) = additional_iter.next() else {
+            break;
+          };
+          merged.push(next);
+        }
         (None, None) => break,
       }
     }

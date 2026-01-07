@@ -2647,7 +2647,9 @@ impl InlineFormattingContext {
       }
 
       let mut iter = segments.into_iter();
-      let mut current = iter.next().unwrap();
+      let Some(mut current) = iter.next() else {
+        return Vec::new();
+      };
       for mut seg in iter {
         current.base.append(&mut seg.base);
         if seg.annotations.is_empty() {
@@ -7130,17 +7132,36 @@ fn merge_breaks(
       match (base_iter.peek(), forced_iter.peek()) {
         (Some(a), Some(b)) => {
           if a.byte_offset < b.byte_offset {
-            merged.push(base_iter.next().unwrap());
+            let Some(next) = base_iter.next() else {
+              break;
+            };
+            merged.push(next);
           } else if a.byte_offset > b.byte_offset {
-            merged.push(forced_iter.next().unwrap());
+            let Some(next) = forced_iter.next() else {
+              break;
+            };
+            merged.push(next);
           } else {
             // Same byte offset: both are mandatory breaks, so keep a single entry.
-            merged.push(base_iter.next().unwrap());
+            let Some(next) = base_iter.next() else {
+              break;
+            };
+            merged.push(next);
             forced_iter.next();
           }
         }
-        (Some(_), None) => merged.push(base_iter.next().unwrap()),
-        (None, Some(_)) => merged.push(forced_iter.next().unwrap()),
+        (Some(_), None) => {
+          let Some(next) = base_iter.next() else {
+            break;
+          };
+          merged.push(next);
+        }
+        (None, Some(_)) => {
+          let Some(next) = forced_iter.next() else {
+            break;
+          };
+          merged.push(next);
+        }
         (None, None) => break,
       }
     }
