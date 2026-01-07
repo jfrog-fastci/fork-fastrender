@@ -4360,6 +4360,7 @@ impl FastRender {
     font_context: FontContext,
     image_cache: ImageCache,
   ) -> Result<Self> {
+    crate::rayon_global::ensure_global_pool().map_err(Error::Other)?;
     let mut layout_config = LayoutConfig::for_viewport(Size::new(
       config.default_width as f32,
       config.default_height as f32,
@@ -4494,7 +4495,6 @@ impl FastRender {
     config: FastRenderConfig,
     fetcher: Option<Arc<dyn ResourceFetcher>>,
   ) -> Result<Self> {
-    crate::rayon_global::ensure_global_pool().map_err(Error::Other)?;
     let font_config = config.font_config.clone();
     let fetcher = resolve_fetcher(&config, fetcher);
     let font_context =
