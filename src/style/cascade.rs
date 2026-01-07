@@ -12471,6 +12471,54 @@ mod tests {
   }
 
   #[test]
+  fn vendor_placeholder_pseudo_class_inside_not_matches_like_placeholder_shown() {
+    // Bootstrap floating labels use selectors like `.form-control:not(:-moz-placeholder)` to detect
+    // whether the input has content. Since `:-moz-placeholder` is treated as a pseudo-element in
+    // normal selector parsing, we only see it here because pseudo-elements are disallowed inside
+    // `:not(...)` and it is parsed as a pseudo-class instead. That pseudo-class must behave like
+    // `:placeholder-shown` to preserve the intended semantics.
+    let stylesheet = parse_stylesheet(
+      r#"
+        input:not(:-moz-placeholder) { color: rgb(10, 20, 30); }
+      "#,
+    )
+    .expect("parse stylesheet");
+
+    let empty_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "Search…".to_string())],
+      },
+      children: vec![],
+    };
+    let baseline_empty = apply_styles(&empty_input, &StyleSheet::new());
+    let styled_empty = apply_styles(&empty_input, &stylesheet);
+    assert_eq!(
+      styled_empty.styles.color, baseline_empty.styles.color,
+      "rule should not match when placeholder is shown"
+    );
+
+    let filled_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("placeholder".to_string(), "Search…".to_string()),
+          ("value".to_string(), "hello".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    let styled_filled = apply_styles(&filled_input, &stylesheet);
+    assert_eq!(
+      styled_filled.styles.color,
+      Rgba::rgb(10, 20, 30),
+      "rule should match when placeholder is not shown"
+    );
+  }
+
+  #[test]
   fn overflow_axis_normalization_matches_chrome() {
     let stylesheet = StyleSheet::new();
 

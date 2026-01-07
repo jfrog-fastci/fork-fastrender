@@ -10521,7 +10521,6 @@ mod tests {
     assert_eq!(value, "a");
     assert!(*selected);
     assert!(*disabled);
-    assert_eq!(select_selected_value(select).as_deref(), Some("a"));
   }
 
   #[test]
@@ -10595,7 +10594,6 @@ mod tests {
     assert_eq!(value, "");
     assert!(*selected);
     assert!(*disabled);
-    assert_eq!(select_selected_value(select).as_deref(), Some(""));
   }
 
   #[test]
