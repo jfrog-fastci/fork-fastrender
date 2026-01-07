@@ -7,7 +7,7 @@ use crate::paint::pixmap::MAX_PIXMAP_BYTES;
 use image::Rgba;
 use image::RgbaImage;
 use std::ffi::c_void;
-use std::io::Cursor;
+use std::io;
 use std::io::Write;
 use tiny_skia::Pixmap;
 
@@ -74,6 +74,64 @@ fn unpremultiply_rgba_row(src: &[u8], dst: &mut [u8]) {
   }
 }
 
+/// A growable in-memory writer that fails gracefully when allocations fail.
+///
+/// The default `impl Write for Vec<u8>` uses infallible allocation and will abort the process on
+/// OOM. Encoding large images can push the process close to memory limits, so prefer `try_reserve`
+/// and surface allocation failures as I/O errors that we can map to `RenderError::EncodeFailed`.
+struct FallibleVecWriter {
+  buf: Vec<u8>,
+  max_bytes: usize,
+  context: &'static str,
+}
+
+impl FallibleVecWriter {
+  fn new(max_bytes: usize, context: &'static str) -> Self {
+    Self {
+      buf: Vec::new(),
+      max_bytes,
+      context,
+    }
+  }
+
+  fn into_inner(self) -> Vec<u8> {
+    self.buf
+  }
+}
+
+impl Write for FallibleVecWriter {
+  fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+    let new_len = self
+      .buf
+      .len()
+      .checked_add(data.len())
+      .ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("{}: output length overflow", self.context)))?;
+
+    if new_len > self.max_bytes {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+          "{}: output exceeded {} bytes (attempted {})",
+          self.context, self.max_bytes, new_len
+        ),
+      ));
+    }
+
+    self.buf.try_reserve(data.len()).map_err(|err| {
+      io::Error::new(
+        io::ErrorKind::Other,
+        format!("{}: output buffer allocation failed: {err}", self.context),
+      )
+    })?;
+    self.buf.extend_from_slice(data);
+    Ok(data.len())
+  }
+
+  fn flush(&mut self) -> io::Result<()> {
+    Ok(())
+  }
+}
+
 pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
   let width = pixmap.width();
   let height = pixmap.height();
@@ -127,7 +185,9 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
         })
       })?;
 
-      let mut buffer = Vec::new();
+      // Cap encoded output to the same budget we use for pixmap allocations so huge outputs fail
+      // with a structured error instead of aborting the process.
+      let mut buffer = FallibleVecWriter::new(MAX_PIXMAP_BYTES as usize, "encode_image: PNG output");
       {
         let mut encoder = png::Encoder::new(&mut buffer, width, height);
         encoder.set_color(png::ColorType::Rgba);
@@ -172,9 +232,10 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
         })?;
       }
 
-      Ok(buffer)
+      Ok(buffer.into_inner())
     }
     OutputFormat::Jpeg(quality) => {
+      let quality = quality.min(100);
       // JPEG has no alpha channel. Convert premultiplied RGBA → straight RGB directly, avoiding
       // the previous full-frame RGBA + RGB intermediate buffers.
       let rgb_len = u64::from(width)
@@ -215,9 +276,8 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
         })
       })?;
 
-      let mut buffer = Vec::new();
-      let mut cursor = Cursor::new(&mut buffer);
-      let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
+      let mut buffer = FallibleVecWriter::new(MAX_PIXMAP_BYTES as usize, "encode_image: JPEG output");
+      let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality);
       rgb_img.write_with_encoder(encoder).map_err(|e| {
         Error::Render(RenderError::EncodeFailed {
           format: "JPEG".to_string(),
@@ -225,7 +285,7 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
         })
       })?;
 
-      Ok(buffer)
+      Ok(buffer.into_inner())
     }
     OutputFormat::WebP(quality) => {
       // Encode via libwebp's picture API to avoid building a second full-frame RGBA buffer.
@@ -358,7 +418,15 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
         }
 
         let data = std::slice::from_raw_parts(writer.0.mem, writer.0.size);
-        Ok(data.to_vec())
+        let out_len = u64::try_from(writer.0.size).map_err(|_| {
+          Error::Render(RenderError::EncodeFailed {
+            format: "WebP".to_string(),
+            reason: "WebP output size does not fit in u64".to_string(),
+          })
+        })?;
+        let mut out = reserve_buffer(out_len, "encode_image: WebP output").map_err(Error::Render)?;
+        out.extend_from_slice(data);
+        Ok(out)
       }
     }
   }
