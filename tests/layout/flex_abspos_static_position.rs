@@ -4,7 +4,9 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
-use fastrender::style::types::{AlignItems, Direction, FlexDirection, JustifyContent, WritingMode};
+use fastrender::style::types::{
+  AlignItems, BorderStyle, BoxSizing, Direction, FlexDirection, JustifyContent, WritingMode,
+};
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -165,4 +167,46 @@ fn abspos_static_position_respects_vertical_writing_mode_axes() {
   let (x, y) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
   assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_is_relative_to_flex_content_box() {
+  // The "static position rectangle" for abspos flex children is the flex container's content box
+  // (i.e. inside padding/border). Ensure we measure alignment from there rather than from the
+  // border box.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.box_sizing = BoxSizing::BorderBox;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.justify_content = JustifyContent::Center;
+  container_style.align_items = AlignItems::Center;
+
+  container_style.border_left_style = BorderStyle::Solid;
+  container_style.border_right_style = BorderStyle::Solid;
+  container_style.border_top_style = BorderStyle::Solid;
+  container_style.border_bottom_style = BorderStyle::Solid;
+  container_style.border_left_width = Length::px(2.0);
+  container_style.border_right_width = Length::px(8.0);
+  container_style.border_top_width = Length::px(4.0);
+  container_style.border_bottom_width = Length::px(6.0);
+
+  container_style.padding_left = Length::px(5.0);
+  container_style.padding_right = Length::px(15.0);
+  container_style.padding_top = Length::px(7.0);
+  container_style.padding_bottom = Length::px(9.0);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(20.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  // Content box is 100 - (2+8) - (5+15) = 70 wide, 100 - (4+6) - (7+9) = 74 tall.
+  // Center alignment therefore places a 10×20 child at:
+  // x = border_left + padding_left + (70 - 10)/2 = 2 + 5 + 30 = 37
+  // y = border_top + padding_top + (74 - 20)/2 = 4 + 7 + 27 = 38
+  assert!((x - 37.0).abs() < 0.1, "expected x≈37, got {}", x);
+  assert!((y - 38.0).abs() < 0.1, "expected y≈38, got {}", y);
 }
