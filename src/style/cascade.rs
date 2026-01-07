@@ -365,6 +365,10 @@ fn container_query_matches(
       memo.query_eval.insert(key, result);
       result
     }
+    ContainerQuery::Unknown(_) => {
+      memo.query_eval.insert(key, false);
+      false
+    }
     ContainerQuery::Not(inner) => {
       let result =
         !container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo);
@@ -469,6 +473,7 @@ fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
   match query {
     ContainerQuery::Size(mq) => cq_size_query_support_mask(mq),
     ContainerQuery::Style(_) => CQ_SUPPORT_ALL,
+    ContainerQuery::Unknown(_) => 0,
     ContainerQuery::Not(inner) => cq_query_support_mask(inner),
     ContainerQuery::And(list) => {
       if list.is_empty() {

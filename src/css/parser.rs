@@ -1108,17 +1108,51 @@ fn parse_container_negation<'i, 't>(
     let inner = parse_container_negation(parser)?;
     return Ok(ContainerQuery::Not(Box::new(inner)));
   }
-  parse_container_feature(parser)
+  parse_container_query_in_parens(parser)
 }
 
-fn parse_container_feature<'i, 't>(
+fn parse_container_query_in_parens<'i, 't>(
   parser: &mut Parser<'i, 't>,
 ) -> std::result::Result<ContainerQuery, ParseError<'i, ()>> {
   parser.skip_whitespace();
   if let Ok(style) = parser.try_parse(parse_container_style_function) {
     return Ok(ContainerQuery::Style(style));
   }
-  parse_container_size_query(parser)
+
+  match parser.next_including_whitespace()? {
+    Token::ParenthesisBlock => parser.parse_nested_block(|nested| {
+      let state = nested.state();
+      if let Ok(grouped) = nested.try_parse(|p| {
+        p.skip_whitespace();
+        let query = parse_container_condition(p)?;
+        p.skip_whitespace();
+        if p.is_exhausted() {
+          Ok(query)
+        } else {
+          Err(p.new_custom_error(()))
+        }
+      }) {
+        return Ok(grouped);
+      }
+      nested.reset(&state);
+
+      let inner = stringify_nested_tokens(nested)?;
+      let raw = format!("({inner})");
+      if let Ok(query) = MediaQuery::parse(&raw) {
+        if query.is_size_query() {
+          return Ok(ContainerQuery::Size(query));
+        }
+      }
+
+      Ok(ContainerQuery::Unknown(raw))
+    }),
+    Token::Function(name) => {
+      let name = name.to_string();
+      let args = parser.parse_nested_block(stringify_nested_tokens)?;
+      Ok(ContainerQuery::Unknown(format!("{name}({args})")))
+    }
+    _ => Err(parser.new_custom_error(())),
+  }
 }
 
 fn parse_container_style_function<'i, 't>(
@@ -1161,6 +1195,10 @@ fn stringify_nested_tokens<'i, 't, E>(
       Token::SquareBracketBlock => {
         let inner = parser.parse_nested_block(stringify_nested_tokens)?;
         parts.push(format!("[{inner}]"));
+      }
+      Token::CurlyBracketBlock => {
+        let inner = parser.parse_nested_block(stringify_nested_tokens)?;
+        parts.push(format!("{{{inner}}}"));
       }
       other => parts.push(other.to_css_string()),
     }
@@ -1211,31 +1249,6 @@ fn parse_style_query_from_str(raw: &str) -> Option<ContainerStyleQuery> {
     name: name.to_ascii_lowercase(),
     value,
   })
-}
-
-fn parse_container_size_query<'i, 't>(
-  parser: &mut Parser<'i, 't>,
-) -> std::result::Result<ContainerQuery, ParseError<'i, ()>> {
-  parser.skip_whitespace();
-  let query_text = parser.try_parse(|p| match p.next_including_whitespace()? {
-    Token::ParenthesisBlock => {
-      let inner = p.parse_nested_block(stringify_nested_tokens)?;
-      Ok(format!("({inner})"))
-    }
-    Token::Function(f) => {
-      let name = f.to_string();
-      let args = p.parse_nested_block(stringify_nested_tokens)?;
-      Ok(format!("{name}({args})"))
-    }
-    _ => Err(p.new_custom_error(())),
-  })?;
-
-  let query = MediaQuery::parse(&query_text).map_err(|_| parser.new_custom_error(()))?;
-  if !query.is_size_query() {
-    return Err(parser.new_custom_error(()));
-  }
-
-  Ok(ContainerQuery::Size(query))
 }
 
 /// Parse an @starting-style rule which simply wraps a nested rule list.

@@ -1483,6 +1483,7 @@ fn collect_container_style_query_metadata(
           }
         }
       }
+      ContainerQuery::Unknown(_) => {}
       ContainerQuery::Not(inner) => {
         collect_container_style_query_metadata(std::slice::from_ref(inner.as_ref()), out);
       }
@@ -2907,6 +2908,10 @@ pub enum ContainerQuery {
   Size(MediaQuery),
   /// Style queries inspecting computed styles of the query container.
   Style(ContainerStyleQuery),
+  /// Unknown or unsupported `<<query-in-parens>>` (e.g. `scroll-state(...)` or `<<general-enclosed>>`).
+  ///
+  /// Stored as a best-effort serialization of the original tokens for debugging.
+  Unknown(String),
   /// Logical negation of a nested condition.
   Not(Box<ContainerQuery>),
   /// Logical conjunction of multiple conditions.
