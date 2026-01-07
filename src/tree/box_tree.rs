@@ -396,10 +396,33 @@ pub struct SrcsetCandidate {
   pub descriptor: SrcsetDescriptor,
 }
 
+/// A length value from the HTML `sizes` attribute.
+///
+/// Unlike CSS computed lengths, `sizes` values can include `min()`/`max()`/`clamp()` expressions
+/// whose results depend on runtime context (viewport size, font sizes). We keep a small AST so we
+/// can resolve these functions during responsive image selection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SizesLength {
+  Length(crate::style::values::Length),
+  Min(Vec<SizesLength>),
+  Max(Vec<SizesLength>),
+  Clamp {
+    min: Box<SizesLength>,
+    preferred: Box<SizesLength>,
+    max: Box<SizesLength>,
+  },
+}
+
+impl From<crate::style::values::Length> for SizesLength {
+  fn from(length: crate::style::values::Length) -> Self {
+    SizesLength::Length(length)
+  }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SizesEntry {
   pub media: Option<Vec<crate::style::media::MediaQuery>>,
-  pub length: crate::style::values::Length,
+  pub length: SizesLength,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -568,18 +591,19 @@ impl SizesList {
     font_size: f32,
     root_font_size: f32,
   ) -> f32 {
-    let mut last_entry: Option<crate::style::values::Length> = None;
+    let mut last_entry: Option<&SizesLength> = None;
     for entry in &self.entries {
-      last_entry = Some(entry.length);
+      last_entry = Some(&entry.length);
       let media_matches = entry
         .media
         .as_ref()
         .map(|q| media_ctx.evaluate_list(q))
         .unwrap_or(true);
       if media_matches {
-        if let Some(resolved) =
-          resolve_sizes_length(entry.length, viewport, font_size, root_font_size)
-            .filter(|v| v.is_finite())
+        if let Some(resolved) = entry
+          .length
+          .resolve(viewport, font_size, root_font_size)
+          .filter(|v| v.is_finite())
         {
           return resolved.max(0.0);
         }
@@ -587,7 +611,8 @@ impl SizesList {
     }
 
     if let Some(len) = last_entry {
-      if let Some(resolved) = resolve_sizes_length(len, viewport, font_size, root_font_size)
+      if let Some(resolved) = len
+        .resolve(viewport, font_size, root_font_size)
         .filter(|v| v.is_finite())
       {
         return resolved.max(0.0);
@@ -595,7 +620,7 @@ impl SizesList {
     }
 
     // Spec fallback: 100vw when all entries are missing/invalid.
-    resolve_sizes_length(
+    resolve_sizes_length_value(
       crate::style::values::Length::new(100.0, crate::style::values::LengthUnit::Vw),
       viewport,
       font_size,
@@ -605,7 +630,80 @@ impl SizesList {
   }
 }
 
-fn resolve_sizes_length(
+impl SizesLength {
+  fn resolve(
+    &self,
+    viewport: crate::geometry::Size,
+    font_size: f32,
+    root_font_size: f32,
+  ) -> Option<f32> {
+    match self {
+      SizesLength::Length(length) => {
+        resolve_sizes_length_value(*length, viewport, font_size, root_font_size)
+      }
+      SizesLength::Min(values) => {
+        let mut iter = values.iter();
+        let first = iter
+          .next()
+          .and_then(|value| value.resolve(viewport, font_size, root_font_size))?;
+        if !first.is_finite() {
+          return None;
+        }
+        let mut min = first;
+        for value in iter {
+          let resolved = value.resolve(viewport, font_size, root_font_size)?;
+          if !resolved.is_finite() {
+            return None;
+          }
+          if resolved < min {
+            min = resolved;
+          }
+        }
+        Some(min)
+      }
+      SizesLength::Max(values) => {
+        let mut iter = values.iter();
+        let first = iter
+          .next()
+          .and_then(|value| value.resolve(viewport, font_size, root_font_size))?;
+        if !first.is_finite() {
+          return None;
+        }
+        let mut max = first;
+        for value in iter {
+          let resolved = value.resolve(viewport, font_size, root_font_size)?;
+          if !resolved.is_finite() {
+            return None;
+          }
+          if resolved > max {
+            max = resolved;
+          }
+        }
+        Some(max)
+      }
+      SizesLength::Clamp {
+        min,
+        preferred,
+        max,
+      } => {
+        let min_value = min.resolve(viewport, font_size, root_font_size)?;
+        let preferred_value = preferred.resolve(viewport, font_size, root_font_size)?;
+        let max_value = max.resolve(viewport, font_size, root_font_size)?;
+        if !min_value.is_finite() || !preferred_value.is_finite() || !max_value.is_finite() {
+          return None;
+        }
+        let upper = if max_value < min_value {
+          min_value
+        } else {
+          max_value
+        };
+        Some(preferred_value.max(min_value).min(upper))
+      }
+    }
+  }
+}
+
+fn resolve_sizes_length_value(
   length: crate::style::values::Length,
   viewport: crate::geometry::Size,
   font_size: f32,
@@ -1653,7 +1751,7 @@ mod tests {
     let list = SizesList {
       entries: vec![SizesEntry {
         media: None,
-        length: Length::new(10.0, LengthUnit::Rem),
+        length: Length::new(10.0, LengthUnit::Rem).into(),
       }],
     };
 
@@ -1682,7 +1780,7 @@ mod tests {
       sizes: Some(SizesList {
         entries: vec![SizesEntry {
           media: None,
-          length: Length::new(50.0, LengthUnit::Vw),
+          length: Length::new(50.0, LengthUnit::Vw).into(),
         }],
       }),
       picture_sources: Vec::new(),
@@ -1729,7 +1827,7 @@ mod tests {
         entries: vec![SizesEntry {
           media: None,
           // Viewport=200px => calc(50vw - 20px) = 80px slot width.
-          length: Length::calc(calc),
+          length: Length::calc(calc).into(),
         }],
       }),
       picture_sources: Vec::new(),
@@ -1779,7 +1877,7 @@ mod tests {
       sizes: Some(SizesList {
         entries: vec![SizesEntry {
           media: None,
-          length: Length::new(50.0, LengthUnit::Vw),
+          length: Length::new(50.0, LengthUnit::Vw).into(),
         }],
       }),
       picture_sources: Vec::new(),
@@ -1810,6 +1908,103 @@ mod tests {
   }
 
   #[test]
+  fn sizes_min_function_controls_width_descriptor_selection() {
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "200w".to_string(),
+          descriptor: SrcsetDescriptor::Width(200),
+        },
+        SrcsetCandidate {
+          url: "400w".to_string(),
+          descriptor: SrcsetDescriptor::Width(400),
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          // Viewport=200px => min(100vw, 80px) = 80px slot width.
+          length: SizesLength::Min(vec![
+            Length::new(100.0, LengthUnit::Vw).into(),
+            Length::px(80.0).into(),
+          ]),
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+    };
+
+    let viewport = Size::new(200.0, 100.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(2.0);
+    let chosen = img.image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 2.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(16.0),
+      root_font_size: Some(16.0),
+      base_url: None,
+    });
+
+    assert_eq!(
+      chosen, "200w",
+      "min() sizes should reduce slot width and keep the smaller width candidate"
+    );
+  }
+
+  #[test]
+  fn sizes_clamp_function_controls_width_descriptor_selection() {
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "200w".to_string(),
+          descriptor: SrcsetDescriptor::Width(200),
+        },
+        SrcsetCandidate {
+          url: "400w".to_string(),
+          descriptor: SrcsetDescriptor::Width(400),
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          // Viewport=200px => clamp(0px, 100vw, 80px) = 80px slot width.
+          length: SizesLength::Clamp {
+            min: Box::new(Length::px(0.0).into()),
+            preferred: Box::new(Length::new(100.0, LengthUnit::Vw).into()),
+            max: Box::new(Length::px(80.0).into()),
+          },
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+    };
+
+    let viewport = Size::new(200.0, 100.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(2.0);
+    let chosen = img.image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 2.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(16.0),
+      root_font_size: Some(16.0),
+      base_url: None,
+    });
+
+    assert_eq!(
+      chosen, "200w",
+      "clamp() sizes should cap slot width and keep the smaller width candidate"
+    );
+  }
+
+  #[test]
   fn sizes_default_to_last_entry_when_no_media_match() {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
@@ -1831,11 +2026,11 @@ mod tests {
               "(max-width: 10px)",
             )
             .unwrap()]),
-            length: Length::new(50.0, LengthUnit::Vw),
+            length: Length::new(50.0, LengthUnit::Vw).into(),
           },
           SizesEntry {
             media: None,
-            length: Length::px(300.0),
+            length: Length::px(300.0).into(),
           },
         ],
       }),
@@ -1881,7 +2076,7 @@ mod tests {
         entries: vec![SizesEntry {
           media: None,
           // 10ch at 16px font size = 80px slot width; smallest density >=1 is 100w.
-          length: Length::new(10.0, LengthUnit::Ch),
+          length: Length::new(10.0, LengthUnit::Ch).into(),
         }],
       }),
       picture_sources: Vec::new(),
@@ -2254,7 +2449,7 @@ mod tests {
         sizes: Some(SizesList {
           entries: vec![SizesEntry {
             media: None,
-            length: Length::new(50.0, LengthUnit::Vw),
+            length: Length::new(50.0, LengthUnit::Vw).into(),
           }],
         }),
         media: None,
@@ -2297,7 +2492,7 @@ mod tests {
       sizes: Some(SizesList {
         entries: vec![SizesEntry {
           media: None,
-          length: Length::new(100.0, LengthUnit::Vw),
+          length: Length::new(100.0, LengthUnit::Vw).into(),
         }],
       }),
       picture_sources: Vec::new(),
@@ -2352,11 +2547,11 @@ mod tests {
         entries: vec![
           SizesEntry {
             media: Some(vec![MediaQuery::parse("(max-width: 500px)").unwrap()]),
-            length: Length::px(200.0),
+            length: Length::px(200.0).into(),
           },
           SizesEntry {
             media: None,
-            length: Length::px(400.0),
+            length: Length::px(400.0).into(),
           },
         ],
       }),

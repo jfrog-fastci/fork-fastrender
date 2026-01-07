@@ -4,7 +4,7 @@
 //! and developer tooling (e.g. asset prefetch) so both paths interpret author
 //! markup consistently.
 
-use crate::tree::box_tree::{SizesEntry, SizesList, SrcsetCandidate, SrcsetDescriptor};
+use crate::tree::box_tree::{SizesEntry, SizesLength, SizesList, SrcsetCandidate, SrcsetDescriptor};
 use cssparser::{Parser, ParserInput, Token};
 
 const MAX_SRCSET_COMMA_CONTEXT_BYTES: usize = 256;
@@ -632,106 +632,27 @@ pub fn parse_sizes(attr: &str) -> Option<SizesList> {
   }
 }
 
-fn parse_sizes_length(value: &str) -> Option<crate::style::values::Length> {
-  use crate::css::properties::parse_calc_function_length;
-  use crate::css::properties::parse_clamp_function_length;
-  use crate::css::properties::parse_min_max_function_length;
-  use crate::css::properties::MathFn;
-  use crate::style::values::Length;
-  use crate::style::values::LengthUnit;
-
-  fn parse_strict(value: &str) -> Option<Length> {
-    let mut input = ParserInput::new(value);
-    let mut parser = Parser::new(&mut input);
-
-    let parsed = match parser.next() {
-      Ok(Token::Dimension {
-        value, ref unit, ..
-      }) => {
-        let unit = unit.as_ref();
-        if unit.eq_ignore_ascii_case("px") {
-          Some(Length::px(*value))
-        } else if unit.eq_ignore_ascii_case("em") {
-          Some(Length::em(*value))
-        } else if unit.eq_ignore_ascii_case("rem") {
-          Some(Length::rem(*value))
-        } else if unit.eq_ignore_ascii_case("ex") {
-          Some(Length::ex(*value))
-        } else if unit.eq_ignore_ascii_case("ch") {
-          Some(Length::ch(*value))
-        } else if unit.eq_ignore_ascii_case("pt") {
-          Some(Length::pt(*value))
-        } else if unit.eq_ignore_ascii_case("pc") {
-          Some(Length::pc(*value))
-        } else if unit.eq_ignore_ascii_case("in") {
-          Some(Length::inches(*value))
-        } else if unit.eq_ignore_ascii_case("cm") {
-          Some(Length::cm(*value))
-        } else if unit.eq_ignore_ascii_case("mm") {
-          Some(Length::mm(*value))
-        } else if unit.eq_ignore_ascii_case("q") {
-          Some(Length::q(*value))
-        } else if unit.eq_ignore_ascii_case("vw") {
-          Some(Length::new(*value, LengthUnit::Vw))
-        } else if unit.eq_ignore_ascii_case("vh") {
-          Some(Length::new(*value, LengthUnit::Vh))
-        } else if unit.eq_ignore_ascii_case("vmin") {
-          Some(Length::new(*value, LengthUnit::Vmin))
-        } else if unit.eq_ignore_ascii_case("vmax") {
-          Some(Length::new(*value, LengthUnit::Vmax))
-        } else if unit.eq_ignore_ascii_case("svw") {
-          Some(Length::new(*value, LengthUnit::Vw))
-        } else if unit.eq_ignore_ascii_case("svh") {
-          Some(Length::new(*value, LengthUnit::Vh))
-        } else if unit.eq_ignore_ascii_case("svmin") {
-          Some(Length::new(*value, LengthUnit::Vmin))
-        } else if unit.eq_ignore_ascii_case("svmax") {
-          Some(Length::new(*value, LengthUnit::Vmax))
-        } else if unit.eq_ignore_ascii_case("lvw") {
-          Some(Length::new(*value, LengthUnit::Vw))
-        } else if unit.eq_ignore_ascii_case("lvh") {
-          Some(Length::new(*value, LengthUnit::Vh))
-        } else if unit.eq_ignore_ascii_case("lvmin") {
-          Some(Length::new(*value, LengthUnit::Vmin))
-        } else if unit.eq_ignore_ascii_case("lvmax") {
-          Some(Length::new(*value, LengthUnit::Vmax))
-        } else if unit.eq_ignore_ascii_case("dvw") {
-          Some(Length::new(*value, LengthUnit::Dvw))
-        } else if unit.eq_ignore_ascii_case("dvh") {
-          Some(Length::new(*value, LengthUnit::Dvh))
-        } else if unit.eq_ignore_ascii_case("dvmin") {
-          Some(Length::new(*value, LengthUnit::Dvmin))
-        } else if unit.eq_ignore_ascii_case("dvmax") {
-          Some(Length::new(*value, LengthUnit::Dvmax))
-        } else {
-          None
-        }
+fn consume_nested_tokens_for_slice<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<(), cssparser::ParseError<'i, ()>> {
+  while !input.is_exhausted() {
+    let token = input.next_including_whitespace_and_comments()?;
+    match token {
+      Token::CurlyBracketBlock
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::Function(_) => {
+        input.parse_nested_block(consume_nested_tokens_for_slice)?;
       }
-      Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("calc") => {
-        parse_calc_function_length(&mut parser).ok()
-      }
-      Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("min") => {
-        parse_min_max_function_length(&mut parser, MathFn::Min).ok()
-      }
-      Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("max") => {
-        parse_min_max_function_length(&mut parser, MathFn::Max).ok()
-      }
-      Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("clamp") => {
-        parse_clamp_function_length(&mut parser).ok()
-      }
-      Ok(Token::Percentage { unit_value, .. }) => Some(Length::percent(*unit_value * 100.0)),
-      Ok(Token::Number { value, .. }) if *value == 0.0 => Some(Length::px(0.0)),
-      Err(_) => None,
-      _ => None,
-    }?;
-
-    parser.skip_whitespace();
-    if parser.is_exhausted() {
-      Some(parsed)
-    } else {
-      None
+      _ => {}
     }
   }
+  Ok(())
+}
+
+fn parse_sizes_length(value: &str) -> Option<SizesLength> {
+  use crate::css::properties::parse_calc_function_length;
+  use crate::style::values::{Length, LengthUnit};
 
   fn split_top_level_commas(input: &str) -> Vec<&str> {
     let bytes = input.as_bytes();
@@ -759,74 +680,169 @@ fn parse_sizes_length(value: &str) -> Option<crate::style::values::Length> {
     out
   }
 
-  fn extract_function_args<'a>(value: &'a str, name: &str) -> Option<&'a str> {
-    if !value.ends_with(')') {
-      return None;
-    }
-    if value.len() <= name.len() + 2 {
-      return None;
-    }
-    if !value
-      .get(..name.len())
-      .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
-    {
-      return None;
-    }
-    if value.as_bytes()[name.len()] != b'(' {
-      return None;
-    }
-    value.get(name.len() + 1..value.len() - 1)
-  }
+  let mut input = ParserInput::new(value);
+  let mut parser = Parser::new(&mut input);
 
-  fn parse_lenient_math_function(value: &str) -> Option<Length> {
-    let value = value.trim();
-
-    // When the core CSS parser cannot represent the math function (e.g., `min(100vw, 500px)` with
-    // mixed units), fall back to parsing one argument so the `sizes` entry isn't discarded.
-    for (func, preferred_index) in [("min", 0usize), ("max", 0usize), ("clamp", 1usize)] {
-      let Some(args_str) = extract_function_args(value, func) else {
-        continue;
-      };
-
-      let args = split_top_level_commas(args_str);
-      let candidates = [preferred_index, 0, 1, 2];
-      let mut tried = [false; 4];
-      for idx in candidates {
-        if idx >= tried.len() || tried[idx] {
-          continue;
-        }
-        tried[idx] = true;
-        let Some(arg) = args.get(idx) else {
-          continue;
-        };
-        let arg = arg.trim();
-        if arg.is_empty() {
-          continue;
-        }
-        if let Some(len) = parse_sizes_length(arg) {
-          return Some(len);
-        }
+  let parsed = match parser.next() {
+    Ok(Token::Dimension {
+      value, ref unit, ..
+    }) => {
+      let unit = unit.as_ref();
+      if unit.eq_ignore_ascii_case("px") {
+        Some(Length::px(*value))
+      } else if unit.eq_ignore_ascii_case("em") {
+        Some(Length::em(*value))
+      } else if unit.eq_ignore_ascii_case("rem") {
+        Some(Length::rem(*value))
+      } else if unit.eq_ignore_ascii_case("ex") {
+        Some(Length::ex(*value))
+      } else if unit.eq_ignore_ascii_case("ch") {
+        Some(Length::ch(*value))
+      } else if unit.eq_ignore_ascii_case("pt") {
+        Some(Length::pt(*value))
+      } else if unit.eq_ignore_ascii_case("pc") {
+        Some(Length::pc(*value))
+      } else if unit.eq_ignore_ascii_case("in") {
+        Some(Length::inches(*value))
+      } else if unit.eq_ignore_ascii_case("cm") {
+        Some(Length::cm(*value))
+      } else if unit.eq_ignore_ascii_case("mm") {
+        Some(Length::mm(*value))
+      } else if unit.eq_ignore_ascii_case("q") {
+        Some(Length::q(*value))
+      } else if unit.eq_ignore_ascii_case("vw") {
+        Some(Length::new(*value, LengthUnit::Vw))
+      } else if unit.eq_ignore_ascii_case("vh") {
+        Some(Length::new(*value, LengthUnit::Vh))
+      } else if unit.eq_ignore_ascii_case("vmin") {
+        Some(Length::new(*value, LengthUnit::Vmin))
+      } else if unit.eq_ignore_ascii_case("vmax") {
+        Some(Length::new(*value, LengthUnit::Vmax))
+      } else if unit.eq_ignore_ascii_case("svw") {
+        Some(Length::new(*value, LengthUnit::Vw))
+      } else if unit.eq_ignore_ascii_case("svh") {
+        Some(Length::new(*value, LengthUnit::Vh))
+      } else if unit.eq_ignore_ascii_case("svmin") {
+        Some(Length::new(*value, LengthUnit::Vmin))
+      } else if unit.eq_ignore_ascii_case("svmax") {
+        Some(Length::new(*value, LengthUnit::Vmax))
+      } else if unit.eq_ignore_ascii_case("lvw") {
+        Some(Length::new(*value, LengthUnit::Vw))
+      } else if unit.eq_ignore_ascii_case("lvh") {
+        Some(Length::new(*value, LengthUnit::Vh))
+      } else if unit.eq_ignore_ascii_case("lvmin") {
+        Some(Length::new(*value, LengthUnit::Vmin))
+      } else if unit.eq_ignore_ascii_case("lvmax") {
+        Some(Length::new(*value, LengthUnit::Vmax))
+      } else if unit.eq_ignore_ascii_case("dvw") {
+        Some(Length::new(*value, LengthUnit::Dvw))
+      } else if unit.eq_ignore_ascii_case("dvh") {
+        Some(Length::new(*value, LengthUnit::Dvh))
+      } else if unit.eq_ignore_ascii_case("dvmin") {
+        Some(Length::new(*value, LengthUnit::Dvmin))
+      } else if unit.eq_ignore_ascii_case("dvmax") {
+        Some(Length::new(*value, LengthUnit::Dvmax))
+      } else {
+        None
       }
-
-      return None;
+      .map(Into::into)
     }
+    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("calc") => {
+      parse_calc_function_length(&mut parser).ok().map(Into::into)
+    }
+    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("min") => parser
+      .parse_nested_block(|block| {
+        let start = block.position();
+        consume_nested_tokens_for_slice(block)?;
+        Ok(block.slice_from(start))
+      })
+      .ok()
+      .and_then(|inner| {
+        let args = split_top_level_commas(inner);
+        if args.is_empty() {
+          return None;
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+          values.push(parse_sizes_math_arg(arg)?);
+        }
+        Some(SizesLength::Min(values))
+      }),
+    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("max") => parser
+      .parse_nested_block(|block| {
+        let start = block.position();
+        consume_nested_tokens_for_slice(block)?;
+        Ok(block.slice_from(start))
+      })
+      .ok()
+      .and_then(|inner| {
+        let args = split_top_level_commas(inner);
+        if args.is_empty() {
+          return None;
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+          values.push(parse_sizes_math_arg(arg)?);
+        }
+        Some(SizesLength::Max(values))
+      }),
+    Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("clamp") => parser
+      .parse_nested_block(|block| {
+        let start = block.position();
+        consume_nested_tokens_for_slice(block)?;
+        Ok(block.slice_from(start))
+      })
+      .ok()
+      .and_then(|inner| {
+        let args = split_top_level_commas(inner);
+        if args.len() != 3 {
+          return None;
+        }
+        let min = parse_sizes_math_arg(args[0])?;
+        let preferred = parse_sizes_math_arg(args[1])?;
+        let max = parse_sizes_math_arg(args[2])?;
+        Some(SizesLength::Clamp {
+          min: Box::new(min),
+          preferred: Box::new(preferred),
+          max: Box::new(max),
+        })
+      }),
+    Ok(Token::Percentage { unit_value, .. }) => Some(Length::percent(*unit_value * 100.0).into()),
+    Ok(Token::Number { value, .. }) if *value == 0.0 => Some(Length::px(0.0).into()),
+    Err(_) => None,
+    _ => None,
+  }?;
 
+  parser.skip_whitespace();
+  if parser.is_exhausted() {
+    Some(parsed)
+  } else {
     None
   }
+}
 
-  let value = value.trim();
-  if value.is_empty() {
+fn parse_sizes_math_arg(value: &str) -> Option<SizesLength> {
+  let trimmed = value.trim();
+  if trimmed.is_empty() {
     return None;
   }
 
-  parse_strict(value).or_else(|| parse_lenient_math_function(value))
+  if let Some(parsed) = parse_sizes_length(trimmed) {
+    return Some(parsed);
+  }
+
+  // `min()`/`max()`/`clamp()` arguments follow the `<calc-sum>` grammar which allows arithmetic
+  // without an explicit `calc()` wrapper (e.g. `2vw + 1rem`). Our base parser requires the
+  // `calc()` function for such expressions, so fall back by wrapping the argument.
+  let wrapped = format!("calc({trimmed})");
+  parse_sizes_length(&wrapped)
 }
 
 #[cfg(test)]
 mod tests {
   use super::{parse_sizes, parse_srcset};
   use crate::style::values::{Length, LengthUnit};
-  use crate::tree::box_tree::SrcsetDescriptor;
+  use crate::tree::box_tree::{SizesLength, SrcsetDescriptor};
 
   #[test]
   fn parse_srcset_parses_density_descriptors() {
@@ -1029,17 +1045,23 @@ mod tests {
     let parsed = parse_sizes("(max-width: 600px) 50vw, 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_some());
-    assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw));
+    assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw).into());
     assert!(parsed.entries[1].media.is_none());
-    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
   }
 
   #[test]
   fn parse_sizes_supports_modern_viewport_units() {
     let parsed = parse_sizes("50SVW, 100lvw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
-    assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw));
-    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+    assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw).into());
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
   }
 
   #[test]
@@ -1047,8 +1069,11 @@ mod tests {
     let parsed = parse_sizes("calc(100vw - 20px)").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 1);
     assert!(parsed.entries[0].media.is_none());
-    assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
-    assert!(parsed.entries[0].length.calc.is_some());
+    let SizesLength::Length(len) = &parsed.entries[0].length else {
+      panic!("expected calc() to parse as a length");
+    };
+    assert_eq!(len.unit, LengthUnit::Calc);
+    assert!(len.calc.is_some());
   }
 
   #[test]
@@ -1056,10 +1081,37 @@ mod tests {
     let parsed = parse_sizes("min(100vw, 500px)").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 1);
     assert!(parsed.entries[0].media.is_none());
+    assert_eq!(
+      parsed.entries[0].length,
+      SizesLength::Min(vec![
+        Length::new(100.0, LengthUnit::Vw).into(),
+        Length::px(500.0).into(),
+      ])
+    );
 
     let parsed = parse_sizes("clamp(10px, 50vw, 300px)").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 1);
     assert!(parsed.entries[0].media.is_none());
+    let SizesLength::Clamp {
+      min,
+      preferred,
+      max,
+    } = &parsed.entries[0].length
+    else {
+      panic!("expected clamp() to parse");
+    };
+    assert!(matches!(
+      min.as_ref(),
+      SizesLength::Length(len) if len.unit == LengthUnit::Px && (len.value - 10.0).abs() < f32::EPSILON
+    ));
+    assert!(matches!(
+      preferred.as_ref(),
+      SizesLength::Length(len) if len.unit == LengthUnit::Vw && (len.value - 50.0).abs() < f32::EPSILON
+    ));
+    assert!(matches!(
+      max.as_ref(),
+      SizesLength::Length(len) if len.unit == LengthUnit::Px && (len.value - 300.0).abs() < f32::EPSILON
+    ));
   }
 
   #[test]
@@ -1068,10 +1120,16 @@ mod tests {
       parse_sizes("(max-width: 600px) calc(100vw - 20px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_some());
-    assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
-    assert!(parsed.entries[0].length.calc.is_some());
+    let SizesLength::Length(len) = &parsed.entries[0].length else {
+      panic!("expected calc() to parse as a length");
+    };
+    assert_eq!(len.unit, LengthUnit::Calc);
+    assert!(len.calc.is_some());
     assert!(parsed.entries[1].media.is_none());
-    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
   }
 
   #[test]
@@ -1080,10 +1138,16 @@ mod tests {
       parse_sizes("(max-width: 600px) calc(50vw - 20px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_some());
-    assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
-    assert!(parsed.entries[0].length.calc.is_some());
+    let SizesLength::Length(len) = &parsed.entries[0].length else {
+      panic!("expected calc() to parse as a length");
+    };
+    assert_eq!(len.unit, LengthUnit::Calc);
+    assert!(len.calc.is_some());
     assert!(parsed.entries[1].media.is_none());
-    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
   }
 
   #[test]
@@ -1092,16 +1156,63 @@ mod tests {
       parse_sizes("clamp(10px, calc(50vw - 20px), 300px), 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert!(parsed.entries[0].media.is_none());
-    assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
-    assert!(parsed.entries[0].length.calc.is_some());
+    let SizesLength::Clamp {
+      min,
+      preferred,
+      max,
+    } = &parsed.entries[0].length
+    else {
+      panic!("expected clamp() to parse");
+    };
+    assert!(matches!(
+      min.as_ref(),
+      SizesLength::Length(len) if len.unit == LengthUnit::Px && (len.value - 10.0).abs() < f32::EPSILON
+    ));
+    assert!(matches!(
+      max.as_ref(),
+      SizesLength::Length(len) if len.unit == LengthUnit::Px && (len.value - 300.0).abs() < f32::EPSILON
+    ));
+    match preferred.as_ref() {
+      SizesLength::Length(len) => {
+        assert_eq!(len.unit, LengthUnit::Calc);
+        assert!(len.calc.is_some());
+      }
+      _ => panic!("expected clamp() preferred value to be a length"),
+    }
     assert!(parsed.entries[1].media.is_none());
-    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
+  }
+
+  #[test]
+  fn parse_sizes_supports_min_with_mixed_units() {
+    let parsed = parse_sizes("min(100vw, 80px), 100vw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 2);
+    let SizesLength::Min(values) = &parsed.entries[0].length else {
+      panic!("expected min() to parse");
+    };
+    assert_eq!(
+      values.as_slice(),
+      &[
+        Length::new(100.0, LengthUnit::Vw).into(),
+        Length::px(80.0).into(),
+      ]
+    );
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
   }
 
   #[test]
   fn parse_sizes_skips_invalid_lengths() {
     let parsed = parse_sizes("bad, 100vw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 1);
-    assert_eq!(parsed.entries[0].length, Length::new(100.0, LengthUnit::Vw));
+    assert_eq!(
+      parsed.entries[0].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
   }
 }
