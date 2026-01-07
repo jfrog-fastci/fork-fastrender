@@ -40,6 +40,7 @@ use crate::style::types::ClipComponent;
 use crate::style::types::ClipPath;
 use crate::style::types::ClipRadii;
 use crate::style::types::ClipRect;
+use crate::style::types::Direction;
 use crate::style::types::FillRule;
 use crate::style::types::FilterColor;
 use crate::style::types::FilterFunction;
@@ -4442,6 +4443,7 @@ struct ScrollContainerContext {
   content: Size,
   origin: Point,
   writing_mode: WritingMode,
+  direction: Direction,
   scroll_padding_top: Length,
   scroll_padding_right: Length,
   scroll_padding_bottom: Length,
@@ -4470,6 +4472,7 @@ fn root_scroll_container_context(
   root_viewport: Rect,
   root_content: Rect,
   writing_mode: WritingMode,
+  direction: Direction,
 ) -> ScrollContainerContext {
   ScrollContainerContext {
     scroll: scroll_state.viewport,
@@ -4477,6 +4480,7 @@ fn root_scroll_container_context(
     content: Size::new(root_content.width(), root_content.height()),
     origin: Point::ZERO,
     writing_mode,
+    direction,
     scroll_padding_top: Length::px(0.0),
     scroll_padding_right: Length::px(0.0),
     scroll_padding_bottom: Length::px(0.0),
@@ -4502,6 +4506,11 @@ fn scroll_container_context_for_node(
     .as_deref()
     .map(|s| s.writing_mode)
     .unwrap_or(WritingMode::HorizontalTb);
+  let direction = node
+    .style
+    .as_deref()
+    .map(|s| s.direction)
+    .unwrap_or(Direction::Ltr);
   let (scroll_padding_top, scroll_padding_right, scroll_padding_bottom, scroll_padding_left) = node
     .style
     .as_deref()
@@ -4525,6 +4534,7 @@ fn scroll_container_context_for_node(
     content: Size::new(node.scroll_overflow.width(), node.scroll_overflow.height()),
     origin,
     writing_mode,
+    direction,
     scroll_padding_top,
     scroll_padding_right,
     scroll_padding_bottom,
@@ -4544,18 +4554,53 @@ fn timeline_scroll_context(
 fn resolved_view_timeline_inset(
   inset: Option<ViewTimelineInset>,
   scroll_container: ScrollContainerContext,
-  horizontal: bool,
+  axis: TimelineAxis,
 ) -> ViewTimelineInset {
-  let (auto_start, auto_end) = if horizontal {
-    (
+  let (auto_start, auto_end) = match axis {
+    TimelineAxis::X => (
       scroll_container.scroll_padding_left,
       scroll_container.scroll_padding_right,
-    )
-  } else {
-    (
+    ),
+    TimelineAxis::Y => (
       scroll_container.scroll_padding_top,
       scroll_container.scroll_padding_bottom,
-    )
+    ),
+    TimelineAxis::Inline | TimelineAxis::Block => {
+      let inline_axis = matches!(axis, TimelineAxis::Inline);
+      let horizontal = if inline_axis {
+        inline_axis_is_horizontal(scroll_container.writing_mode)
+      } else {
+        crate::style::block_axis_is_horizontal(scroll_container.writing_mode)
+      };
+      let positive = if inline_axis {
+        crate::style::inline_axis_positive(scroll_container.writing_mode, scroll_container.direction)
+      } else {
+        crate::style::block_axis_positive(scroll_container.writing_mode)
+      };
+      if horizontal {
+        if positive {
+          (
+            scroll_container.scroll_padding_left,
+            scroll_container.scroll_padding_right,
+          )
+        } else {
+          (
+            scroll_container.scroll_padding_right,
+            scroll_container.scroll_padding_left,
+          )
+        }
+      } else if positive {
+        (
+          scroll_container.scroll_padding_top,
+          scroll_container.scroll_padding_bottom,
+        )
+      } else {
+        (
+          scroll_container.scroll_padding_bottom,
+          scroll_container.scroll_padding_top,
+        )
+      }
+    }
   };
   let inset = inset.unwrap_or_default();
   ViewTimelineInset {
@@ -4630,7 +4675,7 @@ fn named_timeline_states_for_export(
     resolved_timeline.inset = Some(resolved_view_timeline_inset(
       tl.inset,
       view_timeline_context,
-      horizontal,
+      tl.axis,
     ));
     map.insert(
       name.clone(),
@@ -5001,7 +5046,7 @@ fn view_progress_for_function(
     inset: Some(resolved_view_timeline_inset(
       func.inset,
       scroll_container,
-      horizontal,
+      func.axis,
     )),
   };
 
@@ -5078,7 +5123,7 @@ fn apply_animations_to_node_scoped(
         resolved_timeline.inset = Some(resolved_view_timeline_inset(
           tl.inset,
           view_timeline_context,
-          horizontal,
+          tl.axis,
         ));
         timeline_scope_push(
           scope,
@@ -5559,8 +5604,14 @@ pub fn apply_animations(
     .as_deref()
     .map(|s| s.writing_mode)
     .unwrap_or(WritingMode::HorizontalTb);
+  let root_direction = tree
+    .root
+    .style
+    .as_deref()
+    .map(|s| s.direction)
+    .unwrap_or(Direction::Ltr);
   let root_context =
-    root_scroll_container_context(scroll_state, viewport, content, root_writing_mode);
+    root_scroll_container_context(scroll_state, viewport, content, root_writing_mode, root_direction);
 
   {
     let root_offset = Point::new(tree.root.bounds.x(), tree.root.bounds.y());
