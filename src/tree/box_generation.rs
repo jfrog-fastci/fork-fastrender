@@ -4020,15 +4020,9 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     focused = false;
     focus_visible = false;
   }
-  let textarea_value = tag.eq_ignore_ascii_case("textarea").then(|| {
-    let mut value = String::new();
-    for child in styled.children.iter() {
-      if let DomNodeType::Text { content } = &child.node.node_type {
-        value.push_str(content);
-      }
-    }
-    crate::dom::normalize_textarea_value(value)
-  });
+  let textarea_value = tag
+    .eq_ignore_ascii_case("textarea")
+    .then(|| crate::dom::textarea_value(&styled.node));
   let mut select_control: Option<SelectControl> = None;
   if tag.eq_ignore_ascii_case("select") {
     select_control = Some(build_select_control(styled));
