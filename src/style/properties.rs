@@ -6860,7 +6860,7 @@ fn apply_declaration_with_base_internal_with_order(
     "-webkit-animation-play-state" => "animation-play-state",
     "-webkit-animation-composition" => "animation-composition",
     "-webkit-backdrop-filter" => "backdrop-filter",
-    "-webkit-appearance" | "-moz-appearance" => "appearance",
+    "-webkit-appearance" => "appearance",
     other => other,
   };
 
@@ -21033,7 +21033,7 @@ mod tests {
     apply_declaration(
       &mut style,
       &Declaration {
-        property: "-moz-appearance".into(),
+        property: "appearance".into(),
         value: PropertyValue::Keyword("textfield".into()),
         contains_var: false,
         raw_value: String::new(),
