@@ -1394,6 +1394,7 @@ mod tests {
       DisplayItem::PushStackingContext(StackingContextItem {
         z_index: 0,
         creates_stacking_context: true,
+        is_root: false,
         establishes_backdrop_root: false,
         bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -1634,6 +1635,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(108.0, 10.0, 2.0, 2.0),
       plane_rect: Rect::from_xywh(108.0, 10.0, 2.0, 2.0),
@@ -1673,6 +1675,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(500.0, 0.0, 100.0, 100.0),
       plane_rect: Rect::from_xywh(500.0, 0.0, 100.0, 100.0),
@@ -1692,6 +1695,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(500.0, 0.0, 50.0, 50.0),
       plane_rect: Rect::from_xywh(500.0, 0.0, 50.0, 50.0),
@@ -1745,6 +1749,7 @@ mod tests {
     let stacking_context = StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
@@ -1781,6 +1786,7 @@ mod tests {
     let stacking_context = StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
@@ -1986,6 +1992,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: true,
       bounds,
       plane_rect: bounds,
@@ -2084,6 +2091,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
@@ -2104,6 +2112,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
@@ -2167,6 +2176,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
@@ -2189,6 +2199,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
@@ -2211,6 +2222,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4000.0, 100.0),

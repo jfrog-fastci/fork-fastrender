@@ -162,6 +162,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: backdrop_bounds,
     plane_rect: backdrop_bounds,
@@ -184,6 +185,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: masked_bounds,
     plane_rect: masked_bounds,
@@ -210,6 +212,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: shadow_bounds,
     plane_rect: shadow_bounds,
@@ -269,6 +272,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: root_bounds,
     plane_rect: root_bounds,
@@ -290,6 +294,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: far_plane,
     plane_rect: far_plane,
@@ -316,6 +321,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: mid_plane,
     plane_rect: mid_plane,
@@ -343,6 +349,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: near_plane,
     plane_rect: near_plane,

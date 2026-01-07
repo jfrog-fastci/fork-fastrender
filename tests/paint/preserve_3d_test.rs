@@ -18,6 +18,7 @@ fn preserve3d_degenerate_transform_renders() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -42,6 +43,7 @@ fn preserve3d_degenerate_transform_renders() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
     plane_rect: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
@@ -156,6 +158,7 @@ fn preserve3d_disable_warp_toggle_forces_affine_approximation() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: Rect::from_xywh(0.0, 0.0, 120.0, 120.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 120.0, 120.0),
@@ -175,6 +178,7 @@ fn preserve3d_disable_warp_toggle_forces_affine_approximation() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: plane,
     plane_rect: plane,

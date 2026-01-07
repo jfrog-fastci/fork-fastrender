@@ -526,6 +526,7 @@ fn parallel_backdrop_filter_with_mask_and_radii_matches_serial() {
   let sc = StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,

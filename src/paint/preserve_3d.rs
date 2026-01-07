@@ -375,6 +375,7 @@ mod tests {
     StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds,
       plane_rect: bounds,
@@ -436,6 +437,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -495,6 +497,7 @@ mod tests {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),

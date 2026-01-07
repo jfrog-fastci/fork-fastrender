@@ -457,6 +457,7 @@ fn mix_blend_mode_multiplies_backdrop_when_not_isolated() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -499,6 +500,7 @@ fn isolation_does_not_disable_mix_blend_mode_backdrop() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -544,6 +546,7 @@ fn backdrop_filter_does_not_disable_mix_blend_mode() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
@@ -584,6 +587,7 @@ fn matrix3d_transforms_translate_content() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -627,6 +631,7 @@ fn perspective_depth_changes_projection_size() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
@@ -672,6 +677,7 @@ fn perspective_blur_preserves_outsets() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: rect,
     plane_rect: rect,
@@ -725,6 +731,7 @@ fn perspective_rotation_blur_preserves_outsets() {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: !filters.is_empty(),
       bounds: rect,
       plane_rect: rect,
@@ -807,6 +814,7 @@ fn many_perspective_layers_use_cropped_surfaces() {
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
       bounds: Rect::from_xywh(x, y, 10.0, 10.0),
       plane_rect: Rect::from_xywh(x, y, 10.0, 10.0),
@@ -851,6 +859,7 @@ fn perspective_respects_border_radius_clip() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds,
     plane_rect: bounds,
@@ -927,6 +936,7 @@ fn perspective_blur_preserves_outsets_with_border_radius() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
@@ -1011,6 +1021,7 @@ fn clip_path_warped_with_perspective_transform() {
   unclipped.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds,
     plane_rect: bounds,
@@ -1046,6 +1057,7 @@ fn clip_path_warped_with_perspective_transform() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds,
     plane_rect: bounds,
@@ -1207,6 +1219,7 @@ fn backface_hidden_culls_rotated_context() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -1299,6 +1312,7 @@ fn mask_url_image_applies_alpha() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
@@ -1344,6 +1358,7 @@ fn mask_luminance_mode_uses_channel_values() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
@@ -2238,6 +2253,7 @@ fn filters_apply_to_stacking_context_layer() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
@@ -2272,6 +2288,7 @@ fn opacity_filter_modulates_alpha() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
@@ -2335,6 +2352,7 @@ fn backdrop_filters_modify_backdrop_region() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
     plane_rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
@@ -2375,6 +2393,7 @@ fn backdrop_filter_clips_to_affine_transformed_bounds() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: rect,
     plane_rect: rect,
@@ -2415,6 +2434,7 @@ fn backdrop_filter_respects_clip_path_mask() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
@@ -2449,6 +2469,7 @@ fn backdrop_filter_respects_rounded_clip_rect() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(1.0, 1.0, 6.0, 6.0),
     plane_rect: Rect::from_xywh(1.0, 1.0, 6.0, 6.0),
@@ -2548,6 +2569,7 @@ fn drop_shadow_filter_renders_shadow() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
@@ -2591,6 +2613,7 @@ fn drop_shadow_filter_offsets_with_bounded_layer() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
@@ -2635,6 +2658,7 @@ fn blur_filters_arent_clipped_by_border_radii() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
     plane_rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
@@ -2679,6 +2703,7 @@ fn grayscale_filter_converts_to_luma() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
@@ -3000,6 +3025,7 @@ fn backdrop_blur_samples_outside_bounds() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(3.0, 0.0, 3.0, 1.0),
     plane_rect: Rect::from_xywh(3.0, 0.0, 3.0, 1.0),
@@ -3035,6 +3061,7 @@ fn filter_blur_not_clipped_to_bounds() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
     plane_rect: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
@@ -3074,6 +3101,7 @@ fn filter_blur_zero_has_no_effect() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
     plane_rect: Rect::from_xywh(1.0, 0.0, 1.0, 1.0),
@@ -3125,6 +3153,7 @@ fn svg_filter_lengths_scale_with_device_pixel_ratio() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 80.0, 40.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 40.0),
@@ -3189,6 +3218,7 @@ fn clip_path_masks_after_filters() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -3232,6 +3262,7 @@ fn clip_path_masks_bounded_layer_with_offset() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
@@ -3305,6 +3336,7 @@ fn blend_mode_multiply_modulates_destination() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
@@ -3351,6 +3383,7 @@ fn stacking_context_hsl_blend_preserves_backdrop_luminance() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
@@ -3477,6 +3510,7 @@ fn perspective_rotate_y_renders_projective_shape() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: rect,
     plane_rect: rect,
@@ -3580,6 +3614,7 @@ fn rotate_y_without_perspective_stays_affine() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds: rect,
     plane_rect: rect,

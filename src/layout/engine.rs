@@ -79,8 +79,8 @@ static LAYOUT_THREAD_POOL_CACHE: OnceLock<Mutex<HashMap<usize, Result<Arc<Thread
 
 pub(crate) fn default_layout_thread_budget() -> usize {
   crate::rayon_init::ensure_global_rayon_pool();
-  // `rayon::current_num_threads()` reflects the installed pool when we're already executing inside a
-  // scoped thread pool (e.g. `render_pages --in-process`). Clamp it by the process CPU budget so
+  // `rayon::current_num_threads()` reflects the installed pool when we're already executing inside
+  // a scoped thread pool (e.g. `render_pages --in-process`). Clamp it by the process CPU budget so
   // we don't oversubscribe in cgroup quota environments where Rayon may still see the host CPU
   // count.
   let threads = rayon::current_num_threads().max(1);

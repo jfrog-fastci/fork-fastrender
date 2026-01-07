@@ -2174,7 +2174,15 @@ pub struct StackingContextItem {
   /// Whether this element creates a new stacking context
   pub creates_stacking_context: bool,
 
-  /// Whether this element establishes a Filter Effects Level 2 *Backdrop Root* boundary.
+  /// Whether this stacking context is a paint root (root of a display-list build).
+  ///
+  /// Root stacking contexts conceptually sit on the base canvas surface. They still establish a
+  /// Filter Effects Level 2 Backdrop Root, but the renderer must avoid forcing an additional
+  /// full-size offscreen layer solely for that root boundary.
+  pub is_root: bool,
+
+  /// Whether this element establishes a Filter Effects Level 2 *Backdrop Root* for its descendants.
+  /// Whether this element establishes a Filter Effects Level 2 *Backdrop Root* for its descendants.
   ///
   /// This flag scopes backdrop sampling for descendant `backdrop-filter` effects (see the
   /// definition of the "Backdrop Root Image" in Filter Effects Level 2).

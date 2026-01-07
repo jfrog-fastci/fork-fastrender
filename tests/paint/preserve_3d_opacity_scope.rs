@@ -11,6 +11,7 @@ fn stacking_context(bounds: Rect, transform_style: TransformStyle) -> StackingCo
   StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: false,
     bounds,
     plane_rect: bounds,
