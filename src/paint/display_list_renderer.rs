@@ -7554,8 +7554,12 @@ impl DisplayListRenderer {
   /// Returns `true` if the display list contains effects that are not currently supported by the
   /// tile-parallel renderer.
   ///
-  /// Today this is limited to `transform-style: preserve-3d` stacking contexts, which require
-  /// depth sorting and compositing across the full scene.
+  /// Today this includes `transform-style: preserve-3d` stacking contexts (which require depth
+  /// sorting/compositing across the full scene), as well as nested halo-generating
+  /// `backdrop-filter` chains that would require a compounded halo per tile. We also fall back
+  /// for manual mix-blend-mode stacking contexts with non-translation transforms (e.g. rotated
+  /// hue/saturation), since the tile renderer can produce per-tile rasterization differences for
+  /// those cases.
   ///
   /// Note that isolated groups, blend modes, and Filter Effects Level 2 *Backdrop Roots* only
   /// affect compositing/sampling semantics and do not by themselves make a subtree
@@ -7566,14 +7570,106 @@ impl DisplayListRenderer {
     fallback_reason: &mut Option<String>,
   ) -> std::result::Result<bool, RenderError> {
     let mut deadline_counter = 0usize;
+    let mut backdrop_root_stack: Vec<Vec<Rect>> = vec![Vec::new()];
+    let mut backdrop_root_pop_stack: Vec<bool> = Vec::new();
     for item in items {
       check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
-      if let DisplayItem::PushStackingContext(sc) = item {
-        if !self.preserve_3d_disabled && matches!(sc.transform_style, TransformStyle::Preserve3d) {
-          *fallback_reason =
-            Some("preserve-3d stacking contexts require serial painting".to_string());
-          return Ok(true);
+        match item {
+        DisplayItem::PushStackingContext(sc) => {
+          if !self.preserve_3d_disabled && matches!(sc.transform_style, TransformStyle::Preserve3d)
+          {
+            *fallback_reason =
+              Some("preserve-3d stacking contexts require serial painting".to_string());
+            return Ok(true);
+          }
+
+          if is_manual_blend(sc.mix_blend_mode) {
+            if let Some(transform) = sc.transform.as_ref() {
+              let is_non_translation = match transform.to_2d() {
+                Some(affine) => {
+                  const EPS: f32 = 1e-6;
+                  (affine.a - 1.0).abs() > EPS
+                    || affine.b.abs() > EPS
+                    || affine.c.abs() > EPS
+                    || (affine.d - 1.0).abs() > EPS
+                }
+                None => true,
+              };
+              if is_non_translation {
+                *fallback_reason = Some(
+                  "manual mix-blend-mode with non-translation transform requires serial painting"
+                    .to_string(),
+                );
+                return Ok(true);
+              }
+            }
+          }
+
+          let mut has_kernel_backdrop = false;
+          let mut sample_rect: Option<Rect> = None;
+          if !sc.backdrop_filters.is_empty() {
+            let outset = filter_outset_with_bounds(&sc.backdrop_filters, 1.0, Some(sc.bounds));
+            let max_outset = outset.max_side();
+            if !max_outset.is_finite() {
+              *fallback_reason = Some("backdrop-filter halo is non-finite".to_string());
+              return Ok(true);
+            }
+            if max_outset > 0.0 {
+              has_kernel_backdrop = true;
+              let (l, t, r, b) = outset.as_tuple();
+              let rect = Rect::from_xywh(
+                sc.bounds.x() - l,
+                sc.bounds.y() - t,
+                sc.bounds.width() + l + r,
+                sc.bounds.height() + t + b,
+              );
+              if rect.width() <= 0.0
+                || rect.height() <= 0.0
+                || !rect.x().is_finite()
+                || !rect.y().is_finite()
+                || !rect.width().is_finite()
+                || !rect.height().is_finite()
+              {
+                *fallback_reason = Some("backdrop-filter halo is invalid".to_string());
+                return Ok(true);
+              }
+              sample_rect = Some(rect);
+            }
+          }
+
+          if has_kernel_backdrop {
+            let sample_rect = sample_rect.expect("kernel backdrop filters should produce a rect");
+            if backdrop_root_stack
+              .last()
+              .is_some_and(|scope| scope.iter().any(|prior| prior.intersects(sample_rect)))
+            {
+              *fallback_reason = Some(
+                "backdrop-filter depends on previously filtered backdrop; requires serial painting"
+                  .to_string(),
+              );
+              return Ok(true);
+            }
+            if let Some(scope) = backdrop_root_stack.last_mut() {
+              scope.push(sc.bounds);
+            }
+          }
+
+          let establishes_backdrop_root = sc.establishes_backdrop_root;
+          backdrop_root_pop_stack.push(establishes_backdrop_root);
+          if establishes_backdrop_root {
+            let mut scope = Vec::new();
+            if has_kernel_backdrop {
+              scope.push(sc.bounds);
+            }
+            backdrop_root_stack.push(scope);
+          }
         }
+        DisplayItem::PopStackingContext => {
+          if backdrop_root_pop_stack.pop().unwrap_or(false) && backdrop_root_stack.len() > 1 {
+            backdrop_root_stack.pop();
+          }
+        }
+        _ => {}
       }
     }
     Ok(false)

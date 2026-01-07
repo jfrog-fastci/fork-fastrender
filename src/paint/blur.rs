@@ -300,10 +300,11 @@ fn blur_deadline_exceeded(counter: &mut usize) -> Option<RenderError> {
 
 #[inline]
 fn blur_should_parallelize(width: usize, height: usize) -> bool {
-  if blur_thread_budget() <= 1 {
+  let pixels = width.checked_mul(height).unwrap_or(usize::MAX);
+  if pixels < PARALLEL_BLUR_MIN_PIXELS {
     return false;
   }
-  width.checked_mul(height).unwrap_or(usize::MAX) >= PARALLEL_BLUR_MIN_PIXELS
+  blur_thread_budget() > 1
 }
 
 #[inline]

@@ -19,7 +19,7 @@ use fastrender::text::font_loader::FontContext;
 use fastrender::{BorderRadii, FastRender, Length, LengthUnit, Point, Rect, Rgba};
 use fastrender::image_loader::ImageCache;
 use rayon::ThreadPoolBuilder;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tiny_skia::Pixmap;
 
@@ -43,6 +43,12 @@ fn cpu_budget_allows_parallel_paint() -> bool {
   // When the budget is single-threaded, parallel tiling is expected to be disabled even if the
   // test installs a larger Rayon thread pool.
   fastrender::system::cpu_budget() > 1
+}
+
+static PARALLEL_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+fn parallel_pool() -> &'static rayon::ThreadPool {
+  PARALLEL_POOL.get_or_init(|| ThreadPoolBuilder::new().num_threads(4).build().unwrap())
 }
 
 fn assert_rgba8888_pixels_eq(width: u32, height: u32, expected: &[u8], actual: &[u8], label: &str) {
@@ -223,6 +229,11 @@ fn assert_pixmap_eq(serial: &Pixmap, parallel: &Pixmap) {
   panic!("pixmaps differ, but could not locate mismatch");
 }
 
+fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
+  let p = pixmap.pixel(x, y).expect("pixel in bounds");
+  (p.red(), p.green(), p.blue(), p.alpha())
+}
+
 #[test]
 fn parallel_paint_matches_serial_output() {
   let list = basic_list();
@@ -243,7 +254,7 @@ fn parallel_paint_matches_serial_output() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -543,7 +554,7 @@ fn mask_parallel_paint_matches_serial_output() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -668,7 +679,7 @@ fn viewport_unit_masks_match_serial_output() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(256, 256, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -724,7 +735,7 @@ fn thick_strokes_survive_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(112, 112, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -814,7 +825,7 @@ fn clip_transform_and_stacking_context_match_serial_output() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -898,7 +909,7 @@ fn stacking_context_mask_matches_serial_output() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -971,7 +982,7 @@ fn stacking_context_isolated_layer_matches_serial_output() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1074,7 +1085,7 @@ fn svg_filter_and_rounded_clip_match_serial_output_in_translated_tiles() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(256, 256, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1144,7 +1155,7 @@ fn mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1216,7 +1227,7 @@ fn hue_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1294,7 +1305,7 @@ fn saturation_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1371,7 +1382,7 @@ fn color_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1449,7 +1460,7 @@ fn luminosity_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1525,7 +1536,7 @@ fn hue_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1601,7 +1612,7 @@ fn chroma_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1673,7 +1684,7 @@ fn color_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1751,7 +1762,7 @@ fn luminosity_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1910,7 +1921,7 @@ fn plus_darker_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -1988,7 +1999,7 @@ fn saturation_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2065,7 +2076,7 @@ fn color_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2144,7 +2155,7 @@ fn hue_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2222,7 +2233,7 @@ fn luminosity_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2275,7 +2286,7 @@ fn hue_hsv_blend_mode_allows_parallel_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2327,7 +2338,7 @@ fn hue_blend_mode_allows_parallel_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2380,7 +2391,7 @@ fn color_oklch_blend_mode_allows_parallel_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2486,7 +2497,7 @@ fn plus_darker_blend_mode_allows_parallel_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2556,7 +2567,7 @@ fn mix_blend_mode_allows_parallel_tiling_with_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2626,7 +2637,7 @@ fn mix_blend_mode_difference_allows_parallel_tiling_with_isolation() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2696,7 +2707,7 @@ fn mix_blend_mode_hue_matches_serial_output_under_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2716,7 +2727,7 @@ fn mix_blend_mode_hue_matches_serial_output_under_tiling() {
 }
 
 #[test]
-fn mix_blend_mode_hue_with_transform_matches_serial_output_under_tiling() {
+fn mix_blend_mode_hue_with_transform_triggers_serial_fallback() {
   let mut list = DisplayList::new();
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(0.0, 0.0, 64.0, 128.0),
@@ -2779,7 +2790,7 @@ fn mix_blend_mode_hue_with_transform_matches_serial_output_under_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -2788,14 +2799,25 @@ fn mix_blend_mode_hue_with_transform_matches_serial_output_under_tiling() {
       .expect("parallel paint")
   });
 
+  assert!(
+    !report.parallel_used,
+    "expected transformed manual mix-blend-mode to fall back to serial (fallback={:?})",
+    report.fallback_reason
+  );
   if cpu_budget_allows_parallel_paint() {
+    let reason = report.fallback_reason.as_deref().unwrap_or_default();
     assert!(
-      report.parallel_used,
-      "expected tiling to be used (fallback={:?})",
-      report.fallback_reason
+      reason.contains("manual mix-blend-mode"),
+      "expected manual blend fallback reason, got {reason:?}"
     );
   }
   assert_pixmap_eq(&serial, &report.pixmap);
+
+  // Background remains unchanged outside the blended rect.
+  assert_eq!(pixel(&report.pixmap, 10, 10), (60, 140, 200, 255));
+  assert_eq!(pixel(&report.pixmap, 110, 10), (200, 140, 60, 255));
+  // Solid interior of the blended rect is deterministic (away from anti-aliased edges).
+  assert_eq!(pixel(&report.pixmap, 80, 64), (200, 80, 165, 255));
 }
 
 #[test]
@@ -2828,7 +2850,7 @@ fn html_mix_blend_mode_does_not_disable_parallel_paint() {
     ..PaintParallelism::enabled()
   };
 
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let (serial, report) = pool.install(|| {
     let mut renderer = FastRender::new().expect("renderer");
     let dom = renderer.parse_html(html).expect("parsed");
@@ -3088,7 +3110,7 @@ fn clip_path_polygon_matches_serial_output_under_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3197,7 +3219,7 @@ fn mask_layers_survive_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3303,7 +3325,7 @@ fn mask_viewport_units_match_serial_output() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(viewport_w, viewport_h, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3375,7 +3397,7 @@ fn stacking_context_filter_radii_match_serial_output_under_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(128, 64, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3444,7 +3466,7 @@ fn path_clips_survive_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(width, height, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3521,7 +3543,7 @@ fn backdrop_filters_survive_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(128, 64, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3545,6 +3567,102 @@ fn backdrop_filters_survive_tiling() {
     report.pixmap.data(),
     &format!("backdrop filter tiling mismatch (tiles={})", report.tiles),
   );
+}
+
+#[test]
+fn parallel_paint_falls_back_for_nested_backdrop_filters() {
+  // Nested halo-generating backdrop filters require a compounded halo radius that the tiled
+  // renderer does not currently compute. Ensure these scenes fall back to serial painting.
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 128.0, 64.0),
+    color: Rgba::rgb(255, 0, 0),
+  }));
+
+  let outer_bounds = Rect::from_xywh(16.0, 0.0, 96.0, 64.0);
+  let inner_bounds = Rect::from_xywh(40.0, 16.0, 48.0, 32.0);
+  let outer = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds: outer_bounds,
+    plane_rect: outer_bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Blur(6.0), ResolvedFilter::Invert(1.0)],
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  };
+  list.push(DisplayItem::PushStackingContext(outer));
+
+  let inner = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds: inner_bounds,
+    plane_rect: inner_bounds,
+    mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Blur(6.0), ResolvedFilter::Invert(1.0)],
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  };
+  list.push(DisplayItem::PushStackingContext(inner));
+  list.push(DisplayItem::PopStackingContext);
+  list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let parallelism = PaintParallelism {
+    tile_size: 32,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = parallel_pool();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(128, 64, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("paint")
+  });
+
+  assert!(
+    !report.parallel_used,
+    "expected nested backdrop-filters to fall back to serial (fallback={:?})",
+    report.fallback_reason
+  );
+  if cpu_budget_allows_parallel_paint() {
+    let reason = report.fallback_reason.as_deref().unwrap_or_default();
+    assert!(
+      reason.contains("previously filtered backdrop"),
+      "expected backdrop-filter fallback reason, got {reason:?}"
+    );
+  }
+
+  // Background remains red.
+  assert_eq!(pixel(&report.pixmap, 0, 0), (255, 0, 0, 255));
+  // Inside the outer backdrop-filter scope, the red backdrop is inverted to cyan.
+  assert_eq!(pixel(&report.pixmap, 20, 10), (0, 255, 255, 255));
+  // Inside the nested backdrop-filter scope, invert is applied twice, returning to red.
+  assert_eq!(pixel(&report.pixmap, 60, 24), (255, 0, 0, 255));
 }
 
 #[test]
@@ -3625,7 +3743,7 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(256, 256, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3660,7 +3778,7 @@ fn parallel_paint_respects_deadline() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let err = pool.install(|| {
     let deadline = RenderDeadline::new(Some(Duration::from_millis(1)), None);
     let _guard = DeadlineGuard::install(Some(&deadline));
@@ -3805,7 +3923,7 @@ fn auto_parallelizes_expensive_gradients() {
     min_display_items: 10_000,
     ..PaintParallelism::auto()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(512, 512, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3854,7 +3972,7 @@ fn huge_effect_halo_triggers_serial_fallback() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -3965,7 +4083,7 @@ fn parallel_paint_masked_element_matches_serial_off_origin_tiles() {
     build_chunk_size: 1,
     ..PaintParallelism::enabled()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(96, 32, Rgba::WHITE, font_ctx)
       .unwrap()
@@ -4009,7 +4127,7 @@ fn modest_halo_allows_parallel_tiling() {
     build_chunk_size: 1,
     ..PaintParallelism::auto()
   };
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = parallel_pool();
   let report = pool.install(|| {
     DisplayListRenderer::new(256, 256, Rgba::WHITE, FontContext::new())
       .unwrap()

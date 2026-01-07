@@ -397,12 +397,19 @@ fn parallel_paint_is_used_with_backdrop_filter_and_matches_serial() {
     <div id="overlay"></div>
   "#;
 
-  let (list, font_ctx) = build_display_list(html, 128, 64);
-  let serial = DisplayListRenderer::new(128, 64, Rgba::WHITE, font_ctx.clone())
-    .expect("renderer")
-    .with_parallelism(PaintParallelism::disabled())
-    .render(&list)
-    .expect("serial render");
+  let serial_pool = ThreadPoolBuilder::new()
+    .num_threads(1)
+    .build()
+    .expect("rayon pool");
+  let (list, font_ctx, serial) = serial_pool.install(|| {
+    let (list, font_ctx) = build_display_list(html, 128, 64);
+    let serial = DisplayListRenderer::new(128, 64, Rgba::WHITE, font_ctx.clone())
+      .expect("renderer")
+      .with_parallelism(PaintParallelism::disabled())
+      .render(&list)
+      .expect("serial render");
+    (list, font_ctx, serial)
+  });
 
   let parallelism = PaintParallelism {
     tile_size: 32,
