@@ -1881,7 +1881,9 @@ fn parse_numeric_value(
   } else {
     Cow::Borrowed(trimmed)
   };
-  let resolved = resolved.as_ref();
+  // `var()` resolution preserves custom-property token streams, including leading whitespace; trim
+  // outer whitespace so numeric parsing behaves like normal CSS tokenization.
+  let resolved = resolved.as_ref().trim();
 
   if resolved.is_empty() || contains_cascade_dependent_keyword(resolved) {
     return None;
