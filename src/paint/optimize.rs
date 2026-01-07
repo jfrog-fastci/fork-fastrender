@@ -703,6 +703,10 @@ impl DisplayListOptimizer {
           || item.color.a == 0.0
       }
       DisplayItem::Border(border) => {
+        // Border items may paint `border-image-*` even when every border side color is fully
+        // transparent (a common pattern is `border: <width> solid transparent` plus
+        // `border-image-source`). Treat such items as non-transparent so we don't drop the border
+        // image during optimization.
         if border.image.is_some() {
           return false;
         }
