@@ -194,6 +194,7 @@ impl DisplayListOptimizer {
     check_active(RenderStage::Paint).map_err(Error::Render)?;
 
     let items = list.items();
+    let mut deadline_counter = 0usize;
     // `mix-blend-mode` requires correct backdrop scoping across stacking-context boundaries.
     // The optimizer sometimes removes visually-noop stacking contexts (e.g. `z-index: 0` or
     // `transform: translateX(0)`). When those contexts contain a descendant stacking context with a
@@ -201,14 +202,14 @@ impl DisplayListOptimizer {
     // blend with content outside the intended scope. Track which stacking context pushes have
     // blend-mode descendants and keep them (also forcing `is_isolated` on the preserved context so
     // the renderer allocates an intermediate surface).
-    let blend_isolation_scopes = Self::compute_blend_isolation_scopes(items);
+    let blend_isolation_scopes = Self::compute_blend_isolation_scopes_checked(items, &mut deadline_counter)
+      .map_err(Error::Render)?;
     let mut indices: Vec<usize> = (0..items.len()).collect();
     let mut scratch_indices: Vec<usize> = Vec::with_capacity(indices.len());
     let mut stats = OptimizationStats {
       original_count,
       ..Default::default()
     };
-    let mut deadline_counter = 0usize;
 
     // Pass 1: Remove transparent items
     if self.config.enable_transparent_removal {
@@ -857,7 +858,10 @@ impl DisplayListOptimizer {
       && item.radii.is_zero()
   }
 
-  fn compute_blend_isolation_scopes(items: &[DisplayItem]) -> Vec<bool> {
+  fn compute_blend_isolation_scopes_checked(
+    items: &[DisplayItem],
+    deadline_counter: &mut usize,
+  ) -> std::result::Result<Vec<bool>, RenderError> {
     #[derive(Clone, Copy)]
     struct ScopeEntry {
       push_index: usize,
@@ -868,6 +872,7 @@ impl DisplayListOptimizer {
     let mut stack: Vec<ScopeEntry> = Vec::new();
 
     for (index, item) in items.iter().enumerate() {
+      check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
       match item {
         DisplayItem::PushStackingContext(sc) => {
           stack.push(ScopeEntry {
@@ -886,14 +891,10 @@ impl DisplayListOptimizer {
             }
           }
         }
-        _ => {
-          // Non-stacking items do not affect blend scoping.
-        }
+        _ => {}
       }
     }
 
-    // Defensive: if the list is unbalanced, propagate any pending "contains_blend" state to the
-    // remaining open scopes so we still keep boundaries conservatively.
     while let Some(entry) = stack.pop() {
       if entry.contains_blend {
         scopes[entry.push_index] = true;
@@ -903,7 +904,7 @@ impl DisplayListOptimizer {
       }
     }
 
-    scopes
+    Ok(scopes)
   }
 
   fn clone_item_with_blend_isolation(
