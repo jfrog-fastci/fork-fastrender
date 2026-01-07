@@ -1846,6 +1846,45 @@ mod tests {
   }
 
   #[test]
+  fn video_image_sources_with_fallback_filters_whitespace_poster() {
+    let video = ReplacedType::Video {
+      src: String::new(),
+      poster: Some("   ".to_string()),
+    };
+    let sources = video.image_sources_with_fallback(ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: None,
+      media_context: None,
+      font_size: None,
+      base_url: None,
+    });
+    assert!(
+      sources.is_empty(),
+      "whitespace posters should not become image candidates"
+    );
+  }
+
+  #[test]
+  fn embed_image_sources_with_fallback_filters_fragment_only_src() {
+    let embed = ReplacedType::Embed {
+      src: "#".to_string(),
+    };
+    let sources = embed.image_sources_with_fallback(ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: None,
+      media_context: None,
+      font_size: None,
+      base_url: None,
+    });
+    assert!(
+      sources.is_empty(),
+      "fragment-only src values should not become image candidates"
+    );
+  }
+
+  #[test]
   fn picture_source_respects_media_and_type_ordering() {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),

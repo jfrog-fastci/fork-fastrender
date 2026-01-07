@@ -410,15 +410,24 @@ impl ReplacedType {
         picture_sources,
         ..
       } => image_sources_with_fallback(src, srcset, sizes.as_ref(), picture_sources, ctx),
-      ReplacedType::Video { src: _, poster } => poster
-        .iter()
-        .map(|p| SelectedImageSource {
-          url: p.as_str(),
-          descriptor: None,
-          density: None,
-          from_picture: false,
-        })
-        .collect(),
+      ReplacedType::Video { src: _, poster } => {
+        let mut ordered = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        if let Some(poster) = poster.as_deref() {
+          push_unique(
+            &mut ordered,
+            &mut seen,
+            SelectedImageSource {
+              url: poster,
+              descriptor: None,
+              density: None,
+              from_picture: false,
+            },
+            ctx.base_url,
+          );
+        }
+        ordered
+      }
       ReplacedType::Svg { content } => vec![SelectedImageSource {
         url: content.svg.as_str(),
         descriptor: None,
@@ -427,12 +436,22 @@ impl ReplacedType {
       }],
       ReplacedType::Embed { src: content }
       | ReplacedType::Object { data: content }
-      | ReplacedType::Iframe { src: content, .. } => vec![SelectedImageSource {
-        url: content.as_str(),
-        descriptor: None,
-        density: None,
-        from_picture: false,
-      }],
+      | ReplacedType::Iframe { src: content, .. } => {
+        let mut ordered = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        push_unique(
+          &mut ordered,
+          &mut seen,
+          SelectedImageSource {
+            url: content.as_str(),
+            descriptor: None,
+            density: None,
+            from_picture: false,
+          },
+          ctx.base_url,
+        );
+        ordered
+      }
       _ => Vec::new(),
     }
   }

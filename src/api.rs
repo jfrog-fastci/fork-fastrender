@@ -10135,7 +10135,7 @@ impl FastRender {
           }
         }
       }
-      ReplacedType::Video { poster, .. } => {
+      ReplacedType::Video { .. } => {
         if profile_enabled {
           REPLACED_INTRINSIC_PROFILE.with(|state| {
             state.borrow_mut().videos += 1;
@@ -10144,18 +10144,28 @@ impl FastRender {
         let needs_intrinsic = replaced_box.intrinsic_size.is_none();
         let needs_ratio = replaced_box.aspect_ratio.is_none();
         if needs_intrinsic || needs_ratio {
-          if let Some(candidate) = poster.as_deref().filter(|s| !s.is_empty()) {
-            let candidate_trimmed = candidate.trim_start();
+          let sources = replaced_box.replaced_type.image_sources_with_fallback(
+            crate::tree::box_tree::ImageSelectionContext {
+              device_pixel_ratio: self.device_pixel_ratio,
+              slot_width: None,
+              viewport: Some(viewport),
+              media_context: None,
+              font_size: Some(style.font_size),
+              base_url: self.base_url.as_deref(),
+            },
+          );
+          if let Some(candidate) = sources.first() {
+            let candidate_trimmed = candidate.url.trim_start();
             let inline_svg =
               candidate_trimmed.starts_with("<svg") || candidate_trimmed.starts_with("<?xml");
             let meta = if inline_svg {
               self
                 .image_cache
-                .probe_svg_content(candidate, "video-poster")
+                .probe_svg_content(candidate.url, "video-poster")
             } else {
               self
                 .image_cache
-                .probe(candidate)
+                .probe(candidate.url)
                 .map(|meta| (*meta).clone())
             };
             if let Ok(meta) = meta {
@@ -10244,7 +10254,7 @@ impl FastRender {
           });
         }
       }
-      ReplacedType::Embed { src } | ReplacedType::Object { data: src } => {
+      ReplacedType::Embed { .. } | ReplacedType::Object { .. } => {
         if profile_enabled {
           REPLACED_INTRINSIC_PROFILE.with(|state| {
             state.borrow_mut().embeds += 1;
@@ -10252,48 +10262,61 @@ impl FastRender {
         }
         let needs_intrinsic = replaced_box.intrinsic_size.is_none();
         let needs_ratio = replaced_box.aspect_ratio.is_none();
-        if (needs_intrinsic || needs_ratio) && !src.is_empty() {
-          let src_trimmed = src.trim_start();
-          let is_about_blank = {
-            const PREFIX: &str = "about:blank";
-            match src_trimmed.get(..PREFIX.len()) {
-              Some(head) if head.eq_ignore_ascii_case(PREFIX) => matches!(
-                src_trimmed.as_bytes().get(PREFIX.len()),
-                None | Some(b'#') | Some(b'?')
-              ),
-              _ => false,
-            }
-          };
-
-          // about:blank is a browser-provided empty document; avoid probing it as an image source
-          // (which would fail offline and record spurious fetch errors).
-          if !is_about_blank {
-            let inline_svg = src_trimmed.starts_with("<svg") || src_trimmed.starts_with("<?xml");
-            let meta = if inline_svg {
-              self.image_cache.probe_svg_content(src, "embed")
-            } else {
-              self.image_cache.probe(src).map(|meta| (*meta).clone())
+        if needs_intrinsic || needs_ratio {
+          let sources = replaced_box.replaced_type.image_sources_with_fallback(
+            crate::tree::box_tree::ImageSelectionContext {
+              device_pixel_ratio: self.device_pixel_ratio,
+              slot_width: None,
+              viewport: Some(viewport),
+              media_context: None,
+              font_size: Some(style.font_size),
+              base_url: self.base_url.as_deref(),
+            },
+          );
+          if let Some(candidate) = sources.first() {
+            let src = candidate.url;
+            let src_trimmed = src.trim_start();
+            let is_about_blank = {
+              const PREFIX: &str = "about:blank";
+              match src_trimmed.get(..PREFIX.len()) {
+                Some(head) if head.eq_ignore_ascii_case(PREFIX) => matches!(
+                  src_trimmed.as_bytes().get(PREFIX.len()),
+                  None | Some(b'#') | Some(b'?')
+                ),
+                _ => false,
+              }
             };
-            if let Ok(meta) = meta {
-              let orientation = style.image_orientation.resolve(meta.orientation, false);
-              explicit_no_ratio = meta.aspect_ratio_none;
-              if let Some((w, h)) = meta.css_dimensions(
-                orientation,
-                &style.image_resolution,
-                self.device_pixel_ratio,
-                None,
-              ) {
-                if needs_intrinsic {
-                  replaced_box.intrinsic_size = Some(Size::new(w, h));
-                }
-                if needs_ratio && !explicit_no_ratio {
-                  replaced_box.aspect_ratio = meta.intrinsic_ratio(orientation).or_else(|| {
-                    if h > 0.0 {
-                      Some(w / h)
-                    } else {
-                      None
-                    }
-                  });
+
+            // about:blank is a browser-provided empty document; avoid probing it as an image source
+            // (which would fail offline and record spurious fetch errors).
+            if !is_about_blank {
+              let inline_svg = src_trimmed.starts_with("<svg") || src_trimmed.starts_with("<?xml");
+              let meta = if inline_svg {
+                self.image_cache.probe_svg_content(src, "embed")
+              } else {
+                self.image_cache.probe(src).map(|meta| (*meta).clone())
+              };
+              if let Ok(meta) = meta {
+                let orientation = style.image_orientation.resolve(meta.orientation, false);
+                explicit_no_ratio = meta.aspect_ratio_none;
+                if let Some((w, h)) = meta.css_dimensions(
+                  orientation,
+                  &style.image_resolution,
+                  self.device_pixel_ratio,
+                  None,
+                ) {
+                  if needs_intrinsic {
+                    replaced_box.intrinsic_size = Some(Size::new(w, h));
+                  }
+                  if needs_ratio && !explicit_no_ratio {
+                    replaced_box.aspect_ratio = meta.intrinsic_ratio(orientation).or_else(|| {
+                      if h > 0.0 {
+                        Some(w / h)
+                      } else {
+                        None
+                      }
+                    });
+                  }
                 }
               }
             }
@@ -16240,6 +16263,42 @@ mod tests {
       Some(2.0),
       "poster resource should set aspect ratio"
     );
+  }
+
+  #[test]
+  fn resolve_intrinsic_sizes_does_not_probe_invalid_video_poster() {
+    #[derive(Clone)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("invalid video poster should not be fetched/probed");
+      }
+    }
+
+    let renderer = FastRender::builder()
+      .fetcher(Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>)
+      .build()
+      .expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+    let mut node = BoxNode::new_replaced(
+      style,
+      ReplacedType::Video {
+        src: String::new(),
+        poster: Some("   ".to_string()),
+      },
+      Some(Size::new(200.0, 0.0)),
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+
+    let replaced = match &node.box_type {
+      BoxType::Replaced(replaced) => replaced,
+      other => panic!("expected replaced box, got {other:?}"),
+    };
+    assert_eq!(replaced.intrinsic_size, Some(Size::new(200.0, 0.0)));
+    assert_eq!(replaced.aspect_ratio, None);
   }
 
   #[test]
