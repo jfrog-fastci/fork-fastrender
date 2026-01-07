@@ -2668,22 +2668,23 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
   }
 
   fn find_head<'a>(node: &'a DomNode) -> Option<&'a DomNode> {
-    if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-      return None;
-    }
-    if node.is_template_element() {
-      return None;
-    }
-    if let Some(tag) = node.tag_name() {
-      if tag.eq_ignore_ascii_case("head")
+    let mut stack: Vec<&DomNode> = vec![node];
+    while let Some(node) = stack.pop() {
+      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
+      if node.is_template_element() {
+        continue;
+      }
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("head"))
         && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
       {
         return Some(node);
       }
-    }
-    for child in node.traversal_children() {
-      if let Some(found) = find_head(child) {
-        return Some(found);
+      for child in node.traversal_children().iter().rev() {
+        stack.push(child);
       }
     }
     None
@@ -2698,17 +2699,18 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
   }
 
   fn find_first_http_canonical(node: &DomNode, base_url: &str) -> Option<String> {
-    fn inner(node: &DomNode, base_url: &str, prev_sibling_foreign: bool) -> Option<String> {
+    let mut stack: Vec<(&DomNode, bool)> = vec![(node, false)];
+    while let Some((node, prev_sibling_foreign)) = stack.pop() {
       if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-        return None;
+        continue;
       }
       if node.is_template_element() {
-        return None;
+        continue;
       }
 
       let is_html = node_is_html(node);
       if node.is_element() && !is_html {
-        return None;
+        continue;
       }
 
       // Some invalid SVG content (e.g. `<meta>` inside `<svg>`) can be relocated by the HTML parser
@@ -2741,30 +2743,28 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
       }
 
       let children = node.traversal_children();
-      for (idx, child) in children.iter().enumerate() {
+      for idx in (0..children.len()).rev() {
+        let child = &children[idx];
         let prev_foreign = idx > 0 && node_is_foreign_element(&children[idx - 1]);
-        if let Some(found) = inner(child, base_url, prev_foreign) {
-          return Some(found);
-        }
+        stack.push((child, prev_foreign));
       }
-      None
     }
-
-    inner(node, base_url, false)
+    None
   }
 
   fn find_first_http_og_url(node: &DomNode, base_url: &str) -> Option<String> {
-    fn inner(node: &DomNode, base_url: &str, prev_sibling_foreign: bool) -> Option<String> {
+    let mut stack: Vec<(&DomNode, bool)> = vec![(node, false)];
+    while let Some((node, prev_sibling_foreign)) = stack.pop() {
       if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-        return None;
+        continue;
       }
       if node.is_template_element() {
-        return None;
+        continue;
       }
 
       let is_html = node_is_html(node);
       if node.is_element() && !is_html {
-        return None;
+        continue;
       }
 
       if !prev_sibling_foreign
@@ -2791,16 +2791,13 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
       }
 
       let children = node.traversal_children();
-      for (idx, child) in children.iter().enumerate() {
+      for idx in (0..children.len()).rev() {
+        let child = &children[idx];
         let prev_foreign = idx > 0 && node_is_foreign_element(&children[idx - 1]);
-        if let Some(found) = inner(child, base_url, prev_foreign) {
-          return Some(found);
-        }
+        stack.push((child, prev_foreign));
       }
-      None
     }
-
-    inner(node, base_url, false)
+    None
   }
 
   let head = find_head(dom);
@@ -2915,6 +2912,7 @@ mod tests {
   use crate::debug::runtime::{self, RuntimeToggles};
   use crate::style::media::MediaType;
   use cssparser::ToCss;
+  use selectors::context::QuirksMode;
   use std::borrow::Cow;
   use std::collections::HashMap;
   use std::sync::Arc;
@@ -4278,6 +4276,45 @@ mod tests {
         "#;
     let base = infer_base_url(html, "file:///tmp/cache/example.org.unquoted.html");
     assert_eq!(base, "https://example.org/unquoted-og/");
+  }
+
+  #[test]
+  fn infer_document_url_guess_from_dom_deep_dom_does_not_overflow_stack() {
+    const DEPTH: usize = 20_000;
+
+    let meta = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "meta".to_string(),
+        namespace: String::new(),
+        attributes: vec![
+          ("property".to_string(), "og:url".to_string()),
+          ("content".to_string(), "https://example.com/app/".to_string()),
+        ],
+      },
+      children: Vec::new(),
+    };
+
+    let mut node = meta;
+    for _ in 0..DEPTH {
+      node = DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: vec![node],
+      };
+    }
+
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      children: vec![node],
+    };
+
+    let inferred = infer_document_url_guess_from_dom(&dom, "file:///tmp/cache/example.com.html");
+    assert_eq!(inferred.as_ref(), "https://example.com/app/");
   }
 
   #[test]
