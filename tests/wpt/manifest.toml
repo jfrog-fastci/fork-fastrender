@@ -658,6 +658,19 @@ width = 200
 height = 200
 
 [[tests]]
+id = "paint/stacking/positioned-auto-above-inflow-001"
+path = "paint/stacking/positioned-auto-above-inflow-001.html"
+reference = "paint/stacking/positioned-auto-above-inflow-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 200
+
+[[tests]]
 id = "paint/stacking/z-index-flex-item-001"
 path = "paint/stacking/z-index-flex-item-001.html"
 reference = "paint/stacking/z-index-flex-item-001-ref.html"
