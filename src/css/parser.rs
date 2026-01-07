@@ -4730,6 +4730,17 @@ mod tests {
   }
 
   #[test]
+  fn user_agent_stylesheet_parses_without_errors() {
+    let result = parse_stylesheet_with_errors(include_str!("../user_agent.css"))
+      .expect("parse UA stylesheet");
+    assert!(
+      result.is_ok(),
+      "expected UA stylesheet to parse without errors, got {:?}",
+      result.errors
+    );
+  }
+
+  #[test]
   fn nested_rule_errors_are_reported() {
     let css = "body { color: red; }\n@media (max-width: 600px) {\n  .bad {\n    color: ;\n  }\n}\n";
     let result = parse_stylesheet_with_errors(css).unwrap();

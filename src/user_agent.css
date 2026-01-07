@@ -386,6 +386,11 @@ input, textarea, select, button {
     overflow: clip;
 }
 
+input::placeholder,
+textarea::placeholder {
+    opacity: 0.6;
+}
+
 input[type="text"], input[type="password"], input[type="email"],
 input[type="search"], input[type="tel"], input[type="url"],
 input[type="number"],
@@ -440,6 +445,24 @@ input[type="range"] {
     padding: 0;
     border: none;
     background-color: transparent;
+}
+
+input[type="range"]::-webkit-slider-runnable-track,
+input[type="range"]::-moz-range-track {
+    height: 4px;
+    background-color: rgb(190,190,190);
+    border-radius: 2px;
+    border: none;
+}
+
+input[type="range"]::-webkit-slider-thumb,
+input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background-color: #fff;
+    border: 1px solid rgb(130,130,130);
+    border-radius: 50%;
+    box-shadow: none;
 }
 
 input[type="hidden"] {
