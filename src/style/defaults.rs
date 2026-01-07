@@ -243,3 +243,90 @@ pub fn parse_color_attribute(color_str: &str) -> Option<Rgba> {
 
   None
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::debug::runtime::{set_runtime_toggles, RuntimeToggles};
+  use crate::tree::box_tree::ReplacedType;
+  use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+  use std::collections::HashMap;
+  use std::sync::Arc;
+
+  fn collect_embed_object_widths(node: &FragmentNode, embeds: &mut Vec<f32>, objects: &mut Vec<f32>) {
+    if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
+      match replaced_type {
+        ReplacedType::Embed { .. } => embeds.push(node.bounds.width()),
+        ReplacedType::Object { .. } => objects.push(node.bounds.width()),
+        _ => {}
+      }
+    }
+    for child in node.children.iter() {
+      collect_embed_object_widths(child, embeds, objects);
+    }
+  }
+
+  fn layout_widths(toggle: &str) -> (Vec<f32>, Vec<f32>) {
+    let _guard = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      ENV_COMPAT_REPLACED_MAX_WIDTH_100.to_string(),
+      toggle.to_string(),
+    )]))));
+
+    let html = r#"
+      <html>
+        <head><style>body { margin: 0; }</style></head>
+        <body>
+          <embed src="about:blank" width="300" height="10">
+          <object data="about:blank" width="300" height="10"></object>
+        </body>
+      </html>
+    "#;
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled =
+      crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = crate::tree::box_generation::generate_box_tree_with_anonymous_fixup(&styled)
+      .expect("box tree");
+
+    let engine =
+      crate::layout::engine::LayoutEngine::new(crate::layout::engine::LayoutConfig::for_viewport(
+        crate::geometry::Size::new(100.0, 100.0),
+      ));
+    let fragment_tree = engine.layout_tree(&box_tree).expect("layout");
+
+    let mut embeds = Vec::new();
+    let mut objects = Vec::new();
+    collect_embed_object_widths(&fragment_tree.root, &mut embeds, &mut objects);
+    (embeds, objects)
+  }
+
+  #[test]
+  fn compat_replaced_max_width_clamps_embed_and_object() {
+    let (embeds_off, objects_off) = layout_widths("0");
+    assert_eq!(embeds_off.len(), 1, "expected one <embed> fragment");
+    assert_eq!(objects_off.len(), 1, "expected one <object> fragment");
+    assert!(
+      embeds_off[0] > 100.0,
+      "expected <embed> to overflow without compat max-width, got {}",
+      embeds_off[0]
+    );
+    assert!(
+      objects_off[0] > 100.0,
+      "expected <object> to overflow without compat max-width, got {}",
+      objects_off[0]
+    );
+
+    let (embeds_on, objects_on) = layout_widths("1");
+    assert_eq!(embeds_on.len(), 1, "expected one <embed> fragment");
+    assert_eq!(objects_on.len(), 1, "expected one <object> fragment");
+    assert!(
+      embeds_on[0] <= 100.01,
+      "expected <embed> to be clamped to the viewport with compat max-width, got {}",
+      embeds_on[0]
+    );
+    assert!(
+      objects_on[0] <= 100.01,
+      "expected <object> to be clamped to the viewport with compat max-width, got {}",
+      objects_on[0]
+    );
+  }
+}

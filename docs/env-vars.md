@@ -52,7 +52,7 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 
 ## Compatibility toggles
 
-- `FASTR_COMPAT_REPLACED_MAX_WIDTH_100=0|1` – control whether FastRender applies a **non-standard** default `max-width: 100%` to replaced elements (`img`, `video`, `audio`, `canvas`, `svg`, `iframe`).
+- `FASTR_COMPAT_REPLACED_MAX_WIDTH_100=0|1` – control whether FastRender applies a **non-standard** default `max-width: 100%` to replaced elements (`img`, `video`, `audio`, `canvas`, `svg`, `iframe`, `embed`, `object`).
   - Default: `1` (enabled) to preserve historical fixture/CI expectations.
   - Set `0` to use spec-correct defaults (no `max-width` by default), which may allow replaced elements to overflow their containing block unless author CSS constrains them.
 

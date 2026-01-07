@@ -15,6 +15,7 @@ use crate::dom::SVG_NAMESPACE;
 use crate::error::{RenderStage, Result};
 use crate::geometry::Size;
 use crate::html::image_attrs;
+use crate::html::images::is_supported_image_mime;
 use crate::render_control::check_active_periodic;
 use crate::style::color::Rgba;
 use crate::style::computed::Visibility;
@@ -2540,27 +2541,21 @@ fn generate_boxes_for_styled_into(
           }
 
           if is_replaced_element(tag) && styled.styles.display != Display::Contents {
-            // The <object> element falls back to its nested content when no usable external
-            // resource is provided (missing/empty `data` or an explicitly unsupported `type`).
-            // In that case we should not generate a replaced box, allowing the children to render
-            // normally.
-            if !tag.eq_ignore_ascii_case("object") || object_has_renderable_external_content(styled)
-            {
+            let picture_sources_for_img = if tag.eq_ignore_ascii_case("img") {
+              picture_sources.take(styled.node_id)
+            } else {
+              Vec::new()
+            };
+            if let Some(box_node) = create_replaced_box_from_styled(
+              styled,
+              Arc::clone(&styled.styles),
+              document_css,
+              svg_document_css_style_element,
+              picture_sources_for_img,
+              site_compat,
+            ) {
               counters.leave_scope();
               stack.pop();
-              let picture_sources_for_img = if tag.eq_ignore_ascii_case("img") {
-                picture_sources.take(styled.node_id)
-              } else {
-                Vec::new()
-              };
-              let box_node = create_replaced_box_from_styled(
-                styled,
-                Arc::clone(&styled.styles),
-                document_css,
-                svg_document_css_style_element,
-                picture_sources_for_img,
-                site_compat,
-              );
               let mut box_node = box_node;
               box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
               let box_node = attach_debug_info(box_node, styled);
@@ -4084,7 +4079,7 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
 
   // FastRender supports rendering `<object>` external resources when they are images, or when the
   // resource is an HTML document that can be rendered as an embedded iframe.
-  crate::html::images::is_supported_image_mime(&normalized_type)
+  is_supported_image_mime(&normalized_type)
     || matches!(
       normalized_type.as_str(),
       "text/html" | "application/xhtml+xml" | "application/html"
@@ -4163,7 +4158,7 @@ fn create_replaced_box_from_styled(
   svg_document_css_style_element: Option<&Arc<str>>,
   picture_sources: Vec<PictureSource>,
   site_compat: bool,
-) -> BoxNode {
+) -> Option<BoxNode> {
   let tag = styled.node.tag_name().unwrap_or("img");
 
   // Determine replaced type
@@ -4262,6 +4257,10 @@ fn create_replaced_box_from_styled(
       .to_string();
     ReplacedType::Embed { src }
   } else if tag.eq_ignore_ascii_case("object") {
+    // HTML <object> falls back to its children when it has no usable external resource.
+    if !object_has_renderable_external_content(styled) {
+      return None;
+    }
     let data = styled
       .node
       .get_attribute_ref("data")
@@ -4359,7 +4358,7 @@ fn create_replaced_box_from_styled(
     no_intrinsic_ratio,
   };
 
-  BoxNode {
+  Some(BoxNode {
     box_type: BoxType::Replaced(replaced_box),
     style,
     starting_style: None,
@@ -4372,7 +4371,7 @@ fn create_replaced_box_from_styled(
     table_column_span: None,
     first_line_style: None,
     first_letter_style: None,
-  }
+  })
 }
 
 #[cfg(test)]
@@ -4912,9 +4911,8 @@ mod tests {
   }
 
   #[test]
-  fn object_with_unsupported_type_renders_children() {
-    let html =
-      "<html><body><object data=\"file.pdf\" type=\"application/pdf\"><p>fallback</p></object></body></html>";
+  fn object_with_unsupported_type_renders_children_instead_of_replacement() {
+    let html = "<html><body><object data=\"doc.pdf\" type=\"application/pdf\"><p>hi</p></object></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
@@ -4928,8 +4926,8 @@ mod tests {
     let mut texts = Vec::new();
     collect_text(&box_tree.root, &mut texts);
     assert!(
-      texts.iter().any(|t| t.contains("fallback")),
-      "fallback text should be present"
+      texts.iter().any(|t| t.contains("hi")),
+      "fallback text from object children should be present"
     );
   }
 
@@ -4969,7 +4967,8 @@ mod tests {
 
   #[test]
   fn object_with_supported_html_type_still_replaced() {
-    let html = "<html><body><object data=\"doc.html\" type=\"text/html\"></object></body></html>";
+    let html =
+      "<html><body><object data=\"doc.html\" type=\"text/html\"><p>hi</p></object></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
@@ -4978,6 +4977,13 @@ mod tests {
       count_object_replacements(&box_tree.root),
       1,
       "object with supported HTML type should render as replaced content"
+    );
+
+    let mut texts = Vec::new();
+    collect_text(&box_tree.root, &mut texts);
+    assert!(
+      !texts.iter().any(|t| t.contains("hi")),
+      "fallback text should not be present when object is replaced"
     );
   }
 
@@ -5754,9 +5760,17 @@ mod tests {
     let style = default_style();
 
     for tag in ["canvas", "video", "iframe", "embed", "object"] {
-      let styled = styled_element(tag);
-      let box_node =
-        create_replaced_box_from_styled(&styled, style.clone(), "", None, Vec::new(), false);
+      let mut styled = styled_element(tag);
+      if tag == "object" {
+        match &mut styled.node.node_type {
+          DomNodeType::Element { attributes, .. } => {
+            attributes.push(("data".to_string(), "data.bin".to_string()));
+          }
+          _ => panic!("expected element"),
+        }
+      }
+      let box_node = create_replaced_box_from_styled(&styled, style.clone(), "", None, Vec::new(), false)
+        .expect("expected replaced box");
       match &box_node.box_type {
         BoxType::Replaced(replaced) => {
           assert_eq!(
@@ -5786,7 +5800,8 @@ mod tests {
     }
 
     let box_node =
-      create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), true);
+      create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), true)
+        .expect("expected replaced box");
     match &box_node.box_type {
       BoxType::Replaced(replaced) => match &replaced.replaced_type {
         ReplacedType::Video { poster, .. } => {
@@ -5809,7 +5824,8 @@ mod tests {
     }
 
     let box_node =
-      create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), false);
+      create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), false)
+        .expect("expected replaced box");
     match &box_node.box_type {
       BoxType::Replaced(replaced) => match &replaced.replaced_type {
         ReplacedType::Video { poster, .. } => {
