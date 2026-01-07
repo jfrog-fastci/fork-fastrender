@@ -7701,11 +7701,11 @@ impl Painter {
         true
       }
       FormControlKind::Range { value, min, max } => {
+        let appearance_none = matches!(control.appearance, Appearance::None);
         let min_val = *min;
         let max_val = *max;
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
-        let appearance_none = matches!(control.appearance, Appearance::None);
         let track_style = control.slider_track_style.as_deref();
         let thumb_style = control.slider_thumb_style.as_deref();
         let viewport = (self.css_width, self.css_height);
@@ -7867,6 +7867,17 @@ impl Painter {
           knob_height,
         );
 
+        let border_radius_is_zero = |style: &ComputedStyle| {
+          style.border_top_left_radius.x.is_zero()
+            && style.border_top_left_radius.y.is_zero()
+            && style.border_top_right_radius.x.is_zero()
+            && style.border_top_right_radius.y.is_zero()
+            && style.border_bottom_right_radius.x.is_zero()
+            && style.border_bottom_right_radius.y.is_zero()
+            && style.border_bottom_left_radius.x.is_zero()
+            && style.border_bottom_left_radius.y.is_zero()
+        };
+
         // Default range styling draws a track + accent fill; `appearance: none` should avoid
         // injecting UA-specific fills, but author track pseudo-element styling is still expected
         // to paint.
@@ -7890,23 +7901,21 @@ impl Painter {
             if let Some(track_style) = track_style {
               let track_radii = resolve_border_radii(Some(track_style), track_rect);
               paint_outset_box_shadows(self, track_rect, track_radii, track_style, clip_mask);
-
+              self.paint_background(
+                track_rect.x(),
+                track_rect.y(),
+                track_rect.width(),
+                track_rect.height(),
+                track_style,
+              );
+            } else {
+              let radii = BorderRadii::uniform(track_height / 2.0);
               let device_track_rect = self.device_rect(track_rect);
-              let device_radii = self.device_radii(track_radii);
+              let device_radii = self.device_radii(radii);
               fill_rounded_rect_masked(
                 &mut self.pixmap,
                 device_track_rect,
                 device_radii,
-                track_style.background_color,
-                clip_mask,
-              );
-            } else {
-              let device_track_rect = self.device_rect(track_rect);
-              let radii = self.device_radii(BorderRadii::uniform(track_height / 2.0));
-              fill_rounded_rect_masked(
-                &mut self.pixmap,
-                device_track_rect,
-                radii,
                 Rgba::rgb(190, 190, 190),
                 clip_mask,
               );
@@ -7951,11 +7960,26 @@ impl Painter {
         }
 
         if let Some(thumb_style) = thumb_style {
-          let mut knob_radii = resolve_border_radii(Some(thumb_style), knob_rect);
+          let mut style_for_thumb;
+          let style_for_thumb = if border_radius_is_zero(thumb_style) {
+            style_for_thumb = (*thumb_style).clone();
+            let radius = knob_width.min(knob_height) / 2.0;
+            let corner =
+              crate::style::types::BorderCornerRadius::uniform(Length::px(radius.max(0.0)));
+            style_for_thumb.border_top_left_radius = corner;
+            style_for_thumb.border_top_right_radius = corner;
+            style_for_thumb.border_bottom_right_radius = corner;
+            style_for_thumb.border_bottom_left_radius = corner;
+            &style_for_thumb
+          } else {
+            thumb_style
+          };
+
+          let mut knob_radii = resolve_border_radii(Some(style_for_thumb), knob_rect);
           if knob_radii.is_zero() {
             knob_radii = BorderRadii::uniform((knob_width.min(knob_height)) / 2.0);
           }
-          paint_outset_box_shadows(self, knob_rect, knob_radii, thumb_style, clip_mask);
+          paint_outset_box_shadows(self, knob_rect, knob_radii, style_for_thumb, clip_mask);
 
           let device_knob_rect = self.device_rect(knob_rect);
           let device_radii = self.device_radii(knob_radii);
@@ -7963,7 +7987,7 @@ impl Painter {
             &mut self.pixmap,
             device_knob_rect,
             device_radii,
-            thumb_style.background_color,
+            style_for_thumb.background_color,
             clip_mask,
           );
           paint_rounded_border(
@@ -7971,7 +7995,7 @@ impl Painter {
             knob_rect,
             device_knob_rect,
             device_radii,
-            thumb_style,
+            style_for_thumb,
             clip_mask,
           );
         } else {
