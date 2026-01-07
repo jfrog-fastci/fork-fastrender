@@ -13400,7 +13400,9 @@ fn escape_style_end_tags(css: &str) -> String {
 }
 
 fn build_foreign_object_document(info: &ForeignObjectInfo, shared_css: &str) -> String {
-  let mut html = String::from("<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
+  let mut html = String::from(
+    "<!DOCTYPE html><html style=\"margin:0;padding:0;width:100%;height:100%;\"><head><meta charset=\"utf-8\">",
+  );
   if !shared_css.trim().is_empty() {
     let sanitized_css = escape_style_end_tags(shared_css);
     html.push_str("<style>");

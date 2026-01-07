@@ -196,6 +196,29 @@ fn inline_svg_renders_foreign_object_html() {
 }
 
 #[test]
+fn foreign_object_html_percent_sizing_fills_viewport() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="16" height="12" viewBox="0 0 16 12">
+        <foreignObject x="0" y="0" width="10" height="12">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;background: rgb(0, 0, 255);"></div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
+      assert_eq!(pixel(&pixmap, 5, 6), [0, 0, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn foreign_object_without_dimensions_uses_placeholder_comment() {
   let html = r#"
   <svg width="16" height="12" viewBox="0 0 16 12">
