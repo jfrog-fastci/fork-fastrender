@@ -10419,7 +10419,7 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
     }
-    "appearance" => {
+    "appearance" | "-webkit-appearance" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if kw.eq_ignore_ascii_case("auto") {
           styles.appearance = Appearance::Auto;
