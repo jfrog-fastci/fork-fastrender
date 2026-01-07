@@ -4743,6 +4743,37 @@ mod tests {
   }
 
   #[test]
+  fn range_form_controls_capture_slider_thumb_pseudo_styles() {
+    use crate::css::parser::parse_stylesheet;
+    use crate::style::values::Length;
+
+    let html = "<html><body><input class=\"range\" type=\"range\" value=\"50\"></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let stylesheet =
+      parse_stylesheet(".range::-webkit-slider-thumb { width: 18px; }").expect("parse css");
+    let styled = crate::style::cascade::apply_styles(&dom, &stylesheet);
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_range_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          if matches!(control.control, FormControlKind::Range { .. }) {
+            return Some(control);
+          }
+        }
+      }
+      node.children.iter().find_map(find_range_control)
+    }
+
+    let control = find_range_control(&box_tree.root).expect("range control");
+    let thumb_style = control
+      .slider_thumb_style
+      .as_ref()
+      .expect("thumb pseudo styles should be captured");
+    assert_eq!(thumb_style.width, Some(Length::px(18.0)));
+  }
+
+  #[test]
   fn select_single_last_selected_wins() {
     let control = first_select_control_from_html(
       "<html><body><select><option selected>One</option><option selected>Two</option></select></body></html>",
