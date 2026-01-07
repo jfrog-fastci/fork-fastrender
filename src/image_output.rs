@@ -4,8 +4,10 @@ use crate::error::Result;
 use crate::image_compare::{self, CompareConfig};
 use crate::paint::pixmap::reserve_buffer;
 use crate::paint::pixmap::MAX_PIXMAP_BYTES;
+use image::GenericImageView;
 use image::Rgba;
 use image::RgbaImage;
+use image::Rgb;
 use std::ffi::c_void;
 use std::io;
 use std::io::Write;
@@ -238,49 +240,45 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
     }
     OutputFormat::Jpeg(quality) => {
       let quality = quality.min(100);
-      // JPEG has no alpha channel. Convert premultiplied RGBA → straight RGB directly, avoiding
-      // the previous full-frame RGBA + RGB intermediate buffers.
-      let rgb_len = u64::from(width)
-        .checked_mul(u64::from(height))
-        .and_then(|px| px.checked_mul(3))
-        .ok_or_else(|| {
-          Error::Render(RenderError::InvalidParameters {
-            message: format!("encode_image: RGB byte size overflow ({width}x{height})"),
-          })
-        })?;
-      if rgb_len > MAX_PIXMAP_BYTES {
-        return Err(Error::Render(RenderError::InvalidParameters {
-          message: format!(
-            "encode_image: JPEG RGB buffer would be {rgb_len} bytes (limit {MAX_PIXMAP_BYTES})"
-          ),
-        }));
-      }
-      let rgb_len = usize::try_from(rgb_len).map_err(|_| {
-        Error::Render(RenderError::InvalidParameters {
-          message: "encode_image: JPEG RGB buffer size does not fit in usize".to_string(),
-        })
-      })?;
-
-      let mut rgb_data = reserve_buffer(rgb_len as u64, "encode_image: JPEG RGB buffer")
-        .map_err(Error::Render)?;
-      rgb_data.resize(rgb_len, 0);
-      for (in_px, out_px) in pixels.chunks_exact(4).zip(rgb_data.chunks_exact_mut(3)) {
-        let (r, g, b) = unpremultiply_rgb(in_px[0], in_px[1], in_px[2], in_px[3]);
-        out_px[0] = r;
-        out_px[1] = g;
-        out_px[2] = b;
+      // JPEG has no alpha channel. Use the `image` crate's streaming-friendly `encode_image`
+      // (which iterates over pixels on demand) so we don't allocate a full-frame RGB buffer.
+      struct UnpremultipliedRgbView<'a> {
+        width: u32,
+        height: u32,
+        pixels: &'a [u8],
       }
 
-      let rgb_img = image::RgbImage::from_raw(width, height, rgb_data).ok_or_else(|| {
-        Error::Render(RenderError::EncodeFailed {
-          format: "JPEG".to_string(),
-          reason: "Failed to create RGB image".to_string(),
-        })
-      })?;
+      impl GenericImageView for UnpremultipliedRgbView<'_> {
+        type Pixel = Rgb<u8>;
+
+        fn dimensions(&self) -> (u32, u32) {
+          (self.width, self.height)
+        }
+
+        fn get_pixel(&self, x: u32, y: u32) -> Self::Pixel {
+          if x >= self.width || y >= self.height {
+            panic!(
+              "UnpremultipliedRgbView::get_pixel out of bounds ({x},{y}) for {}x{}",
+              self.width, self.height
+            );
+          }
+
+          let idx = (y as usize * self.width as usize + x as usize) * 4;
+          let in_px = &self.pixels[idx..idx + 4];
+          let (r, g, b) = unpremultiply_rgb(in_px[0], in_px[1], in_px[2], in_px[3]);
+          Rgb([r, g, b])
+        }
+      }
+
+      let view = UnpremultipliedRgbView {
+        width,
+        height,
+        pixels,
+      };
 
       let mut buffer = FallibleVecWriter::new(MAX_PIXMAP_BYTES as usize, "encode_image: JPEG output");
-      let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality);
-      rgb_img.write_with_encoder(encoder).map_err(|e| {
+      let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality);
+      encoder.encode_image(&view).map_err(|e| {
         Error::Render(RenderError::EncodeFailed {
           format: "JPEG".to_string(),
           reason: e.to_string(),
