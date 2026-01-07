@@ -109,3 +109,58 @@ fn nested_backdrop_filters_establish_backdrop_root() {
   // cyan instead.
   assert_eq!(pixel(&pixmap, 15, 15), (255, 0, 0, 255));
 }
+
+#[test]
+fn descendant_backdrop_filter_uses_ancestor_backdrop_filter_as_backdrop_root() {
+  // Regression: descendants should treat an ancestor `backdrop-filter` element as their nearest
+  // Backdrop Root, even when there is an intermediate stacking context that is isolated for other
+  // reasons (e.g. `isolation: isolate`).
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #root {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 60px;
+        height: 60px;
+        backdrop-filter: invert(1);
+      }
+      #iso {
+        position: absolute;
+        inset: 0;
+        isolation: isolate;
+      }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 30px;
+        height: 30px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="root">
+      <div id="iso">
+        <div id="child"></div>
+      </div>
+    </div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // Inside the root but outside the child: root backdrop-filter inverts red -> cyan.
+  assert_eq!(pixel(&pixmap, 50, 10), (0, 255, 255, 255));
+  // Inside the child: invert the root cyan backdrop back to red. Incorrect sampling (only from the
+  // isolated layer) would leave the area cyan.
+  assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
+  // Outside the root: unchanged red background.
+  assert_eq!(pixel(&pixmap, 62, 62), (255, 0, 0, 255));
+}
