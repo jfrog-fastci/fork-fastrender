@@ -2315,16 +2315,34 @@ fn parse_expanded(node: &DomNode) -> Option<bool> {
 fn parse_has_popup(node: &DomNode) -> Option<String> {
   let value = node.get_attribute_ref("aria-haspopup")?;
   let trimmed = value.trim();
+  // `aria-haspopup` is an enumerated ARIA token attribute. Only allow known tokens; ignore invalid
+  // values so they don't leak into serialized accessibility output.
+  //
+  // In HTML, a minimized attribute like `<button aria-haspopup>` parses as an empty string. For
+  // backwards compatibility with the legacy boolean form of `aria-haspopup`, treat an empty value
+  // as `"true"`.
   if trimmed.is_empty() {
     return Some("true".to_string());
   }
 
-  let lower = trimmed.to_ascii_lowercase();
-  if lower == "false" || lower == "0" {
+  let token = trimmed.to_ascii_lowercase();
+  if matches!(token.as_str(), "false" | "0") {
     return None;
   }
 
-  Some(lower)
+  // Accept `1` as a legacy synonym for `true`, matching our other boolean-ish ARIA parsing.
+  if token == "1" {
+    return Some("true".to_string());
+  }
+
+  if matches!(
+    token.as_str(),
+    "true" | "menu" | "listbox" | "tree" | "grid" | "dialog"
+  ) {
+    Some(token)
+  } else {
+    None
+  }
 }
 
 fn parse_aria_invalid(node: &DomNode) -> Option<bool> {
@@ -2359,11 +2377,8 @@ fn attr_truthy(node: &DomNode, name: &str) -> bool {
 
 fn parse_aria_multiline(node: &DomNode) -> Option<bool> {
   let value = node.get_attribute_ref("aria-multiline")?;
-  match value.to_ascii_lowercase().trim() {
-    "" | "true" | "1" => Some(true),
-    "false" | "0" => Some(false),
-    _ => None,
-  }
+  let token = value.trim().to_ascii_lowercase();
+  parse_bool_token(&token)
 }
 
 fn parse_check_state(node: &DomNode, name: &str) -> Option<CheckState> {
