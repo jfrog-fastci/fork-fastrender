@@ -65,6 +65,7 @@ use crate::render_control::check_active_periodic;
 use crate::style::display::Display;
 use crate::style::position::Position;
 use crate::style::types::Overflow;
+use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
@@ -499,44 +500,160 @@ impl StackingContext {
       }
     };
 
+    let resolve_length_for_paint =
+      |len: &Length, style: &ComputedStyle, percentage_base: f32| -> f32 {
+        if len.is_zero() {
+          return 0.0;
+        }
+
+        let needs_viewport = len.unit.is_viewport_relative()
+          || len
+            .calc
+            .as_ref()
+            .map(|calc| calc.has_viewport_relative())
+            .unwrap_or(false);
+        let (vw, vh) = match viewport {
+          Some(vp) => vp,
+          None if needs_viewport => (f32::NAN, f32::NAN),
+          None => (percentage_base, percentage_base),
+        };
+
+        let resolved = len
+          .resolve_with_context(
+            Some(percentage_base),
+            vw,
+            vh,
+            style.font_size,
+            style.root_font_size,
+          )
+          .unwrap_or_else(|| {
+            if len.unit.is_absolute() {
+              len.to_px()
+            } else {
+              len.value * style.font_size
+            }
+          });
+
+        if resolved.is_finite() {
+          resolved
+        } else {
+          0.0
+        }
+      };
+
+    let paint_overflow_bounds = |border_rect: Rect, style: Option<&ComputedStyle>| -> Rect {
+      let Some(style) = style else {
+        return border_rect;
+      };
+
+      let mut bounds = border_rect;
+
+      if style.outline_style.paints() {
+        let width = resolve_length_for_paint(&style.outline_width, style, border_rect.width());
+        if width > 0.0 {
+          let offset = resolve_length_for_paint(&style.outline_offset, style, border_rect.width());
+          let expand = width.abs() + offset.abs();
+          if expand > 0.0 {
+            bounds = bounds.union(border_rect.inflate(expand));
+          }
+        }
+      }
+
+      if !style.box_shadow.is_empty() {
+        let mut min_x = border_rect.min_x();
+        let mut min_y = border_rect.min_y();
+        let mut max_x = border_rect.max_x();
+        let mut max_y = border_rect.max_y();
+
+        for shadow in &style.box_shadow {
+          if shadow.inset {
+            continue;
+          }
+
+          let offset_x = resolve_length_for_paint(&shadow.offset_x, style, border_rect.width());
+          let offset_y = resolve_length_for_paint(&shadow.offset_y, style, border_rect.width());
+          let blur =
+            resolve_length_for_paint(&shadow.blur_radius, style, border_rect.width()).max(0.0);
+          let spread =
+            resolve_length_for_paint(&shadow.spread_radius, style, border_rect.width()).max(-1e6);
+
+          let blur_pad = blur * 3.0;
+          let left = blur_pad + spread - offset_x.min(0.0);
+          let right = blur_pad + spread + offset_x.max(0.0);
+          let top = blur_pad + spread - offset_y.min(0.0);
+          let bottom = blur_pad + spread + offset_y.max(0.0);
+
+          min_x = min_x.min(border_rect.min_x() - left);
+          min_y = min_y.min(border_rect.min_y() - top);
+          max_x = max_x.max(border_rect.max_x() + right);
+          max_y = max_y.max(border_rect.max_y() + bottom);
+        }
+
+        bounds = bounds.union(Rect::from_xywh(
+          min_x,
+          min_y,
+          (max_x - min_x).max(0.0),
+          (max_y - min_y).max(0.0),
+        ));
+      }
+
+      bounds
+    };
+
+    let mut accumulate_fragment_bounds =
+      |scroll_overflow: Rect, border_rect: Rect, style: Option<&ComputedStyle>| {
+        let rect = scroll_overflow.union(paint_overflow_bounds(border_rect, style));
+        accumulate(translate(rect), &mut bounds);
+      };
+
     // Union all fragment paint bounds from all layers in the parent stacking context's
     // coordinate space.
     //
-    // Fragment bounds represent only the element's own border box; descendants can paint outside
-    // those bounds (e.g., absolutely positioned elements with `overflow: visible`). Use
-    // `scroll_overflow` (which is annotated after layout) so culling based on stacking context
-    // bounds doesn't incorrectly drop visible overflow descendants.
+    // `scroll_overflow` captures descendant overflow (e.g. absolutely positioned children with
+    // `overflow: visible`), but it does not include paint-only effects on the fragment itself
+    // (outlines, box shadows, etc). Include both so bounded stacking context layers can't clip.
     for (idx, frag) in self.fragments.iter().enumerate() {
-      let rect = if idx == 0 {
-        frag.scroll_overflow
+      if idx == 0 {
+        accumulate_fragment_bounds(
+          frag.scroll_overflow,
+          Rect::new(Point::ZERO, frag.bounds.size),
+          frag.style.as_deref(),
+        );
       } else {
-        frag.scroll_overflow.translate(frag.bounds.origin)
-      };
-      accumulate(translate(rect), &mut bounds);
+        accumulate_fragment_bounds(
+          frag.scroll_overflow.translate(frag.bounds.origin),
+          frag.bounds,
+          frag.style.as_deref(),
+        );
+      }
     }
     for frag in &self.layer3_blocks {
-      accumulate(
-        translate(frag.scroll_overflow.translate(frag.bounds.origin)),
-        &mut bounds,
+      accumulate_fragment_bounds(
+        frag.scroll_overflow.translate(frag.bounds.origin),
+        frag.bounds,
+        frag.style.as_deref(),
       );
     }
     for frag in &self.layer4_floats {
-      accumulate(
-        translate(frag.scroll_overflow.translate(frag.bounds.origin)),
-        &mut bounds,
+      accumulate_fragment_bounds(
+        frag.scroll_overflow.translate(frag.bounds.origin),
+        frag.bounds,
+        frag.style.as_deref(),
       );
     }
     for frag in &self.layer5_inlines {
-      accumulate(
-        translate(frag.scroll_overflow.translate(frag.bounds.origin)),
-        &mut bounds,
+      accumulate_fragment_bounds(
+        frag.scroll_overflow.translate(frag.bounds.origin),
+        frag.bounds,
+        frag.style.as_deref(),
       );
     }
     for frag in &self.layer6_positioned {
       let fragment = &frag.fragment;
-      accumulate(
-        translate(fragment.scroll_overflow.translate(fragment.bounds.origin)),
-        &mut bounds,
+      accumulate_fragment_bounds(
+        fragment.scroll_overflow.translate(fragment.bounds.origin),
+        fragment.bounds,
+        fragment.style.as_deref(),
       );
     }
 

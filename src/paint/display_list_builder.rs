@@ -10304,6 +10304,75 @@ mod tests {
   }
 
   #[test]
+  fn stacking_context_bounds_include_box_shadow_paint_overflow() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.isolation = crate::style::types::Isolation::Isolate;
+    style.box_shadow = vec![crate::css::types::BoxShadow {
+      offset_x: Length::px(0.0),
+      offset_y: Length::px(0.0),
+      blur_radius: Length::px(0.0),
+      spread_radius: Length::px(10.0),
+      color: Rgba::RED,
+      inset: false,
+    }];
+
+    let child = FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 40.0, 20.0, 20.0),
+      vec![],
+      Arc::new(style),
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![child]);
+
+    let list = DisplayListBuilder::new()
+      .with_viewport_size(200.0, 200.0)
+      .build_with_stacking_tree(&root);
+    let items = list.items();
+
+    let sc_bounds = items.iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(sc) if sc.is_isolated => Some(sc.bounds),
+      _ => None,
+    });
+    assert_eq!(
+      sc_bounds,
+      Some(Rect::from_xywh(30.0, 30.0, 40.0, 40.0)),
+      "stacking context bounds should include outer box-shadow paint overflow"
+    );
+  }
+
+  #[test]
+  fn stacking_context_bounds_include_outline_paint_overflow() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.isolation = crate::style::types::Isolation::Isolate;
+    style.outline_style = crate::style::types::OutlineStyle::Solid;
+    style.outline_width = Length::px(8.0);
+    style.outline_offset = Length::px(0.0);
+
+    let child = FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 40.0, 20.0, 20.0),
+      vec![],
+      Arc::new(style),
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![child]);
+
+    let list = DisplayListBuilder::new()
+      .with_viewport_size(200.0, 200.0)
+      .build_with_stacking_tree(&root);
+    let items = list.items();
+
+    let sc_bounds = items.iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(sc) if sc.is_isolated => Some(sc.bounds),
+      _ => None,
+    });
+    assert_eq!(
+      sc_bounds,
+      Some(Rect::from_xywh(32.0, 32.0, 36.0, 36.0)),
+      "stacking context bounds should include outline paint overflow"
+    );
+  }
+
+  #[test]
   fn clip_path_clip_is_inside_stacking_context() {
     let mut style = ComputedStyle::default();
     style.clip_path = ClipPath::BasicShape(
