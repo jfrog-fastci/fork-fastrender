@@ -13878,6 +13878,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
     let text = BoxNode::new_text(
@@ -14106,6 +14107,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
     let text = make_text_box("content");
@@ -14386,6 +14388,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
     let text = BoxNode::new_text(Arc::new(ComputedStyle::default()), "content".to_string());
@@ -14886,6 +14889,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
     let text = make_text_box("content");
@@ -14935,6 +14939,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
     let text = BoxNode::new_text(text_style, "content".to_string());
@@ -15007,6 +15012,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
     let text = BoxNode::new_text(text_style, "content".to_string());
@@ -15108,6 +15114,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
     let text = BoxNode::new_text(text_style, "content".to_string());
@@ -15156,6 +15163,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
     let text = BoxNode::new_text(text_style, "content".to_string());
@@ -15330,6 +15338,7 @@ mod tests {
         },
         intrinsic_size: Some(Size::new(10.0, 10.0)),
         aspect_ratio: Some(1.0),
+        no_intrinsic_ratio: false,
       }),
     );
 

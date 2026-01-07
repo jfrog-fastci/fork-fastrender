@@ -523,10 +523,11 @@ pub fn compute_replaced_size(
     crate::style::types::AspectRatio::AutoRatio(r) if r > 0.0 && r.is_finite() => (true, Some(r)),
     _ => (true, None),
   };
-  let allow_intrinsic_ratio_from_size = !matches!(
-    &replaced.replaced_type,
-    crate::tree::box_tree::ReplacedType::FormControl(_)
-  );
+  let allow_intrinsic_ratio_from_size = !replaced.no_intrinsic_ratio
+    && !matches!(
+      &replaced.replaced_type,
+      crate::tree::box_tree::ReplacedType::FormControl(_)
+    );
 
   let natural_ratio = replaced.aspect_ratio.or_else(|| {
     if !allow_intrinsic_ratio_from_size {
@@ -1090,6 +1091,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(640.0, 480.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1114,6 +1116,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(120.0, 80.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1146,6 +1149,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(100.0, 50.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1176,6 +1180,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(300.0, 150.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1200,6 +1205,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(300.0, 150.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1229,6 +1235,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(300.0, 150.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1265,6 +1272,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(300.0, 150.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1293,6 +1301,7 @@ mod tests {
       },
       intrinsic_size: None,
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1317,6 +1326,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(120.0, 0.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1344,6 +1354,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(100.0, 50.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1371,6 +1382,7 @@ mod tests {
       },
       intrinsic_size: None,
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1397,6 +1409,7 @@ mod tests {
       },
       intrinsic_size: None,
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1419,6 +1432,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(120.0, 0.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1441,6 +1455,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(0.0, 80.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1468,11 +1483,47 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(100.0, 50.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
     assert_eq!(size.width, 200.0);
     assert_eq!(size.height, 100.0);
+  }
+
+  #[test]
+  fn compute_replaced_size_does_not_rederive_ratio_when_explicitly_disabled() {
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(200.0, 100.0)),
+      aspect_ratio: None,
+      no_intrinsic_ratio: true,
+    };
+
+    let mut width_only_style = ComputedStyle::default();
+    width_only_style.width = Some(Length::px(100.0));
+    width_only_style.height = None;
+    width_only_style.width_keyword = None;
+    width_only_style.height_keyword = None;
+    let size = compute_replaced_size(&width_only_style, &replaced, None, Size::new(800.0, 600.0));
+    assert_eq!(size.width, 100.0);
+    assert_eq!(size.height, 100.0);
+
+    let mut height_only_style = ComputedStyle::default();
+    height_only_style.height = Some(Length::px(50.0));
+    height_only_style.width = None;
+    height_only_style.width_keyword = None;
+    height_only_style.height_keyword = None;
+    let size = compute_replaced_size(&height_only_style, &replaced, None, Size::new(800.0, 600.0));
+    assert_eq!(size.width, 200.0);
+    assert_eq!(size.height, 50.0);
   }
 
   #[test]
@@ -1494,6 +1545,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(100.0, 50.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1519,6 +1571,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(2400.0, 1600.0)),
       aspect_ratio: Some(2400.0 / 1600.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1548,6 +1601,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(100.0, 50.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1574,6 +1628,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(200.0, 200.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1606,6 +1661,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(120.0, 80.0)),
       aspect_ratio: Some(1.5),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1632,6 +1688,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(120.0, 80.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1665,6 +1722,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(300.0, 150.0)),
       aspect_ratio: Some(2.0),
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
@@ -1693,6 +1751,7 @@ mod tests {
       },
       intrinsic_size: None,
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1731,6 +1790,7 @@ mod tests {
       },
       intrinsic_size: None,
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1767,6 +1827,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(300.0, 400.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1801,6 +1862,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(120.0, 80.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1834,6 +1896,7 @@ mod tests {
       },
       intrinsic_size: Some(Size::new(80.0, 60.0)),
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1867,6 +1930,7 @@ mod tests {
       },
       intrinsic_size: None,
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(
@@ -1900,6 +1964,7 @@ mod tests {
       },
       intrinsic_size: None,
       aspect_ratio: None,
+      no_intrinsic_ratio: false,
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));

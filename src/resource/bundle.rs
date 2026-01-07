@@ -594,6 +594,7 @@ mod tests {
         last_modified: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -618,6 +619,7 @@ mod tests {
           last_modified: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
+          vary: None,
           access_control_allow_credentials: false,
         },
       )]),

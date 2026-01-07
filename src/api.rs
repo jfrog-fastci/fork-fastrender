@@ -9998,6 +9998,7 @@ impl FastRender {
 
     if let Some(outcome) = probe_results.get(&box_id) {
       explicit_no_ratio = outcome.explicit_no_ratio;
+      replaced_box.no_intrinsic_ratio = outcome.explicit_no_ratio;
       if needs_size_probe {
         if let Some(size) = outcome.intrinsic_size {
           replaced_box.intrinsic_size = Some(size);
@@ -10491,6 +10492,7 @@ impl FastRender {
             if let Ok(image) = probe_result {
               let orientation = style.image_orientation.resolve(image.orientation, false);
               explicit_no_ratio = image.aspect_ratio_none;
+              replaced_box.no_intrinsic_ratio = explicit_no_ratio;
               if needs_size_probe {
                 if let Some((w, h)) = image.css_dimensions(
                   orientation,
@@ -10606,6 +10608,7 @@ impl FastRender {
             if let Ok(meta) = meta {
               let orientation = style.image_orientation.resolve(meta.orientation, false);
               explicit_no_ratio = meta.aspect_ratio_none;
+              replaced_box.no_intrinsic_ratio = explicit_no_ratio;
               if let Some((w, h)) = meta.css_dimensions(
                 orientation,
                 &style.image_resolution,
@@ -10660,6 +10663,7 @@ impl FastRender {
           if let Ok(meta) = meta {
             let orientation = style.image_orientation.resolve(meta.orientation, false);
             explicit_no_ratio = meta.aspect_ratio_none;
+            replaced_box.no_intrinsic_ratio = explicit_no_ratio;
             if let Some((w, h)) = meta.css_dimensions(
               orientation,
               &style.image_resolution,
@@ -10735,6 +10739,7 @@ impl FastRender {
               if let Ok(meta) = meta {
                 let orientation = style.image_orientation.resolve(meta.orientation, false);
                 explicit_no_ratio = meta.aspect_ratio_none;
+                replaced_box.no_intrinsic_ratio = explicit_no_ratio;
                 if let Some((w, h)) = meta.css_dimensions(
                   orientation,
                   &style.image_resolution,
@@ -16714,6 +16719,10 @@ mod tests {
     assert_eq!(
       replaced.aspect_ratio, None,
       "preserveAspectRatio='none' should drop intrinsic ratio"
+    );
+    assert!(
+      replaced.no_intrinsic_ratio,
+      "preserveAspectRatio='none' should mark the resource as having no intrinsic ratio"
     );
   }
 

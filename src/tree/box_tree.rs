@@ -353,6 +353,13 @@ pub struct ReplacedBox {
   ///
   /// Used for sizing when only one dimension is specified.
   pub aspect_ratio: Option<f32>,
+
+  /// True when the replaced resource explicitly declares that it has *no* intrinsic aspect ratio.
+  ///
+  /// Notably, inline/external SVG content with `preserveAspectRatio="none"` must not contribute an
+  /// intrinsic ratio even when it has intrinsic width/height. Layout must avoid re-deriving a ratio
+  /// from `intrinsic_size` when this flag is set.
+  pub no_intrinsic_ratio: bool,
 }
 
 /// MathML replaced content with cached layout.
@@ -1173,6 +1180,7 @@ impl BoxNode {
         replaced_type,
         intrinsic_size,
         aspect_ratio,
+        no_intrinsic_ratio: false,
       }),
       children: Vec::new(),
       id: 0,

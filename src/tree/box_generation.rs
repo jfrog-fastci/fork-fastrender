@@ -3117,6 +3117,7 @@ pub(crate) fn marker_content_from_style(
         },
         intrinsic_size: None,
         aspect_ratio: None,
+        no_intrinsic_ratio: false,
       };
       return Some(MarkerContent::Image(replaced));
     }
@@ -3137,6 +3138,7 @@ pub(crate) fn marker_content_from_style(
         },
         intrinsic_size: None,
         aspect_ratio: None,
+        no_intrinsic_ratio: false,
       };
       return Some(MarkerContent::Image(replaced));
     }
@@ -4108,7 +4110,7 @@ fn create_replaced_box_from_styled(
   let width_attr = styled.node.get_attribute_ref("width");
   let height_attr = styled.node.get_attribute_ref("height");
 
-  let (mut intrinsic_size, mut aspect_ratio) = match &replaced_type {
+  let (mut intrinsic_size, mut aspect_ratio, no_intrinsic_ratio) = match &replaced_type {
     ReplacedType::Svg { .. } => {
       let view_box_attr = styled.node.get_attribute_ref("viewBox");
       let preserve_aspect_ratio_attr = styled.node.get_attribute_ref("preserveAspectRatio");
@@ -4125,7 +4127,11 @@ fn create_replaced_box_from_styled(
         (None, Some(h)) => Size::new(300.0, h),
         (None, None) => Size::new(300.0, 150.0),
       };
-      (Some(size), svg_intrinsic.aspect_ratio)
+      (
+        Some(size),
+        svg_intrinsic.aspect_ratio,
+        svg_intrinsic.aspect_ratio_none,
+      )
     }
     _ => {
       let intrinsic_width = width_attr.and_then(|w| w.parse::<f32>().ok());
@@ -4144,7 +4150,7 @@ fn create_replaced_box_from_styled(
         _ => None,
       };
 
-      (intrinsic_size, aspect_ratio)
+      (intrinsic_size, aspect_ratio, false)
     }
   };
 
@@ -4170,6 +4176,7 @@ fn create_replaced_box_from_styled(
     replaced_type,
     intrinsic_size,
     aspect_ratio,
+    no_intrinsic_ratio,
   };
 
   BoxNode {
