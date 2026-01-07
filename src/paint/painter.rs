@@ -10144,7 +10144,7 @@ impl Painter {
         let text_byte = glyph.cluster as usize;
         if text_byte < run.text.len() {
           if let Some(ch) = run.text[text_byte..].chars().next() {
-            if ch.is_whitespace() || ch.is_control() {
+            if crate::style::is_text_emphasis_mark_excluded(ch) {
               continue;
             }
           }

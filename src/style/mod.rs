@@ -376,6 +376,60 @@ pub(crate) fn resolve_text_emphasis_block_side(
   }
 }
 
+/// Returns true if the character should *not* receive text-emphasis marks.
+///
+/// CSS Text Decoration 4 excludes emphasis marks for whitespace/control and for most punctuation.
+/// This implements a conservative subset of the punctuation rules:
+/// - All Unicode P* general-category characters are excluded, except for a small allowlist of
+///   symbols called out by the spec (e.g. `#`, `%`, `&`, `@`).
+///
+/// Spec: <https://www.w3.org/TR/css-text-decor-4/#text-emphasis-style-property> (mark omission rules)
+pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
+  if ch.is_whitespace() || ch.is_control() {
+    return true;
+  }
+
+  use unicode_general_category::get_general_category;
+  use unicode_general_category::GeneralCategory;
+
+  let is_punctuation = matches!(
+    get_general_category(ch),
+    GeneralCategory::ConnectorPunctuation
+      | GeneralCategory::DashPunctuation
+      | GeneralCategory::ClosePunctuation
+      | GeneralCategory::FinalPunctuation
+      | GeneralCategory::InitialPunctuation
+      | GeneralCategory::OtherPunctuation
+      | GeneralCategory::OpenPunctuation
+  );
+
+  if !is_punctuation {
+    return false;
+  }
+
+  // CSS Text Decoration 4: punctuation marks do not receive emphasis marks unless they NFKD
+  // normalize to one of these symbols. We do not currently implement full NFKD normalization
+  // here; instead we allow the symbols explicitly listed by the spec.
+  !matches!(
+    ch,
+    '#'
+      | '%'
+      | '‰'
+      | '‱'
+      | '٪'
+      | '؉'
+      | '؊'
+      | '&'
+      | '⁊'
+      | '@'
+      | '§'
+      | '¶'
+      | '⁋'
+      | '⁓'
+      | '〽'
+  )
+}
+
 /// Pending logical properties (margin/padding/border/sizing) to resolve after writing-mode is known.
 ///
 /// For side-based properties, the outer `Option` tracks whether the logical start/end side was
