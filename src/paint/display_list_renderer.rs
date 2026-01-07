@@ -10523,11 +10523,38 @@ impl DisplayListRenderer {
       DisplayItem::PushClip(clip) => self.push_clip(clip)?,
       DisplayItem::PopClip => self.pop_clip(),
       DisplayItem::PushOpacity(OpacityItem { opacity }) => {
-        self.push_layer_tracked(*opacity, *opacity < 1.0 - f32::EPSILON)?;
+        let canvas_layer_depth_before = self.trace_backdrop_stack.then(|| self.canvas.layer_stack_len());
+        let is_backdrop_root = *opacity < 1.0 - f32::EPSILON;
+        self.push_layer_tracked(*opacity, is_backdrop_root)?;
         self.record_layer_allocation(self.canvas.width(), self.canvas.height());
+        if self.trace_backdrop_stack {
+          let depth_after = self.canvas.layer_stack_len();
+          eprintln!(
+            "backdrop_stack push_opacity opacity={} backdrop_root={} canvas_layers={} -> {}",
+            opacity,
+            is_backdrop_root,
+            canvas_layer_depth_before.unwrap_or(depth_after),
+            depth_after
+          );
+        }
       }
       DisplayItem::PopOpacity => {
+        let (canvas_layer_depth_before, backdrop_root) = if self.trace_backdrop_stack {
+          (
+            self.canvas.layer_stack_len(),
+            self.canvas.layer_stack().last().is_some_and(|record| record.is_backdrop_root),
+          )
+        } else {
+          (0, false)
+        };
         self.pop_layer_tracked()?;
+        if self.trace_backdrop_stack {
+          let depth_after = self.canvas.layer_stack_len();
+          eprintln!(
+            "backdrop_stack pop_opacity backdrop_root={} canvas_layers={} -> {}",
+            backdrop_root, canvas_layer_depth_before, depth_after
+          );
+        }
       }
       DisplayItem::PushTransform(transform) => {
         let parent = *self
