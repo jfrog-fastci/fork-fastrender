@@ -4911,6 +4911,20 @@ mod tests {
       select.items.get(idx),
       Some(SelectItem::Option { label, disabled: true, .. }) if label == "One"
     )));
+    assert!(
+      select.items.iter().any(|item| matches!(
+        item,
+        SelectItem::Option { label, in_optgroup: true, .. } if label == "One"
+      )),
+      "options under optgroup should be tagged as in_optgroup"
+    );
+    assert!(
+      select.items.iter().any(|item| matches!(
+        item,
+        SelectItem::Option { label, in_optgroup: false, .. } if label == "Two"
+      )),
+      "options outside optgroup should not be tagged as in_optgroup"
+    );
   }
 
   #[test]
