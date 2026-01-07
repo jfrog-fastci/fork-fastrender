@@ -29180,6 +29180,11 @@ fn marker_allows_property(property: &str) -> bool {
     return true;
   }
 
+  // Counter properties affect the document's counter state, not marker layout.
+  if matches!(p, "counter-reset" | "counter-set" | "counter-increment") {
+    return true;
+  }
+
   // Cursor is explicitly allowed for ::marker in the CSS Pseudo tests.
   if p == "cursor" {
     return true;

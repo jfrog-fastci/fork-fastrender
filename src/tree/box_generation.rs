@@ -2377,19 +2377,13 @@ fn generate_boxes_for_styled_into(
         // NOTE: `::marker` and `::before` are both before the element's DOM children. `::after` is
         // generated in `FrameState::Finish` after children have been processed.
         let marker_box = if styled.styles.display == Display::ListItem {
-          create_marker_box_with_counters(styled, counters)
+          create_marker_box(styled, counters)
         } else {
           None
         };
         let before_box = if let Some(before_styles) = &styled.before_styles {
           let before_start = clone_starting_style(&styled.starting_styles.before);
-          create_pseudo_element_box_with_counters(
-            styled,
-            before_styles,
-            before_start,
-            "before",
-            counters,
-          )
+          create_pseudo_element_box(styled, before_styles, before_start, "before", counters)
         } else {
           None
         };
@@ -2477,16 +2471,11 @@ fn generate_boxes_for_styled_into(
         debug_assert!(frame.entered_counter_scope);
         let styled = frame.styled;
         let mut children = frame.children;
-
         if let Some(after_styles) = &styled.after_styles {
           let after_start = clone_starting_style(&styled.starting_styles.after);
-          if let Some(after_box) = create_pseudo_element_box_with_counters(
-            styled,
-            after_styles,
-            after_start,
-            "after",
-            counters,
-          ) {
+          if let Some(after_box) =
+            create_pseudo_element_box(styled, after_styles, after_start, "after", counters)
+          {
             children.push(after_box);
           }
         }
@@ -2575,46 +2564,6 @@ fn generate_boxes_for_styled_into(
   }
 
   Ok(())
-}
-
-fn apply_counter_properties_from_computed_style(style: &ComputedStyle, counters: &mut CounterManager) {
-  style.counters.apply_to(counters);
-}
-
-fn create_pseudo_element_box_with_counters(
-  styled: &StyledNode,
-  styles: &Arc<ComputedStyle>,
-  starting_style: Option<Arc<ComputedStyle>>,
-  pseudo_name: &str,
-  counters: &mut CounterManager,
-) -> Option<BoxNode> {
-  if styles.display == Display::None {
-    return None;
-  }
-  let content_value = effective_content_value(styles);
-  if matches!(content_value, ContentValue::None | ContentValue::Normal) {
-    return None;
-  }
-
-  counters.enter_scope();
-  apply_counter_properties_from_computed_style(styles.as_ref(), counters);
-  let out = create_pseudo_element_box(styled, styles, starting_style, pseudo_name, counters);
-  counters.leave_scope();
-  out
-}
-
-fn create_marker_box_with_counters(styled: &StyledNode, counters: &mut CounterManager) -> Option<BoxNode> {
-  if styled.styles.display != Display::ListItem {
-    return None;
-  }
-
-  counters.enter_scope();
-  if let Some(marker_style) = styled.marker_styles.as_ref() {
-    apply_counter_properties_from_computed_style(marker_style.as_ref(), counters);
-  }
-  let out = create_marker_box(styled, counters);
-  counters.leave_scope();
-  out
 }
 
 fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
@@ -2760,12 +2709,18 @@ fn create_pseudo_element_box(
   styles: &Arc<ComputedStyle>,
   starting_style: Option<Arc<ComputedStyle>>,
   pseudo_name: &str,
-  counters: &CounterManager,
+  counters: &mut CounterManager,
 ) -> Option<BoxNode> {
   let content_value = effective_content_value(styles);
   if matches!(content_value, ContentValue::None | ContentValue::Normal) {
     return None;
   }
+  if styles.display == Display::None {
+    return None;
+  }
+
+  counters.enter_scope();
+  styles.counters.apply_to(counters);
 
   let generated_pseudo = match pseudo_name {
     "before" => Some(GeneratedPseudoElement::Before),
@@ -2802,9 +2757,8 @@ fn create_pseudo_element_box(
     out.push(text_box);
   };
 
-  let items = match &content_value {
-    ContentValue::Items(items) => items,
-    _ => return None,
+  let ContentValue::Items(items) = &content_value else {
+    unreachable!("non-empty pseudo-element content values must be ContentValue::Items");
   };
 
   for item in items {
@@ -2910,7 +2864,7 @@ fn create_pseudo_element_box(
 
   // Wrap in appropriate box type based on display
   let mut pseudo_box = match styles.display {
-    Display::None => return None,
+    Display::None => unreachable!("display:none pseudo-elements are filtered before counter scope"),
     Display::Block | Display::FlowRoot | Display::ListItem => {
       BoxNode::new_block(pseudo_style.clone(), fc_type, children)
     }
@@ -2962,10 +2916,11 @@ fn create_pseudo_element_box(
   pseudo_box.generated_pseudo = generated_pseudo;
   pseudo_box.starting_style = starting_style;
 
+  counters.leave_scope();
   Some(pseudo_box)
 }
 
-fn create_marker_box(styled: &StyledNode, counters: &CounterManager) -> Option<BoxNode> {
+fn create_marker_box(styled: &StyledNode, counters: &mut CounterManager) -> Option<BoxNode> {
   // Prefer authored ::marker styles; fall back to the originating style when absent.
   let (mut marker_style, has_pseudo_styles) = if let Some(styles) = styled.marker_styles.as_deref()
   {
@@ -2977,7 +2932,21 @@ fn create_marker_box(styled: &StyledNode, counters: &CounterManager) -> Option<B
   crate::style::cascade::reset_marker_box_properties(&mut marker_style);
   marker_style.display = Display::Inline;
 
-  let content = marker_content_from_style(styled, &marker_style, counters)?;
+  let content_value = effective_content_value(&marker_style);
+  if matches!(content_value, ContentValue::None) || marker_style.content == "none" {
+    return None;
+  }
+
+  let has_explicit_content = !matches!(content_value, ContentValue::Normal | ContentValue::None);
+  if !has_explicit_content && marker_content_from_style(styled, &marker_style, counters).is_none() {
+    return None;
+  }
+
+  counters.enter_scope();
+  marker_style.counters.apply_to(counters);
+
+  let content = marker_content_from_style(styled, &marker_style, counters)
+    .unwrap_or_else(|| MarkerContent::Text(String::new()));
   marker_style.list_style_type = ListStyleType::None;
   marker_style.list_style_image = crate::style::types::ListStyleImage::None;
   if !has_pseudo_styles {
@@ -2988,6 +2957,7 @@ fn create_marker_box(styled: &StyledNode, counters: &CounterManager) -> Option<B
   let mut node = BoxNode::new_marker(Arc::new(marker_style), content);
   node.styled_node_id = Some(styled.node_id);
   node.starting_style = clone_starting_style(&styled.starting_styles.marker);
+  counters.leave_scope();
   Some(node)
 }
 
@@ -5628,7 +5598,7 @@ mod tests {
     };
 
     let marker_box =
-      create_marker_box(&styled, &CounterManager::default()).expect("marker should be generated");
+      create_marker_box(&styled, &mut CounterManager::default()).expect("marker should be generated");
     let style = marker_box.style.as_ref();
     assert!(style
       .text_decoration
@@ -5693,7 +5663,7 @@ mod tests {
     };
 
     let marker_box =
-      create_marker_box(&styled, &CounterManager::default()).expect("marker should be generated");
+      create_marker_box(&styled, &mut CounterManager::default()).expect("marker should be generated");
     assert!(matches!(marker_box.box_type, BoxType::Marker(_)));
     assert_eq!(
       marker_box.style.text_transform,
@@ -5747,7 +5717,7 @@ mod tests {
       styled.before_styles.as_ref().unwrap(),
       clone_starting_style(&styled.starting_styles.before),
       "before",
-      &counters,
+      &mut counters,
     )
     .expect("before box");
     counters.leave_scope();
@@ -5817,7 +5787,7 @@ mod tests {
       styled.before_styles.as_ref().unwrap(),
       clone_starting_style(&styled.starting_styles.before),
       "before",
-      &counters,
+      &mut counters,
     )
     .expect("before box");
     counters.leave_scope();
@@ -5837,6 +5807,140 @@ mod tests {
     } else {
       panic!("expected replaced child");
     }
+  }
+
+  fn before_pseudo_text(node: &BoxNode) -> String {
+    let before = node
+      .children
+      .iter()
+      .find(|child| child.generated_pseudo == Some(GeneratedPseudoElement::Before))
+      .expect("expected ::before box");
+    before.children.iter().filter_map(|child| child.text()).collect()
+  }
+
+  #[test]
+  fn before_counter_increment_affects_element_children() {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Block;
+    container_style.counters.counter_reset = Some(CounterSet::single("x", 0));
+
+    let mut container_before_style = ComputedStyle::default();
+    container_before_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
+    container_before_style.counters.counter_increment = Some(CounterSet::single("x", 1));
+
+    let mut span_before_style = ComputedStyle::default();
+    span_before_style.content_value = ContentValue::Items(vec![ContentItem::Counter {
+      name: "x".to_string(),
+      style: None,
+    }]);
+    let span_before_style = Arc::new(span_before_style);
+
+    let mut span_a = styled_element("span");
+    span_a.node_id = 1;
+    span_a.before_styles = Some(Arc::clone(&span_before_style));
+
+    let mut span_b = styled_element("span");
+    span_b.node_id = 2;
+    span_b.before_styles = Some(span_before_style);
+
+    let mut container = styled_element("div");
+    container.node_id = 0;
+    container.styles = Arc::new(container_style);
+    container.before_styles = Some(Arc::new(container_before_style));
+    container.children = vec![span_a, span_b];
+
+    let tree = generate_box_tree(&container);
+    assert_eq!(tree.root.children.len(), 3);
+    assert_eq!(before_pseudo_text(&tree.root.children[1]), "1");
+    assert_eq!(before_pseudo_text(&tree.root.children[2]), "1");
+  }
+
+  #[test]
+  fn after_counter_increment_happens_after_children() {
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.counters.counter_reset = Some(CounterSet::single("x", 0));
+
+    let mut container_after_style = ComputedStyle::default();
+    container_after_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
+    container_after_style.counters.counter_increment = Some(CounterSet::single("x", 1));
+
+    let mut before_counter_style = ComputedStyle::default();
+    before_counter_style.content_value = ContentValue::Items(vec![ContentItem::Counter {
+      name: "x".to_string(),
+      style: None,
+    }]);
+    let before_counter_style = Arc::new(before_counter_style);
+
+    let mut span_a = styled_element("span");
+    span_a.node_id = 2;
+    span_a.before_styles = Some(Arc::clone(&before_counter_style));
+
+    let mut span_b = styled_element("span");
+    span_b.node_id = 3;
+    span_b.before_styles = Some(Arc::clone(&before_counter_style));
+
+    let mut container = styled_element("div");
+    container.node_id = 1;
+    container.styles = Arc::new({
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
+      style
+    });
+    container.after_styles = Some(Arc::new(container_after_style));
+    container.children = vec![span_a, span_b];
+
+    let mut sibling = styled_element("div");
+    sibling.node_id = 4;
+    sibling.styles = Arc::new({
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
+      style
+    });
+    sibling.before_styles = Some(before_counter_style);
+
+    let mut root = styled_element("div");
+    root.node_id = 0;
+    root.styles = Arc::new(root_style);
+    root.children = vec![container, sibling];
+
+    let tree = generate_box_tree(&root);
+    assert_eq!(tree.root.children.len(), 2);
+
+    let container_box = &tree.root.children[0];
+    assert_eq!(before_pseudo_text(&container_box.children[0]), "0");
+    assert_eq!(before_pseudo_text(&container_box.children[1]), "0");
+
+    let sibling_box = &tree.root.children[1];
+    assert_eq!(before_pseudo_text(sibling_box), "1");
+  }
+
+  #[test]
+  fn marker_counter_increment_affects_list_item_children() {
+    let mut li_style = ComputedStyle::default();
+    li_style.display = Display::ListItem;
+    li_style.counters.counter_reset = Some(CounterSet::single("x", 0));
+
+    let mut marker_style = ComputedStyle::default();
+    marker_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
+    marker_style.counters.counter_increment = Some(CounterSet::single("x", 1));
+
+    let mut before_style = ComputedStyle::default();
+    before_style.content_value = ContentValue::Items(vec![ContentItem::Counter {
+      name: "x".to_string(),
+      style: None,
+    }]);
+
+    let mut li = styled_element("li");
+    li.node_id = 0;
+    li.styles = Arc::new(li_style);
+    li.marker_styles = Some(Arc::new(marker_style));
+    li.before_styles = Some(Arc::new(before_style));
+
+    let tree = generate_box_tree(&li);
+    assert_eq!(tree.root.children.len(), 2);
+    assert!(matches!(tree.root.children[0].box_type, BoxType::Marker(_)));
+    assert_eq!(before_pseudo_text(&tree.root), "1");
   }
 
   #[test]
@@ -6231,7 +6335,7 @@ mod tests {
     counters.apply_reset(&CounterSet::single("item", 2));
     counters.apply_increment(&CounterSet::single("item", 1));
 
-    let marker_box = create_marker_box(&styled, &counters).expect("marker");
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -6278,7 +6382,7 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &counters).expect("marker");
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -6334,7 +6438,7 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &counters).expect("marker");
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -8051,14 +8155,14 @@ mod tests {
   #[test]
   fn pseudo_element_content_ignores_empty_url() {
     let styled = styled_element("div");
-    let counters = CounterManager::new();
+    let mut counters = CounterManager::new();
 
     let mut pseudo_style = ComputedStyle::default();
     pseudo_style.content_value = ContentValue::Items(vec![ContentItem::Url(String::new())]);
     let pseudo_style = Arc::new(pseudo_style);
 
     let pseudo_box =
-      create_pseudo_element_box(&styled, &pseudo_style, None, "before", &counters).expect(
+      create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters).expect(
         "pseudo-element boxes should still be generated when content isn't none/normal, even if the resolved url is empty",
       );
     assert!(
@@ -8070,13 +8174,13 @@ mod tests {
   #[test]
   fn pseudo_element_content_generates_box_for_empty_string() {
     let styled = styled_element("div");
-    let counters = CounterManager::new();
+    let mut counters = CounterManager::new();
 
     let mut pseudo_style = ComputedStyle::default();
     pseudo_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
     let pseudo_style = Arc::new(pseudo_style);
 
-    let pseudo_box = create_pseudo_element_box(&styled, &pseudo_style, None, "before", &counters)
+    let pseudo_box = create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters)
       .expect("empty string content should still generate the pseudo-element box");
     assert!(
       pseudo_box.children.is_empty(),
