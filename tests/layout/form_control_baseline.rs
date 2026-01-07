@@ -141,6 +141,12 @@ fn inline_text_like_form_controls_use_text_baseline() {
       }),
     ),
     ("button", FormControlKind::Button { label: "Ok".to_string() }),
+    (
+      "unknown-with-label",
+      FormControlKind::Unknown {
+        label: Some("Unknown".to_string()),
+      },
+    ),
   ];
 
   for (label, kind) in cases {
@@ -168,5 +174,20 @@ fn inline_non_text_form_control_keeps_replaced_baseline() {
   assert!(
     (control_bottom_y - baseline_y).abs() <= epsilon,
     "expected checkbox baseline to be bottom edge: bottom={control_bottom_y:.3} baseline={baseline_y:.3}",
+  );
+}
+
+#[test]
+fn inline_unknown_form_control_without_label_keeps_replaced_baseline() {
+  // Unknown controls without a label don't paint text, so they should keep the default replaced
+  // baseline (bottom edge).
+  let (baseline_y, control_bottom_y) = baseline_and_control_bottom(
+    FormControlKind::Unknown { label: None },
+    Size::new(16.0, 16.0),
+  );
+  let epsilon = 0.01;
+  assert!(
+    (control_bottom_y - baseline_y).abs() <= epsilon,
+    "expected unknown-without-label baseline to be bottom edge: bottom={control_bottom_y:.3} baseline={baseline_y:.3}",
   );
 }
