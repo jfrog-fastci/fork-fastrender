@@ -177,6 +177,7 @@ use types::TextCombineUpright;
 use types::TextDecoration;
 use types::TextDecorationSkipInk;
 use types::TextEmphasisPosition;
+use types::TextEmphasisSkip;
 use types::TextEmphasisStyle;
 use types::TextIndent;
 use types::TextJustify;
@@ -474,6 +475,103 @@ pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
   }
 
   true
+}
+
+/// Returns true if emphasis marks should be skipped for the given character based on
+/// `text-emphasis-skip`.
+///
+/// This is used by both the legacy painter and the display-list builder so the two paint backends
+/// behave identically.
+pub(crate) fn should_skip_text_emphasis_mark(ch: char, skip: TextEmphasisSkip) -> bool {
+  use unicode_general_category::get_general_category;
+  use unicode_general_category::GeneralCategory;
+
+  // Control codes and unassigned characters should always be skipped.
+  if ch.is_control() {
+    return true;
+  }
+
+  let category = get_general_category(ch);
+  if matches!(category, GeneralCategory::Format | GeneralCategory::Unassigned) {
+    return true;
+  }
+
+  if skip.contains(TextEmphasisSkip::SPACES) && ch.is_whitespace() {
+    return true;
+  }
+
+  // CSS Text Decoration 4: `symbols` includes all S* general-category characters as well as some
+  // Po characters (and their NFKD-equivalents) such as '%' and '#'.
+  let nfkd_symbol = {
+    let code = ch as u32;
+    if (0xFF01..=0xFF5E).contains(&code) {
+      char::from_u32(code - 0xFEE0)
+        .is_some_and(|mapped| matches!(mapped, '#' | '%' | '&' | '@'))
+    } else {
+      matches!(
+        ch,
+        '\u{FE5F}' // SMALL NUMBER SIGN
+          | '\u{FE6A}' // SMALL PERCENT SIGN
+          | '\u{FE60}' // SMALL AMPERSAND
+          | '\u{FE6B}' // SMALL COMMERCIAL AT
+      )
+    }
+  };
+
+  let is_symbol = matches!(
+    category,
+    GeneralCategory::MathSymbol
+      | GeneralCategory::CurrencySymbol
+      | GeneralCategory::ModifierSymbol
+      | GeneralCategory::OtherSymbol
+  ) || nfkd_symbol
+    || matches!(
+      ch,
+      '#'
+        | '%'
+        | '‰'
+        | '‱'
+        | '٪'
+        | '؉'
+        | '؊'
+        | '&'
+        | '⁊'
+        | '@'
+        | '§'
+        | '¶'
+        | '⁋'
+        | '⁓'
+        | '〽'
+    );
+
+  if skip.contains(TextEmphasisSkip::SYMBOLS) && is_symbol {
+    return true;
+  }
+
+  if skip.contains(TextEmphasisSkip::PUNCTUATION)
+    && !is_symbol
+    && matches!(
+      category,
+      GeneralCategory::ConnectorPunctuation
+        | GeneralCategory::DashPunctuation
+        | GeneralCategory::ClosePunctuation
+        | GeneralCategory::FinalPunctuation
+        | GeneralCategory::InitialPunctuation
+        | GeneralCategory::OtherPunctuation
+        | GeneralCategory::OpenPunctuation
+    )
+  {
+    return true;
+  }
+
+  if skip.contains(TextEmphasisSkip::NARROW) {
+    let wide = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) == 2;
+    if !wide {
+      return true;
+    }
+  }
+
+  false
 }
 
 pub(crate) fn is_combining_mark(ch: char) -> bool {
@@ -962,6 +1060,7 @@ pub struct ComputedStyle {
   /// None means currentColor.
   pub text_emphasis_color: Option<Rgba>,
   pub text_emphasis_position: TextEmphasisPosition,
+  pub text_emphasis_skip: TextEmphasisSkip,
   pub ruby_position: RubyPosition,
   pub ruby_align: RubyAlign,
   pub ruby_merge: RubyMerge,
@@ -1346,6 +1445,7 @@ impl Default for ComputedStyle {
       text_emphasis_style: TextEmphasisStyle::default(),
       text_emphasis_color: None,
       text_emphasis_position: TextEmphasisPosition::default(),
+      text_emphasis_skip: TextEmphasisSkip::default(),
       ruby_position: RubyPosition::default(),
       ruby_align: RubyAlign::default(),
       ruby_merge: RubyMerge::default(),

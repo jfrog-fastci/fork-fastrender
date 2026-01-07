@@ -5622,6 +5622,7 @@ fn apply_property_from_source(
     "text-emphasis-style" => styles.text_emphasis_style = source.text_emphasis_style.clone(),
     "text-emphasis-color" => styles.text_emphasis_color = source.text_emphasis_color,
     "text-emphasis-position" => styles.text_emphasis_position = source.text_emphasis_position,
+    "text-emphasis-skip" => styles.text_emphasis_skip = source.text_emphasis_skip,
     "ruby-position" => styles.ruby_position = source.ruby_position,
     "ruby-align" => styles.ruby_align = source.ruby_align,
     "ruby-merge" => styles.ruby_merge = source.ruby_merge,
@@ -10407,6 +10408,11 @@ fn apply_declaration_with_base_internal_with_order(
     "text-emphasis-position" => {
       if let Some(pos) = parse_text_emphasis_position(resolved_value) {
         styles.text_emphasis_position = pos;
+      }
+    }
+    "text-emphasis-skip" => {
+      if let Some(skip) = parse_text_emphasis_skip(resolved_value) {
+        styles.text_emphasis_skip = skip;
       }
     }
     "text-emphasis" => {
@@ -17420,6 +17426,67 @@ fn parse_text_emphasis_position(value: &PropertyValue) -> Option<TextEmphasisPos
   })
 }
 
+fn parse_text_emphasis_skip(value: &PropertyValue) -> Option<TextEmphasisSkip> {
+  // CSS Text Decoration Level 4:
+  //   Value: spaces || punctuation || symbols || narrow
+  //
+  // The computed value preserves the specified keywords, so we represent it as a bitset.
+  let tokens: Vec<String> = match value {
+    PropertyValue::Keyword(kw) => kw
+      .split_whitespace()
+      .map(|s| s.to_ascii_lowercase())
+      .collect(),
+    PropertyValue::Multiple(values) => {
+      let mut out = Vec::new();
+      for v in values {
+        let PropertyValue::Keyword(kw) = v else {
+          return None;
+        };
+        out.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+      }
+      out
+    }
+    _ => return None,
+  };
+
+  if tokens.is_empty() {
+    return None;
+  }
+
+  let mut skip = TextEmphasisSkip::NONE;
+  for token in tokens {
+    match token.as_str() {
+      "spaces" => {
+        if skip.contains(TextEmphasisSkip::SPACES) {
+          return None;
+        }
+        skip.insert(TextEmphasisSkip::SPACES);
+      }
+      "punctuation" => {
+        if skip.contains(TextEmphasisSkip::PUNCTUATION) {
+          return None;
+        }
+        skip.insert(TextEmphasisSkip::PUNCTUATION);
+      }
+      "symbols" => {
+        if skip.contains(TextEmphasisSkip::SYMBOLS) {
+          return None;
+        }
+        skip.insert(TextEmphasisSkip::SYMBOLS);
+      }
+      "narrow" => {
+        if skip.contains(TextEmphasisSkip::NARROW) {
+          return None;
+        }
+        skip.insert(TextEmphasisSkip::NARROW);
+      }
+      _ => return None,
+    }
+  }
+
+  (!skip.is_empty()).then_some(skip)
+}
+
 #[allow(clippy::option_option)]
 fn parse_text_emphasis_shorthand(
   value: &PropertyValue,
@@ -18227,6 +18294,7 @@ mod tests {
   use crate::style::types::TextUnderlineOffset;
   use crate::style::types::TextEmphasisFill;
   use crate::style::types::TextEmphasisPosition;
+  use crate::style::types::TextEmphasisSkip;
   use crate::style::types::TextEmphasisShape;
   use crate::style::types::TextEmphasisStyle;
   use crate::style::types::TextOrientation;
@@ -25512,6 +25580,84 @@ mod tests {
       }
     ));
     assert_eq!(style.text_emphasis_color, Some(Rgba::BLUE));
+  }
+
+  #[test]
+  fn text_emphasis_skip_parses_keyword_list() {
+    let mut style = ComputedStyle::default();
+    style.text_emphasis_skip = TextEmphasisSkip::NONE;
+
+    let decl = Declaration {
+      property: "text-emphasis-skip".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Keyword("SpAcEs".to_string()),
+        PropertyValue::Keyword("PUNCTUATION".to_string()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert!(style.text_emphasis_skip.contains(TextEmphasisSkip::SPACES));
+    assert!(style
+      .text_emphasis_skip
+      .contains(TextEmphasisSkip::PUNCTUATION));
+    assert!(!style.text_emphasis_skip.contains(TextEmphasisSkip::SYMBOLS));
+    assert!(!style.text_emphasis_skip.contains(TextEmphasisSkip::NARROW));
+  }
+
+  #[test]
+  fn text_emphasis_skip_treats_percent_like_symbols_separately_from_punctuation() {
+    // CSS Text Decoration 4 defines a set of Po characters as "symbols" for emphasis skipping.
+    // In particular '%' should not be skipped by `punctuation` unless `symbols` is also set.
+    assert!(
+      !crate::style::should_skip_text_emphasis_mark('%', TextEmphasisSkip::PUNCTUATION),
+      "expected % to be treated as a symbol, not punctuation"
+    );
+    assert!(
+      crate::style::should_skip_text_emphasis_mark('%', TextEmphasisSkip::SYMBOLS),
+      "expected symbols to skip %"
+    );
+  }
+
+  #[test]
+  fn text_emphasis_skip_rejects_duplicate_keywords() {
+    let mut style = ComputedStyle::default();
+    style.text_emphasis_skip = TextEmphasisSkip::SYMBOLS;
+    let before = style.text_emphasis_skip;
+
+    let decl = Declaration {
+      property: "text-emphasis-skip".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Keyword("spaces".to_string()),
+        PropertyValue::Keyword("spaces".to_string()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert_eq!(style.text_emphasis_skip, before);
+  }
+
+  #[test]
+  fn text_emphasis_skip_rejects_unknown_keywords() {
+    let mut style = ComputedStyle::default();
+    style.text_emphasis_skip = TextEmphasisSkip::NARROW;
+    let before = style.text_emphasis_skip;
+
+    let decl = Declaration {
+      property: "text-emphasis-skip".into(),
+      value: PropertyValue::Keyword("nonsense".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert_eq!(style.text_emphasis_skip, before);
   }
 
   #[test]

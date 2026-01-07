@@ -449,6 +449,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-emphasis",
   "text-emphasis-color",
   "text-emphasis-position",
+  "text-emphasis-skip",
   "text-emphasis-style",
   "text-indent",
   "text-justify",
@@ -1875,6 +1876,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "text-emphasis"
       | "text-emphasis-style"
       | "text-emphasis-position"
+      | "text-emphasis-skip"
       | "contain-intrinsic-size"
       | "contain-intrinsic-width"
       | "contain-intrinsic-height"

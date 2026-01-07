@@ -12082,6 +12082,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.text_emphasis_style = parent.text_emphasis_style.clone();
   styles.text_emphasis_color = parent.text_emphasis_color;
   styles.text_emphasis_position = parent.text_emphasis_position;
+  styles.text_emphasis_skip = parent.text_emphasis_skip;
   styles.text_transform = parent.text_transform;
   styles.text_combine_upright = parent.text_combine_upright;
   styles.text_orientation = parent.text_orientation;

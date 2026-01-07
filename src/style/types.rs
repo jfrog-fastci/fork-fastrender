@@ -3109,6 +3109,39 @@ impl Default for TextEmphasisPosition {
   }
 }
 
+/// Controls which characters receive emphasis marks.
+///
+/// CSS: `text-emphasis-skip` (CSS Text Decoration Level 4)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextEmphasisSkip(pub u8);
+
+impl TextEmphasisSkip {
+  pub const NONE: Self = Self(0);
+  pub const SPACES: Self = Self(1 << 0);
+  pub const PUNCTUATION: Self = Self(1 << 1);
+  pub const SYMBOLS: Self = Self(1 << 2);
+  pub const NARROW: Self = Self(1 << 3);
+
+  pub const fn contains(self, other: Self) -> bool {
+    self.0 & other.0 != 0
+  }
+
+  pub fn insert(&mut self, other: Self) {
+    self.0 |= other.0;
+  }
+
+  pub const fn is_empty(self) -> bool {
+    self.0 == 0
+  }
+}
+
+impl Default for TextEmphasisSkip {
+  fn default() -> Self {
+    // CSS Text Decoration 4: initial value is `spaces punctuation`.
+    TextEmphasisSkip(TextEmphasisSkip::SPACES.0 | TextEmphasisSkip::PUNCTUATION.0)
+  }
+}
+
 /// ruby-position values (CSS Ruby Layout Level 1)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RubyPosition {

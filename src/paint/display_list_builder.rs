@@ -7587,9 +7587,18 @@ impl DisplayListBuilder {
 
           let mut chars = grapheme.chars();
           if let Some(ch) = chars.next() {
-            if crate::style::is_text_emphasis_mark_excluded(ch)
-              && !(ch == ' ' && chars.any(crate::style::is_combining_mark))
+            let mut skip_mark =
+              crate::style::should_skip_text_emphasis_mark(ch, style.text_emphasis_skip);
+            if skip_mark
+              && !style
+                .text_emphasis_skip
+                .contains(crate::style::types::TextEmphasisSkip::NARROW)
+              && ch == ' '
+              && chars.next().is_some_and(crate::style::is_combining_mark)
             {
+              skip_mark = false;
+            }
+            if skip_mark {
               continue;
             }
           }
@@ -9446,6 +9455,7 @@ mod tests {
   use crate::style::types::Overflow;
   use crate::style::types::TextDecorationLine;
   use crate::style::types::TextDecorationThickness;
+  use crate::style::types::TextEmphasisSkip;
   use crate::style::types::TextUnderlineOffset;
   use crate::style::types::TextUnderlinePosition;
   use crate::style::types::TransformBox;
@@ -9590,7 +9600,15 @@ mod tests {
     );
 
     let (w, h) = DisplayListBuilder::compute_background_size(
-      &layer, 10.0, 10.0, None, 100.0, 100.0, 0.0, 0.0, false,
+      &layer,
+      10.0,
+      10.0,
+      None,
+      100.0,
+      100.0,
+      0.0,
+      0.0,
+      false,
     );
     assert_eq!(w, 0.0);
     assert_eq!(h, 0.0);
@@ -9682,6 +9700,46 @@ mod tests {
         shape: Some(crate::style::types::TextEmphasisShape::Circle)
       }
     ));
+  }
+
+  #[test]
+  fn text_emphasis_skip_skips_punctuation_by_default() {
+    let builder = DisplayListBuilder::new();
+    let font = test_font();
+    let cached_face = face_cache::get_ttf_face(font.as_ref()).expect("parse test font");
+    let face = cached_face.face();
+    // The subset font fixture doesn't necessarily include punctuation glyphs. For mark skipping we
+    // only need a cluster -> text mapping, not a specific glyph id, so synthesize a run using any
+    // glyph from the font while providing punctuation text.
+    let ch = ['W', 'O', 'F', '2']
+      .iter()
+      .copied()
+      .find(|ch| face.glyph_index(*ch).is_some())
+      .expect("expected test font to contain at least one ASCII glyph");
+    let mut run = shaped_run_for_char(Arc::clone(&font), ch, 16.0);
+    run.text = ",".to_string();
+    run.end = run.text.len();
+
+    let mut style = ComputedStyle::default();
+    style.font_size = 16.0;
+    style.text_emphasis_style = TextEmphasisStyle::Mark {
+      fill: crate::style::types::TextEmphasisFill::Filled,
+      shape: Some(crate::style::types::TextEmphasisShape::Dot),
+    };
+
+    let emphasis = builder
+      .build_emphasis(&run, &style, 0.0, 0.0, false, TextEmphasisOffset::default())
+      .expect("emphasis");
+    assert!(
+      emphasis.marks.is_empty(),
+      "expected punctuation to be skipped by default (initial text-emphasis-skip: spaces punctuation)"
+    );
+
+    style.text_emphasis_skip = TextEmphasisSkip::SPACES;
+    let emphasis = builder
+      .build_emphasis(&run, &style, 0.0, 0.0, false, TextEmphasisOffset::default())
+      .expect("emphasis");
+    assert_eq!(emphasis.marks.len(), 1);
   }
 
   #[test]

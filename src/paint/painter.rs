@@ -10454,9 +10454,18 @@ impl Painter {
 
           let mut chars = grapheme.chars();
           if let Some(ch) = chars.next() {
-            if crate::style::is_text_emphasis_mark_excluded(ch)
-              && !(ch == ' ' && chars.any(crate::style::is_combining_mark))
+            let mut skip_mark =
+              crate::style::should_skip_text_emphasis_mark(ch, style.text_emphasis_skip);
+            if skip_mark
+              && !style
+                .text_emphasis_skip
+                .contains(crate::style::types::TextEmphasisSkip::NARROW)
+              && ch == ' '
+              && chars.next().is_some_and(crate::style::is_combining_mark)
             {
+              skip_mark = false;
+            }
+            if skip_mark {
               continue;
             }
           }
