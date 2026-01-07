@@ -5768,6 +5768,9 @@ impl GridFormattingContext {
             .as_deref()
             .unwrap_or_else(|| box_node.style.as_ref());
           let wants_baseline_y = taffy_style.align_self == Some(taffy::style::AlignItems::Baseline);
+          let wants_baseline_x = taffy_style.justify_self
+            == Some(taffy::style::AlignItems::Baseline)
+            && crate::style::block_axis_is_horizontal(style.writing_mode);
           let mut available_space = available_space;
           if known_dimensions.width.is_none()
             && matches!(
@@ -5866,7 +5869,9 @@ impl GridFormattingContext {
             };
           }
 
-          if !wants_baseline_y && (intrinsic_width.is_some() || intrinsic_height.is_some()) {
+          if !(wants_baseline_y || wants_baseline_x)
+            && (intrinsic_width.is_some() || intrinsic_height.is_some())
+          {
             let percentage_base = match available_space.width {
               taffy::style::AvailableSpace::Definite(w) => w,
               _ => 0.0,
@@ -5921,8 +5926,21 @@ impl GridFormattingContext {
             height: content_size.height.max(0.0),
           };
           let mut baseline_deadline_counter = 0usize;
-          let baseline = if taffy_style.align_self == Some(taffy::style::AlignItems::Baseline) {
+          let baseline_y = if wants_baseline_y {
             match first_baseline_offset(&fragment, &mut baseline_deadline_counter) {
+              Ok(baseline) => baseline,
+              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+              Err(_) => None,
+            }
+          } else {
+            None
+          };
+          let baseline_x = if wants_baseline_x {
+            match first_baseline_offset_x(
+              &fragment,
+              style.writing_mode,
+              &mut baseline_deadline_counter,
+            ) {
               Ok(baseline) => baseline,
               Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
               Err(_) => None,
@@ -5932,7 +5950,10 @@ impl GridFormattingContext {
           };
           let output = taffy::tree::MeasureOutput::from_size_and_baselines(
             size,
-            taffy::geometry::Point { x: None, y: baseline },
+            taffy::geometry::Point {
+              x: baseline_x,
+              y: baseline_y,
+            },
           );
           grid_measure_size_cache_store(key, output);
           cache.insert(key, output);
@@ -6003,6 +6024,8 @@ impl GridFormattingContext {
       .formatting_context()
       .unwrap_or(FormattingContextType::Block);
     let wants_baseline_y = taffy_style.align_self == Some(taffy::style::AlignItems::Baseline);
+    let wants_baseline_x = taffy_style.justify_self == Some(taffy::style::AlignItems::Baseline)
+      && crate::style::block_axis_is_horizontal(style.writing_mode);
     let fallback_size = |known: Option<f32>, avail_dim: taffy::style::AvailableSpace| {
       known.unwrap_or(match avail_dim {
         taffy::style::AvailableSpace::Definite(v) => v,
@@ -6086,8 +6109,18 @@ impl GridFormattingContext {
         height: content_size.height.max(0.0),
       };
       let mut baseline_deadline_counter = 0usize;
-      let baseline = if taffy_style.align_self == Some(taffy::style::AlignItems::Baseline) {
+      let baseline_y = if wants_baseline_y {
         match first_baseline_offset(&fragment, &mut baseline_deadline_counter) {
+          Ok(baseline) => baseline,
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => None,
+        }
+      } else {
+        None
+      };
+      let baseline_x = if wants_baseline_x {
+        match first_baseline_offset_x(&fragment, style.writing_mode, &mut baseline_deadline_counter)
+        {
           Ok(baseline) => baseline,
           Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
           Err(_) => None,
@@ -6097,7 +6130,10 @@ impl GridFormattingContext {
       };
       let output = taffy::tree::MeasureOutput::from_size_and_baselines(
         size,
-        taffy::geometry::Point { x: None, y: baseline },
+        taffy::geometry::Point {
+          x: baseline_x,
+          y: baseline_y,
+        },
       );
       grid_measure_size_cache_store(key, output);
       if let Some(evicted) = push_measured_key(measured_node_keys.entry(node_id).or_default(), key)
@@ -6555,7 +6591,9 @@ impl GridFormattingContext {
       };
     }
 
-    if !wants_baseline_y && (intrinsic_width.is_some() || intrinsic_height.is_some()) {
+    if !(wants_baseline_y || wants_baseline_x)
+      && (intrinsic_width.is_some() || intrinsic_height.is_some())
+    {
       let percentage_base = match available_space.width {
         taffy::style::AvailableSpace::Definite(w) => w,
         _ => parent_inline_base.unwrap_or(0.0),
@@ -6663,8 +6701,17 @@ impl GridFormattingContext {
       height: content_size.height.max(0.0),
     };
     let mut baseline_deadline_counter = 0usize;
-    let baseline = if wants_baseline_y {
+    let baseline_y = if wants_baseline_y {
       match first_baseline_offset(&fragment, &mut baseline_deadline_counter) {
+        Ok(baseline) => baseline,
+        Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+        Err(_) => None,
+      }
+    } else {
+      None
+    };
+    let baseline_x = if wants_baseline_x {
+      match first_baseline_offset_x(&fragment, style.writing_mode, &mut baseline_deadline_counter) {
         Ok(baseline) => baseline,
         Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
         Err(_) => None,
@@ -6674,7 +6721,10 @@ impl GridFormattingContext {
     };
     let output = taffy::tree::MeasureOutput::from_size_and_baselines(
       size,
-      taffy::geometry::Point { x: None, y: baseline },
+      taffy::geometry::Point {
+        x: baseline_x,
+        y: baseline_y,
+      },
     );
     grid_measure_size_cache_store(key, output);
     if let Some(evicted) = push_measured_key(measured_node_keys.entry(node_id).or_default(), key) {
@@ -6795,11 +6845,68 @@ fn find_first_baseline_offset(
   Ok(None)
 }
 
+fn find_first_baseline_offset_x(
+  fragment: &FragmentNode,
+  block_positive: bool,
+  deadline_counter: &mut usize,
+) -> Result<Option<f32>, LayoutError> {
+  check_layout_deadline(deadline_counter)?;
+
+  let resolve_from_block_start = |offset: f32, extent: f32| -> f32 {
+    if block_positive {
+      offset
+    } else if extent.is_finite() && extent > 0.0 {
+      (extent - offset).max(0.0)
+    } else {
+      offset
+    }
+  };
+
+  let extent = fragment.bounds.width();
+  if let Some(baseline) = fragment.baseline {
+    return Ok(Some(resolve_from_block_start(baseline, extent)));
+  }
+  match &fragment.content {
+    FragmentContent::Line { baseline } => {
+      return Ok(Some(resolve_from_block_start(*baseline, extent)));
+    }
+    FragmentContent::Text {
+      baseline_offset, ..
+    } => {
+      return Ok(Some(resolve_from_block_start(*baseline_offset, extent)));
+    }
+    _ => {}
+  }
+
+  for child in fragment.children.iter() {
+    if let Some(b) = find_first_baseline_offset_x(child, block_positive, deadline_counter)? {
+      return Ok(Some(child.bounds.x() + b));
+    }
+  }
+
+  Ok(None)
+}
+
 fn first_baseline_offset(
   fragment: &FragmentNode,
   deadline_counter: &mut usize,
 ) -> Result<Option<f32>, LayoutError> {
   find_first_baseline_offset(fragment, deadline_counter)
+}
+
+fn first_baseline_offset_x(
+  fragment: &FragmentNode,
+  writing_mode: WritingMode,
+  deadline_counter: &mut usize,
+) -> Result<Option<f32>, LayoutError> {
+  if !crate::style::block_axis_is_horizontal(writing_mode) {
+    return Ok(None);
+  }
+  find_first_baseline_offset_x(
+    fragment,
+    crate::style::block_axis_positive(writing_mode),
+    deadline_counter,
+  )
 }
 
 fn apply_alignment_fallback_for_grid(
@@ -8856,6 +8963,9 @@ impl FormattingContext for GridFormattingContext {
             .as_deref()
             .unwrap_or_else(|| box_node.style.as_ref());
           let wants_baseline_y = taffy_style.align_self == Some(taffy::style::AlignItems::Baseline);
+          let wants_baseline_x = taffy_style.justify_self
+            == Some(taffy::style::AlignItems::Baseline)
+            && crate::style::block_axis_is_horizontal(style.writing_mode);
           let mut available_space = available_space;
           if known_dimensions.width.is_none()
             && matches!(
@@ -8954,7 +9064,9 @@ impl FormattingContext for GridFormattingContext {
             };
           }
 
-          if !wants_baseline_y && (intrinsic_width.is_some() || intrinsic_height.is_some()) {
+          if !(wants_baseline_y || wants_baseline_x)
+            && (intrinsic_width.is_some() || intrinsic_height.is_some())
+          {
             let percentage_base = match available_space.width {
               taffy::style::AvailableSpace::Definite(w) => w,
               _ => 0.0,
@@ -9009,8 +9121,21 @@ impl FormattingContext for GridFormattingContext {
             height: content_size.height.max(0.0),
           };
           let mut baseline_deadline_counter = 0usize;
-          let baseline = if wants_baseline_y {
+          let baseline_y = if wants_baseline_y {
             match first_baseline_offset(&fragment, &mut baseline_deadline_counter) {
+              Ok(baseline) => baseline,
+              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+              Err(_) => None,
+            }
+          } else {
+            None
+          };
+          let baseline_x = if wants_baseline_x {
+            match first_baseline_offset_x(
+              &fragment,
+              style.writing_mode,
+              &mut baseline_deadline_counter,
+            ) {
               Ok(baseline) => baseline,
               Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
               Err(_) => None,
@@ -9020,7 +9145,10 @@ impl FormattingContext for GridFormattingContext {
           };
           let output = taffy::tree::MeasureOutput::from_size_and_baselines(
             size,
-            taffy::geometry::Point { x: None, y: baseline },
+            taffy::geometry::Point {
+              x: baseline_x,
+              y: baseline_y,
+            },
           );
           grid_measure_size_cache_store(key, output);
           cache.insert(key, output);
@@ -9102,6 +9230,21 @@ mod tests {
   fn make_text_item(text: &str, font_size: f32) -> BoxNode {
     let mut style = ComputedStyle::default();
     style.font_size = font_size;
+    let style = Arc::new(style);
+    let text_child = BoxNode::new_text(style.clone(), text.to_string());
+    BoxNode::new_block(style, FormattingContextType::Inline, vec![text_child])
+  }
+
+  fn make_text_item_with_writing_mode(
+    text: &str,
+    font_size: f32,
+    writing_mode: WritingMode,
+    width: f32,
+  ) -> BoxNode {
+    let mut style = ComputedStyle::default();
+    style.font_size = font_size;
+    style.writing_mode = writing_mode;
+    style.width = Some(Length::px(width));
     let style = Arc::new(style);
     let text_child = BoxNode::new_text(style.clone(), text.to_string());
     BoxNode::new_block(style, FormattingContextType::Inline, vec![text_child])
@@ -12862,8 +13005,12 @@ mod tests {
     grid_style.grid_template_rows = vec![GridTrack::Auto, GridTrack::Auto];
     let grid_style = Arc::new(grid_style);
 
-    let item_small = make_text_item("small", 12.0);
-    let item_large = make_text_item("large", 24.0);
+    let item_writing_mode = WritingMode::VerticalLr;
+    let fixed_width = 60.0;
+    let item_small =
+      make_text_item_with_writing_mode("small", 12.0, item_writing_mode, fixed_width);
+    let item_large =
+      make_text_item_with_writing_mode("large", 24.0, item_writing_mode, fixed_width);
 
     let grid = BoxNode::new_block(
       grid_style,
@@ -12875,15 +13022,21 @@ mod tests {
     let fragment = fc.layout(&grid, &constraints).unwrap();
 
     let mut deadline_counter = 0usize;
-    let baseline_offset0 =
-      super::first_baseline_offset(&fragment.children[0], &mut deadline_counter)
-        .expect("baseline computation")
-        .unwrap_or_else(|| fragment.children[0].bounds.width());
+    let baseline_offset0 = super::first_baseline_offset_x(
+      &fragment.children[0],
+      item_writing_mode,
+      &mut deadline_counter,
+    )
+    .expect("baseline computation")
+    .expect("baseline");
     let mut deadline_counter = 0usize;
-    let baseline_offset1 =
-      super::first_baseline_offset(&fragment.children[1], &mut deadline_counter)
-        .expect("baseline computation")
-        .unwrap_or_else(|| fragment.children[1].bounds.width());
+    let baseline_offset1 = super::first_baseline_offset_x(
+      &fragment.children[1],
+      item_writing_mode,
+      &mut deadline_counter,
+    )
+    .expect("baseline computation")
+    .expect("baseline");
 
     let baseline0 = fragment.children[0].bounds.x() + baseline_offset0;
     let baseline1 = fragment.children[1].bounds.x() + baseline_offset1;
@@ -12897,6 +13050,10 @@ mod tests {
     assert!(
       fragment.children[0].bounds.x() >= 0.0 || fragment.children[1].bounds.x() >= 0.0,
       "baseline alignment should not move items outside the column"
+    );
+    assert!(
+      fragment.children[0].bounds.x() > fragment.children[1].bounds.x(),
+      "smaller baseline item should be offset horizontally to align"
     );
   }
 
