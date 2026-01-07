@@ -2,6 +2,8 @@
 
 FastRender treats native form controls as replaced elements so they participate in intrinsic sizing and paint their own UA appearance.
 
+Note: FastRender does not delegate to platform-native widgets; “native painting” here refers to FastRender’s built-in form-control renderer.
+
 ## Specs (background)
 
 - HTML Living Standard: form controls (`<input>`, `<select>`, `<textarea>`, `<button>`)
