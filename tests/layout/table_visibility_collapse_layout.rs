@@ -1,9 +1,20 @@
 use std::collections::HashMap;
+use std::sync::Once;
 
 use fastrender::api::FastRender;
 use fastrender::geometry::Rect;
 use fastrender::style::display::Display;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
+
+static SET_RAYON_THREADS: Once = Once::new();
+
+fn ensure_rayon_threads() {
+  SET_RAYON_THREADS.call_once(|| {
+    if std::env::var("RAYON_NUM_THREADS").is_err() {
+      std::env::set_var("RAYON_NUM_THREADS", "4");
+    }
+  });
+}
 
 #[derive(Debug, Clone)]
 struct CellInfo {
@@ -48,7 +59,128 @@ fn collect_cells(node: &FragmentNode, origin: (f32, f32), cells: &mut HashMap<ch
 }
 
 #[test]
+fn collapsed_row_removal_removes_vertical_gap() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { border-collapse: separate; border-spacing: 0; }
+          td { padding: 0; margin: 0; border: 0; height: 10px; font-size: 0; line-height: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td>A</td></tr>
+          <tr style="visibility: collapse;"><td>B</td></tr>
+          <tr><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed row cell should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("row 1 cell present");
+  let c = cells.get(&'C').expect("row 3 cell present");
+
+  assert!(
+    (a.rect.height() - 10.0).abs() < 0.1,
+    "row height should match explicit cell height (got {})",
+    a.rect.height()
+  );
+
+  let expected_c_y = a.rect.y() + a.rect.height();
+  let gap = c.rect.y() - expected_c_y;
+  assert!(
+    gap.abs() < 0.1,
+    "collapsed row should not create a gap (expected row 3 y={expected_c_y}, got {}, gap={gap})",
+    c.rect.y()
+  );
+}
+
+#[test]
+fn collapsed_column_removal_adjusts_colspans_and_offsets() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed;
+          }
+          col { width: 20px; }
+          td { padding: 0; margin: 0; border: 0; height: 10px; font-size: 0; line-height: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col />
+          <col style="visibility: collapse;" />
+          <col />
+          <tr><td colspan="3">S</td></tr>
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column cell should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell in first visible column present");
+  let c = cells.get(&'C').expect("cell in last visible column present");
+  let s = cells.get(&'S').expect("spanning cell present");
+
+  let expected_c_x = a.rect.x() + a.rect.width();
+  let gap = c.rect.x() - expected_c_x;
+  assert!(
+    gap.abs() < 0.1,
+    "collapsed column should be removed from offsets (expected C x={expected_c_x}, got {}, gap={gap})",
+    c.rect.x()
+  );
+
+  let expected_span_width = a.rect.width() + c.rect.width();
+  let span_gap = s.rect.width() - expected_span_width;
+  assert!(
+    span_gap.abs() < 0.1,
+    "colspan should shrink to visible columns (expected S width={expected_span_width}, got {}, gap={span_gap})",
+    s.rect.width()
+  );
+}
+
+#[test]
 fn column_visibility_collapse_removes_column_from_layout() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -100,6 +232,7 @@ fn column_visibility_collapse_removes_column_from_layout() {
 
 #[test]
 fn column_visibility_collapse_removes_column_from_layout_rtl() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -168,6 +301,7 @@ fn column_visibility_collapse_removes_column_from_layout_rtl() {
 
 #[test]
 fn row_visibility_collapse_removes_row_from_layout() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -209,6 +343,7 @@ fn row_visibility_collapse_removes_row_from_layout() {
 
 #[test]
 fn rowspan_across_collapsed_row_is_shortened() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -263,6 +398,7 @@ fn rowspan_across_collapsed_row_is_shortened() {
 
 #[test]
 fn colspan_over_collapsed_column_is_shortened() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -311,6 +447,7 @@ fn colspan_over_collapsed_column_is_shortened() {
 
 #[test]
 fn colspan_over_collapsed_column_is_shortened_rtl() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -371,6 +508,7 @@ fn colspan_over_collapsed_column_is_shortened_rtl() {
 
 #[test]
 fn row_group_visibility_collapse_removes_rows_from_layout() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -415,6 +553,7 @@ fn row_group_visibility_collapse_removes_rows_from_layout() {
 
 #[test]
 fn column_group_visibility_collapse_removes_columns_from_layout() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -469,6 +608,7 @@ fn column_group_visibility_collapse_removes_columns_from_layout() {
 
 #[test]
 fn column_visibility_collapse_removes_extra_border_spacing_gap() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -515,6 +655,7 @@ fn column_visibility_collapse_removes_extra_border_spacing_gap() {
 
 #[test]
 fn row_visibility_collapse_removes_extra_border_spacing_gap() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -556,6 +697,7 @@ fn row_visibility_collapse_removes_extra_border_spacing_gap() {
 
 #[test]
 fn rowspan_across_collapsed_row_removes_extra_border_spacing_gap() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
