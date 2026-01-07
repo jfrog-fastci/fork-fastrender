@@ -9872,6 +9872,13 @@ impl DisplayListRenderer {
           transform_rect(bounds, &combined_transform)
         };
 
+        let is_backdrop_root = item.establishes_backdrop_root
+          || !scaled_filters.is_empty()
+          || has_backdrop
+          || opacity < 1.0 - f32::EPSILON
+          || mask.is_some()
+          || item.has_clip_path
+          || !matches!(item.mix_blend_mode, BlendMode::Normal);
         let needs_layer = is_isolated
           || !matches!(
             item.mix_blend_mode,
@@ -9947,7 +9954,7 @@ impl DisplayListRenderer {
                   opacity,
                   None,
                   layer_rect,
-                  item.establishes_backdrop_root,
+                  is_backdrop_root,
                 )?;
                 self.push_layer_mutation_state();
               } else {
@@ -9955,7 +9962,7 @@ impl DisplayListRenderer {
                   opacity,
                   None,
                   layer_rect,
-                  item.establishes_backdrop_root,
+                  is_backdrop_root,
                 )?;
               }
             } else if init_from_backdrop {
@@ -9964,11 +9971,11 @@ impl DisplayListRenderer {
                 .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
                   opacity,
                   None,
-                  item.establishes_backdrop_root,
+                  is_backdrop_root,
                 )?;
               self.push_layer_mutation_state();
             } else {
-              self.push_layer_tracked(opacity, item.establishes_backdrop_root)?;
+              self.push_layer_tracked(opacity, is_backdrop_root)?;
             }
           } else {
             let blend = map_blend_mode(item.mix_blend_mode);
@@ -9978,7 +9985,7 @@ impl DisplayListRenderer {
                   opacity,
                   Some(blend),
                   layer_rect,
-                  item.establishes_backdrop_root,
+                  is_backdrop_root,
                 )?;
                 self.push_layer_mutation_state();
               } else {
@@ -9986,7 +9993,7 @@ impl DisplayListRenderer {
                   opacity,
                   Some(blend),
                   layer_rect,
-                  item.establishes_backdrop_root,
+                  is_backdrop_root,
                 )?;
               }
             } else if init_from_backdrop {
@@ -9995,11 +10002,11 @@ impl DisplayListRenderer {
                 .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
                   opacity,
                   Some(blend),
-                  item.establishes_backdrop_root,
+                  is_backdrop_root,
                 )?;
               self.push_layer_mutation_state();
             } else {
-              self.push_layer_with_blend_tracked(opacity, Some(blend), item.establishes_backdrop_root)?;
+              self.push_layer_with_blend_tracked(opacity, Some(blend), is_backdrop_root)?;
             }
           }
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
@@ -10027,7 +10034,7 @@ impl DisplayListRenderer {
           transform: clip_transform,
         });
         self.stacking_layers.push(StackingRecord {
-          establishes_backdrop_root: item.establishes_backdrop_root,
+          establishes_backdrop_root: is_backdrop_root,
           needs_layer,
           mix_blend_mode: item.mix_blend_mode,
           init_from_backdrop,
@@ -10055,7 +10062,7 @@ impl DisplayListRenderer {
           let depth_after = self.canvas.layer_stack_len();
           eprintln!(
             "backdrop_stack push_sc backdrop_root={} needs_layer={} canvas_layers={} -> {}",
-            item.establishes_backdrop_root, needs_layer, canvas_layer_depth_before, depth_after
+            is_backdrop_root, needs_layer, canvas_layer_depth_before, depth_after
           );
         }
       }
