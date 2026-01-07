@@ -1419,10 +1419,10 @@ enum CrawlMode {
 fn placeholder_resource(
   destination: FetchDestination,
   url: &str,
-  referrer: &str,
+  referrer_url: &str,
+  client_origin: Option<&DocumentOrigin>,
 ) -> FetchedResource {
-  fn allow_origin_for_referrer(referrer: &str) -> Option<String> {
-    let origin = origin_from_url(referrer)?;
+  fn allow_origin_for_origin(origin: &DocumentOrigin) -> Option<String> {
     if origin.is_http_like() {
       let host = origin.host()?;
       let host = match host.parse::<std::net::IpAddr>() {
@@ -1446,7 +1446,10 @@ fn placeholder_resource(
     Some("null".to_string())
   }
 
-  let allow_origin = allow_origin_for_referrer(referrer).unwrap_or_else(|| "*".to_string());
+  let allow_origin = client_origin
+    .and_then(allow_origin_for_origin)
+    .or_else(|| origin_from_url(referrer_url).and_then(|origin| allow_origin_for_origin(&origin)))
+    .unwrap_or_else(|| "*".to_string());
   match destination {
     FetchDestination::Image | FetchDestination::ImageCors => {
       let mut res = FetchedResource::with_final_url(
@@ -1541,13 +1544,14 @@ fn crawl_document(
   }
 
   fn enqueue_unique(
-    queue: &mut VecDeque<(String, FetchDestination, FetchCredentialsMode, String)>,
+    queue: &mut VecDeque<CrawlQueueEntry>,
     seen_urls: &mut HashSet<String>,
     queued: &mut HashSet<(String, Option<DocumentOrigin>, FetchDestination, FetchCredentialsMode)>,
     url: String,
     destination: FetchDestination,
     credentials_mode: FetchCredentialsMode,
-    referrer: &str,
+    referrer_url: &str,
+    client_origin: Option<&DocumentOrigin>,
   ) {
     if url.is_empty() {
       return;
@@ -1560,13 +1564,21 @@ fn crawl_document(
     // under `--same-origin-subresources` (a URL may be blocked for one document but allowed for
     // another).
     seen_urls.insert(url.clone());
-    let origin = origin_from_url(referrer);
+    let origin = client_origin
+      .cloned()
+      .or_else(|| origin_from_url(referrer_url));
     let key = (url.clone(), origin.clone(), destination, credentials_mode);
     if queued.contains(&key) {
       return;
     }
     queued.insert(key);
-    queue.push_back((url, destination, credentials_mode, referrer.to_string()));
+    queue.push_back(CrawlQueueEntry {
+      url,
+      destination,
+      credentials_mode,
+      referrer_url: referrer_url.to_string(),
+      client_origin: origin,
+    });
   }
 
   fn document_response_looks_like_html(res: &FetchedResource, requested_url: &str) -> bool {
@@ -1640,7 +1652,8 @@ fn crawl_document(
     fetch_errors: &mut Vec<(String, String)>,
     url: &str,
     destination: FetchDestination,
-    referrer: &str,
+    referrer_url: &str,
+    client_origin: Option<&DocumentOrigin>,
     err: &fastrender::Error,
     mode: CrawlMode,
   ) {
@@ -1653,7 +1666,10 @@ fn crawl_document(
       }
       CrawlMode::AllowMissing => {
         eprintln!("Warning: missing resource; inserting placeholder: {url}: {err}");
-        fetcher.record_override(url, placeholder_resource(destination, url, referrer));
+        fetcher.record_override(
+          url,
+          placeholder_resource(destination, url, referrer_url, client_origin),
+        );
       }
     }
   }
@@ -1678,8 +1694,16 @@ fn crawl_document(
     allowed_origins,
   };
 
-  let mut queue: VecDeque<(String, FetchDestination, FetchCredentialsMode, String)> =
-    VecDeque::new();
+  #[derive(Clone, Debug)]
+  struct CrawlQueueEntry {
+    url: String,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+    referrer_url: String,
+    client_origin: Option<DocumentOrigin>,
+  }
+
+  let mut queue: VecDeque<CrawlQueueEntry> = VecDeque::new();
   // Cap recursion based on distinct URLs discovered, not on per-document referrer contexts.
   let mut seen_urls: HashSet<String> = HashSet::new();
   let mut queued: HashSet<(String, Option<DocumentOrigin>, FetchDestination, FetchCredentialsMode)> =
@@ -1692,6 +1716,7 @@ fn crawl_document(
     HashSet::new();
   let mut fetch_errors: Vec<(String, String)> = Vec::new();
   let root_referrer = document.base_hint.as_str();
+  let root_client_origin = origin_from_url(root_referrer);
 
   let css_links = fastrender::css::loader::extract_css_links(
     &document.html,
@@ -1709,6 +1734,7 @@ fn crawl_document(
       FetchDestination::Style,
       FetchCredentialsMode::Include,
       root_referrer,
+      root_client_origin.as_ref(),
     );
   }
 
@@ -1726,6 +1752,7 @@ fn crawl_document(
         FetchDestination::Style,
         FetchCredentialsMode::Include,
         root_referrer,
+        root_client_origin.as_ref(),
       );
     }
   }
@@ -1749,6 +1776,7 @@ fn crawl_document(
           destination,
           credentials_mode,
           root_referrer,
+          root_client_origin.as_ref(),
         );
       }
     }
@@ -1765,6 +1793,7 @@ fn crawl_document(
         FetchDestination::Image,
         FetchCredentialsMode::Include,
         root_referrer,
+        root_client_origin.as_ref(),
       );
     }
   } else {
@@ -1779,6 +1808,7 @@ fn crawl_document(
         destination,
         credentials_mode,
         root_referrer,
+        root_client_origin.as_ref(),
       );
     }
   }
@@ -1795,6 +1825,7 @@ fn crawl_document(
         destination,
         default_credentials_mode_for_destination(destination),
         root_referrer,
+        root_client_origin.as_ref(),
       );
     }
   }
@@ -1808,6 +1839,7 @@ fn crawl_document(
       FetchDestination::Iframe,
       FetchCredentialsMode::Include,
       root_referrer,
+      root_client_origin.as_ref(),
     );
   }
 
@@ -1816,7 +1848,14 @@ fn crawl_document(
   // deterministic fixture. The HTML/CSS rewrite step will still produce local references for these
   // URLs, but the stored bytes are replaced with a deterministic 1x1 PNG placeholder.
   const MAX_CRAWL_IMAGE_BYTES: usize = 1_000_000;
-  while let Some((url, destination, credentials_mode, referrer)) = queue.pop_front() {
+  while let Some(entry) = queue.pop_front() {
+    let CrawlQueueEntry {
+      url,
+      destination,
+      credentials_mode,
+      referrer_url,
+      client_origin,
+    } = entry;
     if seen_urls.len() > MAX_CRAWL_URLS {
       eprintln!(
         "Warning: crawl URL limit exceeded ({}); skipping remaining discoveries",
@@ -1826,13 +1865,15 @@ fn crawl_document(
     }
 
     let kind: FetchContextKind = destination.into();
-    let document_origin = origin_from_url(&referrer);
     let origin_key = if cors_cache_partitioning_enabled()
       && matches!(
         destination,
         FetchDestination::Font | FetchDestination::ImageCors
       ) {
-      document_origin.clone().or_else(|| origin_from_url(&url))
+      client_origin
+        .clone()
+        .or_else(|| origin_from_url(&referrer_url))
+        .or_else(|| origin_from_url(&url))
     } else {
       None
     };
@@ -1841,7 +1882,7 @@ fn crawl_document(
       continue;
     }
 
-    let policy_for_request = policy.for_origin(document_origin.clone());
+    let policy_for_request = policy.for_origin(client_origin.clone());
     let allowed = match destination {
       FetchDestination::Document
       | FetchDestination::DocumentNoUser
@@ -1854,9 +1895,9 @@ fn crawl_document(
     }
 
     let mut req = FetchRequest::new(&url, destination)
-      .with_referrer_url(&referrer)
+      .with_referrer_url(&referrer_url)
       .with_credentials_mode(credentials_mode);
-    if let Some(origin) = document_origin.as_ref() {
+    if let Some(origin) = client_origin.as_ref() {
       req = req.with_client_origin(origin);
     }
     let res = match fetcher.fetch_with_request(req) {
@@ -1867,7 +1908,8 @@ fn crawl_document(
           &mut fetch_errors,
           &url,
           destination,
-          &referrer,
+          &referrer_url,
+          client_origin.as_ref(),
           &err,
           mode,
         );
@@ -1938,7 +1980,8 @@ fn crawl_document(
         &mut fetch_errors,
         &url,
         destination,
-        &referrer,
+        &referrer_url,
+        client_origin.as_ref(),
         &err,
         mode,
       );
@@ -1967,6 +2010,11 @@ fn crawl_document(
         let css_base = res.final_url.as_deref().unwrap_or(&url);
         let css = decode_css_bytes(&res.bytes, res.content_type.as_deref());
         for (dep, destination) in discover_css_urls_with_destination(&css, css_base) {
+          let dep_referrer_url = if destination == FetchDestination::Font {
+            css_base
+          } else {
+            referrer_url.as_str()
+          };
           enqueue_unique(
             &mut queue,
             &mut seen_urls,
@@ -1974,7 +2022,8 @@ fn crawl_document(
             dep,
             destination,
             default_credentials_mode_for_destination(destination),
-            &referrer,
+            dep_referrer_url,
+            client_origin.as_ref(),
           );
         }
       }
@@ -1986,6 +2035,8 @@ fn crawl_document(
         // and responsive image candidates aligned with the renderer).
         let base_hint = res.final_url.as_deref().unwrap_or(&url);
         let doc = decode_html_resource(&res, base_hint);
+        let doc_referrer = doc.base_hint.as_str();
+        let doc_origin = origin_from_url(doc_referrer);
 
         let css_links =
           fastrender::css::loader::extract_css_links(&doc.html, &doc.base_url, MediaType::Screen)
@@ -1999,7 +2050,8 @@ fn crawl_document(
             css_url,
             FetchDestination::Style,
             FetchCredentialsMode::Include,
-            doc.base_hint.as_str(),
+            doc_referrer,
+            doc_origin.as_ref(),
           );
         }
 
@@ -2016,7 +2068,8 @@ fn crawl_document(
               css_url,
               FetchDestination::Style,
               FetchCredentialsMode::Include,
-              doc.base_hint.as_str(),
+              doc_referrer,
+              doc_origin.as_ref(),
             );
           }
         }
@@ -2035,7 +2088,8 @@ fn crawl_document(
                 url,
                 destination,
                 credentials_mode,
-                doc.base_hint.as_str(),
+                doc_referrer,
+                doc_origin.as_ref(),
               );
             }
           }
@@ -2051,7 +2105,8 @@ fn crawl_document(
               url,
               FetchDestination::Image,
               FetchCredentialsMode::Include,
-              doc.base_hint.as_str(),
+              doc_referrer,
+              doc_origin.as_ref(),
             );
           }
         } else {
@@ -2063,7 +2118,8 @@ fn crawl_document(
               url,
               destination,
               credentials_mode,
-              doc.base_hint.as_str(),
+              doc_referrer,
+              doc_origin.as_ref(),
             );
           }
         }
@@ -2077,7 +2133,8 @@ fn crawl_document(
               url,
               destination,
               default_credentials_mode_for_destination(destination),
-              doc.base_hint.as_str(),
+              doc_referrer,
+              doc_origin.as_ref(),
             );
           }
         }
@@ -2090,7 +2147,8 @@ fn crawl_document(
             url,
             FetchDestination::Iframe,
             FetchCredentialsMode::Include,
-            doc.base_hint.as_str(),
+            doc_referrer,
+            doc_origin.as_ref(),
           );
         }
       }
@@ -2394,6 +2452,103 @@ mod tests {
         && *dest == FetchDestination::Image
         && referrer.as_deref() == Some(base_hint.as_str())
     }));
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_sets_stylesheet_referrer_and_client_origin_for_font_requests() -> Result<()> {
+    #[derive(Default)]
+    struct FontReferrerFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, Option<String>, Option<DocumentOrigin>)>>,
+    }
+
+    impl FontReferrerFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, Option<String>, Option<DocumentOrigin>)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for FontReferrerFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected crawl to use fetch_with_request()");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push((
+          req.url.to_string(),
+          req.destination,
+          req.referrer_url.map(|r| r.to_string()),
+          req.client_origin.cloned(),
+        ));
+
+        const STYLESHEET: &str = "http://cdn.test/styles.css";
+        const FONT: &str = "http://fonts.test/font.woff2";
+
+        match req.url {
+          STYLESHEET => {
+            let mut res = FetchedResource::with_final_url(
+              format!(r#"@font-face{{font-family:"Test";src:url("{FONT}");}}"#).into_bytes(),
+              Some("text/css".to_string()),
+              Some(STYLESHEET.to_string()),
+            );
+            res.status = Some(200);
+            Ok(res)
+          }
+          FONT => {
+            let mut res = FetchedResource::with_final_url(
+              b"ok".to_vec(),
+              Some("font/woff2".to_string()),
+              Some(FONT.to_string()),
+            );
+            res.status = Some(200);
+            Ok(res)
+          }
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    const DOC: &str = "http://root.test/page.html";
+    const STYLESHEET: &str = "http://cdn.test/styles.css";
+    const FONT: &str = "http://fonts.test/font.woff2";
+
+    let inner = Arc::new(FontReferrerFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let doc = common::render_pipeline::PreparedDocument::new(
+      format!(r#"<html><head><link rel="stylesheet" href="{STYLESHEET}"></head></html>"#),
+      DOC.to_string(),
+    );
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let expected_origin = origin_from_url(DOC).expect("doc origin");
+    let calls = inner.calls();
+    let font_calls: Vec<_> = calls
+      .iter()
+      .filter(|(url, dest, _, _)| url == FONT && *dest == FetchDestination::Font)
+      .collect();
+    assert_eq!(font_calls.len(), 1, "expected font fetch");
+    assert_eq!(font_calls[0].2.as_deref(), Some(STYLESHEET));
+    assert_eq!(font_calls[0].3, Some(expected_origin));
 
     Ok(())
   }

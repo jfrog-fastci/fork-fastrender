@@ -156,9 +156,9 @@ mod disk_cache_main {
   use fastrender::pageset::{cache_html_path, pageset_entries, PagesetEntry, PagesetFilter};
   use fastrender::resource::{
     ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane,
-    ensure_stylesheet_mime_sane, is_data_url, CachingFetcherConfig, DiskCachingFetcher,
-    FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher,
-    DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+    ensure_stylesheet_mime_sane, is_data_url, origin_from_url, CachingFetcherConfig,
+    DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
+    FetchedResource, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
   };
   use fastrender::style::media::{MediaContext, MediaQuery, MediaQueryCache};
   use fastrender::tree::box_tree::CrossOriginAttribute;
@@ -1090,6 +1090,7 @@ mod disk_cache_main {
   struct PrefetchImportLoader<'a> {
     fetcher: &'a dyn ResourceFetcher,
     referrer: &'a str,
+    client_origin: Option<&'a DocumentOrigin>,
     css_cache: RefCell<HashMap<String, String>>,
     summary: &'a RefCell<PageSummary>,
     all_asset_urls: &'a RefCell<BTreeSet<String>>,
@@ -1101,6 +1102,7 @@ mod disk_cache_main {
     fn new(
       fetcher: &'a dyn ResourceFetcher,
       referrer: &'a str,
+      client_origin: Option<&'a DocumentOrigin>,
       summary: &'a RefCell<PageSummary>,
       all_asset_urls: &'a RefCell<BTreeSet<String>>,
       css_asset_urls: Option<&'a RefCell<BTreeSet<String>>>,
@@ -1109,6 +1111,7 @@ mod disk_cache_main {
       Self {
         fetcher,
         referrer,
+        client_origin,
         css_cache: RefCell::new(HashMap::new()),
         summary,
         all_asset_urls,
@@ -1124,9 +1127,12 @@ mod disk_cache_main {
         return Ok(cached);
       }
 
-      match self.fetcher.fetch_with_request(
-        FetchRequest::new(url, FetchDestination::Style).with_referrer_url(self.referrer),
-      ) {
+      let mut request =
+        FetchRequest::new(url, FetchDestination::Style).with_referrer_url(self.referrer);
+      if let Some(origin) = self.client_origin {
+        request = request.with_client_origin(origin);
+      }
+      match self.fetcher.fetch_with_request(request) {
         Ok(res) => {
           if let Err(err) =
             ensure_http_success(&res, url).and_then(|()| ensure_stylesheet_mime_sane(&res, url))
@@ -1417,8 +1423,9 @@ mod disk_cache_main {
 
   fn prefetch_fonts_from_stylesheet(
     fetcher: &dyn ResourceFetcher,
-    referrer: &str,
+    referrer_url: &str,
     css_base_url: &str,
+    client_origin: Option<&DocumentOrigin>,
     sheet: &StyleSheet,
     media_ctx: &MediaContext,
     media_query_cache: &mut MediaQueryCache,
@@ -1440,11 +1447,13 @@ mod disk_cache_main {
           None => {}
         }
 
-        let success = match fetcher.fetch_with_request(
-          FetchRequest::new(&resolved, FetchDestination::Font)
-            .with_referrer_url(referrer)
-            .with_credentials_mode(FetchCredentialsMode::Omit),
-        ) {
+        let mut request = FetchRequest::new(&resolved, FetchDestination::Font)
+          .with_referrer_url(referrer_url)
+          .with_credentials_mode(FetchCredentialsMode::Omit);
+        if let Some(origin) = client_origin {
+          request = request.with_client_origin(origin);
+        }
+        let success = match fetcher.fetch_with_request(request) {
           Ok(res) => ensure_http_success(&res, &resolved)
             .and_then(|()| ensure_font_mime_sane(&res, &resolved))
             .is_ok(),
@@ -1471,6 +1480,7 @@ mod disk_cache_main {
     media_ctx: &MediaContext,
     opts: PrefetchOptions,
   ) -> PageSummary {
+    let document_origin = origin_from_url(base_hint);
     let summary = RefCell::new(PageSummary {
       stem: stem.to_string(),
       ..PageSummary::default()
@@ -1742,6 +1752,7 @@ mod disk_cache_main {
       let import_loader = PrefetchImportLoader::new(
         fetcher.as_ref(),
         base_hint,
+        document_origin.as_ref(),
         &summary,
         &all_asset_urls,
         css_asset_urls_ref,
@@ -1800,6 +1811,7 @@ mod disk_cache_main {
                 fetcher.as_ref(),
                 base_hint,
                 base_url,
+                document_origin.as_ref(),
                 &resolved,
                 media_ctx,
                 &mut media_query_cache,
@@ -1871,8 +1883,9 @@ mod disk_cache_main {
                 let mut summary = summary.borrow_mut();
                 prefetch_fonts_from_stylesheet(
                   fetcher.as_ref(),
-                  base_hint,
                   sheet_base,
+                  sheet_base,
+                  document_origin.as_ref(),
                   &resolved,
                   media_ctx,
                   &mut media_query_cache,
@@ -2515,6 +2528,103 @@ mod disk_cache_main {
       );
       assert_eq!(summary.fetched_fonts, 1);
       assert_eq!(summary.failed_fonts, 0);
+    }
+
+    #[test]
+    fn font_face_prefetch_sets_stylesheet_referrer_and_client_origin() {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<(String, FetchDestination, Option<String>, Option<DocumentOrigin>)>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("font prefetch should use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push((
+            req.url.to_string(),
+            req.destination,
+            req.referrer_url.map(|r| r.to_string()),
+            req.client_origin.cloned(),
+          ));
+
+          const STYLESHEET: &str = "https://cdn.test/style.css";
+          const FONT: &str = "https://cdn.test/font.woff2";
+          match req.url {
+            STYLESHEET => {
+              let mut res = FetchedResource::with_final_url(
+                br#"@font-face{font-family:X;src:url("https://cdn.test/font.woff2");}"#.to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            FONT => {
+              let mut res = FetchedResource::with_final_url(
+                b"font".to_vec(),
+                Some("font/woff2".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            other => Err(fastrender::Error::Other(format!(
+              "unexpected fetch: {other}"
+            ))),
+          }
+        }
+      }
+
+      const DOCUMENT_URL: &str = "https://example.com/page";
+      const BASE_URL: &str = "https://example.com/";
+      const STYLESHEET: &str = "https://cdn.test/style.css";
+      const FONT: &str = "https://cdn.test/font.woff2";
+
+      let expected_origin = origin_from_url(DOCUMENT_URL).expect("document origin");
+
+      let html = r#"<!doctype html><html><head><link rel="stylesheet" href="https://cdn.test/style.css"></head><body></body></html>"#;
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: true,
+        prefetch_images: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      prefetch_assets_for_html(
+        "test",
+        DOCUMENT_URL,
+        html,
+        DOCUMENT_URL,
+        BASE_URL,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      let calls = fetcher_impl.calls.lock().unwrap().clone();
+      let font_calls: Vec<_> = calls
+        .iter()
+        .filter(|(url, dest, _, _)| url == FONT && *dest == FetchDestination::Font)
+        .collect();
+      assert_eq!(font_calls.len(), 1, "expected a single font request");
+      assert_eq!(font_calls[0].2.as_deref(), Some(STYLESHEET));
+      assert_eq!(font_calls[0].3, Some(expected_origin));
     }
 
     #[test]
