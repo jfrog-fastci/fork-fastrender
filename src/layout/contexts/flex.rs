@@ -176,7 +176,10 @@ fn flex_auto_min_cache_store(
     {
       map.clear();
     }
-    map.insert((box_id, style_ptr, main_axis_is_horizontal, skip_contents), value);
+    map.insert(
+      (box_id, style_ptr, main_axis_is_horizontal, skip_contents),
+      value,
+    );
   });
 }
 
@@ -936,12 +939,15 @@ impl FormattingContext for FlexFormattingContext {
     let descendant_nearest_fixed_cb = if establishes_fixed_cb {
       let percentage_base = container_inline_base.unwrap_or(viewport_size.width);
       let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
-      let padding_right = self.resolve_length_for_width(style.padding_right, percentage_base, style);
+      let padding_right =
+        self.resolve_length_for_width(style.padding_right, percentage_base, style);
       let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
-      let padding_bottom = self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+      let padding_bottom =
+        self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
       let border_left =
         self.resolve_length_for_width(style.border_left_width, percentage_base, style);
-      let border_top = self.resolve_length_for_width(style.border_top_width, percentage_base, style);
+      let border_top =
+        self.resolve_length_for_width(style.border_top_width, percentage_base, style);
 
       let padding_origin = Point::new(border_left + padding_left, border_top + padding_top);
       let content_width = constraints.width().unwrap_or(0.0).max(0.0);
@@ -1089,11 +1095,8 @@ impl FormattingContext for FlexFormattingContext {
         // laying out all `content-visibility:auto` items so in-viewport content is never skipped.
         auto_unskipped_nodes = auto_all_nodes.clone();
         for (child, node_id) in auto_item_nodes.iter() {
-          let mut resolved_style = self.computed_style_to_taffy_base(
-            child.style.as_ref(),
-            false,
-            Some(style),
-          )?;
+          let mut resolved_style =
+            self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
           self.apply_flex_intrinsic_size_keywords(
             child,
             false,
@@ -2829,11 +2832,8 @@ impl FormattingContext for FlexFormattingContext {
       }
 
       for (child, node_id) in newly_unskipped_nodes {
-        let mut resolved_style = self.computed_style_to_taffy_base(
-          child.style.as_ref(),
-          false,
-          Some(style),
-        )?;
+        let mut resolved_style =
+          self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
         self.apply_flex_intrinsic_size_keywords(
           child,
           false,
@@ -4830,7 +4830,13 @@ impl FlexFormattingContext {
       &mut style,
     )?;
     let skip_contents = self.flex_item_should_skip_contents(box_node, auto_unskipped_for_pass);
-    self.apply_flex_auto_min_size(box_node, is_root, containing_flex, skip_contents, &mut style)?;
+    self.apply_flex_auto_min_size(
+      box_node,
+      is_root,
+      containing_flex,
+      skip_contents,
+      &mut style,
+    )?;
     Ok(style)
   }
 
@@ -4852,10 +4858,20 @@ impl FlexFormattingContext {
       style.flex_direction,
       FlexDirection::Row | FlexDirection::RowReverse
     );
+    let main_axis_positive_container = if container_main_is_inline {
+      inline_positive_container
+    } else {
+      block_positive_container
+    };
     let cross_positive_container = if container_main_is_inline {
       block_positive_container
     } else {
       inline_positive_container
+    };
+    let cross_positive_for_align_content = if matches!(style.flex_wrap, FlexWrap::WrapReverse) {
+      !cross_positive_container
+    } else {
+      cross_positive_container
     };
 
     // Flex items align to the parent flex container's axes, not their own writing-mode/direction.
@@ -4958,9 +4974,11 @@ impl FlexFormattingContext {
         block_positive_container,
       ),
       flex_wrap: self.flex_wrap_to_taffy(style.flex_wrap),
-      justify_content: self.justify_content_to_taffy(style.justify_content),
+      justify_content: self
+        .justify_content_to_taffy(style.justify_content, main_axis_positive_container),
       align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
-      align_content: self.align_content_to_taffy(style.align_content, cross_positive_container),
+      align_content: self
+        .align_content_to_taffy(style.align_content, cross_positive_for_align_content),
       align_self: self.align_self_to_taffy(effective_align_self, align_self_axis_positive),
       justify_self: self.align_self_to_taffy(effective_justify_self, justify_self_axis_positive),
       justify_items: self.align_items_to_taffy(style.justify_items, inline_positive_container),
@@ -7839,23 +7857,6 @@ impl FlexFormattingContext {
             child.bounds.size,
           );
         }
-      } else if min_x.is_finite()
-        && max_x.is_finite()
-        && rect.width().is_finite()
-        && min_x > rect.width() * 0.5
-        && (max_x - min_x) <= rect.width() * 1.5
-      {
-        // Children sit noticeably to the right but still span roughly the container width.
-        // Re-center them within the container to avoid an empty viewport.
-        let span = max_x - min_x;
-        let target_min = ((rect.width() - span).max(0.0)) / 2.0;
-        let dx = min_x - target_min;
-        for child in &mut children {
-          child.bounds = Rect::new(
-            Point::new(child.bounds.x() - dx, child.bounds.y()),
-            child.bounds.size,
-          );
-        }
       }
     }
 
@@ -8262,7 +8263,8 @@ impl FlexFormattingContext {
     let container_width = fragment.bounds.width().max(0.0);
     let container_height = fragment.bounds.height().max(0.0);
 
-    let mut root_style = self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
+    let mut root_style =
+      self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
     root_style.size.width = Dimension::length(container_width);
     root_style.size.height = Dimension::length(container_height);
 
@@ -8456,8 +8458,23 @@ impl FlexFormattingContext {
   fn justify_content_to_taffy(
     &self,
     justify: JustifyContent,
+    axis_positive: bool,
   ) -> Option<taffy::style::JustifyContent> {
     Some(match justify {
+      JustifyContent::Start => {
+        if axis_positive {
+          taffy::style::JustifyContent::Start
+        } else {
+          taffy::style::JustifyContent::End
+        }
+      }
+      JustifyContent::End => {
+        if axis_positive {
+          taffy::style::JustifyContent::End
+        } else {
+          taffy::style::JustifyContent::Start
+        }
+      }
       JustifyContent::FlexStart => taffy::style::JustifyContent::FlexStart,
       JustifyContent::FlexEnd => taffy::style::JustifyContent::FlexEnd,
       JustifyContent::Center => taffy::style::JustifyContent::Center,
@@ -8521,20 +8538,22 @@ impl FlexFormattingContext {
     axis_positive: bool,
   ) -> Option<taffy::style::AlignContent> {
     Some(match align {
-      AlignContent::FlexStart => {
+      AlignContent::Start => {
         if axis_positive {
-          taffy::style::AlignContent::FlexStart
+          taffy::style::AlignContent::Start
         } else {
-          taffy::style::AlignContent::FlexEnd
+          taffy::style::AlignContent::End
         }
       }
-      AlignContent::FlexEnd => {
+      AlignContent::End => {
         if axis_positive {
-          taffy::style::AlignContent::FlexEnd
+          taffy::style::AlignContent::End
         } else {
-          taffy::style::AlignContent::FlexStart
+          taffy::style::AlignContent::Start
         }
       }
+      AlignContent::FlexStart => taffy::style::AlignContent::FlexStart,
+      AlignContent::FlexEnd => taffy::style::AlignContent::FlexEnd,
       AlignContent::Center => taffy::style::AlignContent::Center,
       AlignContent::SpaceBetween => taffy::style::AlignContent::SpaceBetween,
       AlignContent::SpaceEvenly => taffy::style::AlignContent::SpaceEvenly,
@@ -8883,8 +8902,7 @@ mod tests {
     child_style.flex_direction = FlexDirection::Column;
     child_style.content_visibility = ContentVisibility::Hidden;
     child_style.contain_intrinsic_width.length = Some(Length::px(10.0));
-    let mut child =
-      BoxNode::new_block(Arc::new(child_style), FormattingContextType::Flex, vec![]);
+    let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Flex, vec![]);
     child.id = 10;
 
     let container = BoxNode::new_block(

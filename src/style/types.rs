@@ -2148,6 +2148,8 @@ pub enum OffsetAnchor {
 /// Reference: CSS Flexible Box Layout Module Level 1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JustifyContent {
+  Start,
+  End,
   FlexStart,
   FlexEnd,
   Center,
@@ -2179,6 +2181,8 @@ pub enum AlignItems {
 /// Reference: CSS Flexible Box Layout Module Level 1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlignContent {
+  Start,
+  End,
   FlexStart,
   FlexEnd,
   Center,

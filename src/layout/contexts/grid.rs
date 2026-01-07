@@ -3261,14 +3261,14 @@ impl GridFormattingContext {
   /// Converts AlignContent to Taffy AlignContent
   fn convert_align_content(&self, align: &AlignContent, axis_positive: bool) -> TaffyAlignContent {
     match align {
-      AlignContent::FlexStart => {
+      AlignContent::Start | AlignContent::FlexStart => {
         if axis_positive {
           TaffyAlignContent::Start
         } else {
           TaffyAlignContent::End
         }
       }
-      AlignContent::FlexEnd => {
+      AlignContent::End | AlignContent::FlexEnd => {
         if axis_positive {
           TaffyAlignContent::End
         } else {
@@ -3289,14 +3289,14 @@ impl GridFormattingContext {
     axis_positive: bool,
   ) -> TaffyAlignContent {
     match justify {
-      JustifyContent::FlexStart => {
+      JustifyContent::Start | JustifyContent::FlexStart => {
         if axis_positive {
           TaffyAlignContent::Start
         } else {
           TaffyAlignContent::End
         }
       }
-      JustifyContent::FlexEnd => {
+      JustifyContent::End | JustifyContent::FlexEnd => {
         if axis_positive {
           TaffyAlignContent::End
         } else {

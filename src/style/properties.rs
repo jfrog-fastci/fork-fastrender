@@ -8861,8 +8861,10 @@ fn apply_declaration_with_base_internal_with_order(
     "justify-content" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         styles.justify_content = match kw.as_str() {
-          "flex-start" | "start" => JustifyContent::FlexStart,
-          "flex-end" | "end" => JustifyContent::FlexEnd,
+          "start" => JustifyContent::Start,
+          "end" => JustifyContent::End,
+          "flex-start" => JustifyContent::FlexStart,
+          "flex-end" => JustifyContent::FlexEnd,
           "center" => JustifyContent::Center,
           "space-between" => JustifyContent::SpaceBetween,
           "space-around" => JustifyContent::SpaceAround,
@@ -8890,8 +8892,10 @@ fn apply_declaration_with_base_internal_with_order(
     "align-content" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         styles.align_content = match kw.as_str() {
-          "flex-start" | "start" => AlignContent::FlexStart,
-          "flex-end" | "end" => AlignContent::FlexEnd,
+          "start" => AlignContent::Start,
+          "end" => AlignContent::End,
+          "flex-start" => AlignContent::FlexStart,
+          "flex-end" => AlignContent::FlexEnd,
           "center" => AlignContent::Center,
           "space-between" => AlignContent::SpaceBetween,
           "space-evenly" => AlignContent::SpaceEvenly,
@@ -12594,8 +12598,10 @@ fn parse_place_pair(value: &PropertyValue) -> Option<(AlignItems, AlignItems)> {
 fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, JustifyContent)> {
   fn to_align_content(kw: &str) -> Option<AlignContent> {
     match kw {
-      "start" | "flex-start" => Some(AlignContent::FlexStart),
-      "end" | "flex-end" => Some(AlignContent::FlexEnd),
+      "start" => Some(AlignContent::Start),
+      "end" => Some(AlignContent::End),
+      "flex-start" => Some(AlignContent::FlexStart),
+      "flex-end" => Some(AlignContent::FlexEnd),
       "center" => Some(AlignContent::Center),
       "stretch" | "normal" => Some(AlignContent::Stretch),
       "space-between" => Some(AlignContent::SpaceBetween),
@@ -12607,8 +12613,10 @@ fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, Just
 
   fn to_justify_content(kw: &str) -> Option<JustifyContent> {
     match kw {
-      "flex-start" | "start" => Some(JustifyContent::FlexStart),
-      "flex-end" | "end" => Some(JustifyContent::FlexEnd),
+      "start" => Some(JustifyContent::Start),
+      "end" => Some(JustifyContent::End),
+      "flex-start" => Some(JustifyContent::FlexStart),
+      "flex-end" => Some(JustifyContent::FlexEnd),
       "center" => Some(JustifyContent::Center),
       "space-between" => Some(JustifyContent::SpaceBetween),
       "space-around" => Some(JustifyContent::SpaceAround),
