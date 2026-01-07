@@ -229,6 +229,33 @@ mod tests {
   }
 
   #[test]
+  fn calc_rem_lengths_use_root_font_size() {
+    let calc = CalcLength::single(LengthUnit::Rem, 2.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Px, 1.0), 1.0)
+      .expect("calc terms");
+    let position = ObjectPosition {
+      x: PositionComponent::Length(Length::calc(calc)),
+      y: PositionComponent::Keyword(PositionKeyword::Start),
+    };
+
+    // free_x is 50 (100 - 50). 2rem at 20px root font size => 40px + 1px => 41px.
+    let (offset_x, offset_y, _, _) = compute_object_fit(
+      ObjectFit::None,
+      position,
+      100.0,
+      50.0,
+      50.0,
+      50.0,
+      10.0,
+      20.0,
+      None,
+    )
+    .expect("fit computed");
+    assert!((offset_x - 41.0).abs() < 0.01);
+    assert!((offset_y - 0.0).abs() < 0.01);
+  }
+
+  #[test]
   fn viewport_units_resolve_when_available() {
     let position = ObjectPosition {
       x: PositionComponent::Length(Length::new(10.0, LengthUnit::Vw)),

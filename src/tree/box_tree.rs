@@ -2218,6 +2218,55 @@ mod tests {
   }
 
   #[test]
+  fn sizes_calc_rem_uses_root_font_size() {
+    let calc_length =
+      crate::css::properties::parse_length("calc(10rem + 1px)").expect("calc length parsed");
+    assert!(matches!(calc_length.unit, LengthUnit::Calc));
+
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "150w".to_string(),
+          descriptor: SrcsetDescriptor::Width(150),
+        },
+        SrcsetCandidate {
+          url: "250w".to_string(),
+          descriptor: SrcsetDescriptor::Width(250),
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          length: calc_length.into(),
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
+    };
+
+    let viewport = Size::new(500.0, 300.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(1.0);
+    let chosen = img.image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(10.0),
+      root_font_size: Some(20.0),
+      base_url: None,
+    });
+
+    assert_eq!(
+      chosen, "250w",
+      "calc(10rem + 1px) should resolve rem against root font size (20px) => 201px slot width"
+    );
+  }
+
+  #[test]
   fn sizes_calc_is_evaluated_for_srcset_width_selection() {
     let calc_length =
       crate::css::properties::parse_length("calc(50vw - 10px)").expect("calc length parsed");
