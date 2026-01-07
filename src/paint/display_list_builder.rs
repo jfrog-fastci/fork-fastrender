@@ -2279,6 +2279,10 @@ impl DisplayListBuilder {
     }
     context_visibility = context_visibility.intersect(Some(local_bounds), false);
 
+    let style_has_clip_path = root_style.is_some_and(|style| {
+      !matches!(style.clip_path, crate::style::types::ClipPath::None)
+    });
+
     let viewport = self
       .viewport
       .unwrap_or_else(|| (root_border_bounds.width(), root_border_bounds.height()));
@@ -2401,7 +2405,7 @@ impl DisplayListBuilder {
       &backdrop_filters,
       has_opacity,
       mask.is_some(),
-      clip_path.is_some(),
+      style_has_clip_path,
     );
     let ancestor_clips_pushed = self.push_clip_chain(&context.clip_chain, offset);
 
@@ -2509,7 +2513,7 @@ impl DisplayListBuilder {
         backdrop_filters,
         radii,
         mask,
-        has_clip_path: clip_path.is_some(),
+        has_clip_path: style_has_clip_path,
       }));
 
     let mut pushed_clips = 0;
@@ -9576,6 +9580,60 @@ mod tests {
     assert!(child_context.mask.is_none());
     assert_eq!(child_context.mix_blend_mode, BlendMode::Normal);
     assert!((child_context.opacity - 1.0).abs() <= f32::EPSILON);
+  }
+
+  #[test]
+  fn clip_path_establishes_backdrop_root_even_when_resolved_none() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let child_bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
+
+    let mut child_style = ComputedStyle::default();
+    // Degenerate polygon => `resolve_clip_path` returns `None`, but the computed style is still
+    // non-`none` and must trigger Backdrop Root semantics.
+    child_style.clip_path = ClipPath::BasicShape(
+      Box::new(BasicShape::Polygon {
+        fill: crate::style::types::FillRule::NonZero,
+        points: vec![
+          (Length::px(0.0), Length::px(0.0)),
+          (Length::px(1.0), Length::px(0.0)),
+        ],
+      }),
+      None,
+    );
+    let child_style = Arc::new(child_style);
+
+    let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
+    let root =
+      FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+
+    let child_context = list.items().iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(ctx) if ctx.bounds == child_bounds => Some(ctx),
+      _ => None,
+    });
+    let child_context = child_context.expect("expected a stacking context for clip-path");
+
+    assert!(
+      child_context.has_clip_path,
+      "non-`none` clip-path should set StackingContextItem.has_clip_path even when it resolves to None"
+    );
+    assert!(
+      child_context.establishes_backdrop_root,
+      "non-`none` clip-path should establish a backdrop root even when it resolves to None"
+    );
+
+    // Ensure we didn't emit a clip-path clip item, confirming the degenerate polygon resolved to
+    // `None` for painting.
+    assert!(
+      !list.items().iter().any(|item| matches!(
+        item,
+        DisplayItem::PushClip(ClipItem {
+          shape: ClipShape::Path { .. }
+        })
+      )),
+      "expected degenerate clip-path to omit PushClip(Path) emission"
+    );
   }
 
   #[test]
