@@ -7166,7 +7166,8 @@ impl Painter {
         };
         let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
           let mut style = pseudo_style.clone();
-          let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
+          let opacity = style.opacity.clamp(0.0, 1.0);
+          style.opacity = 1.0;
           style.color = style
             .color
             .with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
@@ -7309,7 +7310,8 @@ impl Painter {
         };
         let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
           let mut style = pseudo_style.clone();
-          let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
+          let opacity = style.opacity.clamp(0.0, 1.0);
+          style.opacity = 1.0;
           style.color = style
             .color
             .with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
