@@ -7976,6 +7976,69 @@ mod tests {
   }
 
   #[test]
+  fn custom_counter_style_extends_inherits_prefix_suffix_for_marker() {
+    let mut registry = CounterStyleRegistry::with_builtins();
+    let mut base = CounterStyleRule::new("base-mark");
+    base.system = Some(CounterSystem::Cyclic);
+    base.symbols = Some(vec!["◇".into()]);
+    base.prefix = Some("(".to_string());
+    base.suffix = Some(") ".to_string());
+    registry.register(base);
+
+    let mut derived = CounterStyleRule::new("derived-mark");
+    derived.system = Some(CounterSystem::Extends("base-mark".to_string()));
+    derived.symbols = Some(vec!["◆".into()]);
+    registry.register(derived);
+    let registry = Arc::new(registry);
+
+    let mut style = ComputedStyle::default();
+    style.counter_styles = registry.clone();
+    style.list_style_type = ListStyleType::Custom("derived-mark".to_string());
+    style.display = Display::ListItem;
+    let style = Arc::new(style);
+
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: style.clone(),
+      marker_styles: Some(style.clone()),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut counters = CounterManager::new_with_styles(registry);
+    counters.enter_scope();
+    counters.apply_reset(&CounterSet::single("list-item", 1));
+
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    counters.leave_scope();
+
+    match &marker_box.box_type {
+      BoxType::Marker(marker) => match &marker.content {
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "(◆) "),
+        MarkerContent::Image(_) => panic!("expected text marker"),
+      },
+      _ => panic!("expected marker box"),
+    }
+  }
+
+  #[test]
   fn unordered_list_decimal_starts_at_one() {
     let mut ul_style = ComputedStyle::default();
     ul_style.display = Display::Block;
