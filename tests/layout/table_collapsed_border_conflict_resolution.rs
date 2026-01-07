@@ -201,3 +201,152 @@ fn collapsed_border_resolution_honors_col_span() {
     borders.vertical_line_width(2)
   );
 }
+
+#[test]
+fn collapsed_border_hidden_suppresses_all() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr>
+            <td style="border-right: 4px solid red;"></td>
+            <td style="border-left: 4px hidden blue;"></td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  let segment = borders
+    .vertical_segment(1, 0)
+    .expect("expected internal vertical border segment");
+  assert!(
+    segment.width < 0.01,
+    "expected hidden to suppress the border, got {:?}",
+    segment
+  );
+  assert_eq!(segment.style, BorderStyle::None);
+}
+
+#[test]
+fn collapsed_border_origin_priority_cell_over_column() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="border-right: 2px solid red;">
+          <col>
+          <tr>
+            <td style="border-right: 2px solid blue;"></td>
+            <td></td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  let segment = borders
+    .vertical_segment(1, 0)
+    .expect("expected internal vertical border segment");
+  assert_eq!(
+    segment.color,
+    Rgba::BLUE,
+    "expected cell border to win over column border"
+  );
+  assert!(
+    (segment.width - 2.0).abs() < 0.01,
+    "expected 2px border, got {:?}",
+    segment
+  );
+  assert_eq!(segment.style, BorderStyle::Solid);
+}
+
+#[test]
+fn collapsed_border_origin_priority_column_over_colgroup() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <colgroup style="border-right: 2px solid red;">
+            <col style="border-right: 2px solid blue;">
+          </colgroup>
+          <col>
+          <tr><td></td><td></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  let segment = borders
+    .vertical_segment(1, 0)
+    .expect("expected internal vertical border segment");
+  assert_eq!(
+    segment.color,
+    Rgba::BLUE,
+    "expected column border to win over colgroup border"
+  );
+  assert!(
+    (segment.width - 2.0).abs() < 0.01,
+    "expected 2px border, got {:?}",
+    segment
+  );
+  assert_eq!(segment.style, BorderStyle::Solid);
+}
+
+#[test]
+fn collapsed_border_origin_priority_row_over_table() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; border-top: 2px solid red; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr style="border-top: 2px solid blue;">
+            <td></td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  let segment = borders
+    .horizontal_segment(0, 0)
+    .expect("expected top horizontal border segment");
+  assert_eq!(
+    segment.color,
+    Rgba::BLUE,
+    "expected row border to win over table border"
+  );
+  assert!(
+    (segment.width - 2.0).abs() < 0.01,
+    "expected 2px border, got {:?}",
+    segment
+  );
+  assert_eq!(segment.style, BorderStyle::Solid);
+}
