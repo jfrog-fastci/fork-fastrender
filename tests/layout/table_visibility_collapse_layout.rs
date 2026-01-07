@@ -397,6 +397,88 @@ fn rowspan_across_collapsed_row_is_shortened() {
 }
 
 #[test]
+fn rowspan_across_collapsed_row_is_shortened_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          td { height: 10px; padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 40px" />
+          <col style="width: 50px" />
+          <tr>
+            <td rowspan="2">A</td>
+            <td>X</td>
+          </tr>
+          <tr style="visibility: collapse">
+            <td>(collapsed)</td>
+          </tr>
+          <tr>
+            <td>B</td>
+            <td>Y</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  let a = cells.get(&'A').expect("cell A present");
+  let b = cells.get(&'B').expect("cell B present");
+  let x = cells.get(&'X').expect("cell X present");
+  let y = cells.get(&'Y').expect("cell Y present");
+
+  assert!(
+    (a.rect.height() - 10.0).abs() < 0.1,
+    "rowspan should not include collapsed row in RTL (got {})",
+    a.rect.height()
+  );
+
+  assert!(
+    a.rect.x() > x.rect.x(),
+    "expected RTL order A (right) > X (left), got A.x={} X.x={}",
+    a.rect.x(),
+    x.rect.x()
+  );
+  assert!(
+    b.rect.x() > y.rect.x(),
+    "expected RTL order B (right) > Y (left), got B.x={} Y.x={}",
+    b.rect.x(),
+    y.rect.x()
+  );
+  assert!(
+    (a.rect.x() - b.rect.x()).abs() < 0.1,
+    "expected A and B to share the same column x in RTL, got A.x={} B.x={}",
+    a.rect.x(),
+    b.rect.x()
+  );
+
+  let gap = b.rect.y() - (a.rect.y() + a.rect.height());
+  assert!(
+    gap.abs() < 0.1,
+    "next visible row should start immediately after first row in RTL (gap={gap})"
+  );
+}
+
+#[test]
 fn colspan_over_collapsed_column_is_shortened() {
   ensure_rayon_threads();
   let html = r#"
