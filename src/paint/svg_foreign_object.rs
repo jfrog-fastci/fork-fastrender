@@ -185,7 +185,11 @@ fn render_foreign_object_data_url(
   }
 
   let html = build_foreign_object_document(info, shared_css, width, height);
-  let background = info.background.unwrap_or(Rgba::TRANSPARENT);
+  // ForeignObject "background" comes from the SVG element's computed CSS, not the nested HTML.
+  // Render on a transparent canvas and apply the background via the `<body>` inline style so:
+  // - document-level shared CSS (e.g. `body { background: white }`) cannot override it
+  // - semi-transparent colors are only composited once
+  let background = Rgba::TRANSPARENT;
   let context = image_cache.resource_context();
   let policy = context
     .as_ref()
@@ -291,6 +295,12 @@ fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
     overflow_keyword(info.overflow_x),
     overflow_keyword(info.overflow_y)
   );
+
+  if let Some(bg) = info.background {
+    style.push_str("background:");
+    style.push_str(&format_css_color(bg));
+    style.push(';');
+  }
 
   style.push_str("color:");
   style.push_str(&format_css_color(info.style.color));
