@@ -8956,7 +8956,7 @@ impl FastRender {
           let style_map = styled_style_map(&styled_tree);
           let mut box_map = HashMap::new();
           collect_box_nodes(&box_tree.root, &mut box_map);
-          refresh_fragment_styles(&mut fragment_tree.root, &box_map, &style_map);
+          refresh_fragment_tree_styles(&mut fragment_tree, &box_map, &style_map);
           record_stage(StageHeartbeat::Layout);
         } else {
           if log_container_pass {
@@ -13762,6 +13762,17 @@ fn refresh_fragment_styles(
   }
 }
 
+fn refresh_fragment_tree_styles(
+  tree: &mut FragmentTree,
+  boxes: &HashMap<usize, &BoxNode>,
+  styles: &HashMap<usize, Arc<ComputedStyle>>,
+) {
+  refresh_fragment_styles(&mut tree.root, boxes, styles);
+  for root in &mut tree.additional_fragments {
+    refresh_fragment_styles(root, boxes, styles);
+  }
+}
+
 fn build_container_query_context(
   box_tree: &BoxTree,
   fragments: &FragmentTree,
@@ -13771,6 +13782,9 @@ fn build_container_query_context(
 ) -> ContainerQueryContext {
   let mut sizes: HashMap<usize, (f32, f32)> = HashMap::new();
   collect_fragment_sizes(&fragments.root, &mut sizes);
+  for extra in &fragments.additional_fragments {
+    collect_fragment_sizes(extra, &mut sizes);
+  }
 
   fn collect_main_styles(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
     out.insert(node.node_id, Arc::clone(&node.styles));
@@ -14727,6 +14741,160 @@ pub(crate) fn render_html_with_shared_resources(
       }
       other => panic!("expected footnote anchor content, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn refresh_fragment_tree_styles_visits_additional_fragments() {
+    let old_style = Arc::new(ComputedStyle::default());
+
+    let mut new_root = ComputedStyle::default();
+    new_root.font_size = 12.0;
+    let new_root = Arc::new(new_root);
+
+    let mut new_child = ComputedStyle::default();
+    new_child.font_size = 20.0;
+    let new_child = Arc::new(new_child);
+
+    let mut child = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![]);
+    child.styled_node_id = Some(2);
+    let mut root =
+      BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![child]);
+    root.styled_node_id = Some(1);
+    let tree = BoxTree::new(root);
+    let root_id = tree.root.id;
+    let child_id = tree.root.children[0].id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&tree.root, &mut box_map);
+
+    let mut style_map = HashMap::new();
+    style_map.insert(1 << super::STYLE_KEY_SHIFT, new_root.clone());
+    style_map.insert(2 << super::STYLE_KEY_SHIFT, new_child.clone());
+
+    let mut fragment_tree = FragmentTree::with_viewport(
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), root_id, vec![]),
+      Size::new(100.0, 100.0),
+    );
+    fragment_tree.root.style = Some(old_style.clone());
+
+    let mut second =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), child_id, vec![]);
+    second.style = Some(old_style);
+    fragment_tree.additional_fragments.push(second);
+
+    super::refresh_fragment_tree_styles(&mut fragment_tree, &box_map, &style_map);
+
+    assert!(
+      Arc::ptr_eq(fragment_tree.root.style.as_ref().unwrap(), &new_root),
+      "expected root fragment style to refresh"
+    );
+    assert!(
+      Arc::ptr_eq(
+        fragment_tree.additional_fragments[0]
+          .style
+          .as_ref()
+          .unwrap(),
+        &new_child
+      ),
+      "expected additional root fragments to refresh styles"
+    );
+  }
+
+  #[test]
+  fn build_container_query_context_collects_sizes_from_additional_fragments() {
+    let viewport = Size::new(800.0, 600.0);
+    let media_ctx = MediaContext::screen(viewport.width, viewport.height);
+
+    let mut container_style = ComputedStyle::default();
+    container_style.container_type = crate::style::types::ContainerType::InlineSize;
+    let container_style = Arc::new(container_style);
+    let mut container =
+      BoxNode::new_block(container_style.clone(), FormattingContextType::Block, vec![]);
+    container.styled_node_id = Some(7);
+
+    let mut root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![container],
+    );
+    root.styled_node_id = Some(1);
+    let box_tree = BoxTree::new(root);
+    let root_id = box_tree.root.id;
+    let container_id = box_tree.root.children[0].id;
+
+    let styled = StyledNode {
+      node_id: 1,
+      node: DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: Vec::new(),
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: Default::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![StyledNode {
+        node_id: 7,
+        node: DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: String::new(),
+            attributes: Vec::new(),
+          },
+          children: Vec::new(),
+        },
+        styles: container_style,
+        starting_styles: Default::default(),
+        before_styles: None,
+        after_styles: None,
+        marker_styles: None,
+        placeholder_styles: None,
+        file_selector_button_styles: None,
+        footnote_call_styles: None,
+        footnote_marker_styles: None,
+        first_line_styles: None,
+        first_letter_styles: None,
+        slider_thumb_styles: None,
+        slider_track_styles: None,
+        assigned_slot: None,
+        slotted_node_ids: Vec::new(),
+        children: Vec::new(),
+      }],
+    };
+
+    let mut fragments = FragmentTree::with_viewport(
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), root_id, vec![]),
+      viewport,
+    );
+    fragments.additional_fragments.push(FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 50.0),
+      container_id,
+      vec![],
+    ));
+
+    let ctx = super::build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let info = ctx
+      .containers
+      .get(&7)
+      .expect("expected container from additional fragments to be registered");
+    assert!(
+      info.inline_size > 0.0,
+      "expected non-zero container sizes, got {info:?}"
+    );
   }
 
   #[test]
