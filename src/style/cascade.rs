@@ -370,12 +370,13 @@ fn container_query_matches(
   container_id: usize,
   query: &ContainerQuery,
   container: &ContainerQueryInfo,
+  container_parent: Option<&ContainerQueryInfo>,
   ctx: &ContainerQueryContext,
   guard: &mut Vec<usize>,
   memo: &mut ContainerQueryMemo,
 ) -> QueryResult {
   let query_fingerprint = container_query_fingerprint(query);
-  let container_revision = container_query_cache_revision(container, ctx);
+  let container_revision = container_query_cache_revision(container, container_parent, ctx);
   if let Some(hit) = memo.query_eval_get(container_id, container_revision, query_fingerprint) {
     return hit;
   }
@@ -424,13 +425,30 @@ fn container_query_matches(
         }
       }
     }
-    ContainerQuery::Style(style_query) => eval_style_query(style_query, container, ctx),
+    ContainerQuery::Style(style_query) => eval_style_query(style_query, container, container_parent, ctx),
     ContainerQuery::Unknown(_) => QueryResult::Unknown,
-    ContainerQuery::Not(inner) => container_query_matches(container_id, inner, container, ctx, guard, memo).not(),
+    ContainerQuery::Not(inner) => container_query_matches(
+      container_id,
+      inner,
+      container,
+      container_parent,
+      ctx,
+      guard,
+      memo,
+    )
+    .not(),
     ContainerQuery::And(list) => {
       let mut result = QueryResult::True;
       for inner in list {
-        match container_query_matches(container_id, inner, container, ctx, guard, memo) {
+        match container_query_matches(
+          container_id,
+          inner,
+          container,
+          container_parent,
+          ctx,
+          guard,
+          memo,
+        ) {
           QueryResult::False => {
             result = QueryResult::False;
             break;
@@ -444,7 +462,15 @@ fn container_query_matches(
     ContainerQuery::Or(list) => {
       let mut result = QueryResult::False;
       for inner in list {
-        match container_query_matches(container_id, inner, container, ctx, guard, memo) {
+        match container_query_matches(
+          container_id,
+          inner,
+          container,
+          container_parent,
+          ctx,
+          guard,
+          memo,
+        ) {
           QueryResult::True => {
             result = QueryResult::True;
             break;
@@ -1306,16 +1332,17 @@ fn evaluate_container_size_query(
 fn eval_style_query(
   query: &StyleQueryExpr,
   container: &ContainerQueryInfo,
+  container_parent: Option<&ContainerQueryInfo>,
   ctx: &ContainerQueryContext,
 ) -> QueryResult {
   match query {
     StyleQueryExpr::Unknown => QueryResult::Unknown,
-    StyleQueryExpr::Feature(feature) => eval_style_feature(feature, container, ctx),
-    StyleQueryExpr::Not(inner) => eval_style_query(inner, container, ctx).not(),
+    StyleQueryExpr::Feature(feature) => eval_style_feature(feature, container, container_parent, ctx),
+    StyleQueryExpr::Not(inner) => eval_style_query(inner, container, container_parent, ctx).not(),
     StyleQueryExpr::And(list) => {
       let mut result = QueryResult::True;
       for inner in list {
-        match eval_style_query(inner, container, ctx) {
+        match eval_style_query(inner, container, container_parent, ctx) {
           QueryResult::False => {
             result = QueryResult::False;
             break;
@@ -1329,7 +1356,7 @@ fn eval_style_query(
     StyleQueryExpr::Or(list) => {
       let mut result = QueryResult::False;
       for inner in list {
-        match eval_style_query(inner, container, ctx) {
+        match eval_style_query(inner, container, container_parent, ctx) {
           QueryResult::True => {
             result = QueryResult::True;
             break;
@@ -1346,10 +1373,13 @@ fn eval_style_query(
 fn eval_style_feature(
   feature: &StyleQueryFeature,
   container: &ContainerQueryInfo,
+  container_parent: Option<&ContainerQueryInfo>,
   ctx: &ContainerQueryContext,
 ) -> QueryResult {
   match feature {
-    StyleQueryFeature::Plain { name, value } => eval_plain_style_feature(name, value, container, ctx),
+    StyleQueryFeature::Plain { name, value } => {
+      eval_plain_style_feature(name, value, container, container_parent, ctx)
+    }
     StyleQueryFeature::Boolean { name } => {
       QueryResult::from_bool(eval_boolean_style_feature(name, container, ctx))
     }
@@ -1567,6 +1597,7 @@ fn eval_plain_style_feature(
   name: &str,
   value: &str,
   container: &ContainerQueryInfo,
+  container_parent: Option<&ContainerQueryInfo>,
   ctx: &ContainerQueryContext,
 ) -> QueryResult {
   if contains_cascade_dependent_keyword(value) {
@@ -1574,6 +1605,10 @@ fn eval_plain_style_feature(
   }
 
   let styles = container.styles.as_ref();
+  let parent_styles: &ComputedStyle = match container_parent {
+    Some(info) => info.styles.as_ref(),
+    None => default_computed_style(),
+  };
   // We only need the string form for query evaluation, but `resolve_var_for_property` returns a
   // `Cow<'a, str>` tied to the lifetime of the input `PropertyValue` (including fallbacks). Keep
   // the original `PropertyValue` alive so any borrowed `Cow` remains valid.
@@ -1689,10 +1724,10 @@ fn eval_plain_style_feature(
   apply_declaration_with_base(
     &mut expected,
     decl,
-    styles,
+    parent_styles,
     default_computed_style(),
     None,
-    styles.font_size,
+    parent_styles.font_size,
     styles.root_font_size,
     viewport,
     is_dark_color_scheme,
@@ -3470,7 +3505,11 @@ fn hash_style_range_value_fingerprint(state: &mut impl Hasher, value: &StyleRang
   }
 }
 
-fn container_query_cache_revision(container: &ContainerQueryInfo, ctx: &ContainerQueryContext) -> u64 {
+fn container_query_cache_revision(
+  container: &ContainerQueryInfo,
+  container_parent: Option<&ContainerQueryInfo>,
+  ctx: &ContainerQueryContext,
+) -> u64 {
   let mut hasher = FxHasher::default();
   f32_to_canonical_bits(ctx.base_media.viewport_width).hash(&mut hasher);
   f32_to_canonical_bits(ctx.base_media.viewport_height).hash(&mut hasher);
@@ -3483,6 +3522,10 @@ fn container_query_cache_revision(container: &ContainerQueryInfo, ctx: &Containe
   std::mem::discriminant(&container.container_type).hash(&mut hasher);
   std::mem::discriminant(&container.styles.writing_mode).hash(&mut hasher);
   (Arc::as_ptr(&container.styles) as usize).hash(&mut hasher);
+  match container_parent {
+    Some(parent) => (Arc::as_ptr(&parent.styles) as usize).hash(&mut hasher),
+    None => 0usize.hash(&mut hasher),
+  }
   hasher.finish()
 }
 
@@ -9830,10 +9873,24 @@ impl ContainerQueryContext {
                 QueryResult::False
               } else {
                 guard.push(container_id);
+                let container_parent = if container_id == node_id {
+                  ancestor_ids
+                    .last()
+                    .copied()
+                    .and_then(|id| self.containers.get(&id))
+                } else {
+                  ancestor_ids
+                    .iter()
+                    .position(|id| *id == container_id)
+                    .and_then(|pos| pos.checked_sub(1))
+                    .and_then(|pos| ancestor_ids.get(pos).copied())
+                    .and_then(|id| self.containers.get(&id))
+                };
                 let matches = container_query_matches(
                   container_id,
                   query,
                   container,
+                  container_parent,
                   self,
                   guard,
                   &mut memo,

@@ -117,6 +117,29 @@ fn container_style_query_matches_opacity() {
 }
 
 #[test]
+fn container_style_query_computes_inherit_against_container_parent() {
+  let html = r#"
+    <style>
+      #parent { color: rgb(255 0 0); }
+      #container { container-type: inline-size; color: rgb(0 0 255); }
+      #target { color: rgb(0 0 255); }
+      @container style(color: inherit) {
+        #target { color: rgb(1 2 3); }
+      }
+    </style>
+    <div id="parent">
+      <div id="container">
+        <div id="target">hello</div>
+      </div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
 fn container_style_query_resolves_var_in_opacity_value() {
   let html = r#"
     <style>
