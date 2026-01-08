@@ -1457,6 +1457,50 @@ fn axis_scroll_state_flips_scroll_origin_for_vertical_rl_block_axis() {
 }
 
 #[test]
+fn axis_scroll_state_flips_scroll_origin_for_vertical_writing_mode_rtl_inline_axis() {
+  let (pos0, range, _) = axis_scroll_state(
+    TimelineAxis::Inline,
+    WritingMode::VerticalRl,
+    Direction::Rtl,
+    0.0,
+    0.0,
+    100.0,
+    100.0,
+    100.0,
+    200.0,
+  );
+  assert!((range - 100.0).abs() < 1e-6, "range={range}");
+  assert!((pos0 - 100.0).abs() < 1e-6, "pos0={pos0}");
+
+  let (pos_end, _, _) = axis_scroll_state(
+    TimelineAxis::Inline,
+    WritingMode::VerticalRl,
+    Direction::Rtl,
+    0.0,
+    100.0,
+    100.0,
+    100.0,
+    100.0,
+    200.0,
+  );
+  assert!((pos_end - 0.0).abs() < 1e-6, "pos_end={pos_end}");
+
+  // Physical y axis should also flip for vertical writing modes, because y maps to the inline axis.
+  let (pos_y0, _, _) = axis_scroll_state(
+    TimelineAxis::Y,
+    WritingMode::VerticalRl,
+    Direction::Rtl,
+    0.0,
+    0.0,
+    100.0,
+    100.0,
+    100.0,
+    200.0,
+  );
+  assert!((pos_y0 - 100.0).abs() < 1e-6, "pos_y0={pos_y0}");
+}
+
+#[test]
 fn scroll_timeline_progress_is_reversed_for_rtl_inline_axis() {
   let timeline = ScrollTimeline {
     axis: TimelineAxis::Inline,
@@ -1610,6 +1654,65 @@ fn view_timeline_progress_is_reversed_for_vertical_rl_block_axis() {
   // Ensure horizontal scroll offsets flip for view timelines on the block axis.
   let opacity_origin = opacity_for_scroll_x(100.0);
   let opacity_end = opacity_for_scroll_x(0.0);
+
+  assert!(opacity_origin < 0.2, "opacity_origin={opacity_origin}");
+  assert!(opacity_end > 0.2, "opacity_end={opacity_end}");
+}
+
+#[test]
+fn view_timeline_progress_is_reversed_for_vertical_writing_mode_rtl_inline_axis() {
+  let sheet = parse_stylesheet("@keyframes fade { from { opacity: 0; } to { opacity: 1; } }")
+    .expect("stylesheet");
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = keyframes
+    .into_iter()
+    .next()
+    .expect("fade keyframes");
+
+  let mut root_style = ComputedStyle::default();
+  root_style.direction = Direction::Rtl;
+  root_style.writing_mode = WritingMode::VerticalRl;
+
+  let mut target_style = ComputedStyle::default();
+  target_style.view_timelines = vec![ViewTimeline {
+    name: Some("--v".to_string()),
+    axis: TimelineAxis::Inline,
+    inset: None,
+  }];
+  target_style.animation_names = vec![Some("fade".to_string())];
+  target_style.animation_timelines = vec![AnimationTimeline::Named("--v".to_string())];
+  target_style.animation_ranges = vec![AnimationRange::default()];
+  target_style.animation_fill_modes = vec![AnimationFillMode::Both].into();
+  target_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+  let opacity_for_scroll_y = |scroll_y: f32| -> f32 {
+    let mut target = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 50.0, 100.0), vec![]);
+    target.style = Some(Arc::new(target_style.clone()));
+    let spacer = FragmentNode::new_block(Rect::from_xywh(0.0, 150.0, 50.0, 50.0), vec![]);
+
+    let mut root =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![target, spacer]);
+    root.style = Some(Arc::new(root_style.clone()));
+    let mut tree = FragmentTree::new(root);
+    tree.keyframes.insert("fade".to_string(), rule.clone());
+
+    apply_animations(
+      &mut tree,
+      &ScrollState::with_viewport(Point::new(0.0, scroll_y)),
+      None,
+    );
+    tree.root.children[0]
+      .style
+      .as_ref()
+      .expect("target style")
+      .opacity
+  };
+
+  // In vertical writing modes, `direction` still flips the inline start/end sides even though the
+  // inline axis is vertical. With `direction: rtl`, the scroll origin is at the bottom, so the
+  // origin corresponds to `scroll_y == range`.
+  let opacity_origin = opacity_for_scroll_y(100.0);
+  let opacity_end = opacity_for_scroll_y(0.0);
 
   assert!(opacity_origin < 0.2, "opacity_origin={opacity_origin}");
   assert!(opacity_end > 0.2, "opacity_end={opacity_end}");
