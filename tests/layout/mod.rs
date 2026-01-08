@@ -31,6 +31,7 @@ mod flex_alignment_order_test;
 mod flex_auto_min_size_aspect_ratio_transferred;
 mod flex_auto_min_size_overflow_clip;
 mod flex_auto_min_size_percent;
+mod flex_basis_calc;
 mod flex_basis_content;
 mod flex_box_sizing_test;
 mod flex_constraints_viewport_clamp;

@@ -1096,6 +1096,7 @@ impl FormattingContext for FlexFormattingContext {
         // If we hit the pass cap without reaching a stable viewport set, fall back to fully
         // laying out all `content-visibility:auto` items so in-viewport content is never skipped.
         auto_unskipped_nodes = auto_all_nodes.clone();
+        let container_inner_main_size = self.flex_container_inner_main_size(style, &constraints);
         for (child, node_id) in auto_item_nodes.iter() {
           let mut resolved_style =
             self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
@@ -1121,6 +1122,7 @@ impl FormattingContext for FlexFormattingContext {
             &constraints,
             &mut resolved_style,
           )?;
+          self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
           taffy_tree
             .set_style(*node_id, resolved_style)
             .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -2833,6 +2835,7 @@ impl FormattingContext for FlexFormattingContext {
         break;
       }
 
+      let container_inner_main_size = self.flex_container_inner_main_size(style, &constraints);
       for (child, node_id) in newly_unskipped_nodes {
         let mut resolved_style =
           self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(style))?;
@@ -2858,6 +2861,7 @@ impl FormattingContext for FlexFormattingContext {
           &constraints,
           &mut resolved_style,
         )?;
+        self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
         taffy_tree
           .set_style(node_id, resolved_style)
           .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -4938,6 +4942,7 @@ impl FlexFormattingContext {
     };
 
     let auto_unskipped_empty: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let container_inner_main_size = self.flex_container_inner_main_size(root_style, constraints);
     let mut taffy_children = Vec::with_capacity(root_children.len());
     for (child_style, child) in template.child_styles.iter().zip(root_children.iter()) {
       check_layout_deadline(&mut deadline_counter)?;
@@ -4965,6 +4970,7 @@ impl FlexFormattingContext {
         constraints,
         &mut resolved_style,
       )?;
+      self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
       let node = taffy_tree
         .new_leaf_with_context(resolved_style, child as *const BoxNode)
         .map_err(|e| {
@@ -6016,6 +6022,99 @@ impl FlexFormattingContext {
     }
 
     value
+  }
+
+  fn flex_container_inner_main_size(
+    &self,
+    container_style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+  ) -> Option<f32> {
+    let main_axis_is_row = matches!(
+      container_style.flex_direction,
+      FlexDirection::Row | FlexDirection::RowReverse
+    );
+    let inline_is_horizontal = matches!(container_style.writing_mode, WritingMode::HorizontalTb);
+    let block_is_horizontal = !inline_is_horizontal;
+    let main_axis_is_horizontal = if main_axis_is_row {
+      inline_is_horizontal
+    } else {
+      block_is_horizontal
+    };
+
+    let border_box_width = constraints
+      .used_border_box_width
+      .or_else(|| constraints.width())
+      .filter(|w| w.is_finite());
+    let border_box_height = constraints
+      .used_border_box_height
+      .or_else(|| constraints.height())
+      .filter(|h| h.is_finite());
+
+    let inline_base = constraints
+      .inline_percentage_base
+      .or(border_box_width)
+      .unwrap_or(self.viewport_size.width)
+      .max(0.0);
+
+    let border_left =
+      self.resolve_length_for_width(container_style.used_border_left_width(), inline_base, container_style);
+    let border_right =
+      self.resolve_length_for_width(container_style.used_border_right_width(), inline_base, container_style);
+    let border_top =
+      self.resolve_length_for_width(container_style.used_border_top_width(), inline_base, container_style);
+    let border_bottom =
+      self.resolve_length_for_width(container_style.used_border_bottom_width(), inline_base, container_style);
+    let padding_left =
+      self.resolve_length_for_width(container_style.padding_left, inline_base, container_style);
+    let padding_right =
+      self.resolve_length_for_width(container_style.padding_right, inline_base, container_style);
+    let padding_top =
+      self.resolve_length_for_width(container_style.padding_top, inline_base, container_style);
+    let padding_bottom =
+      self.resolve_length_for_width(container_style.padding_bottom, inline_base, container_style);
+
+    let content_width = border_box_width
+      .map(|w| (w - border_left - border_right - padding_left - padding_right).max(0.0));
+    let content_height = border_box_height
+      .map(|h| (h - border_top - border_bottom - padding_top - padding_bottom).max(0.0));
+
+    if main_axis_is_horizontal {
+      content_width
+    } else {
+      content_height
+    }
+  }
+
+  fn apply_calc_flex_basis(
+    &self,
+    style: &ComputedStyle,
+    container_inner_main_size: Option<f32>,
+    taffy_style: &mut taffy::style::Style,
+  ) {
+    let FlexBasis::Length(len) = &style.flex_basis else {
+      return;
+    };
+    if len.unit != LengthUnit::Calc {
+      return;
+    }
+
+    let percentage_base = len.has_percentage().then_some(container_inner_main_size).flatten();
+    let resolved = resolve_length_with_percentage_metrics(
+      *len,
+      percentage_base,
+      self.viewport_size,
+      style.font_size,
+      style.root_font_size,
+      Some(style),
+      Some(&self.font_context),
+    );
+    if let Some(px) = resolved {
+      if px.is_finite() {
+        taffy_style.flex_basis = Dimension::length(px.max(0.0));
+        return;
+      }
+    }
+    taffy_style.flex_basis = Dimension::auto();
   }
 
   /// Applies Flexbox's automatic minimum size (min-width/height:auto) for a specific box instance.
@@ -9175,6 +9274,20 @@ impl FlexFormattingContext {
 
   fn resolve_length_px(&self, len: &Length, style: &ComputedStyle) -> Option<f32> {
     match len.unit {
+      LengthUnit::Calc => {
+        if len.has_percentage() {
+          return None;
+        }
+        resolve_length_with_percentage_metrics(
+          *len,
+          None,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
+        )
+      }
       LengthUnit::Percent => None,
       _ if len.unit.is_absolute() => Some(len.to_px()),
       u if u.is_viewport_relative() => {
