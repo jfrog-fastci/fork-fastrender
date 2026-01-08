@@ -196,6 +196,39 @@ fn fixed_inside_transformed_parent_uses_transformed_cb() {
 }
 
 #[test]
+fn absolute_inside_transformed_parent_uses_transformed_cb() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+            <style>
+              body { margin: 0; background: white; }
+              .transformed { transform: translateZ(0); width: 120px; height: 120px; }
+              .abs { position: absolute; top: 0; left: 0; right: 0; height: 30px; background: rgb(255, 0, 0); }
+            </style>
+            <div class="transformed"><div class="abs"></div></div>
+            "#;
+
+      // When a transform is present, it establishes the containing block for absolute descendants
+      // even if the ancestor is otherwise un-positioned.
+      // The bar should be constrained to 120px, so x=150 should remain white.
+      let pixmap = renderer.render_html(html, 200, 120).expect("render");
+      assert!(
+        !is_red(pixel(&pixmap, 150, 10)),
+        "transform should capture absolute containing block"
+      );
+      assert!(
+        is_red(pixel(&pixmap, 60, 10)),
+        "bar should still render inside transformed ancestor"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn fixed_inside_animated_translate_none_does_not_create_containing_block() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
