@@ -764,6 +764,27 @@ fn will_change_trailing_comma_is_invalid_and_ignored() {
 }
 
 #[test]
+fn will_change_space_separated_list_is_invalid_and_ignored() {
+  let _guard = lock_tests();
+  // `will-change` uses the `#` list grammar, which requires commas. Space-separated lists like
+  // `transform filter` are invalid and should be ignored.
+  let pixmap = render_backdrop_invert_with_parent_will_change("transform filter");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_double_comma_is_invalid_and_ignored() {
+  let _guard = lock_tests();
+  // Empty list items are invalid (`filter,,opacity`), so the entire declaration should be ignored.
+  let pixmap = render_backdrop_invert_with_parent_will_change("filter,,opacity");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_quoted_string_is_invalid_and_ignored() {
   let _guard = lock_tests();
   // `will-change` does not accept quoted strings; declarations like `"filter"` should be ignored.
