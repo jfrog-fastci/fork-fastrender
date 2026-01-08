@@ -207,6 +207,7 @@ pub mod memory;
 pub mod process_limits;
 pub(crate) mod rayon_global;
 pub mod system;
+pub mod ui;
 
 // ============================================================================
 // Public API

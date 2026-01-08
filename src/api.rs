@@ -5689,6 +5689,7 @@ impl FastRender {
     let timings_enabled = std::env::var_os("FASTR_RENDER_TIMINGS").is_some();
     let mut stage_start = timings_enabled.then(Instant::now);
 
+    record_stage(StageHeartbeat::DomParse);
     let dom = {
       let _span = trace.span("dom_parse", "parse");
       self.parse_html(html)?
