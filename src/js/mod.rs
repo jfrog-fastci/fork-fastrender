@@ -11,6 +11,7 @@ pub mod dom_scripts;
 pub mod clock;
 pub mod event_loop;
 pub mod script_scheduler;
+pub mod url;
 pub mod window_timers;
 pub mod orchestrator;
 
@@ -24,6 +25,7 @@ pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler,
   ScriptSchedulerAction,
 };
+pub use url::{Url, UrlError, UrlSearchParams};
 pub use window_timers::{
   clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
 };
