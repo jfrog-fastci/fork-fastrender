@@ -17,14 +17,33 @@ mod test_public_api {
     FontConfig, LayoutParallelism, PaintParallelism, RenderOptions, ResourceFetcher, ResourceKind,
     ResourcePolicy, Rgba,
   };
+  use fastrender::render_control::{set_stage_listener, StageHeartbeat};
   use std::collections::HashMap;
+  use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::Arc;
+  use std::sync::{Mutex, OnceLock};
 
   fn deterministic_toggles() -> RuntimeToggles {
     let mut toggles = HashMap::new();
     // Avoid any display-list builder rayon fan-out so the suite stays fast and deterministic.
     toggles.insert("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string());
     RuntimeToggles::from_map(toggles)
+  }
+
+  fn stage_listener_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK
+      .get_or_init(|| Mutex::new(()))
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+  }
+
+  struct StageListenerGuard;
+
+  impl Drop for StageListenerGuard {
+    fn drop(&mut self) {
+      set_stage_listener(None);
+    }
   }
 
   fn deterministic_config() -> FastRenderConfig {
@@ -490,6 +509,52 @@ mod test_public_api {
       entry.message.contains("fetch blocked by policy"),
       "expected policy-blocked error, got: {:?}",
       entry.message
+    );
+  }
+
+  #[test]
+  fn test_render_paint_build_stage_emitted_once_for_display_list_backend() {
+    // Stage listeners are global; serialise tests that install them.
+    let _lock = stage_listener_lock();
+
+    let paint_build_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let paint_rasterize_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen_paint = Arc::new(AtomicBool::new(false));
+
+    let paint_build_count_listener = Arc::clone(&paint_build_count);
+    let paint_rasterize_count_listener = Arc::clone(&paint_rasterize_count);
+    let seen_paint_listener = Arc::clone(&seen_paint);
+    set_stage_listener(Some(Arc::new(move |stage| match stage {
+      StageHeartbeat::PaintBuild => {
+        paint_build_count_listener.fetch_add(1, Ordering::Relaxed);
+        seen_paint_listener.store(true, Ordering::Relaxed);
+      }
+      StageHeartbeat::PaintRasterize => {
+        paint_rasterize_count_listener.fetch_add(1, Ordering::Relaxed);
+        seen_paint_listener.store(true, Ordering::Relaxed);
+      }
+      _ => {}
+    })));
+    let _stage_guard = StageListenerGuard;
+
+    let mut renderer = deterministic_renderer();
+    renderer
+      .render_html("<div>stage</div>", 32, 32)
+      .expect("render");
+
+    assert!(
+      seen_paint.load(Ordering::Relaxed),
+      "expected render to enter paint stages"
+    );
+    assert_eq!(
+      paint_build_count.load(Ordering::Relaxed),
+      1,
+      "expected exactly one paint_build stage heartbeat for display-list backend"
+    );
+    assert_eq!(
+      paint_rasterize_count.load(Ordering::Relaxed),
+      1,
+      "expected exactly one paint_rasterize stage heartbeat"
     );
   }
 

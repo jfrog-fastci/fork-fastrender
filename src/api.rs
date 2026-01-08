@@ -9285,8 +9285,13 @@ impl FastRender {
     scroll_state: &ScrollState,
     trace: &TraceHandle,
   ) -> Result<Pixmap> {
-    record_stage(StageHeartbeat::PaintBuild);
-    match paint_backend_from_env() {
+    let backend = paint_backend_from_env();
+    if backend == PaintBackend::Legacy {
+      // The legacy painter does not emit a `PaintBuild` heartbeat, so do it here for consistency
+      // with the display-list pipeline.
+      record_stage(StageHeartbeat::PaintBuild);
+    }
+    match backend {
       PaintBackend::Legacy => paint_tree_with_resources_scaled_offset_with_trace(
         fragment_tree,
         width,
