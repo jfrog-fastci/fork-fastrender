@@ -11082,7 +11082,7 @@ fn apply_declaration_with_base_internal_with_order(
       let mut list_image = ListStyleImage::None;
 
       for token in tokens {
-        if matches!(&token, PropertyValue::Keyword(kw) if kw == "none") {
+        if matches!(&token, PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none")) {
           list_type = ListStyleType::None;
           list_image = ListStyleImage::None;
           continue;
@@ -12877,7 +12877,7 @@ fn apply_declaration_with_base_internal_with_order(
       PropertyValue::BoxShadow(shadows) => {
         styles.box_shadow = shadows.clone();
       }
-      PropertyValue::Keyword(kw) if kw == "none" => {
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => {
         styles.box_shadow.clear();
       }
       _ => {}
@@ -12886,7 +12886,7 @@ fn apply_declaration_with_base_internal_with_order(
       PropertyValue::TextShadow(shadows) => {
         styles.text_shadow = shadows.clone().into();
       }
-      PropertyValue::Keyword(kw) if kw == "none" => {
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => {
         styles.text_shadow = default_computed_style().text_shadow.clone();
       }
       _ => {}
@@ -13787,7 +13787,7 @@ fn parse_spacing_value(
   allow_percentage: bool,
 ) -> Option<f32> {
   match value {
-    PropertyValue::Keyword(kw) if kw == "normal" => Some(0.0),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("normal") => Some(0.0),
     PropertyValue::Number(n) if *n == 0.0 => Some(0.0),
     PropertyValue::Length(len) => {
       resolve_font_relative_length(*len, font_size, root_font_size, viewport)
@@ -13813,7 +13813,8 @@ fn resolve_font_relative_length(
 }
 
 fn parse_object_fit(kw: &str) -> Option<ObjectFit> {
-  match kw {
+  let kw = kw.to_ascii_lowercase();
+  match kw.as_str() {
     "fill" => Some(ObjectFit::Fill),
     "contain" => Some(ObjectFit::Contain),
     "cover" => Some(ObjectFit::Cover),
@@ -13824,7 +13825,8 @@ fn parse_object_fit(kw: &str) -> Option<ObjectFit> {
 }
 
 fn parse_image_rendering(kw: &str) -> Option<ImageRendering> {
-  match kw {
+  let kw = kw.to_ascii_lowercase();
+  match kw.as_str() {
     "auto" => Some(ImageRendering::Auto),
     "smooth" | "high-quality" | "optimizequality" => Some(ImageRendering::Smooth),
     "crisp-edges" | "crispedges" | "optimize-contrast" | "optimizecontrast" => {
@@ -15108,7 +15110,8 @@ fn parse_transform_origin(value: &PropertyValue) -> Option<TransformOrigin> {
   }
 
   fn keyword_to_length(kw: &str) -> Option<(Length, AxisHint)> {
-    match kw {
+    let kw = kw.to_ascii_lowercase();
+    match kw.as_str() {
       "left" => Some((Length::percent(0.0), AxisHint::Horizontal)),
       "right" => Some((Length::percent(100.0), AxisHint::Horizontal)),
       "top" => Some((Length::percent(0.0), AxisHint::Vertical)),
@@ -19166,7 +19169,7 @@ pub fn extract_margin_values(value: &PropertyValue) -> Option<Vec<Option<Length>
   match value {
     PropertyValue::Length(len) => Some(vec![Some(*len)]),
     PropertyValue::Number(n) if *n == 0.0 => Some(vec![Some(Length::px(0.0))]),
-    PropertyValue::Keyword(kw) if kw == "auto" => Some(vec![None]), // auto margins
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => Some(vec![None]), // auto margins
     PropertyValue::Keyword(kw) => parse_length(kw).map(|len| vec![Some(len)]),
     PropertyValue::Multiple(values) => {
       let lengths: Vec<Option<Length>> = values.iter().map(extract_length).collect();
@@ -32110,6 +32113,7 @@ fn parse_background_shorthand(
     // Attachment
     if shorthand.attachment.is_none() {
       if let PropertyValue::Keyword(kw) = token {
+        let kw = kw.to_ascii_lowercase();
         shorthand.attachment = match kw.as_str() {
           "scroll" => Some(BackgroundAttachment::Scroll),
           "fixed" => Some(BackgroundAttachment::Fixed),
