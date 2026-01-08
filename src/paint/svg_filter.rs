@@ -797,7 +797,7 @@ enum SvgCoordinateUnits {
 
 impl SvgCoordinateUnits {
   fn parse(attr: Option<&str>, default: SvgCoordinateUnits) -> SvgCoordinateUnits {
-    match attr.map(|v| v.trim().to_ascii_lowercase()) {
+    match attr.map(|v| trim_ascii_whitespace(v).to_ascii_lowercase()) {
       Some(v) if v == "objectboundingbox" => SvgCoordinateUnits::ObjectBoundingBox,
       Some(v) if v == "userspaceonuse" => SvgCoordinateUnits::UserSpaceOnUse,
       _ => default,
@@ -814,14 +814,14 @@ pub enum SvgLength {
 impl SvgLength {
   fn parse(attr: Option<&str>, default: SvgLength) -> SvgLength {
     let raw = match attr {
-      Some(v) => v.trim(),
+      Some(v) => trim_ascii_whitespace(v),
       None => return default,
     };
     if raw.is_empty() {
       return default;
     }
     if let Some(stripped) = raw.strip_suffix('%') {
-      if let Ok(v) = stripped.trim().parse::<f32>() {
+      if let Ok(v) = trim_ascii_whitespace(stripped).parse::<f32>() {
         return SvgLength::Percent(v / 100.0);
       }
     }
@@ -829,12 +829,12 @@ impl SvgLength {
   }
 
   fn parse_optional(attr: Option<&str>) -> Option<SvgLength> {
-    let raw = attr?.trim();
+    let raw = trim_ascii_whitespace(attr?);
     if raw.is_empty() {
       return None;
     }
     if let Some(stripped) = raw.strip_suffix('%') {
-      let value = stripped.trim().parse::<f32>().ok()?;
+      let value = trim_ascii_whitespace(stripped).parse::<f32>().ok()?;
       return Some(SvgLength::Percent(value / 100.0));
     }
     Some(SvgLength::Number(raw.parse::<f32>().ok()?))
@@ -859,7 +859,7 @@ enum PreserveAspectRatio {
 
 impl PreserveAspectRatio {
   fn parse(attr: Option<&str>) -> PreserveAspectRatio {
-    let raw = attr.unwrap_or("").trim();
+    let raw = trim_ascii_whitespace(attr.unwrap_or(""));
     if raw.eq_ignore_ascii_case("none") {
       PreserveAspectRatio::None
     } else {
@@ -2206,6 +2206,12 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
+  value
+    .split(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    .filter(|part| !part.is_empty())
+}
+
 fn normalize_filter_url(raw: &str) -> Option<String> {
   let mut value = trim_ascii_whitespace(raw);
   if value.is_empty() {
@@ -2264,7 +2270,7 @@ fn strip_matching_quotes(value: &str) -> &str {
 }
 
 fn parse_input(attr: Option<&str>) -> FilterInput {
-  match attr.map(|s| s.trim()) {
+  match attr.map(trim_ascii_whitespace) {
     Some(v) if v.eq_ignore_ascii_case("backgroundimage") => FilterInput::BackgroundImage,
     Some(v) if v.eq_ignore_ascii_case("backgroundalpha") => FilterInput::BackgroundAlpha,
     Some(v) if v.eq_ignore_ascii_case("fillpaint") => FilterInput::FillPaint,
@@ -2285,7 +2291,7 @@ fn attribute_ci<'a>(node: &'a roxmltree::Node, name: &str) -> Option<&'a str> {
 
 fn parse_number(value: Option<&str>) -> f32 {
   value
-    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| split_ascii_whitespace(v).next())
     .and_then(|v| v.parse::<f32>().ok())
     .unwrap_or(0.0)
 }
@@ -2293,9 +2299,9 @@ fn parse_number(value: Option<&str>) -> f32 {
 fn parse_number_list(value: Option<&str>) -> Vec<f32> {
   value
     .unwrap_or("")
-    .split(|c: char| c.is_whitespace() || c == ',')
+    .split(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ',')
     .filter_map(|v| {
-      let trimmed = v.trim();
+      let trimmed = trim_ascii_whitespace(v);
       if trimmed.is_empty() {
         None
       } else {
@@ -2327,7 +2333,7 @@ fn parse_filter_res(value: Option<&str>) -> Option<(u32, u32)> {
 }
 
 fn parse_color(value: Option<&str>) -> Option<Rgba> {
-  let raw = value?.trim();
+  let raw = trim_ascii_whitespace(value?);
   if let Ok(parsed) = color::Color::parse(raw) {
     return Some(parsed.to_rgba(Rgba::BLACK));
   }
@@ -2335,7 +2341,7 @@ fn parse_color(value: Option<&str>) -> Option<Rgba> {
 }
 
 fn parse_color_interpolation_filters(value: Option<&str>) -> Option<ColorInterpolationFilters> {
-  match value.map(|s| s.trim().to_ascii_lowercase()) {
+  match value.map(|s| trim_ascii_whitespace(s).to_ascii_lowercase()) {
     Some(v) if v == "srgb" => Some(ColorInterpolationFilters::SRGB),
     Some(v) if v == "linearrgb" => Some(ColorInterpolationFilters::LinearRGB),
     _ => None,
@@ -2343,7 +2349,7 @@ fn parse_color_interpolation_filters(value: Option<&str>) -> Option<ColorInterpo
 }
 
 fn parse_channel_selector(value: Option<&str>) -> ChannelSelector {
-  match value.map(|v| v.trim().to_ascii_lowercase()) {
+  match value.map(|v| trim_ascii_whitespace(v).to_ascii_lowercase()) {
     Some(v) if v == "r" => ChannelSelector::R,
     Some(v) if v == "g" => ChannelSelector::G,
     Some(v) if v == "b" => ChannelSelector::B,
@@ -2410,12 +2416,12 @@ fn parse_light_source(node: &roxmltree::Node) -> Option<LightSource> {
 fn parse_fe_diffuse_lighting(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(attribute_ci(node, "in"));
   let surface_scale = attribute_ci(node, "surfaceScale")
-    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| split_ascii_whitespace(v).next())
     .and_then(|v| v.parse::<f32>().ok())
     .filter(|v| v.is_finite())
     .unwrap_or(1.0);
   let diffuse_constant = attribute_ci(node, "diffuseConstant")
-    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| split_ascii_whitespace(v).next())
     .and_then(|v| v.parse::<f32>().ok())
     .filter(|v| v.is_finite())
     .unwrap_or(1.0)
@@ -2439,9 +2445,7 @@ fn parse_fe_gaussian_blur(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(attribute_ci(node, "in"));
   let (sx, sy) = parse_number_pair(attribute_ci(node, "stdDeviation"));
   let std_dev = (sx.max(0.0), sy.max(0.0));
-  let edge_mode = match attribute_ci(node, "edgeMode")
-    .unwrap_or("duplicate")
-    .trim()
+  let edge_mode = match trim_ascii_whitespace(attribute_ci(node, "edgeMode").unwrap_or("duplicate"))
     .to_ascii_lowercase()
     .as_str()
   {
@@ -2506,12 +2510,12 @@ fn parse_fe_color_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 fn parse_fe_specular_lighting(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(attribute_ci(node, "in"));
   let surface_scale = attribute_ci(node, "surfaceScale")
-    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| split_ascii_whitespace(v).next())
     .and_then(|v| v.parse::<f32>().ok())
     .filter(|v| v.is_finite())
     .unwrap_or(1.0);
   let specular_constant = attribute_ci(node, "specularConstant")
-    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| split_ascii_whitespace(v).next())
     .and_then(|v| v.parse::<f32>().ok())
     .filter(|v| v.is_finite())
     .unwrap_or(1.0)
@@ -2803,7 +2807,7 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let stitch_tiles = node
     .attribute("stitchTiles")
     .map(|v| {
-      let v = v.trim().to_ascii_lowercase();
+      let v = trim_ascii_whitespace(v).to_ascii_lowercase();
       v == "stitch" || v == "true" || v == "1"
     })
     .unwrap_or(false);
@@ -2885,7 +2889,7 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let preserve_alpha = node
     .attribute("preserveAlpha")
     .map(|v| {
-      let lower = v.trim().to_ascii_lowercase();
+      let lower = trim_ascii_whitespace(v).to_ascii_lowercase();
       lower == "true" || lower == "1"
     })
     .unwrap_or(false);
@@ -6501,6 +6505,41 @@ mod tests {
       delta <= 1,
       "expected {expected}±1, got {actual} (Δ={delta})"
     );
+  }
+
+  #[test]
+  fn svg_filter_parsers_do_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+
+    assert!(matches!(
+      SvgCoordinateUnits::parse(Some("userSpaceOnUse"), SvgCoordinateUnits::ObjectBoundingBox),
+      SvgCoordinateUnits::UserSpaceOnUse
+    ));
+    assert!(matches!(
+      SvgCoordinateUnits::parse(
+        Some(&format!("{nbsp}userSpaceOnUse")),
+        SvgCoordinateUnits::ObjectBoundingBox
+      ),
+      SvgCoordinateUnits::ObjectBoundingBox
+    ));
+
+    match SvgLength::parse(Some(&format!("{nbsp}10")), SvgLength::Number(0.0)) {
+      SvgLength::Number(v) => assert_eq!(v, 0.0),
+      other => panic!("expected default SvgLength::Number, got {other:?}"),
+    }
+    assert!(SvgLength::parse_optional(Some(&format!("{nbsp}10"))).is_none());
+
+    assert!(matches!(
+      PreserveAspectRatio::parse(Some("none")),
+      PreserveAspectRatio::None
+    ));
+    assert!(matches!(
+      PreserveAspectRatio::parse(Some(&format!("{nbsp}none"))),
+      PreserveAspectRatio::XMidYMidMeet
+    ));
+
+    assert_eq!(parse_number(Some("1")), 1.0);
+    assert_eq!(parse_number(Some(&format!("{nbsp}1"))), 0.0);
   }
 
   #[test]
