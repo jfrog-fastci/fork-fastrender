@@ -4130,6 +4130,7 @@ impl HttpFetcher {
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
     let mut effective_referrer_policy = referrer_policy;
+    let mut redirect_referrer_policy: Option<ReferrerPolicy> = None;
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -4298,6 +4299,7 @@ impl HttpFetcher {
               .and_then(ReferrerPolicy::parse_value_list)
             {
               effective_referrer_policy = policy;
+              redirect_referrer_policy = Some(policy);
             }
             let next = Url::parse(&current)
               .ok()
@@ -4357,7 +4359,8 @@ impl HttpFetcher {
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
           .as_deref()
-          .and_then(ReferrerPolicy::parse_value_list);
+          .and_then(ReferrerPolicy::parse_value_list)
+          .or(redirect_referrer_policy);
         let cache_policy = parse_http_cache_policy(response.headers());
         let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
@@ -4643,6 +4646,7 @@ impl HttpFetcher {
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
     let mut effective_referrer_policy = referrer_policy;
+    let mut redirect_referrer_policy: Option<ReferrerPolicy> = None;
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -4804,6 +4808,7 @@ impl HttpFetcher {
               .and_then(ReferrerPolicy::parse_value_list)
             {
               effective_referrer_policy = policy;
+              redirect_referrer_policy = Some(policy);
             }
             let next = Url::parse(&current)
               .ok()
@@ -4863,7 +4868,8 @@ impl HttpFetcher {
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
           .as_deref()
-          .and_then(ReferrerPolicy::parse_value_list);
+          .and_then(ReferrerPolicy::parse_value_list)
+          .or(redirect_referrer_policy);
         let cache_policy = parse_http_cache_policy(response.headers());
         let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();
@@ -5151,6 +5157,7 @@ impl HttpFetcher {
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
     let mut effective_referrer_policy = referrer_policy;
+    let mut redirect_referrer_policy: Option<ReferrerPolicy> = None;
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -5329,6 +5336,7 @@ impl HttpFetcher {
               .and_then(ReferrerPolicy::parse_value_list)
             {
               effective_referrer_policy = policy;
+              redirect_referrer_policy = Some(policy);
             }
             let next = Url::parse(&current)
               .ok()
@@ -5374,7 +5382,8 @@ impl HttpFetcher {
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
           .as_deref()
-          .and_then(ReferrerPolicy::parse_value_list);
+          .and_then(ReferrerPolicy::parse_value_list)
+          .or(redirect_referrer_policy);
         let cache_policy = parse_http_cache_policy(response.headers());
         let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
@@ -5734,6 +5743,7 @@ impl HttpFetcher {
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
     let mut effective_referrer_policy = referrer_policy;
+    let mut redirect_referrer_policy: Option<ReferrerPolicy> = None;
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -5893,6 +5903,7 @@ impl HttpFetcher {
               .and_then(ReferrerPolicy::parse_value_list)
             {
               effective_referrer_policy = policy;
+              redirect_referrer_policy = Some(policy);
             }
             let next = Url::parse(&current)
               .ok()
@@ -5938,7 +5949,8 @@ impl HttpFetcher {
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
           .as_deref()
-          .and_then(ReferrerPolicy::parse_value_list);
+          .and_then(ReferrerPolicy::parse_value_list)
+          .or(redirect_referrer_policy);
         let cache_policy = parse_http_cache_policy(response.headers());
         let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();

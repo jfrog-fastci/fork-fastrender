@@ -1005,6 +1005,53 @@ fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_f
 }
 
 #[test]
+fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_nested_requests()
+{
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_nested_requests",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_redirect_policy.css">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_redirect_policy.css", "/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert!(
+      header_value(&req.headers, "referer").is_none(),
+      "expected Referer header to be omitted for {path} due to redirect Referrer-Policy: no-referrer; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
 fn meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests() {
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests",

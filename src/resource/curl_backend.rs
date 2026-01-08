@@ -454,6 +454,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   let mut current = url.to_string();
   let mut validators = validators;
   let mut effective_referrer_policy = referrer_policy;
+  let mut redirect_referrer_policy: Option<super::ReferrerPolicy> = None;
 
   let timeout_budget = fetcher.timeout_budget(deadline);
   let max_attempts = if deadline
@@ -662,6 +663,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
             .and_then(super::ReferrerPolicy::parse_value_list)
           {
             effective_referrer_policy = policy;
+            redirect_referrer_policy = Some(policy);
           }
           let next = Url::parse(&current)
             .ok()
@@ -706,7 +708,8 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         super::header_values_joined(&response.headers, "timing-allow-origin");
       let response_referrer_policy = super::header_values_joined(&response.headers, "referrer-policy")
         .as_deref()
-        .and_then(super::ReferrerPolicy::parse_value_list);
+        .and_then(super::ReferrerPolicy::parse_value_list)
+        .or(redirect_referrer_policy);
       let cache_policy = super::parse_http_cache_policy(&response.headers);
       let vary = super::parse_vary_headers(&response.headers);
 
