@@ -24,6 +24,7 @@
 
 use crate::debug::runtime;
 use crate::error::{Error, ImageError, RenderError, RenderStage, ResourceError, Result};
+use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::render_control::{self, check_active_periodic};
 use brotli::Decompressor;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
@@ -39,7 +40,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::convert::TryFrom;
-use std::io::{self, Cursor, Read};
+use std::io::{self, Cursor, Read, Write as _};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -9006,6 +9007,11 @@ fn decode_content_encodings(
 
   let mut decoded = body;
   for encoding in encodings.iter().rev() {
+    // "identity" is a no-op; avoid cloning the entire body.
+    if encoding.is_empty() || encoding.eq_ignore_ascii_case("identity") {
+      ensure_within_limit(decoded.len(), limit)?;
+      continue;
+    }
     decoded = decode_single_encoding(encoding, &decoded, limit, stage)?;
   }
 
@@ -9063,7 +9069,8 @@ fn decode_with_reader<R: Read>(
   limit: usize,
   stage: RenderStage,
 ) -> std::result::Result<Vec<u8>, ContentDecodeError> {
-  let mut decoded = Vec::new();
+  let mut decoded = FallibleVecWriter::new(limit, "content decode");
+  let mut decoded_len = 0usize;
   let mut buf = [0u8; 8192];
   let mut deadline_counter = 0usize;
 
@@ -9093,7 +9100,7 @@ fn decode_with_reader<R: Read>(
       break;
     }
 
-    let next_len = decoded.len().saturating_add(read);
+    let next_len = decoded_len.saturating_add(read);
     if next_len > limit {
       return Err(ContentDecodeError::SizeLimitExceeded {
         decoded: next_len,
@@ -9101,10 +9108,16 @@ fn decode_with_reader<R: Read>(
       });
     }
 
-    decoded.extend_from_slice(&buf[..read]);
+    decoded
+      .write_all(&buf[..read])
+      .map_err(|source| ContentDecodeError::DecompressionFailed {
+        encoding: encoding.to_string(),
+        source,
+      })?;
+    decoded_len = next_len;
   }
 
-  Ok(decoded)
+  Ok(decoded.into_inner())
 }
 
 fn ensure_within_limit(len: usize, limit: usize) -> std::result::Result<(), ContentDecodeError> {
@@ -9493,6 +9506,26 @@ mod tests {
       http::HeaderValue::from_static("foo NoSnIfF bar"),
     );
     assert!(header_has_nosniff(&headers));
+  }
+
+  #[test]
+  fn content_decode_does_not_overallocate_beyond_limit() {
+    // The content decode limit should also act as an allocation cap, so the decoder doesn't
+    // over-allocate (and potentially OOM abort) while still producing an output <= limit.
+    let body = vec![b'a'; 10_000];
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&body).expect("gzip encode");
+    let compressed = encoder.finish().expect("gzip finish");
+
+    let decoded =
+      decode_single_encoding("gzip", &compressed, body.len(), RenderStage::Paint).expect("decode");
+    assert_eq!(decoded, body);
+    assert!(
+      decoded.capacity() <= body.len(),
+      "decoded capacity {} exceeds limit {}",
+      decoded.capacity(),
+      body.len()
+    );
   }
 
   #[test]
