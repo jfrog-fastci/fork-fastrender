@@ -546,6 +546,93 @@ fn subgrid_column_gap_can_differ_from_parent_gap() {
 }
 
 #[test]
+fn subgrid_row_gap_can_differ_from_parent_gap() {
+  fn run(row_gap: Option<(Length, bool)>) -> (f32, f32, f32, f32) {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Grid;
+    parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(100.0)), GridTrack::Fr(1.0)];
+    parent_style.grid_template_columns = vec![GridTrack::Auto];
+    parent_style.grid_row_gap = Length::px(50.0);
+    parent_style.width = Some(Length::px(100.0));
+    parent_style.height = Some(Length::px(300.0));
+    parent_style.align_items = AlignItems::Stretch;
+
+    let mut subgrid_style = ComputedStyle::default();
+    subgrid_style.display = Display::Grid;
+    subgrid_style.grid_row_subgrid = true;
+    subgrid_style.grid_row_start = 1;
+    subgrid_style.grid_row_end = 3;
+    subgrid_style.align_items = AlignItems::Stretch;
+    if let Some((gap, is_normal)) = row_gap {
+      subgrid_style.grid_row_gap = gap;
+      subgrid_style.grid_row_gap_is_normal = is_normal;
+    }
+
+    let mut child1_style = ComputedStyle::default();
+    child1_style.display = Display::Block;
+    child1_style.grid_row_start = 1;
+    child1_style.grid_row_end = 2;
+
+    let mut child2_style = ComputedStyle::default();
+    child2_style.display = Display::Block;
+    child2_style.grid_row_start = 2;
+    child2_style.grid_row_end = 3;
+
+    let child1 = BoxNode::new_block(Arc::new(child1_style), FormattingContextType::Block, vec![]);
+    let child2 = BoxNode::new_block(Arc::new(child2_style), FormattingContextType::Block, vec![]);
+
+    let subgrid = BoxNode::new_block(
+      Arc::new(subgrid_style),
+      FormattingContextType::Grid,
+      vec![child1, child2],
+    );
+
+    let grid = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Grid,
+      vec![subgrid],
+    );
+
+    let fc = GridFormattingContext::new();
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(100.0, 300.0))
+      .expect("layout succeeds");
+
+    let subgrid_fragment = &fragment.children[0];
+    assert_eq!(subgrid_fragment.children.len(), 2);
+    let top = &subgrid_fragment.children[0];
+    let bottom = &subgrid_fragment.children[1];
+    (
+      top.bounds.height(),
+      bottom.bounds.y(),
+      bottom.bounds.height(),
+      bottom.bounds.y() + bottom.bounds.height(),
+    )
+  }
+
+  // `row-gap: normal` (the default) matches the parent.
+  let (top_height, bottom_y, bottom_height, bottom_end) = run(None);
+  assert_approx(top_height, 100.0, "normal gap top height");
+  assert_approx(bottom_y, 150.0, "normal gap bottom y");
+  assert_approx(bottom_height, 150.0, "normal gap bottom height");
+  assert_approx(bottom_end, 300.0, "normal gap bottom end");
+
+  // `row-gap: 0` shrinks the visual gutter by applying half the difference (-25px) as margins.
+  let (top_height, bottom_y, bottom_height, bottom_end) = run(Some((Length::px(0.0), false)));
+  assert_approx(top_height, 125.0, "0px gap top height");
+  assert_approx(bottom_y, 125.0, "0px gap bottom y");
+  assert_approx(bottom_height, 175.0, "0px gap bottom height");
+  assert_approx(bottom_end, 300.0, "0px gap bottom end");
+
+  // Intermediate values split the difference.
+  let (top_height, bottom_y, bottom_height, bottom_end) = run(Some((Length::px(25.0), false)));
+  assert_approx(top_height, 112.5, "25px gap top height");
+  assert_approx(bottom_y, 137.5, "25px gap bottom y");
+  assert_approx(bottom_height, 162.5, "25px gap bottom height");
+  assert_approx(bottom_end, 300.0, "25px gap bottom end");
+}
+
+#[test]
 fn column_subgrid_with_mismatched_writing_mode_inherits_gaps() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
