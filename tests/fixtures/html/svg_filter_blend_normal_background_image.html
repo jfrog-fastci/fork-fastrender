@@ -1,33 +1,39 @@
 <!doctype html>
-<style>
-  body {
-    margin: 0;
-    background: rgb(255, 255, 255);
-  }
-  #bg {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 20px;
-    height: 20px;
-    background: rgb(0, 0, 255);
-  }
-  #fg {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 20px;
-    height: 20px;
-    background: rgb(255, 0, 0);
-    filter: url(#blendNormal);
-  }
-</style>
-<svg style="display: none">
-  <defs>
-    <filter id="blendNormal" color-interpolation-filters="sRGB">
-      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImage" />
-    </filter>
-  </defs>
-</svg>
-<div id="bg"></div>
-<div id="fg"></div>
+<html>
+  <head>
+    <style>
+      body {
+        margin: 0;
+        background: rgb(255, 255, 255);
+      }
+      #bg {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 20px;
+        height: 20px;
+        background: rgb(0, 0, 255);
+      }
+      #fg {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 20px;
+        height: 20px;
+        background: rgb(255, 0, 0);
+        filter: url(#blendNormal);
+      }
+    </style>
+  </head>
+  <body>
+    <svg style="display: none">
+      <defs>
+        <filter id="blendNormal" color-interpolation-filters="sRGB">
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImage" />
+        </filter>
+      </defs>
+    </svg>
+    <div id="bg"></div>
+    <div id="fg"></div>
+  </body>
+</html>
