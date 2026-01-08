@@ -17,4 +17,10 @@ pub mod wgpu_pixmap_texture;
 #[cfg(feature = "browser_ui")]
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
 
+#[cfg(feature = "browser_ui")]
+pub mod url;
+
+#[cfg(feature = "browser_ui")]
+pub use url::normalize_user_url;
+
 pub use history::{HistoryEntry, TabHistory};
