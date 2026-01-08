@@ -6,15 +6,15 @@ set -euo pipefail
 # Prefer `prlimit` when available (hard limits). Fall back to `ulimit` otherwise.
 #
 # Examples:
-#   scripts/run_limited.sh --as 12G --cpu 60 -- cargo bench --bench selector_bloom_bench
-#   LIMIT_AS=12G scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
+#   scripts/run_limited.sh --as 64G -- cargo bench --bench selector_bloom_bench
+#   LIMIT_AS=64G scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
 
 usage() {
   cat <<'EOF'
 usage: scripts/run_limited.sh [--as <size>] [--rss <size>] [--stack <size>] [--cpu <secs>] -- <command...>
 
 Limits:
-  --as <size>     Address-space (virtual memory) limit. Example: 12G, 4096M.
+  --as <size>     Address-space (virtual memory) limit. Example: 64G, 4096M.
   --rss <size>    Resident set size limit (advisory on many kernels).
   --stack <size>  Stack size limit.
   --cpu <secs>    CPU time limit (seconds).
@@ -69,7 +69,7 @@ to_bytes() {
 # NOTE: Rust's toolchain shims (rustup) reserve a fairly large amount of virtual address space.
 # A too-low RLIMIT_AS can prevent even `cargo --version` from starting. Keep the default high
 # enough to allow basic commands, but still bounded to protect multi-agent hosts.
-AS="${LIMIT_AS:-12G}"
+AS="${LIMIT_AS:-64G}"
 RSS="${LIMIT_RSS:-}"
 STACK="${LIMIT_STACK:-}"
 CPU="${LIMIT_CPU:-}"

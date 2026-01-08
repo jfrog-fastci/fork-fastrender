@@ -33,7 +33,7 @@ These are optional wrappers for the most common loops:
   - When reusing existing FastRender renders (`--no-fastrender` / `--diff-only`), xtask validates per-fixture metadata to prevent stale diffs; pass `--allow-stale-fastrender-renders` to override.
   - Core flags mirror `cargo xtask fixture-chrome-diff` (run `cargo xtask fixture-chrome-diff --help` for details; the wrapper forwards through newer selection flags like `--from-progress` / `--all-fixtures`).
   - Legacy `--chrome-out-dir` / `--fastr-out-dir` / `--report-html` / `--report-json` flags are still accepted but must match the `<out>/chrome` / `<out>/fastrender` / `<out>/report.*` layout.
-- Run any command under a hard memory cap (uses `prlimit` when available): `scripts/run_limited.sh --as 12G -- <command...>`
+- Run any command under a hard memory cap (uses `prlimit` when available): `scripts/run_limited.sh --as 64G -- <command...>`
 - Profile one page with samply (saves profile + prints summary): `scripts/profile_samply.sh <stem|--from-progress ...>` (builds `pageset_progress` with `disk_cache`)
 - Profile one page with perf: `scripts/profile_perf.sh <stem|--from-progress ...>` (builds `pageset_progress` with `disk_cache`)
 - Summarize a saved samply profile: `scripts/samply_summary.py <profile.json.gz>`

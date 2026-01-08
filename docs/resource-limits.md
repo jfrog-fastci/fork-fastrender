@@ -1,21 +1,29 @@
-# Resource limits (RAM / CPU / time) for agents
+# Resource limits (RAM / time) for agents
+
+This repo assumes we run on a single standard host:
+- **Linux**, ~**192 vCPU** (96c/192t)
+- ~**1.5TB RAM**
+- ~**100TB NVMe** (16× RAID0)
 
 FastRender work involves hostile inputs (real pages) and complex algorithms. **Any run can go pathological**.
-We want safe defaults so no benchmark or CLI can eat the machine.
+Defaults are set to:
+- **Maximize CPU utilization** (no CPU limiting by default)
+- **Always enforce RAM ceilings** (avoid system freezes; fail fast and diagnose)
+- **Avoid cargo stampedes** (coordination, not disk, is the typical bottleneck)
 
 This doc describes a two-layer strategy:
 
 1. **OS-level hard caps** (always available, works for *any* command)
 2. **In-process guardrails** (for our own binaries, better error messages + staged attribution)
 
-## 1) OS-level caps (recommended default for agents)
+## 1) OS-level caps (default)
 
-### Convenience wrapper (recommended encouraging default)
+### Convenience wrapper
 
 Use the repo helper which prefers `prlimit` and falls back to `ulimit`:
 
 ```bash
-scripts/run_limited.sh --as 12G --cpu 60 -- \
+scripts/run_limited.sh --as 64G -- \
   cargo bench --bench selector_bloom_bench
 ```
 
@@ -25,16 +33,16 @@ reserve a surprisingly large amount of virtual address space even when RSS is lo
 You can also set defaults via environment variables:
 
 ```bash
-LIMIT_AS=12G LIMIT_CPU=60 scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
+LIMIT_AS=64G scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
 ```
 
-### A. `prlimit` (best general-purpose tool)
+### A. `prlimit`
 
-If `prlimit` is available (usually via `util-linux`), it can cap address-space and CPU:
+If `prlimit` is available (usually via `util-linux`), it can cap address-space:
 
 ```bash
-# Note: `prlimit` expects raw byte counts; size suffixes (e.g. 12G) are not universally supported.
-prlimit --as=$((12 * 1024 * 1024 * 1024)) --rss=$((12 * 1024 * 1024 * 1024)) --cpu=30 -- \
+# Note: `prlimit` expects raw byte counts; size suffixes (e.g. 64G) are not universally supported.
+prlimit --as=$((64 * 1024 * 1024 * 1024)) --rss=$((64 * 1024 * 1024 * 1024)) -- \
   cargo run --release --bin pageset_progress -- run --timeout 5
 ```
 
@@ -42,26 +50,26 @@ Notes:
 - `--as` (virtual address space) is the most reliable “hard memory ceiling”.
 - `--rss` is not reliably enforced on all kernels; treat it as advisory.
 - Cap `cargo` itself if you are running “cargo run”; `cargo` spawns child processes and inherits limits.
-  - Some `prlimit` builds do not accept human suffixes reliably (e.g. `--as=12G`). Prefer raw byte
+  - Some `prlimit` builds do not accept human suffixes reliably (e.g. `--as=64G`). Prefer raw byte
     counts or use `scripts/run_limited.sh`, which converts suffixes to bytes automatically.
 
-### B. `ulimit` (portable shell-level fallback)
+### B. `ulimit`
 
 In bash/zsh you can cap virtual memory and stack:
 
 ```bash
-ulimit -v $((12 * 1024 * 1024))  # KiB
+ulimit -v $((64 * 1024 * 1024))  # KiB
 ulimit -s $((64 * 1024))         # KiB
 ```
 
 Then run your command in the same shell.
 
-### C. cgroups / systemd (best isolation)
+### C. cgroups / systemd
 
 If systemd is available:
 
 ```bash
-systemd-run --user -p MemoryMax=12G -p CPUQuota=200% -- \
+systemd-run --user -p MemoryMax=64G -- \
   cargo run --release --bin pageset_progress -- run --timeout 5
 ```
 
@@ -90,10 +98,10 @@ The render-driving CLIs (`pageset_progress`, `render_pages`, `fetch_and_render`)
 Examples:
 
 ```bash
-# 8 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 2 GiB RSS
+# 64 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 8 GiB RSS
 cargo run --release --bin pageset_progress -- run \
-  --mem-limit-mb 8192 \
-  --stage-mem-budget-mb 2048
+  --mem-limit-mb 65536 \
+  --stage-mem-budget-mb 8192
 ```
 
 ### Diagnostics
@@ -112,11 +120,25 @@ When diagnostics/stats output is enabled (e.g. `pageset_progress --diagnostics b
 - **Make every unbounded cache bounded** (items and/or bytes) with explicit configuration knobs.
 - **Bench safety**: benches must never allocate unboundedly by default (see below).
 
-## Operational guidance
+## Operational guidance (default loop)
 
-- For pageset runs, set an OS memory cap by default (cgroups or prlimit).
+- Always set an OS memory cap by default (cgroups or `prlimit`).
 - When a cap is hit, treat it as a **bug**: either an algorithmic explosion or an unbounded cache.
 - The “correct fix” is almost always: reduce asymptotic work, add early exits, and bound caches—**not** “skip rendering”.
+
+### Cargo builds/tests (avoid stampedes)
+
+Too many agents running `cargo` concurrently can spawn thousands of `rustc`/`rust-lld` processes and blow up RAM.
+Use the repo wrapper `scripts/cargo_agent.sh`, which:
+- throttles concurrent cargo invocations with lock “slots”
+- enforces an address-space cap by default (`--as 64G`), without CPU limiting
+
+Example:
+
+```bash
+scripts/cargo_agent.sh build --release
+scripts/cargo_agent.sh test --lib
+```
 
 ## Bench safety
 
@@ -153,6 +175,6 @@ In-process caps prevent accidental runaway allocations, but the most reliable pr
 an OS-enforced ceiling. Prefer:
 
 ```bash
-FASTR_BENCH_VERBOSE=1 scripts/run_limited.sh --as 12G --cpu 60 -- \
+FASTR_BENCH_VERBOSE=1 scripts/run_limited.sh --as 64G -- \
   cargo bench --bench selector_bloom_bench -- --noplot
 ```
