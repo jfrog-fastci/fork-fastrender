@@ -151,6 +151,18 @@ impl HeaderCaptureServer {
 </html>"#
                   .to_vec(),
               ),
+              "/doc_response_policy_iframe.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head></head>
+  <body>
+    <iframe src="/frame.html" style="width: 10px; height: 10px"></iframe>
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
               "/doc_links_style_import.html" => (
                 "200 OK",
                 "text/html; charset=utf-8",
@@ -322,6 +334,7 @@ body { font-family: "TestFont"; }"#
                 | "/doc_response_policy_link_override.html"
                 | "/doc_response_policy_meta_override.html"
                 | "/doc_response_policy_img.html"
+                | "/doc_response_policy_iframe.html"
             ) {
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
@@ -1282,6 +1295,53 @@ fn meta_referrer_policy_no_referrer_suppresses_referer_for_images() {
 }
 
 #[test]
+fn meta_referrer_policy_no_referrer_suppresses_referer_for_iframes() {
+  let Some(server) = HeaderCaptureServer::start(
+    "meta_referrer_policy_no_referrer_suppresses_referer_for_iframes",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta name="referrer" content="no-referrer">
+        </head>
+        <body>
+          <iframe src="{}/frame.html" style="width: 10px; height: 10px"></iframe>
+        </body>
+      </html>"#,
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/frame.html",
+    "expected iframe request to be issued for the test fixture",
+  );
+
+  let requests = server.take_requests();
+  let frame_req = requests
+    .iter()
+    .find(|req| req.path == "/frame.html")
+    .expect("expected /frame.html request");
+  assert!(
+    header_value(&frame_req.headers, "referer").is_none(),
+    "expected meta Referrer-Policy to suppress Referer for /frame.html; got:\n{}",
+    frame_req.headers
+  );
+}
+
+#[test]
 fn meta_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests() {
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests",
@@ -1449,6 +1509,40 @@ fn document_response_referrer_policy_no_referrer_suppresses_referer_for_images()
     header_value(&img_req.headers, "referer").is_none(),
     "expected document response Referrer-Policy to suppress Referer for /img.png; got:\n{}",
     img_req.headers
+  );
+}
+
+#[test]
+fn document_response_referrer_policy_no_referrer_suppresses_referer_for_iframes() {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_response_referrer_policy_no_referrer_suppresses_referer_for_iframes",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_response_policy_iframe.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in ["/doc_response_policy_iframe.html", "/frame.html"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let frame_req = requests
+    .iter()
+    .find(|req| req.path == "/frame.html")
+    .expect("expected /frame.html request");
+  assert!(
+    header_value(&frame_req.headers, "referer").is_none(),
+    "expected document response Referrer-Policy to suppress Referer for /frame.html; got:\n{}",
+    frame_req.headers
   );
 }
 
