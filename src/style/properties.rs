@@ -5972,6 +5972,20 @@ pub(crate) fn apply_property_from_source(
       styles.animation_timelines = source.animation_timelines.clone();
       styles.animation_ranges = source.animation_ranges.clone();
     }
+    "transition-property" => styles.transition_properties = source.transition_properties.clone(),
+    "transition-duration" => styles.transition_durations = source.transition_durations.clone(),
+    "transition-delay" => styles.transition_delays = source.transition_delays.clone(),
+    "transition-timing-function" => {
+      styles.transition_timing_functions = source.transition_timing_functions.clone()
+    }
+    "transition-behavior" => styles.transition_behaviors = source.transition_behaviors.clone(),
+    "transition" => {
+      styles.transition_properties = source.transition_properties.clone();
+      styles.transition_durations = source.transition_durations.clone();
+      styles.transition_delays = source.transition_delays.clone();
+      styles.transition_timing_functions = source.transition_timing_functions.clone();
+      styles.transition_behaviors = source.transition_behaviors.clone();
+    }
     "scroll-padding" => {
       styles.scroll_padding_top = source.scroll_padding_top;
       styles.scroll_padding_right = source.scroll_padding_right;
