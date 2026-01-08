@@ -80,3 +80,31 @@ fn abspos_static_position_treats_auto_margins_as_zero() {
   );
 }
 
+#[test]
+fn abspos_static_position_centers_margin_box_on_main_axis() {
+  let fc = FlexFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 40.0);
+
+  // When `justify-content:center` is applied, the abspos child's *margin box* should be centered,
+  // per Flexbox §abspos-items ("margin edges … if it were the sole flex item").
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+  abs_style.margin_left = Some(Length::px(20.0));
+  abs_style.margin_right = Some(Length::px(0.0));
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+
+  let container = flex_container(JustifyContent::Center, vec![abs_child]);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  // Margin box width = 20(left) + 10 + 0(right) = 30; centered in 100 → margin edge at 35.
+  // Border box x = margin edge + margin-left = 35 + 20 = 55.
+  let expected = 55.0;
+  assert!(
+    (abspos_x(&fragment) - expected).abs() < 0.1,
+    "expected abspos border box x≈{expected}px when centering the margin box, got {}",
+    abspos_x(&fragment)
+  );
+}
