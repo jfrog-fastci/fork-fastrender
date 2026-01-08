@@ -373,9 +373,15 @@ pub fn read_cached_document(path: &Path) -> Result<CachedDocument> {
   resource.response_referrer_policy = parsed_meta.response_referrer_policy;
   let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
 
+  let document = PreparedDocument::new_with_response_referrer_policy(
+    html,
+    base_hint,
+    resource.response_referrer_policy,
+  );
+
   Ok(CachedDocument {
     byte_len: resource.bytes.len(),
-    document: PreparedDocument::new(html, base_hint),
+    document,
     resource,
   })
 }
@@ -852,6 +858,21 @@ mod tests {
     resource.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
     let doc = decode_html_resource(&resource, "https://example.com/");
     assert_eq!(doc.referrer_policy, ReferrerPolicy::Origin);
+  }
+
+  #[test]
+  fn read_cached_document_uses_response_referrer_policy_when_meta_absent() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("page.html");
+    std::fs::write(&path, "<!doctype html><html><body>ok</body></html>").expect("write html");
+    std::fs::write(
+      path.with_extension("html.meta"),
+      "content-type: text/html\nreferrer-policy: no-referrer\nurl: https://example.com/page\n",
+    )
+    .expect("write meta");
+
+    let cached = read_cached_document(&path).expect("read cached document");
+    assert_eq!(cached.document.referrer_policy, ReferrerPolicy::NoReferrer);
   }
 }
 
