@@ -12683,6 +12683,43 @@ fn hash_text_indent(indent: &crate::style::types::TextIndent, hasher: &mut Defau
   indent.each_line.hash(hasher);
 }
 
+fn hash_text_overflow_side(side: &crate::style::types::TextOverflowSide, hasher: &mut DefaultHasher) {
+  match side {
+    crate::style::types::TextOverflowSide::Clip => 0u8.hash(hasher),
+    crate::style::types::TextOverflowSide::Ellipsis => 1u8.hash(hasher),
+    crate::style::types::TextOverflowSide::String(s) => {
+      2u8.hash(hasher);
+      s.hash(hasher);
+    }
+  }
+}
+
+fn hash_text_overflow(value: &crate::style::types::TextOverflow, hasher: &mut DefaultHasher) {
+  hash_text_overflow_side(&value.inline_start, hasher);
+  hash_text_overflow_side(&value.inline_end, hasher);
+}
+
+fn hash_text_emphasis_style(value: &crate::style::types::TextEmphasisStyle, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::TextEmphasisStyle::None => 0u8.hash(hasher),
+    crate::style::types::TextEmphasisStyle::Mark { fill, shape } => {
+      1u8.hash(hasher);
+      hash_enum_discriminant(fill, hasher);
+      match shape {
+        Some(shape) => {
+          1u8.hash(hasher);
+          hash_enum_discriminant(shape, hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+    crate::style::types::TextEmphasisStyle::String(s) => {
+      2u8.hash(hasher);
+      s.hash(hasher);
+    }
+  }
+}
+
 fn hash_text_size_adjust(value: &crate::style::types::TextSizeAdjust, hasher: &mut DefaultHasher) {
   use crate::style::types::TextSizeAdjust::Auto;
   use crate::style::types::TextSizeAdjust::None;
@@ -13052,6 +13089,16 @@ fn hash_transforms(transforms: &[crate::css::types::Transform], hasher: &mut Def
 fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   let mut h = DefaultHasher::default();
   hash_enum_discriminant(&style.display, &mut h);
+  style.display_is_webkit_box.hash(&mut h);
+  hash_enum_discriminant(&style.webkit_box_orient, &mut h);
+  match style.line_clamp {
+    Some(lines) => {
+      1u8.hash(&mut h);
+      lines.hash(&mut h);
+    }
+    None => 0u8.hash(&mut h),
+  }
+  hash_enum_discriminant(&style.line_clamp_source, &mut h);
   hash_enum_discriminant(&style.container_type, &mut h);
   hash_string_vec(&style.container_name, &mut h);
   hash_enum_discriminant(&style.containment, &mut h);
@@ -13211,10 +13258,24 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.text_wrap, &mut h);
   hash_text_indent(&style.text_indent, &mut h);
   hash_text_size_adjust(&style.text_size_adjust, &mut h);
+  hash_text_overflow(&style.text_overflow, &mut h);
   hash_enum_discriminant(&style.text_rendering, &mut h);
   hash_text_transform(&style.text_transform, &mut h);
   hash_enum_discriminant(&style.text_orientation, &mut h);
   hash_enum_discriminant(&style.text_combine_upright, &mut h);
+  hash_text_emphasis_style(&style.text_emphasis_style, &mut h);
+  match &style.text_emphasis_color {
+    Some(c) => {
+      1u8.hash(&mut h);
+      c.r.hash(&mut h);
+      c.g.hash(&mut h);
+      c.b.hash(&mut h);
+      hash_f32(c.a, &mut h);
+    }
+    None => 0u8.hash(&mut h),
+  }
+  hash_enum_discriminant(&style.text_emphasis_position, &mut h);
+  style.text_emphasis_skip.0.hash(&mut h);
   hash_tab_size(&style.tab_size, &mut h);
   hash_vertical_align(&style.vertical_align, &mut h);
   hash_enum_discriminant(&style.ruby_position, &mut h);
@@ -14150,6 +14211,7 @@ fn refresh_fragment_styles(
   fragment: &mut FragmentNode,
   boxes: &HashMap<usize, &BoxNode>,
   styles: &HashMap<usize, Arc<ComputedStyle>>,
+  inherited_style: Option<Arc<ComputedStyle>>,
 ) {
   let self_box_id = fragment_box_id(fragment);
 
@@ -14160,6 +14222,10 @@ fn refresh_fragment_styles(
           fragment.style = Some(style.clone());
         }
       }
+    }
+  } else if fragment.style.is_some() {
+    if let Some(inherited) = inherited_style.as_ref() {
+      fragment.style = Some(Arc::clone(inherited));
     }
   }
 
@@ -14176,13 +14242,18 @@ fn refresh_fragment_styles(
   match &mut fragment.content {
     FragmentContent::RunningAnchor { snapshot, .. }
     | FragmentContent::FootnoteAnchor { snapshot } => {
-      refresh_fragment_styles(Arc::make_mut(snapshot), boxes, styles);
+      refresh_fragment_styles(Arc::make_mut(snapshot), boxes, styles, None);
     }
     _ => {}
   }
 
+  let child_inherited = fragment
+    .style
+    .as_ref()
+    .cloned()
+    .or_else(|| inherited_style.clone());
   for child in fragment.children_mut() {
-    refresh_fragment_styles(child, boxes, styles);
+    refresh_fragment_styles(child, boxes, styles, child_inherited.clone());
   }
 
   if let (Some(box_id), Some(base_style)) = (self_box_id, fragment.style.clone()) {
@@ -14216,9 +14287,9 @@ fn refresh_fragment_tree_styles(
   boxes: &HashMap<usize, &BoxNode>,
   styles: &HashMap<usize, Arc<ComputedStyle>>,
 ) {
-  refresh_fragment_styles(&mut tree.root, boxes, styles);
+  refresh_fragment_styles(&mut tree.root, boxes, styles, None);
   for root in &mut tree.additional_fragments {
-    refresh_fragment_styles(root, boxes, styles);
+    refresh_fragment_styles(root, boxes, styles, None);
   }
 }
 
@@ -15053,6 +15124,58 @@ pub(crate) fn render_html_with_shared_resources(
   }
 
   #[test]
+  fn style_layout_fingerprint_includes_text_overflow() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut ellipsis = base.clone();
+    ellipsis.text_overflow.inline_end = crate::style::types::TextOverflowSide::Ellipsis;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&ellipsis),
+      "expected text-overflow to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_line_clamp() {
+    let mut a = ComputedStyle::default();
+    a.display_is_webkit_box = true;
+    a.webkit_box_orient = crate::style::types::WebkitBoxOrient::Vertical;
+    a.line_clamp = Some(2);
+    a.line_clamp_source = crate::style::types::LineClampSource::Webkit;
+
+    let mut b = a.clone();
+    b.line_clamp = Some(3);
+
+    assert_ne!(
+      super::style_layout_fingerprint(&a),
+      super::style_layout_fingerprint(&b),
+      "expected line-clamp settings to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_text_emphasis() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut emphasized = base.clone();
+    emphasized.text_emphasis_style = crate::style::types::TextEmphasisStyle::Mark {
+      fill: crate::style::types::TextEmphasisFill::Open,
+      shape: Some(crate::style::types::TextEmphasisShape::Circle),
+    };
+    emphasized.text_emphasis_position = crate::style::types::TextEmphasisPosition::Over;
+    emphasized.text_emphasis_color = Some(Rgba::BLUE);
+
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&emphasized),
+      "expected text-emphasis settings to affect layout fingerprints"
+    );
+  }
+
+  #[test]
   fn box_style_key_uses_generated_pseudo_instead_of_debug_info() {
     let style = Arc::new(ComputedStyle::default());
     let mut base = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
@@ -15280,7 +15403,7 @@ pub(crate) fn render_html_with_shared_resources(
 
     let mut anchor =
       FragmentNode::new_footnote_anchor(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), snapshot);
-    super::refresh_fragment_styles(&mut anchor, &box_map, &style_map);
+    super::refresh_fragment_styles(&mut anchor, &box_map, &style_map, None);
 
     match &anchor.content {
       FragmentContent::FootnoteAnchor { snapshot } => {
@@ -15353,7 +15476,7 @@ pub(crate) fn render_html_with_shared_resources(
     );
     root_fragment.style = Some(old_style);
 
-    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map);
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None);
 
     let text_style = root_fragment.children[0].children[0]
       .style
@@ -15435,7 +15558,7 @@ pub(crate) fn render_html_with_shared_resources(
     );
     root_fragment.style = Some(old_style);
 
-    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map);
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None);
 
     assert!(
       Arc::ptr_eq(
@@ -15456,6 +15579,74 @@ pub(crate) fn render_html_with_shared_resources(
       .expect("text style refreshed");
     assert_eq!(text_style.color, first_letter.color);
     assert_eq!(text_style.background_color, first_line.background_color);
+  }
+
+  #[test]
+  fn refresh_fragment_styles_refreshes_boxless_text_fragments() {
+    let mut old_style = ComputedStyle::default();
+    old_style.color = Rgba::GREEN;
+    let old_style = Arc::new(old_style);
+
+    let mut new_style = ComputedStyle::default();
+    new_style.color = Rgba::RED;
+    let new_style = Arc::new(new_style);
+
+    let mut root = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![]);
+    root.styled_node_id = Some(1);
+    let box_tree = BoxTree::new(root);
+    let root_id = box_tree.root.id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&box_tree.root, &mut box_map);
+
+    let base_key = 1 << super::STYLE_KEY_SHIFT;
+    let mut style_map = HashMap::new();
+    style_map.insert(base_key, new_style.clone());
+
+    let ellipsis = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+      FragmentContent::Text {
+        text: Arc::from("…"),
+        box_id: None,
+        baseline_offset: 0.0,
+        shaped: None,
+        is_marker: false,
+        emphasis_offset: Default::default(),
+      },
+      vec![],
+      old_style.clone(),
+    );
+    let line = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      0.0,
+      vec![ellipsis],
+    );
+    let mut root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      root_id,
+      vec![line],
+    );
+    root_fragment.style = Some(old_style);
+
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None);
+
+    assert!(
+      Arc::ptr_eq(
+        root_fragment.style.as_ref().expect("root style refreshed"),
+        &new_style
+      ),
+      "expected root box style to refresh"
+    );
+    assert!(
+      Arc::ptr_eq(
+        root_fragment.children[0].children[0]
+          .style
+          .as_ref()
+          .expect("ellipsis style refreshed"),
+        &new_style
+      ),
+      "expected boxless inline fragments (text-overflow markers, tabs, etc.) to inherit refreshed styles"
+    );
   }
 
   #[test]
@@ -15512,7 +15703,7 @@ pub(crate) fn render_html_with_shared_resources(
       Arc::new(ComputedStyle::default()),
     );
 
-    super::refresh_fragment_styles(&mut fragment, &box_map, &style_map);
+    super::refresh_fragment_styles(&mut fragment, &box_map, &style_map, None);
 
     let FragmentContent::Replaced { replaced_type, .. } = &fragment.content else {
       panic!("expected replaced fragment");
