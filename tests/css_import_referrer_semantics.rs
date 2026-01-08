@@ -124,6 +124,9 @@ fn renderer_for(fetcher: Arc<RecordingFetcher>) -> FastRender {
 fn css_import_referrer_is_importing_stylesheet_url() {
   let document_url = "https://example.test/page.html";
   let html = r#"<html><head><link rel="stylesheet" href="a.css"></head><body></body></html>"#;
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
 
   let a_url = "https://example.test/a.css";
   let b_url = "https://example.test/b.css";
@@ -158,18 +161,29 @@ fn css_import_referrer_is_importing_stylesheet_url() {
     .find(|r| r.url == a_url && r.destination == FetchDestination::Style)
     .expect("request for a.css");
   assert_eq!(a_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    a_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 
   let b_request = requests
     .iter()
     .find(|r| r.url == b_url && r.destination == FetchDestination::Style)
     .expect("request for b.css");
   assert_eq!(b_request.referrer_url.as_deref(), Some(a_url));
+  assert_eq!(
+    b_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
 
 #[test]
 fn css_imports_use_stylesheet_final_url_for_base_and_referrer() {
   let document_url = "https://example.test/page.html";
   let html = r#"<html><head><link rel="stylesheet" href="css/a.css"></head><body></body></html>"#;
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
 
   let a_url = "https://example.test/css/a.css";
   let a_final_url = "https://example.test/assets/a-final.css";
@@ -207,12 +221,20 @@ fn css_imports_use_stylesheet_final_url_for_base_and_referrer() {
     .find(|r| r.url == a_url && r.destination == FetchDestination::Style)
     .expect("request for a.css");
   assert_eq!(a_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    a_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 
   let b_request = requests
     .iter()
     .find(|r| r.url == b_expected && r.destination == FetchDestination::Style)
     .expect("request for b.css");
   assert_eq!(b_request.referrer_url.as_deref(), Some(a_final_url));
+  assert_eq!(
+    b_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
   assert!(
     requests.iter().all(|r| r.url != b_wrong),
     "expected b.css to resolve against final_url, got requests: {requests:?}"
@@ -224,6 +246,9 @@ fn css_import_from_inline_style_uses_document_referrer_even_with_base_href() {
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let imported_url = "https://cdn.example.test/assets/import.css";
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     imported_url,
@@ -251,6 +276,10 @@ fn css_import_from_inline_style_uses_document_referrer_even_with_base_href() {
     .find(|r| r.url == imported_url && r.destination == FetchDestination::Style)
     .expect("request for imported stylesheet");
   assert_eq!(import_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    import_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
 
 #[test]
@@ -258,6 +287,9 @@ fn collect_document_stylesheet_inline_import_uses_document_referrer_even_with_ba
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let imported_url = "https://cdn.example.test/assets/import.css";
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     imported_url,
@@ -295,12 +327,19 @@ fn collect_document_stylesheet_inline_import_uses_document_referrer_even_with_ba
     .find(|r| r.url == imported_url && r.destination == FetchDestination::Style)
     .expect("request for imported stylesheet");
   assert_eq!(import_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    import_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
 
 #[test]
 fn css_imports_from_inline_style_use_imported_final_url_for_nested_referrer_and_base() {
   let document_url = "https://example.test/page.html";
   let base_href = "https://example.test/css/";
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
 
   let a_url = "https://example.test/css/a.css";
   let a_final_url = "https://cdn.example.test/assets/a-final.css";
@@ -334,12 +373,20 @@ fn css_imports_from_inline_style_use_imported_final_url_for_nested_referrer_and_
     .find(|r| r.url == a_url && r.destination == FetchDestination::Style)
     .expect("request for a.css");
   assert_eq!(a_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    a_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 
   let b_request = requests
     .iter()
     .find(|r| r.url == b_expected && r.destination == FetchDestination::Style)
     .expect("request for b.css");
   assert_eq!(b_request.referrer_url.as_deref(), Some(a_final_url));
+  assert_eq!(
+    b_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
   assert!(
     requests.iter().all(|r| r.url != b_wrong),
     "expected b.css to resolve against final_url, got requests: {requests:?}"
@@ -351,6 +398,9 @@ fn link_stylesheet_uses_document_referrer_even_with_base_href() {
   let document_url = "https://example.test/page.html";
   let base_href = "https://cdn.example.test/assets/";
   let stylesheet_url = "https://cdn.example.test/assets/style.css";
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     stylesheet_url,
@@ -378,6 +428,10 @@ fn link_stylesheet_uses_document_referrer_even_with_base_href() {
     .find(|r| r.url == stylesheet_url && r.destination == FetchDestination::Style)
     .expect("request for stylesheet");
   assert_eq!(sheet_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    sheet_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
 
 #[test]
@@ -385,6 +439,9 @@ fn inline_stylesheets_for_document_resolves_base_href_without_changing_referrer(
   let document_url = "https://example.test/page.html";
   let stylesheet_url = "https://example.test/static/style.css";
   let html = r#"<html><head><base href="static/"><link rel="stylesheet" href="style.css"></head><body></body></html>"#;
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
 
   let fetcher = Arc::new(RecordingFetcher::default().with_css(
     stylesheet_url,
@@ -416,6 +473,10 @@ fn inline_stylesheets_for_document_resolves_base_href_without_changing_referrer(
     .find(|r| r.url == stylesheet_url && r.destination == FetchDestination::Style)
     .expect("request for stylesheet");
   assert_eq!(sheet_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    sheet_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
 
 #[test]
