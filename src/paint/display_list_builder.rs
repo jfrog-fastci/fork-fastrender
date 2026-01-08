@@ -1524,12 +1524,15 @@ impl DisplayListBuilder {
       .or_else(|| self.svg_id_defs.clone());
 
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let contexts = crate::paint::stacking::build_stacking_tree_from_tree_checked_with_scroll(
+    let mut contexts = crate::paint::stacking::build_stacking_tree_from_tree_checked_with_scroll(
       tree,
       &self.scroll_state,
     )?;
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), stacking_tree_timer) {
       breakdown.record_stacking_tree(start.elapsed());
+    }
+    for context in &mut contexts {
+      context.compute_bounds(self.viewport, Some(&mut svg_filters));
     }
     let visibility = self.root_visibility();
     for context in &contexts {
@@ -1584,7 +1587,7 @@ impl DisplayListBuilder {
     }
     self.estimate_from_roots(std::iter::once(root));
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
+    let mut stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
       root,
       &self.scroll_state,
     )?;
@@ -1597,6 +1600,7 @@ impl DisplayListBuilder {
       vec![root],
       image_cache.as_ref(),
     );
+    stacking.compute_bounds(self.viewport, Some(&mut svg_filters));
     let _ = self.build_stacking_context(
       &stacking,
       Point::ZERO,
@@ -1632,21 +1636,20 @@ impl DisplayListBuilder {
     }
     self.estimate_from_roots(std::iter::once(root));
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
+    let mut stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
       root,
       &self.scroll_state,
     )?;
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), stacking_tree_timer) {
       breakdown.record_stacking_tree(start.elapsed());
     }
-    let mut svg_roots = Vec::new();
-    Self::collect_stacking_fragments(&stacking, &mut svg_roots);
     let image_cache = self.image_cache.clone();
     let mut svg_filters = SvgFilterResolver::new(
       self.svg_filter_defs.clone(),
-      svg_roots,
+      vec![root],
       image_cache.as_ref(),
     );
+    stacking.compute_bounds(self.viewport, Some(&mut svg_filters));
     let _ = self.build_stacking_context(
       &stacking,
       offset,
@@ -11769,7 +11772,7 @@ mod tests {
     root.add_child(neg);
     root.add_child(pos);
     root.sort_children();
-    root.compute_bounds(None);
+    root.compute_bounds(None, None);
 
     let list = DisplayListBuilder::new().build_from_stacking(&root);
     let origins: Vec<f32> = list

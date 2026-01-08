@@ -588,7 +588,7 @@ fn test_bounds_computation() {
   sc.layer3_blocks
     .push(block_fragment(40.0, 40.0, 60.0, 60.0));
 
-  sc.compute_bounds(None);
+  sc.compute_bounds(None, None);
 
   // Should encompass both: (0,0) to (100,100)
   assert_eq!(sc.bounds.min_x(), 0.0);

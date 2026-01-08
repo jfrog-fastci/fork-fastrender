@@ -64,6 +64,7 @@ use crate::paint::display_list::ResolvedFilter;
 use crate::paint::display_list::Transform3D;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::paint_bounds;
+use crate::paint::svg_filter::SvgFilterResolver;
 use crate::render_control::check_active_periodic;
 use crate::scroll::ScrollState;
 use crate::style::display::Display;
@@ -83,6 +84,7 @@ fn resolve_filter_outset_for_bounds(
   style: &ComputedStyle,
   bbox: Rect,
   viewport: Option<(f32, f32)>,
+  mut svg_filters: Option<&mut SvgFilterResolver>,
 ) -> Option<crate::paint::filter_outset::FilterOutset> {
   if style.filter.is_empty() {
     return None;
@@ -102,10 +104,9 @@ fn resolve_filter_outset_for_bounds(
     )
   };
 
-  let resolved_filters: Vec<ResolvedFilter> = style
-    .filter
-    .iter()
-    .filter_map(|filter| match filter {
+  let mut resolved_filters = Vec::with_capacity(style.filter.len());
+  for filter in &style.filter {
+    let resolved = match filter {
       FilterFunction::Blur(radius) => Some(ResolvedFilter::Blur(resolve_length(radius, base).max(0.0))),
       FilterFunction::Brightness(v) => Some(ResolvedFilter::Brightness(*v)),
       FilterFunction::Contrast(v) => Some(ResolvedFilter::Contrast(*v)),
@@ -129,9 +130,15 @@ fn resolve_filter_outset_for_bounds(
           color,
         })
       }
-      FilterFunction::Url(_) => None,
-    })
-    .collect();
+      FilterFunction::Url(url) => svg_filters
+        .as_deref_mut()
+        .and_then(|resolver| resolver.resolve(url))
+        .map(ResolvedFilter::SvgFilter),
+    };
+    if let Some(resolved) = resolved {
+      resolved_filters.push(resolved);
+    }
+  }
 
   if resolved_filters.is_empty() {
     return None;
@@ -493,10 +500,14 @@ impl StackingContext {
   }
 
   /// Computes bounds from all fragments in this context
-  pub fn compute_bounds(&mut self, viewport: Option<(f32, f32)>) {
+  pub fn compute_bounds(
+    &mut self,
+    viewport: Option<(f32, f32)>,
+    mut svg_filters: Option<&mut SvgFilterResolver>,
+  ) {
     // Compute child bounds first so they contribute accurately.
     for child in &mut self.children {
-      child.compute_bounds(viewport);
+      child.compute_bounds(viewport, svg_filters.as_deref_mut());
     }
 
     let mut bounds: Option<Rect> = None;
@@ -654,7 +665,9 @@ impl StackingContext {
         .fragments
         .first()
         .and_then(|fragment| fragment.style.as_deref())
-        .and_then(|style| resolve_filter_outset_for_bounds(style, rect, viewport));
+        .and_then(|style| {
+          resolve_filter_outset_for_bounds(style, rect, viewport, svg_filters.as_deref_mut())
+        });
       let child_transform = resolve_self_transform(child);
       match (child_perspective.as_ref(), child_transform.as_ref()) {
         (None, None) => {}
@@ -1076,7 +1089,7 @@ pub fn build_stacking_tree(
   context.sort_children();
 
   // Compute bounds
-  context.compute_bounds(Some((root.bounds.width(), root.bounds.height())));
+  context.compute_bounds(Some((root.bounds.width(), root.bounds.height())), None);
 
   context
 }
@@ -1281,7 +1294,7 @@ where
   );
 
   context.sort_children();
-  context.compute_bounds(viewport);
+  context.compute_bounds(viewport, None);
   context
 }
 
@@ -1313,7 +1326,7 @@ where
   )?;
 
   context.sort_children();
-  context.compute_bounds(viewport);
+  context.compute_bounds(viewport, None);
   Ok(context)
 }
 
@@ -2753,7 +2766,7 @@ mod tests {
     sc.layer3_blocks
       .push(create_block_fragment(40.0, 40.0, 60.0, 60.0));
 
-    sc.compute_bounds(None);
+    sc.compute_bounds(None, None);
 
     // Should encompass both fragments: (0,0) to (100, 100)
     assert_eq!(sc.bounds.min_x(), 0.0);
@@ -2800,7 +2813,7 @@ mod tests {
     );
     sc.layer3_blocks.push(wrapper);
 
-    sc.compute_bounds(None);
+    sc.compute_bounds(None, None);
 
     // Inner box-shadow spreads 10px in all directions, so bounds should cover 30..70 in both axes
     // after applying the stacking context offset.
@@ -2864,7 +2877,7 @@ mod tests {
       .layer6_positioned
       .push(OrderedFragment::new(translated, 0));
 
-    sc.compute_bounds(None);
+    sc.compute_bounds(None, None);
 
     assert_eq!(sc.bounds, Rect::from_xywh(35.0, 35.0, 40.0, 40.0));
   }
@@ -2878,7 +2891,7 @@ mod tests {
       .push(create_block_fragment(0.0, 0.0, 5.0, 5.0));
 
     parent.children.push(child);
-    parent.compute_bounds(None);
+    parent.compute_bounds(None, None);
 
     assert_eq!(parent.bounds, Rect::from_xywh(0.0, 0.0, 5.0, 5.0));
   }
@@ -2893,7 +2906,7 @@ mod tests {
       .push(create_block_fragment(0.0, 0.0, 10.0, 10.0));
 
     parent.children.push(child);
-    parent.compute_bounds(None);
+    parent.compute_bounds(None, None);
 
     assert_eq!(parent.bounds, Rect::from_xywh(5.0, 5.0, 10.0, 10.0));
   }
@@ -2913,7 +2926,7 @@ mod tests {
       .push(create_block_fragment(0.0, 0.0, 100.0, 10.0));
 
     parent.children.push(child);
-    parent.compute_bounds(None);
+    parent.compute_bounds(None, None);
 
     assert_eq!(parent.bounds, Rect::from_xywh(50.0, 50.0, 110.0, 20.0));
   }
@@ -2948,7 +2961,7 @@ mod tests {
     child.fragments.push(child_fragment);
 
     parent.children.push(child);
-    parent.compute_bounds(None);
+    parent.compute_bounds(None, None);
 
     assert_eq!(parent.bounds, Rect::from_xywh(0.0, 0.0, 200.0, 40.0));
   }
