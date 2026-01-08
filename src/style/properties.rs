@@ -5969,6 +5969,8 @@ pub(crate) fn apply_property_from_source(
       styles.animation_fill_modes = source.animation_fill_modes.clone();
       styles.animation_play_states = source.animation_play_states.clone();
       styles.animation_compositions = source.animation_compositions.clone();
+      styles.animation_timelines = source.animation_timelines.clone();
+      styles.animation_ranges = source.animation_ranges.clone();
     }
     "scroll-padding" => {
       styles.scroll_padding_top = source.scroll_padding_top;
