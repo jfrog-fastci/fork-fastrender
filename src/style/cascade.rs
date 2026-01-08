@@ -2109,6 +2109,16 @@ fn parse_numeric_value(
     }
   }
 
+  // Number math functions (`calc()`, `min()`, `max()`, `clamp()`, etc).
+  if let Some(num) = crate::css::properties::parse_function_number(resolved) {
+    if num.is_finite() {
+      return Some(NumericValue {
+        ty: NumericType::Number,
+        value: num,
+      });
+    }
+  }
+
   // Percentage.
   if let Some(percent) = resolved.strip_suffix('%') {
     if let Ok(num) = percent.trim().parse::<f32>() {

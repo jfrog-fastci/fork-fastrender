@@ -5847,7 +5847,7 @@ fn parse_function_number_slow_path_calls() -> u32 {
   PARSE_FUNCTION_NUMBER_SLOW_PATH_CALLS.with(|calls| calls.get())
 }
 
-fn parse_function_number(input: &str) -> Option<f32> {
+pub(crate) fn parse_function_number(input: &str) -> Option<f32> {
   let input = input.trim();
   if input.is_empty() {
     return None;
