@@ -13546,13 +13546,16 @@ fn length_from_value(value: &PropertyValue) -> Option<Length> {
 
 fn parse_flex_shorthand(value: &PropertyValue) -> Option<(f32, f32, FlexBasis)> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "none" => return Some((0.0, 0.0, FlexBasis::Auto)),
-      "auto" => return Some((1.0, 1.0, FlexBasis::Auto)),
-      "content" => return Some((1.0, 1.0, FlexBasis::Content)),
-      "initial" => return Some((0.0, 1.0, FlexBasis::Auto)),
-      _ => {}
-    },
+    PropertyValue::Keyword(kw) => {
+      let kw = kw.to_ascii_lowercase();
+      match kw.as_str() {
+        "none" => return Some((0.0, 0.0, FlexBasis::Auto)),
+        "auto" => return Some((1.0, 1.0, FlexBasis::Auto)),
+        "content" => return Some((1.0, 1.0, FlexBasis::Content)),
+        "initial" => return Some((0.0, 1.0, FlexBasis::Auto)),
+        _ => {}
+      }
+    }
     PropertyValue::Number(n) if n.is_finite() && *n >= 0.0 => {
       return Some((
         *n,
@@ -13588,9 +13591,9 @@ fn parse_flex_shorthand(value: &PropertyValue) -> Option<(f32, f32, FlexBasis)> 
             // Negative grow/shrink values make the declaration invalid.
             return None;
           }
-          PropertyValue::Keyword(kw) if kw == "auto" || kw == "content" => {
+          PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") || kw.eq_ignore_ascii_case("content") => {
             if basis.is_none() {
-              basis = Some(if kw == "auto" {
+              basis = Some(if kw.eq_ignore_ascii_case("auto") {
                 FlexBasis::Auto
               } else {
                 FlexBasis::Content
@@ -19058,26 +19061,29 @@ fn parse_text_transform(value: &PropertyValue) -> Option<TextTransform> {
 
 fn parse_list_style_type(value: &PropertyValue) -> Option<ListStyleType> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "disc" => Some(ListStyleType::Disc),
-      "circle" => Some(ListStyleType::Circle),
-      "square" => Some(ListStyleType::Square),
-      "decimal" => Some(ListStyleType::Decimal),
-      "decimal-leading-zero" => Some(ListStyleType::DecimalLeadingZero),
-      "lower-roman" => Some(ListStyleType::LowerRoman),
-      "upper-roman" => Some(ListStyleType::UpperRoman),
-      "lower-alpha" | "lower-latin" => Some(ListStyleType::LowerAlpha),
-      "upper-alpha" | "upper-latin" => Some(ListStyleType::UpperAlpha),
-      "armenian" | "upper-armenian" => Some(ListStyleType::Armenian),
-      "lower-armenian" => Some(ListStyleType::LowerArmenian),
-      "georgian" => Some(ListStyleType::Georgian),
-      "lower-greek" => Some(ListStyleType::LowerGreek),
-      "disclosure-open" => Some(ListStyleType::DisclosureOpen),
-      "disclosure-closed" => Some(ListStyleType::DisclosureClosed),
-      "none" => Some(ListStyleType::None),
-      _ if kw.contains('(') => None,
-      _ => Some(ListStyleType::Custom(kw.to_ascii_lowercase())),
-    },
+    PropertyValue::Keyword(kw) => {
+      let lower = kw.to_ascii_lowercase();
+      match lower.as_str() {
+        "disc" => Some(ListStyleType::Disc),
+        "circle" => Some(ListStyleType::Circle),
+        "square" => Some(ListStyleType::Square),
+        "decimal" => Some(ListStyleType::Decimal),
+        "decimal-leading-zero" => Some(ListStyleType::DecimalLeadingZero),
+        "lower-roman" => Some(ListStyleType::LowerRoman),
+        "upper-roman" => Some(ListStyleType::UpperRoman),
+        "lower-alpha" | "lower-latin" => Some(ListStyleType::LowerAlpha),
+        "upper-alpha" | "upper-latin" => Some(ListStyleType::UpperAlpha),
+        "armenian" | "upper-armenian" => Some(ListStyleType::Armenian),
+        "lower-armenian" => Some(ListStyleType::LowerArmenian),
+        "georgian" => Some(ListStyleType::Georgian),
+        "lower-greek" => Some(ListStyleType::LowerGreek),
+        "disclosure-open" => Some(ListStyleType::DisclosureOpen),
+        "disclosure-closed" => Some(ListStyleType::DisclosureClosed),
+        "none" => Some(ListStyleType::None),
+        _ if kw.contains('(') => None,
+        _ => Some(ListStyleType::Custom(lower)),
+      }
+    }
     PropertyValue::String(s) => Some(ListStyleType::String(s.clone())),
     _ => None,
   }
@@ -19085,11 +19091,15 @@ fn parse_list_style_type(value: &PropertyValue) -> Option<ListStyleType> {
 
 fn parse_list_style_position(value: &PropertyValue) -> Option<ListStylePosition> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "inside" => Some(ListStylePosition::Inside),
-      "outside" => Some(ListStylePosition::Outside),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("inside") {
+        Some(ListStylePosition::Inside)
+      } else if kw.eq_ignore_ascii_case("outside") {
+        Some(ListStylePosition::Outside)
+      } else {
+        None
+      }
+    }
     _ => None,
   }
 }
@@ -19437,7 +19447,8 @@ fn parse_border_side_shorthand(
 }
 
 pub fn parse_border_style(kw: &str) -> BorderStyle {
-  match kw {
+  let kw = kw.to_ascii_lowercase();
+  match kw.as_str() {
     "none" => BorderStyle::None,
     "hidden" => BorderStyle::Hidden,
     "solid" => BorderStyle::Solid,
@@ -19453,7 +19464,8 @@ pub fn parse_border_style(kw: &str) -> BorderStyle {
 }
 
 fn parse_outline_style(kw: &str) -> Option<OutlineStyle> {
-  match kw {
+  let kw = kw.to_ascii_lowercase();
+  match kw.as_str() {
     "none" => Some(OutlineStyle::None),
     "hidden" => Some(OutlineStyle::Hidden),
     "solid" => Some(OutlineStyle::Solid),
@@ -19472,12 +19484,17 @@ fn parse_outline_style(kw: &str) -> Option<OutlineStyle> {
 fn parse_outline_width(value: &PropertyValue) -> Option<Length> {
   match value {
     PropertyValue::Length(l) if l.value >= 0.0 => Some(*l),
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "thin" => Some(Length::px(1.0)),
-      "medium" => Some(Length::px(3.0)),
-      "thick" => Some(Length::px(5.0)),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("thin") {
+        Some(Length::px(1.0))
+      } else if kw.eq_ignore_ascii_case("medium") {
+        Some(Length::px(3.0))
+      } else if kw.eq_ignore_ascii_case("thick") {
+        Some(Length::px(5.0))
+      } else {
+        None
+      }
+    }
     PropertyValue::Number(n) if *n >= 0.0 => Some(Length::px(*n)),
     _ => None,
   }
@@ -19543,11 +19560,8 @@ fn apply_outline_shorthand(
           style = Some(parsed_style);
           continue;
         }
-        match kw.as_str() {
-          "thin" | "medium" | "thick" => {
-            width = parse_outline_width(&PropertyValue::Keyword(kw.clone()));
-          }
-          _ => {}
+        if width.is_none() {
+          width = parse_outline_width(&PropertyValue::Keyword(kw.clone()));
         }
       }
       PropertyValue::Length(_) | PropertyValue::Number(_) => {
