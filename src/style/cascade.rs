@@ -7300,7 +7300,30 @@ impl<'a> RuleIndex<'a> {
     selector_metadata_matches_node(metadata, node, summary, quirks_mode)
   }
 
-  fn new(rules: Vec<CascadeRule<'a>>, quirks_mode: QuirksMode) -> Self {
+  fn new(rules: Vec<CascadeRule<'a>>, quirks_mode: QuirksMode) -> Result<Self, RenderError> {
+    fn alloc_failed() -> RenderError {
+      RenderError::PaintFailed {
+        operation: "rule index allocation failed".to_string(),
+      }
+    }
+
+    fn push_cache_entry<T>(entries: &mut Vec<T>, entry: T) -> Result<u32, RenderError> {
+      if entries.len() >= u32::MAX as usize {
+        // Cache ids are stored as `u32` with `0` reserved as "no cache entry". If we can't
+        // represent another id, drop the entry and fall back to the slower paths.
+        return Ok(0);
+      }
+      entries.try_reserve(1).map_err(|_| alloc_failed())?;
+      entries.push(entry);
+      Ok(entries.len() as u32)
+    }
+
+    fn selector_index(selector_idx: usize) -> Result<SelectorIndex, RenderError> {
+      u32::try_from(selector_idx).map_err(|_| RenderError::PaintFailed {
+        operation: "too many selectors to index".to_string(),
+      })
+    }
+
     let mut index = RuleIndex {
       // Keep the caller-provided rule Vec rather than moving each rule into a second Vec.
       // These lists can be extremely large on real pages, and the extra allocation/moves show up
@@ -7327,7 +7350,10 @@ impl<'a> RuleIndex<'a> {
       part_lookup: SelectorBucketMap::default(),
     };
 
-    index.rule_sets_content.reserve(index.rules.len());
+    index
+      .rule_sets_content
+      .try_reserve_exact(index.rules.len())
+      .map_err(|_| alloc_failed())?;
 
     let mut selector_key_analyses: Vec<SelectorKeyAnalysis> = Vec::new();
     let mut selector_key_frequencies: FxHashMap<SelectorKey, usize> = FxHashMap::default();
@@ -7358,13 +7384,15 @@ impl<'a> RuleIndex<'a> {
       // fingerprints in that common case.
       let needs_dedup = selectors.len() > 1;
       let use_linear_dedup = selectors.len() <= SELECTOR_DEDUP_LINEAR_LIMIT;
-      let mut seen_linear: Vec<SelectorDedupKey<'a>> =
-        Vec::with_capacity(selectors.len().min(SELECTOR_DEDUP_LINEAR_LIMIT));
+      let mut seen_linear: Vec<SelectorDedupKey<'a>> = Vec::new();
+      seen_linear
+        .try_reserve_exact(selectors.len().min(SELECTOR_DEDUP_LINEAR_LIMIT))
+        .map_err(|_| alloc_failed())?;
       let mut seen_set: Option<FxHashSet<SelectorDedupKey<'a>>> = needs_dedup
         .then(|| (!use_linear_dedup).then(FxHashSet::default))
         .flatten();
       if let Some(set) = seen_set.as_mut() {
-        set.reserve(selectors.len());
+        set.try_reserve(selectors.len()).map_err(|_| alloc_failed())?;
       }
 
       for selector in selectors.iter() {
@@ -7395,9 +7423,7 @@ impl<'a> RuleIndex<'a> {
               .and_then(|sel| selector_rightmost_compound_fast_reject(sel, quirks_mode))
             {
               Some(desc) => {
-                index.fast_rejects.push(desc);
-                u32::try_from(index.fast_rejects.len())
-                  .expect("selector fast-reject cache overflow")
+                push_cache_entry(&mut index.fast_rejects, desc)?
               }
               None => 0,
             };
@@ -7410,13 +7436,12 @@ impl<'a> RuleIndex<'a> {
             };
             let args_fast_reject = match pe {
               PseudoElement::Slotted(args) => {
-                let mut out: Vec<u32> = Vec::with_capacity(args.len());
+                let mut out: Vec<u32> = Vec::new();
+                out.try_reserve_exact(args.len()).map_err(|_| alloc_failed())?;
                 for sel in args.iter() {
                   let id = match selector_rightmost_compound_fast_reject(sel, quirks_mode) {
                     Some(desc) => {
-                      index.fast_rejects.push(desc);
-                      u32::try_from(index.fast_rejects.len())
-                        .expect("selector fast-reject cache overflow")
+                      push_cache_entry(&mut index.fast_rejects, desc)?
                     }
                     None => 0,
                   };
@@ -7437,8 +7462,7 @@ impl<'a> RuleIndex<'a> {
             let metadata_id = if metadata.is_empty() {
               0
             } else {
-              index.metadatas.push(metadata);
-              u32::try_from(index.metadatas.len()).expect("selector metadata cache overflow")
+              push_cache_entry(&mut index.metadatas, metadata)?
             };
             index.slotted_selectors.push(IndexedSlottedSelector {
               rule_idx,
@@ -7487,14 +7511,12 @@ impl<'a> RuleIndex<'a> {
           let metadata_id = if metadata.is_empty() {
             0
           } else {
-            index.metadatas.push(metadata);
-            u32::try_from(index.metadatas.len()).expect("selector metadata cache overflow")
+            push_cache_entry(&mut index.metadatas, metadata)?
           };
           let ancestor_hashes = cascade_ancestor_hashes(selector, quirks_mode);
           let fast_reject = match pseudo_selector_subject_fast_reject(selector, quirks_mode) {
             Some(desc) => {
-              index.fast_rejects.push(desc);
-              u32::try_from(index.fast_rejects.len()).expect("selector fast-reject cache overflow")
+              push_cache_entry(&mut index.fast_rejects, desc)?
             }
             None => 0,
           };
@@ -7533,14 +7555,12 @@ impl<'a> RuleIndex<'a> {
         let metadata_id = if metadata.is_empty() {
           0
         } else {
-          index.metadatas.push(metadata);
-          u32::try_from(index.metadatas.len()).expect("selector metadata cache overflow")
+          push_cache_entry(&mut index.metadatas, metadata)?
         };
         let ancestor_hashes = cascade_ancestor_hashes(selector, quirks_mode);
         let fast_reject = match selector_rightmost_compound_fast_reject(selector, quirks_mode) {
           Some(desc) => {
-            index.fast_rejects.push(desc);
-            u32::try_from(index.fast_rejects.len()).expect("selector fast-reject cache overflow")
+            push_cache_entry(&mut index.fast_rejects, desc)?
           }
           None => 0,
         };
@@ -7566,7 +7586,7 @@ impl<'a> RuleIndex<'a> {
     }
 
     for (selector_idx, analysis) in selector_key_analyses.iter().enumerate() {
-      let selector_idx = u32::try_from(selector_idx).expect("selector bucket index overflow");
+      let selector_idx = selector_index(selector_idx)?;
       if !analysis.mandatory_keys.is_empty() {
         let anchor = choose_anchor_key(
           &analysis.mandatory_keys,
@@ -7622,7 +7642,7 @@ impl<'a> RuleIndex<'a> {
     }
 
     for (selector_idx, (pseudo, analysis)) in pseudo_key_analyses.iter().enumerate() {
-      let selector_idx = u32::try_from(selector_idx).expect("selector bucket index overflow");
+      let selector_idx = selector_index(selector_idx)?;
       let Some(freq) = pseudo_key_frequencies.get(pseudo) else {
         continue;
       };
@@ -7690,7 +7710,7 @@ impl<'a> RuleIndex<'a> {
     }
 
     for (selector_idx, arg_analyses) in slotted_arg_key_analyses.iter().enumerate() {
-      let selector_idx = u32::try_from(selector_idx).expect("selector bucket index overflow");
+      let selector_idx = selector_index(selector_idx)?;
       let mut keys: Vec<SelectorKey> = Vec::new();
       for analysis in arg_analyses.iter() {
         if !analysis.mandatory_keys.is_empty() {
@@ -7750,10 +7770,10 @@ impl<'a> RuleIndex<'a> {
       }
     }
 
-    index.build_part_index();
+    index.build_part_index()?;
     index.sort_selector_buckets();
 
-    index
+    Ok(index)
   }
 
   fn sort_selector_buckets(&mut self) {
@@ -7826,12 +7846,18 @@ impl<'a> RuleIndex<'a> {
     self.pseudo_buckets.contains_key(pseudo)
   }
 
-  fn build_part_index(&mut self) {
-    let mut part_pseudo_keys: Vec<&PseudoElement> = self
-      .pseudo_buckets
-      .keys()
-      .filter(|pseudo| matches!(pseudo, PseudoElement::Part(_)))
-      .collect();
+  fn build_part_index(&mut self) -> Result<(), RenderError> {
+    let mut part_pseudo_keys: Vec<&PseudoElement> = Vec::new();
+    part_pseudo_keys
+      .try_reserve_exact(self.pseudo_buckets.len())
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "rule index allocation failed".to_string(),
+      })?;
+    for pseudo in self.pseudo_buckets.keys() {
+      if matches!(pseudo, PseudoElement::Part(_)) {
+        part_pseudo_keys.push(pseudo);
+      }
+    }
     part_pseudo_keys.sort_unstable_by(|a, b| {
       let PseudoElement::Part(a_names) = *a else {
         unreachable!("build_part_index only sorts ::part pseudos")
@@ -7851,6 +7877,12 @@ impl<'a> RuleIndex<'a> {
       a_names.len().cmp(&b_names.len())
     });
 
+    self
+      .part_pseudos
+      .try_reserve(part_pseudo_keys.len())
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "rule index allocation failed".to_string(),
+      })?;
     for pseudo in part_pseudo_keys {
       let PseudoElement::Part(required) = pseudo else {
         continue;
@@ -7861,9 +7893,20 @@ impl<'a> RuleIndex<'a> {
       });
       for name in required.iter() {
         let key = selector_bucket_part(name.as_str());
-        self.part_lookup.entry(key).or_default().push(idx);
+        self
+          .part_lookup
+          .try_reserve(1)
+          .map_err(|_| RenderError::PaintFailed {
+            operation: "rule index allocation failed".to_string(),
+          })?;
+        let list = self.part_lookup.entry(key).or_default();
+        list.try_reserve(1).map_err(|_| RenderError::PaintFailed {
+          operation: "rule index allocation failed".to_string(),
+        })?;
+        list.push(idx);
       }
     }
+    Ok(())
   }
 
   fn selector_candidates(
@@ -8932,7 +8975,7 @@ impl<'a, 'dom> SelectorCandidateBench<'a, 'dom> {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, quirks_mode);
+    let index = RuleIndex::new(rules, quirks_mode)?;
     let selector_count = index.selectors.len();
 
     let id_map = enumerate_dom_ids(dom);
@@ -9916,7 +9959,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
       })
       .collect(),
     quirks_mode,
-  );
+  )?;
 
   let document_author_index = RuleIndex::new(
     author_rules
@@ -9936,7 +9979,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
       })
       .collect(),
     quirks_mode,
-  );
+  )?;
 
   let mut shadow_indices: HashMap<usize, RuleIndex<'_>> = HashMap::new();
   let mut shadow_host_indices: HashMap<usize, RuleIndex<'_>> = HashMap::new();
@@ -9983,9 +10026,9 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
       rules.push(cascade_rule);
     }
 
-    shadow_indices.insert(*host, RuleIndex::new(rules, quirks_mode));
+    shadow_indices.insert(*host, RuleIndex::new(rules, quirks_mode)?);
     if !host_rules.is_empty() {
-      shadow_host_indices.insert(*host, RuleIndex::new(host_rules, quirks_mode));
+      shadow_host_indices.insert(*host, RuleIndex::new(host_rules, quirks_mode)?);
     }
   }
 
@@ -10036,7 +10079,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
             .intern_shadow_host_prefixed(template.layer_order.as_ref(), host_tree_scope_prefix);
           rules.push(rule);
         }
-        shadow_host_indices.insert(host_id, RuleIndex::new(rules, quirks_mode));
+        shadow_host_indices.insert(host_id, RuleIndex::new(rules, quirks_mode)?);
       }
     }
   }
@@ -10444,7 +10487,7 @@ impl<'a> PreparedCascade<'a> {
         })
         .collect(),
       quirks_mode,
-    );
+    )?;
 
     let document_author_index = RuleIndex::new(
       document_rules
@@ -10464,7 +10507,7 @@ impl<'a> PreparedCascade<'a> {
         })
         .collect(),
       quirks_mode,
-    );
+    )?;
 
     let mut shadow_indices: HashMap<usize, RuleIndex<'a>> = HashMap::new();
     let mut shadow_host_indices: HashMap<usize, RuleIndex<'a>> = HashMap::new();
@@ -10514,9 +10557,9 @@ impl<'a> PreparedCascade<'a> {
         rules.push(cascade_rule);
       }
 
-      shadow_indices.insert(*host, RuleIndex::new(rules, quirks_mode));
+      shadow_indices.insert(*host, RuleIndex::new(rules, quirks_mode)?);
       if !host_rules.is_empty() {
-        shadow_host_indices.insert(*host, RuleIndex::new(host_rules, quirks_mode));
+        shadow_host_indices.insert(*host, RuleIndex::new(host_rules, quirks_mode)?);
       }
     }
 
@@ -14443,7 +14486,7 @@ mod tests {
         })
         .collect();
 
-      let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+      let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
       let part_names: Vec<&str> = index
         .part_pseudos
         .iter()
@@ -14712,7 +14755,7 @@ mod tests {
         starting_style: rule.starting_style,
       })
       .collect();
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
 
     let node = DomNode {
       node_type: DomNodeType::Element {
@@ -14785,7 +14828,7 @@ mod tests {
         starting_style: rule.starting_style,
       })
       .collect();
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
 
     let node = DomNode {
       node_type: DomNodeType::Element {
@@ -15686,7 +15729,7 @@ mod tests {
           starting_style: rule.starting_style,
         })
         .collect();
-      let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+      let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
 
       // Build selector bloom summaries when :has pruning is in play.
       if index.has_has_requirements {
@@ -17760,7 +17803,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let class_bucket_len = index
       .by_class
@@ -17795,7 +17838,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
 
     let count_bucket_occurrences = |map: &SelectorBucketMap<SelectorIndexList>| -> usize {
@@ -17873,7 +17916,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
 
     assert_eq!(
@@ -17954,7 +17997,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
 
     // This selector has no mandatory anchor key, so it should be indexed under both candidates.
@@ -18043,7 +18086,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 2);
 
     let node = DomNode {
@@ -18109,7 +18152,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 2);
 
     // The selector list is parsed as `div` then `.foo`. They share a rule_idx; ordering should
@@ -18177,7 +18220,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
 
     // This selector has no mandatory key, so it is indexed under all keys discovered in the `:is`
@@ -18269,7 +18312,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 3);
 
     // The selector list is parsed as `div` then `.foo`. They share a rule_idx; ordering should
@@ -18346,7 +18389,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 5);
 
     // This element hits 3 class buckets + tag + universal, so the candidate collection path must
@@ -18414,7 +18457,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
 
     let node = DomNode {
@@ -18491,7 +18534,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.slotted_selectors.len(), 1);
 
     let node = DomNode {
@@ -18578,7 +18621,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 9);
 
     let node = DomNode {
@@ -18660,7 +18703,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.slotted_selectors.len(), 9);
 
     let node = DomNode {
@@ -18729,7 +18772,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
 
     assert_eq!(
@@ -18810,7 +18853,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     assert!(
       index.universal.is_empty(),
@@ -18903,7 +18946,7 @@ mod tests {
         starting_style: rule.starting_style,
       })
       .collect();
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 2);
 
     let key_a = selector_bucket_attr_value("data-test", "a");
@@ -19043,7 +19086,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     assert!(
       index.universal.is_empty(),
@@ -19157,7 +19200,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
 
     use selectors::parser::Component;
     let host_selector_idx = u32::try_from(
@@ -19224,7 +19267,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let fast_reject_id = index.selectors[0].fast_reject;
     assert_ne!(
@@ -19301,7 +19344,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let fast_reject_id = index.selectors[0].fast_reject;
     assert_ne!(
@@ -19378,7 +19421,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let fast_reject_id = index.selectors[0].fast_reject;
     assert_ne!(
@@ -19455,7 +19498,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let fast_reject_id = index.selectors[0].fast_reject;
     assert_ne!(
@@ -19532,7 +19575,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let fast_reject_id = index.selectors[0].fast_reject;
     assert_ne!(
@@ -19609,7 +19652,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let fast_reject_id = index.selectors[0].fast_reject;
     assert_ne!(
@@ -19711,7 +19754,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let fast_reject_id = index.selectors[0].fast_reject;
     assert_ne!(
@@ -19788,7 +19831,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     let fast_reject_id = index.selectors[0].fast_reject;
     assert_ne!(
@@ -19888,7 +19931,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     assert!(
       index.universal.is_empty(),
@@ -19982,7 +20025,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.pseudo_selectors.len(), 1);
 
     let before_bucket = index
@@ -20081,7 +20124,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.pseudo_selectors.len(), 2);
 
     let before_bucket = index
@@ -20180,7 +20223,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.selectors.len(), 1);
     assert_eq!(index.root.as_slice(), &[0]);
     assert!(index.universal.is_empty());
@@ -20262,7 +20305,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.pseudo_selectors.len(), 1);
     let before_bucket = index
       .pseudo_buckets
@@ -20345,7 +20388,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.pseudo_selectors.len(), 1);
   }
 
@@ -20374,7 +20417,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(index.slotted_selectors.len(), 1);
   }
 
@@ -20598,7 +20641,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert!(index.by_id.contains_key(&selector_bucket_id("Foo")));
     assert!(index.by_id.contains_key(&selector_bucket_id("foo")));
     assert!(index.by_class.contains_key(&selector_bucket_class("Bar")));
@@ -20743,7 +20786,7 @@ mod tests {
         starting_style: rule.starting_style,
       })
       .collect();
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
 
     let node = DomNode {
       node_type: DomNodeType::Element {
@@ -20903,7 +20946,7 @@ mod tests {
       })
       .collect();
 
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
 
     let pseudo = PseudoElement::Before;
     for (node_id, node) in [(1usize, &dom), (2usize, &dom.children[0])] {
@@ -21070,7 +21113,7 @@ mod tests {
         starting_style: rule.starting_style,
       })
       .collect();
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert!(index.has_has_requirements);
 
     let mut candidates: Vec<SelectorIndex> = Vec::new();
@@ -21138,7 +21181,7 @@ mod tests {
         starting_style: rule.starting_style,
       })
       .collect();
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert!(!index.has_has_requirements);
 
     let mut candidates: Vec<SelectorIndex> = Vec::new();
@@ -21206,7 +21249,7 @@ mod tests {
         starting_style: rule.starting_style,
       })
       .collect();
-    let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+    let index = RuleIndex::new(rules, QuirksMode::NoQuirks).expect("rule index");
     assert!(!index.has_has_requirements);
 
     let mut candidates: Vec<SelectorIndex> = Vec::new();
@@ -27312,7 +27355,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         }
       })
       .collect();
-    let rule_index = RuleIndex::new(rule_refs, QuirksMode::NoQuirks);
+    let rule_index = RuleIndex::new(rule_refs, QuirksMode::NoQuirks).expect("rule index");
     assert_eq!(
       rule_index.rules.len(),
       1,
