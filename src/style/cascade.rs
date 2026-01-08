@@ -2415,6 +2415,38 @@ fn eval_style_range_value(
       "scroll-margin-inline-end" => scroll_margin_for_side(inline_sides.1),
       "scroll-margin-block-start" => scroll_margin_for_side(block_sides.0),
       "scroll-margin-block-end" => scroll_margin_for_side(block_sides.1),
+      "border-width" => {
+        let top = border_width_for_side(crate::style::PhysicalSide::Top)?;
+        let right = border_width_for_side(crate::style::PhysicalSide::Right)?;
+        let bottom = border_width_for_side(crate::style::PhysicalSide::Bottom)?;
+        let left = border_width_for_side(crate::style::PhysicalSide::Left)?;
+        let equals = |a: NumericValue, b: NumericValue| -> bool {
+          a.ty == b.ty && (a.value - b.value).abs() < 1e-6
+        };
+        if equals(top, right) && equals(top, bottom) && equals(top, left) {
+          Some(top)
+        } else {
+          None
+        }
+      }
+      "border-inline-width" => {
+        let start = border_width_for_side(inline_sides.0)?;
+        let end = border_width_for_side(inline_sides.1)?;
+        if start.ty == end.ty && (start.value - end.value).abs() < 1e-6 {
+          Some(start)
+        } else {
+          None
+        }
+      }
+      "border-block-width" => {
+        let start = border_width_for_side(block_sides.0)?;
+        let end = border_width_for_side(block_sides.1)?;
+        if start.ty == end.ty && (start.value - end.value).abs() < 1e-6 {
+          Some(start)
+        } else {
+          None
+        }
+      }
       "border-top-width" => length_to_numeric(&styles.border_top_width, container, ctx),
       "border-right-width" => length_to_numeric(&styles.border_right_width, container, ctx),
       "border-bottom-width" => length_to_numeric(&styles.border_bottom_width, container, ctx),
