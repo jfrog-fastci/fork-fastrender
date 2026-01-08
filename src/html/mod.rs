@@ -245,6 +245,15 @@ pub fn strip_template_contents(html: &str) -> Cow<'_, str> {
 /// Returns `None` when no `<base>` is present or the element is missing an
 /// `href` attribute.
 pub fn find_base_href(dom: &DomNode) -> Option<String> {
+  // HTML's "strip leading and trailing ASCII whitespace" step only considers TAB/LF/FF/CR/SPACE.
+  // Avoid `str::trim()` here because it removes non-ASCII whitespace like NBSP (U+00A0), which
+  // should be preserved and percent-encoded by URL parsing.
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    })
+  }
+
   fn find_head(root: &DomNode) -> Option<&DomNode> {
     let mut stack: Vec<&DomNode> = vec![root];
     while let Some(node) = stack.pop() {
@@ -291,7 +300,7 @@ pub fn find_base_href(dom: &DomNode) -> Option<String> {
         && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
       {
         if let Some(href) = node.get_attribute_ref("href") {
-          let trimmed = href.trim();
+          let trimmed = trim_ascii_whitespace(href);
           if !trimmed.is_empty() && !trimmed.starts_with('#') {
             return Some(trimmed.to_string());
           }
@@ -588,6 +597,19 @@ mod tests {
     assert_eq!(
       document_base_url(&dom, None),
       Some("https://cdn.example.com/static/".to_string())
+    );
+  }
+
+  #[test]
+  fn document_base_url_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      "<html><head><base href=\"https://cdn.example.com/static/{nbsp}\"></head></html>"
+    );
+    let dom = parse_html(&html).unwrap();
+    assert_eq!(
+      document_base_url(&dom, None),
+      Some("https://cdn.example.com/static/%C2%A0".to_string())
     );
   }
 
