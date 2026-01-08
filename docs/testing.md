@@ -222,6 +222,8 @@ The standalone workflow (`cargo xtask capture-accuracy-fixtures`) is also availa
 
 When working on JavaScript parsing (via the `engines/ecma-rs` submodule), the repository provides an **optional** GitHub Actions workflow that runs the `test262` parser harness and uploads a JSON report artifact:
 
+- Local workflow: see [js_test262_parser.md](js_test262_parser.md) (`cargo xtask js test262-parser`).
+
 - Workflow: `.github/workflows/test262_parser.yml`
 - Artifact: `test262_parser_report`
 - Report path inside the artifact: `target/js/test262-parser.json`

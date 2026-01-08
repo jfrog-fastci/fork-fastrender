@@ -29,6 +29,15 @@ From the FastRender repo root:
 cargo xtask js test262
 ```
 
+`cargo xtask js test262` is a thin wrapper over the **ecma-rs**
+[`test262-semantic`](../engines/ecma-rs/test262-semantic/README.md) runner. It forwards the actual
+test execution/reporting to the submodule and pins the corpus directory via:
+`--test262-dir engines/ecma-rs/test262-semantic/data`.
+
+Note: the `engines/ecma-rs` submodule does not commit a `Cargo.lock`, so the child `cargo run -p
+test262-semantic ...` invocation is intentionally **not** run with `--locked` (even if you run the
+top-level xtask with `--locked`).
+
 By default, the runner writes a JSON report to:
 
 ```
@@ -44,6 +53,7 @@ flags we use the most).
   - Select which preset suite to run (the default is the curated suite).
 - `--manifest <PATH>`
   - Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.
+  - When omitted, xtask defaults to: `tests/js/test262_semantic_expectations.toml`.
 - `--shard <index>/<total>`
   - Run a deterministic shard of the corpus (0-based index).
   - Example: `--shard 0/8` to run the first shard out of 8.
@@ -60,8 +70,9 @@ flags we use the most).
 The suite contains tests with an **expected outcome**. The runner records the **actual outcome**
 and marks the test as a **mismatch** when they disagree.
 
-The expectations manifest (passed via `--manifest`, or the default suite manifest) is how we track
-known gaps without hiding regressions:
+The expectations manifest (passed via `--manifest`, or defaulting to
+`tests/js/test262_semantic_expectations.toml`) is how we track known gaps without hiding
+regressions:
 
 - **Unexpected mismatch**: not covered by the manifest.
   - Treat this as either a regression or a newly-discovered conformance issue.
@@ -75,4 +86,3 @@ known gaps without hiding regressions:
 
 If a test was previously marked `xfail` but now matches the expected outcome (an “xpass”), consider
 removing or narrowing the corresponding manifest entry so future regressions aren’t hidden.
-
