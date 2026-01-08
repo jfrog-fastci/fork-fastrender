@@ -2683,7 +2683,12 @@ fn collect_forced_boundaries_with_axes_internal(
       if idx == 0 && is_forced_page_break(child_style.break_before) {
         if idx >= grid_item_count {
           forced.push(ForcedBoundary {
-            position: child_abs_start,
+            // Forced breaks before the first in-flow child are treated as applying at the start of
+            // the containing block. This matches the CSS Break requirement to suppress leading
+            // blank pages: a `break-before` on the first element should influence the initial page
+            // side without carving out an empty fragmentainer slice when the element is offset by
+            // padding or similar.
+            position: abs_start,
             page_side: break_side_hint(child_style.break_before, page_progression_is_ltr),
           });
         }

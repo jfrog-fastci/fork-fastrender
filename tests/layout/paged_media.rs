@@ -2321,6 +2321,42 @@ fn forced_start_side_suppresses_leading_blank_pages() {
 }
 
 #[test]
+fn forced_start_side_suppresses_leading_blank_pages_with_padding() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          body { margin: 0; padding-top: 20px; }
+          .first { break-before: left; height: 80px; }
+        </style>
+      </head>
+      <body>
+        <div class="first">Content</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    1,
+    "forced break-before side at document start should not emit an extra page"
+  );
+  assert!(find_text(page_roots[0], "Content").is_some());
+  assert!(find_text(page_roots[0], "LEFT").is_some());
+  assert!(find_text(page_roots[0], "RIGHT").is_none());
+}
+
+#[test]
 fn page_progression_uses_root_element_direction() {
   let html = r#"
     <html>
