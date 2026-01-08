@@ -12,6 +12,7 @@ pub mod clock;
 pub mod event_loop;
 pub mod script_scheduler;
 pub mod window_timers;
+pub mod orchestrator;
 
 pub use dom_scripts::extract_script_elements;
 pub use clock::{Clock, RealClock, VirtualClock};
@@ -23,6 +24,7 @@ pub use script_scheduler::{ClassicScriptScheduler, ScriptExecutor, ScriptLoader}
 pub use window_timers::{
   clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
 };
+pub use orchestrator::{CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
