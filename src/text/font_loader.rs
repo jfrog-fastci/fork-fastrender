@@ -35,6 +35,7 @@ use crate::error::Error;
 use crate::error::FontError;
 use crate::error::RenderStage;
 use crate::error::Result;
+use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::render_control;
 use crate::resource::{
   cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, origin_from_url,
@@ -68,6 +69,7 @@ use rustybuzz::Variation;
 use std::collections::HashSet;
 use std::fs;
 use std::hash::BuildHasherDefault;
+use std::io::{self, Read, Write as _};
 use std::num::NonZeroUsize;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -101,6 +103,25 @@ type ScaledMetricsCacheHasher = BuildHasherDefault<FxHasher>;
 
 // Hard limit on font payload sizes to avoid allocator aborts on corrupt inputs.
 const MAX_FONT_BYTES: u64 = 32 * 1024 * 1024;
+
+fn read_all_with_limit<R: Read>(
+  reader: &mut R,
+  max_bytes: usize,
+  context: &'static str,
+) -> io::Result<Vec<u8>> {
+  let mut out = FallibleVecWriter::new(max_bytes, context);
+  let mut buf = [0u8; 8 * 1024];
+  loop {
+    let n = match reader.read(&mut buf) {
+      Ok(0) => break,
+      Ok(n) => n,
+      Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+      Err(err) => return Err(err),
+    };
+    out.write_all(&buf[..n])?;
+  }
+  Ok(out.into_inner())
+}
 
 /// Render-time policy for web font fetching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -506,7 +527,16 @@ impl FontContext {
       // Some minimal container environments ship without discoverable system fonts.
       // Attempt to load a common sans-serif from well-known paths so text shaping can proceed.
       for path in FALLBACK_FONT_FILES {
-        if let Ok(data) = fs::read(path) {
+        let Ok(mut file) = fs::File::open(path) else {
+          continue;
+        };
+        let Ok(meta) = file.metadata() else {
+          continue;
+        };
+        let Ok(max_bytes) = usize::try_from(meta.len()) else {
+          continue;
+        };
+        if let Ok(data) = read_all_with_limit(&mut file, max_bytes, "fallback font file") {
           let _ = db.load_font_data(data);
           if db.font_count() > 0 {
             break;
@@ -2890,12 +2920,16 @@ fn resolve_font_url(url: &str, base_url: Option<&str>) -> String {
 
 fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
   if has_prefix_ignore_ascii_case(url, "data:") {
-    let resource = crate::resource::decode_data_url(url).map_err(|e| {
+    // Decode at most `MAX_FONT_BYTES + 1` so oversized inline fonts fail without allocating the
+    // entire payload.
+    let decode_limit = (MAX_FONT_BYTES as usize).saturating_add(1);
+    let resource = crate::resource::data_url::decode_data_url_prefix(url, decode_limit).map_err(|e| {
       Error::Font(crate::error::FontError::LoadFailed {
         family: "data-url".into(),
         reason: e.to_string(),
       })
     })?;
+    enforce_font_size_for_family(resource.bytes.len() as u64, "data-url", "compressed")?;
     return Ok((resource.bytes, resource.content_type));
   }
 
@@ -2903,6 +2937,7 @@ fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
     static FETCHER: OnceLock<HttpFetcher> = OnceLock::new();
     let fetcher = FETCHER.get_or_init(|| {
       HttpFetcher::new()
+        .with_max_size(MAX_FONT_BYTES as usize)
         .with_timeout(Duration::from_secs(10))
         .with_retry_policy(HttpRetryPolicy {
           max_attempts: 1,
@@ -2927,22 +2962,35 @@ fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
   }
 
   const FILE_URL_PREFIX: &str = "file://";
-  if has_prefix_ignore_ascii_case(url, FILE_URL_PREFIX) {
-    let path = url.get(FILE_URL_PREFIX.len()..).unwrap_or("");
-    return std::fs::read(path).map(|b| (b, None)).map_err(|e| {
-      Error::Font(crate::error::FontError::LoadFailed {
-        family: url.to_string(),
-        reason: e.to_string(),
-      })
-    });
+  let path = if has_prefix_ignore_ascii_case(url, FILE_URL_PREFIX) {
+    url.get(FILE_URL_PREFIX.len()..).unwrap_or("")
+  } else {
+    url
+  };
+
+  let mut max_bytes = MAX_FONT_BYTES as usize;
+  if let Ok(meta) = fs::metadata(path) {
+    enforce_font_size_for_family(meta.len(), url, "file")?;
+    if let Ok(len) = usize::try_from(meta.len()) {
+      max_bytes = len;
+    }
   }
 
-  std::fs::read(url).map(|b| (b, None)).map_err(|e| {
+  let mut file = fs::File::open(path).map_err(|e| {
     Error::Font(crate::error::FontError::LoadFailed {
       family: url.to_string(),
       reason: e.to_string(),
     })
-  })
+  })?;
+
+  let bytes = read_all_with_limit(&mut file, max_bytes, "font file").map_err(|e| {
+    Error::Font(crate::error::FontError::LoadFailed {
+      family: url.to_string(),
+      reason: e.to_string(),
+    })
+  })?;
+  enforce_font_size_for_family(bytes.len() as u64, url, "file")?;
+  Ok((bytes, None))
 }
 
 fn ordered_sources<'a>(sources: &'a [FontFaceSource]) -> Vec<&'a FontFaceSource> {
@@ -3122,10 +3170,10 @@ fn expected_sfnt_size(bytes: &[u8]) -> Option<u64> {
   Some(u32::from_be_bytes(buf) as u64)
 }
 
-fn enforce_font_size(size: u64, label: &str) -> Result<()> {
+fn enforce_font_size_for_family(size: u64, family: &str, label: &str) -> Result<()> {
   if size > MAX_FONT_BYTES {
     return Err(Error::Font(FontError::LoadFailed {
-      family: "font".into(),
+      family: family.to_string(),
       reason: format!(
         "{label} font payload {} bytes exceeds max {}",
         size, MAX_FONT_BYTES
@@ -3133,6 +3181,10 @@ fn enforce_font_size(size: u64, label: &str) -> Result<()> {
     }));
   }
   Ok(())
+}
+
+fn enforce_font_size(size: u64, label: &str) -> Result<()> {
+  enforce_font_size_for_family(size, "font", label)
 }
 
 /// Result of detailed text measurement
@@ -3951,6 +4003,28 @@ mod tests {
       fetch_font_bytes("DATA:font/woff2;base64,a Gk\n").expect("fetch data url font bytes");
     assert_eq!(bytes, b"hi");
     assert_eq!(content_type.as_deref(), Some("font/woff2"));
+  }
+
+  #[test]
+  fn fetch_font_bytes_rejects_oversized_file_urls_without_allocating() {
+    let tmp = tempfile::NamedTempFile::new().expect("temp font");
+    tmp
+      .as_file()
+      .set_len(MAX_FONT_BYTES.saturating_add(1))
+      .expect("set file size");
+    let url = url::Url::from_file_path(tmp.path())
+      .expect("file url")
+      .to_string();
+    let err = fetch_font_bytes(&url).expect_err("expected oversized font to fail");
+    match err {
+      Error::Font(FontError::LoadFailed { reason, .. }) => {
+        assert!(
+          reason.contains("exceeds max"),
+          "unexpected error message: {reason}"
+        );
+      }
+      other => panic!("expected FontError::LoadFailed, got {other:?}"),
+    }
   }
 
   #[test]
