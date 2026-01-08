@@ -2055,6 +2055,22 @@ fn eval_style_range_value(
         value: styles.shape_image_threshold,
       }),
       "offset-distance" => length_to_numeric(&styles.offset_distance, container, ctx),
+      "scale" => match styles.scale {
+        crate::css::types::ScaleValue::None => Some(NumericValue {
+          ty: NumericType::Number,
+          value: 1.0,
+        }),
+        crate::css::types::ScaleValue::Values { x, y, z } => {
+          if x.is_finite() && x == y && (z == 1.0 || z == x) {
+            Some(NumericValue {
+              ty: NumericType::Number,
+              value: x,
+            })
+          } else {
+            None
+          }
+        }
+      },
       "rotate" => match styles.rotate {
         crate::css::types::RotateValue::None => Some(NumericValue {
           ty: NumericType::AngleDeg,
