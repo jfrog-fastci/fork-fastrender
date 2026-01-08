@@ -1063,7 +1063,7 @@ impl ReferrerPolicy {
   ///
   /// Returns `None` when the token is unrecognized.
   pub fn parse(raw: &str) -> Option<Self> {
-    let token = raw.trim();
+    let token = trim_ascii_whitespace(raw);
     if token.is_empty() {
       return Some(Self::EmptyString);
     }
@@ -1094,7 +1094,9 @@ impl ReferrerPolicy {
   /// When multiple recognized tokens are present, the last one wins.
   pub fn parse_value_list(value: &str) -> Option<Self> {
     let mut policy = None;
-    for raw_token in value.split(|c: char| c == ',' || c.is_whitespace()) {
+    for raw_token in value.split(|c: char| {
+      c == ',' || matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    }) {
       let Some(parsed) = Self::parse(raw_token) else {
         continue;
       };
@@ -9849,6 +9851,19 @@ mod tests {
     assert!(
       policy.ensure_url_allowed("\u{00A0}").is_ok(),
       "NBSP-only URLs should not be rejected as empty"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_referrer_policy_does_not_trim_or_split_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      ReferrerPolicy::parse(&format!("{nbsp}no-referrer")).is_none(),
+      "NBSP must not be treated as ASCII whitespace"
+    );
+    assert!(
+      ReferrerPolicy::parse_value_list(&format!("no-referrer{nbsp}unsafe-url")).is_none(),
+      "NBSP must not split referrer policy token lists"
     );
   }
 
