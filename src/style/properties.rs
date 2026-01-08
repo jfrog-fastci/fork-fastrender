@@ -15262,7 +15262,7 @@ fn parse_contain_intrinsic_size_shorthand(
 
 fn will_change_value_as_string(value: &PropertyValue) -> Option<String> {
   match value {
-    PropertyValue::Keyword(kw) | PropertyValue::String(kw) => Some(kw.clone()),
+    PropertyValue::Keyword(kw) => Some(kw.clone()),
     PropertyValue::Multiple(values) => {
       let mut out = String::new();
       for token in values {
@@ -15275,12 +15275,6 @@ fn will_change_value_as_string(value: &PropertyValue) -> Option<String> {
             if k == "," {
               out.push(' ');
             }
-          }
-          PropertyValue::String(s) => {
-            if !out.is_empty() {
-              out.push(' ');
-            }
-            out.push_str(s);
           }
           _ => return None,
         }

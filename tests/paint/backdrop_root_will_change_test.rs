@@ -691,6 +691,49 @@ fn will_change_trailing_comma_is_invalid_and_ignored() {
 }
 
 #[test]
+fn will_change_quoted_string_is_invalid_and_ignored() {
+  let _guard = lock_tests();
+  // `will-change` does not accept quoted strings; declarations like `"filter"` should be ignored.
+  let pixmap = render_backdrop_invert_with_parent_will_change(r#""filter""#);
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_quoted_string_is_invalid_and_does_not_override() {
+  let _guard = lock_tests();
+  // Quoted strings are invalid, so they must not override an earlier valid `will-change` hint list.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent { position: absolute; inset: 0; will-change: filter; }
+      #parent { will-change: "transform"; }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        background: transparent;
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_none_is_invalid_and_does_not_override() {
   let _guard = lock_tests();
   // css-will-change-1 excludes `none` from <<custom-ident>>, so it is invalid here and should not
