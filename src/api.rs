@@ -13309,11 +13309,35 @@ fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
     if let Some(marker) = &node.marker_styles {
       out.insert(base | STYLE_KEY_MARKER, style_layout_fingerprint(marker));
     }
+    if let Some(placeholder) = &node.placeholder_styles {
+      out.insert(base | STYLE_KEY_PLACEHOLDER, style_layout_fingerprint(placeholder));
+    }
+    if let Some(file_button) = &node.file_selector_button_styles {
+      out.insert(
+        base | STYLE_KEY_FILE_SELECTOR_BUTTON,
+        style_layout_fingerprint(file_button),
+      );
+    }
+    if let Some(thumb) = &node.slider_thumb_styles {
+      out.insert(base | STYLE_KEY_SLIDER_THUMB, style_layout_fingerprint(thumb));
+    }
+    if let Some(track) = &node.slider_track_styles {
+      out.insert(base | STYLE_KEY_SLIDER_TRACK, style_layout_fingerprint(track));
+    }
     if let Some(call) = &node.footnote_call_styles {
       out.insert(base | STYLE_KEY_FOOTNOTE_CALL, style_layout_fingerprint(call));
     }
     if let Some(marker) = &node.footnote_marker_styles {
       out.insert(base | STYLE_KEY_FOOTNOTE_MARKER, style_layout_fingerprint(marker));
+    }
+    if let Some(first_line) = &node.first_line_styles {
+      out.insert(base | STYLE_KEY_FIRST_LINE, style_layout_fingerprint(first_line));
+    }
+    if let Some(first_letter) = &node.first_letter_styles {
+      out.insert(
+        base | STYLE_KEY_FIRST_LETTER,
+        style_layout_fingerprint(first_letter),
+      );
     }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
       out.insert(
@@ -13376,6 +13400,14 @@ fn styled_layout_fingerprint_digest(root: &StyledNode) -> u64 {
     if let Some(marker) = &node.footnote_marker_styles {
       (base | STYLE_KEY_FOOTNOTE_MARKER).hash(hasher);
       style_layout_fingerprint(marker).hash(hasher);
+    }
+    if let Some(first_line) = &node.first_line_styles {
+      (base | STYLE_KEY_FIRST_LINE).hash(hasher);
+      style_layout_fingerprint(first_line).hash(hasher);
+    }
+    if let Some(first_letter) = &node.first_letter_styles {
+      (base | STYLE_KEY_FIRST_LETTER).hash(hasher);
+      style_layout_fingerprint(first_letter).hash(hasher);
     }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
       if !matches!(
@@ -13639,11 +13671,32 @@ fn styled_style_map(root: &StyledNode) -> HashMap<usize, Arc<ComputedStyle>> {
     if let Some(marker) = &node.marker_styles {
       out.insert(base | STYLE_KEY_MARKER, Arc::clone(marker));
     }
+    if let Some(placeholder) = &node.placeholder_styles {
+      out.insert(base | STYLE_KEY_PLACEHOLDER, Arc::clone(placeholder));
+    }
+    if let Some(file_button) = &node.file_selector_button_styles {
+      out.insert(
+        base | STYLE_KEY_FILE_SELECTOR_BUTTON,
+        Arc::clone(file_button),
+      );
+    }
+    if let Some(thumb) = &node.slider_thumb_styles {
+      out.insert(base | STYLE_KEY_SLIDER_THUMB, Arc::clone(thumb));
+    }
+    if let Some(track) = &node.slider_track_styles {
+      out.insert(base | STYLE_KEY_SLIDER_TRACK, Arc::clone(track));
+    }
     if let Some(call) = &node.footnote_call_styles {
       out.insert(base | STYLE_KEY_FOOTNOTE_CALL, Arc::clone(call));
     }
     if let Some(marker) = &node.footnote_marker_styles {
       out.insert(base | STYLE_KEY_FOOTNOTE_MARKER, Arc::clone(marker));
+    }
+    if let Some(first_line) = &node.first_line_styles {
+      out.insert(base | STYLE_KEY_FIRST_LINE, Arc::clone(first_line));
+    }
+    if let Some(first_letter) = &node.first_letter_styles {
+      out.insert(base | STYLE_KEY_FIRST_LETTER, Arc::clone(first_letter));
     }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
       out.insert(base | STYLE_KEY_BACKDROP, Arc::clone(backdrop));
@@ -13863,7 +13916,7 @@ fn diff_layout_fields(old: &ComputedStyle, new: &ComputedStyle) -> Vec<String> {
 //
 // We keep these stable across container query passes so we can refresh fragment styles without
 // rebuilding the box tree when layout-affecting properties did not change.
-const STYLE_KEY_SHIFT: usize = 3;
+const STYLE_KEY_SHIFT: usize = 4;
 const STYLE_KEY_MASK: usize = (1usize << STYLE_KEY_SHIFT) - 1;
 const STYLE_KEY_BEFORE: usize = 1;
 const STYLE_KEY_AFTER: usize = 2;
@@ -13871,6 +13924,12 @@ const STYLE_KEY_MARKER: usize = 3;
 const STYLE_KEY_BACKDROP: usize = 4;
 const STYLE_KEY_FOOTNOTE_CALL: usize = 5;
 const STYLE_KEY_FOOTNOTE_MARKER: usize = 6;
+const STYLE_KEY_PLACEHOLDER: usize = 7;
+const STYLE_KEY_SLIDER_THUMB: usize = 8;
+const STYLE_KEY_SLIDER_TRACK: usize = 9;
+const STYLE_KEY_FILE_SELECTOR_BUTTON: usize = 10;
+const STYLE_KEY_FIRST_LINE: usize = 11;
+const STYLE_KEY_FIRST_LETTER: usize = 12;
 
 fn box_style_key(node: &BoxNode) -> Option<usize> {
   let styled_id = node.styled_node_id?;
@@ -13914,17 +13973,188 @@ fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
   }
 }
 
+fn refresh_replaced_type_styles(
+  replaced_type: &mut ReplacedType,
+  styled_id: usize,
+  styles: &HashMap<usize, Arc<ComputedStyle>>,
+) {
+  let base = styled_id << STYLE_KEY_SHIFT;
+  let placeholder = styles.get(&(base | STYLE_KEY_PLACEHOLDER)).cloned();
+  let slider_thumb = styles.get(&(base | STYLE_KEY_SLIDER_THUMB)).cloned();
+  let slider_track = styles.get(&(base | STYLE_KEY_SLIDER_TRACK)).cloned();
+  let file_button = styles
+    .get(&(base | STYLE_KEY_FILE_SELECTOR_BUTTON))
+    .cloned();
+
+  if let ReplacedType::FormControl(control) = replaced_type {
+    match &mut control.control {
+      FormControlKind::Text {
+        placeholder_style, ..
+      }
+      | FormControlKind::TextArea {
+        placeholder_style, ..
+      } => {
+        *placeholder_style = placeholder.clone();
+      }
+      _ => {}
+    }
+
+    control.placeholder_style = placeholder;
+    control.slider_thumb_style = slider_thumb;
+    control.slider_track_style = slider_track;
+    control.file_selector_button_style = file_button;
+  }
+}
+
+fn merge_first_line_overrides(base: &ComputedStyle, first_line: &ComputedStyle) -> ComputedStyle {
+  let mut merged = base.clone();
+  merged.color = first_line.color;
+  merged.background_color = first_line.background_color;
+  merged.background_images = first_line.background_images.clone();
+  merged.background_positions = first_line.background_positions.clone();
+  merged.background_sizes = first_line.background_sizes.clone();
+  merged.background_repeats = first_line.background_repeats.clone();
+  merged.background_attachments = first_line.background_attachments.clone();
+  merged.background_origins = first_line.background_origins.clone();
+  merged.background_clips = first_line.background_clips.clone();
+  merged.rebuild_background_layers();
+
+  merged.font_family = first_line.font_family.clone();
+  merged.font_size = first_line.font_size;
+  merged.font_weight = first_line.font_weight;
+  merged.font_style = first_line.font_style;
+  merged.font_stretch = first_line.font_stretch;
+  merged.font_variant_caps = first_line.font_variant_caps;
+  merged.font_variant_numeric = first_line.font_variant_numeric;
+  merged.font_variant_east_asian = first_line.font_variant_east_asian;
+  merged.font_variant_ligatures = first_line.font_variant_ligatures.clone();
+  merged.font_variant_alternates = first_line.font_variant_alternates.clone();
+  merged.font_feature_settings = first_line.font_feature_settings.clone();
+  merged.font_language_override = first_line.font_language_override.clone();
+  merged.font_kerning = first_line.font_kerning;
+  merged.font_variant_position = first_line.font_variant_position;
+  merged.font_synthesis = first_line.font_synthesis;
+  merged.font_variation_settings = first_line.font_variation_settings.clone();
+  merged.font_size_adjust = first_line.font_size_adjust;
+
+  merged.line_height = first_line.line_height.clone();
+  merged.letter_spacing = first_line.letter_spacing;
+  merged.word_spacing = first_line.word_spacing;
+  merged.text_transform = first_line.text_transform;
+  merged.text_decoration = first_line.text_decoration.clone();
+  merged.text_decoration_skip_self = first_line.text_decoration_skip_self;
+  merged.text_decoration_skip_box = first_line.text_decoration_skip_box;
+  merged.text_decoration_skip_spaces = first_line.text_decoration_skip_spaces;
+  merged.text_decoration_skip_ink = first_line.text_decoration_skip_ink;
+  merged.text_underline_offset = first_line.text_underline_offset;
+  merged.text_underline_position = first_line.text_underline_position;
+  merged.text_shadow = first_line.text_shadow.clone();
+  merged.text_emphasis_color = first_line.text_emphasis_color;
+  merged.text_emphasis_position = first_line.text_emphasis_position;
+  merged.text_emphasis_style = first_line.text_emphasis_style.clone();
+  merged
+}
+
+fn apply_first_line_fragment_style(
+  fragment: &mut FragmentNode,
+  first_line_style: &ComputedStyle,
+  base_style: &Arc<ComputedStyle>,
+) {
+  let is_marker = matches!(
+    fragment.content,
+    FragmentContent::Text {
+      is_marker: true,
+      ..
+    }
+  );
+
+  if !is_marker {
+    let existing = fragment.style.as_ref();
+    let mut merged = if let Some(style) = existing {
+      merge_first_line_overrides(style, first_line_style)
+    } else {
+      first_line_style.clone()
+    };
+
+    if let Some(style) = existing {
+      if style.color != base_style.color {
+        merged.color = style.color;
+      }
+      if style.background_color != base_style.background_color {
+        merged.background_color = style.background_color;
+      }
+      if style.font_family != base_style.font_family {
+        merged.font_family = style.font_family.clone();
+      }
+      if (style.font_size - base_style.font_size).abs() > f32::EPSILON {
+        merged.font_size = style.font_size;
+      }
+      if style.font_weight != base_style.font_weight {
+        merged.font_weight = style.font_weight;
+      }
+      if style.font_style != base_style.font_style {
+        merged.font_style = style.font_style;
+      }
+      if style.font_stretch != base_style.font_stretch {
+        merged.font_stretch = style.font_stretch;
+      }
+      if style.text_transform != base_style.text_transform {
+        merged.text_transform = style.text_transform;
+      }
+      if style.line_height != base_style.line_height {
+        merged.line_height = style.line_height.clone();
+      }
+      if style.letter_spacing != base_style.letter_spacing {
+        merged.letter_spacing = style.letter_spacing;
+      }
+      if style.word_spacing != base_style.word_spacing {
+        merged.word_spacing = style.word_spacing;
+      }
+      if style.text_decoration != base_style.text_decoration {
+        merged.text_decoration = style.text_decoration.clone();
+      }
+      if style.text_shadow != base_style.text_shadow {
+        merged.text_shadow = style.text_shadow.clone();
+      }
+      if style.text_emphasis_color != base_style.text_emphasis_color {
+        merged.text_emphasis_color = style.text_emphasis_color;
+      }
+      if style.text_emphasis_style != base_style.text_emphasis_style {
+        merged.text_emphasis_style = style.text_emphasis_style.clone();
+      }
+    }
+
+    fragment.style = Some(Arc::new(merged));
+  }
+
+  for child in fragment.children_mut() {
+    apply_first_line_fragment_style(child, first_line_style, base_style);
+  }
+}
+
 fn refresh_fragment_styles(
   fragment: &mut FragmentNode,
   boxes: &HashMap<usize, &BoxNode>,
   styles: &HashMap<usize, Arc<ComputedStyle>>,
 ) {
-  if let Some(box_id) = fragment_box_id(fragment) {
+  let self_box_id = fragment_box_id(fragment);
+
+  if let Some(box_id) = self_box_id {
     if let Some(node) = boxes.get(&box_id) {
       if let Some(key) = box_style_key(node) {
         if let Some(style) = styles.get(&key) {
           fragment.style = Some(style.clone());
         }
+      }
+    }
+  }
+
+  if let (Some(box_id), FragmentContent::Replaced { replaced_type, .. }) =
+    (self_box_id, &mut fragment.content)
+  {
+    if let Some(node) = boxes.get(&box_id) {
+      if let Some(styled_id) = node.styled_node_id {
+        refresh_replaced_type_styles(replaced_type, styled_id, styles);
       }
     }
   }
@@ -13939,6 +14169,28 @@ fn refresh_fragment_styles(
 
   for child in fragment.children_mut() {
     refresh_fragment_styles(child, boxes, styles);
+  }
+
+  if let (Some(box_id), Some(base_style)) = (self_box_id, fragment.style.clone()) {
+    let Some(node) = boxes.get(&box_id) else {
+      return;
+    };
+    let Some(styled_id) = node.styled_node_id else {
+      return;
+    };
+    let base_key = styled_id << STYLE_KEY_SHIFT;
+    let Some(first_line_style) = styles.get(&(base_key | STYLE_KEY_FIRST_LINE)) else {
+      return;
+    };
+    let Some(first_line_fragment) = fragment
+      .children_mut()
+      .iter_mut()
+      .find(|child| matches!(child.content, FragmentContent::Line { .. }))
+    else {
+      return;
+    };
+
+    apply_first_line_fragment_style(first_line_fragment, first_line_style.as_ref(), &base_style);
   }
 }
 
@@ -15025,6 +15277,155 @@ pub(crate) fn render_html_with_shared_resources(
       }
       other => panic!("expected footnote anchor content, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn refresh_fragment_styles_reapplies_first_line_pseudo_overrides() {
+    let old_style = Arc::new(ComputedStyle::default());
+
+    let mut base_style = ComputedStyle::default();
+    base_style.font_size = 12.0;
+    base_style.color = Rgba::rgb(0, 0, 0);
+    let base_style = Arc::new(base_style);
+
+    let mut first_line = ComputedStyle::default();
+    first_line.font_size = 20.0;
+    first_line.color = Rgba::rgb(255, 0, 0);
+    let first_line = Arc::new(first_line);
+
+    let mut text = BoxNode::new_text(old_style.clone(), "Hello".to_string());
+    text.styled_node_id = Some(1);
+    let mut root =
+      BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![text]);
+    root.styled_node_id = Some(1);
+    let box_tree = BoxTree::new(root);
+
+    let root_id = box_tree.root.id;
+    let text_id = box_tree.root.children[0].id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&box_tree.root, &mut box_map);
+
+    let base_key = 1 << super::STYLE_KEY_SHIFT;
+    let mut style_map = HashMap::new();
+    style_map.insert(base_key, base_style.clone());
+    style_map.insert(base_key | super::STYLE_KEY_FIRST_LINE, first_line.clone());
+
+    let text_fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      FragmentContent::Text {
+        text: Arc::from("Hello"),
+        box_id: Some(text_id),
+        baseline_offset: 0.0,
+        shaped: None,
+        is_marker: false,
+        emphasis_offset: Default::default(),
+      },
+      vec![],
+      old_style.clone(),
+    );
+    let line = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      0.0,
+      vec![text_fragment],
+    );
+    let mut root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      root_id,
+      vec![line],
+    );
+    root_fragment.style = Some(old_style);
+
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map);
+
+    let text_style = root_fragment.children[0].children[0]
+      .style
+      .as_ref()
+      .expect("text style refreshed");
+    assert_eq!(text_style.color, first_line.color);
+    assert!((text_style.font_size - first_line.font_size).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn refresh_fragment_styles_refreshes_form_control_pseudo_styles() {
+    let base_style = Arc::new(ComputedStyle::default());
+    let old_placeholder = Arc::new(ComputedStyle::default());
+    let mut new_placeholder = ComputedStyle::default();
+    new_placeholder.font_size = 22.0;
+    let new_placeholder = Arc::new(new_placeholder);
+
+    let control = ReplacedType::FormControl(crate::tree::box_tree::FormControl {
+      control: FormControlKind::Text {
+        value: String::new(),
+        placeholder: Some("hint".to_string()),
+        placeholder_style: Some(old_placeholder.clone()),
+        size_attr: None,
+        kind: TextControlKind::Plain,
+      },
+      appearance: crate::style::types::Appearance::Auto,
+      placeholder_style: Some(old_placeholder.clone()),
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    });
+
+    let mut input = BoxNode::new_replaced(base_style.clone(), control.clone(), None, None);
+    input.styled_node_id = Some(1);
+    let mut root =
+      BoxNode::new_block(base_style.clone(), FormattingContextType::Block, vec![input]);
+    root.styled_node_id = Some(1);
+    let box_tree = BoxTree::new(root);
+    let input_id = box_tree.root.children[0].id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&box_tree.root, &mut box_map);
+
+    let base_key = 1 << super::STYLE_KEY_SHIFT;
+    let mut style_map = HashMap::new();
+    style_map.insert(base_key, base_style);
+    style_map.insert(base_key | super::STYLE_KEY_PLACEHOLDER, new_placeholder.clone());
+
+    let mut fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      FragmentContent::Replaced {
+        replaced_type: control,
+        box_id: Some(input_id),
+      },
+      vec![],
+      Arc::new(ComputedStyle::default()),
+    );
+
+    super::refresh_fragment_styles(&mut fragment, &box_map, &style_map);
+
+    let FragmentContent::Replaced { replaced_type, .. } = &fragment.content else {
+      panic!("expected replaced fragment");
+    };
+    let ReplacedType::FormControl(control) = replaced_type else {
+      panic!("expected form control replaced type");
+    };
+    match &control.control {
+      FormControlKind::Text { placeholder_style, .. } => {
+        assert!(
+          placeholder_style
+            .as_ref()
+            .is_some_and(|style| Arc::ptr_eq(style, &new_placeholder)),
+          "expected placeholder pseudo styles to refresh"
+        );
+      }
+      other => panic!("expected text control, got {other:?}"),
+    }
+    assert!(
+      control
+        .placeholder_style
+        .as_ref()
+        .is_some_and(|style| Arc::ptr_eq(style, &new_placeholder)),
+      "expected top-level form control placeholder style to refresh"
+    );
   }
 
   #[test]
