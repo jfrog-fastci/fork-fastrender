@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use xtask::webidl::{extract_webidl_blocks_from_bikeshed, parse_webidl};
+use xtask::webidl::{
+  extract_webidl_blocks_from_bikeshed, extract_webidl_blocks_from_whatwg_html, parse_webidl,
+};
 use xtask::webidl::resolve::{resolve_webidl_world, ExposureTarget};
 
 #[test]
@@ -79,3 +81,32 @@ fn smoke_resolve_dom_url_fetch() {
   );
 }
 
+#[test]
+fn smoke_resolve_whatwg_html() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+
+  let path = repo_root.join("specs/whatwg-html/source");
+  if !path.exists() {
+    eprintln!(
+      "skipping WebIDL smoke test: missing WHATWG HTML source at {}",
+      path.display()
+    );
+    return;
+  }
+
+  let src = std::fs::read_to_string(&path).expect("read spec source");
+  let mut combined_idl = String::new();
+  for block in extract_webidl_blocks_from_whatwg_html(&src) {
+    combined_idl.push_str(&block);
+    combined_idl.push('\n');
+  }
+
+  let parsed = parse_webidl(&combined_idl).unwrap();
+  let resolved = resolve_webidl_world(&parsed);
+  assert!(
+    !resolved.interfaces.is_empty(),
+    "expected non-empty interface set from WHATWG HTML"
+  );
+}

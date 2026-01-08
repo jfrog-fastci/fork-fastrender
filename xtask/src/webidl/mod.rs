@@ -101,6 +101,20 @@ pub struct ParsedMember {
   pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebIdlSourceFormat {
+  Bikeshed,
+  WhatwgHtml,
+}
+
+/// Extract WebIDL blocks from a spec source, based on the expected source format.
+pub fn extract_webidl_blocks(source: &str, format: WebIdlSourceFormat) -> Vec<String> {
+  match format {
+    WebIdlSourceFormat::Bikeshed => extract_webidl_blocks_from_bikeshed(source),
+    WebIdlSourceFormat::WhatwgHtml => extract_webidl_blocks_from_whatwg_html(source),
+  }
+}
+
 /// Extract WebIDL `<pre class=idl> ... </pre>` blocks from a Bikeshed source file (`*.bs`).
 ///
 /// Returns raw IDL blocks with basic HTML entities decoded (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&#39;`).
@@ -115,8 +129,19 @@ pub fn extract_webidl_blocks_from_bikeshed(source: &str) -> Vec<String> {
         let tag = &line[idx..];
         if tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\"") {
           // Everything after the first '>' is IDL content (some blocks place it on the same line).
-          if let Some(gt) = tag.find('>') {
-            let after = &tag[gt + 1..];
+          //
+          // Bikeshed sources occasionally omit the closing `>` when the IDL begins immediately
+          // after the opening `<pre class=idl` tag, e.g.:
+          //   `<pre class=idl>[Exposed=(Window,Worker)]`
+          // In that case, capture from the first `[` onwards.
+          let after = if let Some(gt) = tag.find('>') {
+            Some(&tag[gt + 1..])
+          } else if let Some(bracket) = tag.find('[') {
+            Some(&tag[bracket..])
+          } else {
+            None
+          };
+          if let Some(after) = after {
             if !after.is_empty() {
               current.push_str(after);
               current.push('\n');
@@ -140,6 +165,53 @@ pub fn extract_webidl_blocks_from_bikeshed(source: &str) -> Vec<String> {
 
     current.push_str(line);
     current.push('\n');
+  }
+
+  out
+}
+
+/// Extract WebIDL blocks from the WHATWG HTML `source` file format.
+///
+/// WHATWG HTML embeds IDL in `<pre><code class="idl"> ... </code></pre>` blocks. The IDL itself
+/// includes inline HTML markup (`<dfn>`, `<span>`, `<a>`, …) that must be stripped while
+/// preserving inner text.
+///
+/// Returns raw IDL blocks with basic HTML entities decoded (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&#39;`,
+/// `&nbsp;`).
+pub fn extract_webidl_blocks_from_whatwg_html(source: &str) -> Vec<String> {
+  let mut out = Vec::new();
+  let mut i = 0usize;
+
+  while let Some(rel_start) = source[i..].find("<code") {
+    let start = i + rel_start;
+    // Skip closing tags.
+    if source[start..].starts_with("</code") {
+      i = start + "</code".len();
+      continue;
+    }
+
+    let Some(tag_end) = find_html_tag_end(source, start) else {
+      break;
+    };
+    let tag = &source[start..=tag_end];
+    if !html_start_tag_has_class_token(tag, "idl") {
+      i = tag_end + 1;
+      continue;
+    }
+
+    let content_start = tag_end + 1;
+    let Some(close_rel) = source[content_start..].find("</code>") else {
+      break;
+    };
+    let content_end = content_start + close_rel;
+    let raw = &source[content_start..content_end];
+    let stripped = strip_html_tags_preserve_text(raw);
+    let decoded = decode_basic_html_entities(stripped.trim());
+    if !decoded.is_empty() {
+      out.push(decoded);
+    }
+
+    i = content_end + "</code>".len();
   }
 
   out
@@ -398,6 +470,162 @@ fn decode_basic_html_entities(s: &str) -> String {
     .replace("&#39;", "'")
     .replace("&nbsp;", " ")
     .replace("&amp;", "&")
+}
+
+fn find_html_tag_end(input: &str, start: usize) -> Option<usize> {
+  let bytes = input.as_bytes();
+  if bytes.get(start)? != &b'<' {
+    return None;
+  }
+  let mut i = start + 1;
+  let mut in_quote: Option<u8> = None;
+  while i < bytes.len() {
+    let b = bytes[i];
+    if let Some(q) = in_quote {
+      if b == q {
+        in_quote = None;
+      }
+      i += 1;
+      continue;
+    }
+    match b {
+      b'\'' | b'"' => {
+        in_quote = Some(b);
+        i += 1;
+      }
+      b'>' => return Some(i),
+      _ => i += 1,
+    }
+  }
+  None
+}
+
+fn html_start_tag_has_class_token(tag: &str, token: &str) -> bool {
+  // Parse a single start tag's attributes; forgiving and sufficient for WHATWG HTML sources.
+  let bytes = tag.as_bytes();
+  if bytes.first().copied() != Some(b'<') {
+    return false;
+  }
+
+  let mut i = 1usize;
+  // Skip tag name.
+  while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
+    i += 1;
+  }
+
+  while i < bytes.len() {
+    // Skip whitespace.
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() || bytes[i] == b'>' {
+      break;
+    }
+
+    // Parse attribute name.
+    let name_start = i;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>' {
+      i += 1;
+    }
+    let name = &tag[name_start..i];
+
+    // Skip whitespace.
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+
+    let mut value: Option<&str> = None;
+    if i < bytes.len() && bytes[i] == b'=' {
+      i += 1;
+      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+      }
+      if i >= bytes.len() {
+        break;
+      }
+
+      if bytes[i] == b'"' || bytes[i] == b'\'' {
+        let quote = bytes[i];
+        i += 1;
+        let value_start = i;
+        while i < bytes.len() && bytes[i] != quote {
+          i += 1;
+        }
+        value = Some(&tag[value_start..i]);
+        if i < bytes.len() {
+          i += 1;
+        }
+      } else {
+        let value_start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
+          i += 1;
+        }
+        value = Some(&tag[value_start..i]);
+      }
+    }
+
+    if name.eq_ignore_ascii_case("class") {
+      if let Some(v) = value {
+        if v.split_whitespace().any(|t| t == token) {
+          return true;
+        }
+      }
+    }
+  }
+
+  false
+}
+
+fn strip_html_tags_preserve_text(input: &str) -> String {
+  let bytes = input.as_bytes();
+  let mut out = String::with_capacity(input.len());
+
+  let mut i = 0usize;
+  let mut last_text = 0usize;
+  while i < bytes.len() {
+    if bytes[i] != b'<' {
+      i += 1;
+      continue;
+    }
+
+    // Flush any text before this tag.
+    if last_text < i {
+      out.push_str(&input[last_text..i]);
+    }
+
+    // Skip the tag itself (forgiving).
+    i += 1;
+    let mut in_quote: Option<u8> = None;
+    while i < bytes.len() {
+      let b = bytes[i];
+      if let Some(q) = in_quote {
+        if b == q {
+          in_quote = None;
+        }
+        i += 1;
+        continue;
+      }
+      match b {
+        b'\'' | b'"' => {
+          in_quote = Some(b);
+          i += 1;
+        }
+        b'>' => {
+          i += 1;
+          break;
+        }
+        _ => i += 1,
+      }
+    }
+
+    last_text = i;
+  }
+
+  if last_text < input.len() {
+    out.push_str(&input[last_text..]);
+  }
+
+  out
 }
 
 fn strip_trailing_semicolon(s: &str) -> &str {
