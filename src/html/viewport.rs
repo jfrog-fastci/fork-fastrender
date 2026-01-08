@@ -10,6 +10,11 @@ use crate::render_control::check_active_periodic;
 
 const VIEWPORT_DEADLINE_STRIDE: usize = 1024;
 
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 /// A parsed viewport directive.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaViewport {
@@ -58,17 +63,17 @@ pub fn parse_meta_viewport_content(content: &str) -> Option<MetaViewport> {
   let mut seen = false;
 
   for directive in content.split(|c| c == ',' || c == ';') {
-    let directive = directive.trim();
+    let directive = trim_ascii_whitespace(directive);
     if directive.is_empty() {
       continue;
     }
 
     let mut parts = directive.splitn(2, '=');
-    let key = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+    let key = trim_ascii_whitespace(parts.next().unwrap_or("")).to_ascii_lowercase();
     let Some(raw_value) = parts.next() else {
       continue;
     };
-    let value = raw_value.trim().trim_matches(|c| c == '"' || c == '\'');
+    let value = trim_ascii_whitespace(raw_value).trim_matches(|c| c == '"' || c == '\'');
 
     match key.as_str() {
       "width" => {
@@ -244,7 +249,7 @@ fn parse_viewport_length(value: &str, axis: ViewportAxis) -> Option<ViewportLeng
     return Some(ViewportLength::Device);
   }
 
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   let bytes = trimmed.as_bytes();
   let numeric = if bytes.len() >= 2 && bytes[bytes.len() - 2..].eq_ignore_ascii_case(b"px") {
     trimmed.get(..bytes.len() - 2).unwrap_or("")
@@ -256,7 +261,7 @@ fn parse_viewport_length(value: &str, axis: ViewportAxis) -> Option<ViewportLeng
 }
 
 fn parse_positive_number(value: &str) -> Option<f32> {
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   if trimmed.is_empty() {
     return None;
   }
@@ -288,7 +293,7 @@ fn parse_positive_number(value: &str) -> Option<f32> {
 }
 
 fn parse_user_scalable(value: &str) -> Option<bool> {
-  let normalized = value.trim().to_ascii_lowercase();
+  let normalized = trim_ascii_whitespace(value).to_ascii_lowercase();
   match normalized.as_str() {
     "yes" | "true" | "1" => Some(true),
     "no" | "false" | "0" => Some(false),
@@ -331,6 +336,16 @@ mod tests {
   #[test]
   fn parse_meta_viewport_content_does_not_panic_on_unicode_value() {
     assert!(parse_meta_viewport_content("width=€").is_none());
+  }
+
+  #[test]
+  fn parse_meta_viewport_content_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(parse_meta_viewport_content(&format!("width={nbsp}320")).is_none());
+    assert!(parse_meta_viewport_content(&format!("user-scalable={nbsp}no")).is_none());
+
+    let parsed = parse_meta_viewport_content("width= 320").unwrap();
+    assert_eq!(parsed.width, Some(ViewportLength::Absolute(320.0)));
   }
 
   #[test]
