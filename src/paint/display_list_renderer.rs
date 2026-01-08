@@ -2674,12 +2674,36 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
   check_active(RenderStage::Paint)?;
   let expand = spread > 0.0;
   let radius = radius as usize;
-  let len = width * height;
+  let len = width
+    .checked_mul(height)
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("drop shadow spread: buffer size overflow ({width}x{height})"),
+    })?;
 
   let mut scratch = SPREAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
   let result = (|| -> RenderResult<()> {
+    scratch
+      .source
+      .try_reserve_exact(len.saturating_sub(scratch.source.len()))
+      .map_err(|err| RenderError::InvalidParameters {
+        message: format!("drop shadow spread: scratch allocation failed: {err}"),
+      })?;
     scratch.source.resize(len, [0u8; 4]);
+
+    scratch
+      .horizontal
+      .try_reserve_exact(len.saturating_sub(scratch.horizontal.len()))
+      .map_err(|err| RenderError::InvalidParameters {
+        message: format!("drop shadow spread: scratch allocation failed: {err}"),
+      })?;
     scratch.horizontal.resize(len, [0u8; 4]);
+
+    scratch
+      .transposed
+      .try_reserve_exact(len.saturating_sub(scratch.transposed.len()))
+      .map_err(|err| RenderError::InvalidParameters {
+        message: format!("drop shadow spread: scratch allocation failed: {err}"),
+      })?;
     scratch.transposed.resize(len, [0u8; 4]);
     debug_assert_eq!(scratch.source.len(), len);
     debug_assert_eq!(scratch.horizontal.len(), len);
@@ -2735,8 +2759,28 @@ fn apply_spread_horizontal(
     dst.copy_from_slice(src);
     return Ok(());
   }
-  let window_size = radius * 2 + 1;
-  let extended_len = width + radius * 2;
+  let window_size = radius
+    .checked_mul(2)
+    .and_then(|size| size.checked_add(1))
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("drop shadow spread: window size overflow (radius={radius})"),
+    })?;
+  let extended_len = width
+    .checked_add(
+      radius
+        .checked_mul(2)
+        .ok_or(RenderError::InvalidParameters {
+          message: format!("drop shadow spread: buffer size overflow (radius={radius})"),
+        })?,
+    )
+    .ok_or(RenderError::InvalidParameters {
+      message: format!(
+        "drop shadow spread: buffer size overflow (width={width}, radius={radius})"
+      ),
+    })?;
+  let queue_capacity = window_size.checked_add(1).ok_or(RenderError::InvalidParameters {
+    message: format!("drop shadow spread: window size overflow (radius={radius})"),
+  })?;
   let deadline = active_deadline();
   dst
     .par_chunks_mut(width)
@@ -2745,12 +2789,14 @@ fn apply_spread_horizontal(
       with_deadline(deadline.as_ref(), || -> RenderResult<()> {
         check_active(RenderStage::Paint)?;
         let row_start = y * width;
-        let mut queues = [
-          VecDeque::with_capacity(window_size),
-          VecDeque::with_capacity(window_size),
-          VecDeque::with_capacity(window_size),
-          VecDeque::with_capacity(window_size),
-        ];
+        let mut queues = [VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new()];
+        for queue in queues.iter_mut() {
+          queue
+            .try_reserve_exact(queue_capacity)
+            .map_err(|err| RenderError::InvalidParameters {
+              message: format!("drop shadow spread: window buffer allocation failed: {err}"),
+            })?;
+        }
         let mut deadline_counter = 0usize;
 
         for j in 0..extended_len {
@@ -17604,6 +17650,19 @@ mod tests {
         })
       ),
       "expected spread to abort with a paint timeout, got {result:?}"
+    );
+  }
+
+  #[test]
+  fn spread_horizontal_rejects_overflowing_radius() {
+    let src = vec![[128u8, 64u8, 32u8, 255u8]];
+    let mut dst = vec![[0u8; 4]];
+    let radius = usize::MAX / 2 + 1;
+
+    let result = apply_spread_horizontal(&src, &mut dst, 1, 1, radius, true);
+    assert!(
+      matches!(result, Err(RenderError::InvalidParameters { .. })),
+      "expected invalid parameters error, got {result:?}"
     );
   }
 
