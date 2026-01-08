@@ -9462,6 +9462,66 @@ mod tests {
     });
   }
 
+  #[test]
+  fn cors_cache_partition_key_falls_back_to_referrer_url_and_null_for_file() {
+    if !http_browser_headers_enabled() {
+      eprintln!(
+        "skipping cors_cache_partition_key_falls_back_to_referrer_url_and_null_for_file: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let url = "https://static.example.com/font.woff2";
+
+      let http_referrer =
+        FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://a.test/page.html");
+      assert_eq!(
+        cors_cache_partition_key(&http_referrer).as_deref(),
+        Some("https://a.test")
+      );
+
+      let file_referrer =
+        FetchRequest::new(url, FetchDestination::Font).with_referrer_url("file:///tmp/page.html");
+      assert_eq!(
+        cors_cache_partition_key(&file_referrer).as_deref(),
+        Some("null")
+      );
+
+      // When a referrer is provided but we cannot derive a browser-style origin from it, match
+      // header generation behavior: omit the Origin header entirely (and therefore do not
+      // partition).
+      let invalid_referrer =
+        FetchRequest::new(url, FetchDestination::Font).with_referrer_url("not a url");
+      assert_eq!(cors_cache_partition_key(&invalid_referrer), None);
+    });
+  }
+
+  #[test]
+  fn cors_cache_partition_key_uses_null_for_non_http_client_origin() {
+    if !http_browser_headers_enabled() {
+      eprintln!(
+        "skipping cors_cache_partition_key_uses_null_for_non_http_client_origin: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let url = "https://static.example.com/font.woff2";
+      let file_origin = origin_from_url("file:///tmp/doc.html").expect("file origin");
+      let req = FetchRequest::new(url, FetchDestination::Font).with_client_origin(&file_origin);
+      assert_eq!(cors_cache_partition_key(&req).as_deref(), Some("null"));
+    });
+  }
+
   fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
       .iter()
