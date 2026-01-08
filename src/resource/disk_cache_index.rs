@@ -77,6 +77,12 @@ struct EvictionCandidate {
 }
 
 const EVICTION_LOOKAHEAD: usize = 64;
+// Maximum size of a single JSONL record in the disk-cache journal.
+//
+// Entries are tiny in normal operation (a few hundred bytes). If the journal is corrupted we
+// should treat oversized lines as an invalid tail rather than allocating unbounded buffers via
+// `BufRead::read_line`.
+const MAX_JOURNAL_LINE_BYTES: usize = 256 * 1024;
 
 #[cfg(test)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -531,19 +537,70 @@ impl DiskCacheIndex {
     let file = File::open(&self.journal_path)?;
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(offset))?;
-    let mut line = String::new();
+    let mut line: Vec<u8> = Vec::new();
+    line.try_reserve_exact(MAX_JOURNAL_LINE_BYTES).map_err(|err| {
+      std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("journal line buffer allocation failed: {err}"),
+      )
+    })?;
     let mut processed_bytes: u64 = 0;
     loop {
-      let n = reader.read_line(&mut line)?;
+      let n = match (|| -> std::io::Result<usize> {
+        line.clear();
+        let mut total = 0usize;
+        loop {
+          let buf = reader.fill_buf()?;
+          if buf.is_empty() {
+            break;
+          }
+          let newline_pos = buf.iter().position(|b| *b == b'\n');
+          let take_len = newline_pos.map(|pos| pos + 1).unwrap_or(buf.len());
+          if total.saturating_add(take_len) > MAX_JOURNAL_LINE_BYTES {
+            return Err(std::io::Error::new(
+              std::io::ErrorKind::InvalidData,
+              format!(
+                "disk cache journal line exceeds {} bytes",
+                MAX_JOURNAL_LINE_BYTES
+              ),
+            ));
+          }
+          line.extend_from_slice(&buf[..take_len]);
+          reader.consume(take_len);
+          total = total.saturating_add(take_len);
+          if newline_pos.is_some() {
+            break;
+          }
+        }
+        Ok(total)
+      })() {
+        Ok(n) => n,
+        Err(err) => {
+          let valid_len = offset.saturating_add(processed_bytes);
+          if valid_len == 0 {
+            return Err(err);
+          }
+          if let Ok(file) = OpenOptions::new().write(true).open(&self.journal_path) {
+            if file.set_len(valid_len).is_ok() {
+              #[cfg(test)]
+              {
+                state.journal_replays += 1;
+              }
+              state.journal_len = valid_len;
+              return Ok(());
+            }
+          }
+          return Err(err);
+        }
+      };
       if n == 0 {
         break;
       }
-      if line.trim().is_empty() {
+      if line.iter().all(|b| b.is_ascii_whitespace()) {
         processed_bytes = processed_bytes.saturating_add(n as u64);
-        line.clear();
         continue;
       }
-      let record: JournalRecord = match serde_json::from_str(&line) {
+      let record: JournalRecord = match serde_json::from_slice(&line) {
         Ok(record) => record,
         Err(err) => {
           let valid_len = offset.saturating_add(processed_bytes);
