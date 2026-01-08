@@ -6312,17 +6312,7 @@ impl<'a> Element for ElementRef<'a> {
   ) -> bool {
     match pseudo {
       PseudoElement::Placeholder => {
-        if !self.is_html_element() {
-          return false;
-        }
-
-        match self.node.tag_name() {
-          Some(tag) if tag.eq_ignore_ascii_case("textarea") => true,
-          Some(tag) if tag.eq_ignore_ascii_case("input") => {
-            supports_placeholder(self.node.get_attribute_ref("type"))
-          }
-          _ => false,
-        }
+        self.is_html_element() && self.is_placeholder_shown()
       }
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
         if !self.is_html_element() {

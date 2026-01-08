@@ -856,6 +856,12 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
         Ok(PseudoClass::HostContext(selectors))
       }
       "has" => {
+        if parsing_has_argument() {
+          // Selectors Level 4 forbids nested `:has()`. Treat this as an "invalid state" error so
+          // forgiving selector list parsers (e.g. inside `:is()` / `:where()`) can drop only the
+          // offending selector without failing the entire selector list.
+          return Err(parser.new_custom_error(SelectorParseErrorKind::InvalidState));
+        }
         let _scope = HasArgumentScope::enter();
         let list = SelectorList::parse(
           &PseudoClassParser,
