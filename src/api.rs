@@ -12453,6 +12453,49 @@ fn hash_string_vec(list: &[String], hasher: &mut DefaultHasher) {
   }
 }
 
+fn hash_counter_set(set: &crate::style::counters::CounterSet, hasher: &mut DefaultHasher) {
+  set.items.len().hash(hasher);
+  for item in &set.items {
+    item.name.hash(hasher);
+    item.value.hash(hasher);
+  }
+}
+
+fn hash_counter_properties(
+  props: &crate::style::counters::CounterProperties,
+  hasher: &mut DefaultHasher,
+) {
+  match &props.counter_reset {
+    Some(v) => {
+      1u8.hash(hasher);
+      hash_counter_set(v, hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+  match &props.counter_increment {
+    Some(v) => {
+      1u8.hash(hasher);
+      hash_counter_set(v, hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+  match &props.counter_set {
+    Some(v) => {
+      1u8.hash(hasher);
+      hash_counter_set(v, hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+}
+
+fn hash_quotes(quotes: &[(String, String)], hasher: &mut DefaultHasher) {
+  quotes.len().hash(hasher);
+  for (open, close) in quotes {
+    open.hash(hasher);
+    close.hash(hasher);
+  }
+}
+
 fn running_element_select_fingerprint(select: crate::style::content::RunningElementSelect) -> u8 {
   match select {
     crate::style::content::RunningElementSelect::First => 0,
@@ -13311,6 +13354,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_list_style_type(&style.list_style_type, &mut h);
   hash_enum_discriminant(&style.list_style_position, &mut h);
   hash_list_style_image(&style.list_style_image, &mut h);
+  hash_counter_properties(&style.counters, &mut h);
   hash_length(&style.border_spacing_horizontal, &mut h);
   hash_length(&style.border_spacing_vertical, &mut h);
   hash_enum_discriminant(&style.border_collapse, &mut h);
@@ -13353,6 +13397,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_length(&style.perspective_origin.x, &mut h);
   hash_length(&style.perspective_origin.y, &mut h);
   hash_enum_discriminant(&style.backface_visibility, &mut h);
+  hash_quotes(&style.quotes, &mut h);
   hash_effective_content(style, &mut h);
   h.finish()
 }
@@ -15051,6 +15096,51 @@ pub(crate) fn render_html_with_shared_resources(
       super::style_layout_fingerprint(&a),
       super::style_layout_fingerprint(&b),
       "expected generated content to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_counters() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut reset = base.clone();
+    reset.counters.counter_reset = Some(crate::style::counters::CounterSet::single("chapter", 0));
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&reset),
+      "expected counter-reset to affect layout fingerprints"
+    );
+
+    let mut increment = base.clone();
+    increment.counters.counter_increment =
+      Some(crate::style::counters::CounterSet::single("chapter", 2));
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&increment),
+      "expected counter-increment to affect layout fingerprints"
+    );
+
+    let mut set = base;
+    set.counters.counter_set = Some(crate::style::counters::CounterSet::single("chapter", 3));
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&set),
+      "expected counter-set to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_quotes() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut french = base;
+    french.quotes = Arc::from(vec![("«".to_string(), "»".to_string())]);
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&french),
+      "expected quotes to affect layout fingerprints"
     );
   }
 
