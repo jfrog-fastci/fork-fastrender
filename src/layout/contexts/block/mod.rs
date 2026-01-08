@@ -6675,12 +6675,17 @@ fn convert_fragment_axes(
   parent_writing_mode: WritingMode,
   parent_direction: crate::style::types::Direction,
 ) -> FragmentNode {
-  if fragment
-    .style
-    .as_ref()
-    .is_some_and(|style| matches!(style.display, Display::TableCell))
-  {
-    return fragment;
+  if let Some(style) = fragment.style.as_deref() {
+    // Some layout modes (table, flex, grid) already emit fragments in physical coordinates
+    // (including vertical writing-mode axis handling). The block formatting context's axis
+    // conversion is intended for its own logical coordinate space; applying it again would swap
+    // axes twice.
+    if matches!(
+      style.display,
+      Display::TableCell | Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+    ) {
+      return fragment;
+    }
   }
 
   let style_wm = fragment

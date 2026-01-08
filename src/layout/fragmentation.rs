@@ -20,6 +20,7 @@ use crate::style::types::{BreakBetween, BreakInside, Direction, WritingMode};
 use crate::style::{block_axis_is_horizontal, block_axis_positive, ComputedStyle};
 use crate::tree::fragment_tree::{
   FragmentChildren, FragmentContent, FragmentNode, FragmentSliceInfo, GridItemFragmentationData,
+  GridTrackRanges,
 };
 
 /// The fragmentation context determines how break hints are interpreted.
@@ -409,13 +410,7 @@ fn apply_parallel_flow_shifts_to_descendants(
     if delta.abs() > BREAK_EPSILON {
       translate_fragment_in_parent_space(child, axis.block_translation(delta));
     }
-    apply_parallel_flow_shifts_to_descendants(
-      child,
-      child_abs_start,
-      child_shift,
-      axis,
-      shifts,
-    );
+    apply_parallel_flow_shifts_to_descendants(child, child_abs_start, child_shift, axis, shifts);
   }
 }
 
@@ -451,7 +446,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
         let in_flow_count = grid_info.items.len().min(node.children.len());
         for idx in 0..in_flow_count {
           let placement = &grid_info.items[idx];
-          if !grid_item_spans_single_track(placement) {
+          if !grid_item_spans_single_track(placement, axis) {
             continue;
           }
           let Some(child) = node.children_mut().get_mut(idx) else {
@@ -476,13 +471,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
             continue;
           };
 
-          apply_parallel_flow_shifts_to_descendants(
-            child,
-            0.0,
-            0.0,
-            axis,
-            &shifts,
-          );
+          apply_parallel_flow_shifts_to_descendants(child, 0.0, 0.0, axis, &shifts);
         }
       }
     }
@@ -500,14 +489,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
     }
   }
 
-  walk(
-    root,
-    0.0,
-    &axis,
-    axes,
-    fragmentainer_size,
-    default_style,
-  );
+  walk(root, 0.0, &axis, axes, fragmentainer_size, default_style);
 }
 
 fn grid_container_parallel_flow_required_block_size(
@@ -543,7 +525,7 @@ fn grid_container_parallel_flow_required_block_size(
     if idx >= node.children.len() {
       break;
     }
-    if !grid_item_spans_single_track(placement) {
+    if !grid_item_spans_single_track(placement, axis) {
       continue;
     }
 
@@ -651,8 +633,34 @@ const LINE_FALLBACK_EPSILON: f32 = 1.0;
 const SIBLING_LIMIT_FALLBACK_MAX: f32 = 50.0;
 const SIBLING_LIMIT_FALLBACK_RATIO: f32 = 0.15;
 
-fn grid_item_spans_single_track(placement: &GridItemFragmentationData) -> bool {
-  placement.row_end.saturating_sub(placement.row_start) == 1
+fn grid_tracks_in_fragmentation_axis<'a>(
+  tracks: &'a GridTrackRanges,
+  axis: &FragmentAxis,
+) -> &'a [(f32, f32)] {
+  if axis.block_is_horizontal {
+    &tracks.columns
+  } else {
+    &tracks.rows
+  }
+}
+
+fn grid_item_lines_in_fragmentation_axis(
+  placement: &GridItemFragmentationData,
+  axis: &FragmentAxis,
+) -> (u16, u16) {
+  if axis.block_is_horizontal {
+    (placement.column_start, placement.column_end)
+  } else {
+    (placement.row_start, placement.row_end)
+  }
+}
+
+fn grid_item_spans_single_track(
+  placement: &GridItemFragmentationData,
+  axis: &FragmentAxis,
+) -> bool {
+  let (start, end) = grid_item_lines_in_fragmentation_axis(placement, axis);
+  end.saturating_sub(start) == 1
 }
 
 impl FragmentationAnalyzer {
@@ -1179,12 +1187,8 @@ pub fn fragment_tree(
     apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, options.fragmentainer_size);
   }
 
-  let mut analyzer = FragmentationAnalyzer::new(
-    &root,
-    context,
-    axes,
-    Some(options.fragmentainer_size),
-  );
+  let mut analyzer =
+    FragmentationAnalyzer::new(&root, context, axes, Some(options.fragmentainer_size));
 
   let total_extent = analyzer.content_extent().max(options.fragmentainer_size);
   let boundaries = analyzer.boundaries(options.fragmentainer_size, total_extent)?;
@@ -1339,6 +1343,11 @@ pub(crate) fn clip_node(
   axes: FragmentAxes,
 ) -> Result<Option<FragmentNode>, LayoutError> {
   check_layout_deadline()?;
+  // When a parent fragment's own bounds no longer overlap the fragmentainer but its logical
+  // bounding box does (e.g. descendants overflow), callers can pass a "clipped" range whose end
+  // precedes its start. Clamp to a non-decreasing range so descendant translation always anchors
+  // to the parent's clipped start edge.
+  let parent_clipped_flow_end = parent_clipped_flow_end.max(parent_clipped_flow_start);
   let parent_clip_start_offset = parent_clipped_flow_start - parent_abs_flow_start;
   let parent_clip_end_offset = parent_clipped_flow_end - parent_abs_flow_start;
   let parent_clip_origin_phys = axis
@@ -1522,10 +1531,11 @@ pub(crate) fn clip_node(
   for (idx, child) in node.children.iter().enumerate() {
     let parallel_item = grid_items
       .and_then(|info| info.items.get(idx))
-      .is_some_and(grid_item_spans_single_track);
+      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     if parallel_item {
-      let child_abs_start =
-        axis.flow_range(node_flow_start, original_node_block_size, &child.bounds).0;
+      let child_abs_start = axis
+        .flow_range(node_flow_start, original_node_block_size, &child.bounds)
+        .0;
       let child_required =
         grid_item_parallel_flow_required_block_size(child, axes, fragmentainer_size);
       let child_abs_end = child_abs_start + child_required;
@@ -1544,21 +1554,21 @@ pub(crate) fn clip_node(
         0
       };
 
-      if let Some(mut item_fragment) = clip_grid_item_parallel_for_page(
-        child,
-        axis,
-        axes,
-        fragmentainer_size,
-        local_index,
-      )? {
+      if let Some(mut item_fragment) =
+        clip_grid_item_parallel_for_page(child, axis, axes, fragmentainer_size, local_index)?
+      {
         // Position the clipped fragment in the current fragmentainer slice. This mirrors the
         // coordinate mapping performed by the normal `clip_node` recursion, but without slicing the
         // grid item's internal flow.
         let child_clipped_flow_start = child_abs_start.max(fragment_start);
         let node_clip_origin_phys = axis
-          .flow_point_to_physical(clipped_flow_start - node_flow_start, original_node_block_size)
+          .flow_point_to_physical(
+            clipped_flow_start - node_flow_start,
+            original_node_block_size,
+          )
           .min(
-            axis.flow_point_to_physical(clipped_flow_end - node_flow_start, original_node_block_size),
+            axis
+              .flow_point_to_physical(clipped_flow_end - node_flow_start, original_node_block_size),
           );
         let child_phys_start = axis.flow_box_start_to_physical(
           child_clipped_flow_start - node_flow_start,
@@ -1995,10 +2005,11 @@ fn collect_break_opportunities(
   // Layout).
   let mut grid_item_count = 0usize;
   if matches!(style.display, Display::Grid | Display::InlineGrid) {
-    if let (Some(grid_tracks), Some(grid_items)) =
-      (node.grid_tracks.as_deref(), node.grid_fragmentation.as_deref())
-    {
-      let tracks = &grid_tracks.rows;
+    if let (Some(grid_tracks), Some(grid_items)) = (
+      node.grid_tracks.as_deref(),
+      node.grid_fragmentation.as_deref(),
+    ) {
+      let tracks = grid_tracks_in_fragmentation_axis(grid_tracks, axis);
       if !tracks.is_empty() && !grid_items.items.is_empty() {
         let in_flow_count = grid_items.items.len().min(node.children.len());
         grid_item_count = in_flow_count;
@@ -2015,9 +2026,10 @@ fn collect_break_opportunities(
             .map(|s| s.as_ref())
             .unwrap_or(default_style);
           let placement = &grid_items.items[idx];
-          let (start_line, end_line) = (placement.row_start, placement.row_end);
+          let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
-          let before_strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+          let before_strength =
+            combine_breaks(BreakBetween::Auto, child_style.break_before, context);
           if !matches!(before_strength, BreakStrength::Auto) {
             let boundary_idx = start_line.saturating_sub(1) as usize;
             if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
@@ -2044,7 +2056,8 @@ fn collect_break_opportunities(
           } else if boundary_idx == tracks.len() {
             abs_end
           } else {
-            let Some((track_start, track_end)) = tracks.get(boundary_idx.saturating_sub(1)).copied()
+            let Some((track_start, track_end)) =
+              tracks.get(boundary_idx.saturating_sub(1)).copied()
             else {
               continue;
             };
@@ -2158,7 +2171,7 @@ fn collect_break_opportunities(
 
     let skip_descendants = grid_items
       .and_then(|info| info.items.get(idx))
-      .is_some_and(grid_item_spans_single_track);
+      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     if !skip_descendants {
       collect_break_opportunities(
         child,
@@ -2339,7 +2352,7 @@ fn collect_forced_boundaries_with_axes_internal(
     let mut grid_item_count = 0usize;
     if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
       if let (Some(grid_tracks), Some(grid_items)) = (node.grid_tracks.as_deref(), grid_items) {
-        let tracks = &grid_tracks.rows;
+        let tracks = grid_tracks_in_fragmentation_axis(grid_tracks, axis);
         if !tracks.is_empty() && !grid_items.items.is_empty() {
           let in_flow_count = grid_items.items.len().min(node.children.len());
           // One slot per grid line (track_count + 1). Index `i` corresponds to the boundary at line
@@ -2354,7 +2367,7 @@ fn collect_forced_boundaries_with_axes_internal(
               .map(|s| s.as_ref())
               .unwrap_or(default_style);
             let placement = &grid_items.items[idx];
-            let (start_line, end_line) = (placement.row_start, placement.row_end);
+            let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
             if is_forced_page_break(child_style.break_before) {
               let boundary_idx = start_line.saturating_sub(1) as usize;
@@ -2385,7 +2398,9 @@ fn collect_forced_boundaries_with_axes_internal(
                 continue;
               }
               track_flow_ends.push(
-                abs_start + axis.flow_offset(track_start, track_size, parent_block_size) + track_size,
+                abs_start
+                  + axis.flow_offset(track_start, track_size, parent_block_size)
+                  + track_size,
               );
             }
 
@@ -2479,7 +2494,7 @@ fn collect_forced_boundaries_with_axes_internal(
         && idx < in_flow_grid_item_count
         && grid_items
           .and_then(|grid_items| grid_items.items.get(idx))
-          .map(grid_item_spans_single_track)
+          .map(|placement| grid_item_spans_single_track(placement, axis))
           .unwrap_or(false);
       if !skip_parallel_flow_descendants {
         collect(
@@ -2613,7 +2628,7 @@ fn collect_atomic_range_for_node(
 
   if matches!(style.display, Display::Grid | Display::InlineGrid) {
     if let Some(grid_tracks) = node.grid_tracks.as_deref() {
-      let tracks = &grid_tracks.rows;
+      let tracks = grid_tracks_in_fragmentation_axis(grid_tracks, axis);
 
       // Treat each grid track as indivisible. Additionally, treat the inter-track gutter preceding
       // each track as part of the following track so pagination never splits a `row-gap`/`column-gap`
@@ -2708,7 +2723,7 @@ fn collect_atomic_ranges_with_axis(
   for (idx, child) in node.children.iter().enumerate() {
     let skip_descendants = grid_items
       .and_then(|info| info.items.get(idx))
-      .is_some_and(grid_item_spans_single_track);
+      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     if skip_descendants {
       continue;
     }
@@ -2977,11 +2992,8 @@ mod tests {
     first_style.writing_mode = WritingMode::VerticalRl;
     let first_style = Arc::new(first_style);
 
-    let mut first = FragmentNode::new_block_styled(
-      Rect::from_xywh(40.0, 0.0, 30.0, 20.0),
-      vec![],
-      first_style,
-    );
+    let mut first =
+      FragmentNode::new_block_styled(Rect::from_xywh(40.0, 0.0, 30.0, 20.0), vec![], first_style);
     // Ensure the metadata is wired consistently for the propagation logic.
     first.content = FragmentContent::Block { box_id: Some(1) };
 
