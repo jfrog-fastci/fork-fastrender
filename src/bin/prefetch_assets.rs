@@ -1463,6 +1463,42 @@ mod disk_cache_main {
     }
   }
 
+  struct DryRunImportLoader<'a> {
+    summary: &'a RefCell<PageSummary>,
+  }
+
+  impl<'a> DryRunImportLoader<'a> {
+    fn new(summary: &'a RefCell<PageSummary>) -> Self {
+      Self { summary }
+    }
+  }
+
+  impl CssImportLoader for DryRunImportLoader<'_> {
+    fn load(&self, url: &str) -> fastrender::Result<String> {
+      self
+        .load_with_importer(url, None)
+        .map(|fetched| fetched.css)
+    }
+
+    fn referrer_policy_for_stylesheet(&self, _url: &str) -> Option<ReferrerPolicy> {
+      None
+    }
+
+    fn load_with_importer(
+      &self,
+      url: &str,
+      _importer_url: Option<&str>,
+    ) -> fastrender::Result<FetchedStylesheet> {
+      self
+        .summary
+        .borrow_mut()
+        .report
+        .imports
+        .record_discovered(url.to_string());
+      Ok(FetchedStylesheet::new(String::new(), None))
+    }
+  }
+
   #[derive(Debug, Clone)]
   enum StylesheetTask {
     Inline(String),
@@ -1742,6 +1778,7 @@ mod disk_cache_main {
     media_query_cache: &mut MediaQueryCache,
     seen_fonts: &mut HashMap<String, bool>,
     summary: &mut PageSummary,
+    dry_run: bool,
   ) {
     for face in sheet.collect_font_face_rules_with_cache(media_ctx, Some(media_query_cache)) {
       let stylesheet_url = face
@@ -1765,6 +1802,12 @@ mod disk_cache_main {
           Some(true) => break,
           Some(false) => continue,
           None => {}
+        }
+
+        if dry_run {
+          seen_fonts.insert(resolved.clone(), false);
+          summary.report.fonts.record_discovered(resolved);
+          continue;
         }
 
         let mut request = FetchRequest::new(&resolved, FetchDestination::Font)
@@ -2153,38 +2196,49 @@ mod disk_cache_main {
               Err(_) => continue,
             };
 
-            let resolved = if !opts.dry_run && sheet.contains_imports() {
-              let (destination, credentials_mode) = stylesheet_fetch_profile(None);
-              let import_loader = PrefetchImportLoader::new(
-                fetcher.as_ref(),
-                base_hint,
-                Some(base_url),
-                document_origin.as_ref(),
-                destination,
-                credentials_mode,
-                referrer_policy,
-                &summary,
-                &all_asset_urls,
-                css_asset_urls_ref,
-                opts.max_discovered_assets_per_page,
-              );
-              match sheet.resolve_imports_owned_with_cache(
-                &import_loader,
-                Some(base_url),
-                media_ctx,
-                Some(&mut media_query_cache),
-              ) {
-                Ok(sheet) => sheet,
-                Err(_) => match parse_stylesheet(&css) {
+            let resolved = if sheet.contains_imports() {
+              if opts.dry_run {
+                let import_loader = DryRunImportLoader::new(&summary);
+                let _ = sheet.resolve_imports_owned_with_cache(
+                  &import_loader,
+                  Some(base_url),
+                  media_ctx,
+                  Some(&mut media_query_cache),
+                );
+                sheet
+              } else {
+                let (destination, credentials_mode) = stylesheet_fetch_profile(None);
+                let import_loader = PrefetchImportLoader::new(
+                  fetcher.as_ref(),
+                  base_hint,
+                  Some(base_url),
+                  document_origin.as_ref(),
+                  destination,
+                  credentials_mode,
+                  referrer_policy,
+                  &summary,
+                  &all_asset_urls,
+                  css_asset_urls_ref,
+                  opts.max_discovered_assets_per_page,
+                );
+                match sheet.resolve_imports_owned_with_cache(
+                  &import_loader,
+                  Some(base_url),
+                  media_ctx,
+                  Some(&mut media_query_cache),
+                ) {
                   Ok(sheet) => sheet,
-                  Err(_) => continue,
-                },
+                  Err(_) => match parse_stylesheet(&css) {
+                    Ok(sheet) => sheet,
+                    Err(_) => continue,
+                  },
+                }
               }
             } else {
               sheet
             };
 
-            if !opts.dry_run && opts.prefetch_fonts {
+            if opts.prefetch_fonts {
               let mut summary = summary.borrow_mut();
               prefetch_fonts_from_stylesheet(
                 fetcher.as_ref(),
@@ -2197,6 +2251,7 @@ mod disk_cache_main {
                 &mut media_query_cache,
                 &mut seen_fonts,
                 &mut summary,
+                opts.dry_run,
               );
             }
           }
@@ -2313,6 +2368,7 @@ mod disk_cache_main {
                     &mut media_query_cache,
                     &mut seen_fonts,
                     &mut summary,
+                    false,
                   );
                 }
               }
@@ -2762,7 +2818,11 @@ mod disk_cache_main {
 
       let html = r#"<!doctype html><html><head>
         <link rel="stylesheet" href="https://example.com/style.css">
-        <style>body { background-image: url("https://example.com/bg.png"); }</style>
+        <style>
+          @import "https://example.com/import.css";
+          @font-face { font-family: X; src: url("https://example.com/font.woff2") format("woff2"); }
+          body { background-image: url("https://example.com/bg.png"); }
+        </style>
       </head><body>
         <img src="https://example.com/img.png">
         <iframe src="https://example.com/frame.html"></iframe>
@@ -2820,6 +2880,22 @@ mod disk_cache_main {
           .discovered
           .contains("https://example.com/style.css"),
         "expected CSS URL to be recorded in report discovery"
+      );
+      assert!(
+        summary
+          .report
+          .imports
+          .discovered
+          .contains("https://example.com/import.css"),
+        "expected @import URL to be recorded in report discovery"
+      );
+      assert!(
+        summary
+          .report
+          .fonts
+          .discovered
+          .contains("https://example.com/font.woff2"),
+        "expected @font-face URL to be recorded in report discovery"
       );
       assert!(
         summary
