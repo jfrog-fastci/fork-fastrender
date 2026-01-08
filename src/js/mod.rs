@@ -7,6 +7,7 @@
 pub mod dom_scripts;
 pub mod clock;
 pub mod event_loop;
+pub mod script_scheduler;
 
 pub use dom_scripts::extract_script_elements;
 pub use clock::{Clock, RealClock, VirtualClock};
@@ -14,6 +15,7 @@ pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, Task, TaskSource,
   TimerId,
 };
+pub use script_scheduler::{ClassicScriptScheduler, ScriptExecutor, ScriptLoader};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
