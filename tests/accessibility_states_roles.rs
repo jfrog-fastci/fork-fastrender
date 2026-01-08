@@ -726,3 +726,27 @@ fn aria_idref_lists_dedupe_duplicate_tokens() {
   assert_eq!(relations.controls, vec!["target".to_string()]);
   assert_eq!(relations.owns, vec!["owned".to_string()]);
 }
+
+#[test]
+fn number_input_non_finite_value_is_invalid() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <input id="nan" type="number" value="NaN" />
+        <input id="inf" type="number" value="Infinity" />
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let nan = find_by_id(&tree, "nan").expect("nan input");
+  assert!(nan.states.invalid);
+
+  let inf = find_by_id(&tree, "inf").expect("inf input");
+  assert!(inf.states.invalid);
+}

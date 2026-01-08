@@ -2280,13 +2280,21 @@ fn format_number(mut value: f64) -> String {
 
 fn progress_value(node: &DomNode) -> Option<String> {
   let raw_value = node.get_attribute_ref("value")?;
-  let parsed = raw_value.trim().parse::<f64>().ok()?;
+  let parsed = raw_value
+    .trim()
+    .parse::<f64>()
+    .ok()
+    .filter(|v| v.is_finite())?;
   Some(format_number(parsed))
 }
 
 fn meter_value(node: &DomNode) -> Option<String> {
   let raw_value = node.get_attribute_ref("value")?;
-  let parsed = raw_value.trim().parse::<f64>().ok()?;
+  let parsed = raw_value
+    .trim()
+    .parse::<f64>()
+    .ok()
+    .filter(|v| v.is_finite())?;
   Some(format_number(parsed))
 }
 
@@ -2517,7 +2525,7 @@ fn compute_invalid(
         return required;
       }
 
-      let parsed = raw.trim().parse::<f64>().ok();
+      let parsed = raw.trim().parse::<f64>().ok().filter(|v| v.is_finite());
       let Some(value) = parsed else {
         return true;
       };
@@ -2525,11 +2533,11 @@ fn compute_invalid(
       let min = node
         .node
         .get_attribute_ref("min")
-        .and_then(|m| m.trim().parse::<f64>().ok());
+        .and_then(|m| m.trim().parse::<f64>().ok().filter(|v| v.is_finite()));
       let max = node
         .node
         .get_attribute_ref("max")
-        .and_then(|m| m.trim().parse::<f64>().ok());
+        .and_then(|m| m.trim().parse::<f64>().ok().filter(|v| v.is_finite()));
 
       if let Some(min) = min {
         if value < min {

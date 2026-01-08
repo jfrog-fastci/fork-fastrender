@@ -5066,7 +5066,7 @@ impl<'a> ElementRef<'a> {
   }
 
   fn parse_number(value: &str) -> Option<f64> {
-    value.trim().parse::<f64>().ok()
+    value.trim().parse::<f64>().ok().filter(|v| v.is_finite())
   }
 
   fn numeric_in_range(&self, value: f64) -> Option<bool> {
@@ -8571,6 +8571,19 @@ mod tests {
     );
 
     assert!(ElementRef::new(&select).is_valid_control());
+  }
+
+  #[test]
+  fn number_input_is_invalid_for_non_finite_value() {
+    let nan_input = element_with_attrs("input", vec![("type", "number"), ("value", "NaN")], vec![]);
+    assert!(!ElementRef::new(&nan_input).is_valid_control());
+
+    let inf_input = element_with_attrs(
+      "input",
+      vec![("type", "number"), ("value", "Infinity")],
+      vec![],
+    );
+    assert!(!ElementRef::new(&inf_input).is_valid_control());
   }
 
   #[test]
