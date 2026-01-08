@@ -2555,12 +2555,23 @@ fn parse_animation_play_state_list(raw: &str) -> Vec<AnimationPlayState> {
   }
 }
 
-fn parse_transition_property_list(raw: &str) -> Vec<TransitionProperty> {
+fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
+  }
+  if parts.len() == 1 && parts[0].trim().eq_ignore_ascii_case("none") {
+    return Some(vec![TransitionProperty::None]);
+  }
+
   let mut props = Vec::new();
-  for part in split_top_level_commas(raw) {
+  for part in parts {
     let lower = part.trim().to_ascii_lowercase();
     if lower == "none" {
-      return vec![TransitionProperty::None];
+      // `transition-property` is either the single keyword `none` or a comma-separated list of
+      // `<single-transition-property>` values that excludes `none`. Reject mixed lists such as
+      // `none, opacity`.
+      return None;
     }
     if lower == "all" {
       props.push(TransitionProperty::All);
@@ -2570,11 +2581,7 @@ fn parse_transition_property_list(raw: &str) -> Vec<TransitionProperty> {
       props.push(TransitionProperty::Name(canonical.to_string()));
     }
   }
-  if props.is_empty() {
-    vec![TransitionProperty::All]
-  } else {
-    props
-  }
+  Some(props)
 }
 
 fn parse_transition_time_list(raw: &str) -> Vec<f32> {
@@ -11252,7 +11259,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "transition-property" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.transition_properties = parse_transition_property_list(css_text).into();
+      if let Some(list) = parse_transition_property_list(css_text) {
+        styles.transition_properties = list.into();
+      }
     }
     "transition-duration" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
