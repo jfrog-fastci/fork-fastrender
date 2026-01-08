@@ -1744,6 +1744,16 @@ pub struct RenderResult {
   pub diagnostics: RenderDiagnostics,
 }
 
+/// Result of a paint operation that includes the scroll state actually applied.
+///
+/// During painting the renderer may adjust the requested scroll offset (e.g. via CSS scroll snap,
+/// clamping, etc). This structure exposes the effective scroll state so UI layers can keep their
+/// scroll model in sync with what was actually painted.
+pub struct PaintedFrame {
+  pub pixmap: Pixmap,
+  pub scroll_state: ScrollState,
+}
+
 /// Intermediate artifacts produced during layout.
 #[derive(Debug, Clone)]
 pub struct LayoutArtifacts {
@@ -1888,6 +1898,16 @@ impl PreparedDocument {
 
   /// Paints the prepared document using a rich options struct.
   pub fn paint_with_options(&self, options: PreparedPaintOptions) -> Result<Pixmap> {
+    Ok(self.paint_with_options_frame(options)?.pixmap)
+  }
+
+  /// Paints the prepared document using a rich options struct, returning the rendered pixmap and
+  /// the final scroll state used during painting.
+  ///
+  /// The returned [`ScrollState`] includes any adjustments made by the renderer (such as CSS scroll
+  /// snap), and can be used by UIs to synchronize their scroll position model with the rendered
+  /// output.
+  pub fn paint_with_options_frame(&self, options: PreparedPaintOptions) -> Result<PaintedFrame> {
     runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
       if let Some((w, h)) = options.viewport {
         if w == 0 || h == 0 {
@@ -4279,7 +4299,7 @@ fn paint_fragment_tree_with_state(
   animation_time: Option<f32>,
   paint_parallelism: PaintParallelism,
   max_iframe_depth: usize,
-) -> Result<Pixmap> {
+) -> Result<PaintedFrame> {
   let expand_full_page = runtime::runtime_toggles().truthy("FASTR_FULL_PAGE");
 
   let viewport_size = viewport_override.unwrap_or_else(|| fragment_tree.viewport_size());
@@ -4328,7 +4348,7 @@ fn paint_fragment_tree_with_state(
   };
 
   let offset = Point::new(-scroll.x, -scroll.y);
-  paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
+  let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
     &fragment_tree,
     target_width,
     target_height,
@@ -4341,7 +4361,12 @@ fn paint_fragment_tree_with_state(
     &scroll_state,
     paint_backend_from_env(),
     max_iframe_depth,
-  )
+  )?;
+
+  Ok(PaintedFrame {
+    pixmap,
+    scroll_state,
+  })
 }
 
 /// Options controlling `layout_document` pagination behavior.
@@ -21976,6 +22001,35 @@ pub(crate) fn render_html_with_shared_resources(
       "expected snap to the second section"
     );
     assert!(snapped.x.abs() < 0.1);
+  }
+
+  #[test]
+  fn prepared_document_paint_returns_applied_scroll_state() {
+    let mut renderer = FastRender::new().unwrap();
+    let html = r"
+            <style>
+                html, body { margin: 0; height: 100%; scroll-snap-type: y mandatory; }
+                section { height: 100px; scroll-snap-align: start; }
+            </style>
+            <section></section>
+            <section></section>
+            <section></section>
+        ";
+
+    let prepared = renderer
+      .prepare_html(html, RenderOptions::new().with_viewport(100, 100))
+      .unwrap();
+
+    let requested = 60.0;
+    let frame = prepared
+      .paint_with_options_frame(PreparedPaintOptions::default().with_scroll(0.0, requested))
+      .unwrap();
+
+    assert!(
+      (frame.scroll_state.viewport.y - 100.0).abs() < 0.1,
+      "expected scroll-snap to snap to y=100, got {:?} (requested y={requested})",
+      frame.scroll_state.viewport
+    );
   }
 
   #[test]
