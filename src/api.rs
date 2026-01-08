@@ -1767,7 +1767,16 @@ pub struct PreparedDocumentReport {
   pub document: PreparedDocument,
   /// Diagnostics captured while fetching resources.
   pub diagnostics: RenderDiagnostics,
+  /// Final document URL after redirects, when available.
+  ///
+  /// For `prepare_html*` APIs this is typically the provided base hint (if any).
+  pub final_url: Option<String>,
+  /// Effective base URL used to resolve relative subresources (after `<base href>`).
+  pub base_url: Option<String>,
 }
+
+/// Backwards/alternate naming for prepared document results.
+pub type PrepareResult = PreparedDocumentReport;
 
 /// Intermediate artifacts produced during layout.
 #[derive(Debug, Clone)]
@@ -5316,6 +5325,275 @@ impl FastRender {
     Ok(PreparedDocumentReport {
       document,
       diagnostics,
+      final_url: self.document_url.clone(),
+      base_url: self.base_url.clone(),
+    })
+  }
+
+  /// Prepares an HTML string for repeated painting while inlining linked stylesheets.
+  ///
+  /// This is the HTML-string equivalent of [`FastRender::render_html_with_stylesheets`], allowing
+  /// callers (notably the browser UI) to provide HTML content fetched elsewhere while still
+  /// resolving `<link rel="stylesheet" href="...">` references against a base URL hint.
+  pub fn prepare_html_with_stylesheets(
+    &mut self,
+    html: &str,
+    base_hint: &str,
+    options: RenderOptions,
+  ) -> Result<PrepareResult> {
+    let toggles = self.resolve_runtime_toggles(&options);
+    let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
+    runtime::with_runtime_toggles(toggles, || {
+      let trace = TraceSession::from_options(Some(&options));
+      let trace_handle = trace.handle();
+      let _root_span = trace_handle.span("prepare", "pipeline");
+
+      let (width, height) = options
+        .viewport
+        .unwrap_or((self.default_width, self.default_height));
+      if width == 0 || height == 0 {
+        let result = Err(Error::Render(RenderError::InvalidParameters {
+          message: format!("Invalid dimensions: width={}, height={}", width, height),
+        }));
+        drop(_root_span);
+        return trace.finalize(result);
+      }
+
+      // Install a root deadline before any stylesheet fetches.
+      let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+      // Capture diagnostics for both stylesheet inlining and subsequent layout.
+      let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
+      let previous_sink = self.diagnostics.take();
+      self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
+
+      // Configure base/document URL hints for URL resolution and referrer/origin semantics.
+      let base_hint = base_hint.trim();
+      if base_hint.is_empty() {
+        self.clear_document_url();
+        self.clear_base_url();
+      } else {
+        self.set_document_url(base_hint);
+        self.set_base_url(base_hint.to_string());
+      }
+
+      // Build + install resource context so stylesheet fetches observe the same policy/diagnostics
+      // plumbing as the normal render path.
+      let initial_referrer_policy =
+        crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
+      let inlining_context =
+        self.build_resource_context(self.document_url_hint(), None, initial_referrer_policy);
+      let shared_diagnostics = Some(SharedRenderDiagnostics {
+        inner: Arc::clone(&diagnostics),
+      });
+      let context = Some(self.build_resource_context(
+        self.document_url_hint(),
+        shared_diagnostics,
+        initial_referrer_policy,
+      ));
+      let (prev_self_ctx, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+
+      let result = (|| -> Result<PrepareResult> {
+        // Inline linked stylesheets (respecting `<base href>`, `options.media_type`, and
+        // `options.css_limit`).
+        let inlined_html = {
+          let mut guard = diagnostics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+          self
+            .inline_stylesheets_for_document_with_context(
+              html,
+              base_hint,
+              options.media_type,
+              options.css_limit,
+              Some(&inlining_context),
+              &mut guard,
+              Some(&deadline),
+            )
+            .map_err(Error::Render)?
+        };
+
+        // Parse the resulting HTML so we can disable the original `<link>` entries before the DOM
+        // stylesheet loader runs (avoids double-fetching and ensures `css_limit` is authoritative).
+        let mut dom = {
+          let _span = trace_handle.span("dom_parse", "parse");
+          self.parse_html(&inlined_html)?
+        };
+        self.update_base_url_from_dom(&dom);
+        if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)? {
+          let needs_update = self
+            .resource_context
+            .as_ref()
+            .is_some_and(|ctx| ctx.referrer_policy != policy);
+          if needs_update {
+            if let Some(mut ctx) = self.resource_context.clone() {
+              ctx.referrer_policy = policy;
+              // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+              // resource context.
+              self.push_resource_context(Some(ctx));
+            }
+          }
+        }
+
+        let preload_stylesheets_enabled = self
+          .runtime_toggles
+          .truthy_with_default("FASTR_FETCH_PRELOAD_STYLESHEETS", true);
+        let modulepreload_stylesheets_enabled = self
+          .runtime_toggles
+          .truthy_with_default("FASTR_FETCH_MODULEPRELOAD_STYLESHEETS", false);
+        let alternate_stylesheets_enabled = self
+          .runtime_toggles
+          .truthy_with_default("FASTR_FETCH_ALTERNATE_STYLESHEETS", true);
+
+        fn disable_stylesheet_links(
+          node: &mut DomNode,
+          preload_stylesheets_enabled: bool,
+          modulepreload_stylesheets_enabled: bool,
+          alternate_stylesheets_enabled: bool,
+        ) {
+          if let DomNodeType::Element {
+            tag_name,
+            namespace,
+            attributes,
+          } = &mut node.node_type
+          {
+            if tag_name.eq_ignore_ascii_case("link")
+              && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
+            {
+              let rel_value = attributes
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("rel"))
+                .map(|(_, v)| v.clone());
+              let href_present = attributes
+                .iter()
+                .any(|(k, v)| k.eq_ignore_ascii_case("href") && !v.trim().is_empty());
+              if let (Some(rel_value), true) = (rel_value, href_present) {
+                let rel_tokens = crate::css::parser::tokenize_rel_list(&rel_value);
+                let as_attr = attributes
+                  .iter()
+                  .find(|(k, _)| k.eq_ignore_ascii_case("as"))
+                  .map(|(_, v)| v.as_str());
+                if link_rel_is_stylesheet_candidate(
+                  &rel_tokens,
+                  as_attr,
+                  preload_stylesheets_enabled,
+                  modulepreload_stylesheets_enabled,
+                  alternate_stylesheets_enabled,
+                ) {
+                  if !attributes.iter().any(|(k, _)| k.eq_ignore_ascii_case("disabled")) {
+                    attributes.push(("disabled".to_string(), String::new()));
+                  }
+                }
+              }
+            }
+          }
+
+          for child in node.children.iter_mut() {
+            disable_stylesheet_links(
+              child,
+              preload_stylesheets_enabled,
+              modulepreload_stylesheets_enabled,
+              alternate_stylesheets_enabled,
+            );
+          }
+        }
+
+        disable_stylesheet_links(
+          &mut dom,
+          preload_stylesheets_enabled,
+          modulepreload_stylesheets_enabled,
+          alternate_stylesheets_enabled,
+        );
+
+        let requested_viewport = Size::new(width as f32, height as f32);
+        let base_dpr = options
+          .device_pixel_ratio
+          .unwrap_or(self.device_pixel_ratio);
+        let meta_viewport = if self.apply_meta_viewport {
+          crate::html::viewport::extract_viewport_with_deadline(&dom)?
+        } else {
+          None
+        };
+        let resolved_viewport =
+          resolve_viewport(requested_viewport, base_dpr, meta_viewport.as_ref());
+        let layout_width = resolved_viewport.layout_viewport.width.max(1.0).round() as u32;
+        let layout_height = resolved_viewport.layout_viewport.height.max(1.0).round() as u32;
+        let paint_parallelism = self.resolve_paint_parallelism(&options);
+        let layout_parallelism = self.resolve_layout_parallelism(&options);
+
+        let previous_dpr = self.device_pixel_ratio;
+        let artifacts_result = (|| -> Result<LayoutArtifacts> {
+          self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
+          self.pending_device_size = Some(resolved_viewport.visual_viewport);
+          self.layout_document_for_media_with_artifacts(
+            &dom,
+            layout_width,
+            layout_height,
+            options.media_type,
+            LayoutDocumentOptions {
+              page_stacking: PageStacking::Stacked { gap: 0.0 },
+              animation_time: options.animation_time,
+            },
+            Point::new(options.scroll_x, options.scroll_y),
+            Some(&deadline),
+            options.stage_mem_budget_bytes,
+            trace_handle,
+            layout_parallelism,
+            None,
+          )
+        })();
+
+        self.device_pixel_ratio = previous_dpr;
+        self.pending_device_size = None;
+        let artifacts = artifacts_result?;
+
+        let layout_viewport = artifacts.fragment_tree.viewport_size();
+
+        let document = PreparedDocument {
+          dom: artifacts.dom,
+          stylesheet: artifacts.stylesheet,
+          styled_tree: artifacts.styled_tree,
+          box_tree: artifacts.box_tree,
+          fragment_tree: artifacts.fragment_tree,
+          layout_viewport,
+          visual_viewport: resolved_viewport.visual_viewport,
+          device_pixel_ratio: resolved_viewport.device_pixel_ratio,
+          page_zoom: resolved_viewport.zoom,
+          background_color: self.background_color,
+          default_scroll: ScrollState::from_parts(
+            Point::new(options.scroll_x, options.scroll_y),
+            options.element_scroll_offsets.clone(),
+          ),
+          animation_time: options.animation_time,
+          font_context: self.font_context.clone(),
+          image_cache: self.image_cache.clone(),
+          max_iframe_depth: self.max_iframe_depth,
+          paint_parallelism,
+          runtime_toggles: Arc::clone(&self.runtime_toggles),
+        };
+
+        let diagnostics_value = diagnostics
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .clone();
+
+        let final_url = self.document_url.clone();
+        let base_url = self.base_url.clone();
+
+        Ok(PrepareResult {
+          document,
+          diagnostics: diagnostics_value,
+          final_url,
+          base_url,
+        })
+      })();
+
+      self.pop_resource_context(prev_self_ctx, prev_image, prev_layout_image, prev_font);
+      self.set_diagnostics_sink(previous_sink);
+
+      drop(_root_span);
+      trace.finalize(result)
     })
   }
 
@@ -6843,6 +7121,8 @@ impl FastRender {
     Ok(PreparedDocumentReport {
       document,
       diagnostics,
+      final_url: self.document_url.clone(),
+      base_url: self.base_url.clone(),
     })
   }
 
@@ -19155,6 +19435,110 @@ pub(crate) fn render_html_with_shared_resources(
       css_idx < cascade_idx,
       "expected CssInline stage before Cascade stage, got: {stages:?}"
     );
+  }
+
+  #[test]
+  fn prepare_html_with_stylesheets_inlines_linked_css() {
+    #[derive(Clone, Default)]
+    struct DeadlineAssertingFetcher {
+      map: HashMap<String, (Vec<u8>, Option<String>)>,
+      requested: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl DeadlineAssertingFetcher {
+      fn with_entry(mut self, url: &str, body: &str, content_type: &str) -> Self {
+        self.map.insert(
+          url.to_string(),
+          (body.as_bytes().to_vec(), Some(content_type.to_string())),
+        );
+        self
+      }
+
+      fn requested_urls(&self) -> Vec<String> {
+        self
+          .requested
+          .lock()
+          .map(|guard| guard.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for DeadlineAssertingFetcher {
+      fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+        assert!(
+          crate::render_control::active_deadline().is_some(),
+          "expected active render deadline in fetcher"
+        );
+        self
+          .map
+          .get(url)
+          .map(|(bytes, content_type)| FetchedResource::new(bytes.clone(), content_type.clone()))
+          .ok_or_else(|| {
+            Error::Io(io::Error::new(
+              io::ErrorKind::NotFound,
+              format!("missing resource: {url}"),
+            ))
+          })
+      }
+
+      fn fetch_with_request(
+        &self,
+        request: FetchRequest<'_>,
+      ) -> crate::error::Result<FetchedResource> {
+        assert!(
+          crate::render_control::active_deadline().is_some(),
+          "expected active render deadline in fetcher"
+        );
+        if let Ok(mut guard) = self.requested.lock() {
+          guard.push(request.url.to_string());
+        }
+        self.fetch(request.url)
+      }
+    }
+
+    let html = r#"<!doctype html>
+      <html><head>
+        <link rel="stylesheet" href="/style.css">
+      </head>
+      <body>Hello</body>
+      </html>"#;
+    let base_hint = "https://example.com/page.html";
+    let stylesheet_url = "https://example.com/style.css";
+
+    let fetcher = Arc::new(
+      DeadlineAssertingFetcher::default()
+        .with_entry(stylesheet_url, "html, body { margin: 0; background: black; }", "text/css"),
+    );
+    let config = FastRenderConfig::default()
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled());
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    // Baseline: no inlining, so the linked stylesheet is ignored (relative URL without base).
+    let mut baseline_renderer = FastRender::with_config(FastRenderConfig {
+      font_config: FontConfig::bundled_only(),
+      paint_parallelism: PaintParallelism::disabled(),
+      layout_parallelism: LayoutParallelism::disabled(),
+      ..FastRenderConfig::default()
+    })
+    .unwrap();
+    let baseline_doc = baseline_renderer
+      .prepare_html(html, RenderOptions::new().with_viewport(32, 32))
+      .unwrap();
+    let baseline = baseline_doc.paint_default().unwrap();
+    assert_eq!(pix_rgba(&baseline, 0, 0), (255, 255, 255, 255));
+
+    let prepared = renderer
+      .prepare_html_with_stylesheets(html, base_hint, RenderOptions::new().with_viewport(32, 32))
+      .unwrap();
+    let painted = prepared.document.paint_default().unwrap();
+    assert_eq!(pix_rgba(&painted, 0, 0), (0, 0, 0, 255));
+    assert_eq!(fetcher.requested_urls(), vec![stylesheet_url.to_string()]);
   }
 
   #[test]
