@@ -842,18 +842,13 @@ pub fn creates_stacking_context(
     }
   }
 
-  // Note: The following conditions are not currently tracked in ComputedStyle
-  // but would create stacking contexts if implemented:
-  // - filter property (except none)
-  // - clip-path property (except none)
-  // - mask properties
-  // - mix-blend-mode (except normal)
-  // - isolation: isolate
-  // - perspective property (except none)
-  // - backdrop-filter property (except none)
-  // - contain: layout/paint/strict/content
-  // - will-change for stacking-context-creating properties
-  // - container-type: size/inline-size
+  // 18. container-type: size/inline-size creates a stacking context.
+  if !matches!(
+    style.container_type,
+    crate::style::types::ContainerType::Normal
+  ) {
+    return true;
+  }
 
   false
 }
@@ -950,6 +945,13 @@ pub fn get_stacking_context_reason(
     if parent_is_grid && style.z_index.is_some() {
       return Some(StackingContextReason::GridItemWithZIndex);
     }
+  }
+
+  if !matches!(
+    style.container_type,
+    crate::style::types::ContainerType::Normal
+  ) {
+    return Some(StackingContextReason::ContainerType);
   }
 
   None
