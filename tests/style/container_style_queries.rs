@@ -816,6 +816,58 @@ fn container_style_query_range_feature_resolves_var_in_font_stretch_value() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_font_size_adjust() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; font-size-adjust: 0.4; }
+      .container-high { container-type: inline-size; font-size-adjust: 0.6; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-size-adjust > 0.5) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_text_size_adjust() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; text-size-adjust: 90%; }
+      .container-high { container-type: inline-size; text-size-adjust: 120%; }
+      .child { color: rgb(0 0 255); }
+      @container style(text-size-adjust > 100%) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_letter_spacing() {
   let html = r#"
     <style>

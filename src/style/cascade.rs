@@ -1965,6 +1965,24 @@ fn eval_style_range_value(
         ty: NumericType::LengthPx,
         value: styles.font_size,
       }),
+      "font-size-adjust" => match styles.font_size_adjust {
+        crate::style::types::FontSizeAdjust::Number { ratio, .. } => ratio
+          .is_finite()
+          .then_some(NumericValue {
+            ty: NumericType::Number,
+            value: ratio,
+          }),
+        crate::style::types::FontSizeAdjust::None | crate::style::types::FontSizeAdjust::FromFont { .. } => None,
+      },
+      "text-size-adjust" => match styles.text_size_adjust {
+        crate::style::types::TextSizeAdjust::Percentage(pct) => pct
+          .is_finite()
+          .then_some(NumericValue {
+            ty: NumericType::Percentage,
+            value: pct,
+          }),
+        crate::style::types::TextSizeAdjust::Auto | crate::style::types::TextSizeAdjust::None => None,
+      },
       "font-weight" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.font_weight.to_u16() as f32,
