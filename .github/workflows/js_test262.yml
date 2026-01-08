@@ -39,7 +39,7 @@ jobs:
 
           # Only initialize the curated semantics corpus, not the parser corpus or other optional
           # heavyweight submodules.
-          git -C engines/ecma-rs submodule update --init --recursive test262-semantic/data
+          git -C engines/ecma-rs submodule update --init test262-semantic/data
 
           if [ ! -d engines/ecma-rs/test262-semantic/data ]; then
             echo "::error::test262 semantic corpus directory engines/ecma-rs/test262-semantic/data is missing after submodule init." >&2
