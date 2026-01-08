@@ -13495,6 +13495,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_contain_intrinsic_size_axis(&style.contain_intrinsic_width, &mut h);
   hash_contain_intrinsic_size_axis(&style.contain_intrinsic_height, &mut h);
   hash_enum_discriminant(&style.position, &mut h);
+  hash_enum_discriminant(&style.visibility, &mut h);
   match style.running_position.as_deref() {
     Some(name) => {
       1u8.hash(&mut h);
@@ -15577,6 +15578,20 @@ pub(crate) fn render_html_with_shared_resources(
       super::style_layout_fingerprint(&a),
       super::style_layout_fingerprint(&b),
       "expected text-combine-upright digit count to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_visibility() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut collapsed = base;
+    collapsed.visibility = crate::style::computed::Visibility::Collapse;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&collapsed),
+      "expected visibility to affect layout fingerprints"
     );
   }
 
