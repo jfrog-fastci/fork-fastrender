@@ -224,6 +224,7 @@ pub use api::CascadeDiagnostics;
 pub use api::DiagnosticsLevel;
 pub use api::BrowserDocument;
 pub use api::BrowserDocumentDom2;
+pub use api::BrowserDocument2;
 pub use api::FastRender;
 pub use api::FastRenderBuilder;
 pub use api::FastRenderConfig;

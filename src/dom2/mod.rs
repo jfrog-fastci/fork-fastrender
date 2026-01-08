@@ -293,6 +293,19 @@ impl Document {
   }
 }
 
+/// Find the first element in the document with an `id` attribute matching `id`.
+pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
+  doc.get_element_by_id(id)
+}
+
+/// Set an attribute on a node, returning whether the value changed.
+///
+/// This is a small convenience wrapper around [`Document::set_attribute`] that flattens errors into
+/// `false` for callers that want a simple "did anything change?" signal.
+pub fn set_attribute(doc: &mut Document, node_id: NodeId, name: &str, value: &str) -> bool {
+  doc.set_attribute(node_id, name, value).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod attrs_tests;
 #[cfg(test)]

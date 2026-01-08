@@ -220,6 +220,8 @@ pub use browser_document::BrowserDocument;
 
 mod browser_document_dom2;
 pub use browser_document_dom2::BrowserDocumentDom2;
+mod browser_document2;
+pub use browser_document2::BrowserDocument2;
 
 #[derive(Default, Debug, Clone)]
 struct ReplacedIntrinsicProfileState {
