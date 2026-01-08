@@ -1670,7 +1670,7 @@ impl BlockFormattingContext {
         );
 
         // Resolve positioned style against the containing block.
-        let anchors_for_cb = (cb == parent_padding_cb).then_some(&anchor_index);
+        let anchors_for_cb = Some(&anchor_index);
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &pos_child.style,
           &cb,
@@ -6056,7 +6056,7 @@ impl FormattingContext for BlockFormattingContext {
         );
 
         // Resolve positioned style against the containing block.
-        let anchors_for_cb = (cb == parent_padding_cb).then_some(&anchor_index);
+        let anchors_for_cb = Some(&anchor_index);
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &original_style,
           &cb,

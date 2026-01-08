@@ -8217,7 +8217,7 @@ impl FormattingContext for GridFormattingContext {
             .unwrap_or(CrateAvailableSpace::Indefinite),
         );
 
-        let anchors_for_cb = (cb == padding_cb).then_some(&anchor_index);
+        let anchors_for_cb = Some(&anchor_index);
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &child.style,
           &cb,

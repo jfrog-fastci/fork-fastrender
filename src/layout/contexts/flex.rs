@@ -3584,7 +3584,7 @@ impl FormattingContext for FlexFormattingContext {
         );
         let child_fragment = fc.layout(&layout_child, &child_constraints)?;
 
-        let anchors_for_cb = (cb == padding_cb).then_some(&anchor_index);
+        let anchors_for_cb = Some(&anchor_index);
         let positioned_style = resolve_positioned_style_with_anchors(
           &original_style,
           &cb,

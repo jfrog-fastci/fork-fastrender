@@ -415,6 +415,92 @@ fn anchor_positioning_includes_ancestor_transforms() {
 }
 
 #[test]
+fn anchor_positioning_resolves_with_ancestor_containing_block() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  container_style.padding_left = Length::px(10.0);
+  container_style.padding_top = Length::px(5.0);
+  container_style.padding_right = Length::px(0.0);
+  container_style.padding_bottom = Length::px(0.0);
+  let container_style = Arc::new(container_style);
+
+  let wrapper_id = 20usize;
+  let anchor_id = 21usize;
+  let overlay_id = 22usize;
+
+  let mut wrapper_style = ComputedStyle::default();
+  wrapper_style.display = Display::Block;
+  wrapper_style.width = Some(Length::px(120.0));
+  wrapper_style.height = Some(Length::px(60.0));
+  wrapper_style.width_keyword = None;
+  wrapper_style.height_keyword = None;
+  let wrapper_style = Arc::new(wrapper_style);
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(50.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Right,
+    fallback: None,
+  });
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Top,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut wrapper = BoxNode::new_block(wrapper_style, FormattingContextType::Block, vec![anchor, overlay]);
+  wrapper.id = wrapper_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![wrapper]);
+  container.id = 108;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_bounds = find_abs_bounds_by_box_id(&fragment, anchor_id).expect("anchor bounds");
+  let overlay_bounds = find_abs_bounds_by_box_id(&fragment, overlay_id).expect("overlay bounds");
+
+  assert!(
+    (overlay_bounds.x() - anchor_bounds.max_x()).abs() < 0.1,
+    "anchor() should still resolve when the containing block is an ancestor (got x={}, expected {})",
+    overlay_bounds.x(),
+    anchor_bounds.max_x(),
+  );
+  assert!(
+    (overlay_bounds.y() - anchor_bounds.y()).abs() < 0.1,
+    "anchor() should still resolve when the containing block is an ancestor (got y={}, expected {})",
+    overlay_bounds.y(),
+    anchor_bounds.y(),
+  );
+}
+
+#[test]
 fn anchor_positioning_supports_logical_sides() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Block;
