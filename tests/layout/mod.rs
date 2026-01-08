@@ -37,6 +37,7 @@ mod form_control_baseline;
 mod fragmentation;
 mod fragmentation_widows_orphans;
 mod grid_box_sizing_test;
+mod grid_baseline_column_sizing;
 mod grid_baseline_row_sizing;
 mod grid_fragmentation;
 mod grid_fragmentation_writing_mode;

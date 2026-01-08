@@ -30,6 +30,7 @@ use placement::place_grid_items;
 use rustc_hash::FxHashMap;
 use track_sizing::{
   determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_item_track_indexes,
+  resolve_item_baselines,
   track_sizing_algorithm,
 };
 use types::{
@@ -1062,6 +1063,15 @@ where
   let has_justify_self_baseline_item = items
     .iter()
     .any(|item| item.justify_self == AlignSelf::Baseline);
+
+  // Baseline shims affect intrinsic size contributions via margins. `justify-self: baseline`
+  // requires horizontal baseline information (`first_baselines.x`) which is only available once
+  // we've performed baseline measurement. If we delay until the block-axis sizing pass then
+  // column sizing won't see the shim unless we happen to trigger a rerun. Precompute the
+  // horizontal baseline shims so the first inline-axis track sizing pass can account for them.
+  if has_justify_self_baseline_item {
+    resolve_item_baselines(tree, AbstractAxis::Block, &mut items, inner_node_size);
+  }
 
   // Run track sizing algorithm for Inline axis
       track_sizing_algorithm(

@@ -577,7 +577,7 @@ fn initialize_track_sizes(
 }
 
 /// 11.5.1 Shim baseline-aligned items so their intrinsic size contributions reflect their baseline alignment.
-fn resolve_item_baselines(
+pub(super) fn resolve_item_baselines(
   tree: &mut impl LayoutPartialTree,
   axis: AbstractAxis,
   items: &mut [GridItem],
