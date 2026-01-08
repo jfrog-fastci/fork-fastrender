@@ -317,7 +317,7 @@ impl Position {
   /// assert!(Position::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, PositionParseError> {
-    let s = s.trim().to_lowercase();
+    let s = s.trim().to_ascii_lowercase();
     match s.as_str() {
       "static" => Ok(Position::Static),
       "relative" => Ok(Position::Relative),

@@ -96,7 +96,7 @@ impl Float {
   /// assert!(Float::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, FloatParseError> {
-    let s = s.trim().to_lowercase();
+    let s = s.trim().to_ascii_lowercase();
     match s.as_str() {
       "none" => Ok(Float::None),
       "left" => Ok(Float::Left),
@@ -220,7 +220,7 @@ impl Clear {
   /// assert!(Clear::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, ClearParseError> {
-    let s = s.trim().to_lowercase();
+    let s = s.trim().to_ascii_lowercase();
     match s.as_str() {
       "none" => Ok(Clear::None),
       "left" => Ok(Clear::Left),

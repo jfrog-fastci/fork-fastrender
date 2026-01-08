@@ -572,7 +572,7 @@ impl CounterStyle {
   /// assert_eq!(CounterStyle::parse("unknown"), None);
   /// ```
   pub fn parse(s: &str) -> Option<Self> {
-    match s.trim().to_lowercase().as_str() {
+    match s.trim().to_ascii_lowercase().as_str() {
       "decimal" => Some(CounterStyle::Decimal),
       "decimal-leading-zero" => Some(CounterStyle::DecimalLeadingZero),
       "armenian" | "upper-armenian" => Some(CounterStyle::Armenian),
@@ -1343,7 +1343,7 @@ pub fn parse_content(input: &str) -> Option<ContentValue> {
   let input = input.trim();
 
   // Handle keywords
-  match input.to_lowercase().as_str() {
+  match input.to_ascii_lowercase().as_str() {
     "none" => return Some(ContentValue::None),
     "normal" => return Some(ContentValue::Normal),
     _ => {}
@@ -1414,11 +1414,11 @@ pub fn parse_content(input: &str) -> Option<ContentValue> {
           }
         }
 
-        let item = parse_function(&name.to_lowercase(), &args)?;
+        let item = parse_function(&name.to_ascii_lowercase(), &args)?;
         items.push(item);
       } else {
         // Keyword
-        let item = parse_keyword(&name.to_lowercase())?;
+        let item = parse_keyword(&name.to_ascii_lowercase())?;
         items.push(item);
       }
     }

@@ -1072,7 +1072,7 @@ impl TextAlignment {
   /// Create from a CSS text-align value string
   #[must_use]
   pub fn from_css(value: &str) -> Option<Self> {
-    match value.trim().to_lowercase().as_str() {
+    match value.trim().to_ascii_lowercase().as_str() {
       "left" | "start" => Some(Self::Left),
       "right" | "end" => Some(Self::Right),
       "center" => Some(Self::Center),

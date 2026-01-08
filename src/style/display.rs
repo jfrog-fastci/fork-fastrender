@@ -424,7 +424,7 @@ impl Display {
   /// assert!(Display::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, DisplayParseError> {
-    let s = s.trim().to_lowercase();
+    let s = s.trim().to_ascii_lowercase();
     match s.as_str() {
       "none" => Ok(Display::None),
       "block" => Ok(Display::Block),

@@ -222,7 +222,7 @@ impl SupportedLanguage {
   /// assert_eq!(SupportedLanguage::parse("de"), Some(SupportedLanguage::German));
   /// ```
   pub fn parse(code: &str) -> Option<Self> {
-    let code_lower = code.to_lowercase();
+    let code_lower = code.to_ascii_lowercase();
     let code_lower = code_lower.as_str();
 
     match code_lower {
@@ -689,7 +689,7 @@ pub enum HyphensMode {
 impl HyphensMode {
   /// Parse from CSS value
   pub fn parse(value: &str) -> Option<Self> {
-    match value.trim().to_lowercase().as_str() {
+    match value.trim().to_ascii_lowercase().as_str() {
       "none" => Some(Self::None),
       "manual" => Some(Self::Manual),
       "auto" => Some(Self::Auto),
