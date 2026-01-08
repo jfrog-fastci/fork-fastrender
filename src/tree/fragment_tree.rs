@@ -62,7 +62,7 @@ use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::scroll::ScrollMetadata;
 use crate::style::color::Rgba;
-use crate::style::types::BorderStyle;
+use crate::style::types::{BorderStyle, Overflow};
 use crate::style::ComputedStyle;
 use crate::text::pipeline::ShapedRun;
 use crate::tree::box_tree::{BoxNode, BoxTree, ReplacedType};
@@ -1247,12 +1247,27 @@ impl FragmentNode {
   pub fn fragments_at_point(&self, point: Point) -> Vec<&FragmentNode> {
     let mut result = Vec::new();
 
-    // Convert the point into this fragment's local coordinate space for children.
-    let local_point = Point::new(point.x - self.bounds.x(), point.y - self.bounds.y());
+    let (clip_x, clip_y) = self
+      .style
+      .as_ref()
+      .map(|style| {
+        (
+          style.overflow_x != Overflow::Visible,
+          style.overflow_y != Overflow::Visible,
+        )
+      })
+      .unwrap_or((false, false));
+    let within_x = point.x >= self.bounds.min_x() && point.x <= self.bounds.max_x();
+    let within_y = point.y >= self.bounds.min_y() && point.y <= self.bounds.max_y();
 
-    // Check children first (reverse paint order = depth-first, reversed)
-    for child in self.children.iter().rev() {
-      result.extend(child.fragments_at_point(local_point));
+    if (!clip_x || within_x) && (!clip_y || within_y) {
+      // Convert the point into this fragment's local coordinate space for children.
+      let local_point = Point::new(point.x - self.bounds.x(), point.y - self.bounds.y());
+
+      // Check children first (reverse paint order = depth-first, reversed)
+      for child in self.children.iter().rev() {
+        result.extend(child.fragments_at_point(local_point));
+      }
     }
 
     // Check this fragment
@@ -1883,6 +1898,65 @@ mod tests {
     let hits = parent.fragments_at_point(Point::new(40.0, 40.0));
     assert_eq!(hits.len(), 3); // Both children and parent
                                // child2 should come first (reverse paint order)
+  }
+
+  #[test]
+  fn test_fragments_at_point_overflow_hidden_clips_both_axes() {
+    let child = FragmentNode::new_block(Rect::from_xywh(90.0, 90.0, 30.0, 30.0), vec![]);
+
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Hidden;
+    style.overflow_y = Overflow::Hidden;
+
+    let parent = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![child],
+      Arc::new(style),
+    );
+
+    // Point is inside the child, but outside the parent bounds.
+    let hits = parent.fragments_at_point(Point::new(110.0, 110.0));
+    assert!(hits.is_empty());
+  }
+
+  #[test]
+  fn test_fragments_at_point_overflow_clips_x_only() {
+    let child = FragmentNode::new_block(Rect::from_xywh(10.0, 90.0, 50.0, 50.0), vec![]);
+
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Hidden;
+    style.overflow_y = Overflow::Visible;
+
+    let parent = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![child],
+      Arc::new(style),
+    );
+
+    // Point is outside the parent Y range, but inside its X range.
+    let hits = parent.fragments_at_point(Point::new(20.0, 120.0));
+    assert_eq!(hits.len(), 1);
+    assert!(std::ptr::eq(hits[0], &parent.children[0]));
+  }
+
+  #[test]
+  fn test_fragments_at_point_overflow_clips_y_only() {
+    let child = FragmentNode::new_block(Rect::from_xywh(90.0, 10.0, 50.0, 50.0), vec![]);
+
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Visible;
+    style.overflow_y = Overflow::Hidden;
+
+    let parent = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![child],
+      Arc::new(style),
+    );
+
+    // Point is outside the parent X range, but inside its Y range.
+    let hits = parent.fragments_at_point(Point::new(120.0, 20.0));
+    assert_eq!(hits.len(), 1);
+    assert!(std::ptr::eq(hits[0], &parent.children[0]));
   }
 
   #[test]
