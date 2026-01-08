@@ -10081,6 +10081,69 @@ mod tests {
   }
 
   #[test]
+  fn filter_establishes_backdrop_root_even_when_unresolved() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let child_bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
+
+    let mut child_style = ComputedStyle::default();
+    // Filter Effects Level 2 defines Backdrop Root triggers based on property presence rather than
+    // resolved filter lists. An unresolved `url(#missing)` filter must still establish a Backdrop
+    // Root boundary for descendant `backdrop-filter` sampling.
+    child_style.filter = vec![crate::style::types::FilterFunction::Url("#missing".into())];
+    let child_style = Arc::new(child_style);
+
+    let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
+    let root = FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+
+    let child_context = list.items().iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(ctx) if ctx.bounds == child_bounds => Some(ctx),
+      _ => None,
+    });
+    let child_context = child_context.expect("expected a stacking context for filter:url()");
+
+    assert!(
+      child_context.establishes_backdrop_root,
+      "filter:url() should establish a backdrop root even when the URL cannot be resolved"
+    );
+    assert!(
+      child_context.filters.is_empty(),
+      "unresolved filter:url() should not resolve to any paint-time filters"
+    );
+  }
+
+  #[test]
+  fn backdrop_filter_establishes_backdrop_root_even_when_unresolved() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let child_bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.backdrop_filter = vec![crate::style::types::FilterFunction::Url("#missing".into())];
+    let child_style = Arc::new(child_style);
+
+    let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
+    let root = FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+
+    let child_context = list.items().iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(ctx) if ctx.bounds == child_bounds => Some(ctx),
+      _ => None,
+    });
+    let child_context = child_context.expect("expected a stacking context for backdrop-filter:url()");
+
+    assert!(
+      child_context.establishes_backdrop_root,
+      "backdrop-filter:url() should establish a backdrop root even when the URL cannot be resolved"
+    );
+    assert!(
+      child_context.backdrop_filters.is_empty(),
+      "unresolved backdrop-filter:url() should not resolve to any paint-time filters"
+    );
+  }
+
+  #[test]
   fn clip_path_establishes_backdrop_root_even_when_resolved_none() {
     let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
     let child_bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
