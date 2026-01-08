@@ -193,5 +193,36 @@ mod tests {
 
     assert_eq!(find_document_title(&dom), Some("Head".to_string()));
   }
-}
 
+  #[test]
+  fn ignores_titles_in_template_subtrees() {
+    let dom = parse_html(
+      "<html><head><template><title>Bad</title></template><title>Good</title></head></html>",
+    )
+    .unwrap();
+    assert_eq!(find_document_title(&dom), Some("Good".to_string()));
+
+    let dom = parse_html("<html><head><template><title>Bad</title></template></head></html>").unwrap();
+    assert_eq!(find_document_title(&dom), None);
+  }
+
+  #[test]
+  fn ignores_titles_in_shadow_roots() {
+    let dom = parse_html(
+      "<html><head><title>Good</title></head><body>
+        <div id=\"host\"><template shadowroot=\"open\"><title>Bad</title></template></div>
+      </body></html>",
+    )
+    .unwrap();
+
+    assert_eq!(find_document_title(&dom), Some("Good".to_string()));
+
+    let dom = parse_html(
+      "<html><head></head><body>
+        <div id=\"host\"><template shadowroot=\"open\"><title>Bad</title></template></div>
+      </body></html>",
+    )
+    .unwrap();
+    assert_eq!(find_document_title(&dom), None);
+  }
+}
