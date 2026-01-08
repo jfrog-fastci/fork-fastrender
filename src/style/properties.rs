@@ -2870,16 +2870,13 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
 
   if starts_with_ignore_ascii_case(trimmed, "cubic-bezier(") && trimmed.ends_with(')') {
     let args = &trimmed["cubic-bezier(".len()..trimmed.len() - 1];
-    let parts: Vec<&str> = args.split(',').map(|p| p.trim()).collect();
+    let parts = split_top_level_commas_strict(args)?;
     if parts.len() != 4 {
       return None;
     }
     let mut nums = [0.0f32; 4];
-    for (idx, part) in parts.iter().enumerate() {
-      if part.is_empty() {
-        return None;
-      }
-      let num = part.parse::<f32>().ok()?;
+    for (idx, part) in parts.into_iter().enumerate() {
+      let num = part.trim().parse::<f32>().ok()?;
       if !num.is_finite() {
         return None;
       }
@@ -2896,20 +2893,17 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
 
   if starts_with_ignore_ascii_case(trimmed, "steps(") && trimmed.ends_with(')') {
     let args = &trimmed["steps(".len()..trimmed.len() - 1];
-    let parts: Vec<&str> = args.split(',').map(|p| p.trim()).collect();
-    if parts.is_empty() || parts.len() > 2 {
+    let parts = split_top_level_commas_strict(args)?;
+    if parts.len() > 2 {
       return None;
     }
-    let count_raw = parts[0].parse::<i64>().ok()?;
+    let count_raw = parts[0].trim().parse::<i64>().ok()?;
     let count = u32::try_from(count_raw).ok()?;
     if count == 0 {
       return None;
     }
     let position = if parts.len() == 2 {
-      let pos = parts[1];
-      if pos.is_empty() {
-        return None;
-      }
+      let pos = parts[1].trim();
       if pos.eq_ignore_ascii_case("start") || pos.eq_ignore_ascii_case("jump-start") {
         StepPosition::Start
       } else if pos.eq_ignore_ascii_case("end") || pos.eq_ignore_ascii_case("jump-end") {

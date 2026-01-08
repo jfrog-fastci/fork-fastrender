@@ -1668,6 +1668,66 @@ fn transition_timing_function_linear_allows_percentage_before_number() {
 }
 
 #[test]
+fn transition_timing_function_parses_cubic_bezier_with_comments() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("cubic-bezier(0.25, /*c*/0.1, 0.25, 1)".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::CubicBezier(0.25, 0.1, 0.25, 1.0)].into()
+  );
+}
+
+#[test]
+fn transition_timing_function_parses_steps_with_comments() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("steps(4/*c*/, end)".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::Steps(4, StepPosition::End)].into()
+  );
+}
+
+#[test]
 fn transition_timing_function_rejects_invalid_cubic_bezier_function() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
