@@ -716,6 +716,37 @@ impl Clone for FragmentNode {
   }
 }
 
+impl Drop for FragmentNode {
+  fn drop(&mut self) {
+    // Dropping deeply-nested fragment trees with Rust's default recursive drop can overflow the
+    // stack. Drain descendants iteratively. Since fragment trees structurally share child vectors,
+    // only descend into a child list when it is uniquely owned (`Arc::try_unwrap` succeeds).
+    if self.children.is_empty() {
+      return;
+    }
+
+    let empty_children = FragmentChildren::new(Vec::new());
+
+    let children = std::mem::replace(&mut self.children, empty_children.clone());
+    let mut stack = match Arc::try_unwrap(children.0) {
+      Ok(children) => children,
+      Err(_shared) => return,
+    };
+
+    while let Some(mut node) = stack.pop() {
+      if node.children.is_empty() {
+        continue;
+      }
+      let children = std::mem::replace(&mut node.children, empty_children.clone());
+      if let Ok(mut children) = Arc::try_unwrap(children.0) {
+        stack.append(&mut children);
+      }
+      // `node` is dropped here with an empty `children` list, so this `Drop` implementation is a
+      // cheap no-op for drained descendants.
+    }
+  }
+}
+
 /// Fragmentation metadata for a fragment.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FragmentSliceInfo {
@@ -2412,5 +2443,18 @@ mod tests {
     assert_eq!(content.min_y(), 0.0);
     assert_eq!(content.max_x(), 25.0);
     assert_eq!(content.max_y(), 75.0);
+  }
+
+  #[test]
+  fn test_drop_is_stack_safe_for_deep_trees() {
+    const DEPTH: usize = 30_000;
+    let bounds = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+
+    let mut node = FragmentNode::new_block(bounds, Vec::new());
+    for _ in 0..DEPTH {
+      node = FragmentNode::new_block(bounds, vec![node]);
+    }
+
+    drop(node);
   }
 }
