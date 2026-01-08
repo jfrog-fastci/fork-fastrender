@@ -1672,6 +1672,38 @@ fn container_style_query_range_feature_matches_left() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_inset_inline_start() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; position: relative; direction: ltr; inset-inline-start: 1px; }
+      .container-ltr { container-type: inline-size; position: relative; direction: ltr; inset-inline-start: 3px; }
+      .container-rtl { container-type: inline-size; position: relative; direction: rtl; inset-inline-start: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(inset-inline-start > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-ltr">
+      <div id="ltr" class="child">hello</div>
+    </div>
+    <div class="container-rtl">
+      <div id="rtl" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let ltr = find_by_id(&styled, "ltr").expect("ltr element");
+  let rtl = find_by_id(&styled, "rtl").expect("rtl element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(ltr.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(rtl.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_widows() {
   let html = r#"
     <style>
@@ -2291,6 +2323,32 @@ fn container_style_query_range_feature_matches_border_left_width() {
   let thick = find_by_id(&styled, "thick").expect("thick element");
   assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_border_block_start_width() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; border-top: 1px solid black; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; border-top: 1px solid black; border-right: 3px solid black; }
+      .child { color: rgb(0 0 255); }
+      @container style(border-block-start-width > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
 }
 
 #[test]

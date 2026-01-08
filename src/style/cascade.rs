@@ -2026,6 +2026,29 @@ fn eval_style_range_value(
     };
     length_to_numeric(len, container, ctx)
   };
+
+  let border_width_for_side = |side: crate::style::PhysicalSide| -> Option<NumericValue> {
+    let len = match side {
+      crate::style::PhysicalSide::Top => &styles.border_top_width,
+      crate::style::PhysicalSide::Right => &styles.border_right_width,
+      crate::style::PhysicalSide::Bottom => &styles.border_bottom_width,
+      crate::style::PhysicalSide::Left => &styles.border_left_width,
+    };
+    length_to_numeric(len, container, ctx)
+  };
+
+  let inset_for_side = |side: crate::style::PhysicalSide| -> Option<NumericValue> {
+    let value = match side {
+      crate::style::PhysicalSide::Top => &styles.top,
+      crate::style::PhysicalSide::Right => &styles.right,
+      crate::style::PhysicalSide::Bottom => &styles.bottom,
+      crate::style::PhysicalSide::Left => &styles.left,
+    };
+    match value {
+      crate::style::types::InsetValue::Length(len) => length_to_numeric(len, container, ctx),
+      crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => None,
+    }
+  };
   match value {
     StyleRangeValue::Property(name) => match name.as_str() {
       "font-size" => Some(NumericValue {
@@ -2231,6 +2254,10 @@ fn eval_style_range_value(
         crate::style::types::InsetValue::Length(len) => length_to_numeric(len, container, ctx),
         crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => None,
       },
+      "inset-inline-start" => inset_for_side(inline_sides.0),
+      "inset-inline-end" => inset_for_side(inline_sides.1),
+      "inset-block-start" => inset_for_side(block_sides.0),
+      "inset-block-end" => inset_for_side(block_sides.1),
       "image-resolution" => {
         // `image-resolution: from-image` depends on the referenced image's metadata, which isn't
         // available during style query evaluation.
@@ -2361,6 +2388,10 @@ fn eval_style_range_value(
       "border-right-width" => length_to_numeric(&styles.border_right_width, container, ctx),
       "border-bottom-width" => length_to_numeric(&styles.border_bottom_width, container, ctx),
       "border-left-width" => length_to_numeric(&styles.border_left_width, container, ctx),
+      "border-inline-start-width" => border_width_for_side(inline_sides.0),
+      "border-inline-end-width" => border_width_for_side(inline_sides.1),
+      "border-block-start-width" => border_width_for_side(block_sides.0),
+      "border-block-end-width" => border_width_for_side(block_sides.1),
       "border-top-left-radius" => {
         if styles.border_top_left_radius.x == styles.border_top_left_radius.y {
           length_to_numeric(&styles.border_top_left_radius.x, container, ctx)
