@@ -34,14 +34,18 @@ pub fn decode_html_bytes(bytes: &[u8], content_type: Option<&str>) -> String {
   WINDOWS_1252.decode_with_bom_removal(bytes).0.into_owned()
 }
 
+fn trim_ascii_whitespace_str(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn charset_from_content_type(content_type: &str) -> Option<&str> {
   for param in content_type.split(';').skip(1) {
     let mut parts = param.splitn(2, '=');
-    let name = parts.next()?.trim();
+    let name = trim_ascii_whitespace_str(parts.next()?);
     if !name.eq_ignore_ascii_case("charset") {
       continue;
     }
-    let value = parts.next()?.trim();
+    let value = trim_ascii_whitespace_str(parts.next()?);
     let value = value.trim_matches('"').trim_matches('\'');
     if !value.is_empty() {
       return Some(value);
@@ -352,6 +356,19 @@ mod tests {
     assert!(
       decoded.contains('デ'),
       "decoded text should include kana: {}",
+      decoded
+    );
+  }
+
+  #[test]
+  fn decode_html_content_type_does_not_trim_non_ascii_whitespace() {
+    let encoded = encoding_rs::SHIFT_JIS.encode("abcデ").0;
+    let nbsp = "\u{00A0}";
+    let header = format!("text/html; charset={nbsp}shift_jis");
+    let decoded = decode_html_bytes(&encoded, Some(&header));
+    assert!(
+      !decoded.contains('デ'),
+      "decoded text should not treat NBSP as whitespace in Content-Type charset: {}",
       decoded
     );
   }

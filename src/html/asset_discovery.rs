@@ -37,6 +37,17 @@ fn parse_srcset_urls(srcset: &str, max_candidates: usize) -> Vec<String> {
 const MAX_HTML_SCAN_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ATTRIBUTES_PER_TAG: usize = 128;
 
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+// Avoid `str::trim()` / `split_whitespace()` here because they treat additional Unicode whitespace
+// (e.g. NBSP U+00A0) as ignorable.
+fn is_ascii_whitespace_html(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html)
+}
+
 fn asset_scan_html(html: &str) -> &str {
   if html.len() <= MAX_HTML_SCAN_BYTES {
     return html;
@@ -152,7 +163,10 @@ fn for_each_attribute<'a>(
 
 fn link_rel_is_image_asset(rel_value: &str, as_value: Option<&str>) -> bool {
   let mut has_preload = false;
-  for token in rel_value.split_whitespace() {
+  for token in rel_value
+    .split(is_ascii_whitespace_html)
+    .filter(|token| !token.is_empty())
+  {
     if token.eq_ignore_ascii_case("icon")
       || token.eq_ignore_ascii_case("apple-touch-icon")
       || token.eq_ignore_ascii_case("apple-touch-icon-precomposed")
@@ -168,7 +182,7 @@ fn link_rel_is_image_asset(rel_value: &str, as_value: Option<&str>) -> bool {
 
   if has_preload {
     return as_value
-      .map(|value| value.trim().eq_ignore_ascii_case("image"))
+      .map(|value| trim_ascii_whitespace(value).eq_ignore_ascii_case("image"))
       .unwrap_or(false);
   }
 
@@ -177,10 +191,11 @@ fn link_rel_is_image_asset(rel_value: &str, as_value: Option<&str>) -> bool {
 
 fn link_rel_is_preload_image(rel_value: &str, as_value: Option<&str>) -> bool {
   rel_value
-    .split_ascii_whitespace()
+    .split(is_ascii_whitespace_html)
+    .filter(|token| !token.is_empty())
     .any(|token| token.eq_ignore_ascii_case("preload"))
     && as_value
-      .map(|value| value.trim().eq_ignore_ascii_case("image"))
+      .map(|value| trim_ascii_whitespace(value).eq_ignore_ascii_case("image"))
       .unwrap_or(false)
 }
 
@@ -388,15 +403,11 @@ pub fn discover_html_asset_urls_with_srcset_limit(
         });
         if let Some(raw) = data {
           let normalized_type = type_attr
-            .map(str::trim)
+            .map(trim_ascii_whitespace)
             .filter(|s| !s.is_empty())
             .and_then(|t| {
-              let normalized = t
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
+              let normalized =
+                trim_ascii_whitespace(t.split(';').next().unwrap_or("")).to_ascii_lowercase();
               (!normalized.is_empty()).then_some(normalized)
             });
           match normalized_type.as_deref() {
@@ -615,6 +626,29 @@ mod tests {
       .into_iter()
       .map(str::to_string)
       .collect::<Vec<_>>()
+    );
+  }
+
+  #[test]
+  fn discover_html_asset_urls_does_not_trim_non_ascii_whitespace_in_link_attrs() {
+    let nbsp = "\u{00A0}";
+
+    let html = format!(r#"<link rel="preload" as="{nbsp}image" href="bad.png">"#);
+    let out = discover_html_asset_urls(&html, "https://example.com/base/");
+    assert!(
+      out.images.is_empty(),
+      "preload as attribute should not treat NBSP as ignorable whitespace: {out:?}"
+    );
+
+    let html = r#"<link rel="preload" as=" image " href="good.png">"#;
+    let out = discover_html_asset_urls(html, "https://example.com/base/");
+    assert_eq!(out.images, vec!["https://example.com/base/good.png".to_string()]);
+
+    let html = format!(r#"<link rel="shortcut{nbsp}icon" href="bad.ico">"#);
+    let out = discover_html_asset_urls(&html, "https://example.com/base/");
+    assert!(
+      out.images.is_empty(),
+      "rel tokenization should not split on NBSP: {out:?}"
     );
   }
 
