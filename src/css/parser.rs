@@ -694,8 +694,17 @@ fn parse_rule<'i, 't>(
   .map(|opt| opt.map(CssRule::Style))
 }
 
+#[inline]
+fn is_ascii_whitespace_html_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
 fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
+fn trim_ascii_whitespace_end(value: &str) -> &str {
+  value.trim_end_matches(is_ascii_whitespace_html_css)
 }
 
 /// Parse an @import rule
@@ -1465,11 +1474,11 @@ fn replace_var_calls_with_size_query_placeholder(value: &str) -> Option<String> 
 }
 
 fn normalize_style_query_value(value: &str) -> String {
-  let mut cleaned = value.trim_end_matches(';').trim().to_string();
+  let mut cleaned = trim_ascii_whitespace(value.trim_end_matches(';')).to_string();
   if let Some(idx) = cleaned.rfind('!') {
-    if cleaned[idx..].trim().eq_ignore_ascii_case("!important") {
+    if trim_ascii_whitespace(&cleaned[idx..]).eq_ignore_ascii_case("!important") {
       cleaned.truncate(idx);
-      cleaned = cleaned.trim_end().to_string();
+      cleaned = trim_ascii_whitespace_end(&cleaned).to_string();
     }
   }
   cleaned
@@ -1582,7 +1591,7 @@ fn parse_style_feature<'i, 't>(
       let start = parser.position();
       consume_nested_tokens(parser)?;
       let value = normalize_style_query_value(parser.slice_from(start));
-      let value = value.trim().to_string();
+      let value = trim_ascii_whitespace(&value).to_string();
       if value.is_empty() {
         return Err(parser.new_custom_error(()));
       }
@@ -1661,7 +1670,7 @@ fn parse_style_range_strict_op<'i, 't>(
 }
 
 fn style_range_value_from_text(text: &str) -> StyleRangeValue {
-  let trimmed = text.trim();
+  let trimmed = trim_ascii_whitespace(text);
   if is_valid_custom_property_name(trimmed) {
     return StyleRangeValue::CustomProperty(trimmed.to_string());
   }
@@ -1706,7 +1715,7 @@ fn parse_style_range_value<'i, 't>(
     }
   }
 
-  let raw = parser.slice_from(start).trim();
+  let raw = trim_ascii_whitespace(parser.slice_from(start));
   if raw.is_empty() {
     return Err(parser.new_custom_error(()));
   }
@@ -2066,7 +2075,7 @@ fn parse_supports_selector_arguments<'i, 't>(
   let selector_list = parser.parse_nested_block(|nested| {
     let start = nested.position();
     consume_nested_tokens(nested)?;
-    Ok::<_, ParseError<'i, ()>>(nested.slice_from(start).trim().to_string())
+    Ok::<_, ParseError<'i, ()>>(trim_ascii_whitespace(nested.slice_from(start)).to_string())
   })?;
 
   if selector_list.is_empty() {
@@ -2274,7 +2283,7 @@ fn parse_supports_bare_declaration<'i, 't>(
     }
   }
 
-  let value = parser.slice_from(value_start).trim();
+  let value = trim_ascii_whitespace(parser.slice_from(value_start));
   if value.is_empty() && !property.starts_with("--") {
     return None;
   }
@@ -2301,7 +2310,7 @@ fn parse_supports_declaration_in_parens<'i, 't>(
   parser.skip_whitespace();
   let value_start = parser.position();
   while parser.next_including_whitespace().is_ok() {}
-  let value = parser.slice_from(value_start).trim();
+  let value = trim_ascii_whitespace(parser.slice_from(value_start));
 
   if value.is_empty() && !property.starts_with("--") {
     return None;
@@ -2647,10 +2656,10 @@ fn parse_font_face_descriptors<'i, 't>(
     let trimmed_value = if important {
       full_value
         .rsplit_once("!important")
-        .map(|(before, _)| before.trim_end_matches(';').trim())
-        .unwrap_or_else(|| full_value.trim_end_matches(';').trim())
+        .map(|(before, _)| trim_ascii_whitespace(before.trim_end_matches(';')))
+        .unwrap_or_else(|| trim_ascii_whitespace(full_value.trim_end_matches(';')))
     } else {
-      full_value.trim_end_matches(';').trim()
+      trim_ascii_whitespace(full_value.trim_end_matches(';'))
     };
 
     let mut property = property;
@@ -2754,7 +2763,7 @@ fn parse_font_face_descriptors<'i, 't>(
         {
           face.font_named_instance = None;
         } else if let Some(name) = parse_font_face_string_or_ident(trimmed_value) {
-          if !name.trim().is_empty() {
+          if !trim_ascii_whitespace(&name).is_empty() {
             face.font_named_instance = Some(name);
           }
         }
@@ -2763,7 +2772,7 @@ fn parse_font_face_descriptors<'i, 't>(
         if trimmed_value.eq_ignore_ascii_case("normal") {
           face.font_language_override = None;
         } else if let Some(tag) = parse_font_face_string_or_ident(trimmed_value) {
-          let trimmed = tag.trim();
+          let trimmed = trim_ascii_whitespace(&tag);
           if (1..=4).contains(&trimmed.len()) && trimmed.is_ascii() {
             face.font_language_override = Some(trimmed.to_string());
           }
@@ -2951,10 +2960,10 @@ fn parse_counter_style_descriptor_value<'i, 't>(
   let trimmed_value = if important {
     full_value
       .rsplit_once("!important")
-      .map(|(before, _)| before.trim_end_matches(';').trim())
-      .unwrap_or_else(|| full_value.trim_end_matches(';').trim())
+      .map(|(before, _)| trim_ascii_whitespace(before.trim_end_matches(';')))
+      .unwrap_or_else(|| trim_ascii_whitespace(full_value.trim_end_matches(';')))
   } else {
-    full_value.trim_end_matches(';').trim()
+    trim_ascii_whitespace(full_value.trim_end_matches(';'))
   };
   Ok(trimmed_value.to_string())
 }
@@ -2982,7 +2991,7 @@ fn parse_font_palette_values_rule<'i, 't>(
   })?;
 
   let rule = parser
-    .parse_nested_block(|nested| parse_font_palette_descriptors(nested, name.trim(), css_source))?;
+    .parse_nested_block(|nested| parse_font_palette_descriptors(nested, trim_ascii_whitespace(&name), css_source))?;
   Ok(rule.map(CssRule::FontPaletteValues))
 }
 
@@ -3042,10 +3051,10 @@ fn parse_font_palette_descriptors<'i, 't>(
     let trimmed_value = if important {
       full_value
         .rsplit_once("!important")
-        .map(|(before, _)| before.trim_end_matches(';').trim())
-        .unwrap_or_else(|| full_value.trim_end_matches(';').trim())
+        .map(|(before, _)| trim_ascii_whitespace(before.trim_end_matches(';')))
+        .unwrap_or_else(|| trim_ascii_whitespace(full_value.trim_end_matches(';')))
     } else {
-      full_value.trim_end_matches(';').trim()
+      trim_ascii_whitespace(full_value.trim_end_matches(';'))
     };
 
     let mut property = property;
@@ -3061,7 +3070,7 @@ fn parse_font_palette_descriptors<'i, 't>(
         }
       }
       "base-palette" => {
-        let trimmed = trimmed_value.trim();
+        let trimmed = trim_ascii_whitespace(trimmed_value);
         if let Ok(idx) = trimmed.parse::<i32>() {
           if idx >= 0 {
             rule.base_palette = FontPaletteBase::Index(idx as u16);
@@ -3268,7 +3277,7 @@ fn parse_property_descriptors<'i, 't>(
       }
     }
     let raw_value = parser.slice_from(value_start);
-    let value = raw_value.trim_end_matches(';').trim();
+    let value = trim_ascii_whitespace(raw_value.trim_end_matches(';'));
 
     match ident.as_str() {
       "syntax" => {
@@ -3342,7 +3351,7 @@ fn parse_counter_style_fallback<'i, 't>(
   parser: &mut Parser<'i, 't>,
 ) -> std::result::Result<String, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let value = parse_counter_style_descriptor_value(parser)?;
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(&value);
   if trimmed.is_empty() {
     return Err(
       parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
@@ -3490,7 +3499,7 @@ fn parse_negative_descriptor(value: &str) -> Option<(String, String)> {
 }
 
 fn parse_range_descriptor(value: &str) -> Option<Vec<(i64, i64)>> {
-  if value.trim().eq_ignore_ascii_case("auto") {
+  if trim_ascii_whitespace(value).eq_ignore_ascii_case("auto") {
     return None;
   }
   let mut input = ParserInput::new(value);
@@ -3559,7 +3568,7 @@ fn parse_pad_descriptor(value: &str) -> Option<(u32, String)> {
 }
 
 fn parse_speak_as_descriptor(value: &str) -> Option<SpeakAs> {
-  let trimmed = value.trim().to_ascii_lowercase();
+  let trimmed = trim_ascii_whitespace(value).to_ascii_lowercase();
   match trimmed.as_str() {
     "auto" => Some(SpeakAs::Auto),
     "bullets" => Some(SpeakAs::Bullets),
@@ -3666,7 +3675,7 @@ fn parse_single_keyframe<'i, 't>(
 }
 
 fn parse_font_face_family(value: &str) -> Option<String> {
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   if trimmed.is_empty() {
     return None;
   }
@@ -3738,7 +3747,7 @@ fn parse_font_face_stretch(value: &str) -> Option<(f32, f32)> {
 }
 
 fn parse_font_display(value: &str) -> Option<FontDisplay> {
-  let value = value.trim();
+  let value = trim_ascii_whitespace(value);
   if value.eq_ignore_ascii_case("auto") {
     Some(FontDisplay::Auto)
   } else if value.eq_ignore_ascii_case("block") {
@@ -3757,12 +3766,12 @@ fn parse_font_display(value: &str) -> Option<FontDisplay> {
 fn parse_unicode_range_list(value: &str) -> Vec<(u32, u32)> {
   value
     .split(',')
-    .filter_map(|part| parse_unicode_range(part.trim()))
+    .filter_map(|part| parse_unicode_range(trim_ascii_whitespace(part)))
     .collect()
 }
 
 fn parse_unicode_range(part: &str) -> Option<(u32, u32)> {
-  let part = part.trim();
+  let part = trim_ascii_whitespace(part);
   if !part
     .get(0..2)
     .is_some_and(|prefix| prefix.eq_ignore_ascii_case("u+"))
@@ -3771,8 +3780,8 @@ fn parse_unicode_range(part: &str) -> Option<(u32, u32)> {
   }
   let body = &part[2..];
   if let Some((start, end)) = body.split_once('-') {
-    let start = u32::from_str_radix(start.trim(), 16).ok()?;
-    let end = u32::from_str_radix(end.trim(), 16).ok()?;
+    let start = u32::from_str_radix(trim_ascii_whitespace(start), 16).ok()?;
+    let end = u32::from_str_radix(trim_ascii_whitespace(end), 16).ok()?;
     if start <= end {
       return Some((start, end));
     }
@@ -3799,7 +3808,7 @@ fn parse_unicode_range(part: &str) -> Option<(u32, u32)> {
     return Some((s, e));
   }
 
-  let single = u32::from_str_radix(body.trim(), 16).ok()?;
+  let single = u32::from_str_radix(trim_ascii_whitespace(body), 16).ok()?;
   Some((single, single))
 }
 
@@ -4088,24 +4097,23 @@ fn parse_font_variation_setting<'i, 't>(
 }
 
 pub(crate) fn parse_angle_token(token: &str) -> Option<f32> {
-  let trimmed = token.trim();
+  let trimmed = trim_ascii_whitespace(token);
   if trimmed.ends_with("deg") {
-    trimmed[..trimmed.len() - 3].trim().parse::<f32>().ok()
+    trim_ascii_whitespace(&trimmed[..trimmed.len() - 3])
+      .parse::<f32>()
+      .ok()
   } else if trimmed.ends_with("rad") {
-    trimmed[..trimmed.len() - 3]
-      .trim()
+    trim_ascii_whitespace(&trimmed[..trimmed.len() - 3])
       .parse::<f32>()
       .ok()
       .map(|r| r.to_degrees())
   } else if trimmed.ends_with("turn") {
-    trimmed[..trimmed.len() - 4]
-      .trim()
+    trim_ascii_whitespace(&trimmed[..trimmed.len() - 4])
       .parse::<f32>()
       .ok()
       .map(|t| t * 360.0)
   } else if trimmed.ends_with("grad") {
-    trimmed[..trimmed.len() - 4]
-      .trim()
+    trim_ascii_whitespace(&trimmed[..trimmed.len() - 4])
       .parse::<f32>()
       .ok()
       .map(|g| g * 0.9)
@@ -4119,14 +4127,19 @@ fn parse_weight_token(token: &str) -> Option<u16> {
   match lower.as_str() {
     "normal" => Some(400),
     "bold" => Some(700),
-    _ => token.trim().parse::<u16>().ok().map(|w| w.clamp(1, 1000)),
+    _ => trim_ascii_whitespace(token)
+      .parse::<u16>()
+      .ok()
+      .map(|w| w.clamp(1, 1000)),
   }
 }
 
 fn parse_stretch_token(token: &str) -> Option<f32> {
   let lower = token.to_ascii_lowercase();
   if lower.ends_with('%') {
-    return lower[..lower.len() - 1].trim().parse::<f32>().ok();
+    return trim_ascii_whitespace(&lower[..lower.len() - 1])
+      .parse::<f32>()
+      .ok();
   }
   match lower.as_str() {
     "ultra-condensed" => Some(50.0),
@@ -4143,8 +4156,8 @@ fn parse_stretch_token(token: &str) -> Option<f32> {
 }
 
 fn parse_percentage_multiplier(value: &str) -> Option<f32> {
-  let trimmed = value.trim();
-  let stripped = trimmed.strip_suffix('%')?.trim();
+  let trimmed = trim_ascii_whitespace(value);
+  let stripped = trim_ascii_whitespace(trimmed.strip_suffix('%')?);
   if stripped.is_empty() {
     return None;
   }
@@ -4197,8 +4210,9 @@ fn split_selector_components(selector_text: &str) -> Vec<String> {
       '{' => brace_depth += 1,
       '}' => brace_depth = brace_depth.saturating_sub(1),
       ',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-        if !current.trim().is_empty() {
-          parts.push(current.trim().to_string());
+        let trimmed = trim_ascii_whitespace(&current);
+        if !trimmed.is_empty() {
+          parts.push(trimmed.to_string());
         }
         current.clear();
         continue;
@@ -4209,8 +4223,9 @@ fn split_selector_components(selector_text: &str) -> Vec<String> {
     current.push(ch);
   }
 
-  if !current.trim().is_empty() {
-    parts.push(current.trim().to_string());
+  let trimmed = trim_ascii_whitespace(&current);
+  if !trimmed.is_empty() {
+    parts.push(trimmed.to_string());
   }
 
   parts
@@ -4324,11 +4339,11 @@ fn combine_nested_selectors(
     if has_ampersand {
       for parent in &parent_strings {
         let (replaced, _) = replace_nesting_selector(&comp, parent);
-        combined_parts.push(replaced.trim().to_string());
+        combined_parts.push(trim_ascii_whitespace(&replaced).to_string());
       }
     } else {
       for parent in &parent_strings {
-        combined_parts.push(format!("{} {}", parent, comp.trim()));
+        combined_parts.push(format!("{} {}", parent, trim_ascii_whitespace(&comp)));
       }
     }
   }
@@ -4558,7 +4573,7 @@ fn parse_style_rule<'i, 't>(
       },
     )?;
 
-    let selector_text = parser.slice_from(start).trim();
+    let selector_text = trim_ascii_whitespace(parser.slice_from(start));
     if selector_text.is_empty() {
       return Err(
         parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
@@ -4667,7 +4682,7 @@ fn parse_nest_rule<'i, 't>(
     Ok(())
   })?;
 
-  let selector_text = parser.slice_from(start).trim();
+  let selector_text = trim_ascii_whitespace(parser.slice_from(start));
   if selector_text.is_empty() {
     skip_at_rule(parser);
     return Ok(None);
@@ -5197,7 +5212,7 @@ pub fn extract_css_sources(dom: &DomNode) -> Vec<ScopedStylesheetSource> {
             let crossorigin = match frame.node.get_attribute_ref("crossorigin") {
               None => None,
               Some(value) => {
-                let value = value.trim();
+                let value = trim_ascii_whitespace(value);
                 if value.eq_ignore_ascii_case("use-credentials") {
                   Some(CorsMode::UseCredentials)
                 } else {
@@ -5311,7 +5326,7 @@ pub fn extract_scoped_css_sources(dom: &DomNode) -> ScopedStylesheetSources {
           let crossorigin = match node.get_attribute_ref("crossorigin") {
             None => None,
             Some(value) => {
-              let value = value.trim();
+              let value = trim_ascii_whitespace(value);
               if value.eq_ignore_ascii_case("use-credentials") {
                 Some(CorsMode::UseCredentials)
               } else {

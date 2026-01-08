@@ -46,6 +46,15 @@ fn is_css_whitespace_byte(b: u8) -> bool {
 }
 
 #[inline]
+fn is_css_whitespace_char(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_css_whitespace(value: &str) -> &str {
+  value.trim_matches(is_css_whitespace_char)
+}
+
+#[inline]
 fn needs_token_splice_separator(prev: u8, next: u8, next_next: Option<u8>) -> bool {
   if is_css_whitespace_byte(prev) || is_css_whitespace_byte(next) {
     return false;
@@ -141,7 +150,7 @@ fn contains_ascii_case_insensitive_var_call(raw: &str) -> bool {
 
 #[inline]
 fn parse_simple_var_call<'a>(raw: &'a str) -> Option<(&'a str, Option<&'a str>)> {
-  let trimmed = raw.trim();
+  let trimmed = trim_css_whitespace(raw);
   if trimmed.len() < 6
     || !trimmed
       .get(..4)
@@ -162,25 +171,25 @@ fn parse_simple_var_call<'a>(raw: &'a str) -> Option<(&'a str, Option<&'a str>)>
     return None;
   }
 
-  let inner = inner.trim();
+  let inner = trim_css_whitespace(inner);
   let (name_chunk, fallback_chunk) = inner
     .split_once(',')
     .map(|(name, fallback)| (name, Some(fallback)))
     .unwrap_or((inner, None));
 
-  let name = name_chunk.trim();
+  let name = trim_css_whitespace(name_chunk);
   // The fast path only supports unescaped "simple" custom property names. Enforce the CSS
   // identifier byte rules so `var(--bad!, 1px)` (invalid syntax) doesn't get treated as a missing
   // variable with a valid fallback.
   if !name.starts_with("--")
     || name.len() <= 2
     || name.as_bytes()[2..].iter().any(|&b| !is_ident_byte(b))
-    || name.contains(|c: char| c.is_whitespace())
+    || name.contains(is_css_whitespace_char)
   {
     return None;
   }
 
-  let fallback = fallback_chunk.map(str::trim);
+  let fallback = fallback_chunk.map(trim_css_whitespace);
   if let Some(fallback) = fallback {
     // `var(--x,)` uses an *empty* fallback. This is distinct from omitting the fallback entirely
     // (`var(--x)`) because empty fallbacks are valid in contexts where the substituted token stream
@@ -804,7 +813,7 @@ fn parse_value_after_resolution(value: &str, property_name: &str) -> Option<Prop
 }
 
 fn parse_untyped_value(value: &str) -> PropertyValue {
-  let trimmed = value.trim();
+  let trimmed = trim_css_whitespace(value);
   if let Some(len) = parse_length(trimmed) {
     return PropertyValue::Length(len);
   }
@@ -1115,7 +1124,7 @@ pub fn is_valid_custom_property_name(name: &str) -> bool {
 
   // The rest can be any character except whitespace
   // (CSS spec allows almost any character in custom property names)
-  !name[2..].chars().any(char::is_whitespace)
+  !name[2..].chars().any(is_css_whitespace_char)
 }
 
 #[cfg(test)]
@@ -1124,6 +1133,20 @@ mod tests {
   use crate::style::values::CustomPropertyValue;
   use crate::style::values::Length;
   use crate::style::values::LengthUnit;
+
+  #[test]
+  fn non_ascii_whitespace_var_resolution_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+
+    assert_eq!(parse_simple_var_call(" var(--x) "), Some(("--x", None)));
+    assert_eq!(parse_simple_var_call(&format!("{nbsp}var(--x)")), None);
+    assert!(is_valid_custom_property_name(&format!("--a{nbsp}b")));
+
+    let raw = format!("var(--x,{nbsp}fallback)");
+    let expected_fallback = format!("{nbsp}fallback");
+    let (_, fallback) = parse_simple_var_call(&raw).expect("expected simple var() call");
+    assert_eq!(fallback, Some(expected_fallback.as_str()));
+  }
 
   fn make_props(pairs: &[(&str, &str)]) -> CustomPropertyStore {
     let mut store = CustomPropertyStore::default();
