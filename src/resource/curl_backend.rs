@@ -14,9 +14,10 @@
 
 use super::HttpFetcher;
 use crate::error::{Error, RenderError, ResourceError, Result};
+use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::render_control;
 use http::HeaderMap;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Write as _};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::thread;
@@ -214,6 +215,48 @@ fn read_curl_headers<R: BufRead>(reader: &mut R) -> io::Result<(String, u16, Hea
   }
 }
 
+#[derive(Debug)]
+enum CurlBodyReadError {
+  Io(io::Error),
+  TooLarge { observed: usize, limit: usize },
+}
+
+fn read_curl_body<R: Read>(
+  reader: &mut R,
+  body_limit: usize,
+  should_discard_body: bool,
+) -> std::result::Result<Vec<u8>, CurlBodyReadError> {
+  let mut body = FallibleVecWriter::new(body_limit, "curl body");
+  let mut body_len = 0usize;
+  let mut buf = [0u8; 8192];
+  loop {
+    let read = reader.read(&mut buf).map_err(CurlBodyReadError::Io)?;
+    if read == 0 {
+      break;
+    }
+
+    if should_discard_body {
+      // Drain without buffering to match the primary backend (redirect bodies are ignored).
+      continue;
+    }
+
+    let next_len = body_len.saturating_add(read);
+    if next_len > body_limit {
+      return Err(CurlBodyReadError::TooLarge {
+        observed: next_len,
+        limit: body_limit,
+      });
+    }
+
+    body
+      .write_all(&buf[..read])
+      .map_err(CurlBodyReadError::Io)?;
+    body_len = next_len;
+  }
+
+  Ok(body.into_inner())
+}
+
 fn run_curl(
   url: &str,
   timeout: Option<Duration>,
@@ -238,11 +281,13 @@ fn run_curl(
     }
   };
 
-  let mut stderr = child.stderr.take().expect("stderr piped");
+  let stderr = child.stderr.take().expect("stderr piped");
   let stderr_handle = thread::spawn(move || {
-    let mut buf = Vec::new();
-    let _ = stderr.read_to_end(&mut buf);
-    String::from_utf8_lossy(&buf).to_string()
+    const STDERR_MAX_BYTES: u64 = 64 * 1024;
+    let mut limited = stderr.take(STDERR_MAX_BYTES);
+    let mut buf = FallibleVecWriter::new(STDERR_MAX_BYTES as usize, "curl stderr");
+    let _ = io::copy(&mut limited, &mut buf);
+    String::from_utf8_lossy(&buf.into_inner()).to_string()
   });
 
   let stdout = child.stdout.take().expect("stdout piped");
@@ -265,45 +310,29 @@ fn run_curl(
   let has_location = headers.get("location").is_some();
   let should_discard_body = (300..400).contains(&status) && has_location;
 
-  let mut body = Vec::new();
-  let mut buf = [0u8; 8192];
-  loop {
-    let read = match reader.read(&mut buf) {
-      Ok(read) => read,
-      Err(err) => {
-        let _ = child.kill();
-        let exit_status = child.wait().ok();
-        let stderr = stderr_handle.join().unwrap_or_default();
-        return Err(CurlError::Failure(CurlFailure {
-          exit_status,
-          stderr: format!("{stderr}\n{err}").trim().to_string(),
-          spawn_error: None,
-        }));
-      }
-    };
-    if read == 0 {
-      break;
-    }
-
-    if should_discard_body {
-      // Drain without buffering to match the primary backend (redirect bodies are ignored).
-      continue;
-    }
-
-    let next_len = body.len().saturating_add(read);
-    if next_len > body_limit {
+  let body = match read_curl_body(&mut reader, body_limit, should_discard_body) {
+    Ok(body) => body,
+    Err(CurlBodyReadError::TooLarge { observed, limit }) => {
       let _ = child.kill();
       let _ = child.wait();
       let _ = stderr_handle.join();
       return Err(CurlError::BodyTooLarge {
         status,
-        observed: next_len,
-        limit: body_limit,
+        observed,
+        limit,
       });
     }
-
-    body.extend_from_slice(&buf[..read]);
-  }
+    Err(CurlBodyReadError::Io(err)) => {
+      let _ = child.kill();
+      let exit_status = child.wait().ok();
+      let stderr = stderr_handle.join().unwrap_or_default();
+      return Err(CurlError::Failure(CurlFailure {
+        exit_status,
+        stderr: format!("{stderr}\n{err}").trim().to_string(),
+        spawn_error: None,
+      }));
+    }
+  };
 
   let exit_status = child.wait().ok();
   let stderr = stderr_handle.join().unwrap_or_default();
@@ -853,6 +882,7 @@ mod tests {
   use super::*;
   use crate::resource::DEFAULT_ACCEPT_LANGUAGE;
   use crate::resource::DEFAULT_USER_AGENT;
+  use std::io::Cursor;
 
   #[test]
   fn header_parsing_skips_provisional_blocks() {
@@ -937,5 +967,40 @@ mod tests {
     let headers = vec![("User-Agent".to_string(), DEFAULT_USER_AGENT.to_string())];
     let args = build_curl_args("https://example.com/", None, &headers, true);
     assert!(args.contains(&"--http1.1".to_string()));
+  }
+
+  #[test]
+  fn body_reader_returns_bytes_within_limit() {
+    let input = b"abc".to_vec();
+    let mut reader = Cursor::new(input.clone());
+    let body = read_curl_body(&mut reader, input.len(), false).expect("read body");
+    assert_eq!(body, input);
+  }
+
+  #[test]
+  fn body_reader_rejects_responses_over_limit() {
+    let limit = 16;
+    let input = vec![0u8; limit + 1];
+    let mut reader = Cursor::new(input);
+    match read_curl_body(&mut reader, limit, false) {
+      Err(CurlBodyReadError::TooLarge {
+        observed,
+        limit: got_limit,
+      }) => {
+        assert_eq!(got_limit, limit);
+        assert_eq!(observed, limit + 1);
+      }
+      other => panic!("expected TooLarge error, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn body_reader_discards_redirect_bodies_without_enforcing_limit() {
+    let input = vec![0u8; 32];
+    let expected_len = input.len();
+    let mut reader = Cursor::new(input);
+    let body = read_curl_body(&mut reader, 0, true).expect("discard body");
+    assert!(body.is_empty());
+    assert_eq!(reader.position() as usize, expected_len);
   }
 }
