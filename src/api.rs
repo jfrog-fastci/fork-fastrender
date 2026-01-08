@@ -12531,6 +12531,26 @@ fn hash_image_orientation(value: &crate::style::types::ImageOrientation, hasher:
   }
 }
 
+fn will_change_establishes_containing_block(value: &crate::style::types::WillChange) -> bool {
+  match value {
+    crate::style::types::WillChange::Auto => false,
+    crate::style::types::WillChange::Hints(hints) => hints.iter().any(|hint| match hint {
+      crate::style::types::WillChangeHint::Property(name) => matches!(
+        name.as_str(),
+        "transform"
+          | "translate"
+          | "rotate"
+          | "scale"
+          | "perspective"
+          | "filter"
+          | "backdrop-filter"
+          | "contain"
+      ),
+      _ => false,
+    }),
+  }
+}
+
 fn hash_font_stretch(value: &crate::style::types::FontStretch, hasher: &mut DefaultHasher) {
   hash_enum_discriminant(value, hasher);
   if let crate::style::types::FontStretch::Percentage(v) = value {
@@ -13494,6 +13514,9 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.content_visibility, &mut h);
   hash_contain_intrinsic_size_axis(&style.contain_intrinsic_width, &mut h);
   hash_contain_intrinsic_size_axis(&style.contain_intrinsic_height, &mut h);
+  (!style.filter.is_empty()).hash(&mut h);
+  (!style.backdrop_filter.is_empty()).hash(&mut h);
+  will_change_establishes_containing_block(&style.will_change).hash(&mut h);
   hash_enum_discriminant(&style.position, &mut h);
   hash_enum_discriminant(&style.visibility, &mut h);
   match style.running_position.as_deref() {
@@ -15592,6 +15615,54 @@ pub(crate) fn render_html_with_shared_resources(
       base_fp,
       super::style_layout_fingerprint(&collapsed),
       "expected visibility to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_filter_containing_block() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut filtered = base;
+    filtered
+      .filter
+      .push(crate::style::types::FilterFunction::Blur(crate::Length::px(1.0)));
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&filtered),
+      "expected filter presence to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_backdrop_filter_containing_block() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut filtered = base;
+    filtered
+      .backdrop_filter
+      .push(crate::style::types::FilterFunction::Blur(crate::Length::px(1.0)));
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&filtered),
+      "expected backdrop-filter presence to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_will_change_containing_block() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut hinted = base;
+    hinted.will_change = crate::style::types::WillChange::Hints(vec![
+      crate::style::types::WillChangeHint::Property("transform".to_string()),
+    ]);
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&hinted),
+      "expected will-change containing block hints to affect layout fingerprints"
     );
   }
 
