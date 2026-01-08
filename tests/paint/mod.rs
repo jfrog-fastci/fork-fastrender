@@ -47,6 +47,7 @@ mod filter_url_svg_display_list;
 mod fit_canvas_to_content;
 mod form_control_listbox_geometry_regression;
 mod form_control_placeholder_style_variant;
+mod form_control_text_align;
 mod form_control_overflow_clip_padding_box;
 mod fragmented_root_paint;
 mod individual_transform_properties_test;

@@ -7351,14 +7351,18 @@ impl Painter {
             let bottom = baseline_y + descent;
 
             let caret_x = if value_is_empty {
-              rect.x()
+              Self::aligned_text_start_x(&text_style, rect, 0.0)
             } else {
               let caret_text = match kind {
                 TextControlKind::Password => generated.as_deref().unwrap_or(value.as_str()),
                 _ => value.as_str(),
               };
-              rect.x() + measure_shaped_advance(self, caret_text, &text_style)
+              let caret_advance = measure_shaped_advance(self, caret_text, &text_style);
+              let start_x = Self::aligned_text_start_x(&text_style, rect, caret_advance);
+              start_x + caret_advance
             };
+            let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
+            let caret_x = caret_x.clamp(rect.x(), max_caret_x);
 
             let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
             if let Some(clipped) = caret_rect.intersection(content_rect) {
@@ -7476,11 +7480,17 @@ impl Painter {
               (last_y, last_line)
             };
 
-            let caret_x = if value_is_empty || caret_line.is_empty() {
+            let caret_x = if value_is_empty {
+              Self::aligned_text_start_x(&text_style, rect, 0.0)
+            } else if caret_line.is_empty() {
               rect.x()
             } else {
-              rect.x() + measure_shaped_advance(self, caret_line, &text_style)
+              let caret_advance = measure_shaped_advance(self, caret_line, &text_style);
+              let start_x = Self::aligned_text_start_x(&text_style, rect, caret_advance);
+              start_x + caret_advance
             };
+            let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
+            let caret_x = caret_x.clamp(rect.x(), max_caret_x);
 
             let baseline_y = caret_y + ascent + half_leading * 2.0;
             let top = baseline_y - ascent;
@@ -8947,6 +8957,41 @@ impl Painter {
     }
   }
 
+  fn effective_text_align(style: &ComputedStyle) -> crate::style::types::TextAlign {
+    use crate::style::types::{Direction, TextAlign};
+    match style.text_align {
+      TextAlign::Start | TextAlign::MatchParent | TextAlign::Justify | TextAlign::JustifyAll => {
+        if style.direction == Direction::Rtl {
+          TextAlign::Right
+        } else {
+          TextAlign::Left
+        }
+      }
+      TextAlign::End => {
+        if style.direction == Direction::Rtl {
+          TextAlign::Left
+        } else {
+          TextAlign::Right
+        }
+      }
+      other => other,
+    }
+  }
+
+  fn aligned_text_start_x(style: &ComputedStyle, rect: Rect, advance_width: f32) -> f32 {
+    use crate::style::types::TextAlign;
+    let advance_width = if advance_width.is_finite() {
+      advance_width.max(0.0)
+    } else {
+      0.0
+    };
+    match Self::effective_text_align(style) {
+      TextAlign::Center => rect.x() + ((rect.width() - advance_width).max(0.0) / 2.0),
+      TextAlign::Right => rect.x() + (rect.width() - advance_width).max(0.0),
+      _ => rect.x(),
+    }
+  }
+
   fn paint_alt_text(
     &mut self,
     alt: &str,
@@ -8968,6 +9013,8 @@ impl Painter {
     }
 
     TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+    let advance_width: f32 = runs.iter().map(|run| run.advance).sum();
+    let start_x = Self::aligned_text_start_x(style, rect, advance_width);
 
     let metrics_scaled = self.resolve_scaled_metrics(style);
     let line_height = compute_line_height_with_metrics_viewport(
@@ -8981,7 +9028,7 @@ impl Painter {
 
     self.paint_shaped_runs(
       &runs,
-      rect.x(),
+      start_x,
       baseline_y,
       style.color,
       Some(style),

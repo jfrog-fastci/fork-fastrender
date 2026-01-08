@@ -8661,15 +8661,23 @@ impl DisplayListBuilder {
               metrics_scaled.as_ref(),
               viewport,
             );
-            let caret_x = if value_is_empty {
-              text_rect.x()
+            let caret_advance = if value_is_empty {
+              0.0
             } else {
               let caret_text = match kind {
                 TextControlKind::Password => generated.as_deref().unwrap_or(value.as_str()),
                 _ => value.as_str(),
               };
-              text_rect.x() + measure_shaped_advance(self, caret_text, &text_style)
+              measure_shaped_advance(self, caret_text, &text_style)
             };
+            let caret_start_x = if value_is_empty {
+              Self::aligned_text_start_x(&text_style, text_rect, 0.0)
+            } else {
+              Self::aligned_text_start_x(&text_style, text_rect, caret_advance)
+            };
+            let mut caret_x = caret_start_x + caret_advance;
+            let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
+            caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
 
             let mut sample_text = paint_text.unwrap_or("M");
             if sample_text.trim().is_empty() {
@@ -8793,11 +8801,20 @@ impl DisplayListBuilder {
               (last_y, last_line)
             };
 
-            let caret_x = if value_is_empty || caret_line.is_empty() {
-              rect.x()
+            let caret_advance = if value_is_empty || caret_line.is_empty() {
+              0.0
             } else {
-              rect.x() + measure_shaped_advance(self, caret_line, &text_style)
+              measure_shaped_advance(self, caret_line, &text_style)
             };
+            let line_rect = Rect::from_xywh(rect.x(), caret_y, rect.width(), line_height);
+            let caret_start_x = if value_is_empty {
+              Self::aligned_text_start_x(&text_style, line_rect, 0.0)
+            } else {
+              Self::aligned_text_start_x(&text_style, line_rect, caret_advance)
+            };
+            let mut caret_x = caret_start_x + caret_advance;
+            let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
+            caret_x = caret_x.clamp(rect.x(), max_caret_x);
 
             let sample_text = if caret_line.trim().is_empty() {
               "M"
@@ -9309,6 +9326,41 @@ impl DisplayListBuilder {
     ok
   }
 
+  fn effective_text_align(style: &ComputedStyle) -> crate::style::types::TextAlign {
+    use crate::style::types::{Direction, TextAlign};
+    match style.text_align {
+      TextAlign::Start | TextAlign::MatchParent | TextAlign::Justify | TextAlign::JustifyAll => {
+        if style.direction == Direction::Rtl {
+          TextAlign::Right
+        } else {
+          TextAlign::Left
+        }
+      }
+      TextAlign::End => {
+        if style.direction == Direction::Rtl {
+          TextAlign::Left
+        } else {
+          TextAlign::Right
+        }
+      }
+      other => other,
+    }
+  }
+
+  fn aligned_text_start_x(style: &ComputedStyle, rect: Rect, advance_width: f32) -> f32 {
+    use crate::style::types::TextAlign;
+    let advance_width = if advance_width.is_finite() {
+      advance_width.max(0.0)
+    } else {
+      0.0
+    };
+    match Self::effective_text_align(style) {
+      TextAlign::Center => rect.x() + ((rect.width() - advance_width).max(0.0) / 2.0),
+      TextAlign::Right => rect.x() + (rect.width() - advance_width).max(0.0),
+      _ => rect.x(),
+    }
+  }
+
   fn emit_text_with_style(
     &mut self,
     text: &str,
@@ -9347,13 +9399,15 @@ impl DisplayListBuilder {
       InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
     let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
     let baseline = rect.y() + half_leading + metrics.baseline_offset;
+    let advance_width: f32 = runs.iter().map(|run| run.advance).sum();
+    let start_x = Self::aligned_text_start_x(style, rect, advance_width);
 
     let shadows = Self::text_shadows_from_style(Some(style), self.viewport);
     self.emit_shaped_runs(
       &runs,
       style.color,
       baseline,
-      rect.x(),
+      start_x,
       &shadows,
       Some(style),
       false,
@@ -9367,8 +9421,11 @@ impl DisplayListBuilder {
     let color = style.map(|s| s.color).unwrap_or(Rgba::BLACK);
     let shadows = Self::text_shadows_from_style(style, self.viewport);
     let char_width = font_size * 0.6;
-    let origin = Point::new(rect.x(), rect.y() + font_size * 0.8);
     let advance_width = text.len() as f32 * char_width;
+    let start_x = style
+      .map(|style| Self::aligned_text_start_x(style, rect, advance_width))
+      .unwrap_or(rect.x());
+    let origin = Point::new(start_x, rect.y() + font_size * 0.8);
     let mut bounds = ConservativeGlyphRunBoundsBuilder::new(origin, advance_width);
     let mut glyphs = Vec::new();
     for (i, _) in text.chars().enumerate() {
