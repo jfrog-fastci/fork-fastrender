@@ -735,7 +735,9 @@ fn parse_import_rule<'i, 't>(
     }
   }
   let prelude = parser.slice_from(prelude_start);
-  let prelude = prelude.trim_end_matches(|c: char| c == ';' || c.is_whitespace());
+  let prelude = prelude.trim_end_matches(|c: char| {
+    c == ';' || matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+  });
 
   let (layer, supports, media_queries) = match parse_import_modifiers_and_media(prelude) {
     Some(parts) => parts,
@@ -761,7 +763,7 @@ fn parse_import_modifiers_and_media(
   Option<SupportsCondition>,
   Vec<MediaQuery>,
 )> {
-  let mut input = ParserInput::new(prelude.trim());
+  let mut input = ParserInput::new(trim_ascii_whitespace(prelude));
   let mut parser = Parser::new(&mut input);
 
   let mut layer: Option<ImportLayer> = None;
@@ -796,7 +798,7 @@ fn parse_import_modifiers_and_media(
     break;
   }
 
-  let media_tokens = parser.slice_from(media_start).trim();
+  let media_tokens = trim_ascii_whitespace(parser.slice_from(media_start));
   let media = if media_tokens.is_empty() {
     Vec::new()
   } else {
@@ -901,7 +903,7 @@ fn parse_media_rule<'i, 't>(
     Ok(())
   })?;
 
-  let prelude = parser.slice_from(start).trim();
+  let prelude = trim_ascii_whitespace(parser.slice_from(start));
   let mut media_query_cache = media_query_cache;
   let (queries, matches) = {
     let entry = parsed_media_query_list_cache

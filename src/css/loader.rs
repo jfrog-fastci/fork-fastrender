@@ -21,6 +21,25 @@ use std::collections::HashMap;
 use std::path::Path;
 use url::Url;
 
+// HTML/CSS URL attributes strip leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but do not
+// treat all Unicode whitespace as ignorable. Use an explicit trim instead of `str::trim()` to
+// avoid incorrectly dropping characters like NBSP (U+00A0).
+fn is_ascii_whitespace_html_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
+fn trim_ascii_whitespace_start(value: &str) -> &str {
+  value.trim_start_matches(is_ascii_whitespace_html_css)
+}
+
+fn trim_ascii_whitespace_end(value: &str) -> &str {
+  value.trim_end_matches(is_ascii_whitespace_html_css)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CssLinkCandidate {
   pub url: String,
@@ -49,7 +68,7 @@ pub fn link_rel_is_stylesheet_candidate(
     .iter()
     .any(|t| t.eq_ignore_ascii_case("modulepreload"));
   let as_style = as_attr
-    .map(|v| v.trim().eq_ignore_ascii_case("style"))
+    .map(|v| trim_ascii_whitespace(v).eq_ignore_ascii_case("style"))
     .unwrap_or(false);
 
   let mut is_stylesheet_link =
@@ -73,15 +92,6 @@ pub fn link_rel_is_stylesheet_candidate(
 /// directory paths. JavaScript-escaped hrefs (e.g. `https:\/\/example.com`) are
 /// unescaped before resolution.
 pub fn resolve_href(base: &str, href: &str) -> Option<String> {
-  // HTML/CSS URL attributes strip leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but do
-  // not treat all Unicode whitespace as ignorable. Use an explicit trim instead of `str::trim()`
-  // to avoid incorrectly dropping characters like NBSP (U+00A0).
-  fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| {
-      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
-    })
-  }
-
   let href = unescape_js_escapes(href);
   let href = trim_ascii_whitespace(href.as_ref());
   if href.is_empty() {
@@ -277,10 +287,10 @@ fn unescape_js_escapes(input: &str) -> Cow<'_, str> {
 }
 
 fn normalize_embedded_css_candidate(candidate: &str) -> Option<String> {
-  let mut cleaned = candidate
-    .trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')'))
-    .trim()
-    .to_string();
+  let mut cleaned = trim_ascii_whitespace(
+    candidate.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')')),
+  )
+  .to_string();
 
   if cleaned.is_empty() {
     return None;
@@ -792,11 +802,11 @@ fn parse_import_modifiers_and_media(
     parser.parse_nested_block(|nested| {
       let start = nested.position();
       consume_nested_tokens(nested)?;
-      Ok::<_, cssparser::ParseError<'i, ()>>(nested.slice_from(start).trim().to_string())
+      Ok::<_, cssparser::ParseError<'i, ()>>(trim_ascii_whitespace(nested.slice_from(start)).to_string())
     })
   }
 
-  let mut input = ParserInput::new(prelude.trim());
+  let mut input = ParserInput::new(trim_ascii_whitespace(prelude));
   let mut parser = Parser::new(&mut input);
 
   let mut layer: Option<ImportLayerModifier> = None;
@@ -832,7 +842,7 @@ fn parse_import_modifiers_and_media(
   // position. Advance to the end of the prelude so the slice captures any remaining media query
   // tokens (which are not otherwise consumed by the modifier parser).
   consume_nested_tokens::<()>(&mut parser).ok()?;
-  let media_tokens = parser.slice_from(media_start).trim();
+  let media_tokens = trim_ascii_whitespace(parser.slice_from(media_start));
   Some((layer, supports, media_tokens))
 }
 
@@ -847,7 +857,7 @@ fn parse_import_target(rule: &str) -> Option<(&str, &str)> {
   if bytes.len() > 7 && css_ident_continues(bytes[7]) {
     return None;
   }
-  let after_at = rule[7..].trim_start();
+  let after_at = trim_ascii_whitespace_start(&rule[7..]);
   let bytes = after_at.as_bytes();
   let (target, rest) = if bytes.len() >= 4
     && matches!(bytes[0], b'u' | b'U')
@@ -857,15 +867,19 @@ fn parse_import_target(rule: &str) -> Option<(&str, &str)> {
   {
     let inner = &after_at[4..];
     let close = inner.find(')')?;
-    let url_part = inner[..close].trim();
+    let url_part = trim_ascii_whitespace(&inner[..close]);
     let url_str = url_part.trim_matches(|c| c == '"' || c == '\'');
-    let media = inner[close + 1..].trim().trim_end_matches(';').trim();
+    let mut media = trim_ascii_whitespace(&inner[close + 1..]);
+    media = media.trim_end_matches(';');
+    media = trim_ascii_whitespace_end(media);
     (url_str, media)
   } else if let Some(quote) = after_at.chars().next().filter(|c| *c == '"' || *c == '\'') {
     let rest = &after_at[1..];
     let close_idx = rest.find(quote)?;
     let url_str = &rest[..close_idx];
-    let media = rest[close_idx + 1..].trim().trim_end_matches(';').trim();
+    let mut media = trim_ascii_whitespace(&rest[close_idx + 1..]);
+    media = media.trim_end_matches(';');
+    media = trim_ascii_whitespace_end(media);
     (url_str, media)
   } else {
     return None;
@@ -1468,7 +1482,7 @@ where
             j += 1;
           }
 
-          let rule = css[i..j].trim();
+          let rule = trim_ascii_whitespace(&css[i..j]);
           if brace_depth != 0 || !imports_allowed {
             if !push_with_budget(
               &mut out,
@@ -1914,7 +1928,7 @@ fn parse_tag_attributes(tag_source: &str) -> HashMap<String, String> {
       }
     }
 
-    attrs.insert(name, decode_html_entities(value.trim()));
+    attrs.insert(name, decode_html_entities(trim_ascii_whitespace(&value)));
   }
 
   attrs
@@ -2212,7 +2226,7 @@ fn extract_css_links_without_dom_with_meta(
               let crossorigin = match attrs.get("crossorigin") {
                 None => None,
                 Some(value) => {
-                  let value = value.trim();
+                  let value = trim_ascii_whitespace(value);
                   if value.eq_ignore_ascii_case("use-credentials") {
                     Some(CorsMode::UseCredentials)
                   } else {
@@ -2243,21 +2257,23 @@ fn extract_css_links_without_dom_with_meta(
 }
 
 fn media_attr_allows_target(value: &str, target: crate::style::media::MediaType) -> bool {
-  let value = value.trim();
+  let value = trim_ascii_whitespace(value);
   if value.is_empty() {
     return true;
   }
 
   let mut allowed = false;
   for token in value.split(',') {
-    let query = token.trim();
+    let query = trim_ascii_whitespace(token);
     if query.is_empty() {
       allowed = true;
       continue;
     }
 
     let lowered = query.to_ascii_lowercase();
-    let mut tokens = lowered.split_whitespace();
+    let mut tokens = lowered
+      .split(is_ascii_whitespace_html_css)
+      .filter(|token| !token.is_empty());
     let Some(first) = tokens.next() else {
       continue;
     };
@@ -2565,7 +2581,9 @@ pub(crate) fn extract_embedded_css_urls_with_meta(
             idx = end;
             continue;
           }
-          if !cleaned_lower.contains("style.csstext") && !cleaned.trim_end().ends_with(':') {
+          if !cleaned_lower.contains("style.csstext")
+            && !trim_ascii_whitespace_end(&cleaned).ends_with(':')
+          {
             if let Some(resolved) = resolve_href(base_url, &cleaned) {
               if record_url(
                 resolved,
@@ -2613,7 +2631,7 @@ pub(crate) fn extract_embedded_css_urls_with_meta(
           if let Some(q_end_rel) = after_quote.find(quote) {
             let candidate = &after_quote[..q_end_rel];
             if !candidate.to_ascii_lowercase().contains("style.csstext")
-              && !candidate.trim_end().ends_with(':')
+              && !trim_ascii_whitespace_end(candidate).ends_with(':')
             {
               if let Some(cleaned) = normalize_embedded_css_candidate(candidate) {
                 let lower = cleaned.to_ascii_lowercase();
@@ -2621,7 +2639,9 @@ pub(crate) fn extract_embedded_css_urls_with_meta(
                   pos = abs + 6;
                   continue;
                 }
-                if !lower.contains("style.csstext") && !cleaned.trim_end().ends_with(':') {
+                if !lower.contains("style.csstext")
+                  && !trim_ascii_whitespace_end(&cleaned).ends_with(':')
+                {
                   if let Some(resolved) = resolve_href(base_url, &cleaned) {
                     if record_url(
                       resolved,
@@ -2915,14 +2935,15 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
           .tag_name()
           .is_some_and(|tag| tag.eq_ignore_ascii_case("link"))
         && is_html
-      {
-        if let Some(rel) = node.get_attribute_ref("rel") {
-          if rel
-            .split_whitespace()
-            .any(|token| token.eq_ignore_ascii_case("canonical"))
-          {
-            if let Some(href) = node.get_attribute_ref("href") {
-              if let Some(resolved) = resolve_href(base_url, href) {
+        {
+          if let Some(rel) = node.get_attribute_ref("rel") {
+            if rel
+              .split(is_ascii_whitespace_html_css)
+              .filter(|token| !token.is_empty())
+              .any(|token| token.eq_ignore_ascii_case("canonical"))
+            {
+              if let Some(href) = node.get_attribute_ref("href") {
+                if let Some(resolved) = resolve_href(base_url, href) {
                 if resolved.starts_with("http://") || resolved.starts_with("https://") {
                   return Some(resolved);
                 }
@@ -3977,6 +3998,27 @@ mod tests {
     let html = format!(r#"<link rel="stylesheet" href="a.css{nbsp}">"#);
     let urls = extract_css_links(&html, "https://example.com/", MediaType::Screen).unwrap();
     assert_eq!(urls, vec!["https://example.com/a.css%C2%A0".to_string()]);
+  }
+
+  #[test]
+  fn extract_css_links_preload_as_style_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let html = format!(r#"<link rel="preload" as="{nbsp}style" href="/bad.css">"#);
+    let urls = extract_css_links(&html, "https://example.com/", MediaType::Screen).unwrap();
+    assert!(urls.is_empty());
+
+    let html = r#"<link rel="preload" as=" style " href="/good.css">"#;
+    let urls = extract_css_links(html, "https://example.com/", MediaType::Screen).unwrap();
+    assert_eq!(urls, vec!["https://example.com/good.css".to_string()]);
+  }
+
+  #[test]
+  fn parse_import_target_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let rule = format!("@import url(a.css{nbsp});");
+    let (target, media) = parse_import_target(&rule).expect("parse");
+    assert_eq!(target, format!("a.css{nbsp}"));
+    assert!(media.is_empty());
   }
 
   #[test]
