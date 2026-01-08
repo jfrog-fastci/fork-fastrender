@@ -16933,27 +16933,44 @@ fn validate_oblique_angle(angle: f32) -> Option<f32> {
   }
 }
 
-fn parse_angle_token<'i, 't>(input: &mut Parser<'i, 't>) -> Option<f32> {
-  parse_angle_degrees(input)
-    .ok()
-    .and_then(validate_oblique_angle)
-}
-
 fn parse_font_style_keyword(raw: &str) -> Option<FontStyle> {
-  let lower = raw.trim().to_ascii_lowercase();
-  if lower == "normal" {
-    return Some(FontStyle::Normal);
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
   }
-  if lower == "italic" {
-    return Some(FontStyle::Italic);
+
+  // `font-style` keywords are ASCII case-insensitive, but must still be token-based: a value like
+  // `oblique10deg` is a single identifier and must not be parsed as `oblique 10deg`.
+  let mut input = ParserInput::new(raw);
+  let mut parser = Parser::new(&mut input);
+  let token = parser.next().ok()?;
+  let Token::Ident(ident) = token else {
+    return None;
+  };
+  let ident = ident.as_ref();
+
+  if ident.eq_ignore_ascii_case("normal") {
+    parser.skip_whitespace();
+    return parser.is_exhausted().then_some(FontStyle::Normal);
   }
-  if lower.starts_with("oblique") {
-    let angle_part = lower.trim_start_matches("oblique").trim();
-    if angle_part.is_empty() {
+  if ident.eq_ignore_ascii_case("italic") {
+    parser.skip_whitespace();
+    return parser.is_exhausted().then_some(FontStyle::Italic);
+  }
+  if ident.eq_ignore_ascii_case("oblique") {
+    parser.skip_whitespace();
+    if parser.is_exhausted() {
       return Some(FontStyle::Oblique(None));
     }
-    return parse_angle_from_str(angle_part).map(|angle| FontStyle::Oblique(Some(angle)));
+    let angle = parse_angle_degrees(&mut parser)
+      .ok()
+      .and_then(validate_oblique_angle)?;
+    parser.skip_whitespace();
+    return parser
+      .is_exhausted()
+      .then_some(FontStyle::Oblique(Some(angle)));
   }
+
   None
 }
 
@@ -17101,10 +17118,14 @@ fn parse_font_shorthand(
             font_style = Some(FontStyle::Italic);
           } else if ident.eq_ignore_ascii_case("oblique") {
             font_style = Some(FontStyle::Oblique(None));
-            match parser.try_parse(|p| Ok::<_, cssparser::ParseError<()>>(parse_angle_token(p))) {
-              Ok(Some(angle)) => font_style = Some(FontStyle::Oblique(Some(angle))),
-              Ok(None) => return None, // invalid angle token consumed
-              Err(_) => {}
+            let state = parser.state();
+            if let Ok(angle) = parse_angle_degrees(&mut parser) {
+              let Some(angle) = validate_oblique_angle(angle) else {
+                return None;
+              };
+              font_style = Some(FontStyle::Oblique(Some(angle)));
+            } else {
+              parser.reset(&state);
             }
           } else if ident.eq_ignore_ascii_case("bold") {
             font_weight = Some(FontWeight::Bold);
@@ -17126,14 +17147,16 @@ fn parse_font_shorthand(
             font_stretch = Some(FontStretch::from_percentage(*unit_value * 100.0));
           }
         } else if let Token::Dimension { ref unit, .. } = token {
-          // Oblique angles are allowed; ignore them for now.
+          // Standalone angles are invalid in the font shorthand grammar. The only place angles may
+          // appear is immediately after the `oblique` font-style keyword, where we consume them in
+          // the branch above.
           let u = unit.as_ref();
           if u.eq_ignore_ascii_case("deg")
             || u.eq_ignore_ascii_case("grad")
             || u.eq_ignore_ascii_case("rad")
             || u.eq_ignore_ascii_case("turn")
           {
-            continue;
+            return None;
           }
         }
       }
