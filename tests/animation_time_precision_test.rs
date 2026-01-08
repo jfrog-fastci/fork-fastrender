@@ -86,4 +86,13 @@ fn animation_time_preserves_sub_millisecond_precision() {
     (0, 0, 255),
     "expected red blended over black at 0.5ms, got rgba=({r},{g},{b},{a})"
   );
+
+  let pixmap_end = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(1.0),
+    )
+    .expect("paint at 1ms");
+  assert_eq!(pixel(&pixmap_end, 5, 5), (255, 0, 0, 255));
 }

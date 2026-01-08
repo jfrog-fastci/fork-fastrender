@@ -1835,6 +1835,71 @@ fn transform_animation_moves_pixels() {
 }
 
 #[test]
+fn time_based_transform_animation_updates_stacking_context_order() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #cover {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 10px;
+        height: 10px;
+        background: rgb(0, 0, 255);
+        z-index: 0;
+      }
+      #parent {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 10px;
+        height: 10px;
+        animation: sc 1ms linear both;
+      }
+      #child {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        z-index: -1;
+      }
+      @keyframes sc { from { transform: none; } to { transform: translateX(0px); } }
+    </style>
+    <div id="cover"></div>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+
+  // At t=0ms, `transform: none` means `#parent` does not establish a stacking context. The child
+  // `z-index: -1` stacking context participates in the root stacking context and should paint
+  // behind the `#cover` element with `z-index: 0`.
+  let pixmap_start = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(Rgba::new(0, 0, 0, 1.0))
+        .with_animation_time(0.0),
+    )
+    .expect("paint at 0ms");
+  assert_eq!(pixel(&pixmap_start, 5, 5), (0, 0, 255, 255));
+
+  // After the animation finishes, `transform: translateX(0px)` establishes a stacking context on
+  // `#parent`, so the negative `z-index` child is contained within `#parent` and can no longer
+  // escape behind the sibling `#cover`.
+  let pixmap_end = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(Rgba::new(0, 0, 0, 1.0))
+        .with_animation_time(1.0),
+    )
+    .expect("paint at 1ms");
+  assert_eq!(pixel(&pixmap_end, 5, 5), (255, 0, 0, 255));
+}
+
+#[test]
 fn registered_custom_property_interpolates_and_recomputes_var_dependent_values() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r#"
