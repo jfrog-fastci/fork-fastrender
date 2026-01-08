@@ -116,3 +116,53 @@ fn form_owner_resolution_includes_form_attribute_association() {
   assert_eq!(display(find_by_id(&styled, "f").expect("form#f")), "none");
 }
 
+#[test]
+fn disabled_controls_do_not_affect_fieldset_or_form_validity() {
+  let html = r#"
+    <form id="f">
+      <fieldset id="fs" disabled>
+        <input required>
+      </fieldset>
+    </form>
+  "#;
+  let css = r#"
+    form:valid { display: inline; }
+    form:invalid { display: none; }
+    fieldset:valid { display: inline; }
+    fieldset:invalid { display: none; }
+  "#;
+  let dom = dom::parse_html(html).expect("parse html");
+  let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  assert_eq!(
+    display(find_by_id(&styled, "f").expect("form#f")),
+    "inline",
+    "a disabled fieldset disables its descendants, so they should not make the form invalid"
+  );
+  assert_eq!(
+    display(find_by_id(&styled, "fs").expect("fieldset#fs")),
+    "inline",
+    "disabled descendants should not make the fieldset invalid"
+  );
+}
+
+#[test]
+fn disabled_associated_controls_do_not_affect_form_validity() {
+  let html = r#"
+    <form id="f"></form>
+    <input form="f" required disabled>
+  "#;
+  let css = r#"
+    form:valid { display: inline; }
+    form:invalid { display: none; }
+  "#;
+  let dom = dom::parse_html(html).expect("parse html");
+  let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  assert_eq!(
+    display(find_by_id(&styled, "f").expect("form#f")),
+    "inline"
+  );
+}
