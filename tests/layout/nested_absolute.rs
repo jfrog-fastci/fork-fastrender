@@ -14,6 +14,7 @@ use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::CrossOriginAttribute;
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::box_tree::SrcsetCandidate;
+use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::Size;
 use std::sync::Arc;
 
@@ -276,8 +277,8 @@ fn replaced_border_box_min_width_does_not_double_count_edges_in_block_layout() {
   let fragment = fc.layout(&root, &constraints).expect("block layout");
 
   let image_fragment = fragment
-    .children
-    .first()
+    .iter_fragments()
+    .find(|node| matches!(node.content, FragmentContent::Replaced { .. }))
     .expect("replaced fragment should be present");
 
   // min-width:60px with box-sizing:border-box should apply to the border box; padding+border must
