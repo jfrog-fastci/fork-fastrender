@@ -8702,19 +8702,25 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             .unwrap_or(false);
 
           if self.config.cache_errors && !has_bucket {
-            let _ = self.cache_entry(
-              &key,
+            if let Some(vary_key) = compute_vary_key_for_request(
+              &self.inner,
               request,
-              None,
-              VARY_KEY_EMPTY.to_string(),
-              CacheEntry {
-                value: CacheValue::Error(err.clone()),
-                etag: None,
-                last_modified: None,
-                http_cache: None,
-              },
-              None,
-            );
+              Some(INFLIGHT_VARY_SIGNATURE_HEADERS),
+            ) {
+              let _ = self.cache_entry(
+                &key,
+                request,
+                Some(INFLIGHT_VARY_SIGNATURE_HEADERS.to_string()),
+                vary_key,
+                CacheEntry {
+                  value: CacheValue::Error(err.clone()),
+                  etag: None,
+                  last_modified: None,
+                  http_cache: None,
+                },
+                None,
+              );
+            }
           }
           (Err(err), false)
         }
@@ -8977,19 +8983,25 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             .unwrap_or(false);
 
           if self.config.cache_errors && !has_bucket {
-            let _ = self.cache_entry(
-              &key,
+            if let Some(vary_key) = compute_vary_key_for_request(
+              &self.inner,
               req,
-              None,
-              VARY_KEY_EMPTY.to_string(),
-              CacheEntry {
-                value: CacheValue::Error(err.clone()),
-                etag: None,
-                last_modified: None,
-                http_cache: None,
-              },
-              None,
-            );
+              Some(INFLIGHT_VARY_SIGNATURE_HEADERS),
+            ) {
+              let _ = self.cache_entry(
+                &key,
+                req,
+                Some(INFLIGHT_VARY_SIGNATURE_HEADERS.to_string()),
+                vary_key,
+                CacheEntry {
+                  value: CacheValue::Error(err.clone()),
+                  etag: None,
+                  last_modified: None,
+                  http_cache: None,
+                },
+                None,
+              );
+            }
           }
           (Err(err), false)
         }
@@ -16885,6 +16897,18 @@ mod tests {
         self.count.fetch_add(1, Ordering::SeqCst);
         Err(Error::Other("boom".to_string()))
       }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("origin")
+          || header_name.eq_ignore_ascii_case("accept-encoding")
+          || header_name.eq_ignore_ascii_case("accept-language")
+          || header_name.eq_ignore_ascii_case("user-agent")
+          || header_name.eq_ignore_ascii_case("referer")
+        {
+          return Some(String::new());
+        }
+        None
+      }
     }
 
     let counter = Arc::new(AtomicUsize::new(0));
@@ -16896,6 +16920,156 @@ mod tests {
     assert!(cache.fetch("http://example.com/error").is_err());
     assert!(cache.fetch("http://example.com/error").is_err());
     assert_eq!(counter.load(Ordering::SeqCst), 1);
+  }
+
+  #[test]
+  fn caching_fetcher_partitions_cached_errors_by_referrer_for_request_api() {
+    #[derive(Clone)]
+    struct ReferrerAwareFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for ReferrerAwareFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected request-aware fetch");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        match req.referrer_url {
+          Some("https://a.test/") => Err(Error::Other("blocked".to_string())),
+          Some("https://b.test/") => {
+            let mut res = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+            res.final_url = Some(req.url.to_string());
+            Ok(res)
+          }
+          other => panic!("unexpected referrer in fetch_with_request: {other:?}"),
+        }
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("referer") {
+          return Some(req.referrer_url.unwrap_or("").to_string());
+        }
+        if header_name.eq_ignore_ascii_case("origin")
+          || header_name.eq_ignore_ascii_case("accept-encoding")
+          || header_name.eq_ignore_ascii_case("accept-language")
+          || header_name.eq_ignore_ascii_case("user-agent")
+        {
+          return Some(String::new());
+        }
+        None
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(ReferrerAwareFetcher {
+      calls: Arc::clone(&calls),
+    })
+    .with_cache_errors(true);
+    let url = "https://example.com/image.png";
+    let req_a = FetchRequest::new(url, FetchDestination::Image).with_referrer_url("https://a.test/");
+    let req_b = FetchRequest::new(url, FetchDestination::Image).with_referrer_url("https://b.test/");
+
+    assert!(cache.fetch_with_request(req_a).is_err());
+    assert!(cache.fetch_with_request(req_a).is_err(), "should hit cached error");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected repeated request to reuse cached error"
+    );
+
+    let res = cache
+      .fetch_with_request(req_b)
+      .expect("different referrer should not reuse cached error");
+    assert_eq!(res.bytes, b"ok".to_vec());
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected different referrer to re-fetch"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_partitions_cached_errors_by_referrer_for_context_api() {
+    #[derive(Clone)]
+    struct ContextReferrerAwareFetcher {
+      calls: Arc<AtomicUsize>,
+      referrer: Arc<Mutex<Option<String>>>,
+    }
+
+    impl ResourceFetcher for ContextReferrerAwareFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected context-aware fetch");
+      }
+
+      fn fetch_with_context(&self, _kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let referrer = self.referrer.lock().unwrap().clone();
+        match referrer.as_deref() {
+          Some("https://a.test/") => Err(Error::Other("blocked".to_string())),
+          Some("https://b.test/") => {
+            let mut res = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+            res.final_url = Some(url.to_string());
+            Ok(res)
+          }
+          other => panic!("unexpected referrer in fetch_with_context: {other:?}"),
+        }
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("referer") {
+          return Some(
+            req
+              .referrer_url
+              .map(str::to_string)
+              .or_else(|| self.referrer.lock().unwrap().clone())
+              .unwrap_or_default(),
+          );
+        }
+        if header_name.eq_ignore_ascii_case("origin")
+          || header_name.eq_ignore_ascii_case("accept-encoding")
+          || header_name.eq_ignore_ascii_case("accept-language")
+          || header_name.eq_ignore_ascii_case("user-agent")
+        {
+          return Some(String::new());
+        }
+        None
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let referrer = Arc::new(Mutex::new(None::<String>));
+    let cache = CachingFetcher::new(ContextReferrerAwareFetcher {
+      calls: Arc::clone(&calls),
+      referrer: Arc::clone(&referrer),
+    })
+    .with_cache_errors(true);
+    let url = "https://example.com/image.png";
+
+    *referrer.lock().unwrap() = Some("https://a.test/".to_string());
+    assert!(cache
+      .fetch_with_context(FetchContextKind::Image, url)
+      .is_err());
+    assert!(cache
+      .fetch_with_context(FetchContextKind::Image, url)
+      .is_err());
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected repeated context request to reuse cached error"
+    );
+
+    *referrer.lock().unwrap() = Some("https://b.test/".to_string());
+    let res = cache
+      .fetch_with_context(FetchContextKind::Image, url)
+      .expect("different referrer should not reuse cached error");
+    assert_eq!(res.bytes, b"ok".to_vec());
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected different context referrer to re-fetch"
+    );
   }
 
   #[test]

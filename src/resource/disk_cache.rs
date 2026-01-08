@@ -1956,6 +1956,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     &self,
     kind: FetchContextKind,
     url: &str,
+    request: FetchRequest<'_>,
     error: &ResourceError,
     origin_key: Option<&str>,
     credentials_mode: super::FetchCredentialsMode,
@@ -1972,7 +1973,33 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
     self.remove_alias_for(kind, url, origin_key, credentials_mode);
 
-    let key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let existing_vary = self.read_vary_for_base_key(&base_key);
+    if let Some(existing_vary) = existing_vary.as_deref() {
+      // Avoid overwriting an existing vary bucket (e.g. from a successful response) with the
+      // conservative error partitioning vary list.
+      if existing_vary != super::INFLIGHT_VARY_SIGNATURE_HEADERS {
+        return;
+      }
+    }
+
+    let request = FetchRequest {
+      url,
+      destination: request.destination,
+      referrer_url: request.referrer_url,
+      client_origin: request.client_origin,
+      referrer_policy: request.referrer_policy,
+      credentials_mode,
+    };
+    let Some(vary_key) = super::compute_vary_key_for_request(
+      &self.memory.inner,
+      request,
+      Some(super::INFLIGHT_VARY_SIGNATURE_HEADERS),
+    ) else {
+      return;
+    };
+
+    let key = self.variant_key_for_base_key(&base_key, &vary_key);
     let data_path = self.data_path_for_key(&key);
     if let Some(parent) = data_path.parent() {
       let _ = fs::create_dir_all(parent);
@@ -2069,6 +2096,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     self
       .index
       .record_insert(&key, stored_at, 0, &data_path, &meta_path);
+
+    self.persist_vary_for_base_key(&base_key, Some(super::INFLIGHT_VARY_SIGNATURE_HEADERS));
 
     drop(entry_lock);
 
@@ -3215,25 +3244,32 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               })
               .unwrap_or(false);
             if !has_bucket {
-              self.memory.cache_entry(
-                &key,
+              if let Some(vary_key) = super::compute_vary_key_for_request(
+                &self.memory.inner,
                 request,
-                None,
-                super::VARY_KEY_EMPTY.to_string(),
-                super::CacheEntry {
-                  value: super::CacheValue::Error(err.clone()),
-                  etag: None,
-                  last_modified: None,
-                  http_cache: None,
-                },
-                None,
-              );
+                Some(super::INFLIGHT_VARY_SIGNATURE_HEADERS),
+              ) {
+                self.memory.cache_entry(
+                  &key,
+                  request,
+                  Some(super::INFLIGHT_VARY_SIGNATURE_HEADERS.to_string()),
+                  vary_key,
+                  super::CacheEntry {
+                    value: super::CacheValue::Error(err.clone()),
+                    etag: None,
+                    last_modified: None,
+                    http_cache: None,
+                  },
+                  None,
+                );
+              }
             }
             if self.disk_config.allow_no_store {
               if let Error::Resource(resource_err) = &err {
                 self.persist_error(
                   kind,
                   url,
+                  request,
                   resource_err,
                   key.origin_key.as_deref(),
                   key.credentials_mode,
@@ -3700,6 +3736,18 @@ mod tests {
         url.to_string(),
         "network error".to_string(),
       )))
+    }
+
+    fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+      if header_name.eq_ignore_ascii_case("origin")
+        || header_name.eq_ignore_ascii_case("accept-encoding")
+        || header_name.eq_ignore_ascii_case("accept-language")
+        || header_name.eq_ignore_ascii_case("user-agent")
+        || header_name.eq_ignore_ascii_case("referer")
+      {
+        return Some(String::new());
+      }
+      None
     }
   }
 
@@ -5671,6 +5719,18 @@ mod tests {
       fn fetch(&self, _url: &str) -> Result<FetchedResource> {
         panic!("network fetch should not be reached when disk cache contains persisted error");
       }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("origin")
+          || header_name.eq_ignore_ascii_case("accept-encoding")
+          || header_name.eq_ignore_ascii_case("accept-language")
+          || header_name.eq_ignore_ascii_case("user-agent")
+          || header_name.eq_ignore_ascii_case("referer")
+        {
+          return Some(String::new());
+        }
+        None
+      }
     }
 
     let tmp = tempfile::tempdir().unwrap();
@@ -5719,6 +5779,148 @@ mod tests {
       Error::Resource(err) => assert_eq!(err.message, "network error"),
       other => panic!("expected resource error, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn disk_cache_does_not_share_persisted_errors_across_referrers() {
+    #[derive(Clone)]
+    struct SeedFailFetcher;
+
+    impl ResourceFetcher for SeedFailFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected request-aware fetch");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        match req.referrer_url {
+          Some("https://a.test/") => Err(Error::Resource(crate::error::ResourceError::new(
+            req.url.to_string(),
+            "blocked".to_string(),
+          ))),
+          other => panic!("unexpected referrer in seed fetch: {other:?}"),
+        }
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("referer") {
+          return Some(req.referrer_url.unwrap_or("").to_string());
+        }
+        if header_name.eq_ignore_ascii_case("origin")
+          || header_name.eq_ignore_ascii_case("accept-encoding")
+          || header_name.eq_ignore_ascii_case("accept-language")
+          || header_name.eq_ignore_ascii_case("user-agent")
+        {
+          return Some(String::new());
+        }
+        None
+      }
+    }
+
+    #[derive(Clone)]
+    struct SuccessForBFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for SuccessForBFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected request-aware fetch");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        match req.referrer_url {
+          Some("https://a.test/") => {
+            panic!("network fetch should not run for referrer A when disk cache contains error")
+          }
+          Some("https://b.test/") => {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut res = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+            res.final_url = Some(req.url.to_string());
+            Ok(res)
+          }
+          other => panic!("unexpected referrer in fetcher: {other:?}"),
+        }
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("referer") {
+          return Some(req.referrer_url.unwrap_or("").to_string());
+        }
+        if header_name.eq_ignore_ascii_case("origin")
+          || header_name.eq_ignore_ascii_case("accept-encoding")
+          || header_name.eq_ignore_ascii_case("accept-language")
+          || header_name.eq_ignore_ascii_case("user-agent")
+        {
+          return Some(String::new());
+        }
+        None
+      }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let url = "https://example.com/error-partition";
+    let req_a =
+      FetchRequest::new(url, FetchDestination::Image).with_referrer_url("https://a.test/");
+    let req_b =
+      FetchRequest::new(url, FetchDestination::Image).with_referrer_url("https://b.test/");
+
+    let seed = DiskCachingFetcher::with_configs(
+      SeedFailFetcher,
+      tmp.path(),
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        ..CachingFetcherConfig::default()
+      },
+      DiskCacheConfig {
+        allow_no_store: true,
+        ..DiskCacheConfig::default()
+      },
+    );
+    let err = seed.fetch_with_request(req_a).expect_err("expected seed fetch to fail");
+    match err {
+      Error::Resource(err) => assert_eq!(err.message, "blocked"),
+      other => panic!("expected resource error, got {other:?}"),
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let disk = DiskCachingFetcher::with_configs(
+      SuccessForBFetcher {
+        calls: Arc::clone(&calls),
+      },
+      tmp.path(),
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        stale_policy: CacheStalePolicy::UseStaleWhenDeadline,
+        ..CachingFetcherConfig::default()
+      },
+      DiskCacheConfig {
+        allow_no_store: true,
+        ..DiskCacheConfig::default()
+      },
+    );
+
+    let deadline = render_control::RenderDeadline::new(Some(Duration::from_secs(1)), None);
+    let err = render_control::with_deadline(Some(&deadline), || disk.fetch_with_request(req_a))
+      .expect_err("expected disk cache to serve persisted error for referrer A");
+    match err {
+      Error::Resource(err) => assert_eq!(err.message, "blocked"),
+      other => panic!("expected resource error, got {other:?}"),
+    }
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      0,
+      "expected referrer A load to avoid hitting the inner fetcher"
+    );
+
+    let ok =
+      render_control::with_deadline(Some(&deadline), || disk.fetch_with_request(req_b)).expect(
+        "expected referrer B load to bypass persisted error and attempt a fresh fetch",
+      );
+    assert_eq!(ok.bytes, b"ok".to_vec());
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected inner fetcher to be called for referrer B"
+    );
   }
 
   #[test]
