@@ -6877,8 +6877,16 @@ impl FastRender {
           StylesheetTask::Inline { css } => {
             let mut sheet =
               parse_stylesheet_with_media(&css, media_ctx, Some(&mut local_media_cache))?;
-            if let Some(base_url) = document_base_url.as_deref() {
-              sheet.set_font_face_source_stylesheet_url(base_url);
+            // Inline stylesheets don't have their own URL; use the owning document URL as the
+            // referrer source for CORS-mode CSS subresource fetches (e.g. web fonts). This must
+            // remain distinct from the base URL used for resolving relative `url(...)` references,
+            // which can be overridden via `<base href>`.
+            let font_face_referrer_url = resource_context
+              .as_ref()
+              .and_then(|ctx| ctx.document_url.as_deref())
+              .or_else(|| document_base_url.as_deref());
+            if let Some(url) = font_face_referrer_url {
+              sheet.set_font_face_source_stylesheet_url(url);
             }
             let resolved = if sheet.contains_imports() {
               let referrer_policy = resource_context
@@ -7235,8 +7243,9 @@ impl FastRender {
 
           let mut sheet =
             parse_stylesheet_with_media(&inline.css, media_ctx, Some(media_query_cache))?;
-          if let Some(base_url) = self.base_url.as_deref() {
-            sheet.set_font_face_source_stylesheet_url(base_url);
+          let font_face_referrer_url = self.document_url().or(self.base_url.as_deref());
+          if let Some(url) = font_face_referrer_url {
+            sheet.set_font_face_source_stylesheet_url(url);
           }
           if sheet.contains_imports() {
             let resolved = sheet.resolve_imports_owned_with_cache(
