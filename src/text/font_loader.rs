@@ -1371,17 +1371,31 @@ impl FontContext {
         let guard = PendingTask::new(self.pending_async.clone());
         let done_tx: mpsc::Sender<usize> = block_tx.clone();
         let ctx = self.clone();
-        let events = Arc::clone(&events);
-        let expired_jobs = Arc::clone(&expired_jobs);
-        let render_deadline = render_deadline.clone();
-        std::thread::spawn(move || {
-          let _pending = guard;
-          let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
-          let start = Instant::now();
-          let event = ctx.load_face_sources_with_report(
-            &family_clone,
-            &face_clone,
-            base.as_deref(),
+         let events = Arc::clone(&events);
+         let expired_jobs = Arc::clone(&expired_jobs);
+         let render_deadline = render_deadline.clone();
+         std::thread::spawn(move || {
+           let _pending = guard;
+           let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
+           if render_control::check_active(RenderStage::Css).is_err() {
+             let timed_out = expired_jobs
+               .lock()
+               .map(|set| set.contains(&job_id))
+               .unwrap_or(false);
+             if !timed_out {
+               record_font_event(
+                 &events,
+                 FontLoadEvent::skipped(&family_clone, None, face_clone.display, "render cancelled"),
+               );
+             }
+             let _ = done_tx.send(job_id);
+             return;
+           }
+           let start = Instant::now();
+           let event = ctx.load_face_sources_with_report(
+             &family_clone,
+             &face_clone,
+             base.as_deref(),
             order,
             start,
             allow_remote,
@@ -1418,17 +1432,24 @@ impl FontContext {
     // render until an explicit wait/activation step is performed.
     for (order, family, face, base) in deferred_faces {
       let guard = PendingTask::new(self.pending_async.clone());
-      let ctx = self.clone();
-      let events = Arc::clone(&events);
-      let render_deadline = render_deadline.clone();
-      std::thread::spawn(move || {
-        let _pending = guard;
-        let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
-        let start = Instant::now();
-        let event = ctx.load_face_sources_with_report(
-          &family,
-          &face,
-          base.as_deref(),
+       let ctx = self.clone();
+       let events = Arc::clone(&events);
+       let render_deadline = render_deadline.clone();
+       std::thread::spawn(move || {
+         let _pending = guard;
+         let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
+         if render_control::check_active(RenderStage::Css).is_err() {
+           record_font_event(
+             &events,
+             FontLoadEvent::skipped(&family, None, face.display, "render cancelled"),
+           );
+           return;
+         }
+         let start = Instant::now();
+         let event = ctx.load_face_sources_with_report(
+           &family,
+           &face,
+           base.as_deref(),
           order,
           start,
           allow_remote,
@@ -1689,9 +1710,15 @@ impl FontContext {
     start: Instant,
     allow_remote: bool,
   ) -> FontLoadEvent {
+    if render_control::check_active(RenderStage::Css).is_err() {
+      return FontLoadEvent::skipped(family, None, face.display, "render cancelled");
+    }
     let mut last_error: Option<String> = None;
     let mut last_source: Option<String> = None;
     for source in ordered_sources(&face.sources) {
+      if render_control::check_active(RenderStage::Css).is_err() {
+        return FontLoadEvent::skipped(family, last_source.clone(), face.display, "render cancelled");
+      }
       match source {
         FontFaceSource::Local(name) => {
           last_source = Some(format!("local({})", name));
@@ -1723,8 +1750,14 @@ impl FontContext {
           }
         }
       };
+      if render_control::check_active(RenderStage::Css).is_err() {
+        return FontLoadEvent::skipped(family, last_source.clone(), face.display, "render cancelled");
+      }
     }
 
+    if render_control::check_active(RenderStage::Css).is_err() {
+      return FontLoadEvent::skipped(family, last_source, face.display, "render cancelled");
+    }
     match last_error {
       Some(reason) => FontLoadEvent::failed(family, last_source, face.display, reason),
       None => FontLoadEvent::skipped(family, None, face.display, "no usable sources"),
@@ -1739,6 +1772,7 @@ impl FontContext {
     order: usize,
     start: Instant,
   ) -> Result<LoadOutcome> {
+    render_control::check_active(RenderStage::Css)?;
     let target_style = match face.style {
       FontFaceStyle::Italic => FontStyle::Italic,
       FontFaceStyle::Oblique { .. } => FontStyle::Oblique,
@@ -1757,6 +1791,7 @@ impl FontContext {
 
     if let Some(id) = id {
       if let Some(font) = self.db.load_font(id) {
+        render_control::check_active(RenderStage::Css)?;
         if display_allows_use(face.display, start.elapsed()) {
           self.register_web_font(
             family.to_string(),
@@ -1785,6 +1820,7 @@ impl FontContext {
     start: Instant,
     base_url: Option<&str>,
   ) -> Result<LoadOutcome> {
+    render_control::check_active(RenderStage::Css)?;
     if let Some(ctx) = &self.resource_context {
       if let Err(err) = ctx.check_allowed(ResourceKind::Font, resolved_url) {
         let blocked = Error::Font(crate::error::FontError::LoadFailed {
@@ -1796,6 +1832,7 @@ impl FontContext {
       }
     }
     let referrer_url = face.source_stylesheet_url.as_deref().or(base_url);
+    render_control::check_active(RenderStage::Css)?;
     let resource = match self.fetcher.fetch_with_referrer_policy(
       resolved_url,
       referrer_url,
@@ -1807,6 +1844,7 @@ impl FontContext {
         return Err(err);
       }
     };
+    render_control::check_active(RenderStage::Css)?;
     if let Some(ctx) = &self.resource_context {
       if let Err(err) = ctx.check_allowed_with_final(
         ResourceKind::Font,
@@ -1860,6 +1898,7 @@ impl FontContext {
       .clone()
       .unwrap_or_else(|| resolved_url.to_string());
 
+    render_control::check_active(RenderStage::Css)?;
     let decoded = match decode_font_bytes(resource.bytes, resource.content_type.as_deref()) {
       Ok(decoded) => decoded,
       Err(err) => {
@@ -1881,16 +1920,19 @@ impl FontContext {
         return Err(wrapped);
       }
     };
+    render_control::check_active(RenderStage::Css)?;
     if !display_allows_use(face.display, start.elapsed()) {
       return Ok(LoadOutcome::Skipped);
     }
     let decoded_len = decoded.len();
     let data = Arc::new(decoded);
 
+    render_control::check_active(RenderStage::Css)?;
     let face_count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
     let mut registered_any = false;
     let mut first_parse_error: Option<String> = None;
     for idx in 0..face_count.max(1) {
+      render_control::check_active(RenderStage::Css)?;
       match ttf_parser::Face::parse(&data, idx) {
         Ok(_) => {
           registered_any = true;
@@ -1930,6 +1972,9 @@ impl FontContext {
     face: &FontFaceRule,
     order: usize,
   ) {
+    if render_control::check_active(RenderStage::Css).is_err() {
+      return;
+    }
     self.declare_web_family(&family);
     let generation = self.bump_generation();
 
@@ -3045,6 +3090,7 @@ fn resolve_font_url(url: &str, base_url: Option<&str>) -> String {
 }
 
 fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
+  render_control::check_active(RenderStage::Css)?;
   if has_prefix_ignore_ascii_case(url, "data:") {
     // Decode at most `MAX_FONT_BYTES + 1` so oversized inline fonts fail without allocating the
     // entire payload.
@@ -3060,6 +3106,7 @@ fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
   }
 
   if has_prefix_ignore_ascii_case(url, "http://") || has_prefix_ignore_ascii_case(url, "https://") {
+    render_control::check_active(RenderStage::Css)?;
     static FETCHER: OnceLock<HttpFetcher> = OnceLock::new();
     let fetcher = FETCHER.get_or_init(|| {
       HttpFetcher::new()
@@ -3076,6 +3123,7 @@ fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
         reason: e.to_string(),
       })
     })?;
+    render_control::check_active(RenderStage::Css)?;
     if let Err(err) =
       ensure_http_success(&resource, url).and_then(|()| ensure_font_mime_sane(&resource, url))
     {
@@ -3248,6 +3296,7 @@ fn inferred_format_support_rank_from_url(url: &str) -> Option<usize> {
 }
 
 fn decode_font_bytes(bytes: Vec<u8>, content_type: Option<&str>) -> Result<Vec<u8>> {
+  render_control::check_active(RenderStage::Css)?;
   let content_type = content_type.map(|c| c.to_ascii_lowercase());
   let content_type = content_type.as_deref();
 
@@ -4417,6 +4466,84 @@ mod tests {
     );
 
     worker.join().expect("worker thread should not panic");
+  }
+
+  #[test]
+  fn web_font_registration_is_suppressed_when_cancelled() {
+    #[derive(Clone)]
+    struct FixtureFetcher {
+      url: String,
+      bytes: Arc<Vec<u8>>,
+    }
+
+    impl ResourceFetcher for FixtureFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        assert_eq!(url, self.url);
+        let mut res = FetchedResource::with_final_url(
+          (*self.bytes).clone(),
+          Some("font/ttf".to_string()),
+          Some(url.to_string()),
+        );
+        res.status = Some(200);
+        Ok(res)
+      }
+    }
+
+    let url = "https://example.com/font.ttf".to_string();
+    let bytes = Arc::new(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec());
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(FixtureFetcher {
+      url: url.clone(),
+      bytes,
+    });
+
+    let ctx = FontContext::with_resource_fetcher(fetcher);
+    let face = FontFaceRule {
+      family: Some("CancelledWebFont".to_string()),
+      sources: vec![FontFaceSource::url(url)],
+      display: FontDisplay::Block,
+      ..Default::default()
+    };
+
+    let cancel: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
+    let deadline = render_control::RenderDeadline::new(None, Some(cancel));
+    render_control::with_deadline(Some(&deadline), || {
+      ctx
+        .load_web_fonts(&[face], Some("https://example.com/"), None)
+        .expect("load web fonts");
+    });
+
+    assert!(
+      ctx.wait_for_pending_web_fonts(Duration::from_millis(50)),
+      "cancelled web font loader should settle promptly"
+    );
+
+    // `load_web_fonts` activates blocking faces for the current generation only. If a cancelled
+    // render still registers new faces, a later activation step (e.g. the next render) would make
+    // them visible, so force activation here before matching.
+    ctx.activate_loaded_web_fonts();
+
+    assert!(
+      ctx
+        .web_fonts
+        .read()
+        .ok()
+        .map(|faces| faces.is_empty())
+        .unwrap_or(true),
+      "cancelled render must not register web font faces"
+    );
+
+    assert!(
+      ctx
+        .match_web_font_for_family(
+          "CancelledWebFont",
+          400,
+          FontStyle::Normal,
+          FontStretch::Normal,
+          None,
+        )
+        .is_none(),
+      "cancelled render must not produce an active web font match"
+    );
   }
 
   #[test]
