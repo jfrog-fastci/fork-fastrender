@@ -1067,14 +1067,50 @@ impl FragmentNode {
   /// assert_eq!(bbox.max_x(), 200.0);
   /// ```
   pub fn bounding_box(&self) -> Rect {
-    let mut bbox = Rect::from_xywh(0.0, 0.0, self.bounds.width(), self.bounds.height());
-    if let Some(borders) = &self.table_borders {
-      bbox = bbox.union(borders.paint_bounds);
+    struct Frame<'a> {
+      node: &'a FragmentNode,
+      next_child: usize,
+      bbox: Rect,
     }
-    for child in self.children.iter() {
-      bbox = bbox.union(child.bounding_box());
+
+    impl<'a> Frame<'a> {
+      fn new(node: &'a FragmentNode) -> Self {
+        let mut bbox = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
+        if let Some(borders) = &node.table_borders {
+          bbox = bbox.union(borders.paint_bounds);
+        }
+        Self {
+          node,
+          next_child: 0,
+          bbox,
+        }
+      }
     }
-    bbox.translate(self.bounds.origin)
+
+    // Stack-safe post-order traversal computing each node's bbox in its parent's coordinate space.
+    let mut stack: Vec<Frame<'_>> = Vec::new();
+    stack.push(Frame::new(self));
+
+    while let Some(frame) = stack.last_mut() {
+      if frame.next_child < frame.node.children.len() {
+        let child = &frame.node.children[frame.next_child];
+        frame.next_child += 1;
+        stack.push(Frame::new(child));
+        continue;
+      }
+
+      let bbox_in_parent_space = frame.bbox.translate(frame.node.bounds.origin);
+      stack.pop();
+      if let Some(parent) = stack.last_mut() {
+        parent.bbox = parent.bbox.union(bbox_in_parent_space);
+      } else {
+        return bbox_in_parent_space;
+      }
+    }
+
+    // The traversal always returns when the root frame is popped; fall back to the fragment bounds
+    // to satisfy the type checker without panicking.
+    self.bounds
   }
 
   /// Returns the logical bounds used for fragmentation decisions.
@@ -1768,6 +1804,81 @@ mod tests {
   }
 
   #[test]
+  fn test_bounding_box_children_apart_spans_both() {
+    let child1 = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![]);
+    let child2 = FragmentNode::new_block(Rect::from_xywh(100.0, 50.0, 10.0, 10.0), vec![]);
+    // Keep the parent small so the resulting bbox depends on the children.
+    let parent = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![child1, child2]);
+
+    let bbox = parent.bounding_box();
+    assert_eq!(bbox.min_x(), 0.0);
+    assert_eq!(bbox.max_x(), 110.0);
+    assert_eq!(bbox.min_y(), 0.0);
+    assert_eq!(bbox.max_y(), 60.0);
+  }
+
+  #[test]
+  fn test_bounding_box_includes_overflowing_child() {
+    let child = FragmentNode::new_block(Rect::from_xywh(-50.0, -25.0, 5.0, 5.0), vec![]);
+    let parent = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![child]);
+
+    let bbox = parent.bounding_box();
+    assert_eq!(bbox.min_x(), -50.0);
+    assert_eq!(bbox.min_y(), -25.0);
+    assert_eq!(bbox.max_x(), 10.0);
+    assert_eq!(bbox.max_y(), 10.0);
+  }
+
+  #[test]
+  fn test_bounding_box_unions_table_borders_paint_bounds() {
+    let mut fragment = FragmentNode::new_block(Rect::from_xywh(10.0, 20.0, 100.0, 50.0), vec![]);
+    fragment.table_borders = Some(Arc::new(TableCollapsedBorders {
+      column_count: 0,
+      row_count: 0,
+      column_line_positions: Vec::new(),
+      row_line_positions: Vec::new(),
+      vertical_borders: Vec::new(),
+      horizontal_borders: Vec::new(),
+      corner_borders: Vec::new(),
+      vertical_line_base: Vec::new(),
+      horizontal_line_base: Vec::new(),
+      paint_bounds: Rect::from_xywh(-5.0, -5.0, 110.0, 60.0),
+    }));
+
+    let bbox = fragment.bounding_box();
+    assert_eq!(bbox.min_x(), 5.0);
+    assert_eq!(bbox.min_y(), 15.0);
+    assert_eq!(bbox.max_x(), 115.0);
+    assert_eq!(bbox.max_y(), 75.0);
+  }
+
+  #[test]
+  fn test_bounding_box_deep_tree_stack_safe() {
+    // Keep this large enough to overflow with recursion in the test harness thread stack.
+    let mut fragment = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![]);
+    for _ in 0..30_000 {
+      fragment = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![fragment]);
+    }
+
+    let bbox = fragment.bounding_box();
+    assert_eq!(bbox.width(), 1.0);
+    assert_eq!(bbox.height(), 1.0);
+
+    // Dropping a deep `FragmentNode` chain is recursive and can overflow the test harness thread
+    // stack, so tear it down iteratively.
+    let mut node = fragment;
+    loop {
+      let mut children = std::mem::take(&mut node.children);
+      let mut iter = children.into_iter();
+      if let Some(child) = iter.next() {
+        node = child;
+      } else {
+        break;
+      }
+    }
+  }
+
+  #[test]
   fn test_bounding_box_nested() {
     let grandchild = FragmentNode::new_block(Rect::from_xywh(150.0, 150.0, 50.0, 50.0), vec![]);
     let child =
@@ -2287,5 +2398,19 @@ mod tests {
     assert_eq!(content.min_x(), 0.0);
     assert_eq!(content.max_x(), 800.0);
     assert_eq!(content.max_y(), 600.0);
+  }
+
+  #[test]
+  fn test_content_size_unions_additional_fragments() {
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![]);
+    let additional = FragmentNode::new_block(Rect::from_xywh(0.0, 50.0, 25.0, 25.0), vec![]);
+    let mut tree = FragmentTree::new(root);
+    tree.additional_fragments.push(additional);
+
+    let content = tree.content_size();
+    assert_eq!(content.min_x(), 0.0);
+    assert_eq!(content.min_y(), 0.0);
+    assert_eq!(content.max_x(), 25.0);
+    assert_eq!(content.max_y(), 75.0);
   }
 }
