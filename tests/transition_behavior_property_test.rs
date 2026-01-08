@@ -2,7 +2,8 @@ use fastrender::css::types::{Declaration, PropertyValue};
 use fastrender::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
 use fastrender::style::types::{
   AnimationComposition, AnimationDirection, AnimationFillMode, AnimationIterationCount,
-  AnimationPlayState, StepPosition, TransitionBehavior, TransitionProperty, TransitionTimingFunction,
+  AnimationPlayState, LinearStop, StepPosition, TransitionBehavior, TransitionProperty,
+  TransitionTimingFunction,
 };
 use fastrender::style::ComputedStyle;
 
@@ -1623,6 +1624,46 @@ fn transition_timing_function_steps_accepts_positive_sign() {
   assert_eq!(
     styles.transition_timing_functions,
     vec![TransitionTimingFunction::Steps(4, StepPosition::End)].into()
+  );
+}
+
+#[test]
+fn transition_timing_function_linear_allows_percentage_before_number() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("linear(0% 0, 100% 1)".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::LinearFunction(vec![
+      LinearStop {
+        input: 0.0,
+        output: 0.0,
+      },
+      LinearStop {
+        input: 1.0,
+        output: 1.0,
+      },
+    ])]
+    .into()
   );
 }
 

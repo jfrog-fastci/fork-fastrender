@@ -2770,27 +2770,37 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
       if pieces.is_empty() {
         return None;
       }
-      let y = pieces[0].trim().parse::<f32>().ok()?;
-      if !y.is_finite() {
-        return None;
-      }
-      match pieces.len() {
-        1 => raw_stops.push((None, y)),
-        2 => {
-          let x = parse_percentage(pieces[1]).map(|v| v / 100.0)?;
-          if !x.is_finite() {
-            return None;
+      // The grammar allows the number and up to two percentages in any order.
+      let mut y: Option<f32> = None;
+      let mut xs: Vec<f32> = Vec::new();
+      for piece in &pieces {
+        if y.is_none() {
+          if let Ok(value) = piece.trim().parse::<f32>() {
+            if !value.is_finite() {
+              return None;
+            }
+            y = Some(value);
+            continue;
           }
-          raw_stops.push((Some(x), y));
         }
-        3 => {
-          let x1 = parse_percentage(pieces[1]).map(|v| v / 100.0)?;
-          let x2 = parse_percentage(pieces[2]).map(|v| v / 100.0)?;
-          if !x1.is_finite() || !x2.is_finite() {
-            return None;
-          }
-          raw_stops.push((Some(x1), y));
-          raw_stops.push((Some(x2), y));
+
+        let x = parse_percentage(piece).map(|v| v / 100.0)?;
+        if !x.is_finite() {
+          return None;
+        }
+        xs.push(x);
+        if xs.len() > 2 {
+          return None;
+        }
+      }
+
+      let y = y?;
+      match xs.len() {
+        0 => raw_stops.push((None, y)),
+        1 => raw_stops.push((Some(xs[0]), y)),
+        2 => {
+          raw_stops.push((Some(xs[0]), y));
+          raw_stops.push((Some(xs[1]), y));
         }
         _ => return None,
       }
