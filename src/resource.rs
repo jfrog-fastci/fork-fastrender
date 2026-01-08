@@ -4548,7 +4548,7 @@ impl HttpFetcher {
             resource.response_referrer_policy = response_referrer_policy;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
-            render_control::check_active(decode_stage).map_err(Error::Render)?;
+            render_control::check_root(decode_stage).map_err(Error::Render)?;
             return Ok(resource);
           }
           Err(err) => {
@@ -5056,7 +5056,7 @@ impl HttpFetcher {
             resource.response_referrer_policy = response_referrer_policy;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
-            render_control::check_active(decode_stage).map_err(Error::Render)?;
+            render_control::check_root(decode_stage).map_err(Error::Render)?;
             return Ok(resource);
           }
           Err(err) => {
@@ -5642,7 +5642,7 @@ impl HttpFetcher {
             resource.response_referrer_policy = response_referrer_policy;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
-            render_control::check_active(decode_stage).map_err(Error::Render)?;
+            render_control::check_root(decode_stage).map_err(Error::Render)?;
             return Ok(resource);
           }
           Err(err) => {
@@ -6232,7 +6232,7 @@ impl HttpFetcher {
             resource.response_referrer_policy = response_referrer_policy;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
-            render_control::check_active(decode_stage).map_err(Error::Render)?;
+            render_control::check_root(decode_stage).map_err(Error::Render)?;
             return Ok(resource);
           }
           Err(err) => {
@@ -6413,7 +6413,7 @@ impl HttpFetcher {
 
     self.policy.reserve_budget(bytes.len())?;
 
-    render_control::check_active(render_stage_hint_for_context(kind, url))
+    render_control::check_root(render_stage_hint_for_context(kind, url))
       .map_err(Error::Render)?;
     Ok(FetchedResource::with_final_url(
       bytes,
@@ -6472,7 +6472,7 @@ impl HttpFetcher {
 
     self.policy.reserve_budget(bytes.len())?;
 
-    render_control::check_active(render_stage_hint_for_context(kind, url))
+    render_control::check_root(render_stage_hint_for_context(kind, url))
       .map_err(Error::Render)?;
     Ok(FetchedResource::with_final_url(
       bytes,
@@ -6509,7 +6509,7 @@ impl HttpFetcher {
       )));
     }
     self.policy.reserve_budget(len)?;
-    render_control::check_active(render_stage_hint_for_context(kind, url))
+    render_control::check_root(render_stage_hint_for_context(kind, url))
       .map_err(Error::Render)?;
     Ok(resource)
   }
@@ -6530,7 +6530,7 @@ impl HttpFetcher {
       read_limit,
     );
     self.policy.reserve_budget(resource.bytes.len())?;
-    render_control::check_active(render_stage_hint_from_url(url)).map_err(Error::Render)?;
+    render_control::check_root(render_stage_hint_from_url(url)).map_err(Error::Render)?;
     Ok(resource)
   }
 }
@@ -6558,7 +6558,7 @@ impl ResourceFetcher for HttpFetcher {
   }
 
   fn fetch_with_context(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
-    render_control::check_active(render_stage_hint_for_context(kind, url))
+    render_control::check_root(render_stage_hint_for_context(kind, url))
       .map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data(kind, url),
@@ -6571,7 +6571,7 @@ impl ResourceFetcher for HttpFetcher {
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
-    render_control::check_active(render_stage_hint_for_context(kind, req.url))
+    render_control::check_root(render_stage_hint_for_context(kind, req.url))
       .map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(req.url)? {
       ResourceScheme::Data => self.fetch_data(kind, req.url),
@@ -6637,7 +6637,7 @@ impl ResourceFetcher for HttpFetcher {
     last_modified: Option<&str>,
   ) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
-    render_control::check_active(render_stage_hint_for_context(kind, req.url))
+    render_control::check_root(render_stage_hint_for_context(kind, req.url))
       .map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(req.url)? {
       ResourceScheme::Data => self.fetch_data(kind, req.url),
@@ -6677,7 +6677,7 @@ impl ResourceFetcher for HttpFetcher {
       return Ok(res);
     }
 
-    render_control::check_active(render_stage_hint_for_context(kind, url))
+    render_control::check_root(render_stage_hint_for_context(kind, url))
       .map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data_prefix(kind, url, max_bytes),
@@ -6715,7 +6715,7 @@ impl ResourceFetcher for HttpFetcher {
       return Ok(res);
     }
 
-    render_control::check_active(render_stage_hint_for_context(kind, req.url))
+    render_control::check_root(render_stage_hint_for_context(kind, req.url))
       .map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(req.url)? {
       ResourceScheme::Data => self.fetch_data_prefix(kind, req.url, max_bytes),
@@ -6755,7 +6755,7 @@ impl ResourceFetcher for HttpFetcher {
     etag: Option<&str>,
     last_modified: Option<&str>,
   ) -> Result<FetchedResource> {
-    render_control::check_active(render_stage_hint_for_context(kind, url))
+    render_control::check_root(render_stage_hint_for_context(kind, url))
       .map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Http | ResourceScheme::Https => {
@@ -7663,7 +7663,7 @@ impl InFlight {
       .result
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let deadline = render_control::active_deadline().filter(|d| d.is_enabled());
+    let deadline = render_control::root_deadline().filter(|d| d.is_enabled());
     let stage = render_stage_hint_for_context(key.kind, &key.url);
 
     while guard.is_none() {
@@ -7878,7 +7878,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
       }
 
       if self.config.stale_policy == CacheStalePolicy::UseStaleWhenDeadline
-        && render_control::active_deadline()
+        && render_control::root_deadline()
           .as_ref()
           .and_then(|deadline| deadline.timeout_limit())
           .is_some()
@@ -7921,7 +7921,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
           };
         }
         if self.config.stale_policy == CacheStalePolicy::UseStaleWhenDeadline
-          && render_control::active_deadline()
+          && render_control::root_deadline()
             .as_ref()
             .and_then(|deadline| deadline.timeout_limit())
             .is_some()
@@ -7965,7 +7965,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
       // This keeps `CacheStalePolicy::UseStaleWhenDeadline` consistent with its docs: serve cached
       // bytes even when the entry "requires revalidation".
       if self.config.stale_policy == CacheStalePolicy::UseStaleWhenDeadline
-        && render_control::active_deadline()
+        && render_control::root_deadline()
           .as_ref()
           .and_then(|deadline| deadline.timeout_limit())
           .is_some()

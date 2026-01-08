@@ -8,7 +8,7 @@ use crate::debug::runtime;
 use crate::error::{Error, ImageError, RenderError, RenderStage, Result};
 use crate::paint::painter::with_paint_diagnostics;
 use crate::paint::pixmap::{new_pixmap, MAX_PIXMAP_BYTES};
-use crate::render_control::{self, check_active, check_active_periodic};
+use crate::render_control::{self, check_root, check_root_periodic};
 use crate::resource::CacheArtifactKind;
 use crate::resource::CachingFetcher;
 use crate::resource::CachingFetcherConfig;
@@ -289,7 +289,7 @@ impl<'a> DeadlineCursor<'a> {
   }
 
   fn check_deadline(&mut self) -> io::Result<()> {
-    check_active_periodic(
+    check_root_periodic(
       &mut self.deadline_counter,
       IMAGE_DECODE_DEADLINE_STRIDE,
       RenderStage::Paint,
@@ -893,7 +893,7 @@ fn try_render_simple_svg_pixmap(
   }
 
   let mut deadline_counter = 0usize;
-  check_active_periodic(
+  check_root_periodic(
     &mut deadline_counter,
     IMAGE_DECODE_DEADLINE_STRIDE,
     RenderStage::Paint,
@@ -912,7 +912,7 @@ fn try_render_simple_svg_pixmap(
   }
 
   for node in root.descendants().filter(|n| n.is_element()) {
-    check_active_periodic(
+    check_root_periodic(
       &mut deadline_counter,
       IMAGE_DECODE_DEADLINE_STRIDE,
       RenderStage::Paint,
@@ -996,7 +996,7 @@ fn try_render_simple_svg_pixmap(
     return Ok(None);
   };
   for node in root.descendants().filter(|n| n.is_element()) {
-    check_active_periodic(
+    check_root_periodic(
       &mut deadline_counter,
       IMAGE_DECODE_DEADLINE_STRIDE,
       RenderStage::Paint,
@@ -1606,7 +1606,7 @@ impl DecodeInFlight {
       .result
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let deadline = render_control::active_deadline().filter(|d| d.is_enabled());
+    let deadline = render_control::root_deadline().filter(|d| d.is_enabled());
     while guard.is_none() {
       if let Some(deadline) = deadline.as_ref() {
         deadline.check(RenderStage::Paint).map_err(Error::Render)?;
@@ -1681,7 +1681,7 @@ impl ProbeInFlight {
       .result
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let deadline = render_control::active_deadline().filter(|d| d.is_enabled());
+    let deadline = render_control::root_deadline().filter(|d| d.is_enabled());
     while guard.is_none() {
       if let Some(deadline) = deadline.as_ref() {
         deadline.check(RenderStage::Paint).map_err(Error::Render)?;
@@ -3629,7 +3629,7 @@ impl ImageCache {
   ) -> Result<Arc<tiny_skia::Pixmap>> {
     self.enforce_svg_resource_policy(svg_content, url)?;
     self.enforce_decode_limits(render_width, render_height, url)?;
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
 
     let key = svg_pixmap_key(
       svg_content,
@@ -3664,7 +3664,7 @@ impl ImageCache {
     // new `<image href>` style subresources that we currently police.
     self.enforce_svg_resource_policy(svg_content, url)?;
     self.enforce_decode_limits(render_width, render_height, url)?;
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
 
     let Some(prefix) = svg_content.get(..insert_pos) else {
       return self.render_svg_pixmap_at_size(
@@ -3811,7 +3811,7 @@ impl ImageCache {
         tiny_skia::Transform::from_scale(scale_x, scale_y)
       }
     };
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
     if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       resvg::render(&tree, transform, &mut pixmap.as_mut());
     })) {
@@ -3820,7 +3820,7 @@ impl ImageCache {
         reason: format!("SVG render panicked: {}", panic_payload_to_reason(&*panic)),
       }));
     }
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
 
     let pixmap = Arc::new(pixmap);
     record_image_decode_ms(render_timer.elapsed().as_secs_f64() * 1000.0);
@@ -3936,7 +3936,7 @@ impl ImageCache {
   )> {
     let bytes = &resource.bytes;
     let content_type = resource.content_type.as_deref();
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
     if bytes.is_empty() {
       let img = RgbaImage::new(1, 1);
       return Ok((
@@ -4081,7 +4081,7 @@ impl ImageCache {
     content_type: Option<&str>,
     url: &str,
   ) -> Result<DynamicImage> {
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
     let format_from_content_type = Self::format_from_content_type(content_type);
     let (sniffed_format, sniff_panic) = Self::sniff_image_format(bytes);
     let (pre_dims, dims_panic) =
@@ -4109,7 +4109,7 @@ impl ImageCache {
 
     if let Some(format) = format_from_content_type {
       if format != ImageFormat::Avif {
-        check_active(RenderStage::Paint).map_err(Error::Render)?;
+        check_root(RenderStage::Paint).map_err(Error::Render)?;
         match self.decode_with_format(bytes, format, url) {
           Ok(img) => return self.finish_bitmap_decode(img, url),
           Err(err) => {
@@ -4124,7 +4124,7 @@ impl ImageCache {
 
     if let Some(format) = sniffed_format {
       if Some(format) != format_from_content_type && format != ImageFormat::Avif {
-        check_active(RenderStage::Paint).map_err(Error::Render)?;
+        check_root(RenderStage::Paint).map_err(Error::Render)?;
         match self.decode_with_format(bytes, format, url) {
           Ok(img) => return self.finish_bitmap_decode(img, url),
           Err(err) => {
@@ -4137,7 +4137,7 @@ impl ImageCache {
       }
     }
 
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
     match self.decode_with_guess(bytes, url) {
       Ok(img) => self.finish_bitmap_decode(img, url),
       Err(err) => Err(match err {
@@ -4784,15 +4784,15 @@ impl ImageCache {
 
   fn decode_avif(bytes: &[u8]) -> std::result::Result<DynamicImage, AvifDecodeError> {
     let decode_inner = |payload: &[u8]| -> std::result::Result<DynamicImage, AvifDecodeError> {
-      check_active(RenderStage::Paint).map_err(AvifDecodeError::from)?;
+      check_root(RenderStage::Paint).map_err(AvifDecodeError::from)?;
       let decoder = AvifDecoder::from_avif(payload)
         .map_err(|err| AvifDecodeError::Image(Self::avif_error(err)))?;
-      check_active(RenderStage::Paint).map_err(AvifDecodeError::from)?;
+      check_root(RenderStage::Paint).map_err(AvifDecodeError::from)?;
       let image = decoder
         .to_image()
         .map_err(|err| AvifDecodeError::Image(Self::avif_error(err)))?;
       let mut deadline_counter = 0usize;
-      check_active(RenderStage::Paint).map_err(AvifDecodeError::from)?;
+      check_root(RenderStage::Paint).map_err(AvifDecodeError::from)?;
       Self::avif_image_to_dynamic(image, &mut deadline_counter)
     };
 
@@ -4908,7 +4908,7 @@ impl ImageCache {
         };
         let mut buf = Self::reserve_image_buffer(bytes, "avif rgb8 data")?;
         for px in img.buf() {
-          check_active_periodic(
+          check_root_periodic(
             deadline_counter,
             IMAGE_DECODE_DEADLINE_STRIDE,
             RenderStage::Paint,
@@ -4934,7 +4934,7 @@ impl ImageCache {
         };
         let mut buf = Self::reserve_image_buffer_u16(bytes, "avif rgb16 data")?;
         for px in img.buf() {
-          check_active_periodic(
+          check_root_periodic(
             deadline_counter,
             IMAGE_DECODE_DEADLINE_STRIDE,
             RenderStage::Paint,
@@ -4959,7 +4959,7 @@ impl ImageCache {
         };
         let mut buf = Self::reserve_image_buffer(bytes, "avif rgba8 data")?;
         for px in img.buf() {
-          check_active_periodic(
+          check_root_periodic(
             deadline_counter,
             IMAGE_DECODE_DEADLINE_STRIDE,
             RenderStage::Paint,
@@ -4985,7 +4985,7 @@ impl ImageCache {
         };
         let mut buf = Self::reserve_image_buffer_u16(bytes, "avif rgba16 data")?;
         for px in img.buf() {
-          check_active_periodic(
+          check_root_periodic(
             deadline_counter,
             IMAGE_DECODE_DEADLINE_STRIDE,
             RenderStage::Paint,
@@ -5007,7 +5007,7 @@ impl ImageCache {
         };
         let mut buf = Self::reserve_image_buffer(bytes, "avif gray8 data")?;
         for px in img.buf() {
-          check_active_periodic(
+          check_root_periodic(
             deadline_counter,
             IMAGE_DECODE_DEADLINE_STRIDE,
             RenderStage::Paint,
@@ -5032,7 +5032,7 @@ impl ImageCache {
         };
         let mut buf = Self::reserve_image_buffer_u16(bytes, "avif gray16 data")?;
         for px in img.buf() {
-          check_active_periodic(
+          check_root_periodic(
             deadline_counter,
             IMAGE_DECODE_DEADLINE_STRIDE,
             RenderStage::Paint,
@@ -5191,7 +5191,7 @@ impl ImageCache {
     const DEFAULT_WIDTH: f32 = 300.0;
     const DEFAULT_HEIGHT: f32 = 150.0;
 
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
       svg_intrinsic_metadata(svg_content).unwrap_or((None, None, None, false));
 
@@ -5263,7 +5263,7 @@ impl ImageCache {
     let render_height = target_height.max(1.0).round() as u32;
 
     self.enforce_decode_limits(render_width, render_height, url)?;
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
 
     // Render SVG to pixmap, scaling to the target intrinsic dimensions when needed
     let mut pixmap = new_pixmap(render_width, render_height).ok_or(Error::Render(
@@ -5286,7 +5286,7 @@ impl ImageCache {
       let translate_y = (render_height_f - source_height * scale) * 0.5;
       tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, translate_x, translate_y)
     };
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
     if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       resvg::render(&tree, transform, &mut pixmap.as_mut());
     })) {
@@ -5295,7 +5295,7 @@ impl ImageCache {
         reason: format!("SVG render panicked: {}", panic_payload_to_reason(&*panic)),
       }));
     }
-    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    check_root(RenderStage::Paint).map_err(Error::Render)?;
 
     // Convert pixmap to image
     let rgba_data = pixmap.take();
@@ -5438,6 +5438,7 @@ mod tests {
   use std::path::PathBuf;
   use std::time::Duration;
   use std::time::SystemTime;
+  use url::Url;
 
   #[derive(Clone, Default)]
   struct MapFetcher {
@@ -5570,6 +5571,30 @@ mod tests {
         Err(err) => err,
       };
       assert!(matches!(err, Error::Render(RenderError::Timeout { .. })));
+    });
+  }
+
+  #[test]
+  fn image_decode_uses_root_deadline_instead_of_nested_budget() {
+    // The paint pipeline installs nested deadlines to allocate small time budgets to internal
+    // phases (e.g. display-list construction). Image decoding can be triggered inside those
+    // phases, but should still be bounded by the overall render timeout (root deadline) rather
+    // than the internal sub-budget.
+    let root = RenderDeadline::new(Some(Duration::from_secs(5)), None);
+    render_control::with_deadline(Some(&root), || {
+      // A nested deadline that is immediately expired should not prevent file:// image decoding.
+      let nested = RenderDeadline::new(Some(Duration::ZERO), None);
+      render_control::with_deadline(Some(&nested), || {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+          .join("tests/fixtures/accuracy_png/baseline.png");
+        let url = Url::from_file_path(path).expect("baseline.png file URL").to_string();
+        let cache = ImageCache::new();
+        let img = cache.load(&url).expect("image should load under root deadline");
+        assert!(
+          !cache.is_placeholder_image(&img),
+          "loaded image should not be the about: placeholder"
+        );
+      });
     });
   }
 

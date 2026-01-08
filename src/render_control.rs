@@ -333,6 +333,20 @@ pub fn check_active(stage: RenderStage) -> Result<(), RenderError> {
   })
 }
 
+/// Check against the root (outermost) render deadline stored for the current thread.
+///
+/// Nested deadline guards are used throughout the renderer to allocate time budgets to expensive
+/// phases. Resource fetch/decode operations may be triggered within those scoped budgets (e.g.
+/// during display-list construction) and should generally be bounded by the overall render timeout,
+/// not an internal sub-budget.
+pub fn check_root(stage: RenderStage) -> Result<(), RenderError> {
+  if let Some(deadline) = root_deadline() {
+    deadline.check(stage)
+  } else {
+    Ok(())
+  }
+}
+
 /// Periodically check against any active deadline stored for the current thread.
 ///
 /// This is a low-friction helper for hot loops: call it with a local counter and a stride
@@ -360,6 +374,22 @@ pub fn check_active_periodic(
       Ok(())
     }
   })
+}
+
+/// Periodically check against the root render deadline stored for the current thread.
+pub fn check_root_periodic(
+  counter: &mut usize,
+  stride: usize,
+  stage: RenderStage,
+) -> Result<(), RenderError> {
+  if stride == 0 {
+    return Ok(());
+  }
+  if let Some(deadline) = root_deadline() {
+    deadline.check_periodic(counter, stride, stage)
+  } else {
+    Ok(())
+  }
 }
 
 /// Returns the currently installed deadline for this thread, if any.
