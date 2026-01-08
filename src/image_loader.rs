@@ -3825,20 +3825,249 @@ impl ImageCache {
   fn decode_with_format(&self, bytes: &[u8], format: ImageFormat, url: &str) -> Result<DynamicImage> {
     if format == ImageFormat::Png {
       // Decode PNG via the `png` crate so output buffers are allocated fallibly (avoiding process
-      // aborts on OOM inside `image`'s decoders).
-      return match crate::image_compare::decode_png(bytes) {
-        Ok(rgba) => Ok(DynamicImage::ImageRgba8(rgba)),
-        Err(Error::Render(RenderError::InvalidParameters { message })) => {
-          Err(Error::Image(ImageError::DecodeFailed {
-            url: url.to_string(),
-            reason: message,
-          }))
+      // aborts on OOM inside `image`'s decoders). Keep render deadlines responsive by reading
+      // through `DeadlineCursor`.
+      fn map_png_io_error(url: &str, io_err: &io::Error) -> Error {
+        if let Some(render_err) = io_err
+          .get_ref()
+          .and_then(|source| source.downcast_ref::<RenderError>())
+        {
+          return Error::Render(render_err.clone());
         }
-        Err(err) => Err(Error::Image(ImageError::DecodeFailed {
+
+        Error::Image(ImageError::DecodeFailed {
           url: url.to_string(),
-          reason: err.to_string(),
-        })),
+          reason: io_err.to_string(),
+        })
+      }
+
+      fn map_png_error(url: &str, err: &png::DecodingError) -> Error {
+        match err {
+          png::DecodingError::IoError(io_err) => map_png_io_error(url, io_err),
+          _ => Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: err.to_string(),
+          }),
+        }
+      }
+
+      let mut decoder = png::Decoder::new(DeadlineCursor::new(bytes));
+      decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+      let mut reader = decoder.read_info().map_err(|e| map_png_error(url, &e))?;
+      let info = reader.info();
+      let width = info.width;
+      let height = info.height;
+      if width == 0 || height == 0 {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("PNG image size is zero ({width}x{height})"),
+        }));
+      }
+
+      let rgba_bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("PNG dimensions overflow ({width}x{height})"),
+        }))?;
+      if rgba_bytes > MAX_PIXMAP_BYTES {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!(
+            "PNG decoded image {width}x{height} is {rgba_bytes} bytes (limit {MAX_PIXMAP_BYTES})"
+          ),
+        }));
+      }
+      let rgba_len = usize::try_from(rgba_bytes).map_err(|_| Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("PNG decoded byte size does not fit in usize ({width}x{height})"),
+      }))?;
+
+      let out_size = reader.output_buffer_size().ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: "PNG output buffer size not available".to_string(),
+      }))?;
+      let out_size_u64 = u64::try_from(out_size).map_err(|_| Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: "PNG output buffer size does not fit in u64".to_string(),
+      }))?;
+      if out_size_u64 > MAX_PIXMAP_BYTES {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!(
+            "PNG output buffer is {out_size_u64} bytes (limit {MAX_PIXMAP_BYTES})"
+          ),
+        }));
+      }
+      let out_size = usize::try_from(out_size_u64).map_err(|_| Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: "PNG output buffer size does not fit in usize".to_string(),
+      }))?;
+
+      let mut buf = Vec::new();
+      buf
+        .try_reserve_exact(out_size)
+        .map_err(|err| Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("PNG output buffer allocation failed for {out_size} bytes: {err}"),
+        }))?;
+      buf.resize(out_size, 0);
+
+      let frame = reader.next_frame(&mut buf).map_err(|e| map_png_error(url, &e))?;
+      buf.truncate(frame.buffer_size());
+
+      let rgba = match (frame.color_type, frame.bit_depth) {
+        (png::ColorType::Rgba, png::BitDepth::Eight) => {
+          if buf.len() != rgba_len {
+            return Err(Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: format!(
+                "PNG RGBA output length mismatch (expected {rgba_len} bytes, got {})",
+                buf.len()
+              ),
+            }));
+          }
+          RgbaImage::from_raw(width, height, buf).ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "PNG RGBA buffer was invalid".to_string(),
+          }))?
+        }
+        (png::ColorType::Rgb, png::BitDepth::Eight) => {
+          let rgb_len = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|px| px.checked_mul(3))
+            .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "PNG RGB byte size overflow".to_string(),
+            }))?;
+          let rgb_len = usize::try_from(rgb_len).map_err(|_| Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "PNG RGB byte size does not fit in usize".to_string(),
+          }))?;
+          if buf.len() != rgb_len {
+            return Err(Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: format!(
+                "PNG RGB output length mismatch (expected {rgb_len} bytes, got {})",
+                buf.len()
+              ),
+            }));
+          }
+
+          let mut out = Vec::new();
+          out
+            .try_reserve_exact(rgba_len)
+            .map_err(|err| Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: format!("PNG RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
+            }))?;
+          out.resize(rgba_len, 0);
+          for (in_px, out_px) in buf.chunks_exact(3).zip(out.chunks_exact_mut(4)) {
+            out_px[0] = in_px[0];
+            out_px[1] = in_px[1];
+            out_px[2] = in_px[2];
+            out_px[3] = 255;
+          }
+          RgbaImage::from_raw(width, height, out).ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "PNG RGB->RGBA buffer was invalid".to_string(),
+          }))?
+        }
+        (png::ColorType::Grayscale, png::BitDepth::Eight) => {
+          let gray_len = u64::from(width)
+            .checked_mul(u64::from(height))
+            .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "PNG grayscale byte size overflow".to_string(),
+            }))?;
+          let gray_len = usize::try_from(gray_len).map_err(|_| Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "PNG grayscale byte size does not fit in usize".to_string(),
+          }))?;
+          if buf.len() != gray_len {
+            return Err(Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: format!(
+                "PNG grayscale output length mismatch (expected {gray_len} bytes, got {})",
+                buf.len()
+              ),
+            }));
+          }
+
+          let mut out = Vec::new();
+          out
+            .try_reserve_exact(rgba_len)
+            .map_err(|err| Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: format!("PNG RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
+            }))?;
+          out.resize(rgba_len, 0);
+          for (gray, out_px) in buf.iter().zip(out.chunks_exact_mut(4)) {
+            out_px[0] = *gray;
+            out_px[1] = *gray;
+            out_px[2] = *gray;
+            out_px[3] = 255;
+          }
+          RgbaImage::from_raw(width, height, out).ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "PNG grayscale->RGBA buffer was invalid".to_string(),
+          }))?
+        }
+        (png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => {
+          let ga_len = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|px| px.checked_mul(2))
+            .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "PNG grayscale-alpha byte size overflow".to_string(),
+            }))?;
+          let ga_len = usize::try_from(ga_len).map_err(|_| Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "PNG grayscale-alpha byte size does not fit in usize".to_string(),
+          }))?;
+          if buf.len() != ga_len {
+            return Err(Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: format!(
+                "PNG grayscale-alpha output length mismatch (expected {ga_len} bytes, got {})",
+                buf.len()
+              ),
+            }));
+          }
+
+          let mut out = Vec::new();
+          out
+            .try_reserve_exact(rgba_len)
+            .map_err(|err| Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: format!("PNG RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
+            }))?;
+          out.resize(rgba_len, 0);
+          for (in_px, out_px) in buf.chunks_exact(2).zip(out.chunks_exact_mut(4)) {
+            let gray = in_px[0];
+            out_px[0] = gray;
+            out_px[1] = gray;
+            out_px[2] = gray;
+            out_px[3] = in_px[1];
+          }
+          RgbaImage::from_raw(width, height, out).ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "PNG grayscale-alpha->RGBA buffer was invalid".to_string(),
+          }))?
+        }
+        _ => {
+          return Err(Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: format!(
+              "Unsupported PNG color type {:?} ({:?})",
+              frame.color_type, frame.bit_depth
+            ),
+          }));
+        }
       };
+
+      return Ok(DynamicImage::ImageRgba8(rgba));
     }
 
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
