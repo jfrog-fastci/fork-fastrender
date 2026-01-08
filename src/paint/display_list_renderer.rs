@@ -3162,6 +3162,7 @@ pub struct DisplayListRenderer {
 struct StackingRecord {
   establishes_backdrop_root: bool,
   needs_layer: bool,
+  is_isolated: bool,
   mix_blend_mode: BlendMode,
   init_from_backdrop: bool,
   filters: Vec<ResolvedFilter>,
@@ -9748,6 +9749,63 @@ impl DisplayListRenderer {
   /// Spec references:
   /// - Filter Effects Level 2: Backdrop Root (<https://drafts.fxtf.org/filter-effects-2/#BackdropRoot>)
   /// - CSS Compositing and Blending: isolated groups (<https://www.w3.org/TR/compositing-1/#isolatedgroups>)
+  fn maybe_init_non_isolated_group_backdrop(&mut self, item: &DisplayItem) -> Result<()> {
+    // Non-isolated stacking contexts (`isolation: auto`) need descendant `mix-blend-mode`
+    // compositing to see the already-painted backdrop. We do *not* initialize the group surface
+    // from backdrop eagerly, because doing so forces an uncompositing step later (to avoid
+    // double-counting the backdrop) that can change results for blend modes on opaque backdrops.
+    //
+    // Instead, initialize lazily: only when a descendant blend operation actually needs to sample
+    // backdrop pixels outside the group.
+    let Some(record) = self.stacking_layers.last() else {
+      return Ok(());
+    };
+    if !record.needs_layer || record.is_isolated || record.init_from_backdrop {
+      return Ok(());
+    }
+    let needs_backdrop = match item {
+      DisplayItem::PushStackingContext(sc) => !matches!(sc.mix_blend_mode, BlendMode::Normal),
+      DisplayItem::PushBlendMode(item) => !matches!(item.mode, BlendMode::Normal),
+      _ => false,
+    };
+    if !needs_backdrop {
+      return Ok(());
+    }
+
+    // Only initialize when the stacking context's offscreen layer is the active canvas layer. If
+    // nested (non-stacking-context) layers are active, we can't currently inject backdrop pixels
+    // into the ancestor surface without mutating stored canvas layers.
+    let layer_origin = record.layer_origin;
+    let Some(active_origin) = self.canvas.layer_stack().last().map(|layer| layer.origin) else {
+      return Ok(());
+    };
+    if active_origin != layer_origin {
+      return Ok(());
+    }
+
+    let Some((backdrop, pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
+      return Ok(());
+    };
+    let mut paint = PixmapPaint::default();
+    paint.opacity = 1.0;
+    paint.blend_mode = SkiaBlendMode::DestinationOver;
+    pixmap.draw_pixmap(
+      -active_origin.0,
+      -active_origin.1,
+      backdrop.as_ref(),
+      &paint,
+      Transform::identity(),
+      None,
+    );
+    self.mark_current_pixmap_mutated();
+    if let Some(record) = self.stacking_layers.last_mut() {
+      if record.layer_origin == layer_origin {
+        record.init_from_backdrop = true;
+      }
+    }
+    Ok(())
+  }
+
   fn render_item(&mut self, item: &DisplayItem) -> Result<()> {
     if self.culled_depth > 0 {
       match item {
@@ -9764,6 +9822,7 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
+    self.maybe_init_non_isolated_group_backdrop(item)?;
     self.apply_pending_backdrop(item)?;
 
     if Self::display_item_mutates_current_pixmap(item) {
@@ -10071,66 +10130,27 @@ impl DisplayListRenderer {
         } else {
           (None, (0, 0))
         };
-        let init_from_backdrop = !is_isolated && !matches!(item.mix_blend_mode, BlendMode::Normal);
         if needs_layer {
           if manual_blend.is_some() {
             if let Some(layer_rect) = bounded_rect {
-              if init_from_backdrop {
-                self.canvas.push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
-                  opacity,
-                  None,
-                  layer_rect,
-                  is_backdrop_root,
-                )?;
-                self.push_layer_mutation_state();
-              } else {
-                self.push_layer_bounded_tracked(
-                  opacity,
-                  None,
-                  layer_rect,
-                  is_backdrop_root,
-                )?;
-              }
-            } else if init_from_backdrop {
-              self
-                .canvas
-                .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
-                  opacity,
-                  None,
-                  is_backdrop_root,
-                )?;
-              self.push_layer_mutation_state();
+              self.push_layer_bounded_tracked(
+                opacity,
+                None,
+                layer_rect,
+                is_backdrop_root,
+              )?;
             } else {
               self.push_layer_tracked(opacity, is_backdrop_root)?;
             }
           } else {
             let blend = map_blend_mode(item.mix_blend_mode);
             if let Some(layer_rect) = bounded_rect {
-              if init_from_backdrop {
-                self.canvas.push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
-                  opacity,
-                  Some(blend),
-                  layer_rect,
-                  is_backdrop_root,
-                )?;
-                self.push_layer_mutation_state();
-              } else {
-                self.push_layer_bounded_tracked(
-                  opacity,
-                  Some(blend),
-                  layer_rect,
-                  is_backdrop_root,
-                )?;
-              }
-            } else if init_from_backdrop {
-              self
-                .canvas
-                .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
-                  opacity,
-                  Some(blend),
-                  is_backdrop_root,
-                )?;
-              self.push_layer_mutation_state();
+              self.push_layer_bounded_tracked(
+                opacity,
+                Some(blend),
+                layer_rect,
+                is_backdrop_root,
+              )?;
             } else {
               self.push_layer_with_blend_tracked(opacity, Some(blend), is_backdrop_root)?;
             }
@@ -10164,8 +10184,9 @@ impl DisplayListRenderer {
         self.stacking_layers.push(StackingRecord {
           establishes_backdrop_root: is_backdrop_root,
           needs_layer,
+          is_isolated,
           mix_blend_mode: item.mix_blend_mode,
-          init_from_backdrop,
+          init_from_backdrop: false,
           filters: scaled_filters,
           radii,
           bounds,
@@ -10210,6 +10231,7 @@ impl DisplayListRenderer {
           .unwrap_or_else(|| StackingRecord {
             establishes_backdrop_root: false,
             needs_layer: false,
+            is_isolated: false,
             mix_blend_mode: BlendMode::Normal,
             init_from_backdrop: false,
             filters: Vec::new(),
