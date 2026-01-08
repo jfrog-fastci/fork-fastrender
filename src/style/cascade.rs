@@ -1915,6 +1915,12 @@ fn eval_style_range_value(
         value: styles.word_spacing,
       }),
       "text-indent" => length_to_numeric(&styles.text_indent.length, container, ctx),
+      "shape-margin" => length_to_numeric(&styles.shape_margin, container, ctx),
+      "shape-image-threshold" => Some(NumericValue {
+        ty: NumericType::Number,
+        value: styles.shape_image_threshold,
+      }),
+      "offset-distance" => length_to_numeric(&styles.offset_distance, container, ctx),
       "flex-grow" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.flex_grow,

@@ -940,6 +940,84 @@ fn container_style_query_range_feature_matches_text_indent_percentage() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_shape_margin() {
+  let html = r#"
+    <style>
+      .container-tight { container-type: inline-size; shape-margin: 1px; }
+      .container-wide { container-type: inline-size; shape-margin: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(shape-margin > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-tight">
+      <div id="tight" class="child">hello</div>
+    </div>
+    <div class="container-wide">
+      <div id="wide" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let tight = find_by_id(&styled, "tight").expect("tight element");
+  let wide = find_by_id(&styled, "wide").expect("wide element");
+  assert_eq!(tight.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(wide.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_shape_image_threshold() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; shape-image-threshold: 0.2; }
+      .container-high { container-type: inline-size; shape-image-threshold: 0.8; }
+      .child { color: rgb(0 0 255); }
+      @container style(shape-image-threshold > 0.5) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_offset_distance_percentage() {
+  let html = r#"
+    <style>
+      .container-tight { container-type: inline-size; offset-distance: 1%; }
+      .container-wide { container-type: inline-size; offset-distance: 3%; }
+      .child { color: rgb(0 0 255); }
+      @container style(offset-distance > 2%) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-tight">
+      <div id="tight" class="child">hello</div>
+    </div>
+    <div class="container-wide">
+      <div id="wide" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let tight = find_by_id(&styled, "tight").expect("tight element");
+  let wide = find_by_id(&styled, "wide").expect("wide element");
+  assert_eq!(tight.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(wide.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_flex_grow() {
   let html = r#"
     <style>
