@@ -647,3 +647,56 @@ fn form_control_invalid_state_uses_control_semantics_not_dom_children() {
   assert!(ta_empty.states.required);
   assert!(ta_empty.states.invalid);
 }
+
+#[test]
+fn fieldset_disabled_exempts_first_legend_descendants() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <fieldset disabled>
+          <legend>
+            Legend
+            <input id="in-legend" required />
+          </legend>
+          <input id="outside" required />
+        </fieldset>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let in_legend = find_by_id(&tree, "in-legend").expect("legend input");
+  assert!(!in_legend.states.disabled);
+  assert!(in_legend.states.invalid);
+
+  let outside = find_by_id(&tree, "outside").expect("outside input");
+  assert!(outside.states.disabled);
+  assert!(!outside.states.invalid);
+}
+
+#[test]
+fn textarea_required_uses_text_content_value() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <textarea id="ta" required>ok</textarea>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let textarea = find_by_id(&tree, "ta").expect("textarea");
+  assert!(textarea.states.required);
+  assert!(!textarea.states.invalid);
+  assert_eq!(textarea.value.as_deref(), Some("ok"));
+}

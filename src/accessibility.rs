@@ -583,14 +583,14 @@ fn build_nodes<'a>(
 
       let role_description = compute_role_description(role.as_deref(), &node.node);
 
-      let native_disabled = element_ref.accessibility_disabled();
+      let native_disabled = compute_native_disabled(node, styled_ancestors);
       let aria_disabled = parse_bool_attr(&node.node, "aria-disabled");
       let disabled = native_disabled || aria_disabled == Some(true);
 
       let native_required = element_ref.accessibility_required();
       let aria_required = parse_bool_attr(&node.node, "aria-required");
       let required = native_required || aria_required == Some(true);
-      let invalid = parse_invalid(node, &element_ref);
+      let invalid = parse_invalid(node, &element_ref, styled_ancestors, ctx);
       let checked = compute_checked(node, role.as_deref(), &element_ref);
       let selected =
         compute_selected(node, role.as_deref(), &element_ref, styled_ancestors, ctx);
@@ -2286,7 +2286,165 @@ fn meter_value(node: &DomNode) -> Option<String> {
   Some(format_number(parsed))
 }
 
-fn compute_invalid(node: &StyledNode, element_ref: &ElementRef) -> bool {
+fn supports_disabled(node: &DomNode) -> bool {
+  if !is_html_element(node) {
+    return false;
+  }
+
+  node.tag_name().is_some_and(|tag| {
+    tag.eq_ignore_ascii_case("button")
+      || tag.eq_ignore_ascii_case("input")
+      || tag.eq_ignore_ascii_case("select")
+      || tag.eq_ignore_ascii_case("textarea")
+      || tag.eq_ignore_ascii_case("option")
+      || tag.eq_ignore_ascii_case("optgroup")
+      || tag.eq_ignore_ascii_case("fieldset")
+  })
+}
+
+fn compute_native_disabled(node: &StyledNode, styled_ancestors: &[&StyledNode]) -> bool {
+  if !supports_disabled(&node.node) {
+    return false;
+  }
+
+  if node.node.get_attribute_ref("disabled").is_some() {
+    return true;
+  }
+
+  // Fieldset disabled state propagates to descendants except those inside the first legend.
+  for (i, ancestor) in styled_ancestors.iter().enumerate().rev() {
+    if !ancestor
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("fieldset"))
+    {
+      continue;
+    }
+    if ancestor.node.get_attribute_ref("disabled").is_none() {
+      continue;
+    }
+
+    let first_legend = ancestor.children.iter().find(|child| {
+      child
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("legend"))
+    });
+
+    if let Some(legend) = first_legend {
+      let in_legend = styled_ancestors
+        .get(i + 1..)
+        .into_iter()
+        .flatten()
+        .any(|n| ptr::eq(*n, legend));
+      if in_legend {
+        continue;
+      }
+    }
+
+    return true;
+  }
+
+  let Some(tag) = node.node.tag_name().map(|t| t.to_ascii_lowercase()) else {
+    return false;
+  };
+
+  if tag == "option" || tag == "optgroup" {
+    for ancestor in styled_ancestors.iter().rev() {
+      if ancestor
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("select") || tag.eq_ignore_ascii_case("optgroup"))
+        && ancestor.node.get_attribute_ref("disabled").is_some()
+      {
+        return true;
+      }
+    }
+  }
+
+  false
+}
+
+fn select_has_non_disabled_selected_option(select: &StyledNode, ctx: &BuildContext) -> bool {
+  let multiple = select.node.get_attribute_ref("multiple").is_some();
+  if !multiple {
+    let Some(selected_id) = selected_option_node_id(select, ctx) else {
+      return false;
+    };
+
+    let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
+    stack.push((select, false));
+
+    while let Some((node, optgroup_disabled)) = stack.pop() {
+      if ctx.is_hidden(node) {
+        continue;
+      }
+
+      let is_option = node
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("option"));
+      let is_optgroup = node
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("optgroup"));
+
+      let disabled_attr = node.node.get_attribute_ref("disabled").is_some();
+      let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
+
+      if is_option && node.node_id == selected_id {
+        return !(disabled_attr || optgroup_disabled);
+      }
+
+      for child in ctx.composed_children(node).into_iter().rev() {
+        stack.push((child, next_optgroup_disabled));
+      }
+    }
+
+    return false;
+  }
+
+  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
+  stack.push((select, false));
+
+  while let Some((node, optgroup_disabled)) = stack.pop() {
+    if ctx.is_hidden(node) {
+      continue;
+    }
+
+    let is_option = node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"));
+    let is_optgroup = node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("optgroup"));
+
+    let disabled_attr = node.node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
+
+    if is_option && node.node.get_attribute_ref("selected").is_some() {
+      let option_disabled = disabled_attr || optgroup_disabled;
+      if !option_disabled {
+        return true;
+      }
+    }
+
+    for child in ctx.composed_children(node).into_iter().rev() {
+      stack.push((child, next_optgroup_disabled));
+    }
+  }
+
+  false
+}
+
+fn compute_invalid(
+  node: &StyledNode,
+  element_ref: &ElementRef,
+  styled_ancestors: &[&StyledNode],
+  ctx: &BuildContext,
+) -> bool {
   if let Some(value) = parse_aria_invalid(&node.node) {
     // ARIA should not negate native HTML semantics: allow authors to force the invalid state on,
     // but ignore explicit `false` so native constraint validation still surfaces.
@@ -2294,7 +2452,124 @@ fn compute_invalid(node: &StyledNode, element_ref: &ElementRef) -> bool {
       return true;
     }
   }
-  element_ref.accessibility_supports_validation() && !element_ref.accessibility_is_valid()
+  // TODO: Native constraint validation currently only covers a subset of cases used in our
+  // accessibility output. Keep this logic in sync with `ElementRef::is_valid_control` where
+  // feasible, but operate on the styled tree so we can correctly handle controls whose value is
+  // derived from descendants (e.g. `<textarea>` and `<select>`).
+  if !element_ref.accessibility_supports_validation() {
+    return false;
+  }
+
+  let native_disabled = compute_native_disabled(node, styled_ancestors);
+  if native_disabled {
+    return false;
+  }
+
+  if node
+    .node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
+  {
+    if !element_ref.accessibility_required() {
+      return false;
+    }
+
+    let multiple = node.node.get_attribute_ref("multiple").is_some();
+    let size = crate::dom::select_effective_size(&node.node);
+    if multiple || size != 1 {
+      return !select_has_non_disabled_selected_option(node, ctx);
+    }
+
+    let Some(selected_id) = selected_option_node_id(node, ctx) else {
+      return true;
+    };
+
+    return select_placeholder_label_option_node_id(node, ctx)
+      .is_some_and(|placeholder_id| placeholder_id == selected_id);
+  }
+
+  if node
+    .node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
+  {
+    if !element_ref.accessibility_required() {
+      return false;
+    }
+    return textarea_value_text(node, ctx).is_empty();
+  }
+
+  if node.node.tag_name().is_some_and(|tag| tag.eq_ignore_ascii_case("input")) {
+    let input_type = node.node.get_attribute_ref("type");
+    let required = element_ref.accessibility_required();
+
+    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio")) {
+      return required && node.node.get_attribute_ref("checked").is_none();
+    }
+
+    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number")) {
+      let raw = node.node.get_attribute_ref("value").unwrap_or_default();
+      if raw.trim().is_empty() {
+        return required;
+      }
+
+      let parsed = raw.trim().parse::<f64>().ok();
+      let Some(value) = parsed else {
+        return true;
+      };
+
+      let min = node
+        .node
+        .get_attribute_ref("min")
+        .and_then(|m| m.trim().parse::<f64>().ok());
+      let max = node
+        .node
+        .get_attribute_ref("max")
+        .and_then(|m| m.trim().parse::<f64>().ok());
+
+      if let Some(min) = min {
+        if value < min {
+          return true;
+        }
+      }
+      if let Some(max) = max {
+        if value > max {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("range")) {
+      // Range inputs use value sanitization; treat them as invalid only when required is explicitly
+      // set and there is no value string (rare, but matches our other required checks).
+      if !required {
+        return false;
+      }
+
+      if crate::dom::input_range_value(&node.node).is_some() {
+        return false;
+      }
+
+      return node
+        .node
+        .get_attribute_ref("value")
+        .unwrap_or_default()
+        .trim()
+        .is_empty();
+    }
+
+    if crate::dom::supports_placeholder(input_type) && !matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number")) {
+      let value = node.node.get_attribute_ref("value").unwrap_or_default();
+      return required && value.is_empty();
+    }
+
+    let value = node.node.get_attribute_ref("value").unwrap_or_default();
+    return required && value.trim().is_empty();
+  }
+
+  false
 }
 
 fn compute_checked(
@@ -2517,8 +2792,13 @@ fn compute_focusable(node: &DomNode, role: Option<&str>, disabled: bool) -> bool
     .unwrap_or(false)
 }
 
-fn parse_invalid(node: &StyledNode, element_ref: &ElementRef) -> bool {
-  compute_invalid(node, element_ref)
+fn parse_invalid(
+  node: &StyledNode,
+  element_ref: &ElementRef,
+  styled_ancestors: &[&StyledNode],
+  ctx: &BuildContext,
+) -> bool {
+  compute_invalid(node, element_ref, styled_ancestors, ctx)
 }
 
 fn parse_expanded(node: &DomNode) -> Option<bool> {
