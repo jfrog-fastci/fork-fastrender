@@ -2,6 +2,8 @@ use fastrender::layout::contexts::inline::InlineFormattingContext;
 use fastrender::style::types::Direction;
 use fastrender::style::types::UnicodeBidi;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::FontConfig;
+use fastrender::FontContext;
 use fastrender::FormattingContext;
 use fastrender::FormattingContextType;
 use fastrender::LayoutConstraints;
@@ -52,7 +54,9 @@ fn bidi_visual_order_handles_mixed_arabic_ltr() {
     ],
   );
 
-  let ifc = InlineFormattingContext::new();
+  let ifc = InlineFormattingContext::with_font_context(FontContext::with_config(
+    FontConfig::bundled_only(),
+  ));
   let constraints = LayoutConstraints::definite_width(400.0);
   let fragment = ifc.layout(&root, &constraints).expect("layout");
 
@@ -84,7 +88,9 @@ fn bidi_isolate_keeps_neutral_brackets_outside() {
     ],
   );
 
-  let ifc = InlineFormattingContext::new();
+  let ifc = InlineFormattingContext::with_font_context(FontContext::with_config(
+    FontConfig::bundled_only(),
+  ));
   let constraints = LayoutConstraints::definite_width(400.0);
   let fragment = ifc.layout(&root, &constraints).expect("layout");
 
@@ -126,7 +132,9 @@ fn bidi_isolate_override_keeps_neutral_brackets_outside() {
     ],
   );
 
-  let ifc = InlineFormattingContext::new();
+  let ifc = InlineFormattingContext::with_font_context(FontContext::with_config(
+    FontConfig::bundled_only(),
+  ));
   let constraints = LayoutConstraints::definite_width(400.0);
   let fragment = ifc.layout(&root, &constraints).expect("layout");
 
@@ -163,7 +171,9 @@ fn bidi_embed_allows_neutral_reordering() {
     ],
   );
 
-  let ifc = InlineFormattingContext::new();
+  let ifc = InlineFormattingContext::with_font_context(FontContext::with_config(
+    FontConfig::bundled_only(),
+  ));
   let constraints = LayoutConstraints::definite_width(400.0);
   let fragment = ifc.layout(&root, &constraints).expect("layout");
 
@@ -207,7 +217,9 @@ fn bidi_override_reorders_inline_children() {
     ],
   );
 
-  let ifc = InlineFormattingContext::new();
+  let ifc = InlineFormattingContext::with_font_context(FontContext::with_config(
+    FontConfig::bundled_only(),
+  ));
   let constraints = LayoutConstraints::definite_width(400.0);
   let fragment = ifc.layout(&root, &constraints).expect("layout");
 
@@ -244,7 +256,9 @@ fn isolate_override_reverses_internal_children_only() {
     ],
   );
 
-  let ifc = InlineFormattingContext::new();
+  let ifc = InlineFormattingContext::with_font_context(FontContext::with_config(
+    FontConfig::bundled_only(),
+  ));
   let constraints = LayoutConstraints::definite_width(400.0);
   let fragment = ifc.layout(&root, &constraints).expect("layout");
 
