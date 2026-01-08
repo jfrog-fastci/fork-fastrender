@@ -5798,11 +5798,9 @@ impl HttpFetcher {
         let substitute_captcha_image =
           should_substitute_captcha_image_response(kind, status_code, &final_url);
 
-        let mut body = Vec::new();
-        let body_result = response
-          .take((allowed_limit as u64).saturating_add(1))
-          .read_to_end(&mut body)
-          .map(|_| body);
+        let read_limit = allowed_limit.saturating_add(1);
+        let mut limited_body = response.take(read_limit as u64);
+        let body_result = read_response_prefix(&mut limited_body, read_limit);
 
         match body_result {
           Ok(body) => {
@@ -8905,11 +8903,11 @@ fn read_response_prefix<R: Read>(
     return Ok(Vec::new());
   }
 
-  // Avoid an over-allocation when callers request large prefixes (e.g. 512KiB retry).
-  let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
+  let mut bytes = FallibleVecWriter::new(max_bytes, "response prefix");
+  let mut written = 0usize;
   let mut buf = [0u8; 8 * 1024];
-  while bytes.len() < max_bytes {
-    let remaining = max_bytes - bytes.len();
+  while written < max_bytes {
+    let remaining = max_bytes - written;
     let to_read = remaining.min(buf.len());
     let n = match reader.read(&mut buf[..to_read]) {
       Ok(0) => break,
@@ -8917,9 +8915,10 @@ fn read_response_prefix<R: Read>(
       Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
       Err(err) => return Err(err),
     };
-    bytes.extend_from_slice(&buf[..n]);
+    bytes.write_all(&buf[..n])?;
+    written = written.saturating_add(n);
   }
-  Ok(bytes)
+  Ok(bytes.into_inner())
 }
 
 fn decode_stage_for_content_type(content_type: Option<&str>) -> RenderStage {
@@ -9523,6 +9522,20 @@ mod tests {
     assert!(
       decoded.capacity() <= body.len(),
       "decoded capacity {} exceeds limit {}",
+      decoded.capacity(),
+      body.len()
+    );
+  }
+
+  #[test]
+  fn read_response_prefix_does_not_overallocate_beyond_limit() {
+    let body = vec![0x7fu8; 10_000];
+    let mut cursor = std::io::Cursor::new(body.as_slice());
+    let decoded = read_response_prefix(&mut cursor, body.len()).expect("read prefix");
+    assert_eq!(decoded, body);
+    assert!(
+      decoded.capacity() <= body.len(),
+      "read_response_prefix capacity {} exceeds limit {}",
       decoded.capacity(),
       body.len()
     );
