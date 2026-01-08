@@ -4239,16 +4239,26 @@ struct NodeSelectorKeys<'a> {
 }
 
 impl DomSelectorKeyCache {
-  fn new(node_count: usize) -> Self {
+  fn new(node_count: usize) -> Result<Self, RenderError> {
+    let len = node_count
+      .checked_add(1)
+      .ok_or_else(|| RenderError::PaintFailed {
+        operation: "selector key cache too large".to_string(),
+      })?;
     // Node ids are 1-indexed; leave slot 0 empty.
-    let mut nodes = Vec::with_capacity(node_count + 1);
-    nodes.resize(node_count + 1, DomSelectorKeyEntry::default());
-    Self {
+    let mut nodes = Vec::new();
+    nodes
+      .try_reserve_exact(len)
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "selector key cache allocation failed".to_string(),
+      })?;
+    nodes.resize(len, DomSelectorKeyEntry::default());
+    Ok(Self {
       nodes,
       class_keys: Vec::new(),
       attr_keys: Vec::new(),
       attr_value_keys: Vec::new(),
-    }
+    })
   }
 
   fn set_node_keys(&mut self, node_id: usize, entry: DomSelectorKeyEntry) {
@@ -4282,19 +4292,64 @@ impl DomSelectorKeyCache {
 }
 
 impl DomMaps {
-  fn new(root: &DomNode, id_map: HashMap<*const DomNode, usize>) -> Self {
+  fn new(root: &DomNode, id_map: HashMap<*const DomNode, usize>) -> Result<Self, RenderError> {
     let quirks_mode = quirks_mode_for_dom(root);
     let node_count = id_map.len();
     // Node ids are 1..=node_count (pre-order); leave slot 0 empty.
-    let mut id_to_node: Vec<*const DomNode> = vec![std::ptr::null(); node_count + 1];
-    let mut parent_map: Vec<usize> = vec![0; node_count + 1];
-    let mut tree_scope_prefixes: Vec<u32> = vec![DOCUMENT_TREE_SCOPE_PREFIX; node_count + 1];
-    let mut containing_shadow_roots: Vec<usize> = vec![0; node_count + 1];
+    let map_len = node_count
+      .checked_add(1)
+      .ok_or_else(|| RenderError::PaintFailed {
+        operation: "DOM too large to style".to_string(),
+      })?;
+    let mut id_to_node: Vec<*const DomNode> = Vec::new();
+    id_to_node
+      .try_reserve_exact(map_len)
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "DOM map allocation failed".to_string(),
+      })?;
+    id_to_node.resize(map_len, std::ptr::null());
+
+    let mut parent_map: Vec<usize> = Vec::new();
+    parent_map
+      .try_reserve_exact(map_len)
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "DOM map allocation failed".to_string(),
+      })?;
+    parent_map.resize(map_len, 0);
+
+    let mut tree_scope_prefixes: Vec<u32> = Vec::new();
+    tree_scope_prefixes
+      .try_reserve_exact(map_len)
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "DOM map allocation failed".to_string(),
+      })?;
+    tree_scope_prefixes.resize(map_len, DOCUMENT_TREE_SCOPE_PREFIX);
+
+    let mut containing_shadow_roots: Vec<usize> = Vec::new();
+    containing_shadow_roots
+      .try_reserve_exact(map_len)
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "DOM map allocation failed".to_string(),
+      })?;
+    containing_shadow_roots.resize(map_len, 0);
     let mut shadow_root_ids: Vec<usize> = Vec::new();
-    let mut shadow_host_by_root: Vec<usize> = vec![0; node_count + 1];
-    let mut shadow_root_by_host: Vec<usize> = vec![0; node_count + 1];
+    let mut shadow_host_by_root: Vec<usize> = Vec::new();
+    shadow_host_by_root
+      .try_reserve_exact(map_len)
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "DOM map allocation failed".to_string(),
+      })?;
+    shadow_host_by_root.resize(map_len, 0);
+
+    let mut shadow_root_by_host: Vec<usize> = Vec::new();
+    shadow_root_by_host
+      .try_reserve_exact(map_len)
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "DOM map allocation failed".to_string(),
+      })?;
+    shadow_root_by_host.resize(map_len, 0);
     let mut exportparts_map: HashMap<usize, Vec<(String, String)>> = HashMap::new();
-    let mut selector_keys = DomSelectorKeyCache::new(node_count);
+    let mut selector_keys = DomSelectorKeyCache::new(node_count)?;
 
     // (node, parent_id, containing_shadow_root_id)
     let mut stack: Vec<(&DomNode, Option<usize>, usize)> = Vec::with_capacity(node_count.min(1024));
@@ -4410,7 +4465,7 @@ impl DomMaps {
       node_count.saturating_add(1),
       "DomMaps traversal should visit every node exactly once"
     );
-    Self {
+    Ok(Self {
       id_map,
       id_to_node,
       parent_map,
@@ -4423,7 +4478,7 @@ impl DomMaps {
       selector_blooms: None,
       selector_keys,
       form_validity_index: FormValidityIndex::default(),
-    }
+    })
   }
 
   fn ensure_selector_blooms(&mut self, root: &DomNode) {
@@ -8805,7 +8860,11 @@ pub struct SelectorCandidateBench<'a, 'dom> {
 
 #[doc(hidden)]
 impl<'a, 'dom> SelectorCandidateBench<'a, 'dom> {
-  pub fn new(dom: &'dom DomNode, stylesheet: &'a StyleSheet, media_ctx: &MediaContext) -> Self {
+  pub fn new(
+    dom: &'dom DomNode,
+    stylesheet: &'a StyleSheet,
+    media_ctx: &MediaContext,
+  ) -> Result<Self, RenderError> {
     let quirks_mode = quirks_mode_for_dom(dom);
     let mut layer_order_interner = LayerOrderInterner::default();
     let collected = stylesheet.collect_style_rules(media_ctx);
@@ -8830,7 +8889,7 @@ impl<'a, 'dom> SelectorCandidateBench<'a, 'dom> {
     let selector_count = index.selectors.len();
 
     let id_map = enumerate_dom_ids(dom);
-    let dom_maps = DomMaps::new(dom, id_map);
+    let dom_maps = DomMaps::new(dom, id_map)?;
 
     let mut element_nodes: Vec<(usize, *const DomNode)> = Vec::new();
     let mut stack: Vec<&DomNode> = Vec::new();
@@ -8848,7 +8907,7 @@ impl<'a, 'dom> SelectorCandidateBench<'a, 'dom> {
       }
     }
 
-    Self {
+    Ok(Self {
       index,
       dom_maps,
       element_nodes,
@@ -8861,7 +8920,7 @@ impl<'a, 'dom> SelectorCandidateBench<'a, 'dom> {
       tmp_attr_value_keys: Vec::new(),
       quirks_mode,
       _dom: std::marker::PhantomData,
-    }
+    })
   }
 
   /// Runs `selector_candidates` for every element node `repetitions` times and returns the
@@ -9714,7 +9773,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   let id_map = enumerate_dom_ids(dom);
   let dom_node_count = id_map.len();
   let shadow_stylesheets = collect_shadow_stylesheets(dom, &id_map)?;
-  let mut dom_maps = DomMaps::new(dom, id_map);
+  let mut dom_maps = DomMaps::new(dom, id_map)?;
   dom_maps.form_validity_index = build_form_validity_index(dom, &dom_maps);
   let slot_assignment = if !dom_maps.has_shadow_roots() {
     SlotAssignment::default()
@@ -10133,7 +10192,18 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         max_parts = max_parts.max(rule_index_part_count(index));
       }
       let mut scratch = CascadeScratch::new(max_rules.max(1), max_candidates.max(1), max_parts);
-      let mut inline_style_decls = vec![None; dom_node_count + 1];
+      let inline_len = dom_node_count
+        .checked_add(1)
+        .ok_or_else(|| RenderError::PaintFailed {
+          operation: "inline style decl cache too large".to_string(),
+        })?;
+      let mut inline_style_decls: Vec<Option<Arc<[Declaration]>>> = Vec::new();
+      inline_style_decls
+        .try_reserve_exact(inline_len)
+        .map_err(|_| RenderError::PaintFailed {
+          operation: "inline style decl cache allocation failed".to_string(),
+        })?;
+      inline_style_decls.resize(inline_len, None);
       let mut flat_tree_inheritance_cache = FlatTreeInheritanceCache::default();
       if let Some(reuse_map) = reuse_map {
         seed_flat_tree_inheritance_cache_from_reuse_map(
@@ -10268,7 +10338,7 @@ impl<'a> PreparedCascade<'a> {
 
     let id_map = enumerate_dom_ids(dom);
     let dom_node_count = id_map.len();
-    let mut dom_maps = DomMaps::new(dom, id_map);
+    let mut dom_maps = DomMaps::new(dom, id_map)?;
     dom_maps.form_validity_index = build_form_validity_index(dom, &dom_maps);
     let slot_assignment = if !dom_maps.has_shadow_roots() {
       SlotAssignment::default()
@@ -10608,7 +10678,18 @@ impl<'a> PreparedCascade<'a> {
       max_parts = max_parts.max(rule_index_part_count(index));
     }
     let scratch = CascadeScratch::new(max_rules.max(1), max_candidates.max(1), max_parts);
-    let inline_style_decls = vec![None; dom_node_count + 1];
+    let inline_len = dom_node_count
+      .checked_add(1)
+      .ok_or_else(|| RenderError::PaintFailed {
+        operation: "inline style decl cache too large".to_string(),
+      })?;
+    let mut inline_style_decls: Vec<Option<Arc<[Declaration]>>> = Vec::new();
+    inline_style_decls
+      .try_reserve_exact(inline_len)
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "inline style decl cache allocation failed".to_string(),
+      })?;
+    inline_style_decls.resize(inline_len, None);
 
     Ok(Self {
       dom,
@@ -14399,7 +14480,7 @@ mod tests {
     let host_id = *id_map.get(&(host as *const DomNode)).unwrap();
     let shadow_root_id = *id_map.get(&(shadow_root as *const DomNode)).unwrap();
     let inside_id = *id_map.get(&(inside_shadow as *const DomNode)).unwrap();
-    let dom_maps = DomMaps::new(&dom, id_map);
+    let dom_maps = DomMaps::new(&dom, id_map).expect("DomMaps should build");
 
     assert!(dom_maps.has_shadow_roots());
     assert_eq!(dom_maps.shadow_root_for_host(host_id), Some(shadow_root_id));
@@ -14490,7 +14571,7 @@ mod tests {
     let inside_outer_shadow_id = *id_map
       .get(&(inside_outer_shadow as *const DomNode))
       .unwrap();
-    let dom_maps = DomMaps::new(&dom, id_map);
+    let dom_maps = DomMaps::new(&dom, id_map).expect("DomMaps should build");
 
     assert!(dom_maps.has_shadow_roots());
     assert_eq!(
@@ -15530,7 +15611,7 @@ mod tests {
     for seed in 0..SEED_COUNT {
       let dom = harness_gen_dom(seed);
       let id_map = enumerate_dom_ids(&dom);
-      let mut dom_maps = DomMaps::new(&dom, id_map);
+      let mut dom_maps = DomMaps::new(&dom, id_map).expect("DomMaps should build");
 
       let element_ids = harness_collect_element_ids(&dom_maps);
       if element_ids.is_empty() {
@@ -20736,7 +20817,7 @@ mod tests {
     };
 
     let id_map = enumerate_dom_ids(&dom);
-    let dom_maps = DomMaps::new(&dom, id_map);
+    let dom_maps = DomMaps::new(&dom, id_map).expect("DomMaps should build");
 
     let stylesheet = parse_stylesheet(
       r#"
@@ -20916,7 +20997,7 @@ mod tests {
     };
 
     let id_map = enumerate_dom_ids(&dom);
-    let mut dom_maps = DomMaps::new(&dom, id_map);
+    let mut dom_maps = DomMaps::new(&dom, id_map).expect("DomMaps should build");
     dom_maps.ensure_selector_blooms(&dom);
     let blooms = dom_maps.selector_blooms().expect("bloom map");
     let summary = blooms.summary_for_id(1).expect("summary");
@@ -20984,7 +21065,7 @@ mod tests {
     };
 
     let id_map = enumerate_dom_ids(&dom);
-    let mut dom_maps = DomMaps::new(&dom, id_map);
+    let mut dom_maps = DomMaps::new(&dom, id_map).expect("DomMaps should build");
     dom_maps.ensure_selector_blooms(&dom);
     let blooms = dom_maps.selector_blooms().expect("bloom map");
     let summary = blooms.summary_for_id(1).expect("summary");
@@ -21052,7 +21133,7 @@ mod tests {
     };
 
     let id_map = enumerate_dom_ids(&dom);
-    let mut dom_maps = DomMaps::new(&dom, id_map);
+    let mut dom_maps = DomMaps::new(&dom, id_map).expect("DomMaps should build");
     dom_maps.ensure_selector_blooms(&dom);
     let blooms = dom_maps.selector_blooms().expect("bloom map");
     let summary = blooms.summary_for_id(1).expect("summary");
