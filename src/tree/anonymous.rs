@@ -145,12 +145,14 @@ impl AnonymousBoxCreator {
     struct Frame {
       node: *mut BoxNode,
       next_child_idx: usize,
+      visited_footnote_body: bool,
     }
 
     let mut root = box_node;
     let mut stack = vec![Frame {
       node: &mut root as *mut BoxNode,
       next_child_idx: 0,
+      visited_footnote_body: false,
     }];
 
     while let Some(frame) = stack.last_mut() {
@@ -158,6 +160,26 @@ impl AnonymousBoxCreator {
       // replace a node's `children` Vec after all child frames have been popped, so there are
       // no outstanding pointers into that Vec at mutation time.
       let node = unsafe { &mut *frame.node };
+
+      if !frame.visited_footnote_body {
+        frame.visited_footnote_body = true;
+        if let Some(body) = node.footnote_body.as_deref_mut() {
+          if let Some(deadline) = deadline {
+            deadline.check_periodic(
+              deadline_counter,
+              ANON_FIXUP_DEADLINE_STRIDE,
+              RenderStage::BoxTree,
+            )?;
+          }
+
+          stack.push(Frame {
+            node: body as *mut BoxNode,
+            next_child_idx: 0,
+            visited_footnote_body: false,
+          });
+          continue;
+        }
+      }
 
       if frame.next_child_idx < node.children.len() {
         let idx = frame.next_child_idx;
@@ -175,6 +197,7 @@ impl AnonymousBoxCreator {
         stack.push(Frame {
           node: child_ptr,
           next_child_idx: 0,
+          visited_footnote_body: false,
         });
         continue;
       }
@@ -942,6 +965,32 @@ mod tests {
 
   fn fixup_tree(node: BoxNode) -> BoxNode {
     super::AnonymousBoxCreator::fixup_tree(node).expect("anonymous fixup")
+  }
+
+  #[test]
+  fn anonymous_fixup_traverses_footnote_body() {
+    let style = default_style();
+    let text = BoxNode::new_text(style.clone(), "Footnote".to_string());
+    let block = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    let body = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![text, block]);
+
+    let mut call = BoxNode::new_inline(style.clone(), vec![]);
+    call.footnote_body = Some(Box::new(body));
+    let root = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![call]);
+
+    let fixed = fixup_tree(root);
+    let call = fixed.children.first().expect("call box");
+    let body = call.footnote_body.as_deref().expect("footnote body");
+
+    assert_eq!(body.children.len(), 2);
+    assert!(
+      body.children[0].is_anonymous() && body.children[0].is_block_level(),
+      "expected anonymous block wrapper in footnote body after fixup"
+    );
+    assert!(
+      body.children[1].is_block_level(),
+      "expected original block-level child to remain after fixup"
+    );
   }
 
   #[test]
