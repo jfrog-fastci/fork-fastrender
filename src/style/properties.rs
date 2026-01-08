@@ -4305,6 +4305,7 @@ pub(crate) fn apply_property_from_source(
 ) -> bool {
   let inline_sides = inline_physical_sides(source);
   let block_sides = block_physical_sides(source);
+  #[deny(unreachable_patterns)]
   match property {
     "display" => {
       styles.display = source.display;
@@ -7644,6 +7645,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
   };
 
+  #[deny(unreachable_patterns)]
   match property {
     "all" => {
       let Some(global) = global_keyword(resolved_value) else {
