@@ -86,6 +86,9 @@ Hand-authoring JS bindings does not scale. The binding surface should be **Web I
   - exception mapping (Web IDL exceptions → JS throws),
   - exposure rules (`[Exposed=Window]`, etc.).
 
+Contributor workflow details (codegen, determinism, committed snapshot): see
+[`docs/webidl_bindings.md`](webidl_bindings.md).
+
 The goal is that adding a new web API looks like:
 
 1. pick the spec IDL + algorithms,
@@ -124,4 +127,3 @@ These are requirements, not optimizations:
 3. **Deterministic tests**: conformance tests must be offline and stable; event loop time and scheduling must be controllable.
 
 When tradeoffs are required, prefer a smaller, correct, budgeted subset over an unbounded “mostly works” implementation.
-

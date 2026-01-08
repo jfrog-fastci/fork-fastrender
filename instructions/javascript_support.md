@@ -99,6 +99,9 @@ Implementation strategy:
 - Add a small **IDL → Rust binding generator** tool in this repo (or in `ecma-rs` if that’s a
   better home), and commit the generated Rust glue deterministically.
 
+Contributor workflow details (WebIDL extraction/codegen, determinism, committed snapshot): see
+[`docs/webidl_bindings.md`](../docs/webidl_bindings.md).
+
 ### C) Event loop + microtasks
 
 Implement a minimal event loop model aligned with the HTML Standard terminology:
