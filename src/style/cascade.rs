@@ -1525,22 +1525,27 @@ fn eval_boolean_style_feature(
   if name.starts_with("--") {
     let registry_entry = styles.custom_property_registry.get(name);
     return if let Some(rule) = registry_entry {
-      // Registered custom properties always have a well-defined initial value.
       let initial = rule.initial_value.as_ref();
       let actual = styles.custom_properties.get(name);
 
-      // Missing values behave like the initial value.
-      let actual_value = actual.or(initial);
-      match (actual_value, initial) {
-        (Some(actual), Some(initial)) => {
-          if let (Some(a), Some(b)) = (actual.typed.as_ref(), initial.typed.as_ref()) {
-            a != b
-          } else {
-            normalize_query_value(&actual.value) != normalize_query_value(&initial.value)
+      // `@property` rules with `syntax: "*"` may omit an explicit initial value. In that case the
+      // computed initial value is the guaranteed-invalid value, which behaves like the custom
+      // property being absent. Treat boolean queries as true iff the property is present.
+      if initial.is_none() {
+        actual.is_some()
+      } else {
+        // Missing values behave like the initial value.
+        let actual_value = actual.or(initial);
+        match (actual_value, initial) {
+          (Some(actual), Some(initial)) => {
+            if let (Some(a), Some(b)) = (actual.typed.as_ref(), initial.typed.as_ref()) {
+              a != b
+            } else {
+              normalize_query_value(&actual.value) != normalize_query_value(&initial.value)
+            }
           }
+          _ => false,
         }
-        // No initial value recorded; treat as absent.
-        _ => false,
       }
     } else {
       // Unregistered custom properties: initial is "unset"; boolean query is true iff present.

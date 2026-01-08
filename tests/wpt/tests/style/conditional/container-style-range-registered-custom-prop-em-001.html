@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@container style() range feature resolves registered custom property lengths</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  @property --len {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 1em;
+  }
+
+  .container {
+    width: 120px;
+    height: 60px;
+    container-type: inline-size;
+    font-size: 10px;
+  }
+
+  #big {
+    --len: 2em;
+  }
+
+  .box {
+    width: 100%;
+    height: 100%;
+    background: rgb(255, 0, 0);
+  }
+
+  @container style(--len > 15px) {
+    .box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="small" class="container">
+  <div class="box"></div>
+</div>
+<div id="big" class="container">
+  <div class="box"></div>
+</div>
+

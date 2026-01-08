@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@container style() boolean feature matches registered custom property without initial-value</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  @property --flag {
+    syntax: "*";
+    inherits: false;
+  }
+
+  .container {
+    width: 120px;
+    height: 60px;
+    container-type: inline-size;
+  }
+
+  #present {
+    --flag: yes;
+  }
+
+  .box {
+    width: 100%;
+    height: 100%;
+    background: rgb(255, 0, 0);
+  }
+
+  @container style(--flag) {
+    .box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="missing" class="container">
+  <div class="box"></div>
+</div>
+<div id="present" class="container">
+  <div class="box"></div>
+</div>
+

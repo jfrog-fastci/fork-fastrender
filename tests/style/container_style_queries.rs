@@ -790,9 +790,9 @@ fn container_style_query_range_feature_resolves_var_fallback_value() {
 #[test]
 fn container_style_query_boolean_custom_property_respects_property_initial_value() {
   let html = r#"
-    <style>
-      @property --x {
-        syntax: "<length>";
+     <style>
+       @property --x {
+         syntax: "<length>";
         inherits: false;
         initial-value: 10px;
       }
@@ -816,6 +816,36 @@ fn container_style_query_boolean_custom_property_respects_property_initial_value
   let set = find_by_id(&styled, "set").expect("set element");
   assert_eq!(initial.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(set.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_boolean_custom_property_without_initial_value_matches_when_present() {
+  let html = r#"
+     <style>
+       @property --x {
+         syntax: "*";
+         inherits: false;
+       }
+       .container { container-type: inline-size; }
+       .container-set { container-type: inline-size; --x: present; }
+       .child { color: rgb(0 0 255); }
+       @container style(--x) {
+         .child { color: rgb(255 0 0); }
+       }
+     </style>
+     <div class="container">
+       <div id="missing" class="child">hello</div>
+     </div>
+     <div class="container-set">
+       <div id="present" class="child">hello</div>
+     </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let missing = find_by_id(&styled, "missing").expect("missing element");
+  let present = find_by_id(&styled, "present").expect("present element");
+  assert_eq!(missing.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(present.styles.color, Rgba::rgb(255, 0, 0));
 }
 
 #[test]
