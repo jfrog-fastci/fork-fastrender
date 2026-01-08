@@ -12335,18 +12335,20 @@ fn apply_declaration_with_base_internal_with_order(
         let width_start = first_slash + 1;
         if slash_positions.len() == 2 {
           let second_slash = slash_positions[1];
-          if second_slash <= width_start || second_slash + 1 >= tokens.len() {
+          if second_slash < width_start || second_slash + 1 >= tokens.len() {
             return;
           }
           let width_tokens = &tokens[width_start..second_slash];
-          if width_tokens.is_empty() || width_tokens.len() > 4 {
+          if width_tokens.len() > 4 {
             return;
           }
-          if parse_border_image_width_list(width_tokens).is_none() {
-            return;
-          }
-          for idx in width_start..second_slash {
-            used[idx] = true;
+          if !width_tokens.is_empty() {
+            if parse_border_image_width_list(width_tokens).is_none() {
+              return;
+            }
+            for idx in width_start..second_slash {
+              used[idx] = true;
+            }
           }
 
           // Outset tokens follow the second slash; allow other components (source/repeat/mode)
