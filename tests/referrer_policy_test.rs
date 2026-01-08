@@ -1803,6 +1803,111 @@ fn img_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
 }
 
 #[test]
+fn iframe_invalid_referrerpolicy_attribute_uses_document_meta_policy_for_nested_requests() {
+  let Some(server) = HeaderCaptureServer::start(
+    "iframe_invalid_referrerpolicy_attribute_uses_document_meta_policy_for_nested_requests",
+  ) else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta name="referrer" content="origin">
+      </head>
+      <body>
+        <iframe src="/frame_with_style_import.html" referrerpolicy="bogus-policy" style="width: 10px; height: 10px"></iframe>
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in [
+    "/frame_with_style_import.html",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  for path in [
+    "/frame_with_style_import.html",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(expected_referer.as_str()),
+      "expected invalid iframe referrerpolicy attribute to be ignored and document meta policy to apply; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
+fn stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
+  let Some(server) =
+    HeaderCaptureServer::start("stylesheet_invalid_referrerpolicy_attribute_uses_document_meta_policy")
+  else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta name="referrer" content="origin">
+        <link rel="stylesheet" href="/style_import.css" referrerpolicy="bogus-policy">
+      </head>
+      <body>
+        <div>hello</div>
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(expected_referer.as_str()),
+      "expected invalid stylesheet referrerpolicy attribute to be ignored and document meta policy to apply; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
 fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() {
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",
