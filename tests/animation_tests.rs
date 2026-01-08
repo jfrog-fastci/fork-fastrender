@@ -1720,8 +1720,8 @@ fn scroll_self_timeline_drives_animation_with_element_scroll_offsets() {
         height: 100px;
         overflow: scroll;
         background: red;
-        animation-timeline: scroll(self);
         animation: fade auto linear;
+        animation-timeline: scroll(self);
       }
       #content { height: 300px; }
       @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
