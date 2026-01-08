@@ -7,7 +7,7 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
 use fastrender::style::types::{
-  AnchorFunction, AnchorScope, AnchorSide, Direction, InsetValue, PositionAnchor,
+  AnchorFunction, AnchorScope, AnchorSide, Direction, InsetValue, PositionAnchor, WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
@@ -575,6 +575,96 @@ fn anchor_positioning_supports_logical_sides() {
     overlay_fragment.bounds.y(),
     anchor_fragment.bounds.max_y(),
   );
+}
+
+#[test]
+fn anchor_positioning_inline_sides_respect_rtl_when_inline_axis_is_vertical() {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
+    for direction in [Direction::Ltr, Direction::Rtl] {
+      let mut container_style = ComputedStyle::default();
+      container_style.display = Display::Block;
+      container_style.position = Position::Relative;
+      container_style.writing_mode = writing_mode;
+      container_style.direction = direction;
+      container_style.width = Some(Length::px(200.0));
+      container_style.height = Some(Length::px(200.0));
+      container_style.width_keyword = None;
+      container_style.height_keyword = None;
+      let container_style = Arc::new(container_style);
+
+      let anchor_id = 1usize;
+      let overlay_id = 2usize;
+
+      let mut anchor_style = ComputedStyle::default();
+      anchor_style.display = Display::Block;
+      anchor_style.writing_mode = writing_mode;
+      anchor_style.direction = direction;
+      anchor_style.width = Some(Length::px(50.0));
+      anchor_style.height = Some(Length::px(20.0));
+      anchor_style.width_keyword = None;
+      anchor_style.height_keyword = None;
+      anchor_style.anchor_names = vec!["--a".to_string()];
+      let mut anchor =
+        BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+      anchor.id = anchor_id;
+
+      let mut overlay_style = ComputedStyle::default();
+      overlay_style.display = Display::Block;
+      overlay_style.position = Position::Absolute;
+      overlay_style.writing_mode = writing_mode;
+      overlay_style.direction = direction;
+      overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+      overlay_style.left = InsetValue::Length(Length::px(0.0));
+      overlay_style.top = InsetValue::Anchor(AnchorFunction {
+        name: None,
+        side: AnchorSide::InlineStart,
+        fallback: None,
+      });
+      overlay_style.width = Some(Length::px(10.0));
+      overlay_style.height = Some(Length::px(10.0));
+      overlay_style.width_keyword = None;
+      overlay_style.height_keyword = None;
+      let mut overlay =
+        BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+      overlay.id = overlay_id;
+
+      let mut container =
+        BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+      container.id = 205;
+
+      let fc = BlockFormattingContext::new();
+      let constraints = LayoutConstraints::definite(200.0, 200.0);
+      let fragment = fc.layout(&container, &constraints).expect("layout");
+
+      let anchor_fragment =
+        find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+      let overlay_fragment =
+        find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+
+      let expected_y = if matches!(direction, Direction::Rtl) {
+        anchor_fragment.bounds.max_y()
+      } else {
+        anchor_fragment.bounds.y()
+      };
+
+      assert!(
+        (overlay_fragment.bounds.y() - expected_y).abs() < 0.1,
+        "inline-start should map to the {:?} edge under {writing_mode:?} + {direction:?} (got y={}, expected {})",
+        if matches!(direction, Direction::Rtl) {
+          "bottom"
+        } else {
+          "top"
+        },
+        overlay_fragment.bounds.y(),
+        expected_y,
+      );
+    }
+  }
 }
 
 #[test]
