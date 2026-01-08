@@ -733,6 +733,30 @@ enum DisplayCommand {
   },
 }
 
+fn commands_have_backdrop_sensitive_descendants(commands: &[DisplayCommand]) -> bool {
+  let mut stack: Vec<&[DisplayCommand]> = vec![commands];
+  while let Some(cmds) = stack.pop() {
+    for cmd in cmds {
+      let DisplayCommand::StackingContext {
+        blend_mode,
+        backdrop_filters,
+        commands,
+        ..
+      } = cmd
+      else {
+        continue;
+      };
+      if !matches!(blend_mode, MixBlendMode::Normal) || !backdrop_filters.is_empty() {
+        return true;
+      }
+      if !commands.is_empty() {
+        stack.push(commands);
+      }
+    }
+  }
+  false
+}
+
 #[derive(Debug, Clone, Copy)]
 struct StackingClip {
   rect: Rect,
@@ -2145,19 +2169,17 @@ impl Painter {
         DisplayCommand::StackingContext { blend_mode, .. } => !matches!(blend_mode, MixBlendMode::Normal),
         _ => false,
       });
+    let will_change_needs_backdrop_root_boundary = matches!(blend_mode, MixBlendMode::Normal)
+      && style_ref.is_some_and(|s| s.will_change.establishes_backdrop_root())
+      && commands_have_backdrop_sensitive_descendants(&local_commands);
     let isolated = style_ref
-      .map(|s| {
-        matches!(s.isolation, crate::style::types::Isolation::Isolate)
-          // `will-change` hints for Backdrop Root triggers (Filter Effects 2) must behave as if the
-          // trigger were present, scoping descendant backdrop-filter sampling. In the legacy paint
-          // path we reuse the "isolated group" layer allocation to create that boundary.
-          //
-          // Avoid overriding explicit `mix-blend-mode` compositing: when the stacking context root
-          // itself is blending, we still need to composite with its blend mode.
-          || (matches!(blend_mode, MixBlendMode::Normal)
-            && s.will_change.establishes_backdrop_root())
-      })
+      .map(|s| matches!(s.isolation, crate::style::types::Isolation::Isolate))
       .unwrap_or(false)
+      // `will-change` hints for Backdrop Root triggers (Filter Effects 2) must behave as if the
+      // trigger were present, scoping descendant backdrop-filter sampling. In the legacy paint
+      // path we reuse the "isolated group" layer allocation to create that boundary, but only
+      // when the subtree contains effects that actually sample the backdrop.
+      || will_change_needs_backdrop_root_boundary
       || has_blend_mode_children;
     let filters = style_ref
       .map(|s| resolve_filters(&s.filter, s, viewport, &self.font_ctx, svg_filters))

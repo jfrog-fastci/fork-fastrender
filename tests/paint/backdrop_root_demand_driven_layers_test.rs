@@ -48,11 +48,10 @@ fn build_html(will_change: bool) -> String {
   html
 }
 
-#[test]
-fn will_change_backdrop_root_only_forces_layers_when_needed() {
+fn run_case(backend: &str) {
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
-    "display_list".to_string(),
+    backend.to_string(),
   )]));
   let options = RenderOptions::new()
     .with_viewport(256, 256)
@@ -72,7 +71,7 @@ fn will_change_backdrop_root_only_forces_layers_when_needed() {
   assert_eq!(
     baseline.pixmap.data(),
     will_change.pixmap.data(),
-    "expected `will-change: filter` without backdrop-sensitive descendants to be a paint no-op"
+    "expected `will-change: filter` without backdrop-sensitive descendants to be a paint no-op (backend={backend})"
   );
 
   let baseline_layers = baseline
@@ -90,7 +89,12 @@ fn will_change_backdrop_root_only_forces_layers_when_needed() {
 
   assert_eq!(
     baseline_layers, will_change_layers,
-    "expected will-change backdrop roots to avoid forcing extra layers when there are no backdrop-sensitive descendants (baseline={baseline_layers} will_change={will_change_layers})"
+    "expected will-change backdrop roots to avoid forcing extra layers when there are no backdrop-sensitive descendants (backend={backend} baseline={baseline_layers} will_change={will_change_layers})"
   );
 }
 
+#[test]
+fn will_change_backdrop_root_only_forces_layers_when_needed() {
+  run_case("display_list");
+  run_case("legacy");
+}
