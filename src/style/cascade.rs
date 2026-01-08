@@ -1820,6 +1820,24 @@ fn eval_style_range_value(
   container: &ContainerQueryInfo,
   ctx: &ContainerQueryContext,
 ) -> Option<NumericValue> {
+  fn length_to_numeric(
+    len: &Length,
+    container: &ContainerQueryInfo,
+    ctx: &ContainerQueryContext,
+  ) -> Option<NumericValue> {
+    if len.unit == LengthUnit::Percent {
+      Some(NumericValue {
+        ty: NumericType::Percentage,
+        value: len.value,
+      })
+    } else {
+      Some(NumericValue {
+        ty: NumericType::LengthPx,
+        value: resolve_length_for_query(len, container, ctx)?,
+      })
+    }
+  }
+
   let styles = container.styles.as_ref();
   match value {
     StyleRangeValue::Property(name) => match name.as_str() {
@@ -1855,6 +1873,26 @@ fn eval_style_range_value(
         ty: NumericType::Number,
         value: styles.order as f32,
       }),
+      "margin-top" => styles
+        .margin_top
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "margin-right" => styles
+        .margin_right
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "margin-bottom" => styles
+        .margin_bottom
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "margin-left" => styles
+        .margin_left
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "padding-top" => length_to_numeric(&styles.padding_top, container, ctx),
+      "padding-right" => length_to_numeric(&styles.padding_right, container, ctx),
+      "padding-bottom" => length_to_numeric(&styles.padding_bottom, container, ctx),
+      "padding-left" => length_to_numeric(&styles.padding_left, container, ctx),
       "z-index" => styles.z_index.map(|z| NumericValue {
         ty: NumericType::Number,
         value: z as f32,
