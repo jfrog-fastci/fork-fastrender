@@ -11,6 +11,7 @@
 use clap::{ArgAction, Parser};
 use fastrender::dom::{self, DomNode, DomNodeType};
 use fastrender::html::encoding::decode_html_bytes;
+use fastrender::resource::parse_cached_html_meta;
 use fastrender::pageset::{
   pageset_entries_with_collisions, pageset_stem, PagesetEntry, PagesetFilter, CACHE_HTML_DIR,
 };
@@ -467,38 +468,11 @@ fn collect_codepoints_from_dom(
   }
 }
 
-fn parse_cached_meta(path: &Path) -> Option<(Option<String>, Option<String>)> {
-  let mut meta_path = path.to_path_buf();
-  if let Some(ext) = meta_path.extension().and_then(|e| e.to_str()) {
-    meta_path.set_extension(format!("{ext}.meta"));
-  } else {
-    meta_path.set_extension("meta");
-  }
-  let meta = fs::read_to_string(meta_path).ok()?;
-  let mut content_type = None;
-  let mut url = None;
-  for line in meta.lines() {
-    let Some((key, value)) = line.split_once(':') else {
-      continue;
-    };
-    let key = key.trim();
-    let value = value.trim();
-    if key.eq_ignore_ascii_case("content-type") {
-      if !value.is_empty() {
-        content_type = Some(value.to_string());
-      }
-    } else if key.eq_ignore_ascii_case("url") {
-      if !value.is_empty() {
-        url = Some(value.to_string());
-      }
-    }
-  }
-  Some((content_type, url))
-}
-
 fn read_cached_html(path: &Path) -> Result<String, String> {
   let bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-  let (content_type, _) = parse_cached_meta(path).unwrap_or((None, None));
+  let content_type = fs::read_to_string(path.with_extension("html.meta"))
+    .ok()
+    .and_then(|meta| parse_cached_html_meta(&meta).content_type);
   Ok(decode_html_bytes(&bytes, content_type.as_deref()))
 }
 
