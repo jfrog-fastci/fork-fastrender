@@ -10213,6 +10213,10 @@ impl DisplayListRenderer {
 
         if self.trace_backdrop_stack {
           let depth_after = self.canvas.layer_stack_len();
+          let init_from_backdrop = self
+            .stacking_layers
+            .last()
+            .is_some_and(|record| record.init_from_backdrop);
           eprintln!(
             "backdrop_stack push_sc backdrop_root={} needs_layer={} mix_blend_mode={:?} init_from_backdrop={} canvas_layers={} -> {} stacking_depth={} -> {}",
             is_backdrop_root,

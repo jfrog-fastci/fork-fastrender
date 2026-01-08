@@ -13622,6 +13622,43 @@ fn build_container_query_context(
     let padding_top = resolve_padding(style.padding_top, percentage_base, style, viewport);
     let padding_bottom = resolve_padding(style.padding_bottom, percentage_base, style, viewport);
 
+    let mut padding_left = padding_left;
+    let mut padding_right = padding_right;
+    let mut padding_top = padding_top;
+    let mut padding_bottom = padding_bottom;
+
+    // Block layout reserves space for scrollbars via padding adjustments (including
+    // `scrollbar-gutter: stable`). Mirror that accounting so container query size snapshots match
+    // the actual content box used during layout.
+    {
+      use crate::style::types::Overflow;
+      let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
+        || (style.scrollbar_gutter.stable
+          && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+      if reserve_vertical_gutter {
+        let gutter = crate::layout::utils::resolve_scrollbar_width(style);
+        if gutter > 0.0 {
+          if style.scrollbar_gutter.both_edges {
+            padding_left += gutter;
+          }
+          padding_right += gutter;
+        }
+      }
+
+      let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
+        || (style.scrollbar_gutter.stable
+          && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+      if reserve_horizontal_gutter {
+        let gutter = crate::layout::utils::resolve_scrollbar_width(style);
+        if gutter > 0.0 {
+          if style.scrollbar_gutter.both_edges {
+            padding_top += gutter;
+          }
+          padding_bottom += gutter;
+        }
+      }
+    }
+
     // `Length::to_px()` is a best-effort helper for absolute units; it returns raw values for
     // font-relative units and for `calc()` expressions that include unresolved terms. Resolve
     // borders against the container's computed font/viewport context to match layout's used values.
