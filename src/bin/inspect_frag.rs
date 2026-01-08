@@ -1423,7 +1423,9 @@ mod tests {
     let args = Args::try_parse_from(["inspect_frag", html_path.to_str().unwrap(), "--offline"])
       .expect("parse args");
 
-    let err = build_fetcher(&args).expect_err("expected offline error");
+    let err = build_fetcher(&args)
+      .err()
+      .expect("expected offline error");
     assert!(
       err.to_string().contains("disk_cache"),
       "error should mention disk_cache: {err}"

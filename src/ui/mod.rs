@@ -3,6 +3,8 @@ pub mod history;
 pub mod messages;
 pub mod worker;
 
+// `pixmap_texture` depends on the optional egui stack, so keep it behind the
+// `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
 pub mod pixmap_texture;
 

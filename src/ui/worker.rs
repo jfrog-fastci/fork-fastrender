@@ -1,5 +1,6 @@
 use crate::api::{FastRender, PreparedDocument, PreparedPaintOptions};
 use crate::render_control::{set_stage_listener, StageHeartbeat};
+use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::messages::{TabId, WorkerToUi};
 use crate::{Pixmap, RenderOptions, Result};
 use std::sync::mpsc::Sender;
@@ -70,3 +71,21 @@ impl RenderWorker {
   }
 }
 
+/// Spawn a dedicated render worker thread for the browser UI.
+///
+/// The full render pipeline can recurse deeply on complex pages (DOM/style/layout), so the browser
+/// UI should run it on a large-stack thread (matching the CLI render worker stack size).
+pub fn spawn_render_worker_thread<T: Send + 'static>(
+  name: impl Into<String>,
+  renderer: FastRender,
+  ui_tx: Sender<WorkerToUi>,
+  f: impl FnOnce(RenderWorker) -> T + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<T>> {
+  std::thread::Builder::new()
+    .name(name.into())
+    .stack_size(DEFAULT_RENDER_STACK_SIZE)
+    .spawn(move || {
+      let worker = RenderWorker::new(renderer, ui_tx);
+      f(worker)
+    })
+}
