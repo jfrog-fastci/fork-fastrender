@@ -5651,9 +5651,13 @@ impl FastRender {
       self.set_diagnostics_sink(previous_sink);
       drop(_root_span);
 
+      let final_url = self.document_url.clone();
+      let base_url = self.base_url.clone();
       trace.finalize(result.map(|document| PreparedDocumentReport {
         document,
         diagnostics: snapshot,
+        final_url,
+        base_url,
       }))
     })
   }

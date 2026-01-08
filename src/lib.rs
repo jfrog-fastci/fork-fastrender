@@ -177,6 +177,7 @@ pub mod geometry;
 // ============================================================================
 
 pub mod accessibility;
+pub mod interaction;
 pub mod layout;
 pub mod math;
 pub mod paint;

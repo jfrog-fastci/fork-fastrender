@@ -129,6 +129,7 @@ impl StageHeartbeat {
   }
 }
 
+/// Stage listener callback used by [`record_stage`].
 pub type StageListener = Arc<dyn Fn(StageHeartbeat) + Send + Sync>;
 
 thread_local! {
@@ -140,10 +141,20 @@ fn stage_listener() -> &'static Mutex<Option<StageListener>> {
   LISTENER.get_or_init(|| Mutex::new(None))
 }
 
+/// Swap the global stage listener, returning the previously installed listener (if any).
+///
+/// `record_stage` invokes at most one listener, so callers should treat this as a global resource.
+/// Prefer using [`StageListenerGuard`] to ensure the previous listener is restored even when early
+/// returns occur.
+pub fn swap_stage_listener(listener: Option<StageListener>) -> Option<StageListener> {
+  let mut guard = stage_listener()
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  std::mem::replace(&mut *guard, listener)
+}
+
 pub fn set_stage_listener(listener: Option<StageListener>) {
-  if let Ok(mut guard) = stage_listener().lock() {
-    *guard = listener;
-  }
+  let _ = swap_stage_listener(listener);
 }
 
 pub fn push_stage_listener(listener: Option<StageListener>) -> StageListenerGuard {
@@ -168,12 +179,37 @@ pub fn record_stage(stage: StageHeartbeat) {
   if let Some(listener) = maybe_thread_listener {
     listener(stage);
   }
-  let maybe_global_listener = stage_listener()
-    .lock()
-    .ok()
-    .and_then(|guard| guard.as_ref().cloned());
-  if let Some(listener) = maybe_global_listener {
+  let maybe_listener = {
+    let guard = stage_listener()
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.as_ref().cloned()
+  };
+  if let Some(listener) = maybe_listener {
     listener(stage);
+  }
+}
+
+/// RAII guard that installs a *global* stage listener and restores the previous listener on drop.
+///
+/// Prefer [`push_stage_listener`] when you only need stage events for the current thread; the
+/// global listener is invoked by *all* threads.
+#[must_use]
+pub struct GlobalStageListenerGuard {
+  previous: Option<StageListener>,
+}
+
+impl GlobalStageListenerGuard {
+  pub fn new(listener: StageListener) -> Self {
+    let previous = swap_stage_listener(Some(listener));
+    Self { previous }
+  }
+}
+
+impl Drop for GlobalStageListenerGuard {
+  fn drop(&mut self) {
+    let previous = self.previous.take();
+    let _ = swap_stage_listener(previous);
   }
 }
 
