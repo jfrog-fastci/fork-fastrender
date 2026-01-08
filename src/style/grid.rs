@@ -319,10 +319,30 @@ fn contains_grid_auto_flow_keyword(input: &str) -> bool {
   let bytes = input.as_bytes();
   let mut bracket_depth: usize = 0;
   let mut paren_depth: usize = 0;
+  let mut in_string: Option<u8> = None;
+  let mut escape = false;
   let mut i = 0usize;
   while i < bytes.len() {
     let byte = bytes[i];
+    if let Some(quote) = in_string {
+      if escape {
+        escape = false;
+        i += 1;
+        continue;
+      }
+      if byte == b'\\' {
+        escape = true;
+        i += 1;
+        continue;
+      }
+      if byte == quote {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
     match byte {
+      b'"' | b'\'' => in_string = Some(byte),
       b'(' => paren_depth += 1,
       b')' => paren_depth = paren_depth.saturating_sub(1),
       b'[' if paren_depth == 0 => bracket_depth += 1,
