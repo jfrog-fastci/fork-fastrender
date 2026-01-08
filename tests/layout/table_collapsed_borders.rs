@@ -1,6 +1,10 @@
 use fastrender::api::FastRender;
+use fastrender::geometry::{Point, Rect};
+use fastrender::paint::display_list::ClipShape;
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
+use fastrender::style::media::MediaType;
+use fastrender::tree::fragment_tree::FragmentTree;
 use fastrender::tree::fragment_tree::{FragmentNode, TableCollapsedBorders};
 
 fn count_fragments(node: &FragmentNode) -> usize {
@@ -46,6 +50,52 @@ fn build_table_html(rows: usize, cols: usize, collapse: bool) -> String {
     </html>
   "#
   )
+}
+
+fn pages<'a>(tree: &'a FragmentTree) -> Vec<&'a FragmentNode> {
+  let mut roots = vec![&tree.root];
+  roots.extend(tree.additional_fragments.iter());
+  roots
+}
+
+fn find_table_fragment<'a>(
+  node: &'a FragmentNode,
+  offset: Point,
+) -> Option<(&'a FragmentNode, Rect)> {
+  let abs_rect = node.bounds.translate(offset);
+  if node.table_borders.is_some() {
+    return Some((node, abs_rect));
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_table_fragment(child, abs_rect.origin) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn assert_point_eq_eps(actual: Point, expected: Point, eps: f32) {
+  assert!(
+    (actual.x - expected.x).abs() < eps && (actual.y - expected.y).abs() < eps,
+    "expected point ({}, {}), got ({}, {})",
+    expected.x,
+    expected.y,
+    actual.x,
+    actual.y
+  );
+}
+
+fn assert_rect_eq_eps(actual: Rect, expected: Rect, eps: f32) {
+  assert_point_eq_eps(actual.origin, expected.origin, eps);
+  assert!(
+    (actual.width() - expected.width()).abs() < eps
+      && (actual.height() - expected.height()).abs() < eps,
+    "expected rect size ({}, {}), got ({}, {})",
+    expected.width(),
+    expected.height(),
+    actual.width(),
+    actual.height()
+  );
 }
 
 #[test]
@@ -102,5 +152,121 @@ fn collapsed_table_uses_compact_borders() {
   assert_eq!(
     collapsed_items, 1,
     "collapsed borders should be emitted as a single paint primitive"
+  );
+}
+
+#[test]
+fn collapsed_table_borders_respect_fragment_slice_info_in_print_pagination() {
+  const EPSILON: f32 = 0.1;
+
+  let rows = (0..12)
+    .map(|_| "<tr><td></td></tr>")
+    .collect::<Vec<_>>()
+    .join("");
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 120px; margin: 0; }}
+          html, body {{ margin: 0; padding: 0; }}
+          table {{ border-collapse: collapse; box-decoration-break: slice; width: 100%; }}
+          td {{ border: 2px solid black; height: 30px; padding: 0; }}
+        </style>
+      </head>
+      <body>
+        <table>{rows}</table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() > 1, "table should span multiple pages");
+
+  let mut saw_continuation = false;
+  for (page_idx, page_root) in page_roots.iter().enumerate() {
+    // Page roots can be positioned in a global coordinate space (e.g. stacked vertically). The
+    // display list builder assumes the visible viewport is anchored at (0,0), so translate each
+    // page to local coordinates before building a page-scoped display list.
+    let page_offset = Point::new(-page_root.bounds.origin.x, -page_root.bounds.origin.y);
+    let translated_page = page_root.translate(page_offset);
+
+    let (table_fragment, table_rect) = find_table_fragment(&translated_page, Point::ZERO)
+      .expect("table fragment with border metadata");
+    if table_fragment.slice_info.slice_offset > EPSILON {
+      saw_continuation = true;
+    }
+
+    let list = DisplayListBuilder::new().build(&translated_page);
+    let items = list.items();
+    let table_indices: Vec<usize> = items
+      .iter()
+      .enumerate()
+      .filter_map(|(idx, item)| {
+        matches!(item, DisplayItem::TableCollapsedBorders(_)).then_some(idx)
+      })
+      .collect();
+    assert_eq!(
+      table_indices.len(),
+      1,
+      "expected exactly one TableCollapsedBorders display item on page {page_idx}"
+    );
+    let idx = table_indices[0];
+
+    let DisplayItem::TableCollapsedBorders(item) = &items[idx] else {
+      unreachable!();
+    };
+
+    let info = table_fragment.slice_info;
+    let original_block_size = info.original_block_size.max(0.0);
+    let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
+    let expected_origin = Point::new(table_rect.origin.x, table_rect.origin.y - slice_offset);
+    assert_point_eq_eps(item.origin, expected_origin, EPSILON);
+
+    let expected_bounds = table_fragment
+      .table_borders
+      .as_ref()
+      .unwrap()
+      .paint_bounds
+      .translate(expected_origin);
+    assert_rect_eq_eps(item.bounds, expected_bounds, EPSILON);
+
+    assert!(
+      idx >= 1 && idx + 1 < items.len(),
+      "expected clip items around TableCollapsedBorders on page {page_idx}"
+    );
+    let DisplayItem::PushClip(clip) = &items[idx - 1] else {
+      panic!(
+        "expected PushClip immediately before TableCollapsedBorders on page {page_idx}, got {:?}",
+        items[idx - 1]
+      );
+    };
+    let rect = match &clip.shape {
+      ClipShape::Rect { rect, .. } => *rect,
+      other => {
+        panic!(
+          "expected rect clip immediately before TableCollapsedBorders on page {page_idx}, got {other:?}"
+        );
+      }
+    };
+    assert_rect_eq_eps(rect, table_rect, EPSILON);
+
+    assert!(
+      matches!(&items[idx + 1], DisplayItem::PopClip),
+      "expected PopClip immediately after TableCollapsedBorders on page {page_idx}, got {:?}",
+      items[idx + 1]
+    );
+  }
+
+  assert!(
+    saw_continuation,
+    "expected at least one continuation page with a non-zero slice_offset"
   );
 }

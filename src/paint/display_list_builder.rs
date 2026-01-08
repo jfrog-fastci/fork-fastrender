@@ -2161,7 +2161,28 @@ impl DisplayListBuilder {
       }
 
       if let Some(table_borders) = fragment.table_borders.as_ref() {
-        let origin = absolute_rect.origin;
+        let mut origin = absolute_rect.origin;
+        let mut clip_to_slice = false;
+        if let Some(style) = style_opt {
+          if matches!(style.box_decoration_break, BoxDecorationBreak::Slice) {
+            let info = fragment.slice_info;
+            if !(info.is_first && info.is_last) {
+              clip_to_slice = true;
+              let original_block_size = info.original_block_size.max(0.0);
+              let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
+              if block_axis_is_horizontal(style.writing_mode) {
+                if block_axis_positive(style.writing_mode) {
+                  origin.x -= slice_offset;
+                } else {
+                  origin.x = origin.x + slice_offset - original_block_size;
+                }
+              } else {
+                origin.y -= slice_offset;
+              }
+            }
+          }
+        }
+
         let bounds = table_borders.paint_bounds.translate(origin);
         let has_visible_borders = table_borders
           .vertical_borders
@@ -2170,6 +2191,14 @@ impl DisplayListBuilder {
           .chain(table_borders.corner_borders.iter())
           .any(|b| b.is_visible());
         if paint_self && has_visible_borders {
+          if clip_to_slice {
+            self.list.push(DisplayItem::PushClip(ClipItem {
+              shape: ClipShape::Rect {
+                rect: absolute_rect,
+                radii: None,
+              },
+            }));
+          }
           self.list.push(DisplayItem::TableCollapsedBorders(
             TableCollapsedBordersItem {
               origin,
@@ -2177,6 +2206,9 @@ impl DisplayListBuilder {
               borders: table_borders.clone(),
             },
           ));
+          if clip_to_slice {
+            self.list.push(DisplayItem::PopClip);
+          }
         }
       }
 
@@ -2364,7 +2396,28 @@ impl DisplayListBuilder {
       self.line_decoration_ctx = prev_line_decoration_ctx;
 
       if let Some(table_borders) = fragment.table_borders.as_ref() {
-        let origin = absolute_rect.origin;
+        let mut origin = absolute_rect.origin;
+        let mut clip_to_slice = false;
+        if let Some(style) = style_opt {
+          if matches!(style.box_decoration_break, BoxDecorationBreak::Slice) {
+            let info = fragment.slice_info;
+            if !(info.is_first && info.is_last) {
+              clip_to_slice = true;
+              let original_block_size = info.original_block_size.max(0.0);
+              let slice_offset = info.slice_offset.clamp(0.0, original_block_size);
+              if block_axis_is_horizontal(style.writing_mode) {
+                if block_axis_positive(style.writing_mode) {
+                  origin.x -= slice_offset;
+                } else {
+                  origin.x = origin.x + slice_offset - original_block_size;
+                }
+              } else {
+                origin.y -= slice_offset;
+              }
+            }
+          }
+        }
+
         let bounds = table_borders.paint_bounds.translate(origin);
         let has_visible_borders = table_borders
           .vertical_borders
@@ -2373,6 +2426,14 @@ impl DisplayListBuilder {
           .chain(table_borders.corner_borders.iter())
           .any(|b| b.is_visible());
         if paint_self && has_visible_borders {
+          if clip_to_slice {
+            self.list.push(DisplayItem::PushClip(ClipItem {
+              shape: ClipShape::Rect {
+                rect: absolute_rect,
+                radii: None,
+              },
+            }));
+          }
           self.list.push(DisplayItem::TableCollapsedBorders(
             TableCollapsedBordersItem {
               origin,
@@ -2380,6 +2441,9 @@ impl DisplayListBuilder {
               borders: table_borders.clone(),
             },
           ));
+          if clip_to_slice {
+            self.list.push(DisplayItem::PopClip);
+          }
         }
       }
 
