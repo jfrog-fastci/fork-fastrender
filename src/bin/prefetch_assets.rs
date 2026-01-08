@@ -5187,8 +5187,7 @@ body { background-image: url(/bg.png); }
       }
       if let Some(dir) = &args.report_per_page_dir {
         for page in &report.pages {
-          let mut path = dir.join(PathBuf::from(&page.stem));
-          path.set_extension("json");
+          let path = dir.join(format!("{}.json", page.stem));
           let single = PrefetchAssetsReport {
             version: report.version,
             cache_dir: report.cache_dir.clone(),
