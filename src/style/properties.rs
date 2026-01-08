@@ -7815,20 +7815,23 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "box-orient" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        match kw.as_str() {
-          "horizontal" => styles.webkit_box_orient = WebkitBoxOrient::Horizontal,
-          "vertical" => styles.webkit_box_orient = WebkitBoxOrient::Vertical,
-          _ => {}
+        if kw.eq_ignore_ascii_case("horizontal") {
+          styles.webkit_box_orient = WebkitBoxOrient::Horizontal;
+        } else if kw.eq_ignore_ascii_case("vertical") {
+          styles.webkit_box_orient = WebkitBoxOrient::Vertical;
         }
       }
     }
     "visibility" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.visibility = match kw.as_str() {
-          "visible" => crate::style::computed::Visibility::Visible,
-          "hidden" => crate::style::computed::Visibility::Hidden,
-          "collapse" => crate::style::computed::Visibility::Collapse,
-          _ => styles.visibility,
+        styles.visibility = if kw.eq_ignore_ascii_case("visible") {
+          crate::style::computed::Visibility::Visible
+        } else if kw.eq_ignore_ascii_case("hidden") {
+          crate::style::computed::Visibility::Hidden
+        } else if kw.eq_ignore_ascii_case("collapse") {
+          crate::style::computed::Visibility::Collapse
+        } else {
+          styles.visibility
         };
       }
     }
@@ -7864,34 +7867,22 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "overflow" => {
-      let parse_overflow_keyword = |kw: &str| -> Option<Overflow> {
-        Some(match kw {
-          "visible" => Overflow::Visible,
-          "hidden" => Overflow::Hidden,
-          "scroll" => Overflow::Scroll,
-          "auto" => Overflow::Auto,
-          "clip" => Overflow::Clip,
-          _ => return None,
-        })
-      };
-
       match resolved_value {
         PropertyValue::Keyword(kw) => {
-          if let Some(overflow) = parse_overflow_keyword(kw) {
+          if let Some(overflow) = Overflow::parse(kw) {
             styles.overflow_x = overflow;
             styles.overflow_y = overflow;
           }
         }
         PropertyValue::Multiple(values) => match values.as_slice() {
           [PropertyValue::Keyword(x)] => {
-            if let Some(overflow) = parse_overflow_keyword(x) {
+            if let Some(overflow) = Overflow::parse(x) {
               styles.overflow_x = overflow;
               styles.overflow_y = overflow;
             }
           }
           [PropertyValue::Keyword(x), PropertyValue::Keyword(y)] => {
-            if let (Some(overflow_x), Some(overflow_y)) =
-              (parse_overflow_keyword(x), parse_overflow_keyword(y))
+            if let (Some(overflow_x), Some(overflow_y)) = (Overflow::parse(x), Overflow::parse(y))
             {
               styles.overflow_x = overflow_x;
               styles.overflow_y = overflow_y;
@@ -7904,26 +7895,16 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "overflow-x" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.overflow_x = match kw.as_str() {
-          "visible" => Overflow::Visible,
-          "hidden" => Overflow::Hidden,
-          "scroll" => Overflow::Scroll,
-          "auto" => Overflow::Auto,
-          "clip" => Overflow::Clip,
-          _ => styles.overflow_x,
-        };
+        if let Some(overflow) = Overflow::parse(kw) {
+          styles.overflow_x = overflow;
+        }
       }
     }
     "overflow-y" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.overflow_y = match kw.as_str() {
-          "visible" => Overflow::Visible,
-          "hidden" => Overflow::Hidden,
-          "scroll" => Overflow::Scroll,
-          "auto" => Overflow::Auto,
-          "clip" => Overflow::Clip,
-          _ => styles.overflow_y,
-        };
+        if let Some(overflow) = Overflow::parse(kw) {
+          styles.overflow_y = overflow;
+        }
       }
     }
 

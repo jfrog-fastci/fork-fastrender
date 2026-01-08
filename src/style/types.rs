@@ -49,6 +49,24 @@ pub enum Overflow {
   Clip,
 }
 
+impl Overflow {
+  pub fn parse(keyword: &str) -> Option<Self> {
+    if keyword.eq_ignore_ascii_case("visible") {
+      Some(Self::Visible)
+    } else if keyword.eq_ignore_ascii_case("hidden") {
+      Some(Self::Hidden)
+    } else if keyword.eq_ignore_ascii_case("scroll") {
+      Some(Self::Scroll)
+    } else if keyword.eq_ignore_ascii_case("auto") {
+      Some(Self::Auto)
+    } else if keyword.eq_ignore_ascii_case("clip") {
+      Some(Self::Clip)
+    } else {
+      None
+    }
+  }
+}
+
 /// Determines which box the width/height properties apply to.
 ///
 /// CSS: `box-sizing`
