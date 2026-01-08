@@ -435,8 +435,9 @@ pub enum MediaFeature {
   Or(Vec<MediaFeature>),
   /// Unknown / unsupported media feature or "general-enclosed" construct.
   ///
-  /// Per Media Queries, this evaluates as `false` but must not abort parsing so that other
-  /// comma-separated queries can still be considered.
+  /// Per Media Queries, this evaluates as `unknown` and must not abort parsing so that other
+  /// comma-separated queries can still be considered. When a 2-valued boolean is required
+  /// (e.g. `@media` rule matching), `unknown` is converted to `false`.
   Unknown { name: String, value: Option<String> },
 }
 
@@ -2033,6 +2034,35 @@ pub struct MediaContext {
   pub forced_colors: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MediaEvalResult {
+  True,
+  False,
+  Unknown,
+}
+
+impl MediaEvalResult {
+  fn from_bool(value: bool) -> Self {
+    if value {
+      Self::True
+    } else {
+      Self::False
+    }
+  }
+
+  fn into_bool(self) -> bool {
+    matches!(self, Self::True)
+  }
+
+  fn not(self) -> Self {
+    match self {
+      Self::True => Self::False,
+      Self::False => Self::True,
+      Self::Unknown => Self::Unknown,
+    }
+  }
+}
+
 impl MediaContext {
   pub(crate) fn fingerprint(&self) -> MediaContextFingerprint {
     MediaContextFingerprint {
@@ -2484,29 +2514,7 @@ impl MediaContext {
   /// assert!(ctx.evaluate(&query));
   /// ```
   pub fn evaluate(&self, query: &MediaQuery) -> bool {
-    // Check media type first
-    let type_matches = match query.media_type {
-      Some(media_type) => self.matches_media_type(media_type),
-      None => true, // No media type means "all"
-    };
-
-    // If type doesn't match, apply modifier and return
-    if !type_matches {
-      return match query.modifier {
-        Some(MediaModifier::Not) => true, // NOT (non-matching) = true
-        _ => false,
-      };
-    }
-
-    // Check all features (AND logic)
-    let features_match = query.features.iter().all(|f| self.evaluate_feature(f));
-
-    // Apply modifier
-    match query.modifier {
-      Some(MediaModifier::Not) => !features_match,
-      Some(MediaModifier::Only) => features_match, // 'only' is just for old browser compat
-      None => features_match,
-    }
+    self.evaluate_tristate(query).into_bool()
   }
 
   /// Evaluates a single media query with optional caching.
@@ -2534,261 +2542,474 @@ impl MediaContext {
     media_type == MediaType::All || media_type == self.media_type
   }
 
-  fn evaluate_feature(&self, feature: &MediaFeature) -> bool {
+  fn evaluate_tristate(&self, query: &MediaQuery) -> MediaEvalResult {
+    // MQ4 evaluation uses tri-valued logic (`true`/`false`/`unknown`). When the caller needs a
+    // 2-valued boolean (e.g. `@media` rule matching), `unknown` is converted to `false`.
+    //
+    // https://www.w3.org/TR/mediaqueries-4/#evaluating
+
+    // Check media type first.
+    let type_matches = match query.media_type {
+      Some(media_type) => self.matches_media_type(media_type),
+      None => true, // No media type means "all"
+    };
+
+    // A non-matching media type is definitively false (it dominates `and`).
+    let mut result = if !type_matches {
+      MediaEvalResult::False
+    } else {
+      self.evaluate_features(&query.features)
+    };
+
+    // Apply query modifier.
+    if matches!(query.modifier, Some(MediaModifier::Not)) {
+      result = result.not();
+    }
+
+    // `only` is just for old browser compat; it does not affect evaluation.
+    result
+  }
+
+  fn evaluate_features(&self, features: &[MediaFeature]) -> MediaEvalResult {
+    let mut seen_unknown = false;
+    for feature in features {
+      match self.evaluate_feature(feature) {
+        MediaEvalResult::True => {}
+        MediaEvalResult::False => return MediaEvalResult::False,
+        MediaEvalResult::Unknown => seen_unknown = true,
+      }
+    }
+    if seen_unknown {
+      MediaEvalResult::Unknown
+    } else {
+      MediaEvalResult::True
+    }
+  }
+
+  fn eval_length_feature<F>(
+    &self,
+    actual: f32,
+    length: &Length,
+    inline_base: f32,
+    block_base: f32,
+    compare: F,
+  ) -> MediaEvalResult
+  where
+    F: FnOnce(f32, f32) -> bool,
+  {
+    if !actual.is_finite() {
+      return MediaEvalResult::Unknown;
+    }
+
+    match self
+      .resolve_length(length, inline_base, block_base)
+      .filter(|v| v.is_finite())
+    {
+      Some(target) => MediaEvalResult::from_bool(compare(actual, target)),
+      None => MediaEvalResult::Unknown,
+    }
+  }
+
+  fn evaluate_feature(&self, feature: &MediaFeature) -> MediaEvalResult {
     match feature {
       // Width features
-      MediaFeature::Width(length) => self
-        .resolve_length(length, self.viewport_width, self.viewport_height)
-        .map(|target| (self.viewport_width - target).abs() < 0.5)
-        .unwrap_or(false),
-      MediaFeature::MinWidth(length) => self
-        .resolve_length(length, self.viewport_width, self.viewport_height)
-        .map(|target| self.viewport_width >= target)
-        .unwrap_or(false),
-      MediaFeature::MaxWidth(length) => self
-        .resolve_length(length, self.viewport_width, self.viewport_height)
-        .map(|target| self.viewport_width <= target)
-        .unwrap_or(false),
+      MediaFeature::Width(length) => self.eval_length_feature(
+        self.viewport_width,
+        length,
+        self.viewport_width,
+        self.viewport_height,
+        |actual, target| (actual - target).abs() < 0.5,
+      ),
+      MediaFeature::MinWidth(length) => self.eval_length_feature(
+        self.viewport_width,
+        length,
+        self.viewport_width,
+        self.viewport_height,
+        |actual, target| actual >= target,
+      ),
+      MediaFeature::MaxWidth(length) => self.eval_length_feature(
+        self.viewport_width,
+        length,
+        self.viewport_width,
+        self.viewport_height,
+        |actual, target| actual <= target,
+      ),
 
       // Inline-size
-      MediaFeature::InlineSize(length) => self
-        .resolve_length(length, self.viewport_width, self.viewport_height)
-        .map(|target| (self.viewport_width - target).abs() < 0.5)
-        .unwrap_or(false),
-      MediaFeature::MinInlineSize(length) => self
-        .resolve_length(length, self.viewport_width, self.viewport_height)
-        .map(|target| self.viewport_width >= target)
-        .unwrap_or(false),
-      MediaFeature::MaxInlineSize(length) => self
-        .resolve_length(length, self.viewport_width, self.viewport_height)
-        .map(|target| self.viewport_width <= target)
-        .unwrap_or(false),
+      MediaFeature::InlineSize(length) => self.eval_length_feature(
+        self.viewport_width,
+        length,
+        self.viewport_width,
+        self.viewport_height,
+        |actual, target| (actual - target).abs() < 0.5,
+      ),
+      MediaFeature::MinInlineSize(length) => self.eval_length_feature(
+        self.viewport_width,
+        length,
+        self.viewport_width,
+        self.viewport_height,
+        |actual, target| actual >= target,
+      ),
+      MediaFeature::MaxInlineSize(length) => self.eval_length_feature(
+        self.viewport_width,
+        length,
+        self.viewport_width,
+        self.viewport_height,
+        |actual, target| actual <= target,
+      ),
 
       // Height features
-      MediaFeature::Height(length) => self
-        .resolve_length(length, self.viewport_height, self.viewport_width)
-        .map(|target| (self.viewport_height - target).abs() < 0.5)
-        .unwrap_or(false),
-      MediaFeature::MinHeight(length) => self
-        .resolve_length(length, self.viewport_height, self.viewport_width)
-        .map(|target| self.viewport_height >= target)
-        .unwrap_or(false),
-      MediaFeature::MaxHeight(length) => self
-        .resolve_length(length, self.viewport_height, self.viewport_width)
-        .map(|target| self.viewport_height <= target)
-        .unwrap_or(false),
+      MediaFeature::Height(length) => self.eval_length_feature(
+        self.viewport_height,
+        length,
+        self.viewport_height,
+        self.viewport_width,
+        |actual, target| (actual - target).abs() < 0.5,
+      ),
+      MediaFeature::MinHeight(length) => self.eval_length_feature(
+        self.viewport_height,
+        length,
+        self.viewport_height,
+        self.viewport_width,
+        |actual, target| actual >= target,
+      ),
+      MediaFeature::MaxHeight(length) => self.eval_length_feature(
+        self.viewport_height,
+        length,
+        self.viewport_height,
+        self.viewport_width,
+        |actual, target| actual <= target,
+      ),
 
       // Block-size
-      MediaFeature::BlockSize(length) => self
-        .resolve_length(length, self.viewport_height, self.viewport_width)
-        .map(|target| (self.viewport_height - target).abs() < 0.5)
-        .unwrap_or(false),
-      MediaFeature::MinBlockSize(length) => self
-        .resolve_length(length, self.viewport_height, self.viewport_width)
-        .map(|target| self.viewport_height >= target)
-        .unwrap_or(false),
-      MediaFeature::MaxBlockSize(length) => self
-        .resolve_length(length, self.viewport_height, self.viewport_width)
-        .map(|target| self.viewport_height <= target)
-        .unwrap_or(false),
+      MediaFeature::BlockSize(length) => self.eval_length_feature(
+        self.viewport_height,
+        length,
+        self.viewport_height,
+        self.viewport_width,
+        |actual, target| (actual - target).abs() < 0.5,
+      ),
+      MediaFeature::MinBlockSize(length) => self.eval_length_feature(
+        self.viewport_height,
+        length,
+        self.viewport_height,
+        self.viewport_width,
+        |actual, target| actual >= target,
+      ),
+      MediaFeature::MaxBlockSize(length) => self.eval_length_feature(
+        self.viewport_height,
+        length,
+        self.viewport_height,
+        self.viewport_width,
+        |actual, target| actual <= target,
+      ),
 
       // Device dimensions
-      MediaFeature::DeviceWidth(length) => self
-        .resolve_length(length, self.device_width, self.device_height)
-        .map(|target| (self.device_width - target).abs() < 0.5)
-        .unwrap_or(false),
-      MediaFeature::MinDeviceWidth(length) => self
-        .resolve_length(length, self.device_width, self.device_height)
-        .map(|target| self.device_width >= target)
-        .unwrap_or(false),
-      MediaFeature::MaxDeviceWidth(length) => self
-        .resolve_length(length, self.device_width, self.device_height)
-        .map(|target| self.device_width <= target)
-        .unwrap_or(false),
-      MediaFeature::DeviceHeight(length) => self
-        .resolve_length(length, self.device_height, self.device_width)
-        .map(|target| (self.device_height - target).abs() < 0.5)
-        .unwrap_or(false),
-      MediaFeature::MinDeviceHeight(length) => self
-        .resolve_length(length, self.device_height, self.device_width)
-        .map(|target| self.device_height >= target)
-        .unwrap_or(false),
-      MediaFeature::MaxDeviceHeight(length) => self
-        .resolve_length(length, self.device_height, self.device_width)
-        .map(|target| self.device_height <= target)
-        .unwrap_or(false),
+      MediaFeature::DeviceWidth(length) => self.eval_length_feature(
+        self.device_width,
+        length,
+        self.device_width,
+        self.device_height,
+        |actual, target| (actual - target).abs() < 0.5,
+      ),
+      MediaFeature::MinDeviceWidth(length) => self.eval_length_feature(
+        self.device_width,
+        length,
+        self.device_width,
+        self.device_height,
+        |actual, target| actual >= target,
+      ),
+      MediaFeature::MaxDeviceWidth(length) => self.eval_length_feature(
+        self.device_width,
+        length,
+        self.device_width,
+        self.device_height,
+        |actual, target| actual <= target,
+      ),
+      MediaFeature::DeviceHeight(length) => self.eval_length_feature(
+        self.device_height,
+        length,
+        self.device_height,
+        self.device_width,
+        |actual, target| (actual - target).abs() < 0.5,
+      ),
+      MediaFeature::MinDeviceHeight(length) => self.eval_length_feature(
+        self.device_height,
+        length,
+        self.device_height,
+        self.device_width,
+        |actual, target| actual >= target,
+      ),
+      MediaFeature::MaxDeviceHeight(length) => self.eval_length_feature(
+        self.device_height,
+        length,
+        self.device_height,
+        self.device_width,
+        |actual, target| actual <= target,
+      ),
 
       // Orientation
       MediaFeature::Orientation(orientation) => {
         if !self.viewport_width.is_finite() || !self.viewport_height.is_finite() {
-          return false;
+          return MediaEvalResult::Unknown;
         }
         let is_portrait = self.viewport_height >= self.viewport_width;
-        match orientation {
+        MediaEvalResult::from_bool(match orientation {
           Orientation::Portrait => is_portrait,
           Orientation::Landscape => !is_portrait,
-        }
+        })
       }
 
       // Aspect ratio
       MediaFeature::AspectRatio { width, height } => {
+        let Some(actual_ratio) = ratio(self.viewport_width, self.viewport_height) else {
+          return MediaEvalResult::Unknown;
+        };
         let target_ratio = *width as f32 / *height as f32;
-        let actual_ratio = self.viewport_width / self.viewport_height;
-        (target_ratio - actual_ratio).abs() < 0.01
+        MediaEvalResult::from_bool((target_ratio - actual_ratio).abs() < 0.01)
       }
       MediaFeature::MinAspectRatio { width, height } => {
+        let Some(actual_ratio) = ratio(self.viewport_width, self.viewport_height) else {
+          return MediaEvalResult::Unknown;
+        };
         let target_ratio = *width as f32 / *height as f32;
-        let actual_ratio = self.viewport_width / self.viewport_height;
-        actual_ratio >= target_ratio
+        MediaEvalResult::from_bool(actual_ratio >= target_ratio)
       }
       MediaFeature::MaxAspectRatio { width, height } => {
+        let Some(actual_ratio) = ratio(self.viewport_width, self.viewport_height) else {
+          return MediaEvalResult::Unknown;
+        };
         let target_ratio = *width as f32 / *height as f32;
-        let actual_ratio = self.viewport_width / self.viewport_height;
-        actual_ratio <= target_ratio
+        MediaEvalResult::from_bool(actual_ratio <= target_ratio)
       }
       MediaFeature::DeviceAspectRatio { width, height } => {
+        let Some(actual_ratio) = ratio(self.device_width, self.device_height) else {
+          return MediaEvalResult::Unknown;
+        };
         let target_ratio = *width as f32 / *height as f32;
-        let actual_ratio = self.device_width / self.device_height;
-        (target_ratio - actual_ratio).abs() < 0.01
+        MediaEvalResult::from_bool((target_ratio - actual_ratio).abs() < 0.01)
       }
       MediaFeature::MinDeviceAspectRatio { width, height } => {
+        let Some(actual_ratio) = ratio(self.device_width, self.device_height) else {
+          return MediaEvalResult::Unknown;
+        };
         let target_ratio = *width as f32 / *height as f32;
-        let actual_ratio = self.device_width / self.device_height;
-        actual_ratio >= target_ratio
+        MediaEvalResult::from_bool(actual_ratio >= target_ratio)
       }
       MediaFeature::MaxDeviceAspectRatio { width, height } => {
+        let Some(actual_ratio) = ratio(self.device_width, self.device_height) else {
+          return MediaEvalResult::Unknown;
+        };
         let target_ratio = *width as f32 / *height as f32;
-        let actual_ratio = self.device_width / self.device_height;
-        actual_ratio <= target_ratio
+        MediaEvalResult::from_bool(actual_ratio <= target_ratio)
       }
 
       // Resolution
       MediaFeature::Resolution(res) => {
+        if !self.device_pixel_ratio.is_finite() {
+          return MediaEvalResult::Unknown;
+        }
         let target_dppx = res.to_dppx();
-        (self.device_pixel_ratio - target_dppx).abs() < 0.1
+        MediaEvalResult::from_bool((self.device_pixel_ratio - target_dppx).abs() < 0.1)
       }
       MediaFeature::MinResolution(res) => {
+        if !self.device_pixel_ratio.is_finite() {
+          return MediaEvalResult::Unknown;
+        }
         let target_dppx = res.to_dppx();
-        self.device_pixel_ratio >= target_dppx
+        MediaEvalResult::from_bool(self.device_pixel_ratio >= target_dppx)
       }
       MediaFeature::MaxResolution(res) => {
+        if !self.device_pixel_ratio.is_finite() {
+          return MediaEvalResult::Unknown;
+        }
         let target_dppx = res.to_dppx();
-        self.device_pixel_ratio <= target_dppx
+        MediaEvalResult::from_bool(self.device_pixel_ratio <= target_dppx)
       }
 
       // Color features
-      MediaFeature::Color => self.color_depth > 0,
-      MediaFeature::MinColor(bits) => self.color_depth >= *bits,
-      MediaFeature::MaxColor(bits) => self.color_depth <= *bits,
-      MediaFeature::ColorIndex => self.color_index > 0,
-      MediaFeature::MinColorIndex(count) => self.color_index >= *count,
-      MediaFeature::MaxColorIndex(count) => self.color_index <= *count,
-      MediaFeature::ColorGamut(required) => self.color_gamut >= *required,
+      MediaFeature::Color => MediaEvalResult::from_bool(self.color_depth > 0),
+      MediaFeature::MinColor(bits) => MediaEvalResult::from_bool(self.color_depth >= *bits),
+      MediaFeature::MaxColor(bits) => MediaEvalResult::from_bool(self.color_depth <= *bits),
+      MediaFeature::ColorIndex => MediaEvalResult::from_bool(self.color_index > 0),
+      MediaFeature::MinColorIndex(count) => MediaEvalResult::from_bool(self.color_index >= *count),
+      MediaFeature::MaxColorIndex(count) => MediaEvalResult::from_bool(self.color_index <= *count),
+      MediaFeature::ColorGamut(required) => {
+        MediaEvalResult::from_bool(self.color_gamut >= *required)
+      }
 
       // Monochrome features
-      MediaFeature::Monochrome => self.monochrome_depth > 0,
-      MediaFeature::MinMonochrome(bits) => self.monochrome_depth >= *bits,
-      MediaFeature::MaxMonochrome(bits) => self.monochrome_depth <= *bits,
+      MediaFeature::Monochrome => MediaEvalResult::from_bool(self.monochrome_depth > 0),
+      MediaFeature::MinMonochrome(bits) => {
+        MediaEvalResult::from_bool(self.monochrome_depth >= *bits)
+      }
+      MediaFeature::MaxMonochrome(bits) => {
+        MediaEvalResult::from_bool(self.monochrome_depth <= *bits)
+      }
 
       // Hover capability
-      MediaFeature::Hover(capability) => match capability {
+      MediaFeature::Hover(capability) => MediaEvalResult::from_bool(match capability {
         HoverCapability::None => !self.can_hover,
         HoverCapability::Hover => self.can_hover,
-      },
-      MediaFeature::AnyHover(capability) => match capability {
+      }),
+      MediaFeature::AnyHover(capability) => MediaEvalResult::from_bool(match capability {
         HoverCapability::None => !self.any_can_hover,
         HoverCapability::Hover => self.any_can_hover,
-      },
+      }),
 
       // Pointer capability
-      MediaFeature::Pointer(capability) => self.pointer == *capability,
-      MediaFeature::AnyPointer(capability) => match capability {
+      MediaFeature::Pointer(capability) => MediaEvalResult::from_bool(self.pointer == *capability),
+      MediaFeature::AnyPointer(capability) => MediaEvalResult::from_bool(match capability {
         PointerCapability::None => !self.any_pointer_coarse && !self.any_pointer_fine,
         PointerCapability::Coarse => self.any_pointer_coarse,
         PointerCapability::Fine => self.any_pointer_fine,
-      },
+      }),
 
       // MQ5
-      MediaFeature::Scripting(state) => self.scripting == *state,
-      MediaFeature::Update(freq) => self.update_frequency == *freq,
-      MediaFeature::LightLevel(level) => self.light_level == *level,
-      MediaFeature::DisplayMode(mode) => self.display_mode == *mode,
+      MediaFeature::Scripting(state) => MediaEvalResult::from_bool(self.scripting == *state),
+      MediaFeature::Update(freq) => MediaEvalResult::from_bool(self.update_frequency == *freq),
+      MediaFeature::LightLevel(level) => MediaEvalResult::from_bool(self.light_level == *level),
+      MediaFeature::DisplayMode(mode) => MediaEvalResult::from_bool(self.display_mode == *mode),
 
       // User preferences
-      MediaFeature::PrefersColorScheme(scheme) => match self.prefers_color_scheme {
-        Some(current) => current == *scheme,
-        None => matches!(scheme, ColorScheme::NoPreference),
-      },
-      MediaFeature::PrefersReducedMotion(motion) => match motion {
+      MediaFeature::PrefersColorScheme(scheme) => {
+        MediaEvalResult::from_bool(match self.prefers_color_scheme {
+          Some(current) => current == *scheme,
+          None => matches!(scheme, ColorScheme::NoPreference),
+        })
+      }
+      MediaFeature::PrefersReducedMotion(motion) => MediaEvalResult::from_bool(match motion {
         ReducedMotion::NoPreference => !self.prefers_reduced_motion,
         ReducedMotion::Reduce => self.prefers_reduced_motion,
-      },
-      MediaFeature::PrefersContrast(contrast) => self.prefers_contrast == *contrast,
-      MediaFeature::PrefersReducedTransparency(transparency) => match transparency {
-        ReducedTransparency::NoPreference => !self.prefers_reduced_transparency,
-        ReducedTransparency::Reduce => self.prefers_reduced_transparency,
-      },
-      MediaFeature::PrefersReducedData(data) => match data {
+      }),
+      MediaFeature::PrefersContrast(contrast) => {
+        MediaEvalResult::from_bool(self.prefers_contrast == *contrast)
+      }
+      MediaFeature::PrefersReducedTransparency(transparency) => {
+        MediaEvalResult::from_bool(match transparency {
+          ReducedTransparency::NoPreference => !self.prefers_reduced_transparency,
+          ReducedTransparency::Reduce => self.prefers_reduced_transparency,
+        })
+      }
+      MediaFeature::PrefersReducedData(data) => MediaEvalResult::from_bool(match data {
         ReducedData::NoPreference => !self.prefers_reduced_data,
         ReducedData::Reduce => self.prefers_reduced_data,
-      },
-      MediaFeature::ForcedColors(state) => match state {
+      }),
+      MediaFeature::ForcedColors(state) => MediaEvalResult::from_bool(match state {
         ForcedColors::None => !self.forced_colors,
         ForcedColors::Active => self.forced_colors,
-      },
-      MediaFeature::InvertedColors(state) => match state {
+      }),
+      MediaFeature::InvertedColors(state) => MediaEvalResult::from_bool(match state {
         InvertedColors::None => matches!(self.inverted_colors, InvertedColors::None),
         InvertedColors::Inverted => matches!(self.inverted_colors, InvertedColors::Inverted),
-      },
+      }),
       MediaFeature::Range { feature, op, value } => match (feature, value) {
-        (RangeFeature::Width, RangeValue::Length(len)) => self
-          .resolve_length(len, self.viewport_width, self.viewport_height)
-          .map(|target| compare_with_op(*op, self.viewport_width, target))
-          .unwrap_or(false),
-        (RangeFeature::InlineSize, RangeValue::Length(len)) => self
-          .resolve_length(len, self.viewport_width, self.viewport_height)
-          .map(|target| compare_with_op(*op, self.viewport_width, target))
-          .unwrap_or(false),
-        (RangeFeature::BlockSize, RangeValue::Length(len)) => self
-          .resolve_length(len, self.viewport_height, self.viewport_width)
-          .map(|target| compare_with_op(*op, self.viewport_height, target))
-          .unwrap_or(false),
-        (RangeFeature::Height, RangeValue::Length(len)) => self
-          .resolve_length(len, self.viewport_height, self.viewport_width)
-          .map(|target| compare_with_op(*op, self.viewport_height, target))
-          .unwrap_or(false),
-        (RangeFeature::DeviceWidth, RangeValue::Length(len)) => self
-          .resolve_length(len, self.device_width, self.device_height)
-          .map(|target| compare_with_op(*op, self.device_width, target))
-          .unwrap_or(false),
-        (RangeFeature::DeviceHeight, RangeValue::Length(len)) => self
-          .resolve_length(len, self.device_height, self.device_width)
-          .map(|target| compare_with_op(*op, self.device_height, target))
-          .unwrap_or(false),
+        (RangeFeature::Width, RangeValue::Length(len)) => self.eval_length_feature(
+          self.viewport_width,
+          len,
+          self.viewport_width,
+          self.viewport_height,
+          |actual, target| compare_with_op(*op, actual, target),
+        ),
+        (RangeFeature::InlineSize, RangeValue::Length(len)) => self.eval_length_feature(
+          self.viewport_width,
+          len,
+          self.viewport_width,
+          self.viewport_height,
+          |actual, target| compare_with_op(*op, actual, target),
+        ),
+        (RangeFeature::BlockSize, RangeValue::Length(len)) => self.eval_length_feature(
+          self.viewport_height,
+          len,
+          self.viewport_height,
+          self.viewport_width,
+          |actual, target| compare_with_op(*op, actual, target),
+        ),
+        (RangeFeature::Height, RangeValue::Length(len)) => self.eval_length_feature(
+          self.viewport_height,
+          len,
+          self.viewport_height,
+          self.viewport_width,
+          |actual, target| compare_with_op(*op, actual, target),
+        ),
+        (RangeFeature::DeviceWidth, RangeValue::Length(len)) => self.eval_length_feature(
+          self.device_width,
+          len,
+          self.device_width,
+          self.device_height,
+          |actual, target| compare_with_op(*op, actual, target),
+        ),
+        (RangeFeature::DeviceHeight, RangeValue::Length(len)) => self.eval_length_feature(
+          self.device_height,
+          len,
+          self.device_height,
+          self.device_width,
+          |actual, target| compare_with_op(*op, actual, target),
+        ),
         (RangeFeature::AspectRatio, RangeValue::AspectRatio(w, h)) => {
+          let Some(actual_ratio) = ratio(self.viewport_width, self.viewport_height) else {
+            return MediaEvalResult::Unknown;
+          };
           let target_ratio = *w as f32 / *h as f32;
-          let actual_ratio = self.viewport_width / self.viewport_height;
-          compare_with_op(*op, actual_ratio, target_ratio)
+          MediaEvalResult::from_bool(compare_with_op(*op, actual_ratio, target_ratio))
         }
         (RangeFeature::DeviceAspectRatio, RangeValue::AspectRatio(w, h)) => {
+          let Some(actual_ratio) = ratio(self.device_width, self.device_height) else {
+            return MediaEvalResult::Unknown;
+          };
           let target_ratio = *w as f32 / *h as f32;
-          let actual_ratio = self.device_width / self.device_height;
-          compare_with_op(*op, actual_ratio, target_ratio)
+          MediaEvalResult::from_bool(compare_with_op(*op, actual_ratio, target_ratio))
         }
         (RangeFeature::Resolution, RangeValue::Resolution(res)) => {
+          if !self.device_pixel_ratio.is_finite() {
+            return MediaEvalResult::Unknown;
+          }
           let target_dppx = res.to_dppx();
-          compare_with_op(*op, self.device_pixel_ratio, target_dppx)
+          MediaEvalResult::from_bool(compare_with_op(*op, self.device_pixel_ratio, target_dppx))
         }
-        _ => false,
+        _ => MediaEvalResult::False,
       },
-      MediaFeature::Not(inner) => !self.evaluate_feature(inner.as_ref()),
-      MediaFeature::And(list) => list.iter().all(|f| self.evaluate_feature(f)),
-      MediaFeature::Or(list) => list.iter().any(|f| self.evaluate_feature(f)),
-      MediaFeature::Unknown { .. } => false,
+      MediaFeature::Not(inner) => self.evaluate_feature(inner.as_ref()).not(),
+      MediaFeature::And(list) => {
+        let mut seen_unknown = false;
+        for expr in list {
+          match self.evaluate_feature(expr) {
+            MediaEvalResult::True => {}
+            MediaEvalResult::False => return MediaEvalResult::False,
+            MediaEvalResult::Unknown => seen_unknown = true,
+          }
+        }
+        if seen_unknown {
+          MediaEvalResult::Unknown
+        } else {
+          MediaEvalResult::True
+        }
+      }
+      MediaFeature::Or(list) => {
+        let mut seen_unknown = false;
+        for expr in list {
+          match self.evaluate_feature(expr) {
+            MediaEvalResult::True => return MediaEvalResult::True,
+            MediaEvalResult::False => {}
+            MediaEvalResult::Unknown => seen_unknown = true,
+          }
+        }
+        if seen_unknown {
+          MediaEvalResult::Unknown
+        } else {
+          MediaEvalResult::False
+        }
+      }
+      MediaFeature::Unknown { .. } => MediaEvalResult::Unknown,
     }
   }
 
-  pub(crate) fn resolve_length(&self, length: &Length, inline_base: f32, block_base: f32) -> Option<f32> {
+  pub(crate) fn resolve_length(
+    &self,
+    length: &Length,
+    inline_base: f32,
+    block_base: f32,
+  ) -> Option<f32> {
     // For media/container queries, resolve lengths to pixels using the
     // context viewport and base font size (em/rem derived from the query context).
     use crate::style::values::LengthUnit;
@@ -2900,6 +3121,14 @@ fn compare_with_op(op: ComparisonOp, actual: f32, target: f32) -> bool {
     ComparisonOp::GreaterThanEqual => actual >= target - eps,
     ComparisonOp::Equal => (actual - target).abs() <= eps,
   }
+}
+
+fn ratio(width: f32, height: f32) -> Option<f32> {
+  if !width.is_finite() || !height.is_finite() || width < 0.0 || height <= 0.0 {
+    return None;
+  }
+  let ratio = width / height;
+  ratio.is_finite().then_some(ratio)
 }
 
 impl Default for MediaContext {

@@ -961,6 +961,55 @@ fn test_not_modifier() {
 }
 
 // ============================================================================
+// MQ4 Tri-valued Logic (Kleene logic) / Forward-compatibility
+// ============================================================================
+
+#[test]
+fn not_unknown_media_feature_does_not_match() {
+  let ctx = MediaContext::screen(800.0, 600.0);
+  let query =
+    MediaQuery::parse("not (unknown-feature: value)").expect("parse unknown feature query");
+  assert!(
+    !ctx.evaluate(&query),
+    "not (unknown-feature: value) should not match (unknown negates to unknown, then unknown -> false)"
+  );
+}
+
+#[test]
+fn unknown_media_feature_or_known_feature_matches_when_known_matches() {
+  let ctx = MediaContext::screen(800.0, 600.0);
+  let query =
+    MediaQuery::parse("(unknown-feature: value) or (min-width: 1px)").expect("parse OR query");
+  assert!(
+    ctx.evaluate(&query),
+    "(unknown-feature: value) or (min-width: 1px) should match when min-width matches"
+  );
+}
+
+#[test]
+fn unknown_media_feature_and_known_feature_does_not_match_even_when_known_matches() {
+  let ctx = MediaContext::screen(800.0, 600.0);
+  let query =
+    MediaQuery::parse("(unknown-feature: value) and (min-width: 1px)").expect("parse AND query");
+  assert!(
+    !ctx.evaluate(&query),
+    "(unknown-feature: value) and (min-width: 1px) should not match (unknown propagates)"
+  );
+}
+
+#[test]
+fn not_unresolved_media_feature_does_not_match() {
+  // Container query units are parsed but cannot be resolved in a media-query evaluation context.
+  // This should yield `unknown`, and `not unknown` must not match.
+  let ctx = MediaContext::screen(800.0, 600.0);
+  let query = MediaQuery::parse("not (min-width: 10cqw)").expect("parse container unit query");
+  assert!(
+    !ctx.evaluate(&query),
+    "not (min-width: 10cqw) should not match when the length cannot be resolved"
+  );
+}
+
+// ============================================================================
 // Edge Cases and Error Handling
 // ============================================================================
 
