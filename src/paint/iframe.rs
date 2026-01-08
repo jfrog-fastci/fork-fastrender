@@ -390,10 +390,10 @@ fn record_resource_error(
 
 pub(crate) fn render_iframe_srcdoc(
   html: &str,
-  src: Option<&str>,
+  _src: Option<&str>,
   referrer_policy: Option<ReferrerPolicy>,
   content_rect: Rect,
-  style: Option<&ComputedStyle>,
+  _style: Option<&ComputedStyle>,
   image_cache: &ImageCache,
   font_ctx: &FontContext,
   device_pixel_ratio: f32,
@@ -405,12 +405,10 @@ pub(crate) fn render_iframe_srcdoc(
     return None;
   }
 
-  let iframe_url = src
-    .map(str::trim)
-    .filter(|s| !s.is_empty())
-    .map(|s| image_cache.resolve_url(s))
-    .filter(|s| !s.trim().is_empty())
-    .unwrap_or_else(|| "about:srcdoc".to_string());
+  // The URL of an `srcdoc` browsing context is always `about:srcdoc`, even if the iframe element
+  // has an `src` attribute (used for base URL resolution). Using `about:srcdoc` here ensures
+  // diagnostics like depth-limit violations match browser behavior.
+  let iframe_url = "about:srcdoc".to_string();
   let context = image_cache.resource_context();
   let remaining_depth = context
     .as_ref()
@@ -434,7 +432,10 @@ pub(crate) fn render_iframe_srcdoc(
     return Some(image);
   }
 
-  let background = style.map(|s| s.background_color).unwrap_or(Rgba::WHITE);
+  // Render the nested document into a transparent surface. The iframe element's own background and
+  // border are painted by the outer document, and passing the element background here would cause
+  // it to be composited twice (especially visible for semi-transparent colors).
+  let background = Rgba::TRANSPARENT;
   let base_url = image_cache.base_url();
   let mut cache = image_cache.clone();
   if let Some(base_url) = base_url.clone() {
@@ -517,7 +518,7 @@ pub(crate) fn render_iframe_src(
   src: &str,
   referrer_policy: Option<ReferrerPolicy>,
   content_rect: Rect,
-  style: Option<&ComputedStyle>,
+  _style: Option<&ComputedStyle>,
   image_cache: &ImageCache,
   font_ctx: &FontContext,
   device_pixel_ratio: f32,
@@ -576,21 +577,15 @@ pub(crate) fn render_iframe_src(
   }
   let nested_depth = remaining_depth.saturating_sub(1);
   let fetcher = Arc::clone(image_cache.fetcher());
-  let background = style.map(|s| s.background_color).unwrap_or(Rgba::WHITE);
+  // See `render_iframe_srcdoc` for why iframe documents are rendered into a transparent surface.
+  let background = Rgba::TRANSPARENT;
 
   if is_about_blank(&resolved) {
     // about:blank is a browser-provided empty document. Treat it as an empty iframe instead of a
     // resource fetch so offline fixtures do not record spurious fetch errors.
     let device_width = ((width as f32) * device_pixel_ratio).round().max(1.0) as u32;
     let device_height = ((height as f32) * device_pixel_ratio).round().max(1.0) as u32;
-    let mut pixmap = new_pixmap(device_width, device_height)?;
-    let color = tiny_skia::Color::from_rgba8(
-      background.r,
-      background.g,
-      background.b,
-      background.alpha_u8(),
-    );
-    pixmap.fill(color);
+    let pixmap = new_pixmap(device_width, device_height)?;
     let image = image_data_from_pixmap(&pixmap, width, height);
     #[cfg(test)]
     record_iframe_cache_hit(false);
@@ -1202,7 +1197,7 @@ mod tests {
       css_height: 16,
       device_pixel_ratio_bits: 1.0f32.to_bits(),
       nested_depth: 2,
-      background: Rgba::WHITE.into(),
+      background: Rgba::TRANSPARENT.into(),
       policy_hash: policy_fingerprint(&ResourceAccessPolicy::default()),
       referrer_policy: None,
     };
