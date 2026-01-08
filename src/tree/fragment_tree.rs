@@ -1245,37 +1245,75 @@ impl FragmentNode {
   /// assert_eq!(hits.len(), 2);
   /// ```
   pub fn fragments_at_point(&self, point: Point) -> Vec<&FragmentNode> {
-    let mut result = Vec::new();
+    #[derive(Clone, Copy)]
+    enum VisitState {
+      Enter,
+      Exit,
+    }
 
-    let (clip_x, clip_y) = self
-      .style
-      .as_ref()
-      .map(|style| {
-        (
-          style.overflow_x != Overflow::Visible,
-          style.overflow_y != Overflow::Visible,
-        )
-      })
-      .unwrap_or((false, false));
-    let within_x = point.x >= self.bounds.min_x() && point.x <= self.bounds.max_x();
-    let within_y = point.y >= self.bounds.min_y() && point.y <= self.bounds.max_y();
+    struct Frame<'a> {
+      node: &'a FragmentNode,
+      point: Point,
+      state: VisitState,
+    }
 
-    if (!clip_x || within_x) && (!clip_y || within_y) {
-      // Convert the point into this fragment's local coordinate space for children.
-      let local_point = Point::new(point.x - self.bounds.x(), point.y - self.bounds.y());
+    let mut hits = Vec::new();
+    let mut stack = Vec::new();
+    stack.push(Frame {
+      node: self,
+      point,
+      state: VisitState::Enter,
+    });
 
-      // Check children first (reverse paint order = depth-first, reversed)
-      for child in self.children.iter().rev() {
-        result.extend(child.fragments_at_point(local_point));
+    while let Some(frame) = stack.pop() {
+      match frame.state {
+        VisitState::Enter => {
+          stack.push(Frame {
+            node: frame.node,
+            point: frame.point,
+            state: VisitState::Exit,
+          });
+
+          let (clip_x, clip_y) = frame
+            .node
+            .style
+            .as_ref()
+            .map(|style| {
+              (
+                style.overflow_x != Overflow::Visible,
+                style.overflow_y != Overflow::Visible,
+              )
+            })
+            .unwrap_or((false, false));
+          let within_x = frame.point.x >= frame.node.bounds.min_x()
+            && frame.point.x <= frame.node.bounds.max_x();
+          let within_y = frame.point.y >= frame.node.bounds.min_y()
+            && frame.point.y <= frame.node.bounds.max_y();
+
+          if (!clip_x || within_x) && (!clip_y || within_y) {
+            let local_point = Point::new(
+              frame.point.x - frame.node.bounds.x(),
+              frame.point.y - frame.node.bounds.y(),
+            );
+
+            for child in frame.node.children.iter() {
+              stack.push(Frame {
+                node: child,
+                point: local_point,
+                state: VisitState::Enter,
+              });
+            }
+          }
+        }
+        VisitState::Exit => {
+          if frame.node.contains_point(frame.point) {
+            hits.push(frame.node);
+          }
+        }
       }
     }
 
-    // Check this fragment
-    if self.contains_point(point) {
-      result.push(self);
-    }
-
-    result
+    hits
   }
 
   /// Iterates over all fragments in paint order (depth-first, pre-order)
@@ -1869,10 +1907,13 @@ mod tests {
     // Point in child
     let hits = parent.fragments_at_point(Point::new(25.0, 25.0));
     assert_eq!(hits.len(), 2); // Both child and parent
+    assert!(std::ptr::eq(hits[0], &parent.children[0]));
+    assert!(std::ptr::eq(hits[1], &parent));
 
     // Point only in parent
     let hits = parent.fragments_at_point(Point::new(5.0, 5.0));
     assert_eq!(hits.len(), 1); // Only parent
+    assert!(std::ptr::eq(hits[0], &parent));
   }
 
   #[test]
@@ -1897,7 +1938,32 @@ mod tests {
     // Point in overlapping region
     let hits = parent.fragments_at_point(Point::new(40.0, 40.0));
     assert_eq!(hits.len(), 3); // Both children and parent
-                               // child2 should come first (reverse paint order)
+    assert!(std::ptr::eq(hits[0], &parent.children[1]));
+    assert!(std::ptr::eq(hits[1], &parent.children[0]));
+    assert!(std::ptr::eq(hits[2], &parent));
+  }
+
+  #[test]
+  fn test_fragments_at_point_deep_chain_stack_safe() {
+    const DEPTH: usize = 20_000;
+    let handle = std::thread::Builder::new()
+      .stack_size(256 * 1024)
+      .spawn(|| {
+        let mut root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![]);
+        for _ in 0..DEPTH {
+          root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![root]);
+        }
+
+        let hits_len = {
+          let hits = root.fragments_at_point(Point::new(0.5, 0.5));
+          hits.len()
+        };
+        assert_eq!(hits_len, DEPTH + 1);
+
+        std::mem::forget(root);
+      })
+      .expect("spawn hit-test thread");
+    handle.join().expect("hit-test thread join");
   }
 
   #[test]
