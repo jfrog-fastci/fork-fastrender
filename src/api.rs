@@ -13428,6 +13428,14 @@ fn collect_fragment_sizes(fragment: &FragmentNode, sizes: &mut HashMap<usize, (f
     entry.1 = entry.1.max(fragment.bounds.height());
   }
 
+  match &fragment.content {
+    FragmentContent::RunningAnchor { snapshot, .. }
+    | FragmentContent::FootnoteAnchor { snapshot } => {
+      collect_fragment_sizes(snapshot, sizes);
+    }
+    _ => {}
+  }
+
   for child in fragment.children.iter() {
     collect_fragment_sizes(child, sizes);
   }
@@ -14015,6 +14023,9 @@ fn build_container_query_context(
       }
     }
 
+    if let Some(body) = node.footnote_body.as_deref() {
+      walk_containers(body, sizes, styles, containers, child_base, viewport);
+    }
     for child in node.children.iter() {
       walk_containers(child, sizes, styles, containers, child_base, viewport);
     }
@@ -14891,6 +14902,111 @@ pub(crate) fn render_html_with_shared_resources(
       .containers
       .get(&7)
       .expect("expected container from additional fragments to be registered");
+    assert!(
+      info.inline_size > 0.0,
+      "expected non-zero container sizes, got {info:?}"
+    );
+  }
+
+  #[test]
+  fn build_container_query_context_collects_sizes_from_footnote_anchor_snapshots() {
+    let viewport = Size::new(800.0, 600.0);
+    let media_ctx = MediaContext::screen(viewport.width, viewport.height);
+
+    let mut footnote_style = ComputedStyle::default();
+    footnote_style.container_type = crate::style::types::ContainerType::InlineSize;
+    let footnote_style = Arc::new(footnote_style);
+    let mut footnote_body =
+      BoxNode::new_block(footnote_style.clone(), FormattingContextType::Block, vec![]);
+    footnote_body.styled_node_id = Some(7);
+
+    let mut call = BoxNode::new_inline(Arc::new(ComputedStyle::default()), vec![]);
+    call.footnote_body = Some(Box::new(footnote_body));
+
+    let mut root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![call],
+    );
+    root.styled_node_id = Some(1);
+    let box_tree = BoxTree::new(root);
+    let root_id = box_tree.root.id;
+    let body_id = box_tree
+      .root
+      .children
+      .first()
+      .and_then(|call| call.footnote_body.as_deref())
+      .map(|body| body.id)
+      .expect("expected footnote body id");
+
+    let styled = StyledNode {
+      node_id: 1,
+      node: DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: Vec::new(),
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: Default::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![StyledNode {
+        node_id: 7,
+        node: DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: String::new(),
+            attributes: Vec::new(),
+          },
+          children: Vec::new(),
+        },
+        styles: footnote_style,
+        starting_styles: Default::default(),
+        before_styles: None,
+        after_styles: None,
+        marker_styles: None,
+        placeholder_styles: None,
+        file_selector_button_styles: None,
+        footnote_call_styles: None,
+        footnote_marker_styles: None,
+        first_line_styles: None,
+        first_letter_styles: None,
+        slider_thumb_styles: None,
+        slider_track_styles: None,
+        assigned_slot: None,
+        slotted_node_ids: Vec::new(),
+        children: Vec::new(),
+      }],
+    };
+
+    let snapshot =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 50.0), body_id, vec![]);
+    let anchor = FragmentNode::new_footnote_anchor(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), snapshot);
+    let fragments = FragmentTree::with_viewport(
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 800.0, 600.0), root_id, vec![anchor]),
+      viewport,
+    );
+
+    let ctx =
+      super::build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let info = ctx
+      .containers
+      .get(&7)
+      .expect("expected footnote-body containers to be registered");
     assert!(
       info.inline_size > 0.0,
       "expected non-zero container sizes, got {info:?}"
