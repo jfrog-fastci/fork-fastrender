@@ -6925,6 +6925,69 @@ impl Painter {
     }
   }
 
+  fn paint_with_opacity_layer<F>(&mut self, opacity: f32, bounds: Rect, clip_mask: Option<&Mask>, paint: F)
+  where
+    F: FnOnce(&mut Painter),
+  {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if opacity <= 0.0 {
+      return;
+    }
+    if opacity >= 1.0 - 1e-6 {
+      paint(self);
+      return;
+    }
+
+    let device_bounds = self.device_rect(bounds);
+    let width = device_bounds.width().ceil().max(0.0) as u32;
+    let height = device_bounds.height().ceil().max(0.0) as u32;
+    if width == 0 || height == 0 {
+      return;
+    }
+
+    let layer = match new_pixmap(width, height) {
+      Some(p) => {
+        if self.diagnostics_enabled {
+          record_layer_allocation(width, height);
+        }
+        p
+      }
+      None => return,
+    };
+
+    let offset = Point::new(bounds.min_x(), bounds.min_y());
+    let mut layer_painter = Painter {
+      pixmap: layer,
+      scale: self.scale,
+      origin_offset_css: offset,
+      css_width: self.css_width,
+      css_height: self.css_height,
+      background: Rgba::new(0, 0, 0, 0.0),
+      shaper: ShapingPipeline::new(),
+      font_ctx: self.font_ctx.clone(),
+      image_cache: self.image_cache.clone(),
+      svg_id_defs: self.svg_id_defs.clone(),
+      text_shape_cache: Arc::clone(&self.text_shape_cache),
+      trace: self.trace.clone(),
+      scroll_state: self.scroll_state.clone(),
+      max_iframe_depth: self.max_iframe_depth,
+      gradient_cache: self.gradient_cache.clone(),
+      gradient_stats: GradientStats::default(),
+      diagnostics_enabled: self.diagnostics_enabled,
+    };
+
+    paint(&mut layer_painter);
+    self.gradient_stats.merge(&layer_painter.gradient_stats);
+    let layer_pixmap = layer_painter.pixmap;
+
+    let mut paint = PixmapPaint::default();
+    paint.opacity = opacity;
+    let transform = Transform::from_translate(self.device_x(offset.x), self.device_y(offset.y));
+    self
+      .pixmap
+      .draw_pixmap(0, 0, layer_pixmap.as_ref(), &paint, transform, clip_mask);
+  }
+
   fn paint_form_control(
     &mut self,
     control: &FormControl,
@@ -7997,6 +8060,169 @@ impl Painter {
           true
         };
 
+        let opacity_layer_bounds = |rect: Rect, style: &ComputedStyle| -> Rect {
+          if clip_mask.is_some() {
+            return padding_rect;
+          }
+
+          let percentage_base = rect.width().max(0.0);
+          let border_left = resolve_length_for_paint(
+            &style.used_border_left_width(),
+            style.font_size,
+            style.root_font_size,
+            percentage_base,
+            viewport,
+          )
+          .max(0.0)
+            / 2.0;
+          let border_right = resolve_length_for_paint(
+            &style.used_border_right_width(),
+            style.font_size,
+            style.root_font_size,
+            percentage_base,
+            viewport,
+          )
+          .max(0.0)
+            / 2.0;
+          let border_top = resolve_length_for_paint(
+            &style.used_border_top_width(),
+            style.font_size,
+            style.root_font_size,
+            percentage_base,
+            viewport,
+          )
+          .max(0.0)
+            / 2.0;
+          let border_bottom = resolve_length_for_paint(
+            &style.used_border_bottom_width(),
+            style.font_size,
+            style.root_font_size,
+            percentage_base,
+            viewport,
+          )
+          .max(0.0)
+            / 2.0;
+
+          let mut left = border_left;
+          let mut right = border_right;
+          let mut top = border_top;
+          let mut bottom = border_bottom;
+
+          for shadow in &style.box_shadow {
+            if shadow.inset {
+              continue;
+            }
+            let offset_x = resolve_length_for_paint(
+              &shadow.offset_x,
+              style.font_size,
+              style.root_font_size,
+              percentage_base,
+              viewport,
+            );
+            let offset_y = resolve_length_for_paint(
+              &shadow.offset_y,
+              style.font_size,
+              style.root_font_size,
+              percentage_base,
+              viewport,
+            );
+            let blur = resolve_length_for_paint(
+              &shadow.blur_radius,
+              style.font_size,
+              style.root_font_size,
+              percentage_base,
+              viewport,
+            )
+            .max(0.0);
+            let spread = resolve_length_for_paint(
+              &shadow.spread_radius,
+              style.font_size,
+              style.root_font_size,
+              percentage_base,
+              viewport,
+            )
+            .max(-1e6);
+            if !offset_x.is_finite() || !offset_y.is_finite() || !blur.is_finite() || !spread.is_finite() {
+              continue;
+            }
+            let delta = (blur.abs() * 3.0 + spread).max(0.0);
+            left = left.max((delta - offset_x).max(0.0));
+            right = right.max((delta + offset_x).max(0.0));
+            top = top.max((delta - offset_y).max(0.0));
+            bottom = bottom.max((delta + offset_y).max(0.0));
+          }
+
+          Rect::from_xywh(
+            rect.x() - left,
+            rect.y() - top,
+            (rect.width() + left + right).max(0.0),
+            (rect.height() + top + bottom).max(0.0),
+          )
+        };
+
+        let paint_track = |painter: &mut Painter,
+                           clip_mask: Option<&Mask>,
+                           track_rect: Rect,
+                           track_height: f32| {
+          if let Some(track_style) = track_style {
+            let track_radii = resolve_border_radii(Some(track_style), track_rect);
+            paint_outset_box_shadows(painter, track_rect, track_radii, track_style, clip_mask);
+            painter.paint_background(
+              track_rect.x(),
+              track_rect.y(),
+              track_rect.width(),
+              track_rect.height(),
+              track_style,
+            );
+          } else {
+            let radii = BorderRadii::uniform(track_height / 2.0);
+            let device_track_rect = painter.device_rect(track_rect);
+            let device_radii = painter.device_radii(radii);
+            fill_rounded_rect_masked(
+              &mut painter.pixmap,
+              device_track_rect,
+              device_radii,
+              Rgba::rgb(190, 190, 190),
+              clip_mask,
+            );
+          }
+
+          if !appearance_none {
+            let filled_rect = Rect::from_xywh(
+              track_rect.x(),
+              track_rect.y(),
+              (knob_center_x - track_rect.x()).max(0.0),
+              track_rect.height(),
+            );
+            if filled_rect.width() > 0.0 {
+              let radii = BorderRadii::uniform(track_height / 2.0)
+                .clamped(filled_rect.width(), filled_rect.height());
+              let device_fill_rect = painter.device_rect(filled_rect);
+              let device_radii = painter.device_radii(radii);
+              fill_rounded_rect_masked(
+                &mut painter.pixmap,
+                device_fill_rect,
+                device_radii,
+                muted_accent,
+                clip_mask,
+              );
+            }
+          }
+
+          if let Some(track_style) = track_style {
+            let device_track_rect = painter.device_rect(track_rect);
+            let device_radii = painter.device_radii(resolve_border_radii(Some(track_style), track_rect));
+            paint_rounded_border(
+              painter,
+              track_rect,
+              device_track_rect,
+              device_radii,
+              track_style,
+              clip_mask,
+            );
+          }
+        };
+
         if should_paint_track {
           let track_height = track_style
             .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
@@ -8007,69 +8233,26 @@ impl Painter {
             let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
             let track_rect =
               Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
-
             if let Some(track_style) = track_style {
-              let track_radii = resolve_border_radii(Some(track_style), track_rect);
-              paint_outset_box_shadows(self, track_rect, track_radii, track_style, clip_mask);
-              self.paint_background(
-                track_rect.x(),
-                track_rect.y(),
-                track_rect.width(),
-                track_rect.height(),
-                track_style,
-              );
-            } else {
-              let radii = BorderRadii::uniform(track_height / 2.0);
-              let device_track_rect = self.device_rect(track_rect);
-              let device_radii = self.device_radii(radii);
-              fill_rounded_rect_masked(
-                &mut self.pixmap,
-                device_track_rect,
-                device_radii,
-                Rgba::rgb(190, 190, 190),
-                clip_mask,
-              );
-            }
-
-            if !appearance_none {
-              let filled_rect = Rect::from_xywh(
-                track_rect.x(),
-                track_rect.y(),
-                (knob_center_x - track_rect.x()).max(0.0),
-                track_rect.height(),
-              );
-              if filled_rect.width() > 0.0 {
-                let radii = BorderRadii::uniform(track_height / 2.0)
-                  .clamped(filled_rect.width(), filled_rect.height());
-                let device_fill_rect = self.device_rect(filled_rect);
-                let device_radii = self.device_radii(radii);
-                fill_rounded_rect_masked(
-                  &mut self.pixmap,
-                  device_fill_rect,
-                  device_radii,
-                  muted_accent,
-                  clip_mask,
-                );
+              let track_opacity = track_style.opacity.clamp(0.0, 1.0);
+              if track_opacity <= 0.0 {
+                // Fully transparent track pseudo-element.
+              } else if track_opacity < 1.0 - 1e-6 {
+                let bounds = opacity_layer_bounds(track_rect, track_style);
+                self.paint_with_opacity_layer(track_opacity, bounds, clip_mask, |painter| {
+                  paint_track(painter, None, track_rect, track_height);
+                });
+              } else {
+                paint_track(self, clip_mask, track_rect, track_height);
               }
-            }
-
-            if let Some(track_style) = track_style {
-              let device_track_rect = self.device_rect(track_rect);
-              let device_radii =
-                self.device_radii(resolve_border_radii(Some(track_style), track_rect));
-              paint_rounded_border(
-                self,
-                track_rect,
-                device_track_rect,
-                device_radii,
-                track_style,
-                clip_mask,
-              );
+            } else {
+              paint_track(self, clip_mask, track_rect, track_height);
             }
           }
         }
 
         if let Some(thumb_style) = thumb_style {
+          let thumb_opacity = thumb_style.opacity.clamp(0.0, 1.0);
           let mut style_for_thumb;
           let style_for_thumb = if border_radius_is_zero(thumb_style) {
             style_for_thumb = (*thumb_style).clone();
@@ -8089,25 +8272,39 @@ impl Painter {
           if knob_radii.is_zero() {
             knob_radii = BorderRadii::uniform((knob_width.min(knob_height)) / 2.0);
           }
-          paint_outset_box_shadows(self, knob_rect, knob_radii, style_for_thumb, clip_mask);
 
-          let device_knob_rect = self.device_rect(knob_rect);
-          let device_radii = self.device_radii(knob_radii);
-          fill_rounded_rect_masked(
-            &mut self.pixmap,
-            device_knob_rect,
-            device_radii,
-            style_for_thumb.background_color,
-            clip_mask,
-          );
-          paint_rounded_border(
-            self,
-            knob_rect,
-            device_knob_rect,
-            device_radii,
-            style_for_thumb,
-            clip_mask,
-          );
+          let paint_thumb = |painter: &mut Painter, clip_mask: Option<&Mask>| {
+            paint_outset_box_shadows(painter, knob_rect, knob_radii, style_for_thumb, clip_mask);
+
+            let device_knob_rect = painter.device_rect(knob_rect);
+            let device_radii = painter.device_radii(knob_radii);
+            fill_rounded_rect_masked(
+              &mut painter.pixmap,
+              device_knob_rect,
+              device_radii,
+              style_for_thumb.background_color,
+              clip_mask,
+            );
+            paint_rounded_border(
+              painter,
+              knob_rect,
+              device_knob_rect,
+              device_radii,
+              style_for_thumb,
+              clip_mask,
+            );
+          };
+
+          if thumb_opacity <= 0.0 {
+            // Fully transparent thumb pseudo-element.
+          } else if thumb_opacity < 1.0 - 1e-6 {
+            let bounds = opacity_layer_bounds(knob_rect, style_for_thumb);
+            self.paint_with_opacity_layer(thumb_opacity, bounds, clip_mask, |painter| {
+              paint_thumb(painter, None);
+            });
+          } else {
+            paint_thumb(self, clip_mask);
+          }
         } else {
           let knob_radius = (knob_width.min(knob_height)) / 2.0;
           let knob_center_x = self.device_x(knob_center_x);

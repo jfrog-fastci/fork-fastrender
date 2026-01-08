@@ -101,6 +101,7 @@ This work is tracked in the capability map under `alg.forms.appearance-none`.
   - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
   - `tests/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
   - `tests/paint/range_track_pseudo_element.rs` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
+  - `tests/paint/range_pseudo_opacity.rs` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
 - Offline page fixtures:
   - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including vendor slider pseudos like `::-webkit-slider-thumb` / `::-moz-range-thumb`).
 

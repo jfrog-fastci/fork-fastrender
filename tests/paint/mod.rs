@@ -87,6 +87,7 @@ mod preserve_3d_test;
 mod preserve_3d_warp;
 mod projective_mapping;
 mod range_track_pseudo_element;
+mod range_pseudo_opacity;
 mod rasterize_test;
 mod responsive_srcset_golden;
 mod responsive_width_srcset_golden;

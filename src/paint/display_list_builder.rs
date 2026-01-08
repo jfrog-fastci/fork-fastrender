@@ -9162,75 +9162,104 @@ impl DisplayListBuilder {
         };
 
         if should_paint_track {
-          let track_height = track_style
-            .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
-            .filter(|px| px.is_finite() && *px > 0.0)
-            .unwrap_or_else(|| 4.0_f32.min(padding_rect.height()));
-          if track_height > 0.0 {
-            let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
-            let track_rect =
-              Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
+          let track_opacity = track_style
+            .map(|style| style.opacity.clamp(0.0, 1.0))
+            .unwrap_or(1.0);
+          let push_track_opacity =
+            track_style.is_some() && track_opacity > 0.0 && track_opacity < 1.0 - f32::EPSILON;
+          if push_track_opacity {
+            self.push_opacity(track_opacity);
+          }
+          if track_style.is_some() && track_opacity <= 0.0 {
+            // Fully transparent track pseudo-element.
+          } else {
+            let track_height = track_style
+              .and_then(|style| {
+                style.height.map(|len| resolve_px(style, len, padding_rect.height()))
+              })
+              .filter(|px| px.is_finite() && *px > 0.0)
+              .unwrap_or_else(|| 4.0_f32.min(padding_rect.height()));
+            if track_height > 0.0 {
+              let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
+              let track_rect =
+                Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
 
-            if let Some(track_style) = track_style {
-              self.emit_box_shadows_from_style(track_rect, track_style, false);
-              self.emit_background_from_style(track_rect, track_style);
-            } else {
-              self
-                .list
-                .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-                  rect: track_rect,
-                  color: Rgba::rgb(190, 190, 190),
-                  radii: BorderRadii::uniform(track_height / 2.0),
-                }));
-            }
-
-            if !appearance_none {
-              let filled_rect = Rect::from_xywh(
-                track_rect.x(),
-                track_rect.y(),
-                (knob_center_x - track_rect.x()).max(0.0),
-                track_rect.height(),
-              );
-              if filled_rect.width() > 0.0 {
-                let radii = BorderRadii::uniform(track_height / 2.0)
-                  .clamped(filled_rect.width(), filled_rect.height());
+              if let Some(track_style) = track_style {
+                self.emit_box_shadows_from_style(track_rect, track_style, false);
+                self.emit_background_from_style(track_rect, track_style);
+              } else {
                 self
                   .list
                   .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-                    rect: filled_rect,
-                    color: muted_accent,
-                    radii,
+                    rect: track_rect,
+                    color: Rgba::rgb(190, 190, 190),
+                    radii: BorderRadii::uniform(track_height / 2.0),
                   }));
               }
-            }
 
-            if let Some(track_style) = track_style {
-              self.emit_box_shadows_from_style(track_rect, track_style, true);
-              self.emit_border_from_style(track_rect, track_style);
+              if !appearance_none {
+                let filled_rect = Rect::from_xywh(
+                  track_rect.x(),
+                  track_rect.y(),
+                  (knob_center_x - track_rect.x()).max(0.0),
+                  track_rect.height(),
+                );
+                if filled_rect.width() > 0.0 {
+                  let radii = BorderRadii::uniform(track_height / 2.0)
+                    .clamped(filled_rect.width(), filled_rect.height());
+                  self
+                    .list
+                    .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+                      rect: filled_rect,
+                      color: muted_accent,
+                      radii,
+                    }));
+                }
+              }
+
+              if let Some(track_style) = track_style {
+                self.emit_box_shadows_from_style(track_rect, track_style, true);
+                self.emit_border_from_style(track_rect, track_style);
+              }
             }
+          }
+          if push_track_opacity {
+            self.pop_opacity();
           }
         }
 
         if let Some(thumb_style) = thumb_style {
-          let mut style_for_thumb;
-          let style_for_thumb = if Self::border_radius_is_zero(thumb_style) {
-            style_for_thumb = (*thumb_style).clone();
-            let radius = knob_width.min(knob_height) / 2.0;
-            let corner =
-              crate::style::types::BorderCornerRadius::uniform(Length::px(radius.max(0.0)));
-            style_for_thumb.border_top_left_radius = corner;
-            style_for_thumb.border_top_right_radius = corner;
-            style_for_thumb.border_bottom_right_radius = corner;
-            style_for_thumb.border_bottom_left_radius = corner;
-            &style_for_thumb
+          let thumb_opacity = thumb_style.opacity.clamp(0.0, 1.0);
+          let push_thumb_opacity = thumb_opacity > 0.0 && thumb_opacity < 1.0 - f32::EPSILON;
+          if push_thumb_opacity {
+            self.push_opacity(thumb_opacity);
+          }
+          if thumb_opacity <= 0.0 {
+            // Fully transparent thumb pseudo-element.
           } else {
-            thumb_style
-          };
+            let mut style_for_thumb;
+            let style_for_thumb = if Self::border_radius_is_zero(thumb_style) {
+              style_for_thumb = (*thumb_style).clone();
+              let radius = knob_width.min(knob_height) / 2.0;
+              let corner =
+                crate::style::types::BorderCornerRadius::uniform(Length::px(radius.max(0.0)));
+              style_for_thumb.border_top_left_radius = corner;
+              style_for_thumb.border_top_right_radius = corner;
+              style_for_thumb.border_bottom_right_radius = corner;
+              style_for_thumb.border_bottom_left_radius = corner;
+              &style_for_thumb
+            } else {
+              thumb_style
+            };
 
-          self.emit_box_shadows_from_style(knob_rect, style_for_thumb, false);
-          self.emit_background_from_style(knob_rect, style_for_thumb);
-          self.emit_box_shadows_from_style(knob_rect, style_for_thumb, true);
-          self.emit_border_from_style(knob_rect, style_for_thumb);
+            self.emit_box_shadows_from_style(knob_rect, style_for_thumb, false);
+            self.emit_background_from_style(knob_rect, style_for_thumb);
+            self.emit_box_shadows_from_style(knob_rect, style_for_thumb, true);
+            self.emit_border_from_style(knob_rect, style_for_thumb);
+          }
+          if push_thumb_opacity {
+            self.pop_opacity();
+          }
         } else {
           let knob_radius = knob_width.min(knob_height) / 2.0;
           self
