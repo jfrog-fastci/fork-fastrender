@@ -231,9 +231,9 @@ fn backdrop_root_matrix_mix_blend_mode_isolation() {
       expect_black: false,
     },
     Case {
-      name: "mix-blend-mode (ancestor)",
+      name: "mix-blend-mode (ancestor) (non-isolated)",
       root_style: "mix-blend-mode: multiply;",
-      expect_black: false,
+      expect_black: true,
     },
   ];
 
