@@ -125,6 +125,14 @@ impl HeaderCaptureServer {
                 b"<!doctype html><body>frame</body>".to_vec(),
               ),
               "/style.css" => ("200 OK", "text/css; charset=utf-8", b"body { }".to_vec()),
+              "/style_import_policy.css" => (
+                "200 OK",
+                "text/css; charset=utf-8",
+                br#"@import url("import.css");
+@font-face { font-family: "TestFont"; src: url("font.woff2"); }
+body { font-family: "TestFont"; }"#
+                  .to_vec(),
+              ),
               "/style_import.css" => (
                 "200 OK",
                 "text/css; charset=utf-8",
@@ -149,6 +157,9 @@ body { font-family: "TestFont"; }"#
               } else {
                 extra_headers.push_str("Access-Control-Allow-Origin: *\r\n");
               }
+            }
+            if path == "/style_import_policy.css" {
+              extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
 
             let response = format!(
@@ -662,6 +673,63 @@ fn stylesheet_referrerpolicy_strict_origin_when_cross_origin_downgrade_omits_ref
       header_value(&req.headers, "referer").as_deref(),
       Some(stylesheet_url.as_str()),
       "expected nested request Referer to be the importing stylesheet URL for {path}; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
+fn stylesheet_response_referrer_policy_no_referrer_suppresses_referer_for_imports_and_fonts() {
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_response_referrer_policy_no_referrer_suppresses_referer_for_imports_and_fonts",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_import_policy.css">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_import_policy.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let stylesheet_req = requests
+    .iter()
+    .find(|req| req.path == "/style_import_policy.css")
+    .expect("expected /style_import_policy.css request");
+  assert_eq!(
+    header_value(&stylesheet_req.headers, "referer").as_deref(),
+    Some("http://doc.test/"),
+    "expected stylesheet request Referer to be document origin; got:\n{}",
+    stylesheet_req.headers
+  );
+
+  for path in ["/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert!(
+      header_value(&req.headers, "referer").is_none(),
+      "expected Referer header to be omitted for {path}; got:\n{}",
       req.headers
     );
   }
