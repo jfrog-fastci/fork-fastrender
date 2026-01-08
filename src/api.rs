@@ -9657,15 +9657,30 @@ impl FastRender {
     diagnostics: &mut RenderDiagnostics,
     deadline: Option<&RenderDeadline>,
   ) -> std::result::Result<String, RenderError> {
-    self.inline_stylesheets(
-      html,
-      base_url,
-      media_type,
-      css_limit,
-      diagnostics,
-      deadline,
-      None,
-    )
+    let referrer_policy =
+      crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
+    let document_url = if base_url.trim().is_empty() {
+      None
+    } else {
+      Some(base_url)
+    };
+    let resource_context = self.build_resource_context(document_url, None, referrer_policy);
+
+    runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
+      Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
+        self.fetcher.as_ref(),
+        self.runtime_toggles.as_ref(),
+        html,
+        base_url,
+        media_type,
+        css_limit,
+        Some(&resource_context),
+        diagnostics,
+        deadline,
+        None,
+        StylesheetInlineBudget::default(),
+      )
+    })
   }
 
   /// Fetch linked stylesheets using the renderer's fetcher with an explicit resource context.
@@ -9679,19 +9694,21 @@ impl FastRender {
     diagnostics: &mut RenderDiagnostics,
     deadline: Option<&RenderDeadline>,
   ) -> std::result::Result<String, RenderError> {
-    Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
-      self.fetcher.as_ref(),
-      self.runtime_toggles.as_ref(),
-      html,
-      base_url,
-      media_type,
-      css_limit,
-      resource_context,
-      diagnostics,
-      deadline,
-      None,
-      StylesheetInlineBudget::default(),
-    )
+    runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
+      Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
+        self.fetcher.as_ref(),
+        self.runtime_toggles.as_ref(),
+        html,
+        base_url,
+        media_type,
+        css_limit,
+        resource_context,
+        diagnostics,
+        deadline,
+        None,
+        StylesheetInlineBudget::default(),
+      )
+    })
   }
 
   /// Fetch linked stylesheets using an arbitrary fetcher and inject them into the HTML.

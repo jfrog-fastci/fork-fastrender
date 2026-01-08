@@ -13,6 +13,7 @@ mod test_public_api {
   use fastrender::debug::runtime::RuntimeToggles;
   use fastrender::dom::DomCompatibilityMode;
   use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy};
+  use fastrender::style::media::MediaType;
   use fastrender::{
     FontConfig, LayoutParallelism, PaintParallelism, RenderOptions, ResourceFetcher, ResourceKind,
     ResourcePolicy, Rgba,
@@ -709,6 +710,134 @@ mod test_public_api {
     let pixmap = prepared.paint(0.0, 0.0, None, None).expect("paint");
     assert_eq!(pixmap.width(), 32);
     assert_eq!(pixmap.height(), 32);
+  }
+
+  #[test]
+  fn test_inline_stylesheets_for_document_respects_resource_policy_for_stylesheets() {
+    #[derive(Clone, Default)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+        panic!("unexpected fetch for {url}");
+      }
+    }
+
+    let base_url = "https://origin.test/page.html";
+    let html = r#"
+        <html>
+            <head>
+                <link rel="stylesheet" href="https://example.com/blocked.css">
+            </head>
+            <body>
+                <div>OK</div>
+            </body>
+        </html>
+    "#;
+
+    let fetcher = Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>;
+    let config = deterministic_config()
+      .with_base_url(base_url)
+      .with_same_origin_subresources(true);
+    let renderer = FastRender::with_config_and_fetcher(config, Some(fetcher))
+      .expect("create deterministic renderer with panic fetcher");
+
+    let mut diagnostics = fastrender::RenderDiagnostics::default();
+    let output = renderer
+      .inline_stylesheets_for_document(
+        html,
+        base_url,
+        MediaType::Screen,
+        None,
+        &mut diagnostics,
+        None,
+      )
+      .expect("inline stylesheets");
+    assert_eq!(output, html.to_string());
+    assert!(
+      diagnostics.fetch_errors.iter().any(|e| {
+        e.kind == ResourceKind::Stylesheet
+          && e.url == "https://example.com/blocked.css"
+          && e.message.contains("Blocked cross-origin subresource")
+      }),
+      "expected policy-blocked stylesheet to be recorded in diagnostics, got: {:?}",
+      diagnostics.fetch_errors
+    );
+  }
+
+  #[test]
+  fn test_inline_stylesheets_for_document_respects_runtime_toggles_for_preload_links() {
+    #[derive(Clone, Default)]
+    struct PreloadToggleFetcher {
+      fetched_urls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ResourceFetcher for PreloadToggleFetcher {
+      fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+        if let Ok(mut guard) = self.fetched_urls.lock() {
+          guard.push(url.to_string());
+        }
+        if url == "https://example.com/preload.css" {
+          panic!("unexpected fetch for {url}");
+        }
+        if url != "https://example.com/a.css" {
+          panic!("unexpected fetch for {url}");
+        }
+        Ok(FetchedResource::with_final_url(
+          b"div { color: rgb(1, 2, 3); }".to_vec(),
+          Some("text/css".to_string()),
+          Some(url.to_string()),
+        ))
+      }
+    }
+
+    let base_url = "https://example.com/page.html";
+    let html = r#"<link rel="stylesheet" href="a.css"><link rel="preload" as="style" href="preload.css"><div>OK</div>"#;
+
+    let fetched_urls = Arc::new(Mutex::new(Vec::new()));
+    let fetcher = Arc::new(PreloadToggleFetcher {
+      fetched_urls: Arc::clone(&fetched_urls),
+    }) as Arc<dyn ResourceFetcher>;
+    let mut toggles = HashMap::new();
+    toggles.insert("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string());
+    toggles.insert("FASTR_FETCH_PRELOAD_STYLESHEETS".to_string(), "0".to_string());
+    let config = deterministic_config()
+      .with_base_url(base_url)
+      .with_runtime_toggles(RuntimeToggles::from_map(toggles));
+    assert!(
+      !config
+        .runtime_toggles
+        .truthy_with_default("FASTR_FETCH_PRELOAD_STYLESHEETS", true),
+      "test requires FASTR_FETCH_PRELOAD_STYLESHEETS=0"
+    );
+    let renderer = FastRender::with_config_and_fetcher(config, Some(fetcher))
+      .expect("create deterministic renderer with panic fetcher");
+
+    let mut diagnostics = fastrender::RenderDiagnostics::default();
+    let output = renderer
+      .inline_stylesheets_for_document(
+        html,
+        base_url,
+        MediaType::Screen,
+        None,
+        &mut diagnostics,
+        None,
+      )
+      .expect("inline stylesheets");
+    assert!(
+      output.starts_with("<style>"),
+      "expected stylesheet injection from rel=stylesheet link (output={output:?})"
+    );
+    assert_eq!(diagnostics.fetch_errors.len(), 0);
+
+    let fetched = fetched_urls
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+      fetched.as_slice(),
+      ["https://example.com/a.css"],
+      "expected preload stylesheet to be ignored when FASTR_FETCH_PRELOAD_STYLESHEETS=0"
+    );
   }
 
   #[test]
