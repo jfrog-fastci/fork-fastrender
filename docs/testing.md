@@ -218,6 +218,14 @@ cargo xtask fixture-chrome-diff
 
 The standalone workflow (`cargo xtask capture-accuracy-fixtures`) is also available when you want to tune selection thresholds (`--min-diff-percent`, `--top`) or reuse an existing warmed cache directory.
 
+## test262 parser harness (optional)
+
+When working on JavaScript parsing (via the `engines/ecma-rs` submodule), the repository provides an **optional** GitHub Actions workflow that runs the `test262` parser harness and uploads a JSON report artifact:
+
+- Workflow: `.github/workflows/test262_parser.yml`
+- Artifact: `test262_parser_report`
+- Report path inside the artifact: `target/js/test262-parser.json`
+
 ## WPT harness (local, visual)
 
 There is a self-contained WPT-style runner under `tests/wpt/` for local “render and compare” tests. It does not talk to upstream WPT and never fetches from the network.

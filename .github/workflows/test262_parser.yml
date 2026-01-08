@@ -1,0 +1,85 @@
+name: test262 parser report (artifact)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly report so maintainers can grab a CI-produced JSON artifact without running the suite locally.
+    - cron: "0 7 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  REPORT_PATH: target/js/test262-parser.json
+
+jobs:
+  test262-parser:
+    name: test262 parser report
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: test262-parser-${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: test262-parser-${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: test262-parser-${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Initialize ecma-rs submodule (HTTPS)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # `.gitmodules` points `engines/ecma-rs` at an SSH URL; override it so CI doesn't require SSH keys.
+          git config submodule.engines/ecma-rs.url https://github.com/wilsonzlin/ecma-rs.git
+          git submodule update --init --recursive engines/ecma-rs
+
+      - name: Run test262 parser harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${REPORT_PATH}")"
+          chmod +x scripts/run_limited.sh
+          scripts/run_limited.sh --as 64G -- \
+            cargo run -p xtask --release --locked -- \
+              js test262-parser \
+              --fail-on new \
+              --report "${REPORT_PATH}"
+
+      - name: Verify report JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "${REPORT_PATH}"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("target/js/test262-parser.json")
+          data = json.loads(path.read_text())
+          assert data is not None, "report JSON parsed to null"
+          PY
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test262_parser_report
+          path: ${{ env.REPORT_PATH }}
+          if-no-files-found: error
