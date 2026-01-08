@@ -1,6 +1,7 @@
 /fetches/
 target/
 target_pages/
+/tests/ref/fixtures/**/failures/
 .venv/
 __pycache__/
 *.py[cod]
