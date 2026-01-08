@@ -504,30 +504,47 @@ pub(crate) fn gaussian_kernel(sigma: f32) -> (Vec<f32>, usize) {
   (kernel, radius)
 }
 
-fn gaussian_kernel_fixed(sigma: f32) -> (Vec<i32>, usize, i32) {
+fn gaussian_kernel_fixed(sigma: f32) -> Result<(Vec<i32>, usize, i32), RenderError> {
   let sigma = sigma.abs();
   let radius = (sigma * 3.0).ceil() as usize;
   if radius == 0 {
-    return (Vec::new(), 0, 0);
+    return Ok((Vec::new(), 0, 0));
   }
 
   // Fixed-point scale chosen to keep accumulators in i32.
   const SCALE: i32 = 1 << 16;
-  let mut weights = Vec::with_capacity(radius * 2 + 1);
+  let window_size = radius
+    .checked_mul(2)
+    .and_then(|size| size.checked_add(1))
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("gaussian blur: kernel size overflow (radius={radius})"),
+    })?;
+
+  let mut weights = Vec::new();
+  weights
+    .try_reserve_exact(window_size)
+    .map_err(|err| RenderError::InvalidParameters {
+      message: format!("gaussian blur: kernel allocation failed: {err}"),
+    })?;
   let sigma_sq = sigma as f64 * sigma as f64;
   let denom = 2.0 * sigma_sq;
   let mut sum = 0.0f64;
-  for i in 0..=radius * 2 {
-    let x = i as i32 - radius as i32;
-    let w = (-(x as f64 * x as f64) / denom).exp();
+  for i in 0..window_size {
+    let x = i as f64 - radius as f64;
+    let w = (-(x * x) / denom).exp();
     weights.push(w);
     sum += w;
   }
   if sum == 0.0 {
-    return (Vec::new(), 0, 0);
+    return Ok((Vec::new(), 0, 0));
   }
 
-  let mut fixed = Vec::with_capacity(weights.len());
+  let mut fixed = Vec::new();
+  fixed
+    .try_reserve_exact(weights.len())
+    .map_err(|err| RenderError::InvalidParameters {
+      message: format!("gaussian blur: kernel allocation failed: {err}"),
+    })?;
   let mut fixed_sum: i32 = 0;
   for (idx, w) in weights.iter().enumerate() {
     let mut v = ((*w / sum) * SCALE as f64).round() as i32;
@@ -538,7 +555,7 @@ fn gaussian_kernel_fixed(sigma: f32) -> (Vec<i32>, usize, i32) {
     fixed.push(v);
   }
 
-  (fixed, radius, SCALE)
+  Ok((fixed, radius, SCALE))
 }
 
 #[inline]
@@ -738,7 +755,7 @@ fn gaussian_convolve_premultiplied_with_parallelism(
   sigma: f32,
   parallelism: BlurParallelism,
 ) -> Result<bool, RenderError> {
-  let (kernel, radius, scale) = gaussian_kernel_fixed(sigma);
+  let (kernel, radius, scale) = gaussian_kernel_fixed(sigma)?;
   if radius == 0 || kernel.is_empty() || scale <= 0 {
     return Ok(false);
   }
@@ -1661,12 +1678,24 @@ fn blur_anisotropic_box_kernel_mixed_with_parallelism(
     let (kernel_x, radius_x, scale_x) = if use_box_x {
       (Vec::new(), 0usize, 0i32)
     } else {
-      gaussian_kernel_fixed(sigma_x)
+      match gaussian_kernel_fixed(sigma_x) {
+        Ok(kernel) => kernel,
+        Err(err) => {
+          error = Some(err);
+          return;
+        }
+      }
     };
     let (kernel_y, radius_y, scale_y) = if use_box_y {
       (Vec::new(), 0usize, 0i32)
     } else {
-      gaussian_kernel_fixed(sigma_y)
+      match gaussian_kernel_fixed(sigma_y) {
+        Ok(kernel) => kernel,
+        Err(err) => {
+          error = Some(err);
+          return;
+        }
+      }
     };
 
     if !use_parallel {
@@ -2128,8 +2157,8 @@ fn blur_anisotropic_body_with_parallelism(
     (false, false) => {}
   }
 
-  let (kernel_x, radius_x, scale_x) = gaussian_kernel_fixed(sigma_x);
-  let (kernel_y, radius_y, scale_y) = gaussian_kernel_fixed(sigma_y);
+  let (kernel_x, radius_x, scale_x) = gaussian_kernel_fixed(sigma_x)?;
+  let (kernel_y, radius_y, scale_y) = gaussian_kernel_fixed(sigma_y)?;
   if (radius_x == 0 || kernel_x.is_empty()) && (radius_y == 0 || kernel_y.is_empty()) {
     return Ok(false);
   }
@@ -3273,7 +3302,7 @@ mod tests {
     for (width, height) in sizes {
       let row_stride = width * 4;
       for sigma in sigmas {
-        let (kernel, radius, scale) = gaussian_kernel_fixed(sigma);
+        let (kernel, radius, scale) = gaussian_kernel_fixed(sigma).expect("kernel");
         if radius == 0 || kernel.is_empty() || scale <= 0 {
           continue;
         }
@@ -3338,6 +3367,15 @@ mod tests {
         }
       }
     }
+  }
+
+  #[test]
+  fn gaussian_kernel_fixed_rejects_overflowing_sigma() {
+    let result = gaussian_kernel_fixed(f32::INFINITY);
+    assert!(
+      matches!(result, Err(RenderError::InvalidParameters { .. })),
+      "expected invalid parameters for overflowing kernel radius, got {result:?}"
+    );
   }
 
   #[test]
