@@ -542,3 +542,63 @@ fn stylesheet_referrerpolicy_same_origin_uses_document_referrer_for_sheet_and_st
     );
   }
 }
+
+#[test]
+fn stylesheet_referrerpolicy_same_origin_omits_cross_origin_document_referrer_but_uses_stylesheet_referrer_for_nested(
+) {
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_referrerpolicy_same_origin_omits_cross_origin_document_referrer_but_uses_stylesheet_referrer_for_nested",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_import.css" referrerpolicy="same-origin">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+  let document_url = "http://doc.test/page.html";
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let sheet_req = requests
+    .iter()
+    .find(|req| req.path == "/style_import.css")
+    .expect("expected /style_import.css request");
+  assert!(
+    header_value(&sheet_req.headers, "referer").is_none(),
+    "expected cross-origin document referrer to be omitted for /style_import.css; got:\n{}",
+    sheet_req.headers
+  );
+
+  let stylesheet_url = format!("{}/style_import.css", server.base_url);
+  for path in ["/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(stylesheet_url.as_str()),
+      "expected nested request Referer to be the importing stylesheet URL for {path}; got:\n{}",
+      req.headers
+    );
+  }
+}
