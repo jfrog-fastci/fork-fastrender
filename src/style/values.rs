@@ -513,6 +513,21 @@ mod tests {
   use super::*;
   use crate::css::properties::parse_length;
 
+  #[test]
+  fn non_ascii_whitespace_custom_property_number_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(
+      CustomPropertySyntax::Number.parse_value("1"),
+      Some(CustomPropertyTypedValue::Number(1.0))
+    );
+    assert!(
+      CustomPropertySyntax::Number
+        .parse_value(&format!("{nbsp}1"))
+        .is_none(),
+      "NBSP must not be treated as CSS whitespace in registered custom properties"
+    );
+  }
+
   // LengthUnit tests
   #[test]
   fn test_length_unit_classification() {
@@ -1553,10 +1568,19 @@ impl CustomPropertyValue {
   }
 }
 
+#[inline]
+fn is_ascii_whitespace_html_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
 impl CustomPropertySyntax {
   /// Parses a syntax descriptor such as `<length>` or `*`.
   pub fn parse(s: &str) -> Option<Self> {
-    match s.trim().to_ascii_lowercase().as_str() {
+    match trim_ascii_whitespace(s).to_ascii_lowercase().as_str() {
       "<length>" => Some(CustomPropertySyntax::Length),
       "<length-percentage>" => Some(CustomPropertySyntax::LengthPercentage),
       "<number>" => Some(CustomPropertySyntax::Number),
@@ -1572,7 +1596,7 @@ impl CustomPropertySyntax {
   pub fn parse_value(&self, value: &str) -> Option<CustomPropertyTypedValue> {
     match self {
       CustomPropertySyntax::Length => {
-        let parsed = crate::css::properties::parse_length(value.trim())?;
+        let parsed = crate::css::properties::parse_length(trim_ascii_whitespace(value))?;
         // `<length>` must reject percentage-based values (including `calc()` that contains a `%`
         // term). `parse_length` is a shared helper that accepts `<length-percentage>` values, so
         // enforce the stricter syntax here.
@@ -1582,18 +1606,16 @@ impl CustomPropertySyntax {
         Some(CustomPropertyTypedValue::Length(parsed))
       }
       CustomPropertySyntax::LengthPercentage => {
-        crate::css::properties::parse_length(value.trim()).map(CustomPropertyTypedValue::Length)
+        crate::css::properties::parse_length(trim_ascii_whitespace(value)).map(CustomPropertyTypedValue::Length)
       }
-      CustomPropertySyntax::Number => value
-        .trim()
+      CustomPropertySyntax::Number => trim_ascii_whitespace(value)
         .parse()
         .ok()
         .map(CustomPropertyTypedValue::Number),
       CustomPropertySyntax::Percentage => {
-        let trimmed = value.trim();
+        let trimmed = trim_ascii_whitespace(value);
         if let Some(percent) = trimmed.strip_suffix('%') {
-          percent
-            .trim()
+          trim_ascii_whitespace(percent)
             .parse::<f32>()
             .ok()
             .map(CustomPropertyTypedValue::Percentage)
@@ -1609,11 +1631,11 @@ impl CustomPropertySyntax {
           None
         }
       }
-      CustomPropertySyntax::Color => crate::style::color::Color::parse(value.trim())
+      CustomPropertySyntax::Color => crate::style::color::Color::parse(trim_ascii_whitespace(value))
         .ok()
         .map(CustomPropertyTypedValue::Color),
       CustomPropertySyntax::Angle => {
-        parse_angle_token(value.trim()).map(CustomPropertyTypedValue::Angle)
+        parse_angle_token(trim_ascii_whitespace(value)).map(CustomPropertyTypedValue::Angle)
       }
       CustomPropertySyntax::Universal => None,
     }
@@ -1621,24 +1643,23 @@ impl CustomPropertySyntax {
 }
 
 fn parse_angle_token(token: &str) -> Option<f32> {
-  let trimmed = token.trim();
+  let trimmed = trim_ascii_whitespace(token);
   if trimmed.ends_with("deg") {
-    trimmed[..trimmed.len() - 3].trim().parse::<f32>().ok()
+    trim_ascii_whitespace(&trimmed[..trimmed.len() - 3])
+      .parse::<f32>()
+      .ok()
   } else if trimmed.ends_with("rad") {
-    trimmed[..trimmed.len() - 3]
-      .trim()
+    trim_ascii_whitespace(&trimmed[..trimmed.len() - 3])
       .parse::<f32>()
       .ok()
       .map(|r| r.to_degrees())
   } else if trimmed.ends_with("turn") {
-    trimmed[..trimmed.len() - 4]
-      .trim()
+    trim_ascii_whitespace(&trimmed[..trimmed.len() - 4])
       .parse::<f32>()
       .ok()
       .map(|t| t * 360.0)
   } else if trimmed.ends_with("grad") {
-    trimmed[..trimmed.len() - 4]
-      .trim()
+    trim_ascii_whitespace(&trimmed[..trimmed.len() - 4])
       .parse::<f32>()
       .ok()
       .map(|g| g * 0.9)
