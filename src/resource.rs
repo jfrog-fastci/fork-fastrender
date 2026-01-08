@@ -6267,7 +6267,10 @@ impl HttpFetcher {
   /// Decode a data: URL
   fn fetch_data(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
     let limit = self.policy.allowed_response_limit()?;
-    let mut resource = data_url::decode_data_url(url)?;
+    // Decode at most `limit + 1` bytes so oversized data: URLs fail without allocating the entire
+    // payload (which could otherwise abort the process on OOM).
+    let decode_limit = limit.saturating_add(1);
+    let mut resource = data_url::decode_data_url_prefix(url, decode_limit)?;
     substitute_offline_fixture_placeholder_full(
       kind,
       &mut resource.bytes,

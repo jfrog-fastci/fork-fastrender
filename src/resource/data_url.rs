@@ -1,7 +1,8 @@
 use super::FetchedResource;
 use crate::error::{Error, ImageError, Result};
+use crate::fallible_vec_writer::FallibleVecWriter;
 use base64::Engine;
-use std::io::{self, Read};
+use std::io::{self, Read, Write as _};
 
 const DATA_URL_PREFIX: &str = "data:";
 const DEFAULT_MEDIA_TYPE: &str = "text/plain";
@@ -9,32 +10,7 @@ const DEFAULT_CHARSET: &str = "charset=US-ASCII";
 
 /// Decode a data: URL into bytes and content type following RFC 2397 semantics.
 pub(crate) fn decode_data_url(url: &str) -> Result<FetchedResource> {
-  if !url
-    .get(..DATA_URL_PREFIX.len())
-    .map(|prefix| prefix.eq_ignore_ascii_case(DATA_URL_PREFIX))
-    .unwrap_or(false)
-  {
-    return Err(Error::Image(ImageError::InvalidDataUrl {
-      reason: "URL does not start with 'data:'".to_string(),
-    }));
-  }
-
-  let rest = &url[DATA_URL_PREFIX.len()..];
-  let (metadata, data) = rest.split_once(',').ok_or_else(|| {
-    Error::Image(ImageError::InvalidDataUrl {
-      reason: "Missing comma in data URL".to_string(),
-    })
-  })?;
-
-  let parsed = parse_metadata(metadata);
-
-  let bytes = if parsed.is_base64 {
-    decode_base64_data(data)?
-  } else {
-    percent_decode(data)?
-  };
-
-  Ok(FetchedResource::new(bytes, Some(parsed.content_type)))
+  decode_data_url_prefix(url, usize::MAX)
 }
 
 /// Decode up to the first `max_bytes` of a data: URL payload.
@@ -124,49 +100,9 @@ fn has_charset(params: &[String]) -> bool {
   })
 }
 
-/// Decode base64 payloads, tolerating ASCII whitespace for robustness.
-fn decode_base64_data(data: &str) -> Result<Vec<u8>> {
-  let bytes = data.as_bytes();
-  let mut cleaned: Option<Vec<u8>> = None;
-
-  for (idx, &byte) in bytes.iter().enumerate() {
-    if byte.is_ascii_whitespace() {
-      let mut out = Vec::with_capacity(bytes.len());
-      out.extend_from_slice(&bytes[..idx]);
-      for &rest in &bytes[idx + 1..] {
-        if rest.is_ascii_whitespace() {
-          continue;
-        }
-        out.push(rest);
-      }
-      cleaned = Some(out);
-      break;
-    }
-  }
-
-  let input = cleaned.as_deref().unwrap_or(bytes);
-
-  if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(input) {
-    return Ok(decoded);
-  }
-
-  let last_err = match base64::engine::general_purpose::STANDARD_NO_PAD.decode(input) {
-    Ok(decoded) => return Ok(decoded),
-    Err(_) => {
-      if let Ok(decoded) = base64::engine::general_purpose::URL_SAFE.decode(input) {
-        return Ok(decoded);
-      }
-
-      match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(input) {
-        Ok(decoded) => return Ok(decoded),
-        Err(err) => err,
-      }
-    }
-  };
-
-  Err(Error::Image(ImageError::InvalidDataUrl {
-    reason: format!("Invalid base64: {last_err}"),
-  }))
+enum Base64DecodeError {
+  InvalidBase64(io::Error),
+  Output(io::Error),
 }
 
 struct WhitespaceStrippingReader<'a> {
@@ -209,83 +145,57 @@ fn decode_base64_prefix(data: &str, max_bytes: usize) -> Result<Vec<u8>> {
     data: &str,
     max_bytes: usize,
     engine: &E,
-  ) -> io::Result<Vec<u8>> {
+  ) -> std::result::Result<Vec<u8>, Base64DecodeError> {
     let mut stripped = WhitespaceStrippingReader::new(data.as_bytes());
     let mut decoder = base64::read::DecoderReader::new(&mut stripped, engine);
 
-    let mut out = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut out = FallibleVecWriter::new(max_bytes, "data URL base64 decode");
+    let mut written = 0usize;
     let mut buf = [0u8; 8 * 1024];
-    while out.len() < max_bytes {
-      let remaining = max_bytes - out.len();
+    while written < max_bytes {
+      let remaining = max_bytes - written;
       let to_read = remaining.min(buf.len());
-      let read = decoder.read(&mut buf[..to_read])?;
+      let read = decoder
+        .read(&mut buf[..to_read])
+        .map_err(Base64DecodeError::InvalidBase64)?;
       if read == 0 {
         break;
       }
-      out.extend_from_slice(&buf[..read]);
+      out
+        .write_all(&buf[..read])
+        .map_err(Base64DecodeError::Output)?;
+      written += read;
     }
-    Ok(out)
+    Ok(out.into_inner())
   }
 
-  if let Ok(decoded) =
-    decode_base64_prefix_with_engine(data, max_bytes, &base64::engine::general_purpose::STANDARD)
-  {
-    return Ok(decoded);
-  }
+  let mut last_invalid: Option<String> = None;
 
-  let last_err = match decode_base64_prefix_with_engine(
-    data,
-    max_bytes,
+  for attempt in [
+    &base64::engine::general_purpose::STANDARD,
     &base64::engine::general_purpose::STANDARD_NO_PAD,
-  ) {
-    Ok(decoded) => return Ok(decoded),
-    Err(_) => {
-      if let Ok(decoded) = decode_base64_prefix_with_engine(
-        data,
-        max_bytes,
-        &base64::engine::general_purpose::URL_SAFE,
-      ) {
-        return Ok(decoded);
+    &base64::engine::general_purpose::URL_SAFE,
+    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+  ] {
+    match decode_base64_prefix_with_engine(data, max_bytes, attempt) {
+      Ok(decoded) => return Ok(decoded),
+      Err(Base64DecodeError::Output(err)) => {
+        return Err(Error::Image(ImageError::InvalidDataUrl {
+          reason: err.to_string(),
+        }));
       }
-
-      match decode_base64_prefix_with_engine(
-        data,
-        max_bytes,
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-      ) {
-        Ok(decoded) => return Ok(decoded),
-        Err(err) => err.to_string(),
+      Err(Base64DecodeError::InvalidBase64(err)) => {
+        last_invalid = Some(err.to_string());
       }
     }
-  };
+  }
 
   Err(Error::Image(ImageError::InvalidDataUrl {
-    reason: format!("Invalid base64: {last_err}"),
+    reason: format!(
+      "Invalid base64: {}",
+      last_invalid.unwrap_or_else(|| "unknown error".to_string())
+    ),
   }))
-}
-
-/// Percent-decode a URL payload without treating '+' specially.
-fn percent_decode(input: &str) -> Result<Vec<u8>> {
-  let mut out = Vec::with_capacity(input.len());
-  let bytes = input.as_bytes();
-  let mut i = 0;
-
-  while i < bytes.len() {
-    if bytes[i] == b'%' && i + 2 < bytes.len() {
-      let hi = (bytes[i + 1] as char).to_digit(16);
-      let lo = (bytes[i + 2] as char).to_digit(16);
-      if let (Some(hi), Some(lo)) = (hi, lo) {
-        out.push(((hi << 4) | lo) as u8);
-        i += 3;
-        continue;
-      }
-    }
-    // Spec-compatible behavior: invalid percent escapes are left as a literal '%'.
-    out.push(bytes[i]);
-    i += 1;
-  }
-
-  Ok(out)
 }
 
 fn percent_decode_prefix(input: &str, max_bytes: usize) -> Result<Vec<u8>> {
@@ -293,25 +203,56 @@ fn percent_decode_prefix(input: &str, max_bytes: usize) -> Result<Vec<u8>> {
     return Ok(Vec::new());
   }
 
-  let mut out = Vec::with_capacity(input.len().min(max_bytes));
+  let mut out = FallibleVecWriter::new(max_bytes, "data URL percent decode");
+  let mut written = 0usize;
+  let mut scratch = [0u8; 8 * 1024];
+  let mut scratch_len = 0usize;
   let bytes = input.as_bytes();
   let mut i = 0;
 
-  while i < bytes.len() && out.len() < max_bytes {
+  while i < bytes.len() && written < max_bytes {
     if bytes[i] == b'%' && i + 2 < bytes.len() {
       let hi = (bytes[i + 1] as char).to_digit(16);
       let lo = (bytes[i + 2] as char).to_digit(16);
       if let (Some(hi), Some(lo)) = (hi, lo) {
-        out.push(((hi << 4) | lo) as u8);
+        scratch[scratch_len] = ((hi << 4) | lo) as u8;
+        scratch_len += 1;
         i += 3;
+        written += 1;
+        if scratch_len == scratch.len() || written == max_bytes {
+          out.write_all(&scratch[..scratch_len]).map_err(|err| {
+            Error::Image(ImageError::InvalidDataUrl {
+              reason: err.to_string(),
+            })
+          })?;
+          scratch_len = 0;
+        }
         continue;
       }
     }
-    out.push(bytes[i]);
+    scratch[scratch_len] = bytes[i];
+    scratch_len += 1;
     i += 1;
+    written += 1;
+    if scratch_len == scratch.len() || written == max_bytes {
+      out.write_all(&scratch[..scratch_len]).map_err(|err| {
+        Error::Image(ImageError::InvalidDataUrl {
+          reason: err.to_string(),
+        })
+      })?;
+      scratch_len = 0;
+    }
   }
 
-  Ok(out)
+  if scratch_len != 0 {
+    out.write_all(&scratch[..scratch_len]).map_err(|err| {
+      Error::Image(ImageError::InvalidDataUrl {
+        reason: err.to_string(),
+      })
+    })?;
+  }
+
+  Ok(out.into_inner())
 }
 
 pub(crate) fn encode_base64_data_url(media_type: &str, data: &[u8]) -> Option<String> {
