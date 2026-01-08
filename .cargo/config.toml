@@ -1,6 +1,14 @@
 [alias]
 xtask = "run -p xtask --"
 
+# libaom (used for AVIF decoding via `image`/`avif-decode`) requires an assembler (yasm/nasm) for
+# optimized builds. Our CI/agent environments don't necessarily have those tools installed, so
+# force the portable (non-asm) build by default.
+#
+# This keeps `cargo build` working out-of-the-box while still supporting AVIF decode.
+[env]
+AOM_TARGET_CPU = "generic"
+
 # Use the mold linker on Linux for much faster links (and to avoid sporadic `rust-lld` SIGBUS
 # incidents observed under heavy concurrency).
 #

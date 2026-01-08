@@ -543,6 +543,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     html: "overflow_axis_interaction/index.html",
     shots: DEFAULT_SHOTS,
   },
+  PageFixture {
+    name: "amazon.com",
+    html: "amazon.com/index.html",
+    shots: DEFAULT_SHOTS,
+  },
 ];
 
 fn fixtures_dir() -> PathBuf {
