@@ -764,18 +764,6 @@ impl PositionedStyle {
       return true;
     }
 
-    if self.is_positioned()
-      && (matches!(
-        self.overflow_x,
-        Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-      ) || matches!(
-        self.overflow_y,
-        Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-      ))
-    {
-      return true;
-    }
-
     false
   }
 
@@ -1099,9 +1087,10 @@ mod tests {
     assert!(style.creates_stacking_context());
 
     style = PositionedStyle::default();
-    style.position = Position::Absolute;
+    style.position = Position::Relative;
     style.overflow_x = Overflow::Hidden;
-    assert!(style.creates_stacking_context());
+    style.overflow_y = Overflow::Hidden;
+    assert!(!style.creates_stacking_context());
 
     style = PositionedStyle::default();
     style.containment = Containment::with_flags(false, false, false, false, true);
