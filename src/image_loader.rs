@@ -34,6 +34,7 @@ use avif_decode::Decoder as AvifDecoder;
 use avif_decode::Image as AvifImage;
 use avif_parse::AvifData;
 use exif;
+use flate2::read::GzDecoder;
 use image::imageops;
 use image::DynamicImage;
 use image::GenericImageView;
@@ -149,6 +150,7 @@ fn image_probe_max_bytes() -> usize {
 }
 
 const PANIC_REASON_MAX_BYTES: usize = 1024;
+const MAX_SVGZ_DECOMPRESSED_BYTES: usize = 16 * 1024 * 1024;
 
 fn truncate_utf8_at_boundary(input: &str, max_bytes: usize) -> &str {
   if input.len() <= max_bytes {
@@ -963,6 +965,25 @@ fn is_about_url(url: &str) -> bool {
   trimmed
     .get(..6)
     .is_some_and(|prefix| prefix.eq_ignore_ascii_case("about:"))
+}
+
+fn url_ends_with_svgz(url: &str) -> bool {
+  let trimmed = url.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+  let base = trimmed
+    .split(|c: char| c == '?' || c == '#')
+    .next()
+    .unwrap_or(trimmed);
+  base
+    .get(base.len().saturating_sub(5)..)
+    .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".svgz"))
+}
+
+fn svg_text_looks_like_markup(text: &str) -> bool {
+  let trimmed = text.trim_start();
+  trimmed.starts_with("<svg") || trimmed.starts_with("<?xml")
 }
 
 fn about_url_placeholder_image() -> Arc<CachedImage> {
@@ -3490,6 +3511,41 @@ impl ImageCache {
     })
   }
 
+  fn maybe_decompress_svgz(&self, bytes: &[u8], url: &str) -> Result<Option<Vec<u8>>> {
+    if bytes.len() < 2 || bytes[0] != 0x1F || bytes[1] != 0x8B {
+      return Ok(None);
+    }
+
+    let mut decoder = GzDecoder::new(bytes);
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut deadline_counter = 0usize;
+
+    loop {
+      check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint).map_err(Error::Render)?;
+      let n = decoder.read(&mut buf).map_err(|e| {
+        Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("SVGZ decompression failed: {e}"),
+        })
+      })?;
+      if n == 0 {
+        break;
+      }
+      if out.len().saturating_add(n) > MAX_SVGZ_DECOMPRESSED_BYTES {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!(
+            "SVGZ decompressed payload exceeded {MAX_SVGZ_DECOMPRESSED_BYTES} bytes"
+          ),
+        }));
+      }
+      out.extend_from_slice(&buf[..n]);
+    }
+
+    Ok(Some(out))
+  }
+
   /// Decode a fetched resource into an image
   fn decode_resource(
     &self,
@@ -3520,29 +3576,40 @@ impl ImageCache {
       ));
     }
 
-    // Check if this is SVG
+    let url_hint = resource.final_url.as_deref().unwrap_or(url);
+
+    // Check if this is SVG (plain UTF-8 payload, or gzip-compressed `.svgz`).
     let mime_is_svg = content_type
       .map(|m| m.contains("image/svg"))
       .unwrap_or(false);
-    let is_svg = mime_is_svg
-      || std::str::from_utf8(bytes)
-        .ok()
-        .map(|s| s.trim_start().starts_with("<svg") || s.trim_start().starts_with("<?xml"))
-        .unwrap_or(false);
+    let url_is_svgz =
+      url_ends_with_svgz(url) || resource.final_url.as_deref().is_some_and(url_ends_with_svgz);
 
-    if is_svg {
-      let content = std::str::from_utf8(bytes).map_err(|e| {
-        Error::Image(ImageError::DecodeFailed {
-          url: url.to_string(),
-          reason: format!("SVG not valid UTF-8: {}", e),
-        })
-      })?;
-      let svg_content: Arc<str> = Arc::from(content);
-      let (img, ratio, aspect_none) = self.render_svg_to_image_with_url(&svg_content, url)?;
-      return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
+    if let Ok(content) = std::str::from_utf8(bytes) {
+      if mime_is_svg || svg_text_looks_like_markup(content) {
+        let svg_content: Arc<str> = Arc::from(content);
+        let (img, ratio, aspect_none) =
+          self.render_svg_to_image_with_url(&svg_content, url_hint)?;
+        return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
+      }
+    } else if url_is_svgz || mime_is_svg {
+      if let Some(decompressed) = self.maybe_decompress_svgz(bytes, url)? {
+        if let Ok(content) = std::str::from_utf8(&decompressed) {
+          let svg_content: Arc<str> = Arc::from(content);
+          let (img, ratio, aspect_none) =
+            self.render_svg_to_image_with_url(&svg_content, url_hint)?;
+          return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
+        }
+
+        // Not valid UTF-8 after decompression; treat as a (possibly mislabelled) bitmap.
+        let (orientation, resolution) = Self::exif_metadata(&decompressed);
+        return self
+          .decode_bitmap(&decompressed, content_type, url)
+          .map(|img| (img, orientation, resolution, false, None, false, None));
+      }
     }
 
-    // Regular image - extract EXIF metadata and decode
+    // Regular image - extract EXIF metadata and decode.
     let (orientation, resolution) = Self::exif_metadata(bytes);
     self
       .decode_bitmap(bytes, content_type, url)
@@ -3556,67 +3623,54 @@ impl ImageCache {
       return Ok((*about_url_placeholder_metadata()).clone());
     }
 
-    // SVG: parse intrinsic metadata without rasterizing.
+    let url_hint = resource.final_url.as_deref().unwrap_or(url);
+
+    // SVG (including gzip-compressed `.svgz` responses).
     let mime_is_svg = content_type
       .map(|m| m.contains("image/svg"))
       .unwrap_or(false);
-    let is_svg = mime_is_svg
-      || std::str::from_utf8(bytes)
-        .ok()
-        .map(|s| s.trim_start().starts_with("<svg") || s.trim_start().starts_with("<?xml"))
-        .unwrap_or(false);
-    if is_svg {
-      let content = std::str::from_utf8(bytes).map_err(|e| {
-        Error::Image(ImageError::DecodeFailed {
-          url: url.to_string(),
-          reason: format!("SVG not valid UTF-8: {}", e),
-        })
-      })?;
+    let url_is_svgz =
+      url_ends_with_svgz(url) || resource.final_url.as_deref().is_some_and(url_ends_with_svgz);
 
-      const DEFAULT_WIDTH: f32 = 300.0;
-      const DEFAULT_HEIGHT: f32 = 150.0;
-      let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
-        svg_intrinsic_metadata(content).unwrap_or((None, None, None, false));
-      let ratio = meta_ratio.filter(|r| *r > 0.0);
-      let (target_width, target_height) = match (
-        meta_width.filter(|w| *w > 0.0),
-        meta_height.filter(|h| *h > 0.0),
-        ratio,
-      ) {
-        (Some(w), Some(h), _) => (w, h),
-        (Some(w), None, Some(r)) => (w, (w / r).max(1.0)),
-        (None, Some(h), Some(r)) => ((h * r).max(1.0), h),
-        (Some(w), None, None) => (w, DEFAULT_HEIGHT),
-        (None, Some(h), None) => (DEFAULT_WIDTH, h),
-        (None, None, Some(r)) => (DEFAULT_WIDTH, (DEFAULT_WIDTH / r).max(1.0)),
-        (None, None, None) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
-      };
+    if let Ok(content) = std::str::from_utf8(bytes) {
+      if mime_is_svg || svg_text_looks_like_markup(content) {
+        return self.probe_svg_content(content, url_hint);
+      }
+    } else if url_is_svgz || mime_is_svg {
+      if let Some(decompressed) = self.maybe_decompress_svgz(bytes, url)? {
+        if let Ok(content) = std::str::from_utf8(&decompressed) {
+          return self.probe_svg_content(content, url_hint);
+        }
 
-      let width = target_width.max(1.0).round() as u32;
-      let height = target_height.max(1.0).round() as u32;
-      self.enforce_decode_limits(width, height, url)?;
+        // Not valid UTF-8 after decompression; treat as a bitmap probe on the decompressed bytes.
+        let bytes = decompressed;
+        let (orientation, resolution) = Self::exif_metadata(&bytes);
+        let format_from_content_type = Self::format_from_content_type(content_type);
+        let (sniffed_format, sniff_panic) = Self::sniff_image_format(&bytes);
+        let (dims, dims_panic) =
+          self.predecoded_dimensions(&bytes, format_from_content_type, sniffed_format);
+        let (width, height) = dims.ok_or_else(|| {
+          let reason = dims_panic
+            .or(sniff_panic)
+            .map(|panic| format!("Image probe panicked: {panic}"))
+            .unwrap_or_else(|| "Unable to determine image dimensions".to_string());
+          Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason,
+          })
+        })?;
+        self.enforce_decode_limits(width, height, url)?;
 
-      let ratio = if aspect_ratio_none {
-        None
-      } else {
-        ratio.or_else(|| {
-          if height > 0 {
-            Some(width as f32 / height as f32)
-          } else {
-            None
-          }
-        })
-      };
-
-      return Ok(CachedImageMetadata {
-        width,
-        height,
-        orientation: None,
-        resolution: None,
-        is_vector: true,
-        intrinsic_ratio: ratio,
-        aspect_ratio_none,
-      });
+        return Ok(CachedImageMetadata {
+          width,
+          height,
+          orientation,
+          resolution,
+          is_vector: false,
+          intrinsic_ratio: None,
+          aspect_ratio_none: false,
+        });
+      }
     }
 
     let (orientation, resolution) = Self::exif_metadata(bytes);
@@ -5007,6 +5061,16 @@ mod tests {
         .push((req.url.to_string(), req.destination));
       self.fetch(req.url)
     }
+  }
+
+  fn gzip_bytes(input: &[u8]) -> Vec<u8> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(input).expect("gzip input");
+    encoder.finish().expect("finish gzip")
   }
 
   #[test]
@@ -6770,6 +6834,74 @@ mod tests {
     assert_eq!(stats.probe_partial_fallback_full, 1);
 
     server.join().unwrap();
+  }
+
+  #[test]
+  fn svgz_load_with_svg_content_type() {
+    let url = "https://example.com/icon.svg";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"></svg>"#;
+    let svgz = gzip_bytes(svg.as_bytes());
+
+    let mut res = FetchedResource::new(svgz, Some("image/svg+xml".to_string()));
+    res.status = Some(200);
+    let fetcher = MapFetcher::with_entries([(url.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let img = cache.load(url).expect("load svgz content via svg content-type");
+    assert!(img.is_vector);
+    assert_eq!(img.dimensions(), (10, 20));
+  }
+
+  #[test]
+  fn svgz_load_with_octet_stream_content_type() {
+    let url = "https://example.com/icon.SVGZ?version=1";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"></svg>"#;
+    let svgz = gzip_bytes(svg.as_bytes());
+
+    let mut res = FetchedResource::new(svgz, Some("application/octet-stream".to_string()));
+    res.status = Some(200);
+    let fetcher = MapFetcher::with_entries([(url.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let img = cache
+      .load(url)
+      .expect("load svgz content via .svgz URL + octet-stream content-type");
+    assert!(img.is_vector);
+    assert_eq!(img.dimensions(), (10, 20));
+  }
+
+  #[test]
+  fn svgz_probe_metadata() {
+    let url = "https://example.com/icon.svgz";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"></svg>"#;
+    let svgz = gzip_bytes(svg.as_bytes());
+
+    let mut res = FetchedResource::new(svgz, Some("application/octet-stream".to_string()));
+    res.status = Some(200);
+    let fetcher = MapFetcher::with_entries([(url.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let meta = cache
+      .probe_resolved(url)
+      .expect("probe svgz content should succeed");
+    assert!(meta.is_vector);
+    assert_eq!(meta.dimensions(), (10, 20));
+  }
+
+  #[test]
+  fn svgz_gzipped_non_svg_payload_is_not_misidentified() {
+    let url = "https://example.com/bad.svgz";
+    let svgz = gzip_bytes(b"not an svg");
+
+    let mut res = FetchedResource::new(svgz, Some("application/octet-stream".to_string()));
+    res.status = Some(200);
+    let fetcher = MapFetcher::with_entries([(url.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    assert!(
+      cache.load(url).is_err(),
+      "gzipped non-svg payload must not decode as SVG"
+    );
   }
 
   #[test]
