@@ -463,6 +463,108 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
 }
 
 #[test]
+fn absolute_inline_child_width_fit_content_overconstrained_ignores_trailing_inset_for_available_space(
+) {
+  let cb_width = 200.0;
+  let left = 95.0;
+  let right = 95.0;
+  let gap = cb_width - left - right;
+  let available = cb_width - left;
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Inline;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(cb_width));
+  container_style.padding_left = Length::px(0.0);
+  container_style.padding_right = Length::px(0.0);
+  container_style.padding_top = Length::px(0.0);
+  container_style.padding_bottom = Length::px(0.0);
+  container_style.border_left_width = Length::px(0.0);
+  container_style.border_right_width = Length::px(0.0);
+  container_style.border_top_width = Length::px(0.0);
+  container_style.border_bottom_width = Length::px(0.0);
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.position = Position::Absolute;
+  abs_style.left = InsetValue::Length(Length::px(left));
+  abs_style.right = InsetValue::Length(Length::px(right));
+  abs_style.width = None;
+  abs_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+  abs_style.font_size = 10.0;
+  abs_style.padding_left = Length::px(0.0);
+  abs_style.padding_right = Length::px(0.0);
+  abs_style.padding_top = Length::px(0.0);
+  abs_style.padding_bottom = Length::px(0.0);
+  abs_style.border_left_width = Length::px(0.0);
+  abs_style.border_right_width = Length::px(0.0);
+  abs_style.border_top_width = Length::px(0.0);
+  abs_style.border_bottom_width = Length::px(0.0);
+  let abs_style = Arc::new(abs_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.font_size = 10.0;
+  text_style.border_left_width = Length::px(0.0);
+  text_style.border_right_width = Length::px(0.0);
+  text_style.border_top_width = Length::px(0.0);
+  text_style.border_bottom_width = Length::px(0.0);
+  let text_style = Arc::new(text_style);
+
+  let abs_id = 12usize;
+  let text = BoxNode::new_text(
+    text_style,
+    "Intrinsic sizing keywords should clamp absolute positioned width".to_string(),
+  );
+  let mut abs_child =
+    BoxNode::new_block(abs_style.clone(), FormattingContextType::Inline, vec![text]);
+  abs_child.id = abs_id;
+
+  // Intrinsic sizing for absolute positioning is measured on a temporary "static" relayout style.
+  let mut intrinsic_child = abs_child.clone();
+  let mut intrinsic_style = (*intrinsic_child.style).clone();
+  intrinsic_style.position = Position::Relative;
+  intrinsic_style.top = InsetValue::Auto;
+  intrinsic_style.right = InsetValue::Auto;
+  intrinsic_style.bottom = InsetValue::Auto;
+  intrinsic_style.left = InsetValue::Auto;
+  intrinsic_child.style = Arc::new(intrinsic_style);
+
+  let ifc = InlineFormattingContext::new();
+  let (min_content, max_content) = ifc
+    .compute_intrinsic_inline_sizes(&intrinsic_child)
+    .expect("intrinsic sizes");
+  assert!(
+    min_content > gap + 1.0,
+    "expected min-content ({min_content:.2}) > available-between-insets ({gap:.2})"
+  );
+  assert!(
+    min_content < available - 1.0,
+    "expected min-content ({min_content:.2}) < available-after-dropping-inset ({available:.2})"
+  );
+  assert!(
+    max_content > available + 1.0,
+    "expected max-content ({max_content:.2}) > available-after-dropping-inset ({available:.2})"
+  );
+  let expected = max_content.min(available.max(min_content));
+
+  let constraints = LayoutConstraints::definite_width(cb_width);
+  let mut container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Inline,
+    vec![abs_child],
+  );
+  container.id = 10;
+  let fragment = ifc.layout(&container, &constraints).expect("inline layout");
+
+  let abs_fragment = find_fragment_by_box_id(&fragment, abs_id).expect("abs fragment present");
+  assert!(
+    (abs_fragment.bounds.width() - expected).abs() < 0.5,
+    "fit-content width should re-resolve using available space after dropping the trailing inset (got {:.2}, expected {:.2})",
+    abs_fragment.bounds.width(),
+    expected
+  );
+}
+
+#[test]
 fn absolute_flex_child_reflows_to_used_width() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;

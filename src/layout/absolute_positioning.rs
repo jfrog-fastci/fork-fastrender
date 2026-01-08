@@ -445,7 +445,6 @@ impl AbsoluteLayout {
     } else {
       style.margin.right
     };
-
     let resolve_keyword = |keyword: IntrinsicSizeKeyword, available: f32| -> Option<f32> {
       match keyword {
         IntrinsicSizeKeyword::MinContent => Some(preferred_min),

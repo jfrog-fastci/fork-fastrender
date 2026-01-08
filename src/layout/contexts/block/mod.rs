@@ -1313,40 +1313,35 @@ impl BlockFormattingContext {
           let factory = factory.with_viewport_scroll(child_scroll);
           let fc = factory.get(fc_type);
 
-          let used_border_box_width = computed_width.border_box_width();
-          let used_border_box_height =
+          let used_border_box_inline = computed_width.border_box_width();
+          let used_border_box_block =
             specified_height.map(|h| (h.max(0.0) + vertical_edges).max(0.0));
           // Block layout performs sizing/margin resolution in logical inline/block coordinates, but
           // flex/grid/table formatting contexts operate in the physical width/height axes. Map the
-          // containing block dimensions into physical constraints and then convert the resulting
-          // fragment tree back into the block formatting context’s logical space so the parent’s
+          // resolved border-box size into physical space and then convert the resulting fragment
+          // tree back into the block formatting context’s logical space so the parent's
           // axis-conversion step applies exactly once.
-          let (used_width_physical, used_height_physical) = if inline_is_horizontal {
-            (Some(used_border_box_width), used_border_box_height)
+          let (used_border_box_width, used_border_box_height) = if inline_is_horizontal {
+            (Some(used_border_box_inline), used_border_box_block)
           } else {
-            (used_border_box_height, Some(used_border_box_width))
+            (used_border_box_block, Some(used_border_box_inline))
           };
           let fc_constraints = if inline_is_horizontal {
-            LayoutConstraints::new(AvailableSpace::Definite(containing_width), constraints.available_height)
+            LayoutConstraints::new(
+              AvailableSpace::Definite(containing_width),
+              constraints.available_height,
+            )
           } else {
-            LayoutConstraints::new(constraints.available_width, AvailableSpace::Definite(containing_width))
+            LayoutConstraints::new(
+              constraints.available_width,
+              AvailableSpace::Definite(containing_width),
+            )
           }
-          .with_used_border_box_size(used_width_physical, used_height_physical);
+          .with_inline_percentage_base(Some(containing_width))
+          .with_used_border_box_size(used_border_box_width, used_border_box_height);
 
           let mut fragment = fc.layout(child, &fc_constraints)?;
-          let parent_inline_is_horizontal = inline_axis_is_horizontal(parent.style.writing_mode);
-          let parent_block_size = if parent_inline_is_horizontal {
-            constraints.height().unwrap_or(0.0)
-          } else {
-            constraints.width().unwrap_or(0.0)
-          };
-          fragment = unconvert_fragment_axes(
-            fragment,
-            containing_width,
-            parent_block_size,
-            parent.style.writing_mode,
-            parent.style.direction,
-          );
+          fragment = unconvert_fragment_axes_root(fragment);
           let desired_origin = child_border_origin;
           let offset = Point::new(
             desired_origin.x - fragment.bounds.x(),
@@ -2804,18 +2799,32 @@ impl BlockFormattingContext {
         .unwrap_or(&mut local_float_ctx)
     };
     let available_height = block_space;
-    // The positioned-layout code resolves `top/left` percentages against the containing block's
-    // physical width/height. Block layout tracks sizes in logical inline/block coordinates, so map
-    // them back to physical axes before constructing the containing block.
+    // Positioned offsets resolve percentages against the containing block's physical width/height.
+    // Block layout tracks sizes in logical inline/block coordinates, so map them back to physical
+    // axes before constructing the positioned containing block. Keep the percentage bases `None`
+    // when the corresponding physical size is indefinite so percentage offsets resolve to `auto`
+    // instead of being treated as 0px (CSS 2.1 §10.5/10.6).
     let block_space_px = block_space.to_option().unwrap_or(0.0);
     let (relative_width, relative_height) = if inline_is_horizontal {
       (containing_width, block_space_px)
     } else {
       (block_space_px, containing_width)
     };
-    let relative_cb = ContainingBlock::with_viewport(
+    let physical_width_base = if inline_is_horizontal {
+      Some(containing_width)
+    } else {
+      block_space.to_option()
+    };
+    let physical_height_base = if inline_is_horizontal {
+      block_space.to_option()
+    } else {
+      Some(containing_width)
+    };
+    let relative_cb = ContainingBlock::with_viewport_and_bases(
       Rect::new(Point::ZERO, Size::new(relative_width, relative_height)),
       self.viewport_size,
+      physical_width_base,
+      physical_height_base,
     );
     // Check for border/padding that prevents margin collapse with first child
     let parent_has_top_separation = resolve_length_for_width(

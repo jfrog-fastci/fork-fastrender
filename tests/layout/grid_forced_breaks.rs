@@ -174,12 +174,12 @@ fn vertical_writing_mode_grid_item_forced_break_after_propagates_to_row_boundary
             align-items: start;
           }
           .row1 {
-            block-size: 10px;
+            width: 10px;
             break-after: page;
             background: rgb(255, 0, 0);
           }
           .row2 {
-            block-size: 10px;
+            width: 10px;
             background: rgb(0, 0, 255);
           }
         </style>
