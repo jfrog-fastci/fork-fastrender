@@ -1,5 +1,5 @@
 use fastrender::api::{FastRender, RenderDiagnostics, RenderOptions};
-use fastrender::css::loader::{infer_base_url, StylesheetInlineBudget};
+use fastrender::css::loader::StylesheetInlineBudget;
 use fastrender::resource::{FetchedResource, ResourceFetcher};
 use fastrender::style::color::Rgba;
 use fastrender::style::media::MediaType;
@@ -113,14 +113,13 @@ fn nested_imports_resolve_against_base_and_stylesheet_urls() {
     .build()
     .unwrap();
 
-  let base_url = infer_base_url(&html, base_hint).into_owned();
-  renderer.set_base_url(base_url.clone());
+  renderer.set_base_url(base_hint);
 
   let mut diagnostics = RenderDiagnostics::default();
   let html_with_css = renderer
     .inline_stylesheets_for_document(
       &html,
-      &base_url,
+      base_hint,
       MediaType::Screen,
       None,
       &mut diagnostics,
@@ -176,14 +175,13 @@ fn inline_stylesheets_stop_when_byte_budget_exhausted() {
     .build()
     .unwrap();
 
-  let base_url = infer_base_url(html, base_hint).into_owned();
-  renderer.set_base_url(base_url.clone());
+  renderer.set_base_url(base_hint);
 
   let mut diagnostics = RenderDiagnostics::default();
   let inlined = renderer
     .inline_stylesheets_for_document(
       html,
-      &base_url,
+      base_hint,
       MediaType::Screen,
       None,
       &mut diagnostics,

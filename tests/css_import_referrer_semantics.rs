@@ -348,3 +348,41 @@ fn link_stylesheet_uses_document_referrer_even_with_base_href() {
     .expect("request for stylesheet");
   assert_eq!(sheet_request.referrer_url.as_deref(), Some(document_url));
 }
+
+#[test]
+fn inline_stylesheets_for_document_resolves_base_href_without_changing_referrer() {
+  let document_url = "https://example.test/page.html";
+  let stylesheet_url = "https://example.test/static/style.css";
+  let html = r#"<html><head><base href="static/"><link rel="stylesheet" href="style.css"></head><body></body></html>"#;
+
+  let fetcher = Arc::new(RecordingFetcher::default().with_css(
+    stylesheet_url,
+    "body { color: rgb(10, 20, 30); }",
+    None,
+  ));
+  let renderer = renderer_for(fetcher.clone());
+
+  let mut diagnostics = RenderDiagnostics::default();
+  renderer
+    .inline_stylesheets_for_document(
+      html,
+      document_url,
+      MediaType::Screen,
+      None,
+      &mut diagnostics,
+      None,
+    )
+    .expect("inline stylesheets");
+
+  assert!(
+    diagnostics.fetch_errors.is_empty(),
+    "expected stylesheet fetch to succeed: {:?}",
+    diagnostics.fetch_errors
+  );
+  let requests = fetcher.requests();
+  let sheet_request = requests
+    .iter()
+    .find(|r| r.url == stylesheet_url && r.destination == FetchDestination::Style)
+    .expect("request for stylesheet");
+  assert_eq!(sheet_request.referrer_url.as_deref(), Some(document_url));
+}

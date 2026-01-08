@@ -9822,6 +9822,10 @@ impl FastRender {
   }
 
   /// Fetch linked stylesheets using the renderer's fetcher and inject them into the HTML.
+  ///
+  /// `base_url` is treated as a document URL hint (used for referrer/origin policy). The effective
+  /// base URL for resolving relative stylesheet hrefs is inferred from the document, honoring
+  /// `<base href>` when present.
   pub fn inline_stylesheets_for_document(
     &self,
     html: &str,
@@ -9833,19 +9837,25 @@ impl FastRender {
   ) -> std::result::Result<String, RenderError> {
     let referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
-    let document_url = if base_url.trim().is_empty() {
+    let base_hint = base_url.trim();
+    let document_url = if base_hint.is_empty() {
       None
     } else {
-      Some(base_url)
+      Some(base_hint)
     };
     let resource_context = self.build_resource_context(document_url, None, referrer_policy);
+    let base_url = if let Some(base_hint) = document_url {
+      crate::css::loader::infer_base_url(html, base_hint)
+    } else {
+      std::borrow::Cow::Borrowed("")
+    };
 
     runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
       Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
         self.fetcher.as_ref(),
         self.runtime_toggles.as_ref(),
         html,
-        base_url,
+        base_url.as_ref(),
         media_type,
         css_limit,
         Some(&resource_context),
@@ -9858,6 +9868,9 @@ impl FastRender {
   }
 
   /// Fetch linked stylesheets using the renderer's fetcher with an explicit resource context.
+  ///
+  /// `base_url` is treated as a document URL hint; relative stylesheet hrefs are resolved against
+  /// the inferred document base URL (honoring `<base href>`).
   pub fn inline_stylesheets_for_document_with_context(
     &self,
     html: &str,
@@ -9868,12 +9881,18 @@ impl FastRender {
     diagnostics: &mut RenderDiagnostics,
     deadline: Option<&RenderDeadline>,
   ) -> std::result::Result<String, RenderError> {
+    let base_hint = base_url.trim();
+    let base_url = if base_hint.is_empty() {
+      std::borrow::Cow::Borrowed("")
+    } else {
+      crate::css::loader::infer_base_url(html, base_hint)
+    };
     runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
       Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
         self.fetcher.as_ref(),
         self.runtime_toggles.as_ref(),
         html,
-        base_url,
+        base_url.as_ref(),
         media_type,
         css_limit,
         resource_context,
