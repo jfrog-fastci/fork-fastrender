@@ -2799,7 +2799,7 @@ pub fn compute_slot_assignment_with_ids(
           .map_err(Error::Render)?;
           let slot_name = child
             .get_attribute_ref("slot")
-            .map(|v| v.trim())
+            .map(trim_ascii_whitespace_html)
             .filter(|v| !v.is_empty());
           light_children.push((slot_name, child as *const DomNode));
         }
@@ -4304,20 +4304,31 @@ impl DomNode {
   }
 }
 
+fn is_ascii_whitespace_html(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+}
+
+fn trim_ascii_whitespace_html(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html)
+}
+
 /// Parse an `exportparts` attribute value into (internal, exported) name pairs.
 ///
 /// Entries are comma-separated. A missing alias is treated as an identity mapping.
 pub(crate) fn parse_exportparts(value: &str) -> Vec<(String, String)> {
   let mut mappings = Vec::new();
   for entry in value.split(',') {
-    let entry = entry.trim();
+    let entry = trim_ascii_whitespace_html(entry);
     if entry.is_empty() {
       continue;
     }
 
     let mut parts = entry.splitn(2, ':');
-    let internal = parts.next().map(str::trim).unwrap_or_default();
-    let exported = parts.next().map(str::trim);
+    let internal = parts
+      .next()
+      .map(trim_ascii_whitespace_html)
+      .unwrap_or_default();
+    let exported = parts.next().map(trim_ascii_whitespace_html);
     if internal.is_empty() {
       continue;
     }
@@ -4335,7 +4346,10 @@ pub(crate) fn parse_exportparts(value: &str) -> Vec<(String, String)> {
 }
 
 fn parse_finite_number(value: &str) -> Option<f64> {
-  value.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+  trim_ascii_whitespace_html(value)
+    .parse::<f64>()
+    .ok()
+    .filter(|v| v.is_finite())
 }
 
 fn format_number(mut value: f64) -> String {
@@ -4390,7 +4404,10 @@ pub(crate) fn input_range_value(node: &DomNode) -> Option<f64> {
   let clamped = resolved.clamp(min, max);
 
   let step_attr = node.get_attribute_ref("step");
-  if matches!(step_attr, Some(step) if step.trim().eq_ignore_ascii_case("any")) {
+  if matches!(
+    step_attr,
+    Some(step) if trim_ascii_whitespace_html(step).eq_ignore_ascii_case("any")
+  ) {
     return Some(clamped);
   }
 
@@ -5271,7 +5288,10 @@ impl<'a> ElementRef<'a> {
   }
 
   fn parse_number(value: &str) -> Option<f64> {
-    value.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+    trim_ascii_whitespace_html(value)
+      .parse::<f64>()
+      .ok()
+      .filter(|v| v.is_finite())
   }
 
   fn numeric_in_range(&self, value: f64) -> Option<bool> {
@@ -5356,7 +5376,7 @@ impl<'a> ElementRef<'a> {
       }
 
       if input_type.eq_ignore_ascii_case("number") || input_type.eq_ignore_ascii_case("range") {
-        if value.trim().is_empty() {
+        if trim_ascii_whitespace_html(&value).is_empty() {
           return !required;
         }
         if let Some(num) = Self::parse_number(&value) {
@@ -5386,7 +5406,7 @@ impl<'a> ElementRef<'a> {
         return !self.radio_group_is_missing();
       }
 
-      return !(required && value.trim().is_empty());
+      return !(required && trim_ascii_whitespace_html(&value).is_empty());
     }
 
     true
@@ -5968,12 +5988,11 @@ fn inline_style_display_is_none(node: &DomNode) -> Option<bool> {
     let Some((name, value)) = decl.split_once(':') else {
       continue;
     };
-    if !name.trim().eq_ignore_ascii_case("display") {
+    if !trim_ascii_whitespace_html(name).eq_ignore_ascii_case("display") {
       continue;
     }
-    let token = value
-      .trim()
-      .split(|c: char| c.is_ascii_whitespace() || c == '!' || c == ';')
+    let token = trim_ascii_whitespace_html(value)
+      .split(|c: char| is_ascii_whitespace_html(c) || c == '!' || c == ';')
       .next()
       .unwrap_or("");
     if token.is_empty() {
@@ -6143,7 +6162,7 @@ fn single_select_selected_option_and_disabled<'a>(select: &'a DomNode) -> Option
 fn select_display_size(select: &DomNode) -> u32 {
   let size = select
     .get_attribute_ref("size")
-    .and_then(|value| value.trim().parse::<u32>().ok())
+    .and_then(|value| trim_ascii_whitespace_html(value).parse::<u32>().ok())
     .filter(|value| *value > 0);
 
   size.unwrap_or_else(|| {
@@ -6229,7 +6248,7 @@ fn select_has_non_disabled_selected_option(select: &DomNode) -> bool {
 
 pub(crate) fn parse_select_size_attribute(node: &DomNode) -> Option<u32> {
   let raw = node.get_attribute_ref("size")?;
-  let trimmed = raw.trim_matches(|c: char| c.is_ascii_whitespace());
+  let trimmed = trim_ascii_whitespace_html(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -8064,12 +8083,62 @@ mod tests {
   }
 
   #[test]
+  fn non_ascii_whitespace_input_range_bounds_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let min = format!("{nbsp}10");
+    let node = element_with_attrs(
+      "input",
+      vec![("type", "range"), ("min", min.as_str()), ("max", "20")],
+      vec![],
+    );
+    assert_eq!(
+      input_range_bounds(&node),
+      Some((0.0, 20.0)),
+      "NBSP must not be treated as whitespace when parsing range bounds"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_input_range_step_any_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let step = format!("{nbsp}any");
+    let node = element_with_attrs(
+      "input",
+      vec![
+        ("type", "range"),
+        ("min", "0"),
+        ("max", "10"),
+        ("value", "3.3"),
+        ("step", step.as_str()),
+      ],
+      vec![],
+    );
+    assert_eq!(
+      input_range_value(&node),
+      Some(3.0),
+      "NBSP must not be treated as whitespace when matching step=any"
+    );
+  }
+
+  #[test]
   fn required_whitespace_is_not_value_missing() {
     let textarea = element_with_attrs("textarea", vec![("required", "")], vec![text(" ")]);
     assert!(ElementRef::new(&textarea).accessibility_is_valid());
 
     let input = element_with_attrs("input", vec![("required", ""), ("value", " ")], vec![]);
     assert!(ElementRef::new(&input).accessibility_is_valid());
+  }
+
+  #[test]
+  fn non_ascii_whitespace_select_display_size_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let size = format!("{nbsp}2");
+    let select = element_with_attrs("select", vec![("size", size.as_str())], vec![]);
+    assert_eq!(
+      select_display_size(&select),
+      1,
+      "NBSP must not be treated as whitespace when parsing <select size>"
+    );
   }
 
   #[test]
@@ -8541,6 +8610,41 @@ mod tests {
       .expect("light assigned");
     assert_eq!(assigned.slot_node_id, real_id);
     assert_ne!(assigned.slot_node_id, template_id);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_slot_assignment_does_not_trim_nbsp_in_slot_attr() {
+    let html = "<div id='host'><template shadowroot='open'><slot id='default'></slot><slot id='named' name='foo'></slot></template><span id='light' slot='&nbsp;foo'></span></div>";
+    let dom = parse_html(html).expect("parse html");
+    let ids = enumerate_dom_ids(&dom);
+    let assignment = compute_slot_assignment_with_ids(&dom, &ids).expect("slot assignment");
+
+    let light = find_node_by_id(&dom, "light").expect("light node");
+    let default_slot = find_node_by_id(&dom, "default").expect("default slot");
+    let named_slot = find_node_by_id(&dom, "named").expect("named slot");
+
+    let light_id = ids
+      .get(&(light as *const DomNode))
+      .copied()
+      .expect("light node id");
+    let default_id = ids
+      .get(&(default_slot as *const DomNode))
+      .copied()
+      .expect("default slot id");
+    let named_id = ids
+      .get(&(named_slot as *const DomNode))
+      .copied()
+      .expect("named slot id");
+
+    let assigned = assignment
+      .node_to_slot
+      .get(&light_id)
+      .expect("light assigned");
+    assert_eq!(
+      assigned.slot_node_id, default_id,
+      "NBSP must not be treated as whitespace for slot name matching"
+    );
+    assert_ne!(assigned.slot_node_id, named_id);
   }
 
   #[test]
@@ -10508,6 +10612,23 @@ mod tests {
       Some(CssString::from("inner"))
     );
     assert_eq!(element.imported_part(&CssString::from("missing")), None);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_imported_part_does_not_trim_nbsp_in_exportparts() {
+    let nbsp = "\u{00A0}";
+    let exportparts = format!("{nbsp}label");
+    let node = element_with_attrs(
+      "div",
+      vec![("exportparts", exportparts.as_str())],
+      vec![],
+    );
+    let element = ElementRef::new(&node);
+    assert_eq!(
+      element.imported_part(&CssString::from("label")),
+      None,
+      "NBSP must not be treated as whitespace when parsing exportparts"
+    );
   }
 
   fn collect_wbr_texts(node: &DomNode, out: &mut Vec<String>) {
@@ -13051,6 +13172,17 @@ mod tests {
     assert!(
       node_hidden_for_select(&invalid_then_none),
       "invalid inline display declarations should not mask later valid ones"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_inline_style_display_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let style = format!("display:{nbsp}none");
+    let option = element_with_attrs("option", vec![("style", style.as_str())], vec![]);
+    assert!(
+      !node_hidden_for_select(&option),
+      "NBSP must not be treated as whitespace when parsing inline style declarations"
     );
   }
 

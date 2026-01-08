@@ -1321,7 +1321,7 @@ fn should_substitute_akamai_pixel_empty_image_body(
   if headers
     .get("content-length")
     .and_then(|h| h.to_str().ok())
-    .and_then(|raw| raw.trim().parse::<u64>().ok())
+    .and_then(|raw| trim_http_whitespace(raw).parse::<u64>().ok())
     .is_some_and(|len| len > 0)
   {
     return false;
@@ -1334,7 +1334,7 @@ fn header_content_length_is_zero(headers: &HeaderMap) -> bool {
   headers
     .get("content-length")
     .and_then(|h| h.to_str().ok())
-    .and_then(|raw| raw.trim().parse::<u64>().ok())
+    .and_then(|raw| trim_http_whitespace(raw).parse::<u64>().ok())
     .is_some_and(|len| len == 0)
 }
 
@@ -2647,7 +2647,7 @@ pub fn ensure_cors_allows_origin_with<E>(
     .unwrap_or_default();
   let header_value = header_value
     .split(',')
-    .map(|v| v.trim())
+    .map(trim_http_whitespace)
     .find(|v| !v.is_empty())
     .unwrap_or_default();
 
@@ -9943,6 +9943,42 @@ mod tests {
     assert!(
       !allow_credentials,
       "NBSP must not be treated as whitespace when matching allow-credentials"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_content_length_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let mut headers = HeaderMap::new();
+    headers.insert(
+      "content-length",
+      http::HeaderValue::from_bytes(format!("{nbsp}0").as_bytes()).expect("header value"),
+    );
+    assert!(
+      !header_content_length_is_zero(&headers),
+      "NBSP must not be treated as HTTP OWS when parsing Content-Length"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_cors_allow_origin_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let request_origin = origin_from_url("https://example.com").expect("origin");
+    let mut resource = FetchedResource::new(Vec::new(), None);
+    resource.final_url = Some("https://other.com/".to_string());
+    resource.access_control_allow_origin = Some(format!("{nbsp}*"));
+
+    let err = ensure_cors_allows_origin_with(
+      Some(&request_origin),
+      &resource,
+      "https://other.com/",
+      |message| message,
+    )
+    .expect_err("CORS should reject NBSP-prefixed allow-origin");
+
+    assert!(
+      err.contains("invalid Access-Control-Allow-Origin"),
+      "unexpected error: {err}"
     );
   }
 
