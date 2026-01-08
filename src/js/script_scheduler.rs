@@ -110,6 +110,15 @@ where
 
     // Inline scripts execute immediately (async/defer ignored).
     if spec.src.is_none() {
+      // HTML `</script>` handling performs a microtask checkpoint *before* preparing/executing a
+      // parser-inserted script when the JS execution context stack is empty.
+      //
+      // In this MVP we approximate "JS execution context stack is empty" by checking whether the
+      // event loop is currently executing a task/microtask. This prevents microtasks from running
+      // during re-entrant parsing (e.g. `document.write()` inside an executing script).
+      if spec.parser_inserted && event_loop.currently_running_task().is_none() {
+        event_loop.perform_microtask_checkpoint(host)?;
+      }
       host.execute_classic_script(&spec.inline_text, &spec, event_loop)?;
       // HTML: a microtask checkpoint is performed after script execution.
       event_loop.perform_microtask_checkpoint(host)?;
@@ -144,6 +153,9 @@ where
     }
 
     // Parser-blocking external script: synchronously load + execute.
+    if spec.parser_inserted && event_loop.currently_running_task().is_none() {
+      event_loop.perform_microtask_checkpoint(host)?;
+    }
     let script_text = host.load_blocking(src_url)?;
     host.execute_classic_script(&script_text, &spec, event_loop)?;
     event_loop.perform_microtask_checkpoint(host)?;
@@ -485,6 +497,8 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::dom::parse_html;
+  use crate::js::extract_script_elements;
   use crate::js::{EventLoop, RunLimits, ScriptElementSpec, ScriptType};
   use std::collections::VecDeque;
 
@@ -678,6 +692,28 @@ mod tests {
         "microtask-after-a2".to_string(),
       ]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn microtasks_run_before_parser_blocking_inline_script_at_script_end_boundary() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.log.push("microtask".to_string());
+      Ok(())
+    })?;
+
+    let dom = parse_html("<!doctype html><script>BLOCK</script>")?;
+    let scripts = extract_script_elements(&dom, None);
+    assert_eq!(scripts.len(), 1);
+    assert_eq!(scripts[0].inline_text, "BLOCK");
+
+    scheduler.handle_script(&mut host, &mut event_loop, scripts[0].clone())?;
+
+    assert_eq!(host.log, vec!["microtask".to_string(), "BLOCK".to_string()]);
     Ok(())
   }
 }
