@@ -378,9 +378,13 @@ pub fn normalize_page_name(raw: &str) -> Option<String> {
   Some(sanitize_filename(&no_fragment))
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 /// Normalize a URL into a filename-safe stem used for caches and outputs.
 pub fn url_to_filename(url: &str) -> String {
-  let trimmed = url.trim();
+  let trimmed = trim_ascii_whitespace(url);
   // First, try to parse the URL so we can lowercase the hostname (case-insensitive per URL
   // spec) and strip the scheme regardless of casing. If parsing fails, fall back to a best-effort
   // scheme-stripping path similar to the old behavior.
@@ -544,7 +548,7 @@ fn http_browser_headers_enabled() -> bool {
 /// This must only be used for header decisions; it must not be used to mutate the actual request
 /// URL.
 fn http_browser_tolerant_origin_from_url(url: &str) -> Option<DocumentOrigin> {
-  let trimmed = url.trim();
+  let trimmed = trim_ascii_whitespace(url);
   let scheme_end = trimmed.find("://")?;
   let scheme = trimmed[..scheme_end].to_ascii_lowercase();
   if !matches!(scheme.as_str(), "http" | "https") {
@@ -619,7 +623,7 @@ fn http_browser_tolerant_origin_from_url(url: &str) -> Option<DocumentOrigin> {
 /// - lowercase scheme + host (matching URL serialization)
 /// - drop default ports (80/443)
 fn http_normalize_referrer_url_tolerant(url: &str) -> String {
-  let trimmed = url.trim();
+  let trimmed = trim_ascii_whitespace(url);
   let Some(scheme_end) = trimmed.find("://") else {
     return trimmed.to_string();
   };
@@ -1979,10 +1983,7 @@ impl ResourcePolicy {
   }
 
   fn ensure_url_allowed(&self, url: &str) -> Result<ResourceScheme> {
-    if url
-      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
-      .is_empty()
-    {
+    if trim_ascii_whitespace(url).is_empty() {
       return Err(policy_error("empty URL"));
     }
     let scheme = classify_scheme(url);
@@ -2529,7 +2530,7 @@ fn url_looks_like_suffix(url: &str, suffix: &str) -> bool {
 }
 
 fn url_without_query_fragment(url: &str) -> &str {
-  let url = url.trim();
+  let url = trim_ascii_whitespace(url);
   let url = url.split_once('#').map(|(before, _)| before).unwrap_or(url);
   url.split_once('?').map(|(before, _)| before).unwrap_or(url)
 }
@@ -3645,7 +3646,7 @@ fn build_http_header_pairs<'a>(
   }
 
   if let Some(raw_referrer) = referrer_url {
-    let raw_referrer = raw_referrer.trim();
+    let raw_referrer = trim_ascii_whitespace(raw_referrer);
     if !raw_referrer.is_empty() {
       if let Some(value) = http_referer_header_value(raw_referrer, url, referrer_policy) {
         headers.push(("Referer".to_string(), value));
@@ -9872,6 +9873,15 @@ mod tests {
       ".jpg"
     ));
     assert!(!url_looks_like_suffix("jpg", ".jpeg"));
+  }
+
+  #[test]
+  fn url_looks_like_suffix_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(!url_looks_like_suffix(
+      &format!("http://example.com/photo.jpg{nbsp}"),
+      ".jpg"
+    ));
   }
 
   #[test]

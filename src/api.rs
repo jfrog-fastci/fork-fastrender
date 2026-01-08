@@ -309,11 +309,11 @@ fn authored_intrinsic_axis_hints(intrinsic_size: Option<Size>) -> (Option<f32>, 
   (width, height)
 }
 
-fn url_looks_like_svg_resource(url: &str) -> bool {
-  fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
-  }
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
 
+fn url_looks_like_svg_resource(url: &str) -> bool {
   let trimmed = trim_ascii_whitespace(url);
   if trimmed.is_empty() {
     return false;
@@ -5375,7 +5375,7 @@ impl FastRender {
       self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
 
       // Configure base/document URL hints for URL resolution and referrer/origin semantics.
-      let base_hint = base_hint.trim();
+      let base_hint = trim_ascii_whitespace(base_hint);
       if base_hint.is_empty() {
         self.clear_document_url();
         self.clear_base_url();
@@ -5473,7 +5473,7 @@ impl FastRender {
                 .map(|(_, v)| v.clone());
               let href_present = attributes
                 .iter()
-                .any(|(k, v)| k.eq_ignore_ascii_case("href") && !v.trim().is_empty());
+                .any(|(k, v)| k.eq_ignore_ascii_case("href") && !trim_ascii_whitespace(v).is_empty());
               if let (Some(rel_value), true) = (rel_value, href_present) {
                 let rel_tokens = crate::css::parser::tokenize_rel_list(&rel_value);
                 let as_attr = attributes
@@ -5630,7 +5630,7 @@ impl FastRender {
       self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
 
       let sanitized_document_url = document_url
-        .map(|url| url.trim())
+        .map(trim_ascii_whitespace)
         .filter(|url| !url.is_empty());
       if let Some(url) = sanitized_document_url {
         self.set_document_url(url);
@@ -8741,7 +8741,7 @@ impl FastRender {
 
       let base_hint = self.base_url.clone().unwrap_or_default();
       self.set_document_url(base_hint.clone());
-      if !base_hint.trim().is_empty() {
+      if !trim_ascii_whitespace(&base_hint).is_empty() {
         self.set_base_url(base_hint);
       }
       let dom = self.parse_html(html)?;
@@ -8807,7 +8807,7 @@ impl FastRender {
 
       let hint = resource.final_url.as_deref().or(base_hint).unwrap_or("");
       self.set_document_url(hint);
-      if !hint.trim().is_empty() {
+      if !trim_ascii_whitespace(hint).is_empty() {
         self.set_base_url(hint.to_string());
       }
 
@@ -10837,7 +10837,7 @@ impl FastRender {
 
   fn set_document_url(&mut self, document_url: impl Into<String>) {
     let url = document_url.into();
-    if url.trim().is_empty() {
+    if trim_ascii_whitespace(&url).is_empty() {
       self.document_url = None;
     } else {
       self.document_url = Some(url);
@@ -10860,7 +10860,7 @@ impl FastRender {
   fn document_url_hint(&self) -> Option<&str> {
     self
       .document_url()
-      .or_else(|| self.base_url.as_deref().filter(|url| !url.trim().is_empty()))
+      .or_else(|| self.base_url.as_deref().filter(|url| !trim_ascii_whitespace(url).is_empty()))
   }
 
   /// Attach or clear the diagnostics sink for downstream fetchers.
@@ -11058,7 +11058,7 @@ impl FastRender {
   ) -> std::result::Result<String, RenderError> {
     let referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
-    let base_hint = base_url.trim();
+    let base_hint = trim_ascii_whitespace(base_url);
     let document_url = if base_hint.is_empty() {
       None
     } else {
@@ -11102,7 +11102,7 @@ impl FastRender {
     diagnostics: &mut RenderDiagnostics,
     deadline: Option<&RenderDeadline>,
   ) -> std::result::Result<String, RenderError> {
-    let base_hint = base_url.trim();
+    let base_hint = trim_ascii_whitespace(base_url);
     let base_url = if base_hint.is_empty() {
       std::borrow::Cow::Borrowed("")
     } else {
@@ -24837,6 +24837,18 @@ pub(crate) fn render_html_with_shared_resources(
       stylesheet_request.referrer_url.as_deref(),
       Some(document_url)
     );
+  }
+
+  #[test]
+  fn document_url_hint_preserves_non_ascii_whitespace_in_base_url() {
+    let nbsp = "\u{00A0}";
+    let mut renderer = FastRender::new().expect("renderer");
+    renderer.clear_base_url();
+    renderer.clear_document_url();
+    renderer.set_base_url(nbsp);
+    assert_eq!(renderer.document_url_hint(), Some(nbsp));
+    renderer.set_document_url(nbsp);
+    assert_eq!(renderer.document_url(), Some(nbsp));
   }
 
   #[test]

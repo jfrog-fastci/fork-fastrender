@@ -3336,10 +3336,14 @@ fn apply_dom_compatibility_mutations(
   node: &mut DomNode,
   deadline_counter: &mut usize,
 ) -> Result<()> {
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  }
+
   fn first_non_empty_attr(attrs: &[(String, String)], names: &[&str]) -> Option<String> {
     for &name in names {
       if let Some((_, value)) = attrs.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
-        if !value.trim().is_empty() {
+        if !trim_ascii_whitespace(value).is_empty() {
           return Some(value.clone());
         }
       }
@@ -3348,7 +3352,7 @@ fn apply_dom_compatibility_mutations(
   }
 
   fn looks_like_url(value: &str) -> bool {
-    let value = value.trim();
+    let value = trim_ascii_whitespace(value);
     if value.is_empty() {
       return false;
     }
@@ -3365,11 +3369,11 @@ fn apply_dom_compatibility_mutations(
     fn extract(value: &serde_json::Value) -> Option<String> {
       match value {
         serde_json::Value::String(s) => {
-          let s = s.trim();
-          if s.is_empty() || !looks_like_url(s) {
+          let trimmed = trim_ascii_whitespace(s);
+          if trimmed.is_empty() || !looks_like_url(trimmed) {
             return None;
           }
-          Some(s.to_string())
+          Some(trimmed.to_string())
         }
         serde_json::Value::Array(values) => values.iter().find_map(extract),
         serde_json::Value::Object(map) => {
@@ -3395,7 +3399,7 @@ fn apply_dom_compatibility_mutations(
       }
     }
 
-    let value = value.trim();
+    let value = trim_ascii_whitespace(value);
     if value.is_empty() {
       return None;
     }
@@ -3410,7 +3414,7 @@ fn apply_dom_compatibility_mutations(
   fn first_non_empty_url_attr(attrs: &[(String, String)], names: &[&str]) -> Option<String> {
     for &name in names {
       if let Some((_, value)) = attrs.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
-        let trimmed = value.trim();
+        let trimmed = trim_ascii_whitespace(value);
         if trimmed.is_empty() {
           continue;
         }
@@ -3427,7 +3431,7 @@ fn apply_dom_compatibility_mutations(
   }
 
   fn url_looks_like_mp4(url: &str) -> bool {
-    let url = url.trim();
+    let url = trim_ascii_whitespace(url);
     if url.is_empty() {
       return false;
     }
@@ -3437,7 +3441,7 @@ fn apply_dom_compatibility_mutations(
   }
 
   fn video_url_from_urls_list(value: &str) -> Option<String> {
-    let value = value.trim();
+    let value = trim_ascii_whitespace(value);
     if value.is_empty() {
       return None;
     }
@@ -3448,7 +3452,7 @@ fn apply_dom_compatibility_mutations(
     let mut first: Option<&str> = None;
     let mut mp4: Option<&str> = None;
     for part in value.split(',') {
-      let part = part.trim();
+      let part = trim_ascii_whitespace(part);
       if part.is_empty() {
         continue;
       }
@@ -3584,7 +3588,7 @@ fn apply_dom_compatibility_mutations(
         }
 
         let needs_srcset = match srcset_idx {
-          Some(idx) => attributes[idx].1.trim().is_empty(),
+          Some(idx) => trim_ascii_whitespace(&attributes[idx].1).is_empty(),
           None => true,
         };
         if needs_srcset {
@@ -3593,7 +3597,7 @@ fn apply_dom_compatibility_mutations(
           {
             match srcset_idx {
               Some(idx) => {
-                if attributes[idx].1.trim().is_empty() {
+                if trim_ascii_whitespace(&attributes[idx].1).is_empty() {
                   attributes[idx].1 = candidate;
                 }
               }
@@ -3605,7 +3609,7 @@ fn apply_dom_compatibility_mutations(
         }
 
         let needs_sizes = match sizes_idx {
-          Some(idx) => attributes[idx].1.trim().is_empty(),
+          Some(idx) => trim_ascii_whitespace(&attributes[idx].1).is_empty(),
           None => true,
         };
         if needs_sizes {
@@ -3614,7 +3618,7 @@ fn apply_dom_compatibility_mutations(
           {
             match sizes_idx {
               Some(idx) => {
-                if attributes[idx].1.trim().is_empty() {
+                if trim_ascii_whitespace(&attributes[idx].1).is_empty() {
                   attributes[idx].1 = candidate;
                 }
               }
@@ -3636,7 +3640,7 @@ fn apply_dom_compatibility_mutations(
           .position(|(name, _)| name.eq_ignore_ascii_case("sizes"));
 
         let needs_srcset = match srcset_idx {
-          Some(idx) => attributes[idx].1.trim().is_empty(),
+          Some(idx) => trim_ascii_whitespace(&attributes[idx].1).is_empty(),
           None => true,
         };
         if needs_srcset {
@@ -3645,7 +3649,7 @@ fn apply_dom_compatibility_mutations(
           {
             match srcset_idx {
               Some(idx) => {
-                if attributes[idx].1.trim().is_empty() {
+                if trim_ascii_whitespace(&attributes[idx].1).is_empty() {
                   attributes[idx].1 = candidate;
                 }
               }
@@ -3657,7 +3661,7 @@ fn apply_dom_compatibility_mutations(
         }
 
         let needs_sizes = match sizes_idx {
-          Some(idx) => attributes[idx].1.trim().is_empty(),
+          Some(idx) => trim_ascii_whitespace(&attributes[idx].1).is_empty(),
           None => true,
         };
         if needs_sizes {
@@ -3666,7 +3670,7 @@ fn apply_dom_compatibility_mutations(
           {
             match sizes_idx {
               Some(idx) => {
-                if attributes[idx].1.trim().is_empty() {
+                if trim_ascii_whitespace(&attributes[idx].1).is_empty() {
                   attributes[idx].1 = candidate;
                 }
               }
@@ -3783,7 +3787,7 @@ fn apply_dom_compatibility_mutations(
         .as_deref()
         .and_then(video_url_from_urls_list);
       let wrapper_poster = wrapper_poster_url.as_deref().and_then(|value| {
-        let trimmed = value.trim();
+        let trimmed = trim_ascii_whitespace(value);
         if trimmed.is_empty() {
           return None;
         }
@@ -13522,6 +13526,15 @@ mod tests {
       img.get_attribute_ref("srcset"),
       Some("a1.jpg 1x, a2.jpg 2x")
     );
+  }
+
+  #[test]
+  fn parse_html_compat_mode_does_not_treat_nbsp_srcset_as_empty() {
+    let nbsp = "\u{00A0}";
+    let html = format!("<img id='img' srcset='{nbsp}' data-srcset='a1.jpg 1x'>");
+    let dom = parse_html_with_options(&html, DomParseOptions::compatibility()).expect("parse");
+    let img = find_element_by_id(&dom, "img").expect("img element");
+    assert_eq!(img.get_attribute_ref("srcset"), Some(nbsp));
   }
 
   #[test]
