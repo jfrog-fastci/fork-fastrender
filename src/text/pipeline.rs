@@ -2441,6 +2441,19 @@ fn collect_opentype_features(style: &ComputedStyle) -> Vec<Feature> {
     FontKerning::None => push_toggle(&mut features, *b"kern", false),
   }
 
+  if style.letter_spacing != 0.0 {
+    for tag in [*b"liga", *b"clig", *b"dlig", *b"hlig"] {
+      let tag = Tag::from_bytes(&tag);
+      features.retain(|f| f.tag != tag);
+      features.push(Feature {
+        tag,
+        value: 0,
+        start: 0,
+        end: u32::MAX,
+      });
+    }
+  }
+
   // Low-level font-feature-settings override defaults and prior toggles.
   for setting in style.font_feature_settings.iter() {
     let tag = Tag::from_bytes(&setting.tag);
@@ -5503,6 +5516,7 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
   style.language.hash(&mut hasher);
   style.font_family.hash(&mut hasher);
   f32_to_canonical_bits(style.font_size).hash(&mut hasher);
+  f32_to_canonical_bits(style.letter_spacing).hash(&mut hasher);
   style.font_weight.to_u16().hash(&mut hasher);
   f32_to_canonical_bits(style.font_stretch.to_percentage()).hash(&mut hasher);
 

@@ -38,6 +38,7 @@ mod font_variation_backend;
 mod generic_family_mapping_test;
 mod hyphenation_test;
 mod justify_test;
+mod letter_spacing_ligatures_test;
 mod line_break_test;
 mod pipeline_test;
 mod script_test;
