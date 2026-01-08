@@ -1156,39 +1156,74 @@ fn parse_timeline_offset_token(token: &str) -> Option<TimelineOffset> {
   None
 }
 
-fn parse_scroll_timeline_list(raw: &str) -> Vec<ScrollTimeline> {
-  let mut timelines = Vec::new();
+fn parse_scroll_timeline_list(raw: &str) -> Option<Vec<ScrollTimeline>> {
   let trimmed = raw.trim();
-  if trimmed.eq_ignore_ascii_case("none") {
-    return Vec::new();
+  if trimmed.is_empty() {
+    return None;
   }
-  for part in split_top_level_commas(trimmed) {
+  if trimmed.eq_ignore_ascii_case("none") {
+    return Some(Vec::new());
+  }
+
+  let parts = split_top_level_commas_strict(trimmed)?;
+  let mut timelines = Vec::with_capacity(parts.len());
+  for part in parts {
     let tokens = split_top_level_whitespace(&part);
     if tokens.is_empty() {
-      continue;
+      return None;
     }
     let mut name: Option<String> = None;
-    let mut name_specified_as_none = false;
+    let mut name_specified = false;
     let mut axis = TimelineAxis::Block;
+    let mut axis_specified = false;
     let mut offsets: Vec<TimelineOffset> = Vec::new();
+
     for token in tokens {
       let lower = token.to_ascii_lowercase();
       if let Some(ax) = parse_timeline_axis(&lower) {
+        if axis_specified {
+          return None;
+        }
         axis = ax;
+        axis_specified = true;
         continue;
       }
       if let Some(offset) = parse_timeline_offset_token(&token) {
+        if offsets.len() >= 2 {
+          return None;
+        }
         offsets.push(offset);
         continue;
       }
-      if name.is_none() && !name_specified_as_none {
-        if token.eq_ignore_ascii_case("none") {
-          name_specified_as_none = true;
-          continue;
-        }
-        name = Some(token.to_string());
+      if name_specified {
+        return None;
       }
+      let mut input = ParserInput::new(&token);
+      let mut parser = Parser::new(&mut input);
+      parser.skip_whitespace();
+      name_specified = true;
+      let tok = parser.next_including_whitespace().ok()?;
+      let parsed_name = match tok {
+        Token::Ident(ident) => {
+          if ident.eq_ignore_ascii_case("none") {
+            None
+          } else {
+            let ident_lower = ident.as_ref().to_ascii_lowercase();
+            if custom_ident_is_excluded_keyword(&ident_lower) {
+              return None;
+            }
+            Some(ident.to_string())
+          }
+        }
+        _ => return None,
+      };
+      parser.skip_whitespace();
+      if !parser.is_exhausted() {
+        return None;
+      }
+      name = parsed_name;
     }
+
     let start = offsets.get(0).cloned().unwrap_or_default();
     let end = offsets.get(1).cloned().unwrap_or(TimelineOffset::Auto);
     timelines.push(ScrollTimeline {
@@ -1198,7 +1233,7 @@ fn parse_scroll_timeline_list(raw: &str) -> Vec<ScrollTimeline> {
       end,
     });
   }
-  timelines
+  Some(timelines)
 }
 
 fn parse_named_timeline_name_list(raw: &str) -> Option<Vec<Option<String>>> {
@@ -1259,25 +1294,35 @@ fn parse_timeline_axis_list(raw: &str) -> Vec<TimelineAxis> {
   axes
 }
 
-fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
-  let mut timelines = Vec::new();
+fn parse_view_timeline_list(raw: &str) -> Option<Vec<ViewTimeline>> {
   let trimmed = raw.trim();
-  if trimmed.eq_ignore_ascii_case("none") {
-    return Vec::new();
+  if trimmed.is_empty() {
+    return None;
   }
-  for part in split_top_level_commas(trimmed) {
+  if trimmed.eq_ignore_ascii_case("none") {
+    return Some(Vec::new());
+  }
+
+  let parts = split_top_level_commas_strict(trimmed)?;
+  let mut timelines = Vec::with_capacity(parts.len());
+  for part in parts {
     let tokens = split_top_level_whitespace(&part);
     if tokens.is_empty() {
-      continue;
+      return None;
     }
     let mut name: Option<String> = None;
-    let mut name_specified_as_none = false;
+    let mut name_specified = false;
     let mut axis = TimelineAxis::Block;
+    let mut axis_specified = false;
     let mut inset_values: Vec<Option<Length>> = Vec::new();
     for token in tokens {
       let lower = token.to_ascii_lowercase();
       if let Some(ax) = parse_timeline_axis(&lower) {
+        if axis_specified {
+          return None;
+        }
         axis = ax;
+        axis_specified = true;
         continue;
       }
       if inset_values.len() < 2 {
@@ -1290,13 +1335,33 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
           continue;
         }
       }
-      if name.is_none() && !name_specified_as_none {
-        if token.eq_ignore_ascii_case("none") {
-          name_specified_as_none = true;
-          continue;
-        }
-        name = Some(token.to_string());
+      if name_specified {
+        return None;
       }
+      let mut input = ParserInput::new(&token);
+      let mut parser = Parser::new(&mut input);
+      parser.skip_whitespace();
+      name_specified = true;
+      let tok = parser.next_including_whitespace().ok()?;
+      let parsed_name = match tok {
+        Token::Ident(ident) => {
+          if ident.eq_ignore_ascii_case("none") {
+            None
+          } else {
+            let ident_lower = ident.as_ref().to_ascii_lowercase();
+            if custom_ident_is_excluded_keyword(&ident_lower) {
+              return None;
+            }
+            Some(ident.to_string())
+          }
+        }
+        _ => return None,
+      };
+      parser.skip_whitespace();
+      if !parser.is_exhausted() {
+        return None;
+      }
+      name = parsed_name;
     }
     let inset = match inset_values.len() {
       0 => None,
@@ -1311,7 +1376,7 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
     };
     timelines.push(ViewTimeline { name, axis, inset });
   }
-  timelines
+  Some(timelines)
 }
 
 fn parse_view_timeline_inset_list(raw: &str) -> Vec<Option<ViewTimelineInset>> {
@@ -11458,7 +11523,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "scroll-timeline" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.scroll_timelines = parse_scroll_timeline_list(css_text);
+      if let Some(val) = parse_scroll_timeline_list(css_text) {
+        styles.scroll_timelines = val;
+      }
     }
     "view-timeline-name" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
@@ -11512,7 +11579,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "view-timeline" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.view_timelines = parse_view_timeline_list(css_text);
+      if let Some(val) = parse_view_timeline_list(css_text) {
+        styles.view_timelines = val;
+      }
     }
     "animation-timeline" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
