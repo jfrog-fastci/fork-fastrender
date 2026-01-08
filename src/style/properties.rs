@@ -15279,10 +15279,13 @@ fn parse_offset_path_str(input: &str) -> Option<OffsetPath> {
     return Some(OffsetPath::None);
   }
 
-  if let Some(path_data) = trimmed
-    .strip_prefix("path(")
-    .and_then(|s| s.strip_suffix(')'))
-  {
+  if starts_with_ignore_ascii_case(trimmed, "path(") {
+    let Some(path_data) = trimmed
+      .get("path(".len()..)
+      .and_then(|s| s.strip_suffix(')'))
+    else {
+      return None;
+    };
     let inner = path_data.trim().trim_matches(&['"', '\''][..]);
     if let Some(commands) = parse_svg_motion_path(inner) {
       return Some(OffsetPath::Path(commands));
