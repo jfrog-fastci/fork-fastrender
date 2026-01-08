@@ -8,6 +8,13 @@ const DATA_URL_PREFIX: &str = "data:";
 const DEFAULT_MEDIA_TYPE: &str = "text/plain";
 const DEFAULT_CHARSET: &str = "charset=US-ASCII";
 
+// RFC 2397 and the HTML "ASCII whitespace" definition both only treat TAB/LF/FF/CR/SPACE as
+// whitespace. Avoid `str::trim()` here because it removes additional Unicode whitespace like NBSP
+// (U+00A0), which should not be treated as ignorable.
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 /// Decode a data: URL into bytes and content type following RFC 2397 semantics.
 pub(crate) fn decode_data_url(url: &str) -> Result<FetchedResource> {
   decode_data_url_prefix(url, usize::MAX)
@@ -55,13 +62,13 @@ struct DataUrlMetadata {
 
 fn parse_metadata(metadata: &str) -> DataUrlMetadata {
   let mut parts = metadata.split(';');
-  let mediatype = parts.next().unwrap_or("").trim();
+  let mediatype = trim_ascii_whitespace(parts.next().unwrap_or(""));
 
   let mut is_base64 = false;
   let mut params: Vec<String> = Vec::new();
 
   for param in parts {
-    let trimmed = param.trim();
+    let trimmed = trim_ascii_whitespace(param);
     if trimmed.is_empty() {
       continue;
     }
@@ -95,8 +102,8 @@ fn parse_metadata(metadata: &str) -> DataUrlMetadata {
 
 fn has_charset(params: &[String]) -> bool {
   params.iter().any(|param| match param.split_once('=') {
-    Some((name, _)) => name.trim().eq_ignore_ascii_case("charset"),
-    None => param.trim().eq_ignore_ascii_case("charset"),
+    Some((name, _)) => trim_ascii_whitespace(name).eq_ignore_ascii_case("charset"),
+    None => trim_ascii_whitespace(param).eq_ignore_ascii_case("charset"),
   })
 }
 
@@ -391,5 +398,15 @@ mod tests {
     let decoded = decode_data_url_prefix(url, 5).expect("decode prefix");
     assert_eq!(decoded.content_type.as_deref(), Some("text/plain"));
     assert_eq!(decoded.bytes, b"hello");
+  }
+
+  #[test]
+  fn data_url_metadata_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let url = format!("data:text/plain;{nbsp}base64,aGk=");
+    let decoded = decode_data_url(&url).expect("decode data url");
+    assert_eq!(decoded.bytes, b"aGk=");
+    let expected = format!("text/plain;{nbsp}base64");
+    assert_eq!(decoded.content_type.as_deref(), Some(expected.as_str()));
   }
 }
