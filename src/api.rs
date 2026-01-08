@@ -12558,12 +12558,16 @@ fn hash_effective_content(style: &ComputedStyle, hasher: &mut DefaultHasher) {
     ContentValue::Normal => {
       let raw = style.content.trim();
       if raw.is_empty() || raw.eq_ignore_ascii_case("normal") {
-        0u8.hash(hasher);
-      } else if raw.eq_ignore_ascii_case("none") {
+        // Effective `normal`.
         1u8.hash(hasher);
+      } else if raw.eq_ignore_ascii_case("none") {
+        // Effective `none`.
+        0u8.hash(hasher);
       } else {
         // Legacy fallback: treat the raw string as literal content.
-        2u8.hash(hasher);
+        2u8.hash(hasher); // ContentValue::Items
+        1usize.hash(hasher); // single item
+        0u8.hash(hasher); // ContentItem::String
         style.content.hash(hasher);
       }
     }
@@ -14693,6 +14697,37 @@ pub(crate) fn render_html_with_shared_resources(
       super::style_layout_fingerprint(&a),
       super::style_layout_fingerprint(&b),
       "expected generated content to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_normalizes_legacy_content_fallbacks() {
+    let mut explicit_none = ComputedStyle::default();
+    explicit_none.content = "none".to_string();
+    explicit_none.content_value = crate::style::content::ContentValue::None;
+
+    let mut legacy_none = ComputedStyle::default();
+    legacy_none.content = "none".to_string();
+    legacy_none.content_value = crate::style::content::ContentValue::Normal;
+
+    assert_eq!(
+      super::style_layout_fingerprint(&explicit_none),
+      super::style_layout_fingerprint(&legacy_none),
+      "expected legacy `content` string fallbacks to match structured content_value"
+    );
+
+    let mut explicit_items = ComputedStyle::default();
+    explicit_items.content = "hello".to_string();
+    explicit_items.content_value = crate::style::content::ContentValue::from_string("hello");
+
+    let mut legacy_items = ComputedStyle::default();
+    legacy_items.content = "hello".to_string();
+    legacy_items.content_value = crate::style::content::ContentValue::Normal;
+
+    assert_eq!(
+      super::style_layout_fingerprint(&explicit_items),
+      super::style_layout_fingerprint(&legacy_items),
+      "expected legacy `content` string fallbacks to hash like their effective content value"
     );
   }
 
