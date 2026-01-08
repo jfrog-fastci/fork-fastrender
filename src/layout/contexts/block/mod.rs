@@ -494,11 +494,6 @@ impl BlockFormattingContext {
     let style = &child.style;
     let font_size = style.font_size; // Get font-size for resolving em units
     let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
-    let inline_viewport = if inline_is_horizontal {
-      self.viewport_size.width
-    } else {
-      self.viewport_size.height
-    };
     // Map physical width/height inputs to the logical inline/block axes used by the block
     // formatting context.
     let (inline_length, inline_keyword, min_inline_length, min_inline_keyword, max_inline_length, max_inline_keyword) =
@@ -987,13 +982,8 @@ impl BlockFormattingContext {
     } else {
       max_width
     };
-    let mut clamped_content_width =
+    let clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
-    let clamped_content_width = if clamped_content_width > inline_viewport {
-      inline_viewport
-    } else {
-      clamped_content_width
-    };
     if clamped_content_width != computed_width.content_width {
       let (margin_left, margin_right) = recompute_margins_for_width(
         style,
@@ -2699,12 +2689,7 @@ impl BlockFormattingContext {
     } else {
       self.viewport_size.height
     };
-    let containing_width = Some(inline_percentage_base).map(|w| w.min(inline_viewport));
-    let mut containing_width = containing_width.unwrap_or(if intrinsic_width {
-      0.0
-    } else {
-      inline_viewport
-    });
+    let mut containing_width = inline_percentage_base;
     if !intrinsic_width && containing_width <= 1.0 {
       let width_is_absolute = parent
         .style
@@ -4996,8 +4981,7 @@ impl FormattingContext for BlockFormattingContext {
       AvailableSpace::MaxContent | AvailableSpace::MinContent | AvailableSpace::Indefinite => {
         preferred_containing_width(inline_percentage_base).unwrap_or(inline_percentage_base)
       }
-    }
-    .min(inline_viewport);
+    };
     if containing_width <= 1.0 && !intrinsic_width_mode {
       let width_is_absolute = style
         .width
@@ -5287,13 +5271,8 @@ impl FormattingContext for BlockFormattingContext {
       max_width
     };
 
-    let mut clamped_content_width =
+    let clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
-    let clamped_content_width = if clamped_content_width > inline_viewport {
-      inline_viewport
-    } else {
-      clamped_content_width
-    };
     let log_wide_block = toggles.truthy("FASTR_LOG_WIDE_FLEX");
     if log_wide_block && computed_width.content_width > self.viewport_size.width + 0.5 {
       let selector = box_node
