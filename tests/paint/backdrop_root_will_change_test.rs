@@ -338,6 +338,42 @@ fn will_change_webkit_mask_image_establishes_backdrop_root() {
 }
 
 #[test]
+fn will_change_multiple_properties_establishes_backdrop_root_if_any_hint_does() {
+  // `will-change` accepts a comma-separated list. If any hinted property is a Backdrop Root trigger,
+  // the element must establish a Backdrop Root immediately.
+  //
+  // This also guards against implementations that only consider the first hint.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent { position: absolute; inset: 0; will-change: transform, filter; }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        background: transparent;
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // Backdrop Root means the child's backdrop-filter samples an empty backdrop and yields transparent,
+  // letting the page background show through unchanged.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_mask_image_establishes_backdrop_root() {
   // `mask-image` is a Backdrop Root trigger; `will-change: mask-image` must establish the boundary
   // proactively even before the element has a non-`none` mask-image applied.
