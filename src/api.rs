@@ -13587,10 +13587,26 @@ fn build_container_query_context(
     let padding_top = resolve_padding(style.padding_top, percentage_base, style, viewport);
     let padding_bottom = resolve_padding(style.padding_bottom, percentage_base, style, viewport);
 
-    let border_left = style.used_border_left_width().to_px();
-    let border_right = style.used_border_right_width().to_px();
-    let border_top = style.used_border_top_width().to_px();
-    let border_bottom = style.used_border_bottom_width().to_px();
+    // `Length::to_px()` is a best-effort helper for absolute units; it returns raw values for
+    // font-relative units and for `calc()` expressions that include unresolved terms. Resolve
+    // borders against the container's computed font/viewport context to match layout's used values.
+    let (font_size, root_font_size) = safe_font_size(style);
+    let resolve_border = |len: Length| {
+      len
+        .resolve_with_context(
+          None,
+          viewport.width,
+          viewport.height,
+          font_size,
+          root_font_size,
+        )
+        .unwrap_or(0.0)
+    };
+
+    let border_left = resolve_border(style.used_border_left_width());
+    let border_right = resolve_border(style.used_border_right_width());
+    let border_top = resolve_border(style.used_border_top_width());
+    let border_bottom = resolve_border(style.used_border_bottom_width());
 
     let horiz_edges = padding_left + padding_right + border_left + border_right;
     let vert_edges = padding_top + padding_bottom + border_top + border_bottom;
