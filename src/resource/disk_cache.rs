@@ -2222,10 +2222,11 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let origin_key = request
       .as_ref()
       .and_then(|req| super::cors_cache_partition_key(req));
+    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
     let credentials_mode = request
       .as_ref()
       .map(|req| req.credentials_mode)
-      .unwrap_or(super::FetchCredentialsMode::Include);
+      .unwrap_or(default_credentials_mode);
     let key = CacheKey::new_with_origin(kind, url.to_string(), origin_key, credentials_mode);
 
     let mut disk_snapshot: Option<(String, CachedSnapshot)> = None;
@@ -2800,12 +2801,13 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       return result;
     }
 
+    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
     if let Some((_canonical, mut res)) = self.read_disk_entry_prefix(
       kind,
       url,
       max_bytes,
       None,
-      super::FetchCredentialsMode::Include,
+      default_credentials_mode,
     )? {
       if res.bytes.len() > max_bytes {
         res.bytes.truncate(max_bytes);
@@ -2877,13 +2879,14 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     url: &str,
     artifact: CacheArtifactKind,
   ) -> Option<FetchedResource> {
+    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
     let snapshot = self
       .read_disk_artifact(
         kind,
         url,
         artifact,
         None,
-        super::FetchCredentialsMode::Include,
+        default_credentials_mode,
       )
       .ok()
       .flatten();
@@ -2937,6 +2940,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     bytes: &[u8],
     source: Option<&FetchedResource>,
   ) {
+    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
     self.persist_artifact(
       kind,
       url,
@@ -2944,7 +2948,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       bytes,
       source,
       None,
-      super::FetchCredentialsMode::Include,
+      default_credentials_mode,
     );
   }
 
@@ -2969,12 +2973,13 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
   }
 
   fn remove_cache_artifact(&self, kind: FetchContextKind, url: &str, artifact: CacheArtifactKind) {
+    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
     self.remove_artifact_for_url(
       kind,
       url,
       artifact,
       None,
-      super::FetchCredentialsMode::Include,
+      default_credentials_mode,
     );
   }
 
@@ -4138,6 +4143,87 @@ mod tests {
       assert_eq!(second_include.bytes, b"include");
       let second_omit = disk_again.fetch_with_request(req_omit).expect("disk omit");
       assert_eq!(second_omit.bytes, b"omit");
+    });
+  }
+
+  #[test]
+  fn disk_cache_does_not_mix_context_and_request_credentials_when_partition_toggle_disabled() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "0".to_string(),
+      ),
+    ])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      #[derive(Clone)]
+      struct ContextVsRequestFetcher {
+        calls: Arc<AtomicUsize>,
+      }
+
+      impl ResourceFetcher for ContextVsRequestFetcher {
+        fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+          panic!("expected DiskCachingFetcher to use fetch_with_context/fetch_with_request()");
+        }
+
+        fn fetch_with_context(&self, _kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+          self.calls.fetch_add(1, Ordering::SeqCst);
+          let mut res = FetchedResource::with_final_url(
+            b"context".to_vec(),
+            Some("font/woff2".to_string()),
+            Some(url.to_string()),
+          );
+          res.status = Some(200);
+          Ok(res)
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+          self.calls.fetch_add(1, Ordering::SeqCst);
+          let tag = match req.credentials_mode {
+            FetchCredentialsMode::Omit => "omit",
+            FetchCredentialsMode::SameOrigin => "same-origin",
+            FetchCredentialsMode::Include => "include",
+          };
+          let mut res = FetchedResource::with_final_url(
+            format!("request-{tag}").into_bytes(),
+            Some("font/woff2".to_string()),
+            Some(req.url.to_string()),
+          );
+          res.status = Some(200);
+          Ok(res)
+        }
+      }
+
+      let tmp = tempfile::tempdir().unwrap();
+      let calls = Arc::new(AtomicUsize::new(0));
+      let url = "https://example.com/font.woff2";
+      let req_include = FetchRequest::new(url, FetchDestination::Font)
+        .with_referrer_url("https://a.test/page")
+        .with_credentials_mode(FetchCredentialsMode::Include);
+
+      let disk = DiskCachingFetcher::new(
+        ContextVsRequestFetcher {
+          calls: Arc::clone(&calls),
+        },
+        tmp.path(),
+      );
+
+      let context = disk
+        .fetch_with_context(FetchContextKind::Font, url)
+        .expect("context fetch");
+      assert_eq!(context.bytes, b"context");
+
+      let include = disk
+        .fetch_with_request(req_include)
+        .expect("include fetch");
+      assert_eq!(include.bytes, b"request-include");
+
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "expected distinct fetches for context default (omit) vs request include credentials"
+      );
     });
   }
 
