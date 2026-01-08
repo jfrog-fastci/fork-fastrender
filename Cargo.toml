@@ -93,14 +93,21 @@ walkdir = "2"
 
 # Optional desktop UI stack (winit + wgpu + egui) used by `src/bin/browser.rs`.
 # Kept behind a feature gate so core renderer builds stay lean.
-winit = { version = "0.28", default-features = false, features = ["x11"], optional = true }
 wgpu = { version = "0.17", optional = true }
 egui = { version = "0.23", optional = true }
-# Disable `egui-winit` default features to avoid pulling in Wayland/clipboard
-# stacks that may require system packages on Linux CI.
-egui-winit = { version = "0.23", default-features = false, features = ["x11"], optional = true }
 egui-wgpu = { version = "0.23", optional = true }
 pollster = { version = "0.3", optional = true }
+
+# `winit`/`egui-winit` need a platform backend. On Linux we explicitly enable X11
+# and keep default features off so CI doesn't need additional system packages
+# for Wayland.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.28", default-features = false, features = ["x11"], optional = true }
+egui-winit = { version = "0.23", default-features = false, features = ["x11"], optional = true }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+winit = { version = "0.28", default-features = false, optional = true }
+egui-winit = { version = "0.23", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
