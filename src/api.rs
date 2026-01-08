@@ -313,6 +313,11 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn trim_ascii_whitespace_and_trailing_semicolon(value: &str) -> &str {
+  let trimmed = trim_ascii_whitespace(value);
+  trim_ascii_whitespace(trimmed.trim_end_matches(';'))
+}
+
 fn url_looks_like_svg_resource(url: &str) -> bool {
   let trimmed = trim_ascii_whitespace(url);
   if trimmed.is_empty() {
@@ -8248,7 +8253,7 @@ impl FastRender {
                 continue;
               }
               let css = inline.css;
-              if css.trim().is_empty() {
+              if trim_ascii_whitespace(&css).is_empty() {
                 continue;
               }
               tasks.push(StylesheetTask::Inline { css });
@@ -8433,7 +8438,7 @@ impl FastRender {
           if !Self::media_attr_allows(inline.media.as_deref(), media_ctx, media_query_cache) {
             continue;
           }
-          if inline.css.trim().is_empty() {
+          if trim_ascii_whitespace(&inline.css).is_empty() {
             continue;
           }
 
@@ -8636,7 +8641,7 @@ impl FastRender {
     match type_attr {
       None => true,
       Some(value) => {
-        let mime = value.split(';').next().map(str::trim).unwrap_or("");
+        let mime = trim_ascii_whitespace(value.split(';').next().unwrap_or(""));
         mime.is_empty() || mime.eq_ignore_ascii_case("text/css")
       }
     }
@@ -8650,7 +8655,7 @@ impl FastRender {
     match media_attr {
       None => true,
       Some(media) => {
-        let trimmed = media.trim();
+        let trimmed = trim_ascii_whitespace(media);
         if trimmed.is_empty() {
           return true;
         }
@@ -14279,7 +14284,7 @@ fn hash_effective_content(style: &ComputedStyle, hasher: &mut DefaultHasher) {
 
   match &style.content_value {
     ContentValue::Normal => {
-      let raw = style.content.trim();
+      let raw = trim_ascii_whitespace(&style.content);
       if raw.is_empty() || raw.eq_ignore_ascii_case("normal") {
         // Effective `normal`.
         1u8.hash(hasher);
@@ -15340,7 +15345,7 @@ fn container_query_context_fingerprint(
         prop.hash(&mut hasher);
         match info.styles.custom_properties.get(prop) {
           Some(value) => {
-            let raw = value.value.trim().trim_end_matches(';').trim();
+            let raw = trim_ascii_whitespace_and_trailing_semicolon(&value.value);
             // Style queries against custom properties compare the query container's stored custom
             // property token stream. When the stored value contains `var()` calls, the *raw* value
             // can matter (e.g. `--x: var(--y)` does not equal `--x: 10px` for unregistered custom
@@ -15363,11 +15368,11 @@ fn container_query_context_fingerprint(
                     (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
                   );
                   let resolved = if no_substitution { raw } else { css_text.as_ref() };
-                  resolved.trim().trim_end_matches(';').trim().hash(&mut hasher);
+                  trim_ascii_whitespace_and_trailing_semicolon(resolved).hash(&mut hasher);
                 }
                 crate::style::var_resolution::VarResolutionResult::InvalidSyntax(resolved) => {
                   "var_invalid_syntax".hash(&mut hasher);
-                  resolved.trim().trim_end_matches(';').trim().hash(&mut hasher);
+                  trim_ascii_whitespace_and_trailing_semicolon(&resolved).hash(&mut hasher);
                 }
                 crate::style::var_resolution::VarResolutionResult::NotFound(name) => {
                   "var_not_found".hash(&mut hasher);
@@ -22639,6 +22644,36 @@ pub(crate) fn render_html_with_shared_resources(
     assert!(!url_looks_like_svg_resource(&format!(
       "{nbsp}data:image/svg+xml,<svg></svg>"
     )));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_stylesheet_type_is_css_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(FastRender::stylesheet_type_is_css(Some("text/css")));
+    let ty = format!("{nbsp}text/css");
+    assert!(
+      !FastRender::stylesheet_type_is_css(Some(&ty)),
+      "NBSP must not be treated as ASCII whitespace when parsing <style>/<link type>"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_media_attr_allows_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let mut cache = crate::style::media::MediaQueryCache::default();
+    assert!(
+      FastRender::media_attr_allows(Some("screen"), &media_ctx, &mut cache),
+      "baseline: screen should match screen media contexts"
+    );
+
+    let mut cache = crate::style::media::MediaQueryCache::default();
+    let media = format!("{nbsp}screen");
+    assert!(
+      !FastRender::media_attr_allows(Some(&media), &media_ctx, &mut cache),
+      "NBSP must not be treated as ASCII whitespace when parsing media attributes"
+    );
   }
 
   #[test]

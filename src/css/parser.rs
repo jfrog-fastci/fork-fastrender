@@ -4801,7 +4801,7 @@ fn parse_declaration<'i, 't>(
   } else {
     full_slice_raw
   };
-  let value = value.trim_end_matches(';').trim_end();
+  let value = trim_ascii_whitespace_end(value.trim_end_matches(';'));
 
   let contains_var = crate::style::var_resolution::contains_var(value);
   let parsed_value =
@@ -4961,7 +4961,7 @@ fn parse_declaration_in_style_block<'i, 't>(
   } else {
     full_slice_raw
   };
-  let value = value.trim_end_matches(';').trim_end();
+  let value = trim_ascii_whitespace_end(value.trim_end_matches(';'));
 
   let Some(property) = property else {
     return Ok(None);
@@ -5508,6 +5508,39 @@ mod tests {
       parse_override_colors(&format!("0{nbsp}red")).is_empty(),
       "NBSP must not be treated as CSS whitespace between index and color"
     );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_parse_declarations_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let decls = parse_declarations(&format!("color: red{nbsp};"));
+    assert_eq!(decls.len(), 1);
+    match &decls[0].value {
+      PropertyValue::Keyword(raw) => assert_eq!(raw, &format!("red{nbsp}")),
+      PropertyValue::Color(_) => panic!("NBSP must not be trimmed from color keywords"),
+      other => panic!("expected keyword value, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_parse_stylesheet_does_not_trim_nbsp_in_declaration_value() {
+    let nbsp = "\u{00A0}";
+    let css = format!("body {{ color: red{nbsp}; }}");
+    let sheet = parse_stylesheet(&css).expect("parse_stylesheet");
+    let style_rule = sheet
+      .rules
+      .iter()
+      .find_map(|rule| match rule {
+        CssRule::Style(rule) => Some(rule),
+        _ => None,
+      })
+      .expect("expected style rule");
+    assert_eq!(style_rule.declarations.len(), 1);
+    match &style_rule.declarations[0].value {
+      PropertyValue::Keyword(raw) => assert_eq!(raw, &format!("red{nbsp}")),
+      PropertyValue::Color(_) => panic!("NBSP must not be trimmed from stylesheet color values"),
+      other => panic!("expected keyword value, got {other:?}"),
+    }
   }
 
   #[test]

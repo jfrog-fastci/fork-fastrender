@@ -45,7 +45,7 @@ pub fn validate_cors_allow_origin(
   let raw = resource
     .access_control_allow_origin
     .as_deref()
-    .map(str::trim)
+    .map(super::trim_http_whitespace)
     .filter(|v| !v.is_empty())
     .ok_or_else(|| "blocked by CORS: missing Access-Control-Allow-Origin".to_string())?;
 
@@ -136,5 +136,25 @@ mod tests {
     resource.access_control_allow_credentials = true;
     validate_cors_allow_origin(&resource, url, &doc_origin, CorsMode::UseCredentials)
       .expect("credentialed null origin should succeed with ACAC=true");
+  }
+
+  #[test]
+  fn non_ascii_whitespace_validate_cors_allow_origin_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let doc_origin = origin_from_url("https://example.com/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some(format!("{nbsp}*"));
+
+    let err = validate_cors_allow_origin(&resource, url, &doc_origin, CorsMode::Anonymous)
+      .expect_err("NBSP-prefixed ACAO wildcard must not be accepted");
+    assert!(
+      err.contains("invalid Access-Control-Allow-Origin"),
+      "unexpected error: {err}"
+    );
   }
 }

@@ -36,6 +36,10 @@ use std::sync::Arc;
 
 pub use crate::html::images::{ImageSelectionContext, SelectedImageSource};
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+}
+
 /// Parsed `crossorigin` attribute state for `<img>` elements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CrossOriginAttribute {
@@ -288,7 +292,7 @@ impl FormControlKind {
           "none".to_string()
         } else if selected_option_count == 1 {
           let (label, value) = first_selected.unwrap_or(("", ""));
-          let text = if label.trim().is_empty() { value } else { label };
+          let text = if trim_ascii_whitespace(label).is_empty() { value } else { label };
           let text = truncate_for_snapshot(text, MAX_SELECTED_LABEL_CHARS);
           format!("{text:?}")
         } else {
@@ -1583,6 +1587,29 @@ mod tests {
 
   fn default_style() -> Arc<ComputedStyle> {
     Arc::new(ComputedStyle::default())
+  }
+
+  #[test]
+  fn non_ascii_whitespace_select_snapshot_label_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let control = FormControlKind::Select(SelectControl {
+      multiple: false,
+      size: 1,
+      items: Arc::new(vec![SelectItem::Option {
+        label: nbsp.to_string(),
+        value: "fallback".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+      }]),
+      selected: vec![0],
+    });
+
+    let snapshot = control.snapshot_label();
+    assert!(
+      snapshot.contains(&format!("{:?}", nbsp)),
+      "NBSP label must not be treated as whitespace in select snapshots: {snapshot}"
+    );
   }
 
   #[test]

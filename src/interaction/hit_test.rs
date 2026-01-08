@@ -7,6 +7,10 @@ use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
 use std::ptr;
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HitTestResult {
   pub box_id: usize,
@@ -158,7 +162,7 @@ fn node_is_form_control(node: &DomNode) -> bool {
   };
 
   if tag.eq_ignore_ascii_case("input") {
-    let ty = node.get_attribute_ref("type").unwrap_or("").trim();
+    let ty = trim_ascii_whitespace(node.get_attribute_ref("type").unwrap_or(""));
     return !ty.eq_ignore_ascii_case("hidden");
   }
 
@@ -311,7 +315,7 @@ pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> 
 
   if let Some(for_value) = label
     .get_attribute_ref("for")
-    .map(str::trim)
+    .map(trim_ascii_whitespace)
     .filter(|v| !v.is_empty())
   {
     let mut by_id: HashMap<String, usize> = HashMap::new();
@@ -347,4 +351,49 @@ pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> 
   }
 
   None
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn find_element_node_id(dom: &DomNode, tag: &str) -> usize {
+    let index = DomIndex::new(dom);
+    let found = index.node_ids().find(|&id| {
+      index
+        .node(id)
+        .and_then(|node| node.tag_name())
+        .is_some_and(|name| name.eq_ignore_ascii_case(tag))
+    });
+    found.unwrap_or_else(|| panic!("missing element {tag}"))
+  }
+
+  #[test]
+  fn non_ascii_whitespace_hit_test_input_type_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let html = format!("<html><body><input type=\"{nbsp}hidden\"></body></html>");
+    let dom = crate::dom::parse_html(&html).expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+
+    let index = DomIndex::new(&dom);
+    let input = index.node(input_id).expect("input node");
+    assert!(
+      node_is_form_control(input),
+      "NBSP must not be treated as ASCII whitespace when checking input type"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_label_for_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let html = format!("<html><body><label for=\"{nbsp}x\">Label</label><input id=\"x\"></body></html>");
+    let dom = crate::dom::parse_html(&html).expect("parse");
+    let label_id = find_element_node_id(&dom, "label");
+
+    assert_eq!(
+      resolve_label_associated_control(&dom, label_id),
+      None,
+      "NBSP must not be treated as ASCII whitespace when resolving label for= associations"
+    );
+  }
 }

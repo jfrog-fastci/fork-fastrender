@@ -707,7 +707,7 @@ fn inline_svg_use_references<'a>(
 
         let Some(id) = sprite_node
           .attribute("id")
-          .map(str::trim)
+          .map(trim_ascii_whitespace)
           .filter(|id| !id.is_empty())
         else {
           continue;
@@ -765,12 +765,12 @@ fn inline_svg_use_references<'a>(
 
       let width = node
         .attribute("width")
-        .map(str::trim)
+        .map(trim_ascii_whitespace)
         .filter(|v| !v.is_empty())
         .unwrap_or("100%");
       let height = node
         .attribute("height")
-        .map(str::trim)
+        .map(trim_ascii_whitespace)
         .filter(|v| !v.is_empty())
         .unwrap_or("100%");
 
@@ -809,7 +809,10 @@ fn inline_svg_use_references<'a>(
       .attribute("y")
       .and_then(parse_svg_length_px)
       .unwrap_or(0.0);
-    let use_transform = node.attribute("transform").map(str::trim).unwrap_or("");
+    let use_transform = node
+      .attribute("transform")
+      .map(trim_ascii_whitespace)
+      .unwrap_or("");
 
     let mut transform = String::new();
     if x != 0.0 || y != 0.0 {
@@ -8237,6 +8240,34 @@ mod tests {
       rgba.get_pixel(0, 0).0,
       [255, 0, 0, 255],
       "external <use href> sprite should inline and render red pixel"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_inline_svg_use_references_does_not_trim_nbsp_in_sprite_id() {
+    let nbsp = "\u{00A0}";
+    let sprite_url = "https://example.test/sprite.svg";
+    let main_url = "https://example.test/main.svg";
+
+    let sprite_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="{nbsp}icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#
+    );
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svg#icon"/></svg>"#;
+    let expanded =
+      inline_svg_use_references(main_svg, main_url, &fetcher, None).expect("expand");
+    assert_eq!(
+      expanded.as_ref(),
+      main_svg,
+      "NBSP must not be treated as whitespace when indexing sprite ids for <use> expansion"
     );
   }
 
