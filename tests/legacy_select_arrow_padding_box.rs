@@ -66,6 +66,11 @@ fn legacy_dropdown_select_arrow_is_painted_in_padding_box() {
     padding_blue > 0,
     "expected dropdown select arrow to paint inside padding box (blue pixels in padding={padding_blue})"
   );
+  let deep_padding_blue = count_accent_blue(&pixmap, 90, 0, 100, 30);
+  assert!(
+    deep_padding_blue > 0,
+    "expected dropdown select arrow to paint deep into the right padding region (blue pixels in x=[90..100)={deep_padding_blue})"
+  );
 
   // The arrow should not be painted inside the content area when there is enough padding space.
   let content_blue = count_accent_blue(&pixmap, 60, 0, 80, 30);
@@ -74,4 +79,3 @@ fn legacy_dropdown_select_arrow_is_painted_in_padding_box() {
     "expected dropdown select arrow to not paint inside the content box (blue pixels in content={content_blue})"
   );
 }
-

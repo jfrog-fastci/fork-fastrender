@@ -7694,7 +7694,7 @@ impl Painter {
             }
             let mut arrow_style = select_style;
             arrow_style.color = muted_accent;
-            let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, clip_mask);
+            let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, incoming_clip_mask);
           }
           true
         }
