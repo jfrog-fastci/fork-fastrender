@@ -28,9 +28,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The ecma-rs submodule is tracked via an SSH URL; rewrite to https for GitHub Actions.
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global core.longpaths true
 
           git submodule update --init engines/ecma-rs
 
@@ -45,6 +43,16 @@ jobs:
 
           if [ ! -d engines/ecma-rs/test262-semantic/data ]; then
             echo "::error::test262 semantic corpus directory engines/ecma-rs/test262-semantic/data is missing after submodule init." >&2
+            exit 1
+          fi
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
             exit 1
           fi
 
