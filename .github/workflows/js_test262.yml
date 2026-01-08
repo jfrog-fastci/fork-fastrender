@@ -45,6 +45,10 @@ jobs:
             echo "::error::test262 semantic corpus directory engines/ecma-rs/test262-semantic/data is missing after submodule init." >&2
             exit 1
           fi
+          if [ ! -d engines/ecma-rs/test262-semantic/data/test ]; then
+            echo "::error::test262 semantic corpus appears incomplete (expected engines/ecma-rs/test262-semantic/data/test). Did the submodule checkout fail?" >&2
+            exit 1
+          fi
 
       - name: Assert ecma-rs is checked out
         shell: bash
@@ -92,6 +96,17 @@ jobs:
               --fail-on new \
               --report "${TEST262_REPORT}" || status=$?
           test -s "${TEST262_REPORT}"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("target/js/test262.json")
+          data = json.loads(path.read_text())
+          assert isinstance(data, dict), "test262 report JSON should be an object"
+          assert isinstance(data.get("schema_version"), int), "missing schema_version in test262 report"
+          assert isinstance(data.get("summary"), dict), "missing summary object in test262 report"
+          assert isinstance(data.get("results"), list), "missing results array in test262 report"
+          PY
           exit $status
 
       - name: Upload test262 semantic report
