@@ -2190,34 +2190,26 @@ impl BlockFormattingContext {
       containing_width,
       constraints.height().unwrap_or(f32::NAN),
     ));
-    let mut used_size =
-      compute_replaced_size(style, replaced_box, percentage_base, self.viewport_size);
-    // As a final guard, honor resolved min/max constraints against the containing block width/height.
-    let resolved_max_w = style.max_width.as_ref().map(|l| {
-      resolve_length_for_width(
-        *l,
-        containing_width,
-        style,
-        &self.font_context,
-        self.viewport_size,
-      )
-    });
-    if let Some(max_w) = resolved_max_w {
-      used_size.width = used_size.width.min(max_w);
-    }
-    let resolved_min_w = style.min_width.as_ref().map(|l| {
-      resolve_length_for_width(
-        *l,
-        containing_width,
-        style,
-        &self.font_context,
-        self.viewport_size,
-      )
-    });
-    if let Some(min_w) = resolved_min_w {
-      used_size.width = used_size.width.max(min_w);
-    }
+    let used_size = compute_replaced_size(style, replaced_box, percentage_base, self.viewport_size);
     if log_wide_flex && used_size.width > containing_width + 0.5 {
+      let resolved_max_w = style.max_width.as_ref().map(|l| {
+        resolve_length_for_width(
+          *l,
+          containing_width,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      });
+      let resolved_min_w = style.min_width.as_ref().map(|l| {
+        resolve_length_for_width(
+          *l,
+          containing_width,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      });
       let selector = child
         .debug_info
         .as_ref()
@@ -4889,30 +4881,9 @@ impl FormattingContext for BlockFormattingContext {
         containing_width,
         containing_height.unwrap_or(f32::NAN),
       ));
-      let mut used_size =
-        compute_replaced_size(style, replaced_box, percentage_base, self.viewport_size);
-      if let Some(max_w) = style.max_width.as_ref().map(|l| {
-        resolve_length_for_width(
-          *l,
-          containing_width,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      }) {
-        used_size.width = used_size.width.min(max_w);
-      }
-      if let Some(min_w) = style.min_width.as_ref().map(|l| {
-        resolve_length_for_width(
-          *l,
-          containing_width,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      }) {
-        used_size.width = used_size.width.max(min_w);
-      }
+      // `compute_replaced_size` returns the used content-box size and already accounts for min/max
+      // constraints while interpreting `box-sizing`. Avoid reapplying min/max clamps here.
+      let used_size = compute_replaced_size(style, replaced_box, percentage_base, self.viewport_size);
       if log_skinny && containing_width <= 1.0 {
         let selector = box_node
           .debug_info
@@ -4924,35 +4895,6 @@ impl FormattingContext for BlockFormattingContext {
                     box_node.id, selector, containing_width, used_size.width, style.min_width, style.max_width
                 );
       }
-      if let Some(ch) = containing_height {
-        if let Some(max_h) = style.max_height.as_ref().and_then(|l| {
-          resolve_length_with_percentage_metrics(
-            *l,
-            Some(ch),
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-            Some(style),
-            Some(&self.font_context),
-          )
-        }) {
-          used_size.height = used_size.height.min(max_h);
-        }
-        if let Some(min_h) = style.min_height.as_ref().and_then(|l| {
-          resolve_length_with_percentage_metrics(
-            *l,
-            Some(ch),
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-            Some(style),
-            Some(&self.font_context),
-          )
-        }) {
-          used_size.height = used_size.height.max(min_h);
-        }
-      }
-
       // `compute_replaced_size` returns a content-box size. Fragment bounds are border-box sized,
       // so include padding and border edges here; absolute positioning and container query sizing
       // both expect border-box fragment geometry.

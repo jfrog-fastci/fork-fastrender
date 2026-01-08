@@ -6,6 +6,7 @@ use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
 use fastrender::style::types::BorderStyle;
+use fastrender::style::types::BoxSizing;
 use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -232,6 +233,59 @@ fn replaced_absolute_with_padding_and_border_includes_edges_in_block_layout() {
     (image_fragment.bounds.x() - 10.0).abs() < 0.1,
     "left inset should be honored when shrinking to intrinsic width (got x = {})",
     image_fragment.bounds.x()
+  );
+}
+
+#[test]
+fn replaced_border_box_min_width_does_not_double_count_edges_in_block_layout() {
+  let mut root_style = ComputedStyle::default();
+  root_style.width = Some(Length::px(200.0));
+
+  let mut img_style = ComputedStyle::default();
+  img_style.box_sizing = BoxSizing::BorderBox;
+  img_style.min_width = Some(Length::px(60.0));
+  img_style.padding_left = Length::px(5.0);
+  img_style.padding_right = Length::px(5.0);
+  img_style.border_left_style = BorderStyle::Solid;
+  img_style.border_right_style = BorderStyle::Solid;
+  img_style.border_left_width = Length::px(2.0);
+  img_style.border_right_width = Length::px(2.0);
+
+  let img = BoxNode::new_replaced(
+    Arc::new(img_style),
+    ReplacedType::Image {
+      src: String::new(),
+      alt: None,
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
+      srcset: Vec::<SrcsetCandidate>::new(),
+      sizes: None,
+      picture_sources: Vec::new(),
+    },
+    Some(Size::new(10.0, 20.0)),
+    None,
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![img],
+  );
+  let constraints = LayoutConstraints::definite(200.0, 100.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&root, &constraints).expect("block layout");
+
+  let image_fragment = fragment
+    .children
+    .first()
+    .expect("replaced fragment should be present");
+
+  // min-width:60px with box-sizing:border-box should apply to the border box; padding+border must
+  // not be added on top of the min-width.
+  assert!(
+    (image_fragment.bounds.width() - 60.0).abs() < 0.1,
+    "expected 60px border-box width, got {}",
+    image_fragment.bounds.width()
   );
 }
 
