@@ -270,3 +270,121 @@ fn border_spacing_applies_at_table_edges_in_separated_model_rtl() {
     "spacing between cells should match border-spacing in RTL (expected ~10, got {spacing_x})"
   );
 }
+
+#[test]
+fn collapsed_border_model_ignores_border_spacing() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: collapse;
+            border-spacing: 10px 6px;
+            table-layout: fixed;
+            width: 100px;
+            border: none;
+            padding: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          td { padding: 0; margin: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <tr><td>A</td><td>B</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  for child in table.children.iter() {
+    collect_cells(child, (0.0, 0.0), &mut cells);
+  }
+
+  let a = cells.get(&'A').expect("A cell");
+  let b = cells.get(&'B').expect("B cell");
+
+  assert!(
+    (a.x() - 0.0).abs() < 0.1,
+    "expected border-spacing to be ignored at the leading edge in collapsed model (A.x={})",
+    a.x()
+  );
+  let spacing_x = b.x() - (a.x() + a.width());
+  assert!(
+    spacing_x.abs() < 0.1,
+    "expected border-spacing to be ignored between cells in collapsed model (gap={spacing_x})"
+  );
+}
+
+#[test]
+fn collapsed_border_model_ignores_border_spacing_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: collapse;
+            border-spacing: 10px 6px;
+            table-layout: fixed;
+            width: 100px;
+            border: none;
+            padding: 0;
+            direction: rtl;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          td { padding: 0; margin: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <tr><td>A</td><td>B</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  for child in table.children.iter() {
+    collect_cells(child, (0.0, 0.0), &mut cells);
+  }
+
+  let a = cells.get(&'A').expect("A cell");
+  let b = cells.get(&'B').expect("B cell");
+
+  assert!(
+    a.x() > b.x(),
+    "expected RTL order A (right) > B (left), got A.x={} B.x={}",
+    a.x(),
+    b.x()
+  );
+  assert!(
+    (b.x() - 0.0).abs() < 0.1,
+    "expected border-spacing to be ignored at the leading edge in RTL collapsed model (B.x={})",
+    b.x()
+  );
+
+  let spacing_x = a.x() - (b.x() + b.width());
+  assert!(
+    spacing_x.abs() < 0.1,
+    "expected border-spacing to be ignored between cells in RTL collapsed model (gap={spacing_x})"
+  );
+}
