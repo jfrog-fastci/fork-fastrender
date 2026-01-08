@@ -1932,6 +1932,38 @@ fn container_style_query_range_feature_matches_margin_left_percentage() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_margin_inline_start() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; margin-inline-start: 1px; }
+      .container-ltr { container-type: inline-size; margin-inline-start: 3px; direction: ltr; }
+      .container-rtl { container-type: inline-size; margin-inline-start: 3px; direction: rtl; }
+      .child { color: rgb(0 0 255); }
+      @container style(margin-inline-start > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-ltr">
+      <div id="ltr" class="child">hello</div>
+    </div>
+    <div class="container-rtl">
+      <div id="rtl" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let ltr = find_by_id(&styled, "ltr").expect("ltr element");
+  let rtl = find_by_id(&styled, "rtl").expect("rtl element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(ltr.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(rtl.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_padding_left() {
   let html = r#"
     <style>
@@ -1955,6 +1987,32 @@ fn container_style_query_range_feature_matches_padding_left() {
   let wide = find_by_id(&styled, "wide").expect("wide element");
   assert_eq!(tight.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(wide.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_padding_block_start() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; padding-block-start: 1px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; padding-block-start: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(padding-block-start > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
 }
 
 #[test]

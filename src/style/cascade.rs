@@ -1959,6 +1959,53 @@ fn eval_style_range_value(
 
   let styles = container.styles.as_ref();
   let inline_horizontal = crate::style::inline_axis_is_horizontal(styles.writing_mode);
+  let inline_positive = crate::style::inline_axis_positive(styles.writing_mode, styles.direction);
+  let block_horizontal = crate::style::block_axis_is_horizontal(styles.writing_mode);
+  let block_positive = crate::style::block_axis_positive(styles.writing_mode);
+
+  let inline_sides = if inline_horizontal {
+    if inline_positive {
+      (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+    } else {
+      (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+    }
+  } else if inline_positive {
+    (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+  } else {
+    (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+  };
+
+  let block_sides = if block_horizontal {
+    if block_positive {
+      (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+    } else {
+      (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+    }
+  } else if block_positive {
+    (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+  } else {
+    (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+  };
+
+  let margin_for_side = |side: crate::style::PhysicalSide| -> Option<NumericValue> {
+    let len = match side {
+      crate::style::PhysicalSide::Top => styles.margin_top.as_ref(),
+      crate::style::PhysicalSide::Right => styles.margin_right.as_ref(),
+      crate::style::PhysicalSide::Bottom => styles.margin_bottom.as_ref(),
+      crate::style::PhysicalSide::Left => styles.margin_left.as_ref(),
+    }?;
+    length_to_numeric(len, container, ctx)
+  };
+
+  let padding_for_side = |side: crate::style::PhysicalSide| -> Option<NumericValue> {
+    let len = match side {
+      crate::style::PhysicalSide::Top => &styles.padding_top,
+      crate::style::PhysicalSide::Right => &styles.padding_right,
+      crate::style::PhysicalSide::Bottom => &styles.padding_bottom,
+      crate::style::PhysicalSide::Left => &styles.padding_left,
+    };
+    length_to_numeric(len, container, ctx)
+  };
   match value {
     StyleRangeValue::Property(name) => match name.as_str() {
       "font-size" => Some(NumericValue {
@@ -2262,10 +2309,18 @@ fn eval_style_range_value(
         .margin_left
         .as_ref()
         .and_then(|len| length_to_numeric(len, container, ctx)),
+      "margin-inline-start" => margin_for_side(inline_sides.0),
+      "margin-inline-end" => margin_for_side(inline_sides.1),
+      "margin-block-start" => margin_for_side(block_sides.0),
+      "margin-block-end" => margin_for_side(block_sides.1),
       "padding-top" => length_to_numeric(&styles.padding_top, container, ctx),
       "padding-right" => length_to_numeric(&styles.padding_right, container, ctx),
       "padding-bottom" => length_to_numeric(&styles.padding_bottom, container, ctx),
       "padding-left" => length_to_numeric(&styles.padding_left, container, ctx),
+      "padding-inline-start" => padding_for_side(inline_sides.0),
+      "padding-inline-end" => padding_for_side(inline_sides.1),
+      "padding-block-start" => padding_for_side(block_sides.0),
+      "padding-block-end" => padding_for_side(block_sides.1),
       "scroll-padding-top" => length_to_numeric(&styles.scroll_padding_top, container, ctx),
       "scroll-padding-right" => length_to_numeric(&styles.scroll_padding_right, container, ctx),
       "scroll-padding-bottom" => length_to_numeric(&styles.scroll_padding_bottom, container, ctx),
