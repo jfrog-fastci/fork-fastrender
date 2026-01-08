@@ -10,6 +10,7 @@ use url::Url;
 
 mod chrome_baseline_fixtures;
 mod capability_map;
+mod freeze_page_fixture_cmd;
 mod fixture_chrome_diff;
 mod fixture_determinism;
 mod generate_emoji_tables;
@@ -34,6 +35,7 @@ fn main() -> Result<()> {
     Commands::CapabilityMap(args) => capability_map::run_capability_map(args),
     Commands::FixtureChromeDiff(args) => fixture_chrome_diff::run_fixture_chrome_diff(args),
     Commands::FixtureDeterminism(args) => fixture_determinism::run_fixture_determinism(args),
+    Commands::FreezePageFixture(args) => freeze_page_fixture_cmd::run_freeze_page_fixture(args),
     Commands::ImportPageFixture(args) => import_page_fixture::run_import_page_fixture(args),
     Commands::CaptureAccuracyFixtures(args) => run_capture_accuracy_fixtures(args),
     Commands::ChromeBaselineFixtures(args) => {
@@ -95,6 +97,8 @@ enum Commands {
   FixtureChromeDiff(fixture_chrome_diff::FixtureChromeDiffArgs),
   /// Render offline fixtures multiple times and report nondeterministic fixtures (pixel diffs between runs)
   FixtureDeterminism(fixture_determinism::FixtureDeterminismArgs),
+  /// Freeze selected pageset pages into deterministic offline fixtures under tests/pages/fixtures
+  FreezePageFixture(freeze_page_fixture_cmd::FreezePageFixtureArgs),
   /// Convert a captured bundle into a pages_regression fixture
   ImportPageFixture(import_page_fixture::ImportPageFixtureArgs),
   /// Capture and import offline page fixtures for ok pages with the worst accuracy diffs.

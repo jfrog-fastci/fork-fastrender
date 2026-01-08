@@ -17,6 +17,7 @@ fn help_lists_commands() {
     stdout.contains("render-page")
       && stdout.contains("update-goldens")
       && stdout.contains("diff-renders")
+      && stdout.contains("freeze-page-fixture")
       && stdout.contains("chrome-baseline-fixtures")
       && stdout.contains("fixture-chrome-diff")
       && stdout.contains("fixture-determinism")
