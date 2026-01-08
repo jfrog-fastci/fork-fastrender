@@ -1011,7 +1011,9 @@ fn clip_chain_link_for_fragment(
   let is_replaced = matches!(fragment.content, FragmentContent::Replaced { .. });
   let clips_overflow =
     !is_replaced && (overflow_axis_clips(style.overflow_x) || overflow_axis_clips(style.overflow_y));
-  let clips_rect = style.clip.is_some();
+  // CSS 2.1 `clip` only applies to absolutely positioned elements.
+  let clips_rect =
+    matches!(style.position, Position::Absolute | Position::Fixed) && style.clip.is_some();
   if !(clips_overflow || clips_rect) {
     return None;
   }

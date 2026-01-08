@@ -2234,7 +2234,11 @@ impl Painter {
         None
       };
 
-      let clip_property = style.clip.as_ref().and_then(|clip| {
+      // CSS 2.1 `clip` applies only to absolutely positioned elements (position: absolute|fixed).
+      let clip_property = matches!(style.position, Position::Absolute | Position::Fixed)
+        .then(|| style.clip.as_ref())
+        .flatten()
+        .and_then(|clip| {
         let font_size = style.font_size;
         let root_font = style.root_font_size;
         let viewport = (self.css_width, self.css_height);

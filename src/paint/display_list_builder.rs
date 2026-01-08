@@ -3253,6 +3253,11 @@ impl DisplayListBuilder {
     bounds: Rect,
     viewport: Option<(f32, f32)>,
   ) -> Option<ClipItem> {
+    // CSS 2.1 `clip` applies only to absolutely positioned elements (position: absolute|fixed).
+    // For other positioning schemes the used value is `auto`, meaning no clip is applied.
+    if !matches!(style.position, Position::Absolute | Position::Fixed) {
+      return None;
+    }
     let clip = style.clip.as_ref()?;
     let width = bounds.width().max(0.0);
     let height = bounds.height().max(0.0);
@@ -3316,7 +3321,7 @@ impl DisplayListBuilder {
     if !matches!(style.clip_path, crate::style::types::ClipPath::None) {
       return true;
     }
-    if style.clip.is_some() {
+    if matches!(style.position, Position::Absolute | Position::Fixed) && style.clip.is_some() {
       return true;
     }
     if Self::overflow_axis_clips(style.overflow_x) || Self::overflow_axis_clips(style.overflow_y) {
@@ -10619,6 +10624,7 @@ mod tests {
   #[test]
   fn clip_rect_from_style_offsets_are_relative_to_bounds_origin() {
     let mut style = ComputedStyle::default();
+    style.position = Position::Absolute;
     style.clip = Some(ClipRect {
       top: ClipComponent::Length(Length::px(10.0)),
       right: ClipComponent::Length(Length::px(60.0)),
@@ -10642,6 +10648,7 @@ mod tests {
   #[test]
   fn clip_rect_from_style_resolves_rem_against_root_font_size() {
     let mut style = ComputedStyle::default();
+    style.position = Position::Absolute;
     style.font_size = 10.0;
     style.root_font_size = 20.0;
     style.clip = Some(ClipRect {
@@ -10664,6 +10671,7 @@ mod tests {
   #[test]
   fn clip_rect_from_style_viewport_units_require_viewport() {
     let mut style = ComputedStyle::default();
+    style.position = Position::Absolute;
     style.clip = Some(ClipRect {
       top: ClipComponent::Length(Length::px(0.0)),
       right: ClipComponent::Auto,
@@ -11846,6 +11854,7 @@ mod tests {
   #[test]
   fn clip_rect_flattens_preserve_3d() {
     let mut style = ComputedStyle::default();
+    style.position = Position::Absolute;
     style.transform = vec![Transform::Translate(Length::px(1.0), Length::px(2.0))];
     style.transform_style = TransformStyle::Preserve3d;
     style.clip = Some(ClipRect {
@@ -12159,6 +12168,7 @@ mod tests {
   #[test]
   fn clip_property_emits_clip_item() {
     let mut style = ComputedStyle::default();
+    style.position = Position::Absolute;
     style.clip = Some(crate::style::types::ClipRect {
       top: crate::style::types::ClipComponent::Length(Length::px(5.0)),
       right: crate::style::types::ClipComponent::Length(Length::px(15.0)),
