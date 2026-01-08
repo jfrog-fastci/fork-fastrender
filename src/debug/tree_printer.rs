@@ -166,9 +166,13 @@ impl EnhancedTreePrinter {
     output.push_str(&self.format_box_node(node));
     output.push('\n');
 
-    let child_count = node.children.len();
-    for (i, child) in node.children.iter().enumerate() {
-      let is_last_child = i == child_count - 1;
+    let mut children: Vec<&BoxNode> = node.children.iter().collect();
+    if let Some(body) = node.footnote_body.as_deref() {
+      children.push(body);
+    }
+    let child_count = children.len();
+    for (i, child) in children.into_iter().enumerate() {
+      let is_last_child = i == child_count.saturating_sub(1);
       let child_prefix = if depth > 0 {
         let ext = if self.config.use_unicode {
           if is_last {

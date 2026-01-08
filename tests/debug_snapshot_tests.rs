@@ -127,3 +127,28 @@ fn box_tree_snapshot_includes_table_spans_from_metadata() {
   let col_json = &children[1];
   assert_eq!(col_json["table_spans"]["column_span"], 4);
 }
+
+#[test]
+fn box_tree_snapshot_includes_footnote_body() {
+  let call = BoxNode::new_inline(Arc::new(fastrender::ComputedStyle::default()), vec![]);
+  let mut call = call;
+  call.footnote_body = Some(Box::new(BoxNode::new_block(
+    Arc::new(fastrender::ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![],
+  )));
+  let tree = BoxTree::new(call);
+
+  let snapshot = fastrender::debug::snapshot::snapshot_box_tree(&tree);
+  let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+  let children = json["root"]["children"].as_array().expect("children array");
+  assert_eq!(
+    children.len(),
+    1,
+    "expected footnote_body to be included as a child in box tree snapshots"
+  );
+  assert_eq!(
+    children[0]["box_id"], 2,
+    "expected footnote body to have its own box id"
+  );
+}

@@ -312,6 +312,9 @@ fn collect_styled_boxes<'a>(root: &'a BoxNode, out: &mut HashMap<usize, Vec<&'a 
     for child in node.children.iter().rev() {
       stack.push(child);
     }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
   }
 }
 

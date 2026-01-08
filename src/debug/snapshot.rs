@@ -617,7 +617,13 @@ fn snapshot_box_node(node: &BoxNode) -> BoxNodeSnapshot {
     }),
     table_spans,
     style: snapshot_style(&node.style),
-    children: node.children.iter().map(snapshot_box_node).collect(),
+    children: {
+      let mut children: Vec<BoxNodeSnapshot> = node.children.iter().map(snapshot_box_node).collect();
+      if let Some(body) = node.footnote_body.as_deref() {
+        children.push(snapshot_box_node(body));
+      }
+      children
+    },
   }
 }
 
