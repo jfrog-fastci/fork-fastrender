@@ -67,11 +67,12 @@ use crate::tree::fragment_tree::TextEmphasisOffset;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHasher;
 use smallvec::SmallVec;
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use unicode_bidi::Level;
 
@@ -552,7 +553,9 @@ struct ClusterBoundary {
   run_advance: f32,
 }
 
-static INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+  static INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED: Cell<bool> = const { Cell::new(false) };
+}
 static INLINE_RESHAPE_CACHE_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
 static INLINE_RESHAPE_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 static INLINE_RESHAPE_CACHE_STORES: AtomicUsize = AtomicUsize::new(0);
@@ -561,11 +564,16 @@ pub(crate) fn enable_inline_reshape_cache_diagnostics() {
   INLINE_RESHAPE_CACHE_LOOKUPS.store(0, Ordering::Relaxed);
   INLINE_RESHAPE_CACHE_HITS.store(0, Ordering::Relaxed);
   INLINE_RESHAPE_CACHE_STORES.store(0, Ordering::Relaxed);
-  INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED.store(true, Ordering::Release);
+  INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(true));
 }
 
 pub(crate) fn take_inline_reshape_cache_diagnostics() -> Option<(usize, usize, usize)> {
-  if !INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED.swap(false, Ordering::AcqRel) {
+  let was_enabled = INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED.with(|enabled| {
+    let prev = enabled.get();
+    enabled.set(false);
+    prev
+  });
+  if !was_enabled {
     return None;
   }
 
@@ -577,7 +585,7 @@ pub(crate) fn take_inline_reshape_cache_diagnostics() -> Option<(usize, usize, u
 }
 
 fn inline_reshape_cache_diagnostics_enabled() -> bool {
-  INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED.load(Ordering::Acquire)
+  INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED.with(|enabled| enabled.get())
 }
 
 #[inline]

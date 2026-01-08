@@ -47,6 +47,7 @@ use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -54,7 +55,6 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::{self, BufRead, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -190,12 +190,14 @@ pub struct ImageCacheDiagnostics {
   pub raster_pixmap_cache_bytes: usize,
 }
 
-static IMAGE_CACHE_DIAGNOSTICS_ACTIVE: AtomicBool = AtomicBool::new(false);
+thread_local! {
+  static IMAGE_CACHE_DIAGNOSTICS_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
 static IMAGE_CACHE_DIAGNOSTICS: Mutex<Option<ImageCacheDiagnostics>> = Mutex::new(None);
 static NEXT_IMAGE_CACHE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn enable_image_cache_diagnostics() {
-  IMAGE_CACHE_DIAGNOSTICS_ACTIVE.store(true, Ordering::Relaxed);
+  IMAGE_CACHE_DIAGNOSTICS_ACTIVE.with(|active| active.set(true));
   let mut guard = IMAGE_CACHE_DIAGNOSTICS
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -203,7 +205,7 @@ pub(crate) fn enable_image_cache_diagnostics() {
 }
 
 pub(crate) fn take_image_cache_diagnostics() -> Option<ImageCacheDiagnostics> {
-  IMAGE_CACHE_DIAGNOSTICS_ACTIVE.store(false, Ordering::Relaxed);
+  IMAGE_CACHE_DIAGNOSTICS_ACTIVE.with(|active| active.set(false));
   IMAGE_CACHE_DIAGNOSTICS
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -212,7 +214,7 @@ pub(crate) fn take_image_cache_diagnostics() -> Option<ImageCacheDiagnostics> {
 
 #[inline]
 fn with_image_cache_diagnostics<F: FnOnce(&mut ImageCacheDiagnostics)>(f: F) {
-  if !IMAGE_CACHE_DIAGNOSTICS_ACTIVE.load(Ordering::Relaxed) {
+  if !IMAGE_CACHE_DIAGNOSTICS_ACTIVE.with(|active| active.get()) {
     return;
   }
   let mut guard = IMAGE_CACHE_DIAGNOSTICS

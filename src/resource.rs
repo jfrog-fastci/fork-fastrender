@@ -34,7 +34,7 @@ use publicsuffix::{List, Psl};
 use reqwest::blocking as reqwest_blocking;
 use reqwest::cookie::{CookieStore, Jar as ReqwestCookieJar};
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::convert::TryFrom;
@@ -6846,9 +6846,36 @@ impl Drop for ResourceCacheDiagnosticsBaseline {
 thread_local! {
   static RESOURCE_CACHE_DIAGNOSTICS_BASELINE: RefCell<ResourceCacheDiagnosticsBaseline> =
     RefCell::new(ResourceCacheDiagnosticsBaseline::default());
+  static RESOURCE_CACHE_DIAGNOSTICS_THREAD_ENABLED: Cell<bool> = const { Cell::new(false) };
 }
 
 static RESOURCE_CACHE_DIAGNOSTICS_ACTIVE_SESSIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// Enables resource-cache diagnostics collection for the current thread.
+///
+/// Resource fetching can happen on helper threads (e.g. speculative prefetch / parallel crawlers).
+/// Make collection opt-in per thread so unrelated work running concurrently in the process doesn't
+/// pollute per-render diagnostics snapshots.
+pub(crate) struct ResourceCacheDiagnosticsThreadGuard {
+  prev_enabled: bool,
+}
+
+impl ResourceCacheDiagnosticsThreadGuard {
+  pub(crate) fn enter() -> Self {
+    let prev_enabled = RESOURCE_CACHE_DIAGNOSTICS_THREAD_ENABLED.with(|cell| {
+      let prev = cell.get();
+      cell.set(true);
+      prev
+    });
+    Self { prev_enabled }
+  }
+}
+
+impl Drop for ResourceCacheDiagnosticsThreadGuard {
+  fn drop(&mut self) {
+    RESOURCE_CACHE_DIAGNOSTICS_THREAD_ENABLED.with(|cell| cell.set(self.prev_enabled));
+  }
+}
 
 static RESOURCE_CACHE_DIAGNOSTICS: ResourceCacheDiagnosticsState = ResourceCacheDiagnosticsState {
   fresh_hits: AtomicUsize::new(0),
@@ -6921,7 +6948,10 @@ fn resource_cache_diagnostics_snapshot() -> ResourceCacheDiagnosticsSnapshot {
 }
 
 fn resource_cache_diagnostics_enabled() -> bool {
-  RESOURCE_CACHE_DIAGNOSTICS_ACTIVE_SESSIONS.load(Ordering::Relaxed) > 0
+  if RESOURCE_CACHE_DIAGNOSTICS_ACTIVE_SESSIONS.load(Ordering::Relaxed) == 0 {
+    return false;
+  }
+  RESOURCE_CACHE_DIAGNOSTICS_THREAD_ENABLED.with(|cell| cell.get())
 }
 
 fn end_resource_cache_diagnostics_session() {
@@ -6946,6 +6976,7 @@ pub(crate) fn enable_resource_cache_diagnostics() {
     guard.baseline = Some(baseline);
     !was_enabled
   });
+  RESOURCE_CACHE_DIAGNOSTICS_THREAD_ENABLED.with(|cell| cell.set(true));
   if enabled {
     RESOURCE_CACHE_DIAGNOSTICS_ACTIVE_SESSIONS.fetch_add(1, Ordering::Relaxed);
   }
@@ -6956,6 +6987,7 @@ pub(crate) fn take_resource_cache_diagnostics() -> Option<ResourceCacheDiagnosti
     let mut guard = cell.borrow_mut();
     guard.baseline.take()
   })?;
+  RESOURCE_CACHE_DIAGNOSTICS_THREAD_ENABLED.with(|cell| cell.set(false));
   end_resource_cache_diagnostics_session();
 
   let current = resource_cache_diagnostics_snapshot();
@@ -11740,6 +11772,7 @@ mod tests {
     for _ in 0..threads {
       let barrier = Arc::clone(&barrier);
       handles.push(thread::spawn(move || {
+        let _diag_guard = ResourceCacheDiagnosticsThreadGuard::enter();
         barrier.wait();
         for _ in 0..fresh_per_thread {
           record_cache_fresh_hit();

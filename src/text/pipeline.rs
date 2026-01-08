@@ -101,7 +101,7 @@ use std::cell::{Cell, RefCell};
 use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -409,7 +409,10 @@ impl TextDiagnosticsState {
 }
 
 static TEXT_DIAGNOSTICS: OnceLock<Mutex<TextDiagnosticsState>> = OnceLock::new();
-static TEXT_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+  static TEXT_DIAGNOSTICS_ENABLED: Cell<bool> = const { Cell::new(false) };
+}
 static TEXT_DIAGNOSTICS_SESSION: AtomicU64 = AtomicU64::new(0);
 static LAST_RESORT_LOGGED: AtomicUsize = AtomicUsize::new(0);
 static SHAPING_FALLBACK_LOGGED: AtomicUsize = AtomicUsize::new(0);
@@ -431,9 +434,9 @@ pub(crate) fn enable_text_diagnostics() {
     .wrapping_add(1);
   if let Ok(mut state) = diagnostics_cell().lock() {
     *state = TextDiagnosticsState::new(session);
-    TEXT_DIAGNOSTICS_ENABLED.store(true, Ordering::Release);
+    TEXT_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(true));
   } else {
-    TEXT_DIAGNOSTICS_ENABLED.store(false, Ordering::Release);
+    TEXT_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(false));
   }
   SHAPING_CACHE_DIAG_HITS.store(0, Ordering::Relaxed);
   SHAPING_CACHE_DIAG_MISSES.store(0, Ordering::Relaxed);
@@ -442,7 +445,12 @@ pub(crate) fn enable_text_diagnostics() {
 }
 
 pub(crate) fn take_text_diagnostics() -> Option<TextDiagnostics> {
-  if !TEXT_DIAGNOSTICS_ENABLED.swap(false, Ordering::AcqRel) {
+  let was_enabled = TEXT_DIAGNOSTICS_ENABLED.with(|enabled| {
+    let prev = enabled.get();
+    enabled.set(false);
+    prev
+  });
+  if !was_enabled {
     return None;
   }
 
@@ -468,7 +476,7 @@ pub(crate) fn take_text_diagnostics() -> Option<TextDiagnostics> {
 }
 
 pub(crate) fn text_diagnostics_enabled() -> bool {
-  TEXT_DIAGNOSTICS_ENABLED.load(Ordering::Acquire)
+  TEXT_DIAGNOSTICS_ENABLED.with(|enabled| enabled.get())
 }
 
 pub(crate) fn text_diagnostics_timer(stage: TextDiagnosticsStage) -> Option<TextDiagnosticsTimer> {
@@ -486,7 +494,7 @@ pub(crate) fn text_diagnostics_timer(stage: TextDiagnosticsStage) -> Option<Text
 }
 
 fn with_text_diagnostics_state(f: impl FnOnce(&mut TextDiagnosticsState)) {
-  if !TEXT_DIAGNOSTICS_ENABLED.load(Ordering::Acquire) {
+  if !text_diagnostics_enabled() {
     return;
   }
 
@@ -10082,6 +10090,25 @@ mod tests {
     let second = take_text_diagnostics().expect("expected diagnostics snapshot");
     assert_eq!(second.shaped_runs, 1);
     assert_eq!(second.glyphs, 2);
+  }
+
+  #[test]
+  fn text_diagnostics_do_not_capture_other_threads() {
+    let _session = crate::api::DiagnosticsSessionGuard::acquire();
+    enable_text_diagnostics();
+
+    std::thread::spawn(|| {
+      record_text_shape(None, 5, 10);
+    })
+    .join()
+    .expect("join thread");
+
+    let snapshot = take_text_diagnostics().expect("expected diagnostics snapshot");
+    assert_eq!(
+      snapshot.shaped_runs, 0,
+      "expected text diagnostics to ignore other threads"
+    );
+    assert_eq!(snapshot.glyphs, 0);
   }
 
   #[test]

@@ -33,8 +33,7 @@ use selectors::Element;
 use selectors::OpaqueElement;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
-use std::cell::RefCell;
-use std::cell::RefMut;
+use std::cell::{Cell, RefCell, RefMut};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -123,21 +122,29 @@ pub(crate) struct DomParseDiagnostics {
 }
 
 static DOM_PARSE_DIAGNOSTICS: OnceLock<Mutex<DomParseDiagnostics>> = OnceLock::new();
-static DOM_PARSE_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+  static DOM_PARSE_DIAGNOSTICS_ENABLED: Cell<bool> = const { Cell::new(false) };
+}
 
 fn dom_parse_diagnostics_cell() -> &'static Mutex<DomParseDiagnostics> {
   DOM_PARSE_DIAGNOSTICS.get_or_init(|| Mutex::new(DomParseDiagnostics::default()))
 }
 
 pub(crate) fn enable_dom_parse_diagnostics() {
-  DOM_PARSE_DIAGNOSTICS_ENABLED.store(true, Ordering::Release);
+  DOM_PARSE_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(true));
   if let Ok(mut diag) = dom_parse_diagnostics_cell().lock() {
     *diag = DomParseDiagnostics::default();
   }
 }
 
 pub(crate) fn take_dom_parse_diagnostics() -> Option<DomParseDiagnostics> {
-  if !DOM_PARSE_DIAGNOSTICS_ENABLED.swap(false, Ordering::AcqRel) {
+  let was_enabled = DOM_PARSE_DIAGNOSTICS_ENABLED.with(|enabled| {
+    let prev = enabled.get();
+    enabled.set(false);
+    prev
+  });
+  if !was_enabled {
     return None;
   }
 
@@ -148,7 +155,7 @@ pub(crate) fn take_dom_parse_diagnostics() -> Option<DomParseDiagnostics> {
 }
 
 fn dom_parse_diagnostics_enabled() -> bool {
-  DOM_PARSE_DIAGNOSTICS_ENABLED.load(Ordering::Acquire)
+  DOM_PARSE_DIAGNOSTICS_ENABLED.with(|enabled| enabled.get())
 }
 
 fn dom_parse_diagnostics_timer() -> Option<Instant> {

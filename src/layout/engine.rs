@@ -999,9 +999,12 @@ impl LayoutEngine {
     if let Some(pool) = pool {
       let deadline_stack = deadline_stack_snapshot();
       let stage = active_stage();
+      let taffy_perf_enabled = crate::layout::taffy_integration::taffy_perf_thread_enabled();
       pool.install(move || {
         let _guard = DeadlineStackGuard::install(deadline_stack);
         let _stage_guard = StageGuard::install(stage);
+        let _taffy_perf_guard =
+          crate::layout::taffy_integration::TaffyPerfThreadGuard::enter(taffy_perf_enabled);
         f()
       })
     } else {

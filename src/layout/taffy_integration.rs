@@ -13,8 +13,9 @@
 //! split by Flex vs Grid.
 //!
 //! Note: the recorded compute durations are accumulated across *all* Taffy invocations in a render
-//! (and across rayon worker threads). This means the resulting `*_compute_cpu_ms` values act like
-//! "core-milliseconds" and may exceed wall-clock timings for the overall render.
+//! (and across threads that are explicitly opted into the diagnostics session). This means the
+//! resulting `*_compute_cpu_ms` values act like "core-milliseconds" and may exceed wall-clock
+//! timings for the overall render.
 //!
 //! In `RenderDiagnostics.stats`, these are exposed as
 //! `LayoutDiagnostics.taffy_{flex,grid}_compute_cpu_ms` (legacy JSON may still use
@@ -92,16 +93,26 @@ static TAFFY_GRID_COMPUTE_NS: AtomicU64 = AtomicU64::new(0);
 static TAFFY_FLEX_MEASURE_CALLS: AtomicU64 = AtomicU64::new(0);
 static TAFFY_GRID_MEASURE_CALLS: AtomicU64 = AtomicU64::new(0);
 
+thread_local! {
+  static TAFFY_PERF_THREAD_ENABLED: Cell<bool> = const { Cell::new(false) };
+}
+
 /// Enables Taffy perf counters for the duration of a diagnostics-enabled render.
 ///
 /// The counters are global and not intended for per-thread attribution.
 #[doc(hidden)]
 pub struct TaffyPerfCountersGuard {
   previous: bool,
+  prev_thread: bool,
 }
 
 impl TaffyPerfCountersGuard {
   pub fn new() -> Self {
+    let prev_thread = TAFFY_PERF_THREAD_ENABLED.with(|cell| {
+      let prev = cell.get();
+      cell.set(true);
+      prev
+    });
     let previous = TAFFY_PERF_ENABLED.swap(true, Ordering::Relaxed);
     if !previous {
       TAFFY_PERF_RESET_REQUESTED.store(true, Ordering::Relaxed);
@@ -110,19 +121,54 @@ impl TaffyPerfCountersGuard {
       // hook at the start of each run).
       reset_taffy_perf_counters();
     }
-    Self { previous }
+    Self {
+      previous,
+      prev_thread,
+    }
   }
 }
 
 impl Drop for TaffyPerfCountersGuard {
   fn drop(&mut self) {
     TAFFY_PERF_ENABLED.store(self.previous, Ordering::Relaxed);
+    TAFFY_PERF_THREAD_ENABLED.with(|cell| cell.set(self.prev_thread));
+  }
+}
+
+#[inline]
+fn taffy_perf_session_active() -> bool {
+  TAFFY_PERF_ENABLED.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub(crate) fn taffy_perf_thread_enabled() -> bool {
+  TAFFY_PERF_THREAD_ENABLED.with(|cell| cell.get())
+}
+
+pub(crate) struct TaffyPerfThreadGuard {
+  prev: bool,
+}
+
+impl TaffyPerfThreadGuard {
+  pub(crate) fn enter(enabled: bool) -> Self {
+    let prev = TAFFY_PERF_THREAD_ENABLED.with(|cell| {
+      let prev = cell.get();
+      cell.set(enabled);
+      prev
+    });
+    Self { prev }
+  }
+}
+
+impl Drop for TaffyPerfThreadGuard {
+  fn drop(&mut self) {
+    TAFFY_PERF_THREAD_ENABLED.with(|cell| cell.set(self.prev));
   }
 }
 
 #[inline]
 pub(crate) fn taffy_perf_enabled() -> bool {
-  TAFFY_PERF_ENABLED.load(Ordering::Relaxed)
+  taffy_perf_session_active() && taffy_perf_thread_enabled()
 }
 
 /// Resets Taffy perf counters at the start of a layout run when requested.
@@ -134,7 +180,7 @@ pub(crate) fn taffy_perf_enabled() -> bool {
 /// multi-pass relayout within the same render (e.g. container queries).
 #[inline]
 pub(crate) fn reset_taffy_perf_counters() {
-  if !taffy_perf_enabled() {
+  if !taffy_perf_session_active() {
     return;
   }
   if !TAFFY_PERF_RESET_REQUESTED.swap(false, Ordering::Relaxed) {
