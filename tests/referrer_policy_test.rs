@@ -1760,6 +1760,49 @@ fn meta_referrer_policy_origin_is_overridden_by_iframe_referrerpolicy_no_referre
 }
 
 #[test]
+fn img_invalid_referrerpolicy_attribute_uses_document_meta_policy() {
+  let Some(server) =
+    HeaderCaptureServer::start("img_invalid_referrerpolicy_attribute_uses_document_meta_policy")
+  else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta name="referrer" content="origin">
+      </head>
+      <body>
+        <img src="/img.png" referrerpolicy="bogus-policy" style="width: 10px; height: 10px">
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected image request to be issued for the test fixture",
+  );
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert_eq!(
+    header_value(&img_req.headers, "referer").as_deref(),
+    Some(expected_referer.as_str()),
+    "expected invalid img referrerpolicy attribute to be ignored and document meta policy to apply; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
 fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() {
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",

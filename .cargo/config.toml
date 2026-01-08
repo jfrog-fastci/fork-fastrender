@@ -6,6 +6,7 @@ xtask = "run -p xtask --"
 # libaom to fall back to the generic (no-asm) CPU target.
 #
 # Override `AOM_TARGET_CPU` in your shell to re-enable optimized builds.
+# `cmake` crate forwards `CMAKE_ARGS` as extra configure args.
 [env]
 AOM_TARGET_CPU = "generic"
 CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"
