@@ -1715,6 +1715,14 @@ fn eval_style_range_value(
         ty: NumericType::Number,
         value: styles.font_weight.to_u16() as f32,
       }),
+      "letter-spacing" => Some(NumericValue {
+        ty: NumericType::LengthPx,
+        value: styles.letter_spacing,
+      }),
+      "word-spacing" => Some(NumericValue {
+        ty: NumericType::LengthPx,
+        value: styles.word_spacing,
+      }),
       "z-index" => styles.z_index.map(|z| NumericValue {
         ty: NumericType::Number,
         value: z as f32,
