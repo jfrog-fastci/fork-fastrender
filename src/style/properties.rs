@@ -8412,109 +8412,109 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "margin-top" => {
-      set_margin_side(
-        styles,
-        crate::style::PhysicalSide::Top,
-        extract_length(resolved_value),
-        order,
-      );
+      if let Some(value) = parse_margin_length(resolved_value) {
+        set_margin_side(styles, crate::style::PhysicalSide::Top, value, order);
+      }
     }
     "margin-right" => {
-      set_margin_side(
-        styles,
-        crate::style::PhysicalSide::Right,
-        extract_length(resolved_value),
-        order,
-      );
+      if let Some(value) = parse_margin_length(resolved_value) {
+        set_margin_side(styles, crate::style::PhysicalSide::Right, value, order);
+      }
     }
     "margin-bottom" => {
-      set_margin_side(
-        styles,
-        crate::style::PhysicalSide::Bottom,
-        extract_length(resolved_value),
-        order,
-      );
+      if let Some(value) = parse_margin_length(resolved_value) {
+        set_margin_side(styles, crate::style::PhysicalSide::Bottom, value, order);
+      }
     }
     "margin-left" => {
-      set_margin_side(
-        styles,
-        crate::style::PhysicalSide::Left,
-        extract_length(resolved_value),
-        order,
-      );
+      if let Some(value) = parse_margin_length(resolved_value) {
+        set_margin_side(styles, crate::style::PhysicalSide::Left, value, order);
+      }
     }
     "margin-inline-start" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::Margin {
-          axis: crate::style::LogicalAxis::Inline,
-          start: Some(extract_length(resolved_value)),
-          end: None,
-        },
-        order,
-      );
-    }
-    "margin-inline-end" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::Margin {
-          axis: crate::style::LogicalAxis::Inline,
-          start: None,
-          end: Some(extract_length(resolved_value)),
-        },
-        order,
-      );
-    }
-    "margin-block-start" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::Margin {
-          axis: crate::style::LogicalAxis::Block,
-          start: Some(extract_length(resolved_value)),
-          end: None,
-        },
-        order,
-      );
-    }
-    "margin-block-end" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::Margin {
-          axis: crate::style::LogicalAxis::Block,
-          start: None,
-          end: Some(extract_length(resolved_value)),
-        },
-        order,
-      );
-    }
-    "margin-inline" => {
-      if let Some(values) = extract_margin_values(resolved_value) {
-        let start = values.first().copied().flatten();
-        let end = values.get(1).copied().flatten().or(start);
+      if let Some(value) = parse_margin_length(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::Margin {
             axis: crate::style::LogicalAxis::Inline,
-            start: Some(start),
-            end: Some(end),
+            start: Some(value),
+            end: None,
           },
           order,
         );
       }
     }
-    "margin-block" => {
-      if let Some(values) = extract_margin_values(resolved_value) {
-        let start = values.first().copied().flatten();
-        let end = values.get(1).copied().flatten().or(start);
+    "margin-inline-end" => {
+      if let Some(value) = parse_margin_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::Margin {
+            axis: crate::style::LogicalAxis::Inline,
+            start: None,
+            end: Some(value),
+          },
+          order,
+        );
+      }
+    }
+    "margin-block-start" => {
+      if let Some(value) = parse_margin_length(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::Margin {
             axis: crate::style::LogicalAxis::Block,
-            start: Some(start),
-            end: Some(end),
+            start: Some(value),
+            end: None,
           },
           order,
         );
+      }
+    }
+    "margin-block-end" => {
+      if let Some(value) = parse_margin_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::Margin {
+            axis: crate::style::LogicalAxis::Block,
+            start: None,
+            end: Some(value),
+          },
+          order,
+        );
+      }
+    }
+    "margin-inline" => {
+      if let Some(values) = extract_margin_values(resolved_value) {
+        if values.len() == 1 || values.len() == 2 {
+          let start = values[0];
+          let end = values.get(1).copied().unwrap_or(start);
+          push_logical(
+            styles,
+            crate::style::LogicalProperty::Margin {
+              axis: crate::style::LogicalAxis::Inline,
+              start: Some(start),
+              end: Some(end),
+            },
+            order,
+          );
+        }
+      }
+    }
+    "margin-block" => {
+      if let Some(values) = extract_margin_values(resolved_value) {
+        if values.len() == 1 || values.len() == 2 {
+          let start = values[0];
+          let end = values.get(1).copied().unwrap_or(start);
+          push_logical(
+            styles,
+            crate::style::LogicalProperty::Margin {
+              axis: crate::style::LogicalAxis::Block,
+              start: Some(start),
+              end: Some(end),
+            },
+            order,
+          );
+        }
       }
     }
 
@@ -19202,18 +19202,26 @@ fn counter_value_to_string(value: &PropertyValue) -> Option<String> {
 
 pub fn extract_margin_values(value: &PropertyValue) -> Option<Vec<Option<Length>>> {
   match value {
-    PropertyValue::Length(len) => Some(vec![Some(*len)]),
-    PropertyValue::Number(n) if *n == 0.0 => Some(vec![Some(Length::px(0.0))]),
-    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => Some(vec![None]), // auto margins
-    PropertyValue::Keyword(kw) => parse_length(kw).map(|len| vec![Some(len)]),
     PropertyValue::Multiple(values) => {
-      let lengths: Vec<Option<Length>> = values.iter().map(extract_length).collect();
-      if lengths.is_empty() {
-        None
-      } else {
-        Some(lengths)
+      if values.is_empty() || values.len() > 4 {
+        return None;
       }
+      let mut out: Vec<Option<Length>> = Vec::with_capacity(values.len());
+      for token in values {
+        out.push(parse_margin_length(token)?);
+      }
+      Some(out)
     }
+    _ => parse_margin_length(value).map(|v| vec![v]),
+  }
+}
+
+fn parse_margin_length(value: &PropertyValue) -> Option<Option<Length>> {
+  match value {
+    PropertyValue::Length(len) => Some(Some(*len)),
+    PropertyValue::Number(n) if *n == 0.0 => Some(Some(Length::px(0.0))),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => Some(None),
+    PropertyValue::Keyword(kw) => parse_length(kw).map(Some),
     _ => None,
   }
 }
