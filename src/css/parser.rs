@@ -2753,9 +2753,30 @@ fn parse_keyframes_rule<'i, 't>(
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   parser.skip_whitespace();
   let name = match parser.next_including_whitespace() {
-    Ok(Token::Ident(id)) => id.to_string(),
+    Ok(Token::Ident(id)) => {
+      let ident_ref = id.as_ref();
+      // Per CSS Animations 1 §2: `<keyframes-name>` is either a `<custom-ident>` or `<string>`.
+      // The custom-ident form excludes CSS-wide keywords, `default`, and the `none` keyword.
+      //
+      // The string form can still represent these values, e.g. `@keyframes "None"`.
+      if ident_ref.eq_ignore_ascii_case("none")
+        || ident_ref.eq_ignore_ascii_case("default")
+        || ident_ref.eq_ignore_ascii_case("inherit")
+        || ident_ref.eq_ignore_ascii_case("initial")
+        || ident_ref.eq_ignore_ascii_case("unset")
+        || ident_ref.eq_ignore_ascii_case("revert")
+        || ident_ref.eq_ignore_ascii_case("revert-layer")
+      {
+        skip_at_rule(parser);
+        return Ok(None);
+      }
+      id.to_string()
+    }
     Ok(Token::QuotedString(s)) => s.to_string(),
-    _ => return Ok(None),
+    _ => {
+      skip_at_rule(parser);
+      return Ok(None);
+    }
   };
 
   parser.expect_curly_bracket_block().map_err(|_| {
@@ -6926,5 +6947,21 @@ mod tests {
         Rgba::TRANSPARENT
       )))
     );
+  }
+
+  #[test]
+  fn keyframes_rule_rejects_invalid_custom_ident_names() {
+    let css = r#"
+      @keyframes None { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes initial { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes "None" { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes "initial" { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes foo { from { opacity: 0; } to { opacity: 1; } }
+    "#;
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    let media_ctx = crate::style::media::MediaContext::screen(800.0, 600.0);
+    let collected = sheet.collect_keyframes(&media_ctx);
+    let names: Vec<&str> = collected.iter().map(|rule| rule.name.as_str()).collect();
+    assert_eq!(names, vec!["None", "initial", "foo"]);
   }
 }
