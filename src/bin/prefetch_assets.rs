@@ -2199,7 +2199,7 @@ mod disk_cache_main {
             let resolved = if sheet.contains_imports() {
               if opts.dry_run {
                 let import_loader = DryRunImportLoader::new(&summary);
-                let _ = sheet.resolve_imports_owned_with_cache(
+                let _ = sheet.resolve_imports_with_cache(
                   &import_loader,
                   Some(base_url),
                   media_ctx,

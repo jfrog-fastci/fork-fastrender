@@ -357,39 +357,59 @@ fn load_input_document(args: &Args) -> io::Result<InputDocument> {
 
 #[cfg(feature = "disk_cache")]
 #[derive(Clone)]
-struct DenyNetworkFetcher {
-  header_model: HttpFetcher,
+struct OfflineAwareFetcher {
+  offline: bool,
+  http: HttpFetcher,
 }
 
 #[cfg(feature = "disk_cache")]
-impl DenyNetworkFetcher {
-  fn new(header_model: HttpFetcher) -> Self {
-    Self { header_model }
+impl OfflineAwareFetcher {
+  fn new(http: HttpFetcher, offline: bool) -> Self {
+    Self { offline, http }
+  }
+
+  fn offline_error(url: &str) -> fastrender::Error {
+    fastrender::Error::Resource(fastrender::error::ResourceError::new(
+      url,
+      "offline mode: network disabled",
+    ))
   }
 }
 
 #[cfg(feature = "disk_cache")]
-impl ResourceFetcher for DenyNetworkFetcher {
+impl ResourceFetcher for OfflineAwareFetcher {
   fn fetch(&self, url: &str) -> fastrender::Result<fastrender::resource::FetchedResource> {
-    Err(fastrender::Error::Resource(
-      fastrender::error::ResourceError::new(url, "offline mode: network disabled"),
-    ))
+    if self.offline {
+      Err(Self::offline_error(url))
+    } else {
+      self.http.fetch(url)
+    }
   }
 
   fn fetch_with_request(
     &self,
     req: fastrender::resource::FetchRequest<'_>,
   ) -> fastrender::Result<fastrender::resource::FetchedResource> {
-    self.fetch(req.url)
+    if self.offline {
+      Err(Self::offline_error(req.url))
+    } else {
+      self.http.fetch_with_request(req)
+    }
   }
 
   fn fetch_with_request_and_validation(
     &self,
     req: fastrender::resource::FetchRequest<'_>,
-    _etag: Option<&str>,
-    _last_modified: Option<&str>,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
   ) -> fastrender::Result<fastrender::resource::FetchedResource> {
-    self.fetch(req.url)
+    if self.offline {
+      Err(Self::offline_error(req.url))
+    } else {
+      self
+        .http
+        .fetch_with_request_and_validation(req, etag, last_modified)
+    }
   }
 
   fn request_header_value(
@@ -397,7 +417,7 @@ impl ResourceFetcher for DenyNetworkFetcher {
     req: fastrender::resource::FetchRequest<'_>,
     header_name: &str,
   ) -> Option<String> {
-    self.header_model.request_header_value(req, header_name)
+    self.http.request_header_value(req, header_name)
   }
 }
 
@@ -423,11 +443,7 @@ fn build_fetcher(args: &Args) -> io::Result<Arc<dyn ResourceFetcher>> {
       &args.accept_language,
     ));
 
-    let base = if args.offline {
-      DenyNetworkFetcher::new(http)
-    } else {
-      http
-    };
+    let base = OfflineAwareFetcher::new(http, args.offline);
 
     return Ok(Arc::new(DiskCachingFetcher::with_configs(
       base,
