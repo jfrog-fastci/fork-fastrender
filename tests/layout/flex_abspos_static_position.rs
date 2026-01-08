@@ -828,6 +828,51 @@ fn abspos_static_position_respects_vertical_lr_writing_mode_axes() {
 }
 
 #[test]
+fn abspos_static_position_respects_sideways_rl_writing_mode_axes() {
+  // Sideways writing modes share the same physical axis mapping as vertical modes for flex layout.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.writing_mode = WritingMode::SidewaysRl;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.justify_content = JustifyContent::FlexEnd;
+  container_style.align_items = AlignItems::Start;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_sideways_lr_writing_mode_axes() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.writing_mode = WritingMode::SidewaysLr;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.justify_content = JustifyContent::FlexEnd;
+  container_style.align_items = AlignItems::Start;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_rtl_direction_in_vertical_writing_mode_for_flex_end() {
   // In vertical writing modes, `direction` flips the inline-start/inline-end edges even though the
   // inline axis is vertical.
