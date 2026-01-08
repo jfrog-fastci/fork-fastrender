@@ -16,3 +16,11 @@ AOM_TARGET_CPU = "generic"
 [target.'cfg(target_os = "linux")']
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[env]
+# Some sys crates (notably `libaom-sys`, used for AVIF decoding) use CMake and attempt to enable
+# x86_64 assembly optimizations. Our CI/container images do not ship with `yasm`/`nasm`, so force
+# libaom to fall back to the generic (no-asm) CPU target.
+#
+# `cmake` crate forwards this env var as extra configure args.
+CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"
