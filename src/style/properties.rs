@@ -6502,18 +6502,23 @@ fn parse_font_variant_caps_tokens(
   }
 
   let mut variant = base_variant;
-  let caps = match tokens[0] {
-    "normal" => FontVariantCaps::Normal,
-    "small-caps" => {
-      variant = FontVariant::SmallCaps;
-      FontVariantCaps::SmallCaps
-    }
-    "all-small-caps" => FontVariantCaps::AllSmallCaps,
-    "petite-caps" => FontVariantCaps::PetiteCaps,
-    "all-petite-caps" => FontVariantCaps::AllPetiteCaps,
-    "unicase" => FontVariantCaps::Unicase,
-    "titling-caps" => FontVariantCaps::TitlingCaps,
-    _ => return None,
+  let caps = if tokens[0].eq_ignore_ascii_case("normal") {
+    FontVariantCaps::Normal
+  } else if tokens[0].eq_ignore_ascii_case("small-caps") {
+    variant = FontVariant::SmallCaps;
+    FontVariantCaps::SmallCaps
+  } else if tokens[0].eq_ignore_ascii_case("all-small-caps") {
+    FontVariantCaps::AllSmallCaps
+  } else if tokens[0].eq_ignore_ascii_case("petite-caps") {
+    FontVariantCaps::PetiteCaps
+  } else if tokens[0].eq_ignore_ascii_case("all-petite-caps") {
+    FontVariantCaps::AllPetiteCaps
+  } else if tokens[0].eq_ignore_ascii_case("unicase") {
+    FontVariantCaps::Unicase
+  } else if tokens[0].eq_ignore_ascii_case("titling-caps") {
+    FontVariantCaps::TitlingCaps
+  } else {
+    return None;
   };
 
   Some((caps, variant))
@@ -6525,16 +6530,18 @@ fn parse_font_variant_ligatures_tokens(tokens: &[&str]) -> Option<FontVariantLig
   }
 
   if tokens.len() == 1 {
-    return match tokens[0] {
-      "normal" => Some(FontVariantLigatures::default()),
-      "none" => Some(FontVariantLigatures {
+    if tokens[0].eq_ignore_ascii_case("normal") {
+      return Some(FontVariantLigatures::default());
+    }
+    if tokens[0].eq_ignore_ascii_case("none") {
+      return Some(FontVariantLigatures {
         common: false,
         discretionary: false,
         historical: false,
         contextual: false,
-      }),
-      _ => None,
-    };
+      });
+    }
+    return None;
   }
 
   let mut lig = FontVariantLigatures::default();
@@ -6544,64 +6551,56 @@ fn parse_font_variant_ligatures_tokens(tokens: &[&str]) -> Option<FontVariantLig
   let mut seen_ctx = false;
 
   for tok in tokens {
-    match *tok {
-      "common-ligatures" => {
-        if seen_common {
-          return None;
-        }
-        lig.common = true;
-        seen_common = true;
+    if tok.eq_ignore_ascii_case("common-ligatures") {
+      if seen_common {
+        return None;
       }
-      "no-common-ligatures" => {
-        if seen_common {
-          return None;
-        }
-        lig.common = false;
-        seen_common = true;
+      lig.common = true;
+      seen_common = true;
+    } else if tok.eq_ignore_ascii_case("no-common-ligatures") {
+      if seen_common {
+        return None;
       }
-      "discretionary-ligatures" => {
-        if seen_disc {
-          return None;
-        }
-        lig.discretionary = true;
-        seen_disc = true;
+      lig.common = false;
+      seen_common = true;
+    } else if tok.eq_ignore_ascii_case("discretionary-ligatures") {
+      if seen_disc {
+        return None;
       }
-      "no-discretionary-ligatures" => {
-        if seen_disc {
-          return None;
-        }
-        lig.discretionary = false;
-        seen_disc = true;
+      lig.discretionary = true;
+      seen_disc = true;
+    } else if tok.eq_ignore_ascii_case("no-discretionary-ligatures") {
+      if seen_disc {
+        return None;
       }
-      "historical-ligatures" => {
-        if seen_hist {
-          return None;
-        }
-        lig.historical = true;
-        seen_hist = true;
+      lig.discretionary = false;
+      seen_disc = true;
+    } else if tok.eq_ignore_ascii_case("historical-ligatures") {
+      if seen_hist {
+        return None;
       }
-      "no-historical-ligatures" => {
-        if seen_hist {
-          return None;
-        }
-        lig.historical = false;
-        seen_hist = true;
+      lig.historical = true;
+      seen_hist = true;
+    } else if tok.eq_ignore_ascii_case("no-historical-ligatures") {
+      if seen_hist {
+        return None;
       }
-      "contextual" => {
-        if seen_ctx {
-          return None;
-        }
-        lig.contextual = true;
-        seen_ctx = true;
+      lig.historical = false;
+      seen_hist = true;
+    } else if tok.eq_ignore_ascii_case("contextual") {
+      if seen_ctx {
+        return None;
       }
-      "no-contextual" => {
-        if seen_ctx {
-          return None;
-        }
-        lig.contextual = false;
-        seen_ctx = true;
+      lig.contextual = true;
+      seen_ctx = true;
+    } else if tok.eq_ignore_ascii_case("no-contextual") {
+      if seen_ctx {
+        return None;
       }
-      _ => return None,
+      lig.contextual = false;
+      seen_ctx = true;
+    } else {
+      return None;
     }
   }
 
@@ -6612,7 +6611,7 @@ fn parse_font_variant_numeric_tokens(tokens: &[&str]) -> Option<FontVariantNumer
   if tokens.is_empty() {
     return None;
   }
-  if tokens.len() == 1 && tokens[0] == "normal" {
+  if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
     return Some(FontVariantNumeric::default());
   }
 
@@ -6622,52 +6621,48 @@ fn parse_font_variant_numeric_tokens(tokens: &[&str]) -> Option<FontVariantNumer
   let mut seen_fraction = false;
 
   for tok in tokens {
-    match *tok {
-      "lining-nums" => {
-        if seen_figure {
-          return None;
-        }
-        numeric.figure = NumericFigure::Lining;
-        seen_figure = true;
+    if tok.eq_ignore_ascii_case("lining-nums") {
+      if seen_figure {
+        return None;
       }
-      "oldstyle-nums" => {
-        if seen_figure {
-          return None;
-        }
-        numeric.figure = NumericFigure::Oldstyle;
-        seen_figure = true;
+      numeric.figure = NumericFigure::Lining;
+      seen_figure = true;
+    } else if tok.eq_ignore_ascii_case("oldstyle-nums") {
+      if seen_figure {
+        return None;
       }
-      "proportional-nums" => {
-        if seen_spacing {
-          return None;
-        }
-        numeric.spacing = NumericSpacing::Proportional;
-        seen_spacing = true;
+      numeric.figure = NumericFigure::Oldstyle;
+      seen_figure = true;
+    } else if tok.eq_ignore_ascii_case("proportional-nums") {
+      if seen_spacing {
+        return None;
       }
-      "tabular-nums" => {
-        if seen_spacing {
-          return None;
-        }
-        numeric.spacing = NumericSpacing::Tabular;
-        seen_spacing = true;
+      numeric.spacing = NumericSpacing::Proportional;
+      seen_spacing = true;
+    } else if tok.eq_ignore_ascii_case("tabular-nums") {
+      if seen_spacing {
+        return None;
       }
-      "diagonal-fractions" => {
-        if seen_fraction {
-          return None;
-        }
-        numeric.fraction = NumericFraction::Diagonal;
-        seen_fraction = true;
+      numeric.spacing = NumericSpacing::Tabular;
+      seen_spacing = true;
+    } else if tok.eq_ignore_ascii_case("diagonal-fractions") {
+      if seen_fraction {
+        return None;
       }
-      "stacked-fractions" => {
-        if seen_fraction {
-          return None;
-        }
-        numeric.fraction = NumericFraction::Stacked;
-        seen_fraction = true;
+      numeric.fraction = NumericFraction::Diagonal;
+      seen_fraction = true;
+    } else if tok.eq_ignore_ascii_case("stacked-fractions") {
+      if seen_fraction {
+        return None;
       }
-      "ordinal" => numeric.ordinal = true,
-      "slashed-zero" => numeric.slashed_zero = true,
-      _ => return None,
+      numeric.fraction = NumericFraction::Stacked;
+      seen_fraction = true;
+    } else if tok.eq_ignore_ascii_case("ordinal") {
+      numeric.ordinal = true;
+    } else if tok.eq_ignore_ascii_case("slashed-zero") {
+      numeric.slashed_zero = true;
+    } else {
+      return None;
     }
   }
 
@@ -6678,7 +6673,7 @@ fn parse_font_variant_east_asian_tokens(tokens: &[&str]) -> Option<FontVariantEa
   if tokens.is_empty() {
     return None;
   }
-  if tokens.len() == 1 && tokens[0] == "normal" {
+  if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
     return Some(FontVariantEastAsian::default());
   }
 
@@ -6687,65 +6682,58 @@ fn parse_font_variant_east_asian_tokens(tokens: &[&str]) -> Option<FontVariantEa
   let mut seen_width = false;
 
   for tok in tokens {
-    match *tok {
-      "jis78" => {
-        if seen_variant {
-          return None;
-        }
-        east.variant = Some(EastAsianVariant::Jis78);
-        seen_variant = true;
+    if tok.eq_ignore_ascii_case("jis78") {
+      if seen_variant {
+        return None;
       }
-      "jis83" => {
-        if seen_variant {
-          return None;
-        }
-        east.variant = Some(EastAsianVariant::Jis83);
-        seen_variant = true;
+      east.variant = Some(EastAsianVariant::Jis78);
+      seen_variant = true;
+    } else if tok.eq_ignore_ascii_case("jis83") {
+      if seen_variant {
+        return None;
       }
-      "jis90" => {
-        if seen_variant {
-          return None;
-        }
-        east.variant = Some(EastAsianVariant::Jis90);
-        seen_variant = true;
+      east.variant = Some(EastAsianVariant::Jis83);
+      seen_variant = true;
+    } else if tok.eq_ignore_ascii_case("jis90") {
+      if seen_variant {
+        return None;
       }
-      "jis04" => {
-        if seen_variant {
-          return None;
-        }
-        east.variant = Some(EastAsianVariant::Jis04);
-        seen_variant = true;
+      east.variant = Some(EastAsianVariant::Jis90);
+      seen_variant = true;
+    } else if tok.eq_ignore_ascii_case("jis04") {
+      if seen_variant {
+        return None;
       }
-      "simplified" => {
-        if seen_variant {
-          return None;
-        }
-        east.variant = Some(EastAsianVariant::Simplified);
-        seen_variant = true;
+      east.variant = Some(EastAsianVariant::Jis04);
+      seen_variant = true;
+    } else if tok.eq_ignore_ascii_case("simplified") {
+      if seen_variant {
+        return None;
       }
-      "traditional" => {
-        if seen_variant {
-          return None;
-        }
-        east.variant = Some(EastAsianVariant::Traditional);
-        seen_variant = true;
+      east.variant = Some(EastAsianVariant::Simplified);
+      seen_variant = true;
+    } else if tok.eq_ignore_ascii_case("traditional") {
+      if seen_variant {
+        return None;
       }
-      "full-width" => {
-        if seen_width {
-          return None;
-        }
-        east.width = Some(EastAsianWidth::FullWidth);
-        seen_width = true;
+      east.variant = Some(EastAsianVariant::Traditional);
+      seen_variant = true;
+    } else if tok.eq_ignore_ascii_case("full-width") {
+      if seen_width {
+        return None;
       }
-      "proportional-width" => {
-        if seen_width {
-          return None;
-        }
-        east.width = Some(EastAsianWidth::ProportionalWidth);
-        seen_width = true;
+      east.width = Some(EastAsianWidth::FullWidth);
+      seen_width = true;
+    } else if tok.eq_ignore_ascii_case("proportional-width") {
+      if seen_width {
+        return None;
       }
-      "ruby" => east.ruby = true,
-      _ => return None,
+      east.width = Some(EastAsianWidth::ProportionalWidth);
+      seen_width = true;
+    } else if tok.eq_ignore_ascii_case("ruby") {
+      east.ruby = true;
+    } else {
+      return None;
     }
   }
 
@@ -6765,14 +6753,23 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
 
   let parse_num = |s: &str| s.trim().parse::<u8>().ok().filter(|n| *n > 0 && *n <= 99);
 
+  fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let prefix_len = prefix.len();
+    let head = s.get(..prefix_len)?;
+    if head.eq_ignore_ascii_case(prefix) {
+      s.get(prefix_len..)
+    } else {
+      None
+    }
+  }
+
   for token in tokens {
-    if *token == "historical-forms" {
+    if token.eq_ignore_ascii_case("historical-forms") {
       alt.historical_forms = true;
       continue;
     }
 
-    if let Some(inner) = token
-      .strip_prefix("stylistic(")
+    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "stylistic(")
       .and_then(|s| s.strip_suffix(')'))
     {
       if seen_stylistic {
@@ -6786,8 +6783,7 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       return None;
     }
 
-    if let Some(inner) = token
-      .strip_prefix("styleset(")
+    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "styleset(")
       .and_then(|s| s.strip_suffix(')'))
     {
       for part in inner
@@ -6803,8 +6799,7 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       continue;
     }
 
-    if let Some(inner) = token
-      .strip_prefix("character-variant(")
+    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "character-variant(")
       .and_then(|s| s.strip_suffix(')'))
     {
       for part in inner
@@ -6820,9 +6815,7 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       continue;
     }
 
-    if let Some(inner) = token
-      .strip_prefix("swash(")
-      .and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "swash(").and_then(|s| s.strip_suffix(')'))
     {
       if seen_swash {
         return None;
@@ -6835,9 +6828,8 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       return None;
     }
 
-    if let Some(inner) = token
-      .strip_prefix("ornaments(")
-      .and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) =
+      strip_prefix_ignore_ascii_case(token, "ornaments(").and_then(|s| s.strip_suffix(')'))
     {
       if seen_ornaments {
         return None;
@@ -6850,9 +6842,8 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       return None;
     }
 
-    if let Some(inner) = token
-      .strip_prefix("annotation(")
-      .and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) =
+      strip_prefix_ignore_ascii_case(token, "annotation(").and_then(|s| s.strip_suffix(')'))
     {
       if seen_annotation {
         return None;
@@ -6882,11 +6873,14 @@ fn parse_font_variant_position_tokens(
     return None;
   }
 
-  match tokens[0] {
-    "normal" => Some(FontVariantPosition::Normal),
-    "sub" => Some(FontVariantPosition::Sub),
-    "super" => Some(FontVariantPosition::Super),
-    _ => None,
+  if tokens[0].eq_ignore_ascii_case("normal") {
+    Some(FontVariantPosition::Normal)
+  } else if tokens[0].eq_ignore_ascii_case("sub") {
+    Some(FontVariantPosition::Sub)
+  } else if tokens[0].eq_ignore_ascii_case("super") {
+    Some(FontVariantPosition::Super)
+  } else {
+    None
   }
 }
 
@@ -10223,7 +10217,7 @@ fn apply_declaration_with_base_internal_with_order(
       if let PropertyValue::Keyword(kw) = resolved_value {
         let trimmed = kw.trim();
         // CSS Fonts shorthand for font-variant subproperties.
-        if trimmed == "normal" {
+        if trimmed.eq_ignore_ascii_case("normal") {
           styles.font_variant = FontVariant::Normal;
           styles.font_variant_caps = FontVariantCaps::Normal;
           styles.font_variant_alternates = FontVariantAlternates::default();
@@ -10247,7 +10241,8 @@ fn apply_declaration_with_base_internal_with_order(
           let mut invalid = false;
 
           for tok in tokens {
-            match tok {
+            let tok_lower = tok.to_ascii_lowercase();
+            match tok_lower.as_str() {
               "small-caps" | "all-small-caps" | "petite-caps" | "all-petite-caps" | "unicase"
               | "titling-caps" => caps_tokens.push(tok),
               // The shorthand grammar omits "normal"/"none" for ligatures; those are invalid here.
@@ -10265,23 +10260,23 @@ fn apply_declaration_with_base_internal_with_order(
               }
               "jis78" | "jis83" | "jis90" | "jis04" | "simplified" | "traditional"
               | "full-width" | "proportional-width" | "ruby" => east_asian_tokens.push(tok),
-              tok
-                if tok.starts_with("stylistic(")
-                  || tok.starts_with("styleset(")
-                  || tok.starts_with("character-variant(")
-                  || tok.starts_with("swash(")
-                  || tok.starts_with("ornaments(")
-                  || tok.starts_with("annotation(")
-                  || tok == "historical-forms" =>
-              {
-                alternate_tokens.push(tok);
-              }
               "sub" | "super" => position_tokens.push(tok),
               _ => {
-                invalid = true;
-                break;
+                if tok_lower.starts_with("stylistic(")
+                  || tok_lower.starts_with("styleset(")
+                  || tok_lower.starts_with("character-variant(")
+                  || tok_lower.starts_with("swash(")
+                  || tok_lower.starts_with("ornaments(")
+                  || tok_lower.starts_with("annotation(")
+                  || tok_lower == "historical-forms"
+                {
+                  alternate_tokens.push(tok);
+                } else {
+                  invalid = true;
+                  break;
+                }
               }
-            }
+            };
           }
 
           if invalid {
@@ -10373,7 +10368,7 @@ fn apply_declaration_with_base_internal_with_order(
       if let PropertyValue::Keyword(kw) = resolved_value {
         let raw_tokens = split_font_variant_tokens(kw);
         let tokens: Vec<&str> = raw_tokens.iter().map(String::as_str).collect();
-        if tokens.len() == 1 && tokens[0] == "normal" {
+        if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
           styles.font_variant_alternates = FontVariantAlternates::default();
         } else if let Some(alt) = parse_font_variant_alternates_tokens(&tokens) {
           styles.font_variant_alternates = alt;
@@ -16473,7 +16468,8 @@ fn parse_angle_from_str(s: &str) -> Option<f32> {
 }
 
 fn parse_font_stretch_keyword(kw: &str) -> Option<FontStretch> {
-  match kw {
+  let kw = kw.to_ascii_lowercase();
+  match kw.as_str() {
     "ultra-condensed" => Some(FontStretch::UltraCondensed),
     "extra-condensed" => Some(FontStretch::ExtraCondensed),
     "condensed" => Some(FontStretch::Condensed),
@@ -16593,40 +16589,34 @@ fn parse_font_shorthand(
 
         if let Token::Ident(ref ident) = token {
           let ident = ident.as_ref();
-          match ident {
-            "normal" => {
-              if font_style.is_none() {
-                font_style = Some(FontStyle::Normal);
-              } else if font_weight.is_none() {
-                font_weight = Some(FontWeight::Normal);
-              } else if font_stretch.is_none() {
-                font_stretch = Some(FontStretch::Normal);
-              }
+          if ident.eq_ignore_ascii_case("normal") {
+            if font_style.is_none() {
+              font_style = Some(FontStyle::Normal);
+            } else if font_weight.is_none() {
+              font_weight = Some(FontWeight::Normal);
+            } else if font_stretch.is_none() {
+              font_stretch = Some(FontStretch::Normal);
             }
-            "small-caps" => font_variant = Some(FontVariant::SmallCaps),
-            "italic" => font_style = Some(FontStyle::Italic),
-            "oblique" => {
-              font_style = Some(FontStyle::Oblique(None));
-              match parser.try_parse(|p| Ok::<_, cssparser::ParseError<()>>(parse_angle_token(p))) {
-                Ok(Some(angle)) => font_style = Some(FontStyle::Oblique(Some(angle))),
-                Ok(None) => return None, // invalid angle token consumed
-                Err(_) => {}
-              }
+          } else if ident.eq_ignore_ascii_case("small-caps") {
+            font_variant = Some(FontVariant::SmallCaps);
+          } else if ident.eq_ignore_ascii_case("italic") {
+            font_style = Some(FontStyle::Italic);
+          } else if ident.eq_ignore_ascii_case("oblique") {
+            font_style = Some(FontStyle::Oblique(None));
+            match parser.try_parse(|p| Ok::<_, cssparser::ParseError<()>>(parse_angle_token(p))) {
+              Ok(Some(angle)) => font_style = Some(FontStyle::Oblique(Some(angle))),
+              Ok(None) => return None, // invalid angle token consumed
+              Err(_) => {}
             }
-            "bold" => font_weight = Some(FontWeight::Bold),
-            "bolder" => font_weight = Some(FontWeight::Bolder),
-            "lighter" => font_weight = Some(FontWeight::Lighter),
-            _ => {
-              if font_stretch.is_none() {
-                if let Some(stretch) = parse_font_stretch_keyword(ident) {
-                  font_stretch = Some(stretch);
-                }
-              }
-              if font_variant.is_none() {
-                if ident == "normal" {
-                  font_variant = Some(FontVariant::Normal);
-                }
-              }
+          } else if ident.eq_ignore_ascii_case("bold") {
+            font_weight = Some(FontWeight::Bold);
+          } else if ident.eq_ignore_ascii_case("bolder") {
+            font_weight = Some(FontWeight::Bolder);
+          } else if ident.eq_ignore_ascii_case("lighter") {
+            font_weight = Some(FontWeight::Lighter);
+          } else if font_stretch.is_none() {
+            if let Some(stretch) = parse_font_stretch_keyword(ident) {
+              font_stretch = Some(stretch);
             }
           }
         } else if let Token::Number { value, .. } = token {
@@ -16640,7 +16630,11 @@ fn parse_font_shorthand(
         } else if let Token::Dimension { ref unit, .. } = token {
           // Oblique angles are allowed; ignore them for now.
           let u = unit.as_ref();
-          if matches!(u, "deg" | "grad" | "rad" | "turn") {
+          if u.eq_ignore_ascii_case("deg")
+            || u.eq_ignore_ascii_case("grad")
+            || u.eq_ignore_ascii_case("rad")
+            || u.eq_ignore_ascii_case("turn")
+          {
             continue;
           }
         }
