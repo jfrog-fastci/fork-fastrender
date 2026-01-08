@@ -1673,11 +1673,16 @@ impl FontContext {
       return Err(err);
     }
     if cors_enforcement_enabled() {
-      let request_origin = self
-        .resource_context
-        .as_ref()
-        .and_then(|ctx| ctx.document_url.as_deref())
-        .and_then(origin_from_url);
+      // CORS enforcement should still be meaningful when the initiating document URL is unknown
+      // (e.g. HTML-string entry points configured with `FastRenderConfig::with_base_url`). In that
+      // case we fall back to the configured document origin.
+      let request_origin = self.resource_context.as_ref().and_then(|ctx| {
+        ctx
+          .policy
+          .document_origin
+          .clone()
+          .or_else(|| ctx.document_url.as_deref().and_then(origin_from_url))
+      });
       if let Some(origin) = request_origin.as_ref() {
         if let Err(message) =
           validate_cors_allow_origin(&resource, resolved_url, origin, CorsMode::Anonymous)

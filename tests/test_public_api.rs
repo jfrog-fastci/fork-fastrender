@@ -494,6 +494,76 @@ mod test_public_api {
   }
 
   #[test]
+  fn test_font_cors_enforcement_uses_configured_document_origin() {
+    #[derive(Clone)]
+    struct FontFetcher {
+      font_bytes: Arc<Vec<u8>>,
+    }
+
+    impl ResourceFetcher for FontFetcher {
+      fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+        if url != "https://fonts.test/font.ttf" {
+          panic!("unexpected fetch for {url}");
+        }
+        Ok(FetchedResource::with_final_url(
+          (*self.font_bytes).clone(),
+          Some("font/ttf".to_string()),
+          Some(url.to_string()),
+        ))
+      }
+    }
+
+    let font_bytes = std::fs::read("tests/fonts/RobotoFlex-VF.ttf").expect("read font fixture");
+    let fetcher = Arc::new(FontFetcher {
+      font_bytes: Arc::new(font_bytes),
+    }) as Arc<dyn ResourceFetcher>;
+
+    let mut toggles = HashMap::new();
+    toggles.insert("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string());
+    toggles.insert("FASTR_FETCH_ENFORCE_CORS".to_string(), "1".to_string());
+
+    // Provide only a base URL (no explicit document URL) so we exercise the code path where
+    // `ResourceContext.document_url` is unset but `ResourceContext.policy.document_origin` is
+    // configured. CORS enforcement should still treat cross-origin fonts as requiring
+    // Access-Control-Allow-Origin.
+    let config = deterministic_config()
+      .with_runtime_toggles(RuntimeToggles::from_map(toggles))
+      .with_base_url("https://origin.test/page.html")
+      .with_resource_policy(ResourcePolicy::default().allow_http(false).allow_https(true));
+    let mut renderer =
+      FastRender::with_config_and_fetcher(config, Some(fetcher)).expect("renderer");
+
+    let html = r#"
+        <!doctype html>
+        <html>
+          <head>
+            <style>
+              @font-face {
+                font-family: "CorsFont";
+                src: url("https://fonts.test/font.ttf");
+              }
+              body { font-family: "CorsFont", serif; }
+            </style>
+          </head>
+          <body>Hello</body>
+        </html>
+    "#;
+
+    let result = renderer
+      .render_html_with_diagnostics(html, RenderOptions::new().with_viewport(32, 32))
+      .expect("render");
+    assert!(
+      result.diagnostics.fetch_errors.iter().any(|e| {
+        e.kind == ResourceKind::Font
+          && e.url == "https://fonts.test/font.ttf"
+          && e.message.contains("blocked by CORS")
+      }),
+      "expected a CORS-blocked font fetch error, got: {:?}",
+      result.diagnostics.fetch_errors
+    );
+  }
+
+  #[test]
   fn test_prepare_html_respects_resource_policy_for_stylesheets() {
     #[derive(Clone, Default)]
     struct PanicFetcher;
