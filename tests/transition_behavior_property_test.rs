@@ -1,6 +1,6 @@
 use fastrender::css::types::{Declaration, PropertyValue};
 use fastrender::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
-use fastrender::style::types::{TransitionBehavior, TransitionProperty};
+use fastrender::style::types::{TransitionBehavior, TransitionProperty, TransitionTimingFunction};
 use fastrender::style::ComputedStyle;
 
 #[test]
@@ -474,5 +474,190 @@ fn transition_shorthand_rejects_negative_duration() {
   assert_eq!(
     styles.transition_properties,
     vec![TransitionProperty::Name("opacity".to_string())].into()
+  );
+}
+
+#[test]
+fn transition_timing_function_ignores_invalid_value() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::Linear].into()
+  );
+
+  let invalid_decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("wat".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::Linear].into()
+  );
+}
+
+#[test]
+fn transition_timing_function_ignores_invalid_comma_list() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  let invalid_decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("ease-in, wat".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::Linear].into()
+  );
+}
+
+#[test]
+fn transition_timing_function_parses_valid_comma_list() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("ease-in, linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::EaseIn, TransitionTimingFunction::Linear].into()
+  );
+}
+
+#[test]
+fn animation_timing_function_ignores_invalid_value() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "animation-timing-function".into(),
+    value: PropertyValue::Keyword("linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+  assert_eq!(
+    styles.animation_timing_functions,
+    vec![TransitionTimingFunction::Linear].into()
+  );
+
+  let invalid_decl = Declaration {
+    property: "animation-timing-function".into(),
+    value: PropertyValue::Keyword("wat".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.animation_timing_functions,
+    vec![TransitionTimingFunction::Linear].into()
   );
 }

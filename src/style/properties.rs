@@ -2793,18 +2793,16 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
   None
 }
 
-fn parse_transition_timing_function_list(raw: &str) -> Vec<TransitionTimingFunction> {
-  let mut funcs = Vec::new();
-  for part in split_top_level_commas(raw) {
-    if let Some(tf) = parse_transition_timing_function(&part) {
-      funcs.push(tf);
-    }
+fn parse_transition_timing_function_list(raw: &str) -> Option<Vec<TransitionTimingFunction>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
   }
-  if funcs.is_empty() {
-    vec![TransitionTimingFunction::Ease]
-  } else {
-    funcs
+  let mut funcs = Vec::with_capacity(parts.len());
+  for part in parts {
+    funcs.push(parse_transition_timing_function(&part)?);
   }
+  Some(funcs)
 }
 
 fn parse_animation_shorthand(
@@ -11296,7 +11294,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "animation-timing-function" | "-webkit-animation-timing-function" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_timing_functions = parse_transition_timing_function_list(css_text).into();
+      if let Some(list) = parse_transition_timing_function_list(css_text) {
+        styles.animation_timing_functions = list.into();
+      }
     }
     "animation-iteration-count" | "-webkit-animation-iteration-count" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
@@ -11363,7 +11363,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "transition-timing-function" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.transition_timing_functions = parse_transition_timing_function_list(css_text).into();
+      if let Some(list) = parse_transition_timing_function_list(css_text) {
+        styles.transition_timing_functions = list.into();
+      }
     }
     "transition-behavior" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
