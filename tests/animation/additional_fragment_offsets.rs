@@ -50,7 +50,7 @@ fn animated_style(timeline: &str, animation: &str) -> Arc<ComputedStyle> {
   }];
   style.animation_timelines = vec![AnimationTimeline::Named(timeline.to_string())];
   style.animation_ranges = vec![AnimationRange::default()];
-  style.animation_names = vec![animation.to_string()];
+  style.animation_names = vec![Some(animation.to_string())];
   style.animation_fill_modes = vec![AnimationFillMode::Both].into();
   Arc::new(style)
 }

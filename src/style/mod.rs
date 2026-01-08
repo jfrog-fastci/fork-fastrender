@@ -833,7 +833,11 @@ pub struct ComputedStyle {
   /// Ranges for animations along their timelines.
   pub animation_ranges: Vec<AnimationRange>,
   /// Names of animations applied to this element.
-  pub animation_names: Vec<String>,
+  ///
+  /// Each entry corresponds to a single animation in the comma-separated `animation-*` lists.
+  /// `None` represents the keyword `none` (which disables that animation entry). An empty vector
+  /// represents `animation-name: none` (no animations).
+  pub animation_names: Vec<Option<String>>,
   /// Durations for animations in milliseconds.
   pub animation_durations: Arc<[f32]>,
   /// Delays for animations in milliseconds.

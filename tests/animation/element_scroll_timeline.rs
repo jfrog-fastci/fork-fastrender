@@ -52,6 +52,7 @@ fn opacity_for_scroll(
   let animation_name = animated_style
     .animation_names
     .first()
+    .and_then(|name| name.as_ref())
     .expect("animated style should contain animation name")
     .clone();
 
@@ -108,7 +109,7 @@ fn scroll_timeline_uses_element_scroll_offsets() {
   let scroller_style = Arc::new(scroller_style);
 
   let mut animated_style = ComputedStyle::default();
-  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
   animated_style.animation_ranges = vec![AnimationRange::default()];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
   animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
@@ -140,7 +141,7 @@ fn named_timeline_scroll_beats_view_when_both_share_a_name() {
   let scroller_style = Arc::new(scroller_style);
 
   let mut animated_style = ComputedStyle::default();
-  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
   animated_style.animation_ranges = vec![AnimationRange::default()];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
   animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
@@ -204,7 +205,7 @@ fn scroll_timeline_respects_iteration_and_direction() {
   let scroller_style = Arc::new(scroller_style);
 
   let mut animated_style = ComputedStyle::default();
-  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
   animated_style.animation_ranges = vec![AnimationRange::default()];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
   animated_style.animation_iteration_counts = vec![AnimationIterationCount::Count(2.0)].into();
@@ -246,7 +247,7 @@ fn scroll_timeline_respects_steps_timing_function() {
   let scroller_style = Arc::new(scroller_style);
 
   let mut animated_style = ComputedStyle::default();
-  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
   animated_style.animation_ranges = vec![AnimationRange::default()];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
   animated_style.animation_timing_functions =
@@ -277,7 +278,7 @@ fn scroll_timeline_paused_freezes_progress() {
   let scroller_style = Arc::new(scroller_style);
 
   let mut animated_style = ComputedStyle::default();
-  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
   animated_style.animation_ranges = vec![AnimationRange::default()];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
   animated_style.animation_play_states = vec![AnimationPlayState::Paused].into();
@@ -342,7 +343,7 @@ fn scroll_timeline_fill_mode_none_skips_before_range() {
   let scroller_style = Arc::new(scroller_style);
 
   let mut animated_style = ComputedStyle::default();
-  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
   animated_style.animation_ranges = vec![AnimationRange {
     start: RangeOffset::Progress(0.5),
@@ -390,7 +391,7 @@ fn scroll_timeline_fill_mode_both_clamps_before_range() {
   let scroller_style = Arc::new(scroller_style);
 
   let mut animated_style = ComputedStyle::default();
-  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
   animated_style.animation_ranges = vec![AnimationRange {
     start: RangeOffset::Progress(0.5),
@@ -456,7 +457,7 @@ fn scroll_self_timeline_inactive_when_not_scrollable() {
 
   let mut style = ComputedStyle::default();
   style.overflow_y = Overflow::Scroll;
-  style.animation_names = vec!["fade".to_string()];
+  style.animation_names = vec![Some("fade".to_string())];
   style.animation_timelines = vec![AnimationTimeline::Scroll(ScrollFunctionTimeline {
     scroller: ScrollTimelineScroller::SelfElement,
     axis: TimelineAxis::Block,
@@ -485,7 +486,7 @@ fn scroll_self_timeline_active_when_scrollable() {
 
   let mut style = ComputedStyle::default();
   style.overflow_y = Overflow::Scroll;
-  style.animation_names = vec!["fade".to_string()];
+  style.animation_names = vec![Some("fade".to_string())];
   style.animation_timelines = vec![AnimationTimeline::Scroll(ScrollFunctionTimeline {
     scroller: ScrollTimelineScroller::SelfElement,
     axis: TimelineAxis::Block,
@@ -519,7 +520,7 @@ fn scroll_self_timeline_inactive_when_element_not_scroll_container() {
 
   let mut style = ComputedStyle::default();
   style.overflow_y = Overflow::Visible;
-  style.animation_names = vec!["fade".to_string()];
+  style.animation_names = vec![Some("fade".to_string())];
   style.animation_timelines = vec![AnimationTimeline::Scroll(ScrollFunctionTimeline {
     scroller: ScrollTimelineScroller::SelfElement,
     axis: TimelineAxis::Block,
@@ -547,7 +548,7 @@ fn view_root_timeline_tracks_viewport_scroll_offset() {
   let box_id = 1usize;
 
   let mut style = ComputedStyle::default();
-  style.animation_names = vec!["fade".to_string()];
+  style.animation_names = vec![Some("fade".to_string())];
   style.animation_timelines = vec![AnimationTimeline::View(ViewFunctionTimeline {
     scroller: ScrollTimelineScroller::Root,
     axis: TimelineAxis::Block,
@@ -609,7 +610,7 @@ fn view_root_timeline_paused_freezes_progress() {
   let box_id = 1usize;
 
   let mut style = ComputedStyle::default();
-  style.animation_names = vec!["fade".to_string()];
+  style.animation_names = vec![Some("fade".to_string())];
   style.animation_timelines = vec![AnimationTimeline::View(ViewFunctionTimeline {
     scroller: ScrollTimelineScroller::Root,
     axis: TimelineAxis::Block,

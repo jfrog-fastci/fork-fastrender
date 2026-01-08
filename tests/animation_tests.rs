@@ -59,7 +59,7 @@ fn parses_timelines_and_keyframes() {
   let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
   let div = find_by_tag(&styled, "div").expect("div present");
   assert_eq!(div.styles.animation_names.len(), 2);
-  assert_eq!(div.styles.animation_names[0], "fade");
+  assert_eq!(div.styles.animation_names[0].as_deref(), Some("fade"));
   assert_eq!(div.styles.animation_timelines.len(), 2);
   assert_eq!(div.styles.animation_ranges.len(), 2);
   assert_eq!(div.styles.scroll_timelines.len(), 1);

@@ -5185,6 +5185,7 @@ fn apply_animations_to_node_scoped(
         Vec::new();
 
       for (idx, name) in names.iter().enumerate() {
+        let Some(name) = name.as_ref() else { continue };
         let timeline_ref = pick(timelines_list, idx, AnimationTimeline::Auto);
         let range = pick(ranges_list, idx, AnimationRange::default());
         let play_state = pick(
@@ -6281,7 +6282,7 @@ mod tests {
   fn time_based_animation_fill_forwards_applies_after_end() {
     let rule = fade_rule();
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_delays = vec![500.0].into();
     style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
@@ -6298,7 +6299,7 @@ mod tests {
   fn time_based_animation_fill_backwards_respects_reverse_direction() {
     let rule = fade_rule();
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_delays = vec![500.0].into();
     style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
@@ -6314,7 +6315,7 @@ mod tests {
   fn time_based_animation_alternate_ends_on_start_state() {
     let rule = fade_rule();
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_iteration_counts = vec![AnimationIterationCount::Count(2.0)].into();
     style.animation_directions = vec![AnimationDirection::Alternate].into();
@@ -6330,7 +6331,7 @@ mod tests {
   fn time_based_animation_paused_samples_at_start_time() {
     let rule = fade_rule();
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
     style.animation_play_states = vec![AnimationPlayState::Paused].into();
@@ -6338,6 +6339,85 @@ mod tests {
     let progress = time_based_animation_progress(&style, 0, 500.0).expect("active");
     assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
     assert!((sampled_opacity(&rule, progress) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn animation_name_none_keyword_does_not_match_quoted_keyframes_name() {
+    let sheet = parse_stylesheet(
+      "@keyframes \"None\" { 0% { opacity: 0; } 100% { opacity: 0; } }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    assert_eq!(keyframes.len(), 1);
+    let rule = keyframes[0].clone();
+    assert_eq!(rule.name, "None");
+
+    let defaults = ComputedStyle::default();
+    let mut style = ComputedStyle::default();
+    let decl_name = crate::css::types::Declaration {
+      property: "animation-name".into(),
+      value: PropertyValue::Keyword("None, missing".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration_with_base(
+      &mut style,
+      &decl_name,
+      &defaults,
+      &defaults,
+      None,
+      defaults.font_size,
+      defaults.root_font_size,
+      Size::new(800.0, 600.0),
+      false,
+    );
+    let decl_duration = crate::css::types::Declaration {
+      property: "animation-duration".into(),
+      value: PropertyValue::Keyword("1s".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration_with_base(
+      &mut style,
+      &decl_duration,
+      &defaults,
+      &defaults,
+      None,
+      defaults.font_size,
+      defaults.root_font_size,
+      Size::new(800.0, 600.0),
+      false,
+    );
+
+    assert_eq!(
+      style.animation_names,
+      vec![None, Some("missing".to_string())]
+    );
+
+    let style = Arc::new(style);
+    let mut animated = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 50.0, 50.0), vec![]);
+    animated.style = Some(style);
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![animated]);
+    let mut tree = FragmentTree::new(root);
+    tree.keyframes.insert(rule.name.clone(), rule);
+
+    apply_animations(
+      &mut tree,
+      &ScrollState::default(),
+      Some(Duration::from_millis(500)),
+    );
+
+    let opacity = tree.root.children[0]
+      .style
+      .as_ref()
+      .expect("animated style present")
+      .opacity;
+    assert!(
+      (opacity - 1.0).abs() < 1e-6,
+      "keyword none should not match @keyframes \"None\", opacity={opacity}"
+    );
   }
 
   #[test]
@@ -6352,7 +6432,7 @@ mod tests {
     let timing = TransitionTimingFunction::EaseIn;
 
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["k".to_string()];
+    style.animation_names = vec![Some("k".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_timing_functions = vec![timing.clone()].into();
 
@@ -6411,7 +6491,7 @@ mod tests {
     let timing = TransitionTimingFunction::CubicBezier(0.0, 1.0, 0.0, 1.0);
 
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["tri".to_string()];
+    style.animation_names = vec![Some("tri".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_timing_functions = vec![timing.clone()].into();
 
@@ -6441,7 +6521,7 @@ mod tests {
   ) -> f32 {
     let mut style = ComputedStyle::default();
     style.overflow_y = Overflow::Scroll;
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_timelines = vec![AnimationTimeline::Scroll(ScrollFunctionTimeline {
       scroller: ScrollTimelineScroller::SelfElement,
       axis: TimelineAxis::Block,
@@ -6554,7 +6634,7 @@ mod tests {
   fn settled_time_based_animation_progress_samples_fill_forwards_end_state() {
     let rule = fade_rule();
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
     style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
 
@@ -6566,7 +6646,7 @@ mod tests {
   #[test]
   fn settled_time_based_animation_progress_paused_returns_initial_progress() {
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
     style.animation_play_states = vec![AnimationPlayState::Paused].into();
@@ -6581,7 +6661,7 @@ mod tests {
   fn settled_time_based_animation_progress_paused_with_positive_delay_is_none_without_backwards_fill(
   ) {
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_delays = vec![10_000.0].into();
     style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
@@ -6593,7 +6673,7 @@ mod tests {
   #[test]
   fn settled_time_based_animation_progress_paused_infinite_iterations_is_deterministically_start() {
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_durations = vec![1000.0].into();
     style.animation_iteration_counts = vec![AnimationIterationCount::Infinite].into();
     style.animation_play_states = vec![AnimationPlayState::Paused].into();
@@ -6605,7 +6685,7 @@ mod tests {
   #[test]
   fn settled_time_based_animation_progress_skips_non_filled_animations() {
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_fill_modes = vec![AnimationFillMode::None].into();
 
     assert_eq!(settled_time_based_animation_progress(&style, 0), None);
@@ -6614,7 +6694,7 @@ mod tests {
   #[test]
   fn settled_time_based_animation_progress_skips_infinite_iterations() {
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
     style.animation_iteration_counts = vec![AnimationIterationCount::Infinite].into();
 
@@ -6625,7 +6705,7 @@ mod tests {
   fn settled_time_based_animation_progress_respects_direction_and_iterations() {
     let rule = fade_rule();
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
     style.animation_directions = vec![AnimationDirection::Alternate].into();
     style.animation_iteration_counts = vec![AnimationIterationCount::Count(2.0)].into();
@@ -6639,7 +6719,7 @@ mod tests {
   fn settled_time_based_animation_progress_supports_fractional_iterations() {
     let rule = fade_rule();
     let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
+    style.animation_names = vec![Some("fade".to_string())];
     style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
     style.animation_iteration_counts = vec![AnimationIterationCount::Count(1.5)].into();
     style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
@@ -7305,7 +7385,7 @@ mod tests {
       false,
     );
 
-    assert_eq!(&*style.animation_names, &["fade".to_string()]);
+    assert_eq!(&*style.animation_names, &[Some("fade".to_string())]);
     assert_eq!(&*style.animation_durations, &[1000.0]);
     assert_eq!(&*style.animation_delays, &[0.0]);
     assert_eq!(

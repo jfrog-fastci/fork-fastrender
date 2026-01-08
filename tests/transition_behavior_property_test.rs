@@ -1162,7 +1162,7 @@ fn animation_shorthand_rejects_negative_duration() {
   );
 
   assert_eq!(styles.animation_durations, vec![1000.0].into());
-  assert_eq!(styles.animation_names, vec!["fade".to_string()]);
+  assert_eq!(styles.animation_names, vec![Some("fade".to_string())]);
 }
 
 #[test]
@@ -1189,7 +1189,7 @@ fn animation_shorthand_disambiguates_none_and_backwards() {
     false,
   );
 
-  assert_eq!(styles.animation_names, vec!["backwards".to_string()]);
+  assert_eq!(styles.animation_names, vec![Some("backwards".to_string())]);
   assert_eq!(styles.animation_durations, vec![3000.0].into());
   assert_eq!(
     styles.animation_fill_modes,
@@ -1221,7 +1221,7 @@ fn animation_shorthand_quoted_none_name_is_not_cleared() {
     false,
   );
 
-  assert_eq!(styles.animation_names, vec!["none".to_string()]);
+  assert_eq!(styles.animation_names, vec![Some("none".to_string())]);
   assert_eq!(styles.animation_durations, vec![1000.0].into());
   assert_eq!(
     styles.animation_timing_functions,
@@ -1317,7 +1317,7 @@ fn animation_name_ignores_invalid_value() {
     DEFAULT_VIEWPORT,
     false,
   );
-  assert_eq!(styles.animation_names, vec!["fade".to_string()]);
+  assert_eq!(styles.animation_names, vec![Some("fade".to_string())]);
 
   let invalid_decl = Declaration {
     property: "animation-name".into(),
@@ -1338,7 +1338,7 @@ fn animation_name_ignores_invalid_value() {
     false,
   );
 
-  assert_eq!(styles.animation_names, vec!["fade".to_string()]);
+  assert_eq!(styles.animation_names, vec![Some("fade".to_string())]);
 }
 
 #[test]
@@ -1384,7 +1384,7 @@ fn animation_name_rejects_css_wide_keywords_in_list() {
     false,
   );
 
-  assert_eq!(styles.animation_names, vec!["fade".to_string()]);
+  assert_eq!(styles.animation_names, vec![Some("fade".to_string())]);
 }
 
 #[test]
@@ -1411,7 +1411,7 @@ fn animation_name_quoted_none_is_not_the_none_keyword() {
     false,
   );
 
-  assert_eq!(styles.animation_names, vec!["none".to_string()]);
+  assert_eq!(styles.animation_names, vec![Some("none".to_string())]);
 }
 
 #[test]

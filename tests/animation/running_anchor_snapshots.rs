@@ -55,7 +55,7 @@ fn scroll_driven_animations_apply_inside_running_anchor_snapshots() {
   let scroller_style = Arc::new(scroller_style);
 
   let mut animated_style = ComputedStyle::default();
-  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
   animated_style.animation_ranges = vec![AnimationRange::default()];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
   animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();

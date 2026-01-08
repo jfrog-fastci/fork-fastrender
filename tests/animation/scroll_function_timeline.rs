@@ -48,7 +48,7 @@ fn scroll_function_timeline_uses_self_scroll_offsets() {
 
   let mut style = ComputedStyle::default();
   style.overflow_y = Overflow::Auto;
-  style.animation_names = vec![animation_name.to_string()];
+  style.animation_names = vec![Some(animation_name.to_string())];
   style.animation_ranges = vec![AnimationRange::default()];
   style.animation_timelines = vec![AnimationTimeline::Scroll(ScrollFunctionTimeline {
     scroller: ScrollTimelineScroller::SelfElement,

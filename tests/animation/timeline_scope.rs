@@ -44,7 +44,7 @@ fn fade_keyframes(name: &str) -> KeyframesRule {
 
 fn animated_style(animation: &str, timeline: &str) -> Arc<ComputedStyle> {
   let mut style = ComputedStyle::default();
-  style.animation_names = vec![animation.to_string()];
+  style.animation_names = vec![Some(animation.to_string())];
   style.animation_ranges = vec![AnimationRange::default()];
   style.animation_timelines = vec![AnimationTimeline::Named(timeline.to_string())];
   style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();

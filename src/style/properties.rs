@@ -1473,12 +1473,11 @@ fn custom_ident_is_excluded_keyword(ident_lower: &str) -> bool {
   )
 }
 
-fn parse_animation_names(raw: &str) -> Option<Vec<String>> {
+fn parse_animation_names(raw: &str) -> Option<Vec<Option<String>>> {
   let parts = split_top_level_commas_strict(raw)?;
 
   let mut names = Vec::with_capacity(parts.len());
-  let mut first_is_none_ident = false;
-  for (idx, part) in parts.into_iter().enumerate() {
+  for part in parts {
     let trimmed = part.trim();
     if trimmed.is_empty() {
       return None;
@@ -1487,28 +1486,29 @@ fn parse_animation_names(raw: &str) -> Option<Vec<String>> {
     let mut parser = Parser::new(&mut input);
     parser.skip_whitespace();
     let token = parser.next_including_whitespace().ok()?;
-    let (name, is_none_ident) = match token {
+    let name = match token {
       Token::Ident(ident) => {
         let lower = ident.as_ref().to_ascii_lowercase();
         if custom_ident_is_excluded_keyword(&lower) {
           return None;
         }
-        (ident.to_string(), ident.eq_ignore_ascii_case("none"))
+        if ident.eq_ignore_ascii_case("none") {
+          None
+        } else {
+          Some(ident.to_string())
+        }
       }
-      Token::QuotedString(s) => (s.to_string(), false),
+      Token::QuotedString(s) => Some(s.to_string()),
       _ => return None,
     };
     parser.skip_whitespace();
     if !parser.is_exhausted() {
       return None;
     }
-    if idx == 0 {
-      first_is_none_ident = is_none_ident;
-    }
     names.push(name);
   }
 
-  if names.len() == 1 && first_is_none_ident {
+  if names.len() == 1 && names[0].is_none() {
     // The keyword `none` disables animations. A quoted string `"none"` is still a valid keyframes
     // name, so only treat the ident token as the keyword.
     Some(Vec::new())
@@ -2955,7 +2955,7 @@ fn parse_transition_timing_function_list(raw: &str) -> Option<Vec<TransitionTimi
 fn parse_animation_shorthand(
   raw: &str,
 ) -> Option<(
-  Vec<String>,
+  Vec<Option<String>>,
   Vec<f32>,
   Vec<f32>,
   Vec<TransitionTimingFunction>,
@@ -2966,7 +2966,6 @@ fn parse_animation_shorthand(
   Vec<AnimationComposition>,
 )> {
   let mut names = Vec::new();
-  let mut names_are_none_keywords = Vec::new();
   let mut durations = Vec::new();
   let mut delays = Vec::new();
   let mut timings = Vec::new();
@@ -2979,7 +2978,7 @@ fn parse_animation_shorthand(
   let mut saw_any = false;
 
   for part in split_top_level_commas_strict(raw)? {
-    let mut name: Option<(String, bool)> = None;
+    let mut name: Option<Option<String>> = None;
     let mut duration: Option<f32> = None;
     let mut delay: Option<f32> = None;
     let mut timing: Option<TransitionTimingFunction> = None;
@@ -3107,7 +3106,11 @@ fn parse_animation_shorthand(
           invalid = true;
           break;
         }
-        name = parsed.map(|value| (value, is_none_keyword));
+        name = if is_none_keyword {
+          Some(None)
+        } else {
+          Some(parsed)
+        };
       } else {
         invalid = true;
         break;
@@ -3119,12 +3122,7 @@ fn parse_animation_shorthand(
     }
 
     saw_any = true;
-    let (name_value, is_none_keyword) = match name {
-      Some((value, is_none)) => (value, is_none),
-      None => ("none".to_string(), true),
-    };
-    names.push(name_value);
-    names_are_none_keywords.push(is_none_keyword);
+    names.push(name.unwrap_or(None));
     durations.push(duration.unwrap_or(0.0));
     delays.push(delay.unwrap_or(0.0));
     timings.push(timing.unwrap_or(TransitionTimingFunction::Ease));
@@ -3139,11 +3137,7 @@ fn parse_animation_shorthand(
     return None;
   }
 
-  if names.len() == 1
-    && names_are_none_keywords.len() == 1
-    && names_are_none_keywords[0]
-    && names[0].eq_ignore_ascii_case("none")
-  {
+  if names.len() == 1 && names[0].is_none() {
     names.clear();
   }
 
@@ -20574,7 +20568,33 @@ mod tests {
 
     assert_eq!(
       styles.animation_names,
-      vec!["fade".to_string(), "slide".to_string()]
+      vec![Some("fade".to_string()), Some("slide".to_string())]
+    );
+  }
+
+  #[test]
+  fn animation_name_preserves_none_keyword_entries_in_lists() {
+    let decls = parse_declarations("animation-name: None, fade;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut styles,
+      decl,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+      false,
+    );
+
+    assert_eq!(
+      styles.animation_names,
+      vec![None, Some("fade".to_string())]
     );
   }
 
@@ -20666,7 +20686,7 @@ mod tests {
 
     assert_eq!(
       styles.animation_names,
-      vec!["fade".to_string(), "slide".to_string()]
+      vec![Some("fade".to_string()), Some("slide".to_string())]
     );
     assert_eq!(styles.animation_durations, vec![2000.0, 1000.0].into());
     assert_eq!(styles.animation_delays, vec![1000.0, 0.0].into());
@@ -20720,7 +20740,7 @@ mod tests {
       false,
     );
 
-    assert_eq!(styles.animation_names, vec!["spin".to_string()]);
+    assert_eq!(styles.animation_names, vec![Some("spin".to_string())]);
     assert_eq!(styles.animation_durations, vec![2000.0].into());
     assert_eq!(
       styles.animation_timing_functions,
@@ -20806,7 +20826,7 @@ mod tests {
       false,
     );
 
-    assert_eq!(styles.animation_names, vec!["spin".to_string()]);
+    assert_eq!(styles.animation_names, vec![Some("spin".to_string())]);
     assert_eq!(styles.animation_durations, vec![2000.0].into());
     assert_eq!(
       styles.animation_timing_functions,
@@ -20838,7 +20858,7 @@ mod tests {
       false,
     );
 
-    assert_eq!(styles.animation_names, vec!["spin".to_string()]);
+    assert_eq!(styles.animation_names, vec![Some("spin".to_string())]);
     assert_eq!(styles.animation_durations, vec![2000.0].into());
     assert_eq!(
       styles.animation_timing_functions,
@@ -20884,7 +20904,7 @@ mod tests {
       false,
     );
 
-    assert_eq!(styles.animation_names, vec!["spin,fast".to_string()]);
+    assert_eq!(styles.animation_names, vec![Some("spin,fast".to_string())]);
     assert_eq!(styles.animation_durations, vec![2000.0].into());
     assert_eq!(
       styles.animation_timing_functions,
@@ -20918,7 +20938,7 @@ mod tests {
 
     assert_eq!(
       styles.animation_names,
-      vec!["spin".to_string(), "fade".to_string()]
+      vec![Some("spin".to_string()), Some("fade".to_string())]
     );
     assert_eq!(styles.animation_durations, vec![2000.0, 1000.0].into());
     assert_eq!(
@@ -21020,7 +21040,7 @@ mod tests {
     );
 
     assert_eq!(
-      styles.animation_names.get(0).map(String::as_str),
+      styles.animation_names.get(0).and_then(|name| name.as_deref()),
       Some("fade")
     );
     assert_eq!(
