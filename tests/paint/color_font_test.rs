@@ -3,6 +3,7 @@ use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_db::LoadedFont;
 use fastrender::text::pipeline::{Direction, GlyphPosition, RunRotation, ShapedRun};
 use fastrender::TextRasterizer;
+use fastrender::{image_output::encode_image, OutputFormat};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tiny_skia::Pixmap;
@@ -87,14 +88,17 @@ fn render_to_png(
   height: u32,
   x: f32,
   baseline: f32,
+  background: Option<tiny_skia::Color>,
 ) -> Vec<u8> {
   let mut pixmap = Pixmap::new(width, height).expect("pixmap");
-  pixmap.fill(tiny_skia::Color::WHITE);
+  if let Some(background) = background {
+    pixmap.fill(background);
+  }
   let mut rasterizer = TextRasterizer::new();
   rasterizer
     .render_shaped_run(run, x, baseline, color, &mut pixmap)
     .expect("render run");
-  pixmap.encode_png().expect("encode png")
+  encode_image(&pixmap, OutputFormat::Png).expect("encode png")
 }
 
 fn compare_with_golden(name: &str, rendered: &[u8]) {
@@ -113,7 +117,15 @@ fn compare_with_golden(name: &str, rendered: &[u8]) {
 fn colrv1_linear_gradient_matches_golden() {
   let font = load_fixture_font("colrv1-test.ttf");
   let run = shaped_run(&font, 'G', 96.0, 0);
-  let rendered = render_to_png(&run, Rgba::BLACK, 180, 180, 20.0, 150.0);
+  let rendered = render_to_png(
+    &run,
+    Rgba::BLACK,
+    180,
+    180,
+    20.0,
+    150.0,
+    Some(tiny_skia::Color::WHITE),
+  );
   compare_with_golden("colrv1_light_palette", &rendered);
 }
 
@@ -121,7 +133,15 @@ fn colrv1_linear_gradient_matches_golden() {
 fn colrv1_dark_palette_matches_golden() {
   let font = load_fixture_font("colrv1-test.ttf");
   let run = shaped_run(&font, 'G', 96.0, 1);
-  let rendered = render_to_png(&run, Rgba::BLACK, 180, 180, 20.0, 150.0);
+  let rendered = render_to_png(
+    &run,
+    Rgba::BLACK,
+    180,
+    180,
+    20.0,
+    150.0,
+    Some(tiny_skia::Color::WHITE),
+  );
   compare_with_golden("colrv1_dark_palette", &rendered);
 }
 
@@ -129,7 +149,15 @@ fn colrv1_dark_palette_matches_golden() {
 fn svg_glyph_uses_current_color() {
   let font = load_fixture_font("svg-color-glyph-test.ttf");
   let run = shaped_run(&font, 'A', 64.0, 0);
-  let rendered = render_to_png(&run, Rgba::new(200, 30, 30, 0.8), 120, 120, 10.0, 90.0);
+  let rendered = render_to_png(
+    &run,
+    Rgba::new(200, 30, 30, 0.8),
+    120,
+    120,
+    10.0,
+    90.0,
+    None,
+  );
   compare_with_golden("svg_color_glyph_red", &rendered);
 }
 

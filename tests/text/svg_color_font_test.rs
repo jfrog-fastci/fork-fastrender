@@ -30,7 +30,7 @@ fn painted_bounds(pixmap: &Pixmap) -> Option<(u32, u32, u32, u32)> {
   let mut max_y = 0;
 
   for (idx, chunk) in pixmap.data().chunks(4).enumerate() {
-    // Alpha channel is last in tiny-skia's BGRA layout.
+    // Alpha channel is last in tiny-skia's RGBA layout.
     if chunk[3] == 0 {
       continue;
     }
@@ -59,9 +59,10 @@ fn pixmap_to_rgba_image(pixmap: &Pixmap) -> image::RgbaImage {
     .chunks_exact_mut(4)
     .zip(pixmap.data().chunks_exact(4))
   {
-    let b = src[0];
+    // tiny-skia pixmaps store pixels as premultiplied RGBA.
+    let r = src[0];
     let g = src[1];
-    let r = src[2];
+    let b = src[2];
     let a = src[3];
 
     if a == 0 {

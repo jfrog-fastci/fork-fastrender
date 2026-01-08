@@ -33,7 +33,7 @@ pub use svg::MAX_SVG_GLYPH_BYTES;
 /// Rasterized color glyph image with positioning relative to the glyph origin.
 #[derive(Debug, Clone)]
 pub struct ColorGlyphRaster {
-  /// Premultiplied BGRA8 pixmap for the glyph.
+  /// Premultiplied RGBA8 pixmap for the glyph.
   pub image: Arc<tiny_skia::Pixmap>,
   /// X offset from glyph origin to the top-left corner (pixels, Y-down).
   pub left: f32,
