@@ -1523,7 +1523,11 @@ pub(crate) fn clip_node(
     }
   }
 
-  if node_bbox_flow_end <= fragment_start || node_bbox_flow_start >= fragment_end {
+  let bbox_is_zero = node_bbox_block_size <= BREAK_EPSILON;
+  if node_bbox_flow_end < fragment_start
+    || (node_bbox_flow_end <= fragment_start && !bbox_is_zero)
+    || node_bbox_flow_start >= fragment_end
+  {
     return Ok(None);
   }
   let is_table_row_like = matches!(
