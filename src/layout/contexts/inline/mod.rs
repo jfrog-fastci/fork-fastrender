@@ -5101,7 +5101,13 @@ impl InlineFormattingContext {
             pseudo.first_line_style = None;
             pseudo.first_letter_style = None;
             pseudo.styled_node_id = child.styled_node_id;
-            let mut letter_child = BoxNode::new_text(letter_style.clone(), letter);
+            // The pseudo element may be floated, but `float` does not inherit. If we apply the
+            // first-letter style wholesale to the text node, the block formatting context used for
+            // floats will incorrectly treat the text child as a nested float and can drop it.
+            let mut letter_text_style: ComputedStyle = letter_style.as_ref().clone();
+            letter_text_style.float = crate::style::float::Float::None;
+            let letter_text_style = Arc::new(letter_text_style);
+            let mut letter_child = BoxNode::new_text(letter_text_style, letter);
             letter_child.styled_node_id = child.styled_node_id;
             pseudo.children.push(letter_child);
             out.push(pseudo);

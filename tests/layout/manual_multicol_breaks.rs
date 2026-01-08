@@ -31,7 +31,7 @@ fn break_before_column_forces_new_manual_column() {
     <html>
       <head>
         <style>
-          body { margin: 0; column-count: 2; column-gap: 20px; }
+          body { margin: 0; }
           #first { height: 60px; background: rgb(200, 40, 40); }
           #second { height: 40px; background: rgb(40, 180, 90); break-before: column; }
         </style>
@@ -86,9 +86,10 @@ fn vertical_writing_mode_break_before_column_forces_new_manual_column() {
     <html>
       <head>
         <style>
-          body { margin: 0; writing-mode: vertical-rl; column-count: 2; column-gap: 16px; }
-          #first { height: 50px; background: rgb(120, 120, 200); }
-          #second { height: 50px; background: rgb(20, 160, 140); break-before: column; }
+          html { writing-mode: vertical-rl; }
+          body { margin: 0; }
+          #first { block-size: 50px; background: rgb(120, 120, 200); }
+          #second { block-size: 50px; background: rgb(20, 160, 140); break-before: column; }
         </style>
       </head>
       <body>

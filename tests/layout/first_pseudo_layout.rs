@@ -36,7 +36,7 @@ fn collect_texts<'a>(fragment: &'a fastrender::FragmentNode, out: &mut Vec<(&'a 
         .as_ref()
         .map(|s| s.color)
         .unwrap_or_else(|| fastrender::Rgba::BLACK);
-      out.push((text.as_str(), color));
+      out.push((text.as_ref(), color));
     }
   }
   for child in fragment.children.iter() {
@@ -102,11 +102,9 @@ fn first_letter_and_first_line_styles_apply_to_fragments() {
   let fragment = ifc
     .layout(&container, &LayoutConstraints::definite_width(180.0))
     .expect("inline layout");
-  dbg!(&fragment);
 
   let mut all_texts = Vec::new();
   collect_texts(&fragment, &mut all_texts);
-  dbg!(&all_texts);
   assert!(
     all_texts
       .iter()
@@ -117,7 +115,6 @@ fn first_letter_and_first_line_styles_apply_to_fragments() {
   let first_line = find_first_line(&fragment).expect("line fragment");
   let mut first_line_texts = Vec::new();
   collect_texts(first_line, &mut first_line_texts);
-  dbg!(&first_line_texts);
   assert!(
     first_line_texts
       .iter()

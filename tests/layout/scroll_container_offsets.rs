@@ -73,6 +73,9 @@ fn element_scroll_translates_descendants() {
 
   fastrender::scroll::apply_scroll_offsets(&mut tree, &scroll_state);
 
+  // `apply_scroll_offsets` mutates the fragment tree in place, so painting should not apply the
+  // same scroll offsets a second time.
+  let empty_scroll_state = ScrollState::default();
   let pixmap = paint_tree_display_list_with_resources_scaled_offset(
     &tree,
     50,
@@ -83,7 +86,7 @@ fn element_scroll_translates_descendants() {
     1.0,
     Point::ZERO,
     PaintParallelism::default(),
-    &scroll_state,
+    &empty_scroll_state,
   )
   .expect("paint scrolled fragment tree");
 

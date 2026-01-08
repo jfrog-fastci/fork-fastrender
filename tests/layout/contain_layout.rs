@@ -5,6 +5,7 @@ use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::formatting_context::IntrinsicSizingMode;
 use fastrender::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
+use fastrender::style::types::BorderStyle;
 use fastrender::style::types::Containment;
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
@@ -23,6 +24,8 @@ fn container_with_child(containment: Containment) -> BoxNode {
   container_style.padding_right = Length::px(5.0);
   container_style.border_left_width = Length::px(1.0);
   container_style.border_right_width = Length::px(1.0);
+  container_style.border_left_style = BorderStyle::Solid;
+  container_style.border_right_style = BorderStyle::Solid;
   container_style.containment = containment;
   let container_style = Arc::new(container_style);
 
