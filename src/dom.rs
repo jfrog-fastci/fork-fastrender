@@ -2714,6 +2714,38 @@ pub fn enumerate_dom_ids(root: &DomNode) -> HashMap<*const DomNode, usize> {
   ids
 }
 
+/// Find a mutable reference to the node with the given stable pre-order id.
+///
+/// The id scheme matches [`enumerate_dom_ids`]: ids are 1-based and assigned by a depth-first
+/// pre-order traversal.
+///
+/// This helper uses an explicit stack to avoid stack overflows on extremely deep/degenerate trees.
+pub fn find_node_mut_by_preorder_id(root: &mut DomNode, id: usize) -> Option<&mut DomNode> {
+  if id == 0 {
+    return None;
+  }
+
+  let mut next_id = 1usize;
+  let mut stack: Vec<*mut DomNode> = Vec::new();
+  stack.push(root as *mut DomNode);
+
+  while let Some(ptr) = stack.pop() {
+    // Safety: `root` is mutably borrowed for the duration of this search, and we do not mutate any
+    // `children` vectors while raw pointers are stored in `stack`, so pointers remain valid.
+    let current = unsafe { &mut *ptr };
+    if next_id == id {
+      return Some(current);
+    }
+    next_id += 1;
+
+    for child in current.children.iter_mut().rev() {
+      stack.push(child as *mut DomNode);
+    }
+  }
+
+  None
+}
+
 /// Compute the slot assignment map for all shadow roots in the DOM.
 pub fn compute_slot_assignment(root: &DomNode) -> Result<SlotAssignment> {
   let ids = enumerate_dom_ids(root);
@@ -4073,6 +4105,47 @@ impl DomNode {
 
   pub fn get_attribute(&self, name: &str) -> Option<String> {
     self.get_attribute_ref(name).map(|v| v.to_string())
+  }
+
+  /// Set (or replace) an attribute on element/slot nodes.
+  ///
+  /// Attribute name comparisons are ASCII case-insensitive, matching [`DomNode::get_attribute_ref`].
+  ///
+  /// This is a no-op on non-element nodes.
+  pub fn set_attribute(&mut self, name: &str, value: &str) {
+    match &mut self.node_type {
+      DomNodeType::Element { attributes, .. } | DomNodeType::Slot { attributes, .. } => {
+        set_attr(attributes, name, value);
+      }
+      _ => {}
+    }
+  }
+
+  /// Remove an attribute from element/slot nodes.
+  ///
+  /// Attribute name comparisons are ASCII case-insensitive, matching [`DomNode::get_attribute_ref`].
+  ///
+  /// This is a no-op on non-element nodes.
+  pub fn remove_attribute(&mut self, name: &str) {
+    match &mut self.node_type {
+      DomNodeType::Element { attributes, .. } | DomNodeType::Slot { attributes, .. } => {
+        remove_attr(attributes, name);
+      }
+      _ => {}
+    }
+  }
+
+  /// Toggle a boolean attribute on element/slot nodes.
+  ///
+  /// When `enabled` is true, sets `name=""`. When false, removes the attribute.
+  ///
+  /// This is a no-op on non-element nodes.
+  pub fn toggle_bool_attribute(&mut self, name: &str, enabled: bool) {
+    if enabled {
+      self.set_attribute(name, "");
+    } else {
+      self.remove_attribute(name);
+    }
   }
 
   pub fn tag_name(&self) -> Option<&str> {
@@ -8325,6 +8398,88 @@ mod tests {
     let ids = enumerate_dom_ids(&dom);
     let legacy = enumerate_dom_ids_legacy(&dom);
     assert_eq!(ids, legacy);
+  }
+
+  #[test]
+  fn dom_node_attribute_mutation_helpers_are_case_insensitive() {
+    let mut node = element_with_attrs("div", vec![("Data-Fastr-Hidden", "false")], vec![]);
+
+    node.set_attribute("data-fastr-hidden", "true");
+    assert_eq!(node.get_attribute_ref("DATA-FASTR-HIDDEN"), Some("true"));
+    assert_eq!(
+      node
+        .attributes_iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("data-fastr-hidden"))
+        .count(),
+      1
+    );
+
+    node.remove_attribute("DATA-FASTR-HIDDEN");
+    assert_eq!(node.get_attribute_ref("data-fastr-hidden"), None);
+
+    node.toggle_bool_attribute("disabled", true);
+    assert_eq!(node.get_attribute_ref("DISABLED"), Some(""));
+    node.toggle_bool_attribute("DISABLED", false);
+    assert_eq!(node.get_attribute_ref("disabled"), None);
+
+    let mut slot = DomNode {
+      node_type: DomNodeType::Slot {
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("NaMe".to_string(), "x".to_string())],
+        assigned: false,
+      },
+      children: vec![],
+    };
+    slot.set_attribute("name", "y");
+    assert_eq!(slot.get_attribute_ref("NAME"), Some("y"));
+    assert_eq!(
+      slot
+        .attributes_iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("name"))
+        .count(),
+      1
+    );
+    slot.remove_attribute("NAME");
+    assert_eq!(slot.get_attribute_ref("name"), None);
+
+    let mut text = text("hi");
+    text.set_attribute("data-x", "1");
+    text.remove_attribute("data-x");
+    text.toggle_bool_attribute("data-x", true);
+    assert_eq!(text.text_content(), Some("hi"));
+    assert_eq!(text.get_attribute_ref("data-x"), None);
+  }
+
+  #[test]
+  fn find_node_mut_by_preorder_id_matches_enumerate_dom_ids() {
+    let mut dom = parse_html(
+      r#"<!doctype html>
+<div id="a">
+  <template id="tpl"><span id="inside"></span></template>
+  <p id="p"><b></b></p>
+</div>"#,
+    )
+    .expect("parse_html");
+
+    let ids = enumerate_dom_ids(&dom);
+    let len = ids.len();
+    let mut by_id: Vec<*const DomNode> = vec![std::ptr::null(); len + 1];
+    for (&ptr, &id) in ids.iter() {
+      by_id[id] = ptr;
+    }
+
+    assert!(find_node_mut_by_preorder_id(&mut dom, 0).is_none());
+    assert!(find_node_mut_by_preorder_id(&mut dom, len + 1).is_none());
+
+    for id in 1..=len {
+      let node = find_node_mut_by_preorder_id(&mut dom, id)
+        .unwrap_or_else(|| panic!("missing node for id {id}"));
+      let ptr = node as *const DomNode;
+      assert_eq!(
+        ptr, by_id[id],
+        "id {id} should resolve to the same node as enumerate_dom_ids"
+      );
+    }
   }
 
   #[test]

@@ -8,3 +8,10 @@ xtask = "run -p xtask --"
 [target.'cfg(target_os = "linux")']
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# `avif-decode` depends on `libaom-sys`, whose upstream build expects `yasm`/`nasm` for assembly
+# optimizations. Our CI environment (and many developer machines) won't have those tools installed,
+# so default to the portable C implementation. Override in your shell to re-enable optimized builds:
+# `AOM_TARGET_CPU=x86_64 cargo ...`
+[env]
+AOM_TARGET_CPU = "generic"
