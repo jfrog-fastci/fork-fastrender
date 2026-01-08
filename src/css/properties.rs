@@ -339,6 +339,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "list-style-type",
   "mask",
   "mask-border",
+  "mask-border-source",
   "mask-image",
   "mask-position",
   "mask-size",
@@ -596,6 +597,9 @@ pub(crate) fn vendor_prefixed_property_alias(property: &str) -> Option<&'static 
   // common real-world stylesheets still establish the correct stacking contexts / backdrop roots.
   if property == "-webkit-mask-box-image" {
     return Some("mask-border");
+  }
+  if property == "-webkit-mask-box-image-source" {
+    return Some("mask-border-source");
   }
 
   let stripped = strip_vendor_prefix(property)?;

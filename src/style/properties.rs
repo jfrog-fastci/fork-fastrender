@@ -6095,7 +6095,7 @@ pub(crate) fn apply_property_from_source(
     "filter" => styles.filter = source.filter.clone(),
     "backdrop-filter" => styles.backdrop_filter = source.backdrop_filter.clone(),
     "clip-path" => styles.clip_path = source.clip_path.clone(),
-    "mask-border" => styles.mask_border = source.mask_border,
+    "mask-border" | "mask-border-source" => styles.mask_border = source.mask_border,
     "clip" => styles.clip = source.clip.clone(),
     "transform-origin" => styles.transform_origin = source.transform_origin.clone(),
     "mix-blend-mode" => styles.mix_blend_mode = source.mix_blend_mode,
@@ -12430,6 +12430,11 @@ fn apply_declaration_with_base_internal_with_order(
       }
 
       styles.mask_border = matches!(source, Some(BorderImageSource::Image(_)));
+    }
+    "mask-border-source" => {
+      if let Some(src) = parse_border_image_source(resolved_value) {
+        styles.mask_border = matches!(src, BorderImageSource::Image(_));
+      }
     }
     "mask-image" => {
       if let Some(mut images) = parse_background_image_list(resolved_value) {
