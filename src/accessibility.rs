@@ -1446,14 +1446,7 @@ fn textarea_value_text(node: &StyledNode, ctx: &BuildContext) -> String {
     }
   }
 
-  if value.contains('\r') {
-    value = value.replace("\r\n", "\n").replace('\r', "\n");
-  }
-  if value.starts_with('\n') {
-    value.remove(0);
-  }
-
-  value
+  crate::dom::textarea_current_value_from_text_content(&node.node, value)
 }
 
 fn select_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {

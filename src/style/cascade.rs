@@ -12492,7 +12492,7 @@ fn placeholder_is_shown(node: &DomNode) -> bool {
       return false;
     }
 
-    return textarea_value(node).is_empty();
+    return crate::dom::textarea_current_value(node).is_empty();
   }
 
   false
@@ -12534,24 +12534,6 @@ fn input_type_supports_placeholder(input_type: Option<&str>) -> bool {
   }
 
   true
-}
-
-fn textarea_value(node: &DomNode) -> String {
-  let mut value = String::new();
-  for child in node.children.iter() {
-    if let DomNodeType::Text { content } = &child.node_type {
-      value.push_str(content);
-    }
-  }
-
-  if value.contains('\r') {
-    value = value.replace("\r\n", "\n").replace('\r', "\n");
-  }
-  if value.starts_with('\n') {
-    value.remove(0);
-  }
-
-  value
 }
 
 #[inline(never)]

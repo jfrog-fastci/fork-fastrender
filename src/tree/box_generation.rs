@@ -4254,7 +4254,9 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   }
   let textarea_value = tag
     .eq_ignore_ascii_case("textarea")
-    .then(|| crate::dom::normalize_textarea_value(collect_text_content(styled)));
+    .then(|| {
+      crate::dom::textarea_current_value_from_text_content(&styled.node, collect_text_content(styled))
+    });
   let mut select_control: Option<SelectControl> = None;
   if tag.eq_ignore_ascii_case("select") {
     select_control = Some(build_select_control(styled));

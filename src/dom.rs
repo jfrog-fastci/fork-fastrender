@@ -5156,7 +5156,7 @@ impl<'a> ElementRef<'a> {
   fn control_value(&self) -> Option<String> {
     let tag = self.node.tag_name()?;
     if tag.eq_ignore_ascii_case("textarea") {
-      return Some(textarea_value(self.node));
+      return Some(textarea_current_value(self.node));
     }
     if tag.eq_ignore_ascii_case("select") {
       return self.select_value();
@@ -5474,7 +5474,7 @@ impl<'a> ElementRef<'a> {
         return false;
       }
 
-      let value = textarea_value(self.node);
+      let value = textarea_current_value(self.node);
       return value.is_empty();
     }
 
@@ -5617,7 +5617,7 @@ pub(crate) fn textarea_value(node: &DomNode) -> String {
   normalize_textarea_value(value)
 }
 
-pub(crate) fn normalize_textarea_value(value: String) -> String {
+pub(crate) fn normalize_textarea_newlines(value: String) -> String {
   let mut value = value;
   if value.contains('\r') {
     let mut normalized = String::with_capacity(value.len());
@@ -5634,11 +5634,33 @@ pub(crate) fn normalize_textarea_value(value: String) -> String {
     }
     value = normalized;
   }
+
+  value
+}
+
+pub(crate) fn normalize_textarea_value(value: String) -> String {
+  let mut value = normalize_textarea_newlines(value);
   if value.starts_with('\n') {
     value.remove(0);
   }
 
   value
+}
+
+pub(crate) fn textarea_current_value(node: &DomNode) -> String {
+  if let Some(value) = node.get_attribute_ref("data-fastr-value") {
+    return normalize_textarea_newlines(value.to_string());
+  }
+
+  textarea_value(node)
+}
+
+pub(crate) fn textarea_current_value_from_text_content(node: &DomNode, text_content: String) -> String {
+  if let Some(value) = node.get_attribute_ref("data-fastr-value") {
+    return normalize_textarea_newlines(value.to_string());
+  }
+
+  normalize_textarea_value(text_content)
 }
 
 fn matches_an_plus_b(a: i32, b: i32, position: i32) -> bool {
