@@ -254,3 +254,75 @@ fn grid_baseline_aligned_items_increase_auto_column_size_vertical_rl() {
     );
   }
 }
+
+#[test]
+fn baseline_aligned_items_in_subgrid_increase_parent_auto_column_size() {
+  let fc = GridFormattingContext::new();
+
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![GridTrack::Auto];
+  parent_style.grid_template_rows = vec![GridTrack::Auto];
+  let parent_style = Arc::new(parent_style);
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.grid_column_start = 1;
+  subgrid_style.grid_column_end = 2;
+  subgrid_style.grid_row_start = 1;
+  subgrid_style.grid_row_end = 2;
+  // Local rows so we can place two items in different rows.
+  subgrid_style.grid_template_rows = vec![GridTrack::Auto, GridTrack::Auto];
+  // Baseline alignment happens within the subgrid (and contributes to the inherited column).
+  subgrid_style.justify_items = AlignItems::Baseline;
+  let subgrid_style = Arc::new(subgrid_style);
+
+  let writing_mode = WritingMode::VerticalLr;
+  let width = 60.0;
+  let line_height = 20.0;
+  let item_large = make_text_item(41, 20.0, line_height, writing_mode, width, 1);
+  let item_small = make_text_item(42, 5.0, line_height, writing_mode, width, 2);
+
+  let mut subgrid =
+    BoxNode::new_block(subgrid_style, FormattingContextType::Grid, vec![item_large, item_small]);
+  subgrid.id = 40;
+
+  let grid = BoxNode::new_block(parent_style, FormattingContextType::Grid, vec![subgrid]);
+
+  let fragment = fc
+    .layout(
+      &grid,
+      &LayoutConstraints::new(AvailableSpace::Indefinite, AvailableSpace::Definite(200.0)),
+    )
+    .expect("layout succeeds");
+
+  assert_eq!(fragment.children.len(), 1, "parent grid should have one child (subgrid)");
+  let subgrid_fragment = &fragment.children[0];
+  assert_eq!(
+    subgrid_fragment.children.len(),
+    2,
+    "subgrid should have two item fragments"
+  );
+  let a = &subgrid_fragment.children[0];
+  let b = &subgrid_fragment.children[1];
+
+  let expected_width = expected_baseline_track_size_x([a, b], writing_mode);
+  assert_approx(fragment.bounds.width(), expected_width, "parent column width");
+  assert_approx(subgrid_fragment.bounds.width(), expected_width, "subgrid width");
+
+  let max_item_width = a.bounds.width().max(b.bounds.width());
+  assert!(
+    fragment.bounds.width() > max_item_width + 0.5,
+    "expected baseline alignment to increase column width beyond either item (col={:.2}, max_item={:.2})",
+    fragment.bounds.width(),
+    max_item_width
+  );
+
+  let baseline_a = a.bounds.x() + baseline_offset_x_with_fallback(a, writing_mode);
+  let baseline_b = b.bounds.x() + baseline_offset_x_with_fallback(b, writing_mode);
+  assert!(
+    (baseline_a - baseline_b).abs() <= 0.5,
+    "expected baselines to align within subgrid (a={baseline_a:.2}, b={baseline_b:.2})"
+  );
+}
