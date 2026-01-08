@@ -3969,10 +3969,19 @@ impl ImageCache {
     } else if url_is_svgz || mime_is_svg {
       if let Some(decompressed) = self.maybe_decompress_svgz(bytes, url)? {
         if let Ok(content) = std::str::from_utf8(&decompressed) {
-          let svg_content: Arc<str> = Arc::from(content);
-          let (img, ratio, aspect_none) =
-            self.render_svg_to_image_with_url(&svg_content, url_hint)?;
-          return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
+          if mime_is_svg || svg_text_looks_like_markup(content) {
+            let svg_content: Arc<str> = Arc::from(content);
+            let (img, ratio, aspect_none) =
+              self.render_svg_to_image_with_url(&svg_content, url_hint)?;
+            return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
+          }
+
+          // Decompressed to UTF-8 but doesn't look like SVG markup; treat as a (possibly mislabelled)
+          // bitmap payload.
+          let (orientation, resolution) = Self::exif_metadata(&decompressed);
+          return self
+            .decode_bitmap(&decompressed, content_type, url)
+            .map(|img| (img, orientation, resolution, false, None, false, None));
         }
 
         // Not valid UTF-8 after decompression; treat as a (possibly mislabelled) bitmap.
@@ -4013,10 +4022,13 @@ impl ImageCache {
     } else if url_is_svgz || mime_is_svg {
       if let Some(decompressed) = self.maybe_decompress_svgz(bytes, url)? {
         if let Ok(content) = std::str::from_utf8(&decompressed) {
-          return self.probe_svg_content(content, url_hint);
+          if mime_is_svg || svg_text_looks_like_markup(content) {
+            return self.probe_svg_content(content, url_hint);
+          }
         }
 
-        // Not valid UTF-8 after decompression; treat as a bitmap probe on the decompressed bytes.
+        // Not UTF-8 (or not SVG markup) after decompression; treat as a bitmap probe on the
+        // decompressed bytes.
         let bytes = decompressed;
         let (orientation, resolution) = Self::exif_metadata(&bytes);
         let format_from_content_type = Self::format_from_content_type(content_type);
@@ -7348,6 +7360,10 @@ mod tests {
     assert!(
       cache.load(url).is_err(),
       "gzipped non-svg payload must not decode as SVG"
+    );
+    assert!(
+      cache.probe_resolved(url).is_err(),
+      "gzipped non-svg payload must not probe as SVG"
     );
   }
 
