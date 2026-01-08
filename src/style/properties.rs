@@ -9300,6 +9300,7 @@ fn apply_declaration_with_base_internal_with_order(
     // Flexbox
     "flex-direction" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.flex_direction = match kw.as_str() {
           "row" => FlexDirection::Row,
           "row-reverse" => FlexDirection::RowReverse,
@@ -9311,6 +9312,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "flex-wrap" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.flex_wrap = match kw.as_str() {
           "nowrap" => FlexWrap::NoWrap,
           "wrap" => FlexWrap::Wrap,
@@ -9402,6 +9404,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "justify-content" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.justify_content = match kw.as_str() {
           "start" => JustifyContent::Start,
           "end" => JustifyContent::End,
@@ -9424,15 +9427,16 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "align-self" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.align_self = match kw.as_str() {
-          "auto" => None,
-          _ => parse_align_keyword(kw),
+        if kw.eq_ignore_ascii_case("auto") {
+          styles.align_self = None;
+        } else if let Some(value) = parse_align_keyword(kw) {
+          styles.align_self = Some(value);
         }
-        .or(styles.align_self);
       }
     }
     "align-content" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.align_content = match kw.as_str() {
           "start" => AlignContent::Start,
           "end" => AlignContent::End,
@@ -9449,23 +9453,20 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "justify-items" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        match kw.as_str() {
-          "auto" => styles.justify_items = AlignItems::Stretch,
-          _ => {
-            if let Some(value) = parse_align_keyword(kw) {
-              styles.justify_items = value;
-            }
-          }
+        if kw.eq_ignore_ascii_case("auto") {
+          styles.justify_items = AlignItems::Stretch;
+        } else if let Some(value) = parse_align_keyword(kw) {
+          styles.justify_items = value;
         }
       }
     }
     "justify-self" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.justify_self = match kw.as_str() {
-          "auto" => None,
-          _ => parse_align_keyword(kw),
+        if kw.eq_ignore_ascii_case("auto") {
+          styles.justify_self = None;
+        } else if let Some(value) = parse_align_keyword(kw) {
+          styles.justify_self = Some(value);
         }
-        .or(styles.justify_self);
       }
     }
     "place-items" => {
@@ -9520,11 +9521,11 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "flex-basis" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        match kw.as_str() {
-          "auto" => styles.flex_basis = FlexBasis::Auto,
-          "content" => styles.flex_basis = FlexBasis::Content,
-          _ => {}
-        };
+        if kw.eq_ignore_ascii_case("auto") {
+          styles.flex_basis = FlexBasis::Auto;
+        } else if kw.eq_ignore_ascii_case("content") {
+          styles.flex_basis = FlexBasis::Content;
+        }
       } else if let Some(len) = extract_length(resolved_value) {
         styles.flex_basis = FlexBasis::Length(len);
       }
@@ -13633,7 +13634,8 @@ fn parse_single_gap_length(value: &PropertyValue) -> Option<GapValue> {
 }
 
 fn parse_align_keyword(kw: &str) -> Option<AlignItems> {
-  match kw {
+  let kw = kw.to_ascii_lowercase();
+  match kw.as_str() {
     "start" => Some(AlignItems::Start),
     "end" => Some(AlignItems::End),
     "self-start" => Some(AlignItems::SelfStart),
@@ -13678,7 +13680,8 @@ fn parse_place_pair(value: &PropertyValue) -> Option<(AlignItems, AlignItems)> {
 
 fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, JustifyContent)> {
   fn to_align_content(kw: &str) -> Option<AlignContent> {
-    match kw {
+    let kw = kw.to_ascii_lowercase();
+    match kw.as_str() {
       "start" => Some(AlignContent::Start),
       "end" => Some(AlignContent::End),
       "flex-start" => Some(AlignContent::FlexStart),
@@ -13693,7 +13696,8 @@ fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, Just
   }
 
   fn to_justify_content(kw: &str) -> Option<JustifyContent> {
-    match kw {
+    let kw = kw.to_ascii_lowercase();
+    match kw.as_str() {
       "start" => Some(JustifyContent::Start),
       "end" => Some(JustifyContent::End),
       "flex-start" => Some(JustifyContent::FlexStart),
