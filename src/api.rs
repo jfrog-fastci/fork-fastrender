@@ -12552,6 +12552,85 @@ fn will_change_establishes_containing_block(value: &crate::style::types::WillCha
   }
 }
 
+fn hash_transform_origin(value: &crate::style::types::TransformOrigin, hasher: &mut DefaultHasher) {
+  hash_length(&value.x, hasher);
+  hash_length(&value.y, hasher);
+  hash_length(&value.z, hasher);
+}
+
+fn hash_motion_position(value: &crate::style::types::MotionPosition, hasher: &mut DefaultHasher) {
+  hash_length(&value.x, hasher);
+  hash_length(&value.y, hasher);
+}
+
+fn hash_motion_path_command(value: &crate::style::types::MotionPathCommand, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::MotionPathCommand::MoveTo(pos) => {
+      0u8.hash(hasher);
+      hash_motion_position(pos, hasher);
+    }
+    crate::style::types::MotionPathCommand::LineTo(pos) => {
+      1u8.hash(hasher);
+      hash_motion_position(pos, hasher);
+    }
+    crate::style::types::MotionPathCommand::ClosePath => 2u8.hash(hasher),
+  }
+}
+
+fn hash_offset_path(value: &crate::style::types::OffsetPath, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::OffsetPath::None => 0u8.hash(hasher),
+    crate::style::types::OffsetPath::Ray(ray) => {
+      1u8.hash(hasher);
+      hash_f32(ray.angle, hasher);
+      match ray.length {
+        Some(len) => {
+          1u8.hash(hasher);
+          hash_length(&len, hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+      ray.contain.hash(hasher);
+    }
+    crate::style::types::OffsetPath::Path(commands) => {
+      2u8.hash(hasher);
+      commands.len().hash(hasher);
+      for cmd in commands {
+        hash_motion_path_command(cmd, hasher);
+      }
+    }
+    crate::style::types::OffsetPath::BasicShape(shape) => {
+      3u8.hash(hasher);
+      hash_basic_shape(shape, hasher);
+    }
+  }
+}
+
+fn hash_offset_rotate(value: &crate::style::types::OffsetRotate, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::OffsetRotate::Auto { angle, reverse } => {
+      0u8.hash(hasher);
+      hash_f32(*angle, hasher);
+      reverse.hash(hasher);
+    }
+    crate::style::types::OffsetRotate::Angle(angle) => {
+      1u8.hash(hasher);
+      hash_f32(*angle, hasher);
+    }
+  }
+}
+
+fn hash_offset_anchor(value: &crate::style::types::OffsetAnchor, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::OffsetAnchor::Auto => 0u8.hash(hasher),
+    crate::style::types::OffsetAnchor::Position { x, y } => {
+      1u8.hash(hasher);
+      hash_length(x, hasher);
+      hash_length(y, hasher);
+    }
+  }
+}
+
 fn hash_font_stretch(value: &crate::style::types::FontStretch, hasher: &mut DefaultHasher) {
   hash_enum_discriminant(value, hasher);
   if let crate::style::types::FontStretch::Percentage(v) = value {
@@ -13780,7 +13859,16 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   }
   hash_transforms(&style.transform, &mut h);
   hash_enum_discriminant(&style.transform_box, &mut h);
+  if style.has_transform() {
+    hash_transform_origin(&style.transform_origin, &mut h);
+  }
   hash_enum_discriminant(&style.transform_style, &mut h);
+  hash_offset_path(&style.offset_path, &mut h);
+  if style.has_motion_path() {
+    hash_length(&style.offset_distance, &mut h);
+    hash_offset_rotate(&style.offset_rotate, &mut h);
+    hash_offset_anchor(&style.offset_anchor, &mut h);
+  }
   hash_option_length(&style.perspective, &mut h);
   hash_length(&style.perspective_origin.x, &mut h);
   hash_length(&style.perspective_origin.y, &mut h);
@@ -15664,6 +15752,101 @@ pub(crate) fn render_html_with_shared_resources(
       base_fp,
       super::style_layout_fingerprint(&hinted),
       "expected will-change containing block hints to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_transform_origin() {
+    let mut base = ComputedStyle::default();
+    base
+      .transform
+      .push(crate::css::types::Transform::TranslateX(crate::Length::px(1.0)));
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut shifted = base;
+    shifted.transform_origin.x = crate::Length::percent(0.0);
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&shifted),
+      "expected transform-origin to affect layout fingerprints when transforms are present"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_offset_path() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut motion = base;
+    motion.offset_path = crate::style::types::OffsetPath::Ray(crate::style::types::Ray {
+      angle: 45.0,
+      length: None,
+      contain: false,
+    });
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&motion),
+      "expected offset-path to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_offset_distance() {
+    let mut base = ComputedStyle::default();
+    base.offset_path = crate::style::types::OffsetPath::Ray(crate::style::types::Ray {
+      angle: 45.0,
+      length: None,
+      contain: false,
+    });
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut moved = base;
+    moved.offset_distance = crate::Length::percent(50.0);
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&moved),
+      "expected offset-distance to affect layout fingerprints when motion paths are active"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_offset_rotate() {
+    let mut base = ComputedStyle::default();
+    base.offset_path = crate::style::types::OffsetPath::Ray(crate::style::types::Ray {
+      angle: 45.0,
+      length: None,
+      contain: false,
+    });
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut rotated = base;
+    rotated.offset_rotate = crate::style::types::OffsetRotate::Angle(30.0);
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&rotated),
+      "expected offset-rotate to affect layout fingerprints when motion paths are active"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_offset_anchor() {
+    let mut base = ComputedStyle::default();
+    base.offset_path = crate::style::types::OffsetPath::Ray(crate::style::types::Ray {
+      angle: 45.0,
+      length: None,
+      contain: false,
+    });
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut anchored = base;
+    anchored.offset_anchor = crate::style::types::OffsetAnchor::Position {
+      x: crate::Length::percent(25.0),
+      y: crate::Length::percent(75.0),
+    };
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&anchored),
+      "expected offset-anchor to affect layout fingerprints when motion paths are active"
     );
   }
 
