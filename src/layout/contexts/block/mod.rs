@@ -8075,14 +8075,17 @@ mod tests {
     let mut root_style = ComputedStyle::default();
     root_style.display = Display::Block;
     root_style.writing_mode = WritingMode::VerticalRl;
-    root_style.width = Some(Length::px(200.0));
-    root_style.width_keyword = None;
+    // In vertical writing modes the inline axis is vertical, so the inline size maps to the
+    // physical height.
+    root_style.height = Some(Length::px(200.0));
+    root_style.height_keyword = None;
 
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.writing_mode = WritingMode::VerticalRl;
-    child_style.height = Some(Length::px(40.0));
-    child_style.height_keyword = None;
+    // The block axis is horizontal, so the block size maps to the physical width.
+    child_style.width = Some(Length::px(40.0));
+    child_style.width_keyword = None;
 
     let child1 = BoxNode::new_block(
       Arc::new(child_style.clone()),
