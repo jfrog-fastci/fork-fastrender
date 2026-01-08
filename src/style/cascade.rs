@@ -1983,6 +1983,10 @@ fn eval_style_range_value(
           }),
         crate::style::types::TextSizeAdjust::Auto | crate::style::types::TextSizeAdjust::None => None,
       },
+      "line-clamp" | "-webkit-line-clamp" => styles.line_clamp.map(|lines| NumericValue {
+        ty: NumericType::Number,
+        value: lines as f32,
+      }),
       "font-weight" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.font_weight.to_u16() as f32,

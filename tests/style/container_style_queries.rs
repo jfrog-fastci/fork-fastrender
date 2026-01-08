@@ -868,6 +868,64 @@ fn container_style_query_range_feature_matches_text_size_adjust() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_line_clamp() {
+  let html = r#"
+    <style>
+      .container-none { container-type: inline-size; }
+      .container-few { container-type: inline-size; line-clamp: 2; }
+      .container-many { container-type: inline-size; line-clamp: 4; }
+      .child { color: rgb(0 0 255); }
+      @container style(line-clamp > 3) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-none">
+      <div id="none" class="child">hello</div>
+    </div>
+    <div class="container-few">
+      <div id="few" class="child">hello</div>
+    </div>
+    <div class="container-many">
+      <div id="many" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let none = find_by_id(&styled, "none").expect("none element");
+  let few = find_by_id(&styled, "few").expect("few element");
+  let many = find_by_id(&styled, "many").expect("many element");
+  assert_eq!(none.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(few.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(many.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_webkit_line_clamp() {
+  let html = r#"
+    <style>
+      .container-few { container-type: inline-size; -webkit-line-clamp: 2; }
+      .container-many { container-type: inline-size; -webkit-line-clamp: 4; }
+      .child { color: rgb(0 0 255); }
+      @container style(-webkit-line-clamp > 3) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-few">
+      <div id="few" class="child">hello</div>
+    </div>
+    <div class="container-many">
+      <div id="many" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let few = find_by_id(&styled, "few").expect("few element");
+  let many = find_by_id(&styled, "many").expect("many element");
+  assert_eq!(few.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(many.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_letter_spacing() {
   let html = r#"
     <style>
