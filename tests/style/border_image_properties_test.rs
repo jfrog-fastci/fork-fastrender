@@ -148,6 +148,42 @@ fn border_image_shorthand_splits_segments() {
 }
 
 #[test]
+fn border_image_repeat_accepts_case_insensitive_keywords() {
+  let mut styles = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-repeat", "ROUND"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert_eq!(
+    styles.border_image.repeat,
+    (BorderImageRepeat::Round, BorderImageRepeat::Round)
+  );
+}
+
+#[test]
+fn border_image_shorthand_accepts_case_insensitive_repeat_keywords() {
+  let mut styles = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image", "url(a) 30 / 10px / 0 ROUND"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert_eq!(
+    styles.border_image.repeat,
+    (BorderImageRepeat::Round, BorderImageRepeat::Round)
+  );
+}
+
+#[test]
 fn border_image_shorthand_source_only_uses_initial_slice_and_width() {
   let mut styles = ComputedStyle::default();
 

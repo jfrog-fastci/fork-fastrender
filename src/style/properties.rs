@@ -12357,7 +12357,10 @@ fn apply_declaration_with_base_internal_with_order(
         matches!(
           token,
           PropertyValue::Keyword(kw)
-            if matches!(kw.as_str(), "stretch" | "repeat" | "round" | "space")
+            if kw.eq_ignore_ascii_case("stretch")
+              || kw.eq_ignore_ascii_case("repeat")
+              || kw.eq_ignore_ascii_case("round")
+              || kw.eq_ignore_ascii_case("space")
         )
       };
 
@@ -14118,12 +14121,16 @@ fn parse_border_image_repeat(
     return None;
   }
   let parse = |kw: &str| -> Option<BorderImageRepeat> {
-    match kw {
-      "stretch" => Some(BorderImageRepeat::Stretch),
-      "repeat" => Some(BorderImageRepeat::Repeat),
-      "round" => Some(BorderImageRepeat::Round),
-      "space" => Some(BorderImageRepeat::Space),
-      _ => None,
+    if kw.eq_ignore_ascii_case("stretch") {
+      Some(BorderImageRepeat::Stretch)
+    } else if kw.eq_ignore_ascii_case("repeat") {
+      Some(BorderImageRepeat::Repeat)
+    } else if kw.eq_ignore_ascii_case("round") {
+      Some(BorderImageRepeat::Round)
+    } else if kw.eq_ignore_ascii_case("space") {
+      Some(BorderImageRepeat::Space)
+    } else {
+      None
     }
   };
   if tokens.len() == 1 {
@@ -14149,7 +14156,10 @@ fn parse_border_image_shorthand(value: &PropertyValue) -> Option<BorderImage> {
     matches!(
       token,
       PropertyValue::Keyword(kw)
-        if matches!(kw.as_str(), "stretch" | "repeat" | "round" | "space")
+        if kw.eq_ignore_ascii_case("stretch")
+          || kw.eq_ignore_ascii_case("repeat")
+          || kw.eq_ignore_ascii_case("round")
+          || kw.eq_ignore_ascii_case("space")
     )
   };
 

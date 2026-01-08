@@ -685,8 +685,8 @@ fn mask_border_shorthand_with_repeat_and_mode_triggers_backdrop_root_even_when_u
         height: 20px;
         margin: 20px;
         /* Backdrop Root triggers apply to the entire shorthand, including slash-separated
-           width/outset portions and trailing repeat/mode keywords. */
-        mask-border: url(#missing) 30 / 10px / 0 stretch alpha;
+           width/outset portions and trailing (case-insensitive) repeat/mode keywords. */
+        mask-border: url(#missing) 30 / 10px / 0 ROUND alpha;
       }
       #overlay {
         width: 40px;
