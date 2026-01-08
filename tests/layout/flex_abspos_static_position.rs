@@ -1059,6 +1059,53 @@ fn abspos_static_position_respects_wrap_reverse_cross_axis_direction() {
 }
 
 #[test]
+fn abspos_static_position_respects_align_items_flex_end_under_wrap_reverse() {
+  // Under `wrap-reverse` in a horizontal writing mode, the flex cross-end edge is the physical top
+  // edge, so `align-items:flex-end` should place the child at y≈0.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexEnd;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_align_self_flex_start_under_wrap_reverse() {
+  // `align-self` should override `align-items` and still respect the wrap-reverse cross-start edge
+  // for the `flex-start` keyword.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexEnd;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.align_self = Some(AlignItems::FlexStart);
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_ignores_wrap_reverse_for_start_keyword() {
   // `wrap-reverse` flips the flex cross-start/cross-end edges, but the `start` keyword resolves
   // against the container's physical writing-mode axis and must not mirror with flex lines.
@@ -1145,6 +1192,56 @@ fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis() {
   child_style.position = Position::Absolute;
   child_style.width = Some(Length::px(10.0));
   child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_align_items_flex_end_under_wrap_reverse_with_horizontal_cross_axis() {
+  // In a column flex container, the cross axis is horizontal. Under `wrap-reverse` the flex
+  // cross-end edge becomes the physical left edge, so `align-items:flex-end` should place the child
+  // at x≈0.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexEnd;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_align_self_flex_start_under_wrap_reverse_with_horizontal_cross_axis() {
+  // `align-self` should override `align-items` and still respect the wrap-reverse cross-start edge
+  // for the `flex-start` keyword when the cross axis is horizontal.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexEnd;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.align_self = Some(AlignItems::FlexStart);
 
   let (x, y) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
