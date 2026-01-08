@@ -1754,6 +1754,15 @@ pub struct PaintedFrame {
   pub scroll_state: ScrollState,
 }
 
+/// Result of a prepare operation that includes diagnostics.
+#[derive(Clone)]
+pub struct PreparedDocumentReport {
+  /// Fully prepared document ready for repeated painting.
+  pub document: PreparedDocument,
+  /// Diagnostics captured while fetching resources.
+  pub diagnostics: RenderDiagnostics,
+}
+
 /// Intermediate artifacts produced during layout.
 #[derive(Debug, Clone)]
 pub struct LayoutArtifacts {
@@ -3466,6 +3475,32 @@ mod pool_panic_tests {
   }
 }
 
+#[cfg(test)]
+mod pool_prepare_tests {
+  use super::*;
+
+  #[test]
+  fn fast_render_pool_can_prepare_html_multiple_times() {
+    let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+    let pool = FastRenderPool::with_config(
+      FastRenderPoolConfig::new()
+        .with_renderer_config(renderer)
+        .with_pool_size(1),
+    )
+    .expect("pool");
+
+    let options = RenderOptions::new().with_viewport(10, 10);
+    for idx in 0..2 {
+      let report = pool
+        .prepare_html("<!doctype html><html><body>Hello</body></html>", options.clone())
+        .unwrap_or_else(|err| panic!("prepare #{idx} failed: {err:?}"));
+      let pixmap = report.document.paint_default().expect("paint");
+      assert_eq!(pixmap.width(), 10);
+      assert_eq!(pixmap.height(), 10);
+    }
+  }
+}
+
 struct SharedPoolResources {
   config: FastRenderConfig,
   font_cache: FontCacheConfig,
@@ -3621,6 +3656,16 @@ impl FastRenderPool {
   /// Fetch and render a document from a URL using explicit options.
   pub fn render_url_with_options(&self, url: &str, options: RenderOptions) -> Result<RenderResult> {
     self.with_renderer(move |renderer| renderer.render_url_with_options(url, options))
+  }
+
+  /// Prepare HTML for repeated painting using a pooled renderer.
+  pub fn prepare_html(&self, html: &str, options: RenderOptions) -> Result<PreparedDocumentReport> {
+    self.with_renderer(move |renderer| renderer.prepare_html_with_diagnostics(html, options))
+  }
+
+  /// Fetch and prepare a document from a URL using a pooled renderer.
+  pub fn prepare_url(&self, url: &str, options: RenderOptions) -> Result<PreparedDocumentReport> {
+    self.with_renderer(move |renderer| renderer.prepare_url(url, options))
   }
 }
 
@@ -5037,6 +5082,28 @@ impl FastRender {
     self.prepare_html_internal(html, options)
   }
 
+  /// Prepares HTML for repeated painting while capturing diagnostics.
+  pub fn prepare_html_with_diagnostics(
+    &mut self,
+    html: &str,
+    options: RenderOptions,
+  ) -> Result<PreparedDocumentReport> {
+    let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
+    let previous_sink = self.diagnostics.take();
+    self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
+    let document = self.prepare_html_internal(html, options);
+    self.set_diagnostics_sink(previous_sink);
+    let document = document?;
+    let diagnostics = diagnostics
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    Ok(PreparedDocumentReport {
+      document,
+      diagnostics,
+    })
+  }
+
   fn render_html_internal(
     &mut self,
     html: &str,
@@ -6030,6 +6097,54 @@ impl FastRender {
     let result = self.render_html(html, width, height);
     self.background_color = original_background;
     result
+  }
+
+  /// Fetches and prepares a document from a URL with explicit options.
+  pub fn prepare_url(&mut self, url: &str, options: RenderOptions) -> Result<PreparedDocumentReport> {
+    let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
+    let previous_sink = self.diagnostics.take();
+    self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
+    let document = (|| -> Result<PreparedDocument> {
+      let resource = match self.fetcher.fetch_with_request(FetchRequest::document(url)) {
+        Ok(res) => res,
+        Err(e) => {
+          if let Ok(mut guard) = diagnostics.lock() {
+            guard.record_error(ResourceKind::Document, url, &e);
+            guard.document_error = Some(e.to_string());
+          }
+          if options.allow_partial {
+            self.set_document_url(url);
+            self.set_base_url(url);
+            let html = format!(
+              "<!doctype html><html><body style=\"margin:0;background:#ffebee;color:#c62828;display:flex;align-items:center;justify-content:center;font:16px sans-serif;\">Failed to fetch document</body></html>"
+            );
+            return self.prepare_html_internal(&html, options);
+          }
+          let reason = e.to_string();
+          let source = Arc::new(e);
+          return Err(Error::Navigation(NavigationError::FetchFailed {
+            url: url.to_string(),
+            reason,
+            source: Some(source),
+          }));
+        }
+      };
+      let hint = resource.final_url.as_deref().unwrap_or(url);
+      self.set_document_url(hint);
+      self.set_base_url(hint);
+      let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
+      self.prepare_html_internal(&html, options)
+    })();
+    self.set_diagnostics_sink(previous_sink);
+    let document = document?;
+    let diagnostics = diagnostics
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    Ok(PreparedDocumentReport {
+      document,
+      diagnostics,
+    })
   }
 
   /// Fetches and renders a document from a URL using default options.
