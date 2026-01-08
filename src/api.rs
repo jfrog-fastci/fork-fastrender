@@ -13205,6 +13205,15 @@ fn styled_layout_fingerprint_digest(root: &StyledNode) -> u64 {
       (base | STYLE_KEY_FOOTNOTE_MARKER).hash(hasher);
       style_layout_fingerprint(marker).hash(hasher);
     }
+    if let Some(backdrop) = node.styles.backdrop.as_ref() {
+      if !matches!(
+        backdrop.display,
+        crate::style::display::Display::None | crate::style::display::Display::Contents
+      ) {
+        (base | STYLE_KEY_BACKDROP).hash(hasher);
+        style_layout_fingerprint(backdrop).hash(hasher);
+      }
+    }
     for child in node.children.iter() {
       walk(child, hasher);
     }
@@ -14718,6 +14727,85 @@ pub(crate) fn render_html_with_shared_resources(
       }
       other => panic!("expected footnote anchor content, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn styled_layout_fingerprint_digest_includes_backdrop() {
+    let mut backdrop_a = ComputedStyle::default();
+    backdrop_a.display = crate::style::display::Display::Block;
+    backdrop_a.position = crate::style::position::Position::Fixed;
+    let backdrop_a = Arc::new(backdrop_a);
+
+    let mut backdrop_b = ComputedStyle::default();
+    backdrop_b.display = crate::style::display::Display::Block;
+    backdrop_b.position = crate::style::position::Position::Absolute;
+    let backdrop_b = Arc::new(backdrop_b);
+
+    let mut style_a = ComputedStyle::default();
+    style_a.backdrop = Some(backdrop_a);
+    let style_a = Arc::new(style_a);
+
+    let mut style_b = ComputedStyle::default();
+    style_b.backdrop = Some(backdrop_b);
+    let style_b = Arc::new(style_b);
+
+    let base_node = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        attributes: Vec::new(),
+      },
+      children: Vec::new(),
+    };
+
+    let node_a = StyledNode {
+      node_id: 7,
+      node: base_node.clone(),
+      styles: style_a,
+      starting_styles: Default::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: Vec::new(),
+    };
+
+    let node_b = StyledNode {
+      node_id: 7,
+      node: base_node,
+      styles: style_b,
+      starting_styles: Default::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: Vec::new(),
+    };
+
+    let digest_a = super::styled_layout_fingerprint_digest(&node_a);
+    let digest_b = super::styled_layout_fingerprint_digest(&node_b);
+    assert_ne!(
+      digest_a, digest_b,
+      "expected backdrop layout properties to participate in the digest used for layout reuse"
+    );
   }
 
   #[test]
