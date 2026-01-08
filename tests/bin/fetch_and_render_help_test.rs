@@ -40,4 +40,14 @@ fn help_mentions_default_output_and_dirs() {
     "help should mention --stage-mem-budget-mb; got:\n{}",
     help
   );
+  assert!(
+    help.contains("--soft-timeout-ms"),
+    "help should mention --soft-timeout-ms; got:\n{}",
+    help
+  );
+  assert!(
+    help.contains("timeout - 250ms"),
+    "help should describe how --soft-timeout-ms interacts with --timeout; got:\n{}",
+    help
+  );
 }

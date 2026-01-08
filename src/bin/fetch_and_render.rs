@@ -17,9 +17,9 @@ use common::args::{
 };
 use common::media_prefs::MediaPreferences;
 use common::render_pipeline::{
-  build_http_fetcher, build_render_configs, follow_client_redirects_resource,
-  format_error_with_chain, log_diagnostics, read_cached_document, render_fetched_document,
-  RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
+  build_http_fetcher, build_render_configs, compute_soft_timeout_ms,
+  follow_client_redirects_resource, format_error_with_chain, log_diagnostics, read_cached_document,
+  render_fetched_document, RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig};
 use fastrender::image_output::encode_image;
@@ -73,6 +73,13 @@ struct Args {
 
   #[command(flatten)]
   timeout: TimeoutArgs,
+
+  /// Cooperative timeout handed to the renderer in milliseconds (0 disables)
+  ///
+  /// When unset, defaults to (timeout - 250ms) to allow a graceful timeout before the hard kill.
+  /// Ignored if --timeout is not set (or is 0).
+  #[arg(long, value_name = "MS")]
+  soft_timeout_ms: Option<u64>,
 
   #[command(flatten)]
   memory: MemoryGuardArgs,
@@ -275,6 +282,9 @@ fn try_main(args: Args) -> Result<()> {
   eprintln!("{banner}");
 
   let timeout_secs = args.timeout.seconds(Some(0));
+  let soft_timeout_ms = timeout_secs
+    .map(Duration::from_secs)
+    .and_then(|hard_timeout| compute_soft_timeout_ms(hard_timeout, args.soft_timeout_ms));
 
   #[cfg(feature = "disk_cache")]
   {
@@ -317,6 +327,11 @@ fn try_main(args: Args) -> Result<()> {
         ))
       })?;
     options.stage_mem_budget_bytes = Some(bytes);
+  }
+  if let Some(ms) = soft_timeout_ms {
+    if ms > 0 {
+      options.timeout = Some(Duration::from_millis(ms));
+    }
   }
 
   let http = build_http_fetcher(
