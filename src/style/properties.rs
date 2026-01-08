@@ -7732,20 +7732,10 @@ fn apply_declaration_with_base_internal_with_order(
     }
   };
 
-  #[deny(unreachable_patterns)]
+    #[deny(unreachable_patterns)]
   match property {
     "all" => {
       let Some(global) = global_keyword(resolved_value) else {
-        return;
-      };
-      let Some(source) = global_keyword_source(
-        global,
-        "all",
-        parent_styles,
-        default_computed_style(),
-        revert_base,
-        revert_layer_base,
-      ) else {
         return;
       };
       let prev_direction = styles.direction;
@@ -7759,7 +7749,32 @@ fn apply_declaration_with_base_internal_with_order(
       // always rebuilt as cascade application continues.
       let next_order = styles.logical.next_order_value();
 
-      *styles = source.clone();
+      // `all: unset` sets each property to its inherited value if it is normally inherited,
+      // otherwise to its initial value. The regular global-keyword helper needs a concrete property
+      // name to decide whether `unset` behaves like `inherit` or `initial`, so handle the `all`
+      // special-case here by explicitly inheriting into an initial-value baseline.
+      let source = match global {
+        GlobalKeyword::Unset => {
+          let mut computed = default_computed_style().clone();
+          crate::style::cascade::inherit_styles(&mut computed, parent_styles);
+          computed
+        }
+        other => {
+          let Some(source) = global_keyword_source(
+            other,
+            "all",
+            parent_styles,
+            default_computed_style(),
+            revert_base,
+            revert_layer_base,
+          ) else {
+            return;
+          };
+          source.clone()
+        }
+      };
+
+      *styles = source;
       styles.direction = prev_direction;
       styles.unicode_bidi = prev_unicode_bidi;
       styles.custom_property_registry = prev_custom_property_registry;
