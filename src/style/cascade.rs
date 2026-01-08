@@ -1355,9 +1355,7 @@ fn eval_style_feature(
   ctx: &ContainerQueryContext,
 ) -> QueryResult {
   match feature {
-    StyleQueryFeature::Plain { name, value } => {
-      QueryResult::from_bool(eval_plain_style_feature(name, value, container, ctx))
-    }
+    StyleQueryFeature::Plain { name, value } => eval_plain_style_feature(name, value, container, ctx),
     StyleQueryFeature::Boolean { name } => {
       QueryResult::from_bool(eval_boolean_style_feature(name, container, ctx))
     }
@@ -1406,6 +1404,53 @@ fn contains_cascade_dependent_keyword(value: &str) -> bool {
   scan(&mut parser)
 }
 
+const CQ_VALUE_BASE_CQW: u8 = 1 << 0;
+const CQ_VALUE_BASE_CQH: u8 = 1 << 1;
+const CQ_VALUE_BASE_CQI: u8 = 1 << 2;
+const CQ_VALUE_BASE_CQB: u8 = 1 << 3;
+
+fn cq_required_bases_from_value(value: &str) -> u8 {
+  let mut input = cssparser::ParserInput::new(value);
+  let mut parser = cssparser::Parser::new(&mut input);
+  fn scan<'i, 't>(parser: &mut cssparser::Parser<'i, 't>) -> u8 {
+    let mut mask = 0u8;
+    while let Ok(token) = parser.next_including_whitespace_and_comments() {
+      match token {
+        cssparser::Token::Dimension { value, unit, .. } => {
+          if *value == 0.0 {
+            continue;
+          }
+          let unit = unit.as_ref();
+          if unit.eq_ignore_ascii_case("cqw") {
+            mask |= CQ_VALUE_BASE_CQW;
+          } else if unit.eq_ignore_ascii_case("cqh") {
+            mask |= CQ_VALUE_BASE_CQH;
+          } else if unit.eq_ignore_ascii_case("cqi") {
+            mask |= CQ_VALUE_BASE_CQI;
+          } else if unit.eq_ignore_ascii_case("cqb") {
+            mask |= CQ_VALUE_BASE_CQB;
+          } else if unit.eq_ignore_ascii_case("cqmin") || unit.eq_ignore_ascii_case("cqmax") {
+            mask |= CQ_VALUE_BASE_CQI | CQ_VALUE_BASE_CQB;
+          }
+        }
+        cssparser::Token::Function(_)
+        | cssparser::Token::ParenthesisBlock
+        | cssparser::Token::SquareBracketBlock
+        | cssparser::Token::CurlyBracketBlock => {
+          if let Ok(found) =
+            parser.parse_nested_block(|nested| Ok::<_, cssparser::ParseError<'i, ()>>(scan(nested)))
+          {
+            mask |= found;
+          }
+        }
+        _ => {}
+      }
+    }
+    mask
+  }
+  scan(&mut parser)
+}
+
 fn parse_overflow_keyword(value: &str) -> Option<Overflow> {
   if value.eq_ignore_ascii_case("visible") {
     Some(Overflow::Visible)
@@ -1427,9 +1472,9 @@ fn eval_plain_style_feature(
   value: &str,
   container: &ContainerQueryInfo,
   ctx: &ContainerQueryContext,
-) -> bool {
+) -> QueryResult {
   if contains_cascade_dependent_keyword(value) {
-    return false;
+    return QueryResult::False;
   }
 
   let styles = container.styles.as_ref();
@@ -1453,7 +1498,7 @@ fn eval_plain_style_feature(
             && css_text.is_empty();
         if no_substitution { Cow::Borrowed(value) } else { css_text }
       }
-      _ => return false,
+      _ => return QueryResult::False,
     }
   } else {
     Cow::Borrowed(value)
@@ -1461,7 +1506,7 @@ fn eval_plain_style_feature(
   let resolved_value = resolved_value.as_ref().trim();
 
   if contains_cascade_dependent_keyword(resolved_value) {
-    return false;
+    return QueryResult::False;
   }
 
   if name.starts_with("--") {
@@ -1479,27 +1524,41 @@ fn eval_plain_style_feature(
       styles.custom_properties.get(name)
     };
     let Some(actual) = actual else {
-      return false;
+      return QueryResult::False;
     };
 
     // Prefer typed comparisons for registered properties when possible.
     if let Some(rule) = registry_entry {
       if let Some(expected_typed) = rule.syntax.parse_value(expected_resolved.trim()) {
         if let Some(actual_typed) = actual.typed.as_ref() {
-          return actual_typed == &expected_typed;
+          return QueryResult::from_bool(actual_typed == &expected_typed);
         }
       }
     }
 
-    return normalize_query_value(&actual.value) == expected_resolved;
+    return QueryResult::from_bool(normalize_query_value(&actual.value) == expected_resolved);
   }
 
   let value = normalize_query_value(resolved_value);
   let decls = parse_declarations(&format!("{name}: {value};"));
   let decl = match decls.as_slice() {
     [decl] => decl,
-    _ => return false,
+    _ => return QueryResult::False,
   };
+
+  // Ensure container query units can be resolved for this query container. Otherwise treat the
+  // entire style feature as unknown so `not style(...)` doesn't incorrectly match.
+  let required = cq_required_bases_from_value(&value);
+  if required != 0 {
+    let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
+    if (required & CQ_VALUE_BASE_CQW) != 0 && !cqw.is_finite()
+      || (required & CQ_VALUE_BASE_CQH) != 0 && !cqh.is_finite()
+      || (required & CQ_VALUE_BASE_CQI) != 0 && !cqi.is_finite()
+      || (required & CQ_VALUE_BASE_CQB) != 0 && !cqb.is_finite()
+    {
+      return QueryResult::Unknown;
+    }
+  }
 
   let viewport = Size::new(ctx.base_media.viewport_width, ctx.base_media.viewport_height);
   let color_scheme_pref = ctx
@@ -1546,12 +1605,12 @@ fn eval_plain_style_feature(
   let mut actual_snapshot = default_computed_style().clone();
   let mut expected_snapshot = default_computed_style().clone();
   if !apply_property_from_source(&mut actual_snapshot, styles, name, 0) {
-    return false;
+    return QueryResult::False;
   }
   if !apply_property_from_source(&mut expected_snapshot, &expected, name, 0) {
-    return false;
+    return QueryResult::False;
   }
-  actual_snapshot == expected_snapshot
+  QueryResult::from_bool(actual_snapshot == expected_snapshot)
 }
 
 fn eval_boolean_style_feature(
