@@ -845,6 +845,16 @@ pub enum FetchDestination {
   ImageCors,
   Font,
   Other,
+  /// JavaScript `fetch()` request.
+  ///
+  /// This matches typical `window.fetch()` traffic (as opposed to [`FetchDestination::Other`],
+  /// which uses a `no-cors` mode closer to passive subresource fetches).
+  ///
+  /// Note: `Sec-Fetch-Site` classification is computed in `build_http_header_pairs()` when
+  /// `client_origin` or `referrer_url` is provided. The value returned by
+  /// `sec_fetch_site()` is only a conservative fallback when that context is
+  /// unavailable.
+  Fetch,
 }
 
 /// Credentials mode for a fetch request (roughly aligned with the Fetch spec).
@@ -884,7 +894,7 @@ impl FetchDestination {
       Self::Document | Self::DocumentNoUser | Self::Iframe => DEFAULT_ACCEPT,
       Self::Style | Self::StyleCors => BROWSER_ACCEPT_STYLESHEET,
       Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
-      Self::Font | Self::Other => BROWSER_ACCEPT_ALL,
+      Self::Font | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
     }
   }
 
@@ -895,14 +905,14 @@ impl FetchDestination {
       Self::Style | Self::StyleCors => "style",
       Self::Image | Self::ImageCors => "image",
       Self::Font => "font",
-      Self::Other => "empty",
+      Self::Other | Self::Fetch => "empty",
     }
   }
 
   fn sec_fetch_mode(self) -> &'static str {
     match self {
       Self::Document | Self::DocumentNoUser | Self::Iframe => "navigate",
-      Self::Font | Self::ImageCors | Self::StyleCors => "cors",
+      Self::Font | Self::ImageCors | Self::StyleCors | Self::Fetch => "cors",
       Self::Style | Self::Image | Self::Other => "no-cors",
     }
   }
@@ -915,7 +925,8 @@ impl FetchDestination {
       | Self::Image
       | Self::ImageCors
       | Self::Font
-      | Self::Other => "same-origin",
+      | Self::Other
+      | Self::Fetch => "same-origin",
     }
   }
 
@@ -2885,6 +2896,7 @@ impl From<FetchDestination> for FetchContextKind {
       FetchDestination::ImageCors => Self::ImageCors,
       FetchDestination::Font => Self::Font,
       FetchDestination::Other => Self::Other,
+      FetchDestination::Fetch => Self::Other,
     }
   }
 }
@@ -10252,6 +10264,75 @@ mod tests {
     assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("navigate"));
     assert_eq!(header_value(&headers, "Sec-Fetch-User"), None);
     assert_eq!(header_value(&headers, "Upgrade-Insecure-Requests"), Some("1"));
+  }
+
+  #[test]
+  fn http_headers_fetch_profile_uses_empty_dest_and_cors_mode() {
+    let client_origin =
+      origin_from_url("https://client.example.com/page.html").expect("client origin");
+    let req = FetchRequest::new("https://api.other.com/data.json", FetchDestination::Fetch)
+      .with_client_origin(&client_origin);
+    let headers = build_http_header_pairs(
+      req.url,
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      req.destination,
+      req.client_origin,
+      req.referrer_url,
+      req.referrer_policy,
+    );
+    assert_eq!(header_value(&headers, "Accept"), Some("*/*"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("empty"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("cors"));
+    assert_eq!(
+      header_value(&headers, "Origin"),
+      Some("https://client.example.com")
+    );
+    assert_eq!(header_value(&headers, "Sec-Fetch-User"), None);
+    assert_eq!(header_value(&headers, "Upgrade-Insecure-Requests"), None);
+  }
+
+  #[test]
+  fn http_headers_fetch_profile_sends_null_origin_for_file_client_origin() {
+    let client_origin = origin_from_url("file:///tmp/page.html").expect("file origin");
+    let req = FetchRequest::new("https://example.com/data.json", FetchDestination::Fetch)
+      .with_client_origin(&client_origin);
+    let headers = build_http_header_pairs(
+      req.url,
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      req.destination,
+      req.client_origin,
+      req.referrer_url,
+      req.referrer_policy,
+    );
+    assert_eq!(header_value(&headers, "Origin"), Some("null"));
+  }
+
+  #[test]
+  fn http_headers_other_profile_remains_no_cors() {
+    let client_origin =
+      origin_from_url("https://client.example.com/page.html").expect("client origin");
+    let req = FetchRequest::new("https://api.other.com/data.json", FetchDestination::Other)
+      .with_client_origin(&client_origin);
+    let headers = build_http_header_pairs(
+      req.url,
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      req.destination,
+      req.client_origin,
+      req.referrer_url,
+      req.referrer_policy,
+    );
+    assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("empty"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("no-cors"));
+    assert_eq!(header_value(&headers, "Origin"), None);
   }
 
   #[test]
