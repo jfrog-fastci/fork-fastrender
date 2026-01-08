@@ -4291,6 +4291,25 @@ impl ImageCache {
       }
     }
 
+    // Bound decoded images even when the caller disables `max_decoded_*` limits so we don't
+    // allocate unbounded buffers that can abort the process on OOM.
+    let pixels = u64::from(width) * u64::from(height);
+    let bytes = pixels
+      .checked_mul(4)
+      .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("Image dimensions {}x{} overflow decoded byte size", width, height),
+      }))?;
+    if bytes > MAX_PIXMAP_BYTES {
+      return Err(Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!(
+          "Image dimensions {}x{} require {} bytes (limit {})",
+          width, height, bytes, MAX_PIXMAP_BYTES
+        ),
+      }));
+    }
+
     Ok(())
   }
 
@@ -7361,6 +7380,29 @@ mod tests {
         Err(err) => err,
       };
       assert_decode_or_timeout(load_err);
+    }
+  }
+
+  #[test]
+  fn enforce_decode_limits_rejects_images_exceeding_max_pixmap_bytes() {
+    // Even if callers disable the user-configurable decode limits, the decoder should still
+    // refuse images that would require allocations larger than our global pixmap cap.
+    let config = ImageCacheConfig {
+      max_decoded_pixels: 0,
+      max_decoded_dimension: 0,
+      ..ImageCacheConfig::default()
+    };
+    let cache = ImageCache::with_config(config);
+
+    // width * height * 4 > MAX_PIXMAP_BYTES
+    let err = cache
+      .enforce_decode_limits(20_000, 20_000, "test://too-big")
+      .expect_err("expected size limit failure");
+    match err {
+      Error::Image(ImageError::DecodeFailed { reason, .. }) => {
+        assert!(reason.contains("limit"), "unexpected reason: {reason}");
+      }
+      other => panic!("unexpected error: {other:?}"),
     }
   }
 
