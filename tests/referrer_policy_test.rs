@@ -737,6 +737,116 @@ fn img_crossorigin_no_referrer_still_sends_origin_header() {
 }
 
 #[test]
+fn img_default_referrer_policy_sends_full_url_for_same_origin_requests() {
+  let Some(server) =
+    HeaderCaptureServer::start("img_default_referrer_policy_sends_full_url_for_same_origin_requests")
+  else {
+    return;
+  };
+
+  let html = format!(
+    r#"<img src="{}/img.png" style="width: 10px; height: 10px">"#,
+    server.base_url
+  );
+  let document_url = format!("{}/page.html#section", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected image request to be issued for the test fixture",
+  );
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  let expected_referer = format!("{}/page.html", server.base_url);
+  assert_eq!(
+    header_value(&img_req.headers, "referer").as_deref(),
+    Some(expected_referer.as_str()),
+    "expected default strict-origin-when-cross-origin policy to send full (fragment-stripped) URL for same-origin image request; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
+fn img_default_referrer_policy_uses_origin_for_cross_origin_requests() {
+  let Some(server) =
+    HeaderCaptureServer::start("img_default_referrer_policy_uses_origin_for_cross_origin_requests")
+  else {
+    return;
+  };
+
+  let html = format!(
+    r#"<img src="{}/img.png" style="width: 10px; height: 10px">"#,
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, "http://doc.test/page.html", RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected image request to be issued for the test fixture",
+  );
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert_eq!(
+    header_value(&img_req.headers, "referer").as_deref(),
+    Some("http://doc.test/"),
+    "expected default strict-origin-when-cross-origin policy to send origin-only Referer for cross-origin image request; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
+fn img_default_referrer_policy_downgrade_suppresses_referer_header() {
+  let Some(server) =
+    HeaderCaptureServer::start("img_default_referrer_policy_downgrade_suppresses_referer_header")
+  else {
+    return;
+  };
+
+  let html = format!(
+    r#"<img src="{}/img.png" style="width: 10px; height: 10px">"#,
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      "https://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected image request to be issued for the test fixture",
+  );
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert!(
+    header_value(&img_req.headers, "referer").is_none(),
+    "expected strict-origin-when-cross-origin downgrade (HTTPS → HTTP) to suppress Referer header; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
 fn iframe_referrerpolicy_no_referrer_suppresses_referer_header() {
   let Some(server) =
     HeaderCaptureServer::start("iframe_referrerpolicy_no_referrer_suppresses_referer_header")
