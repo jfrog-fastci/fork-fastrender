@@ -12285,6 +12285,10 @@ fn apply_declaration_with_base_internal_with_order(
           for idx in start..=end {
             let token = &tokens[idx];
             if is_slice_value(token) {
+              if fill {
+                // `fill` must come after all slice numbers/percentages.
+                return;
+              }
               slice_values += 1;
               if slice_values > 4 {
                 return;
@@ -12294,6 +12298,10 @@ fn apply_declaration_with_base_internal_with_order(
             }
             if is_fill_keyword(token) {
               if fill {
+                return;
+              }
+              if slice_values == 0 {
+                // `fill` cannot appear before the slice numeric values.
                 return;
               }
               fill = true;
@@ -12329,6 +12337,10 @@ fn apply_declaration_with_base_internal_with_order(
             continue;
           }
           if is_fill_keyword(token) {
+            if slice_values > 0 {
+              // The `fill` keyword (if present) must appear after all numeric slice values.
+              return;
+            }
             if fill {
               return;
             }
