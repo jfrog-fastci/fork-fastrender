@@ -59,6 +59,66 @@ pub struct Document {
   root: NodeId,
 }
 
+/// Mapping from renderer DOM pre-order IDs (1-based) to `dom2` [`NodeId`]s.
+///
+/// Renderer pre-order IDs follow the scheme in [`crate::dom::enumerate_dom_ids`]:
+/// - ID 0 is unused (synthetic slot)
+/// - The document root is ID 1
+/// - Children are visited in a depth-first pre-order traversal
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dom2ToRendererMap {
+  /// Map from renderer pre-order DOM id to `dom2` `NodeId`.
+  ///
+  /// Index 0 is always `None`.
+  pub preorder_to_node_id: Vec<Option<NodeId>>,
+  /// Optional reverse map from `dom2` `NodeId` index to renderer pre-order id.
+  pub node_id_to_preorder: Vec<Option<usize>>,
+}
+
+/// Snapshot of a `dom2` document into the renderer's [`DomNode`] tree, along with a stable mapping
+/// from renderer DOM pre-order ids back to `dom2` node ids.
+#[derive(Debug, Clone)]
+pub struct RendererDomSnapshotWithMapping {
+  pub dom: DomNode,
+  pub mapping: Dom2ToRendererMap,
+}
+
+fn node_kind_to_dom_node_type(kind: &NodeKind) -> DomNodeType {
+  match kind {
+    NodeKind::Document { quirks_mode } => DomNodeType::Document {
+      quirks_mode: *quirks_mode,
+    },
+    NodeKind::ShadowRoot {
+      mode,
+      delegates_focus,
+    } => DomNodeType::ShadowRoot {
+      mode: *mode,
+      delegates_focus: *delegates_focus,
+    },
+    NodeKind::Slot {
+      namespace,
+      attributes,
+      assigned,
+    } => DomNodeType::Slot {
+      namespace: namespace.clone(),
+      attributes: attributes.clone(),
+      assigned: *assigned,
+    },
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      attributes,
+    } => DomNodeType::Element {
+      tag_name: tag_name.clone(),
+      namespace: namespace.clone(),
+      attributes: attributes.clone(),
+    },
+    NodeKind::Text { content } => DomNodeType::Text {
+      content: content.clone(),
+    },
+  }
+}
+
 impl Document {
   pub fn new(quirks_mode: QuirksMode) -> Self {
     let mut doc = Self {
@@ -114,46 +174,14 @@ impl Document {
   /// This is used for tests and incremental adoption (e.g. import into `dom2`, mutate, then render
   /// via existing code that consumes `DomNode`).
   pub fn to_renderer_dom(&self) -> DomNode {
+    self.to_renderer_dom_internal(|_| {})
+  }
+
+  fn to_renderer_dom_internal<F: FnMut(NodeId)>(&self, mut on_node: F) -> DomNode {
     struct Frame {
       src: NodeId,
       dst: *mut DomNode,
       next_child: usize,
-    }
-
-    fn node_kind_to_dom_node_type(kind: &NodeKind) -> DomNodeType {
-      match kind {
-        NodeKind::Document { quirks_mode } => DomNodeType::Document {
-          quirks_mode: *quirks_mode,
-        },
-        NodeKind::ShadowRoot {
-          mode,
-          delegates_focus,
-        } => DomNodeType::ShadowRoot {
-          mode: *mode,
-          delegates_focus: *delegates_focus,
-        },
-        NodeKind::Slot {
-          namespace,
-          attributes,
-          assigned,
-        } => DomNodeType::Slot {
-          namespace: namespace.clone(),
-          attributes: attributes.clone(),
-          assigned: *assigned,
-        },
-        NodeKind::Element {
-          tag_name,
-          namespace,
-          attributes,
-        } => DomNodeType::Element {
-          tag_name: tag_name.clone(),
-          namespace: namespace.clone(),
-          attributes: attributes.clone(),
-        },
-        NodeKind::Text { content } => DomNodeType::Text {
-          content: content.clone(),
-        },
-      }
     }
 
     let root_id = self.root;
@@ -162,6 +190,7 @@ impl Document {
       node_type: node_kind_to_dom_node_type(&root_src.kind),
       children: Vec::with_capacity(root_src.children.len()),
     };
+    on_node(root_id);
 
     let mut stack: Vec<Frame> = vec![Frame {
       src: root_id,
@@ -185,6 +214,7 @@ impl Document {
           node_type: node_kind_to_dom_node_type(&child_src.kind),
           children: Vec::with_capacity(child_src.children.len()),
         });
+        on_node(child_id);
         let child_dst = dst
           .children
           .last_mut()
@@ -199,6 +229,28 @@ impl Document {
     }
 
     root
+  }
+
+  /// Snapshot this `dom2` document back into the renderer's immutable [`DomNode`] representation,
+  /// and produce a stable mapping from renderer pre-order node ids back to `dom2` node ids.
+  pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshotWithMapping {
+    let mut preorder_to_node_id = Vec::with_capacity(self.nodes_len() + 1);
+    preorder_to_node_id.push(None); // index 0 is unused
+    let mut node_id_to_preorder: Vec<Option<usize>> = vec![None; self.nodes_len()];
+
+    let dom = self.to_renderer_dom_internal(|node_id| {
+      let preorder_id = preorder_to_node_id.len();
+      preorder_to_node_id.push(Some(node_id));
+      node_id_to_preorder[node_id.index()] = Some(preorder_id);
+    });
+
+    RendererDomSnapshotWithMapping {
+      dom,
+      mapping: Dom2ToRendererMap {
+        preorder_to_node_id,
+        node_id_to_preorder,
+      },
+    }
   }
 
   pub fn text_data(&self, node: NodeId) -> Result<&str, DomError> {
@@ -225,3 +277,5 @@ impl Document {
 
 #[cfg(test)]
 mod attrs_tests;
+#[cfg(test)]
+mod snapshot_tests;
