@@ -9920,6 +9920,22 @@ impl DisplayListRenderer {
       DisplayItem::PushStackingContext(item) => {
         let canvas_layer_depth_before = self.canvas.layer_stack_len();
         let stacking_depth_before = self.stacking_layers.len();
+        // If the current clip rectangle excludes the entire canvas, the stacking context cannot
+        // affect any pixels. Avoid allocating layers and traversing the subtree in this case.
+        if let Some(clip_bounds) = self.canvas.clip_bounds().filter(|bounds| {
+          bounds.x().is_finite()
+            && bounds.y().is_finite()
+            && bounds.width().is_finite()
+            && bounds.height().is_finite()
+        }) {
+          let has_visible_pixels = clip_bounds
+            .intersection(self.canvas.bounds())
+            .is_some_and(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0);
+          if !has_visible_pixels {
+            self.culled_depth = 1;
+            return Ok(());
+          }
+        }
         let parent_child_transform = *self
           .transform_stack
           .last()
@@ -18890,6 +18906,72 @@ mod tests {
     assert_eq!(
       report.layer_alloc_bytes, 4,
       "expected PushOpacity to allocate a minimal placeholder layer for an empty clip"
+    );
+  }
+
+  #[test]
+  fn fully_clipped_stacking_context_avoids_layer_allocation() {
+    crate::paint::painter::enable_paint_diagnostics();
+    struct DiagnosticsGuard;
+    impl Drop for DiagnosticsGuard {
+      fn drop(&mut self) {
+        let _ = crate::paint::painter::take_paint_diagnostics();
+      }
+    }
+    let _guard = DiagnosticsGuard;
+
+    const SIZE: u32 = 64;
+    let renderer = DisplayListRenderer::new(SIZE, SIZE, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled());
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(30, 120, 220, 255),
+    }));
+
+    // Clip fully outside the canvas so the stacking context paints nothing.
+    let clip = Rect::from_xywh(200.0, 200.0, 10.0, 10.0);
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect { rect: clip, radii: None },
+    }));
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      is_root: false,
+      establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
+      bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::from_rgba8(200, 200, 40, 255),
+    }));
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopClip);
+
+    let report = renderer.render_with_report(&list).unwrap();
+    assert_eq!(
+      report.layer_allocations, 0,
+      "expected fully clipped stacking contexts to be culled without allocating a layer"
+    );
+    assert_eq!(
+      report.layer_alloc_bytes, 0,
+      "expected fully clipped stacking contexts to avoid offscreen layer allocations"
     );
   }
 
