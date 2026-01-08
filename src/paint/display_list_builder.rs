@@ -9190,7 +9190,7 @@ impl DisplayListBuilder {
             caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
 
             let mut sample_text = paint_text.unwrap_or("M");
-            if sample_text.trim().is_empty() {
+            if trim_ascii_whitespace(sample_text).is_empty() {
               sample_text = "M";
             }
             let runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
@@ -9318,7 +9318,7 @@ impl DisplayListBuilder {
             let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
             caret_x = caret_x.clamp(rect.x(), max_caret_x);
 
-            let sample_text = if caret_line.trim().is_empty() {
+            let sample_text = if trim_ascii_whitespace(caret_line).is_empty() {
               "M"
             } else {
               caret_line
@@ -10068,7 +10068,7 @@ impl DisplayListBuilder {
     rect: Rect,
     trim: bool,
   ) -> bool {
-    let text = if trim { text.trim() } else { text };
+    let text = if trim { trim_ascii_whitespace(text) } else { text };
     if text.is_empty() {
       return false;
     }
@@ -10763,6 +10763,17 @@ mod tests {
         .decode_mask_image_url(&format!("#mask{nbsp}"), &style, bounds)
         .is_none(),
       "expected NBSP-suffixed fragment to not match existing SVG ids"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_emit_text_with_style_does_not_trim_nbsp() {
+    let mut builder = DisplayListBuilder::new();
+    let style = ComputedStyle::default();
+    let rect = Rect::from_xywh(0.0, 0.0, 100.0, 20.0);
+    assert!(
+      builder.emit_text_with_style("\u{00A0}", Some(&style), rect),
+      "NBSP must not be treated as trim() whitespace when emitting text"
     );
   }
 

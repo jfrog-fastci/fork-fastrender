@@ -330,7 +330,7 @@ fn write_path_with_deadline(
 fn stage_for_cached_content_type(content_type: Option<&str>) -> RenderStage {
   let mime = content_type
     .and_then(|ct| ct.split(';').next())
-    .map(|ct| ct.trim().to_ascii_lowercase())
+    .map(|ct| super::trim_http_whitespace(ct).to_ascii_lowercase())
     .unwrap_or_default();
 
   if mime.contains("text/css") || mime.contains("font/") {
@@ -685,7 +685,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       Err(_) => return Some(Cow::Borrowed("*")),
     };
 
-    let trimmed = contents.trim();
+    let trimmed = super::trim_http_whitespace(contents);
     if trimmed.is_empty() {
       return None;
     }
@@ -3692,6 +3692,21 @@ mod tests {
       }
       Err(err) => panic!("bind {context}: {err}"),
     }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_disk_cache_read_vary_does_not_trim_nbsp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+    let url = "https://example.com/vary_nbsp";
+    let base_key = disk.cache_key(TEST_KIND, url);
+    let vary_path = disk.vary_metadata_path_for_base_key(&base_key);
+    fs::write(&vary_path, "\u{00A0}").expect("write vary metadata");
+    assert_eq!(
+      disk.read_vary_for_base_key(&base_key).as_deref(),
+      Some("\u{00A0}"),
+      "NBSP must not be treated as HTTP whitespace when loading persisted Vary metadata"
+    );
   }
 
   #[derive(Clone)]

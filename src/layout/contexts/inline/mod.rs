@@ -11534,7 +11534,7 @@ fn edge_combinability(
         CombineEdge::Trailing => Box::new(normalized.text.chars().rev()),
       };
       while let Some(ch) = iter.next() {
-        if ch.is_whitespace() {
+        if is_ascii_whitespace_char(ch) {
           saw_whitespace = true;
           continue;
         }
@@ -11565,7 +11565,7 @@ fn edge_combinability(
           CombineEdge::Trailing => Box::new(normalized.text.chars().rev()),
         };
         while let Some(ch) = iter.next() {
-          if ch.is_whitespace() {
+          if is_ascii_whitespace_char(ch) {
             saw_whitespace = true;
             continue;
           }
@@ -12248,7 +12248,7 @@ fn accumulate_scripts(item: &InlineItem, counts: &mut ScriptCounts) {
         return;
       }
       for ch in t.text.chars() {
-        if ch.is_whitespace() {
+        if is_ascii_whitespace_char(ch) {
           continue;
         }
         counts.total += 1;
@@ -12339,7 +12339,7 @@ fn inline_item_ends_with_hyphen(item: &InlineItem) -> bool {
       .text
       .chars()
       .rev()
-      .find(|c| !c.is_whitespace())
+      .find(|c| !is_ascii_whitespace_char(*c))
       .map_or(false, |c| c == '\u{2010}' || c == '\u{00AD}' || c == '-'),
     InlineItem::SoftBreak => false,
     InlineItem::InlineBox(b) => b
@@ -12555,6 +12555,27 @@ mod tests {
     assert_eq!(before, "");
     assert_eq!(letter, nbsp);
     assert_eq!(after, "A");
+  }
+
+  #[test]
+  fn non_ascii_whitespace_inline_item_ends_with_hyphen_does_not_skip_nbsp() {
+    let nbsp = "\u{00A0}";
+    let text = format!("-{nbsp}");
+    let metrics = BaselineMetrics::new(0.0, 0.0, 0.0, 0.0);
+    let item = InlineItem::Text(TextItem::new(
+      Vec::new(),
+      text,
+      metrics,
+      Vec::new(),
+      Vec::new(),
+      default_style(),
+      Direction::Ltr,
+    ));
+
+    assert!(
+      !inline_item_ends_with_hyphen(&item),
+      "NBSP must not be treated as collapsible whitespace when detecting hyphenated line ends"
+    );
   }
 
   fn make_text_box(text: &str) -> BoxNode {

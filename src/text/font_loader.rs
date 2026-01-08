@@ -3038,6 +3038,10 @@ fn has_prefix_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     .unwrap_or(false)
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn rewrite_discord_font_asset_url(url: &str) -> Option<String> {
   // Discord's `https://discord.com/w/assets/latest/<hash>.woff2` endpoints serve corrupted bytes in
   // some environments (the same hashes are available under `/assets/<hash>.woff2`). Rewrite the
@@ -3238,7 +3242,7 @@ fn inferred_format_support_rank_from_url(url: &str) -> Option<usize> {
       .split_once(',')
       .map(|(m, _)| m)
       .unwrap_or(after_prefix);
-    let mime = meta.split(';').next().unwrap_or("").trim();
+    let mime = trim_ascii_whitespace(meta.split(';').next().unwrap_or(""));
     if !mime.is_empty() {
       let mime = mime.to_ascii_lowercase();
       if mime.contains("woff2") {
