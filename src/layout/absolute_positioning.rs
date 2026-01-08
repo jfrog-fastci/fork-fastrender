@@ -2227,6 +2227,7 @@ pub fn resolve_positioned_style(
     viewport,
     font_context,
     None,
+    None,
   )
 }
 
@@ -2240,6 +2241,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   viewport: Size,
   font_context: &FontContext,
   anchors: Option<&AnchorIndex>,
+  query_parent_box_id: Option<usize>,
 ) -> PositionedStyle {
   let mut resolved = PositionedStyle::default();
   resolved.position = style.position;
@@ -2265,7 +2267,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
       crate::style::types::PositionAnchor::Name(name) => Some(name.as_str()),
       _ => None,
     })?;
-    let anchor = anchors?.get_anchor(anchor_name)?;
+    let anchor = anchors?.get_anchor_for_query(anchor_name, query_parent_box_id)?;
     let anchor_rect = anchor.rect;
     let cb_rect = containing_block.rect;
 

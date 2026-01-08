@@ -5953,13 +5953,27 @@ impl FormattingContext for TableFormattingContext {
       if positioned_children.is_empty() {
         return Ok(());
       }
-      let mut anchor_index =
-        crate::layout::anchor_positioning::AnchorIndex::from_fragments(
-          fragment.children_ref(),
-          self.viewport_size,
-        );
+      let root_box_id = fragment.box_id().unwrap_or(0);
+      let mut anchor_index = fragment
+        .style
+        .as_ref()
+        .map(|style| {
+          crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+            fragment.children_ref(),
+            root_box_id,
+            &style.anchor_scope,
+            self.viewport_size,
+          )
+        })
+        .unwrap_or_else(|| {
+          crate::layout::anchor_positioning::AnchorIndex::from_fragments(
+            fragment.children_ref(),
+            self.viewport_size,
+          )
+        });
       if let Some(style) = fragment.style.as_ref() {
-        anchor_index.insert_names(
+        anchor_index.insert_names_for_box(
+          root_box_id,
           &style.anchor_names,
           crate::layout::anchor_positioning::AnchorBox {
             rect: Rect::new(Point::ZERO, fragment.bounds.size),
@@ -6011,6 +6025,7 @@ impl FormattingContext for TableFormattingContext {
           self.viewport_size,
           self.factory.font_context(),
           Some(&anchor_index),
+          Some(root_box_id),
         );
         let is_replaced = child.is_replaced();
         let has_inline_keyword = positioned_style.width_keyword.is_some()

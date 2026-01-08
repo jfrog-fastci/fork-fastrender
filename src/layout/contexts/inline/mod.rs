@@ -219,6 +219,10 @@ struct PositionedChild {
   /// Box id of the nearest positioned ancestor that establishes this child's containing block.
   /// `None` means to use the formatting context's `nearest_positioned_cb`.
   containing_block_id: Option<usize>,
+  /// Box id of the positioned element's parent in the box tree.
+  ///
+  /// Used to resolve `anchor-scope` during `anchor()` lookup.
+  parent_box_id: Option<usize>,
 }
 
 fn ensure_box_id(node: &BoxNode) -> usize {
@@ -630,6 +634,7 @@ impl InlineFormattingContext {
     let mut segments = Vec::new();
     let mut current_items: Vec<InlineItem> = Vec::new();
     let mut deadline_counter = 0usize;
+    let parent_box_id = Some(ensure_box_id(box_node));
 
     let combinable_indices: Vec<usize> = box_node
       .children
@@ -726,6 +731,7 @@ impl InlineFormattingContext {
           node: BoxNodeRef::new(child),
           box_id,
           containing_block_id,
+          parent_box_id,
         });
         current_items.push(anchor);
         whitespace.note_ignorable();
@@ -1476,6 +1482,7 @@ impl InlineFormattingContext {
     self.collect_inline_items_internal_for_children(
       box_node.children.len(),
       |idx| &box_node.children[idx],
+      Some(ensure_box_id(box_node)),
       available_width,
       available_height,
       whitespace,
@@ -1493,6 +1500,7 @@ impl InlineFormattingContext {
     &self,
     children_len: usize,
     child_at: F,
+    parent_box_id: Option<usize>,
     available_width: f32,
     available_height: Option<f32>,
     whitespace: &mut CollapsibleWhitespaceState,
@@ -1574,6 +1582,7 @@ impl InlineFormattingContext {
           node: BoxNodeRef::new(child),
           box_id,
           containing_block_id,
+          parent_box_id,
         });
         items.push(anchor);
         whitespace.note_ignorable();
@@ -6595,6 +6604,7 @@ impl InlineFormattingContext {
     self.collect_inline_items_internal_for_children(
       children.len(),
       |idx| children[idx],
+      None,
       available_width,
       available_height,
       &mut whitespace,
@@ -10445,11 +10455,16 @@ impl InlineFormattingContext {
 
     // Position out-of-flow abs/fixed children against the containing block.
     if !positioned_children.is_empty() {
-      let mut anchor_index = crate::layout::anchor_positioning::AnchorIndex::from_fragments(
-        merged_children.as_slice(),
-        self.viewport_size,
-      );
-      anchor_index.insert_names(
+      let root_box_id = ensure_box_id(box_node);
+      let mut anchor_index =
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+          merged_children.as_slice(),
+          root_box_id,
+          &style.anchor_scope,
+          self.viewport_size,
+        );
+      anchor_index.insert_names_for_box(
+        root_box_id,
         &style.anchor_names,
         crate::layout::anchor_positioning::AnchorBox {
           rect: Rect::new(Point::ZERO, bounds.size),
@@ -10595,12 +10610,13 @@ impl InlineFormattingContext {
           custom_fixed_factories.insert(id, base_factory.with_fixed_cb(custom_cb));
         }
       }
-      let layout_positioned_child = |positioned_child: &PositionedChild| {
-        let PositionedChild {
-          node: child_ref,
-          box_id,
-          containing_block_id,
-        } = *positioned_child;
+        let layout_positioned_child = |positioned_child: &PositionedChild| {
+          let PositionedChild {
+            node: child_ref,
+            box_id,
+            containing_block_id,
+            parent_box_id,
+          } = *positioned_child;
         // SAFETY: `PositionedChild` stores pointers into the (immutable) box tree owned by the
         // current layout run. The tree is not moved while `layout_with_floats` executes.
         let child = unsafe { child_ref.get() };
@@ -10691,6 +10707,7 @@ impl InlineFormattingContext {
           viewport_size,
           &font_context,
           anchors_for_cb,
+          parent_box_id,
         );
         let is_replaced = child.is_replaced();
         let has_inline_keyword = original_style.width_keyword.is_some()

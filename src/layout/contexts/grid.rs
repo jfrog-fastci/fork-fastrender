@@ -8124,12 +8124,16 @@ impl FormattingContext for GridFormattingContext {
           Some(padding_rect.size.width),
           block_base,
         );
+      let root_box_id = ensure_box_id(box_node);
       let mut anchor_index =
-        crate::layout::anchor_positioning::AnchorIndex::from_fragments(
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
           fragment.children_ref(),
+          root_box_id,
+          &box_node.style.anchor_scope,
           ctx.viewport_size,
         );
-      anchor_index.insert_names(
+      anchor_index.insert_names_for_box(
+        root_box_id,
         &box_node.style.anchor_names,
         crate::layout::anchor_positioning::AnchorBox {
           rect: crate::geometry::Rect::new(crate::geometry::Point::ZERO, fragment.bounds.size),
@@ -8253,6 +8257,7 @@ impl FormattingContext for GridFormattingContext {
           ctx.viewport_size,
           &ctx.font_context,
           anchors_for_cb,
+          Some(root_box_id),
         );
         // Static position resolves to where the element would be in flow, relative to the containing
         // block origin (padding edge).

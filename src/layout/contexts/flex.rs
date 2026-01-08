@@ -3515,9 +3515,16 @@ impl FormattingContext for FlexFormattingContext {
         Some(padding_rect.size.width),
         block_base,
       );
+      let root_box_id = ensure_box_id(box_node);
       let mut anchor_index =
-        crate::layout::anchor_positioning::AnchorIndex::from_fragments(fragment.children_ref(), self.viewport_size);
-      anchor_index.insert_names(
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+          fragment.children_ref(),
+          root_box_id,
+          &box_node.style.anchor_scope,
+          self.viewport_size,
+        );
+      anchor_index.insert_names_for_box(
+        root_box_id,
         &box_node.style.anchor_names,
         crate::layout::anchor_positioning::AnchorBox {
           rect: Rect::new(Point::ZERO, fragment.bounds.size),
@@ -3591,6 +3598,7 @@ impl FormattingContext for FlexFormattingContext {
           self.viewport_size,
           &self.font_context,
           anchors_for_cb,
+          Some(root_box_id),
         );
         let has_inline_keyword = positioned_style.width_keyword.is_some()
           || positioned_style.min_width_keyword.is_some()

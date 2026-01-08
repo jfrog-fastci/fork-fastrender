@@ -6,7 +6,9 @@ use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
-use fastrender::style::types::{AnchorFunction, AnchorSide, Direction, InsetValue, PositionAnchor};
+use fastrender::style::types::{
+  AnchorFunction, AnchorScope, AnchorSide, Direction, InsetValue, PositionAnchor,
+};
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
@@ -781,5 +783,236 @@ fn anchor_positioning_allows_explicit_anchor_name_in_anchor_function() {
   assert!(
     (overlay_fragment.bounds.y() - anchor_fragment.bounds.max_y()).abs() < 0.1,
     "overlay should use the explicit anchor name for top resolution"
+  );
+}
+
+#[test]
+fn anchor_positioning_respects_anchor_scope_for_nested_positioned_descendants() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let wrapper1_id = 10usize;
+  let wrapper2_id = 11usize;
+  let overlay1_id = 20usize;
+  let overlay2_id = 21usize;
+
+  let mut wrapper1_style = ComputedStyle::default();
+  wrapper1_style.display = Display::Block;
+  wrapper1_style.width = Some(Length::px(40.0));
+  wrapper1_style.height = Some(Length::px(20.0));
+  wrapper1_style.width_keyword = None;
+  wrapper1_style.height_keyword = None;
+  wrapper1_style.anchor_names = vec!["--a".to_string()];
+  wrapper1_style.anchor_scope = AnchorScope::Names(vec!["--a".to_string()]);
+
+  let mut overlay1_style = ComputedStyle::default();
+  overlay1_style.display = Display::Block;
+  overlay1_style.position = Position::Absolute;
+  overlay1_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay1_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  overlay1_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Right,
+    fallback: None,
+  });
+  overlay1_style.width = Some(Length::px(10.0));
+  overlay1_style.height = Some(Length::px(10.0));
+  overlay1_style.width_keyword = None;
+  overlay1_style.height_keyword = None;
+
+  let mut overlay1 =
+    BoxNode::new_block(Arc::new(overlay1_style), FormattingContextType::Block, vec![]);
+  overlay1.id = overlay1_id;
+  let mut wrapper1 = BoxNode::new_block(
+    Arc::new(wrapper1_style),
+    FormattingContextType::Block,
+    vec![overlay1],
+  );
+  wrapper1.id = wrapper1_id;
+
+  let mut wrapper2_style = ComputedStyle::default();
+  wrapper2_style.display = Display::Block;
+  wrapper2_style.width = Some(Length::px(60.0));
+  wrapper2_style.height = Some(Length::px(30.0));
+  wrapper2_style.width_keyword = None;
+  wrapper2_style.height_keyword = None;
+  wrapper2_style.anchor_names = vec!["--a".to_string()];
+  wrapper2_style.anchor_scope = AnchorScope::Names(vec!["--a".to_string()]);
+
+  let mut overlay2_style = ComputedStyle::default();
+  overlay2_style.display = Display::Block;
+  overlay2_style.position = Position::Absolute;
+  overlay2_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay2_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  overlay2_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Right,
+    fallback: None,
+  });
+  overlay2_style.width = Some(Length::px(10.0));
+  overlay2_style.height = Some(Length::px(10.0));
+  overlay2_style.width_keyword = None;
+  overlay2_style.height_keyword = None;
+
+  let mut overlay2 =
+    BoxNode::new_block(Arc::new(overlay2_style), FormattingContextType::Block, vec![]);
+  overlay2.id = overlay2_id;
+  let mut wrapper2 = BoxNode::new_block(
+    Arc::new(wrapper2_style),
+    FormattingContextType::Block,
+    vec![overlay2],
+  );
+  wrapper2.id = wrapper2_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![wrapper1, wrapper2]);
+  container.id = 109;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let wrapper1_fragment = find_fragment_by_box_id(&fragment, wrapper1_id).expect("wrapper1");
+  let wrapper2_fragment = find_fragment_by_box_id(&fragment, wrapper2_id).expect("wrapper2");
+  let wrapper1_bounds = find_abs_bounds_by_box_id(&fragment, wrapper1_id).expect("wrapper1 bounds");
+  let wrapper2_bounds = find_abs_bounds_by_box_id(&fragment, wrapper2_id).expect("wrapper2 bounds");
+  let overlay1_bounds = find_abs_bounds_by_box_id(&fragment, overlay1_id).expect("overlay1 bounds");
+  let overlay2_bounds = find_abs_bounds_by_box_id(&fragment, overlay2_id).expect("overlay2 bounds");
+
+  let wrapper1_style = wrapper1_fragment.style.as_ref().expect("wrapper1 style");
+  let wrapper2_style = wrapper2_fragment.style.as_ref().expect("wrapper2 style");
+  assert_eq!(
+    wrapper1_style.anchor_names,
+    vec!["--a".to_string()],
+    "wrapper1 should expose anchor-name"
+  );
+  assert_eq!(
+    wrapper2_style.anchor_names,
+    vec!["--a".to_string()],
+    "wrapper2 should expose anchor-name"
+  );
+  assert!(
+    matches!(wrapper1_style.anchor_scope, AnchorScope::Names(_)),
+    "wrapper1 should expose anchor-scope"
+  );
+  assert!(
+    matches!(wrapper2_style.anchor_scope, AnchorScope::Names(_)),
+    "wrapper2 should expose anchor-scope"
+  );
+
+  let overlay1_expected_x = wrapper1_bounds.max_x();
+  let overlay1_expected_y = wrapper1_bounds.max_y();
+  let overlay2_expected_x = wrapper2_bounds.max_x();
+  let overlay2_expected_y = wrapper2_bounds.max_y();
+
+  assert!(
+    (overlay1_bounds.x() - overlay1_expected_x).abs() < 0.1,
+    "overlay1 should resolve against wrapper1's scoped anchor-name (got x={}, expected {})",
+    overlay1_bounds.x(),
+    overlay1_expected_x,
+  );
+  assert!(
+    (overlay1_bounds.y() - overlay1_expected_y).abs() < 0.1,
+    "overlay1 should resolve against wrapper1's scoped anchor-name (got y={}, expected {})",
+    overlay1_bounds.y(),
+    overlay1_expected_y,
+  );
+  assert!(
+    (overlay2_bounds.x() - overlay2_expected_x).abs() < 0.1,
+    "overlay2 should resolve against wrapper2's scoped anchor-name (got x={}, expected {})",
+    overlay2_bounds.x(),
+    overlay2_expected_x,
+  );
+  assert!(
+    (overlay2_bounds.y() - overlay2_expected_y).abs() < 0.1,
+    "overlay2 should resolve against wrapper2's scoped anchor-name (got y={}, expected {})",
+    overlay2_bounds.y(),
+    overlay2_expected_y,
+  );
+}
+
+#[test]
+fn anchor_positioning_scoped_anchors_are_not_visible_outside_the_scope_subtree() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let wrapper_id = 30usize;
+  let overlay_id = 31usize;
+
+  let mut wrapper_style = ComputedStyle::default();
+  wrapper_style.display = Display::Block;
+  wrapper_style.width = Some(Length::px(100.0));
+  wrapper_style.height = Some(Length::px(40.0));
+  wrapper_style.width_keyword = None;
+  wrapper_style.height_keyword = None;
+  wrapper_style.anchor_names = vec!["--a".to_string()];
+  wrapper_style.anchor_scope = AnchorScope::Names(vec!["--a".to_string()]);
+  let mut wrapper =
+    BoxNode::new_block(Arc::new(wrapper_style), FormattingContextType::Block, vec![]);
+  wrapper.id = wrapper_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: Some(Length::px(9.0)),
+  });
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: Some(Length::px(7.0)),
+  });
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay =
+    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![wrapper, overlay],
+  );
+  container.id = 110;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+  assert!(
+    (overlay_fragment.bounds.x() - 7.0).abs() < 0.1,
+    "anchors scoped to a sibling subtree should not be visible (got x={})",
+    overlay_fragment.bounds.x()
+  );
+  assert!(
+    (overlay_fragment.bounds.y() - 9.0).abs() < 0.1,
+    "anchors scoped to a sibling subtree should not be visible (got y={})",
+    overlay_fragment.bounds.y()
   );
 }

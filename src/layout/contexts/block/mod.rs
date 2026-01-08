@@ -111,6 +111,7 @@ struct PositionedCandidate {
   node: BoxNode,
   source: ContainingBlockSource,
   static_position: Option<Point>,
+  query_parent_id: usize,
 }
 
 #[derive(Clone)]
@@ -1564,12 +1565,16 @@ impl BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
-      let mut anchor_index = crate::layout::anchor_positioning::AnchorIndex::from_fragments(
-        child_fragments.as_slice(),
-        self.viewport_size,
-      );
+      let mut anchor_index =
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+          child_fragments.as_slice(),
+          child.id,
+          &style.anchor_scope,
+          self.viewport_size,
+        );
       // Allow descendants to anchor against the containing block element itself.
-      anchor_index.insert_names(
+      anchor_index.insert_names_for_box(
+        child.id,
         &style.anchor_names,
         crate::layout::anchor_positioning::AnchorBox {
           rect: Rect::from_xywh(0.0, 0.0, box_width, box_height),
@@ -1618,6 +1623,7 @@ impl BlockFormattingContext {
         node: pos_child,
         source,
         static_position,
+        query_parent_id,
       } in positioned_children
       {
         let original_style = pos_child.style.clone();
@@ -1667,6 +1673,7 @@ impl BlockFormattingContext {
           self.viewport_size,
           &self.font_context,
           anchors_for_cb,
+          Some(query_parent_id),
         );
 
         let mut static_pos = static_position.unwrap_or(Point::ZERO);
@@ -3332,6 +3339,7 @@ impl BlockFormattingContext {
           node: child.clone(),
           source,
           static_position,
+          query_parent_id: parent.id,
         });
         continue;
       }
@@ -5963,12 +5971,16 @@ impl FormattingContext for BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
-      let mut anchor_index = crate::layout::anchor_positioning::AnchorIndex::from_fragments(
-        child_fragments.as_slice(),
-        self.viewport_size,
-      );
+      let mut anchor_index =
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
+          child_fragments.as_slice(),
+          box_node.id,
+          &style.anchor_scope,
+          self.viewport_size,
+        );
       // Allow descendants to anchor against the containing block element itself.
-      anchor_index.insert_names(
+      anchor_index.insert_names_for_box(
+        box_node.id,
         &style.anchor_names,
         crate::layout::anchor_positioning::AnchorBox {
           rect: Rect::from_xywh(0.0, 0.0, box_width, box_height),
@@ -6011,6 +6023,7 @@ impl FormattingContext for BlockFormattingContext {
         node: child,
         source,
         static_position,
+        query_parent_id,
       } in positioned_children
       {
         let original_style = child.style.clone();
@@ -6049,6 +6062,7 @@ impl FormattingContext for BlockFormattingContext {
           self.viewport_size,
           &self.font_context,
           anchors_for_cb,
+          Some(query_parent_id),
         );
 
         let mut static_pos = static_position.unwrap_or(Point::ZERO);
