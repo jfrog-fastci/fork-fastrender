@@ -1803,6 +1803,7 @@ impl WillChangeHint {
           | "mix-blend-mode"
           | "isolation"
           | "contain"
+          | "container-type"
       ),
     }
   }
