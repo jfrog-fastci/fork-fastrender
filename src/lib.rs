@@ -196,6 +196,7 @@ pub mod debug;
 pub mod dom;
 pub mod dom2;
 pub mod js;
+pub mod web;
 pub(crate) mod fallible_vec_writer;
 pub mod html;
 pub mod image_compare;
