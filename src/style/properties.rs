@@ -12153,12 +12153,23 @@ fn apply_declaration_with_base_internal_with_order(
         other => vec![other.clone()],
       };
 
-      styles.mask_border = tokens.iter().any(|token| {
-        matches!(
-          parse_border_image_source(token),
-          Some(BorderImageSource::Image(_))
-        )
-      });
+      let mut saw_source = false;
+      let mut has_image_source = false;
+      for token in &tokens {
+        if let Some(source) = parse_border_image_source(token) {
+          saw_source = true;
+          if matches!(source, BorderImageSource::Image(_)) {
+            has_image_source = true;
+          }
+        }
+      }
+
+      // Invalid values are ignored per spec. The mask-border shorthand must contain a valid
+      // <mask-border-source> token (including `none`); if we cannot parse one, treat the
+      // declaration as invalid and leave the previous computed value intact.
+      if saw_source {
+        styles.mask_border = has_image_source;
+      }
     }
     "mask-image" => {
       if let Some(mut images) = parse_background_image_list(resolved_value) {
