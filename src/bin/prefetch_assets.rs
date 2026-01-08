@@ -361,8 +361,7 @@ mod disk_cache_main {
       self.discovered.insert(url.clone());
       if success {
         self.fetched.insert(url.clone());
-        self.failed.remove(&url);
-      } else if !self.fetched.contains(&url) {
+      } else {
         self.failed.insert(url);
       }
     }
@@ -529,8 +528,6 @@ mod disk_cache_main {
       into.discovered.extend(other.discovered);
       into.fetched.extend(other.fetched);
       into.failed.extend(other.failed);
-      // A success in any nested pass should dominate a failure.
-      into.failed.retain(|url| !into.fetched.contains(url));
     }
 
     into.discovered_css += other.discovered_css;
@@ -2821,6 +2818,23 @@ mod disk_cache_main {
         report_per_page_path(dir, "example.com_path"),
         PathBuf::from("out").join("example.com_path.json")
       );
+    }
+
+    #[test]
+    fn report_records_partial_failures_even_if_url_succeeds_elsewhere() {
+      let mut set = UrlOutcomeSet::default();
+      set.record_fetch_result("https://example.com/a", true);
+      set.record_fetch_result("https://example.com/a", false);
+      assert!(set.discovered.contains("https://example.com/a"));
+      assert!(set.fetched.contains("https://example.com/a"));
+      assert!(set.failed.contains("https://example.com/a"));
+
+      let mut set = UrlOutcomeSet::default();
+      set.record_fetch_result("https://example.com/a", false);
+      set.record_fetch_result("https://example.com/a", true);
+      assert!(set.discovered.contains("https://example.com/a"));
+      assert!(set.fetched.contains("https://example.com/a"));
+      assert!(set.failed.contains("https://example.com/a"));
     }
 
     #[test]
