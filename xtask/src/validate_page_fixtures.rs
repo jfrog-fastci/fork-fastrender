@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use regex::Regex;
+use std::borrow::Cow;
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
@@ -16,6 +17,13 @@ pub struct ValidatePageFixturesArgs {
   /// Root directory containing offline fixtures.
   #[arg(long, default_value = DEFAULT_FIXTURES_ROOT)]
   pub fixtures_root: PathBuf,
+
+  /// Also validate script-related subresources (e.g. remote `<script src>`, modulepreload).
+  ///
+  /// This is intentionally opt-in because fixtures are commonly rendered in JS-disabled mode, and
+  /// scripts are not fetched there.
+  #[arg(long)]
+  pub include_scripts: bool,
 
   /// Only validate the listed fixtures (comma-separated).
   #[arg(long, value_delimiter = ',')]
@@ -70,6 +78,8 @@ pub fn run_validate_page_fixtures(args: ValidatePageFixturesArgs) -> Result<()> 
   } else {
     crate::repo_root().join(&args.fixtures_root)
   };
+
+  let include_scripts = args.include_scripts;
 
   if !fixtures_root.is_dir() {
     bail!(
@@ -139,7 +149,7 @@ pub fn run_validate_page_fixtures(args: ValidatePageFixturesArgs) -> Result<()> 
     let content = String::from_utf8_lossy(&bytes).to_string();
 
     let spans = match kind {
-      Kind::Html => scan_html_for_remote_fetches(&content),
+      Kind::Html => scan_html_for_remote_fetches(&content, include_scripts),
       Kind::Css => scan_css_for_remote_fetches(&content),
       Kind::Svg => scan_svg_for_remote_fetches(&content),
     };
@@ -151,6 +161,7 @@ pub fn run_validate_page_fixtures(args: ValidatePageFixturesArgs) -> Result<()> 
           &fixture_name,
           path,
           &content,
+          include_scripts,
           &mut violations,
         )?;
       }
@@ -175,6 +186,7 @@ pub fn run_validate_page_fixtures(args: ValidatePageFixturesArgs) -> Result<()> 
         &fixture_name,
         path,
         &content,
+        include_scripts,
         &mut violations,
       )?;
     }
@@ -292,6 +304,8 @@ fn extract_embedded_html_urls(html: &str) -> Vec<String> {
   static EMBED_SRC: OnceLock<Regex> = OnceLock::new();
   static OBJECT_DATA: OnceLock<Regex> = OnceLock::new();
 
+  let html = mask_html_script_contents(html);
+
   let iframe_src = IFRAME_SRC.get_or_init(|| {
     Regex::new("(?is)<iframe[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
       .expect("iframe src regex")
@@ -306,17 +320,17 @@ fn extract_embedded_html_urls(html: &str) -> Vec<String> {
   });
 
   let mut out = Vec::new();
-  for caps in iframe_src.captures_iter(html) {
+  for caps in iframe_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       out.push(m.as_str().to_string());
     }
   }
-  for caps in embed_src.captures_iter(html) {
+  for caps in embed_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       out.push(m.as_str().to_string());
     }
   }
-  for caps in object_data.captures_iter(html) {
+  for caps in object_data.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       out.push(m.as_str().to_string());
     }
@@ -329,6 +343,7 @@ fn scan_embedded_html_assets_for_fixture(
   fixture_name: &str,
   index_path: &Path,
   index_html: &str,
+  include_scripts: bool,
   violations: &mut Vec<Violation>,
 ) -> Result<()> {
   let fixture_dir = fixtures_root.join(fixture_name);
@@ -349,7 +364,7 @@ fn scan_embedded_html_assets_for_fixture(
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     let html = String::from_utf8_lossy(&bytes).to_string();
 
-    let spans = scan_html_for_remote_fetches(&html);
+    let spans = scan_html_for_remote_fetches(&html, include_scripts);
     if !spans.is_empty() {
       let rel = path
         .strip_prefix(fixtures_root)
@@ -511,7 +526,7 @@ fn push_srcset_violations(out: &mut Vec<UrlSpan>, value: &str, value_start: usiz
   }
 }
 
-fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
+fn scan_html_for_remote_fetches(html: &str, include_scripts: bool) -> Vec<UrlSpan> {
   static IMG_SRC: OnceLock<Regex> = OnceLock::new();
   static IFRAME_SRC: OnceLock<Regex> = OnceLock::new();
   static EMBED_SRC: OnceLock<Regex> = OnceLock::new();
@@ -523,6 +538,7 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
   static SOURCE_SRC: OnceLock<Regex> = OnceLock::new();
   static IMG_SRCSET: OnceLock<Regex> = OnceLock::new();
   static SOURCE_SRCSET: OnceLock<Regex> = OnceLock::new();
+  static SCRIPT_SRC: OnceLock<Regex> = OnceLock::new();
   static STYLE_TAG: OnceLock<Regex> = OnceLock::new();
   static STYLE_ATTR_DOUBLE: OnceLock<Regex> = OnceLock::new();
   static STYLE_ATTR_SINGLE: OnceLock<Regex> = OnceLock::new();
@@ -575,6 +591,10 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
     Regex::new("(?is)<source[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
       .expect("source srcset regex")
   });
+  let script_src = SCRIPT_SRC.get_or_init(|| {
+    Regex::new("(?is)<script[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("script src regex")
+  });
   let style_tag = STYLE_TAG
     .get_or_init(|| Regex::new("(?is)<style[^>]*>(.*?)</style>").expect("style tag regex"));
   let style_attr_double =
@@ -593,67 +613,76 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
   });
 
   let mut out = Vec::new();
+  let html = mask_html_script_contents(html);
 
-  for caps in img_src.captures_iter(html) {
+  for caps in img_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
-  for caps in iframe_src.captures_iter(html) {
+  for caps in iframe_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
-  for caps in embed_src.captures_iter(html) {
+  for caps in embed_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
-  for caps in object_data.captures_iter(html) {
+  for caps in object_data.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
-  for caps in video_poster.captures_iter(html) {
+  for caps in video_poster.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
-  for caps in video_src.captures_iter(html) {
+  for caps in video_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
-  for caps in audio_src.captures_iter(html) {
+  for caps in audio_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
-  for caps in track_src.captures_iter(html) {
+  for caps in track_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
-  for caps in source_src.captures_iter(html) {
+  for caps in source_src.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
       push_match_if_remote(&mut out, m);
     }
   }
 
   const MAX_SRCSET_CANDIDATES: usize = 64;
-  for caps in img_srcset.captures_iter(html) {
+  for caps in img_srcset.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2]) {
       push_srcset_violations(&mut out, m.as_str(), m.start(), MAX_SRCSET_CANDIDATES);
     }
   }
-  for caps in source_srcset.captures_iter(html) {
+  for caps in source_srcset.captures_iter(html.as_ref()) {
     if let Some(m) = capture_first_match(&caps, &[1, 2]) {
       push_srcset_violations(&mut out, m.as_str(), m.start(), MAX_SRCSET_CANDIDATES);
     }
   }
 
+  if include_scripts {
+    for caps in script_src.captures_iter(html.as_ref()) {
+      if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
+        push_match_if_remote(&mut out, m);
+      }
+    }
+  }
+
   // Inline CSS.
-  for caps in style_tag.captures_iter(html) {
+  for caps in style_tag.captures_iter(html.as_ref()) {
     let Some(css_match) = caps.get(1) else {
       continue;
     };
@@ -665,7 +694,7 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
       });
     }
   }
-  for caps in style_attr_double.captures_iter(html) {
+  for caps in style_attr_double.captures_iter(html.as_ref()) {
     let Some(css_match) = caps.get(1) else {
       continue;
     };
@@ -677,7 +706,7 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
       });
     }
   }
-  for caps in style_attr_single.captures_iter(html) {
+  for caps in style_attr_single.captures_iter(html.as_ref()) {
     let Some(css_match) = caps.get(1) else {
       continue;
     };
@@ -691,7 +720,7 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
   }
 
   // Fetchable <link href> and <link imagesrcset>.
-  for tag_match in link_tag.captures_iter(html) {
+  for tag_match in link_tag.captures_iter(html.as_ref()) {
     let Some(tag) = tag_match.get(0) else {
       continue;
     };
@@ -707,6 +736,7 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
     for token in rel_value.split_ascii_whitespace() {
       if token.eq_ignore_ascii_case("stylesheet")
         || token.eq_ignore_ascii_case("preload")
+        || (include_scripts && token.eq_ignore_ascii_case("modulepreload"))
         || token.eq_ignore_ascii_case("prefetch")
         || token.eq_ignore_ascii_case("icon")
         || token.eq_ignore_ascii_case("apple-touch-icon")
@@ -758,6 +788,101 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
   out
 }
 
+fn mask_html_script_contents(html: &str) -> Cow<'_, str> {
+  // The validator uses regexes for deterministic scanning rather than a full HTML parser. To avoid
+  // false positives (e.g. "<img src=...>" strings inside inline JS), treat script element content
+  // as raw text and mask it out before running regexes.
+  const SCRIPT: &[u8] = b"script";
+
+  fn is_boundary_byte(b: u8) -> bool {
+    matches!(b, b' ' | b'\n' | b'\r' | b'\t' | b'/' | b'>')
+  }
+
+  fn eq_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+      .iter()
+      .zip(needle.iter())
+      .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+  }
+
+  fn find_tag_end(bytes: &[u8], mut i: usize) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+      match bytes[i] {
+        b'\'' if !in_double => in_single = !in_single,
+        b'"' if !in_single => in_double = !in_double,
+        b'>' if !in_single && !in_double => return Some(i),
+        _ => {}
+      }
+      i += 1;
+    }
+    None
+  }
+
+  let bytes = html.as_bytes();
+  let mut out: Option<Vec<u8>> = None;
+  let mut i = 0usize;
+  while i < bytes.len() {
+    if bytes[i] != b'<' || i + 1 + SCRIPT.len() > bytes.len() {
+      i += 1;
+      continue;
+    }
+    let name_start = i + 1;
+    let name_end = name_start + SCRIPT.len();
+    if !eq_ignore_ascii_case(&bytes[name_start..name_end], SCRIPT) {
+      i += 1;
+      continue;
+    }
+    if name_end < bytes.len() && !is_boundary_byte(bytes[name_end]) {
+      i += 1;
+      continue;
+    }
+
+    let Some(start_tag_end) = find_tag_end(bytes, name_end) else {
+      break;
+    };
+
+    let content_start = start_tag_end + 1;
+    let mut j = content_start;
+    let mut end_tag_start: Option<usize> = None;
+    while j + 2 + SCRIPT.len() <= bytes.len() {
+      if bytes[j] == b'<'
+        && j + 2 + SCRIPT.len() <= bytes.len()
+        && bytes.get(j + 1) == Some(&b'/')
+        && eq_ignore_ascii_case(&bytes[j + 2..j + 2 + SCRIPT.len()], SCRIPT)
+      {
+        let after = j + 2 + SCRIPT.len();
+        if after == bytes.len() || is_boundary_byte(*bytes.get(after).unwrap_or(&b'>')) {
+          end_tag_start = Some(j);
+          break;
+        }
+      }
+      j += 1;
+    }
+
+    let mask_end = end_tag_start.unwrap_or(bytes.len());
+    if mask_end > content_start {
+      let vec = out.get_or_insert_with(|| bytes.to_vec());
+      for b in &mut vec[content_start..mask_end] {
+        if *b != b'\n' && *b != b'\r' {
+          *b = b' ';
+        }
+      }
+    }
+
+    match end_tag_start {
+      Some(pos) => i = pos + 1,
+      None => break,
+    }
+  }
+
+  match out {
+    Some(vec) => Cow::Owned(String::from_utf8(vec).expect("masked HTML must remain valid UTF-8")),
+    None => Cow::Borrowed(html),
+  }
+}
+
 fn scan_svg_for_remote_fetches(svg: &str) -> Vec<UrlSpan> {
   static IMAGE_HREF: OnceLock<Regex> = OnceLock::new();
   static USE_HREF: OnceLock<Regex> = OnceLock::new();
@@ -801,4 +926,52 @@ fn scan_svg_for_remote_fetches(svg: &str) -> Vec<UrlSpan> {
   // style= attributes, and presentation attributes such as fill="url(...)").
   out.extend(scan_css_for_remote_fetches(svg));
   out
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::collections::BTreeSet;
+
+  #[test]
+  fn script_subresource_validation_is_opt_in() {
+    let html = r#"
+<!doctype html>
+<html>
+  <head>
+    <link rel="preload" as="script" href="https://example.com/preload.js">
+    <link rel="modulepreload" href="https://example.com/module.js">
+    <script>
+      // Strings that look like markup must not trigger validator matches.
+      const html = '<script src="https://example.com/inner.js">';
+    </script>
+    <script src="https://example.com/outer.js"></script>
+    <script src="javascript:alert(1)"></script>
+    <script src="data:text/javascript,alert(1)"></script>
+  </head>
+</html>
+"#;
+
+    let off: BTreeSet<String> = scan_html_for_remote_fetches(html, false)
+      .into_iter()
+      .map(|span| span.url)
+      .collect();
+    assert!(off.contains("https://example.com/preload.js"));
+    assert!(!off.contains("https://example.com/outer.js"));
+    assert!(!off.contains("https://example.com/module.js"));
+    assert!(!off.contains("https://example.com/inner.js"));
+    assert!(!off.contains("javascript:alert(1)"));
+    assert!(!off.contains("data:text/javascript,alert(1)"));
+
+    let on: BTreeSet<String> = scan_html_for_remote_fetches(html, true)
+      .into_iter()
+      .map(|span| span.url)
+      .collect();
+    assert!(on.contains("https://example.com/preload.js"));
+    assert!(on.contains("https://example.com/module.js"));
+    assert!(on.contains("https://example.com/outer.js"));
+    assert!(!on.contains("https://example.com/inner.js"));
+    assert!(!on.contains("javascript:alert(1)"));
+    assert!(!on.contains("data:text/javascript,alert(1)"));
+  }
 }
