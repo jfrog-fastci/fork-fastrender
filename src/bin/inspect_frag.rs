@@ -1,93 +1,131 @@
 mod common;
 
 use clap::Parser;
-use common::args::{parse_viewport, CompatArgs, MediaPreferenceArgs};
+use common::args::{parse_viewport, CompatArgs, DiskCacheArgs, MediaPreferenceArgs};
 use common::media_prefs::MediaPreferences;
-use common::render_pipeline::PreparedDocument;
 use fastrender::api::FastRender;
 use fastrender::debug::runtime::{self, RuntimeToggles};
 use fastrender::dom::DomNodeType;
-use fastrender::dom::{self};
-use fastrender::geometry::Point;
-use fastrender::geometry::Rect;
-use fastrender::geometry::Size;
+use fastrender::geometry::{Point, Rect};
 use fastrender::image_output::encode_image;
-use fastrender::layout::engine::LayoutConfig;
-use fastrender::layout::engine::LayoutEngine;
-use fastrender::paint::display_list::Transform3D;
-use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::paint::stacking::creates_stacking_context;
-use fastrender::resource::HttpFetcher;
-use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
-use fastrender::resource::DEFAULT_USER_AGENT;
-use fastrender::scroll::ScrollState;
-use fastrender::style::cascade::apply_style_set_with_media_target_and_imports_cached_with_deadline;
-use fastrender::style::cascade::StyledNode;
-use fastrender::style::computed::Visibility;
-use fastrender::style::display::Display;
-use fastrender::style::media::MediaQueryCache;
+use fastrender::pageset::{pageset_short_hash, pageset_stem};
+#[cfg(not(feature = "disk_cache"))]
+use fastrender::resource::CachingFetcher;
+#[cfg(feature = "disk_cache")]
+use fastrender::resource::DiskCachingFetcher;
+use fastrender::resource::{
+  CachingFetcherConfig, HttpFetcher, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+};
 use fastrender::style::media::MediaType;
-use fastrender::style::position::Position;
-use fastrender::style::ComputedStyle;
-use fastrender::tree::box_generation::generate_box_tree_with_anonymous_fixup;
-use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::fragment_tree::FragmentContent;
-use fastrender::tree::fragment_tree::FragmentNode;
+use fastrender::tree::box_tree::{BoxNode, BoxTree};
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use fastrender::{snapshot_pipeline, OutputFormat, RenderArtifactRequest, RenderOptions};
 use serde_json;
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tiny_skia::{Color, Paint, PathBuilder, Stroke, Transform};
 use url::Url;
 
-/// Inspect fragment tree for a given HTML file
+const DEFAULT_HTML_DIR: &str = fastrender::pageset::CACHE_HTML_DIR;
+const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
+
+/// Inspect fragment/box trees for a given HTML file.
 #[derive(Parser, Debug)]
 #[command(name = "inspect_frag", version, about)]
 struct Args {
-  /// HTML file or file:// URL to inspect
-  file: String,
-
-  /// Write deterministic pipeline stage snapshots into this directory
+  /// HTML file path (or file:// URL) to inspect.
   ///
-  /// Writes `dom.json`, `composed_dom.json`, `styled.json`, `box_tree.json`,
-  /// `fragment_tree.json`, and `display_list.json`. When filters are provided, the
-  /// dumps are restricted to the first matching subtree.
+  /// If the file is a cached pageset HTML (`*.html`) and a `*.html.meta` sidecar exists, the meta
+  /// `url:` field is used as the base hint by default so relative subresources resolve correctly.
+  #[arg(value_name = "FILE", required_unless_present = "pageset")]
+  file: Option<String>,
+
+  /// Load cached pageset HTML from `<html-dir>/<cache_stem>.html` by URL or stem.
+  ///
+  /// Examples:
+  /// - `--pageset https://example.com`
+  /// - `--pageset example.com`
+  /// - `--pageset example.com--deadbeef` (collision-aware cache stem)
+  #[arg(long, value_name = "URL_OR_STEM", conflicts_with = "file")]
+  pageset: Option<String>,
+
+  /// Directory containing cached HTML (defaults to fetches/html).
+  #[arg(long, value_name = "DIR", default_value = DEFAULT_HTML_DIR)]
+  html_dir: PathBuf,
+
+  /// Override the base URL used to resolve relative subresources.
+  ///
+  /// This overrides any `.html.meta`-derived `url:` base hint.
+  #[arg(long, value_name = "URL")]
+  base_hint: Option<String>,
+
+  /// Write deterministic pipeline stage snapshots into this directory.
+  ///
+  /// Writes `dom.json`, `composed_dom.json`, `styled.json`, `box_tree.json`, `fragment_tree.json`,
+  /// and `display_list.json`. When filters are provided, the dumps are restricted to the first
+  /// matching subtree.
   #[arg(long, value_name = "DIR")]
   dump_json: Option<PathBuf>,
 
-  /// Print a combined pipeline snapshot JSON to stdout and exit
+  /// Print a combined pipeline snapshot JSON to stdout.
   #[arg(long)]
   dump_snapshot: bool,
 
-  /// Render the page to a PNG and draw debug overlays (fragment bounds, scroll containers)
+  /// Render the page to a PNG and draw debug overlays (fragment bounds).
   #[arg(long, value_name = "PNG")]
   render_overlay: Option<PathBuf>,
 
-  /// Restrict dumps/overlays to the first node matching this selector
+  /// Restrict dumps/overlays/traces to the first node matching this selector.
   #[arg(long, value_name = "SELECTOR")]
   filter_selector: Option<String>,
 
-  /// Restrict dumps/overlays to the first node matching this id attribute
+  /// Restrict dumps/overlays/traces to the first node matching this id attribute.
   #[arg(long, value_name = "ID")]
   filter_id: Option<String>,
 
-  /// Viewport size as WxH (e.g., 1200x800)
+  /// Trace the fragment ancestry path to the first text fragment containing this substring
+  /// (repeatable).
+  #[arg(long, value_name = "SUBSTRING")]
+  trace_text: Vec<String>,
+
+  /// Trace the fragment ancestry path to the first fragment associated with this box id
+  /// (repeatable).
+  #[arg(long, value_name = "BOX_ID")]
+  trace_box: Vec<usize>,
+
+  /// Dump the fragment subtree for the first fragment associated with this box id.
+  #[arg(long, value_name = "BOX_ID")]
+  dump_fragment: Option<usize>,
+
+  /// Find tall skinny fragments (diagnostic).
+  #[arg(long)]
+  find_skinny_fragments: bool,
+
+  /// Maximum width in CSS px for `--find-skinny-fragments`.
+  #[arg(long, default_value_t = 5.0, value_name = "PX")]
+  skinny_max_width: f32,
+
+  /// Minimum height in CSS px for `--find-skinny-fragments`.
+  #[arg(long, default_value_t = 600.0, value_name = "PX")]
+  skinny_min_height: f32,
+
+  /// Viewport size as WxH (e.g., 1200x800).
   #[arg(long, value_parser = parse_viewport, default_value = "1200x800")]
   viewport: (u32, u32),
 
-  /// Device pixel ratio for media queries/srcset
+  /// Device pixel ratio for media queries/srcset.
   #[arg(long, default_value = "1.0")]
   dpr: f32,
 
-  /// Horizontal scroll offset in CSS px
+  /// Horizontal scroll offset in CSS px.
   #[arg(long, default_value = "0.0")]
   scroll_x: f32,
 
-  /// Vertical scroll offset in CSS px
+  /// Vertical scroll offset in CSS px.
   #[arg(long, default_value = "0.0")]
   scroll_y: f32,
 
@@ -97,31 +135,318 @@ struct Args {
   #[command(flatten)]
   compat: CompatArgs,
 
-  /// Override the User-Agent header
+  /// Override the User-Agent header.
   #[arg(long, default_value = DEFAULT_USER_AGENT)]
   user_agent: String,
 
-  /// Override the Accept-Language header
+  /// Override the Accept-Language header.
   #[arg(long, default_value = DEFAULT_ACCEPT_LANGUAGE)]
   accept_language: String,
 
-  /// Abort after this many seconds
+  /// Disable serving fresh cached HTTP responses without revalidation.
+  ///
+  /// This matches pageset tooling semantics when built with `disk_cache`.
+  #[arg(long)]
+  no_http_freshness: bool,
+
+  /// Offline mode: forbid network I/O (requires `disk_cache`).
+  ///
+  /// Disk cache hits are still served. Cache misses surface as normal fetch errors/diagnostics.
+  #[arg(long)]
+  offline: bool,
+
+  #[command(flatten)]
+  disk_cache: DiskCacheArgs,
+
+  /// Disk cache directory for subresources (defaults to fetches/assets).
+  ///
+  /// Note: this only has an effect when the binary is built with the `disk_cache` cargo feature.
+  #[arg(long, default_value = DEFAULT_ASSET_CACHE_DIR)]
+  cache_dir: PathBuf,
+
+  /// Abort after this many seconds.
   #[arg(long)]
   timeout: Option<u64>,
 }
 
-fn write_pretty_json(
-  path: &Path,
-  value: &impl serde::Serialize,
-) -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Debug, Clone)]
+struct InputDocument {
+  path: PathBuf,
+  html: String,
+  base_hint: String,
+}
+
+fn write_pretty_json(path: &Path, value: &impl serde::Serialize) -> io::Result<()> {
   if let Some(parent) = path.parent() {
     if !parent.as_os_str().is_empty() {
       fs::create_dir_all(parent)?;
     }
   }
-  let json = serde_json::to_string_pretty(value)?;
+  let json = serde_json::to_string_pretty(value)
+    .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
   fs::write(path, json)?;
   Ok(())
+}
+
+fn html_meta_path(html_path: &Path) -> PathBuf {
+  let mut meta_path = html_path.to_path_buf();
+  if let Some(ext) = meta_path.extension().and_then(|e| e.to_str()) {
+    meta_path.set_extension(format!("{ext}.meta"));
+  } else {
+    meta_path.set_extension("meta");
+  }
+  meta_path
+}
+
+fn file_url_for_path(path: &Path) -> String {
+  let abs = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+  Url::from_file_path(&abs)
+    .map(|u| u.to_string())
+    .unwrap_or_else(|_| format!("file://{}", abs.display()))
+}
+
+fn parse_collision_suffix(raw: &str) -> Option<(&str, &str)> {
+  raw
+    .rsplit_once("--")
+    .filter(|(_, suffix)| suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn resolve_pageset_html_path(html_dir: &Path, url_or_stem: &str) -> io::Result<PathBuf> {
+  let trimmed = url_or_stem.trim();
+  let Some(stem) = pageset_stem(trimmed) else {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      format!("invalid pageset URL/stem: {url_or_stem}"),
+    ));
+  };
+
+  if let Some((base, suffix)) = parse_collision_suffix(trimmed) {
+    if let Some(base_stem) = pageset_stem(base) {
+      let cache_stem = format!("{base_stem}--{}", suffix.to_ascii_lowercase());
+      let path = html_dir.join(format!("{cache_stem}.html"));
+      if path.exists() {
+        return Ok(path);
+      }
+      return Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+          "pageset cache not found for {cache_stem} (expected {})",
+          path.display()
+        ),
+      ));
+    }
+  }
+
+  let direct = html_dir.join(format!("{stem}.html"));
+  if direct.exists() {
+    return Ok(direct);
+  }
+
+  // When the caller provides a full URL, try the collision-hash cache stem used by pageset tools.
+  // This matches `fastrender::pageset::PagesetEntry` naming (stem + `--` + short hash) so that
+  // `inspect_frag --pageset <URL>` works even for colliding stems.
+  if matches!(Url::parse(trimmed).map(|u| u.scheme().to_ascii_lowercase()), Ok(s) if s == "http" || s == "https")
+  {
+    let cache_stem = format!("{stem}--{}", pageset_short_hash(trimmed));
+    let hashed = html_dir.join(format!("{cache_stem}.html"));
+    if hashed.exists() {
+      return Ok(hashed);
+    }
+  }
+
+  let mut collisions: Vec<PathBuf> = Vec::new();
+  if let Ok(entries) = fs::read_dir(html_dir) {
+    for entry in entries.flatten() {
+      let path = entry.path();
+      if path.extension().and_then(|e| e.to_str()) != Some("html") {
+        continue;
+      }
+      let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+      if let Some((base, _suffix)) = parse_collision_suffix(file_stem) {
+        if base == stem {
+          collisions.push(path);
+        }
+      }
+    }
+  }
+
+  if collisions.is_empty() {
+    return Err(io::Error::new(
+      io::ErrorKind::NotFound,
+      format!(
+        "pageset cache not found for {url_or_stem} (expected {} or {stem}--????????.html under {})",
+        direct.display(),
+        html_dir.display()
+      ),
+    ));
+  }
+
+  collisions.sort();
+  if collisions.len() == 1 {
+    return Ok(collisions[0].clone());
+  }
+
+  let listed = collisions
+    .iter()
+    .filter_map(|p| {
+      p.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+    })
+    .collect::<Vec<_>>()
+    .join(", ");
+
+  Err(io::Error::new(
+    io::ErrorKind::Other,
+    format!(
+      "multiple cached pages match stem {stem} under {}: {listed}. Pass the full cache stem (e.g. {stem}--deadbeef) to disambiguate.",
+      html_dir.display()
+    ),
+  ))
+}
+
+fn parse_file_arg_to_path(raw: &str) -> io::Result<PathBuf> {
+  if let Ok(url) = Url::parse(raw) {
+    if url.scheme() == "file" {
+      return url
+        .to_file_path()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid file:// URL path"));
+    }
+    // Treat non-file URLs as paths (backwards compatible behavior).
+  }
+  Ok(PathBuf::from(raw))
+}
+
+fn load_input_document(args: &Args) -> io::Result<InputDocument> {
+  let path = if let Some(pageset) = &args.pageset {
+    resolve_pageset_html_path(&args.html_dir, pageset)?
+  } else {
+    let raw = args
+      .file
+      .as_deref()
+      .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing FILE argument"))?;
+    parse_file_arg_to_path(raw)?
+  };
+
+  let cached = common::render_pipeline::read_cached_document(&path).map_err(|err| {
+    io::Error::new(
+      io::ErrorKind::Other,
+      format!("failed to read cached HTML {}: {err}", path.display()),
+    )
+  })?;
+  let mut doc = cached.document;
+
+  if let Some(base) = args.base_hint.as_deref() {
+    doc = doc.with_base_override(Some(base));
+  } else {
+    let meta_exists = html_meta_path(&path).exists();
+    // If there is no `.meta` URL hint, ensure we use a valid absolute file:// base hint (the shared
+    // cached doc helper uses `file://{path.display()}`, which may be relative).
+    if !meta_exists || doc.base_hint.starts_with("file://") {
+      let file_url = file_url_for_path(&path);
+      doc = doc.with_base_override(Some(&file_url));
+    }
+  }
+
+  Ok(InputDocument {
+    path,
+    html: doc.html,
+    base_hint: doc.base_hint,
+  })
+}
+
+#[cfg(feature = "disk_cache")]
+#[derive(Clone)]
+struct DenyNetworkFetcher {
+  header_model: HttpFetcher,
+}
+
+#[cfg(feature = "disk_cache")]
+impl DenyNetworkFetcher {
+  fn new(header_model: HttpFetcher) -> Self {
+    Self { header_model }
+  }
+}
+
+#[cfg(feature = "disk_cache")]
+impl ResourceFetcher for DenyNetworkFetcher {
+  fn fetch(&self, url: &str) -> fastrender::Result<fastrender::resource::FetchedResource> {
+    Err(fastrender::Error::Resource(
+      fastrender::error::ResourceError::new(url, "offline mode: network disabled"),
+    ))
+  }
+
+  fn fetch_with_request(
+    &self,
+    req: fastrender::resource::FetchRequest<'_>,
+  ) -> fastrender::Result<fastrender::resource::FetchedResource> {
+    self.fetch(req.url)
+  }
+
+  fn fetch_with_request_and_validation(
+    &self,
+    req: fastrender::resource::FetchRequest<'_>,
+    _etag: Option<&str>,
+    _last_modified: Option<&str>,
+  ) -> fastrender::Result<fastrender::resource::FetchedResource> {
+    self.fetch(req.url)
+  }
+
+  fn request_header_value(
+    &self,
+    req: fastrender::resource::FetchRequest<'_>,
+    header_name: &str,
+  ) -> Option<String> {
+    self.header_model.request_header_value(req, header_name)
+  }
+}
+
+fn build_fetcher(args: &Args) -> io::Result<Arc<dyn ResourceFetcher>> {
+  let timeout_budget = args.timeout.map(Duration::from_secs);
+  let http = common::render_pipeline::build_http_fetcher(
+    &args.user_agent,
+    &args.accept_language,
+    timeout_budget,
+  );
+
+  let honor_http_freshness = cfg!(feature = "disk_cache") && !args.no_http_freshness;
+  let memory_config = CachingFetcherConfig {
+    honor_http_cache_freshness: honor_http_freshness,
+    ..CachingFetcherConfig::default()
+  };
+
+  #[cfg(feature = "disk_cache")]
+  {
+    let mut disk_config = args.disk_cache.to_config();
+    disk_config.namespace = Some(common::render_pipeline::disk_cache_namespace(
+      &args.user_agent,
+      &args.accept_language,
+    ));
+
+    let base = if args.offline {
+      DenyNetworkFetcher::new(http)
+    } else {
+      http
+    };
+
+    return Ok(Arc::new(DiskCachingFetcher::with_configs(
+      base,
+      &args.cache_dir,
+      memory_config,
+      disk_config,
+    )));
+  }
+
+  #[cfg(not(feature = "disk_cache"))]
+  {
+    if args.offline {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        "inspect_frag: --offline requires the binary to be built with --features disk_cache",
+      ));
+    }
+    return Ok(Arc::new(CachingFetcher::with_config(http, memory_config)));
+  }
 }
 
 fn find_dom_node_by_preorder_id(
@@ -150,7 +475,10 @@ fn find_dom_node_by_preorder_id(
   walk(root, &mut next, target_id)
 }
 
-fn find_styled_node_by_id(root: &StyledNode, target_id: usize) -> Option<StyledNode> {
+fn find_styled_node_by_id(
+  root: &fastrender::style::cascade::StyledNode,
+  target_id: usize,
+) -> Option<fastrender::style::cascade::StyledNode> {
   if root.node_id == target_id {
     return Some(root.clone());
   }
@@ -162,7 +490,10 @@ fn find_styled_node_by_id(root: &StyledNode, target_id: usize) -> Option<StyledN
   None
 }
 
-fn collect_styled_node_ids(root: &StyledNode, out: &mut HashSet<usize>) {
+fn collect_styled_node_ids(
+  root: &fastrender::style::cascade::StyledNode,
+  out: &mut HashSet<usize>,
+) {
   out.insert(root.node_id);
   for child in &root.children {
     collect_styled_node_ids(child, out);
@@ -205,6 +536,18 @@ fn collect_box_ids(node: &BoxNode, out: &mut HashSet<usize>) {
   }
 }
 
+fn fragment_box_id(node: &FragmentNode) -> Option<usize> {
+  match &node.content {
+    FragmentContent::Block { box_id }
+    | FragmentContent::Inline { box_id, .. }
+    | FragmentContent::Text { box_id, .. }
+    | FragmentContent::Replaced { box_id, .. } => *box_id,
+    FragmentContent::RunningAnchor { .. }
+    | FragmentContent::FootnoteAnchor { .. }
+    | FragmentContent::Line { .. } => None,
+  }
+}
+
 fn filter_fragment_subtree(
   node: &FragmentNode,
   allowed_box_ids: &HashSet<usize>,
@@ -225,7 +568,7 @@ fn filter_fragment_subtree(
 
 fn draw_fragment_overlays(
   pixmap: &mut tiny_skia::Pixmap,
-  tree: &fastrender::FragmentTree,
+  tree: &FragmentTree,
   dpr: f32,
   scroll_x: f32,
   scroll_y: f32,
@@ -244,22 +587,30 @@ fn draw_fragment_overlays(
 
   let offset_x = -scroll_x;
   let offset_y = -scroll_y;
-  let mut stack: Vec<&FragmentNode> = Vec::new();
+
+  let mut stack: Vec<(Point, &FragmentNode)> = Vec::new();
   for root in tree.additional_fragments.iter().rev() {
-    stack.push(root);
+    stack.push((Point::ZERO, root));
   }
-  stack.push(&tree.root);
+  stack.push((Point::ZERO, &tree.root));
 
   let stroke = Stroke {
     width: (1.0 * dpr).max(1.0),
     ..Stroke::default()
   };
-  while let Some(fragment) = stack.pop() {
+
+  while let Some((origin, fragment)) = stack.pop() {
     let rect = fragment.bounds;
-    let x = (rect.x() + offset_x) * dpr;
-    let y = (rect.y() + offset_y) * dpr;
-    let w = rect.width() * dpr;
-    let h = rect.height() * dpr;
+    let abs = Rect::from_xywh(
+      rect.x() + origin.x,
+      rect.y() + origin.y,
+      rect.width(),
+      rect.height(),
+    );
+    let x = (abs.x() + offset_x) * dpr;
+    let y = (abs.y() + offset_y) * dpr;
+    let w = abs.width() * dpr;
+    let h = abs.height() * dpr;
     if w > 0.0 && h > 0.0 {
       if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) {
         let mut pb = PathBuilder::new();
@@ -272,23 +623,288 @@ fn draw_fragment_overlays(
       }
     }
 
+    let next_origin = Point::new(abs.x(), abs.y());
     for child in fragment.children.iter().rev() {
-      stack.push(child);
+      stack.push((next_origin, child));
     }
   }
 }
 
-fn run_dump_outputs(
+fn format_debug_info(node: &BoxNode) -> String {
+  let mut label = node
+    .debug_info
+    .as_ref()
+    .map(|info| info.to_selector())
+    .unwrap_or_else(|| format!("{:?}", node.box_type));
+
+  let mut spans = Vec::new();
+  let colspan = node.table_colspan();
+  if colspan > 1 {
+    spans.push(format!("colspan={colspan}"));
+  }
+  let rowspan = node.table_rowspan();
+  if rowspan > 1 {
+    spans.push(format!("rowspan={rowspan}"));
+  }
+  let column_span = node.table_column_span();
+  if column_span > 1 {
+    spans.push(format!("column-span={column_span}"));
+  }
+  if !spans.is_empty() {
+    label.push_str(&format!(" ({})", spans.join(" ")));
+  }
+
+  label
+}
+
+fn collect_box_debug(node: &BoxNode, out: &mut HashMap<usize, String>) {
+  out.insert(node.id, format_debug_info(node));
+  for child in node.children.iter() {
+    collect_box_debug(child, out);
+  }
+}
+
+fn find_box_by_id<'a>(node: &'a BoxNode, target: usize) -> Option<&'a BoxNode> {
+  if node.id == target {
+    return Some(node);
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_box_by_id(child, target) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn style_summary(style: &fastrender::style::ComputedStyle) -> String {
+  let mut out = format!(
+    "display={:?} position={:?} visibility={:?} opacity={:.2} width={:?} height={:?} min=({:?},{:?}) max=({:?},{:?}) overflow=({:?},{:?}) flex=({:.2},{:.2},{:?}) order={}",
+    style.display,
+    style.position,
+    style.visibility,
+    style.opacity,
+    style.width,
+    style.height,
+    style.min_width,
+    style.min_height,
+    style.max_width,
+    style.max_height,
+    style.overflow_x,
+    style.overflow_y,
+    style.flex_grow,
+    style.flex_shrink,
+    style.flex_basis,
+    style.order,
+  );
+
+  if !style.background_layers.is_empty() {
+    let summaries: Vec<String> = style
+      .background_layers
+      .iter()
+      .map(|layer| match &layer.image {
+        Some(fastrender::style::types::BackgroundImage::Url(url)) => format!("url({})", url),
+        Some(fastrender::style::types::BackgroundImage::None) => "none".to_string(),
+        Some(_) => "gradient".to_string(),
+        None => "(none)".to_string(),
+      })
+      .collect();
+    out.push_str(&format!(" backgrounds={:?}", summaries));
+  }
+
+  out
+}
+
+fn absolute_rect(fragment: &FragmentNode, offset: Point) -> (Rect, Point) {
+  let abs = Rect::from_xywh(
+    fragment.bounds.x() + offset.x,
+    fragment.bounds.y() + offset.y,
+    fragment.bounds.width(),
+    fragment.bounds.height(),
+  );
+  (abs, abs.origin)
+}
+
+fn label_fragment(
+  fragment: &FragmentNode,
+  abs: Rect,
+  box_debug: &HashMap<usize, String>,
+) -> String {
+  let mut label = match &fragment.content {
+    FragmentContent::Block { .. } => "block".to_string(),
+    FragmentContent::Inline { .. } => "inline".to_string(),
+    FragmentContent::Line { .. } => "line".to_string(),
+    FragmentContent::Text { text, .. } => {
+      format!("text {:?}", text.chars().take(40).collect::<String>())
+    }
+    FragmentContent::Replaced { .. } => "replaced".to_string(),
+    FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
+    FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
+  };
+
+  label.push_str(&format!(
+    " @ ({:.1},{:.1},{:.1},{:.1})",
+    abs.x(),
+    abs.y(),
+    abs.width(),
+    abs.height()
+  ));
+
+  if let Some(style) = fragment.style.as_deref() {
+    label.push_str(&format!(
+      " display={:?} pos={:?} z={:?}",
+      style.display, style.position, style.z_index
+    ));
+  }
+
+  if fragment.fragment_count > 1 {
+    label.push_str(&format!(
+      " fragmentainer={}/{}",
+      fragment.fragmentainer_index + 1,
+      fragment.fragment_count
+    ));
+  }
+
+  if let Some(box_id) = match &fragment.content {
+    FragmentContent::Block { box_id }
+    | FragmentContent::Inline { box_id, .. }
+    | FragmentContent::Replaced { box_id, .. }
+    | FragmentContent::Text { box_id, .. } => *box_id,
+    _ => None,
+  } {
+    if let Some(debug) = box_debug.get(&box_id) {
+      label.push_str(&format!(" box#{box_id} {debug}"));
+    } else {
+      label.push_str(&format!(" box#{box_id}"));
+    }
+  }
+
+  label
+}
+
+fn find_fragment_path_for_text(
+  fragment: &FragmentNode,
+  offset: Point,
+  needle: &str,
+  box_debug: &HashMap<usize, String>,
+  out_path: &mut Vec<String>,
+) -> bool {
+  let (abs, next_offset) = absolute_rect(fragment, offset);
+  let label = label_fragment(fragment, abs, box_debug);
+
+  if let FragmentContent::Text { text, .. } = &fragment.content {
+    if text.contains(needle) {
+      out_path.push(label);
+      return true;
+    }
+  }
+
+  for child in fragment.children.iter() {
+    if find_fragment_path_for_text(child, next_offset, needle, box_debug, out_path) {
+      out_path.insert(0, label);
+      return true;
+    }
+  }
+
+  false
+}
+
+fn find_fragment_path_for_box_id(
+  fragment: &FragmentNode,
+  offset: Point,
+  target: usize,
+  box_debug: &HashMap<usize, String>,
+  out_path: &mut Vec<String>,
+) -> bool {
+  let (abs, next_offset) = absolute_rect(fragment, offset);
+  let label = label_fragment(fragment, abs, box_debug);
+
+  if fragment_box_id(fragment) == Some(target) {
+    out_path.push(label);
+    return true;
+  }
+
+  for child in fragment.children.iter() {
+    if find_fragment_path_for_box_id(child, next_offset, target, box_debug, out_path) {
+      out_path.insert(0, label);
+      return true;
+    }
+  }
+
+  false
+}
+
+fn find_fragment_node_for_box_id<'a>(
+  fragment: &'a FragmentNode,
+  offset: Point,
+  target: usize,
+) -> Option<(&'a FragmentNode, Rect)> {
+  let (abs, next_offset) = absolute_rect(fragment, offset);
+  if fragment_box_id(fragment) == Some(target) {
+    return Some((fragment, abs));
+  }
+  for child in fragment.children.iter() {
+    if let Some(found) = find_fragment_node_for_box_id(child, next_offset, target) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn print_fragment_tree(node: &FragmentNode, indent: usize, max_lines: usize) {
+  fn fmt_content(node: &FragmentNode) -> String {
+    match &node.content {
+      FragmentContent::Block { box_id } => format!("block box_id={:?}", box_id),
+      FragmentContent::Inline { box_id, .. } => format!("inline box_id={:?}", box_id),
+      FragmentContent::Line { .. } => "line".into(),
+      FragmentContent::Text { text, .. } => format!("text {:?}", text),
+      FragmentContent::Replaced { box_id, .. } => format!("replaced box_id={:?}", box_id),
+      FragmentContent::RunningAnchor { name, .. } => format!("running-anchor name={name}"),
+      FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".into(),
+    }
+  }
+
+  fn walk(node: &FragmentNode, indent: usize, remaining: &mut usize) {
+    if *remaining == 0 {
+      return;
+    }
+    *remaining -= 1;
+    println!(
+      "{space}{desc}",
+      space = " ".repeat(indent * 2),
+      desc = fmt_content(node)
+    );
+    for child in node.children.iter() {
+      walk(child, indent + 1, remaining);
+      if *remaining == 0 {
+        break;
+      }
+    }
+  }
+
+  let mut remaining = max_lines;
+  walk(node, indent, &mut remaining);
+}
+
+#[derive(Debug)]
+struct InspectionOutput {
+  pixmap: tiny_skia::Pixmap,
+  dom: fastrender::dom::DomNode,
+  styled: fastrender::style::cascade::StyledNode,
+  box_tree: BoxTree,
+  fragment_tree: fastrender::FragmentTree,
+  display_list: fastrender::DisplayList,
+  diagnostics: fastrender::api::RenderDiagnostics,
+}
+
+fn inspect_pipeline(
   renderer: &mut FastRender,
-  html: &str,
-  base_hint: &str,
+  doc: &InputDocument,
   args: &Args,
-  viewport: (u32, u32),
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<InspectionOutput, Box<dyn std::error::Error>> {
   if args.filter_id.is_some() && args.filter_selector.is_some() {
     return Err(
-      std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
+      io::Error::new(
+        io::ErrorKind::InvalidInput,
         "--filter-id and --filter-selector are mutually exclusive",
       )
       .into(),
@@ -296,51 +912,49 @@ fn run_dump_outputs(
   }
 
   let options = RenderOptions::new()
-    .with_viewport(viewport.0, viewport.1)
+    .with_viewport(args.viewport.0, args.viewport.1)
     .with_device_pixel_ratio(args.dpr)
     .with_media_type(MediaType::Screen)
     .with_scroll(args.scroll_x, args.scroll_y);
 
   let report = renderer.render_html_with_stylesheets_report(
-    html,
-    base_hint,
+    &doc.html,
+    &doc.base_hint,
     options,
     RenderArtifactRequest::full(),
   )?;
 
-  let fastrender::RenderReport {
-    pixmap: _pixmap,
+  let fastrender::api::RenderReport {
+    pixmap,
     artifacts,
+    diagnostics,
     ..
   } = report;
 
-  let mut dom = artifacts.dom.ok_or_else(|| {
-    std::io::Error::new(
-      std::io::ErrorKind::Other,
-      "inspect_frag: missing DOM artifact",
-    )
-  })?;
+  let mut dom = artifacts
+    .dom
+    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "inspect_frag: missing DOM artifact"))?;
   let mut styled = artifacts.styled_tree.ok_or_else(|| {
-    std::io::Error::new(
-      std::io::ErrorKind::Other,
+    io::Error::new(
+      io::ErrorKind::Other,
       "inspect_frag: missing styled tree artifact",
     )
   })?;
   let mut box_tree = artifacts.box_tree.ok_or_else(|| {
-    std::io::Error::new(
-      std::io::ErrorKind::Other,
+    io::Error::new(
+      io::ErrorKind::Other,
       "inspect_frag: missing box tree artifact",
     )
   })?;
   let mut fragment_tree = artifacts.fragment_tree.ok_or_else(|| {
-    std::io::Error::new(
-      std::io::ErrorKind::Other,
+    io::Error::new(
+      io::ErrorKind::Other,
       "inspect_frag: missing fragment tree artifact",
     )
   })?;
   let mut display_list = artifacts.display_list.ok_or_else(|| {
-    std::io::Error::new(
-      std::io::ErrorKind::Other,
+    io::Error::new(
+      io::ErrorKind::Other,
       "inspect_frag: missing display list artifact",
     )
   })?;
@@ -408,8 +1022,8 @@ fn run_dump_outputs(
     }
     if roots.is_empty() {
       return Err(
-        std::io::Error::new(
-          std::io::ErrorKind::Other,
+        io::Error::new(
+          io::ErrorKind::Other,
           format!("inspect_frag: filter matched node_id={node_id} but no fragments were retained"),
         )
         .into(),
@@ -436,11 +1050,91 @@ fn run_dump_outputs(
     display_list = fastrender::DisplayList::from_items(filtered_items);
   }
 
+  Ok(InspectionOutput {
+    pixmap,
+    dom,
+    styled,
+    box_tree,
+    fragment_tree,
+    display_list,
+    diagnostics,
+  })
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+  // Avoid panicking on SIGPIPE/BrokenPipe when piped through tools like `head`.
+  let default_hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    let mut msg = info.to_string();
+    if let Some(s) = info.payload().downcast_ref::<&str>() {
+      msg = (*s).to_string();
+    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+      msg = s.clone();
+    }
+    if msg.contains("Broken pipe") {
+      std::process::exit(0);
+    }
+    default_hook(info);
+  }));
+
+  let args = Args::parse();
+  let media_prefs = MediaPreferences::from(&args.media_prefs);
+
+  if let Some(sec) = args.timeout {
+    std::thread::spawn(move || {
+      std::thread::sleep(Duration::from_secs(sec));
+      eprintln!("inspect_frag: timed out after {}s", sec);
+      std::process::exit(1);
+    });
+  }
+
+  let input = load_input_document(&args)?;
+
+  media_prefs.apply_env();
+  let runtime_toggles = RuntimeToggles::from_env();
+  let _runtime_guard = runtime::set_runtime_toggles(Arc::new(runtime_toggles.clone()));
+
+  let fetcher = build_fetcher(&args)?;
+
+  let mut renderer = FastRender::builder()
+    .device_pixel_ratio(args.dpr)
+    .compat_mode(args.compat.compat_profile())
+    .dom_compatibility_mode(args.compat.dom_compat_mode())
+    .fetcher(fetcher)
+    .runtime_toggles(runtime_toggles)
+    .build()?;
+
+  let output = inspect_pipeline(&mut renderer, &input, &args)?;
+
+  if !output.diagnostics.fetch_errors.is_empty() {
+    eprintln!(
+      "inspect_frag: {} subresource fetch errors",
+      output.diagnostics.fetch_errors.len()
+    );
+    for err in output.diagnostics.fetch_errors.iter().take(10) {
+      eprintln!(
+        "  {:?} {}: {}",
+        err.kind,
+        err.final_url.as_deref().unwrap_or(&err.url),
+        err.message
+      );
+    }
+    if output.diagnostics.fetch_errors.len() > 10 {
+      eprintln!("  ...");
+    }
+  }
+
   if let Some(dir) = &args.dump_json {
     fs::create_dir_all(dir)?;
-    let snapshot = snapshot_pipeline(&dom, &styled, &box_tree, &fragment_tree, &display_list);
+    let snapshot = snapshot_pipeline(
+      &output.dom,
+      &output.styled,
+      &output.box_tree,
+      &output.fragment_tree,
+      &output.display_list,
+    );
     write_pretty_json(&dir.join("dom.json"), &snapshot.dom)?;
-    let composed_dom = fastrender::debug::snapshot::snapshot_composed_dom(&dom)?;
+    let composed_dom = fastrender::debug::snapshot::snapshot_composed_dom(&output.dom)?;
     write_pretty_json(&dir.join("composed_dom.json"), &composed_dom)?;
     write_pretty_json(&dir.join("styled.json"), &snapshot.styled)?;
     write_pretty_json(&dir.join("box_tree.json"), &snapshot.box_tree)?;
@@ -449,15 +1143,21 @@ fn run_dump_outputs(
   }
 
   if args.dump_snapshot {
-    let snapshot = snapshot_pipeline(&dom, &styled, &box_tree, &fragment_tree, &display_list);
+    let snapshot = snapshot_pipeline(
+      &output.dom,
+      &output.styled,
+      &output.box_tree,
+      &output.fragment_tree,
+      &output.display_list,
+    );
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
   }
 
   if let Some(path) = &args.render_overlay {
-    let mut pixmap = _pixmap;
+    let mut pixmap = output.pixmap;
     draw_fragment_overlays(
       &mut pixmap,
-      &fragment_tree,
+      &output.fragment_tree,
       args.dpr,
       args.scroll_x,
       args.scroll_y,
@@ -472,2421 +1172,344 @@ fn run_dump_outputs(
     eprintln!("Overlay render written to {}", path.display());
   }
 
-  Ok(())
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  // Avoid panicking on SIGPIPE/BrokenPipe when piped through tools like `head`.
-  let default_hook = std::panic::take_hook();
-  std::panic::set_hook(Box::new(move |info| {
-    let mut msg = info.to_string();
-    if let Some(s) = info.payload().downcast_ref::<&str>() {
-      msg = (*s).to_string();
-    } else if let Some(s) = info.payload().downcast_ref::<String>() {
-      msg = s.clone();
-    }
-    if msg.contains("Broken pipe") {
-      // Exit silently with success for broken pipe to mirror common CLI behavior.
-      std::process::exit(0);
-    }
-    default_hook(info);
-  }));
-
-  let args = Args::parse();
-  let media_prefs = MediaPreferences::from(&args.media_prefs);
-
-  let (viewport_w, viewport_h) = args.viewport;
-
-  if let Some(sec) = args.timeout {
-    std::thread::spawn(move || {
-      std::thread::sleep(Duration::from_secs(sec));
-      eprintln!("inspect_frag: timed out after {}s", sec);
-      std::process::exit(1);
-    });
-  }
-
-  let (path, input_url) = if let Ok(url) = Url::parse(&args.file) {
-    if url.scheme() == "file" {
-      let path_buf = url.to_file_path().map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file:// path")
-      })?;
-      let canonical = path_buf.to_string_lossy().into_owned();
-      (canonical, url.to_string())
-    } else {
-      // Treat non-file URLs as paths; callers should pass a plain file path for cached HTML.
-      let fallback = args.file.clone();
-      let input = Url::from_file_path(&fallback)
-        .map(|u| u.to_string())
-        .unwrap_or_else(|_| format!("file://{fallback}"));
-      (fallback, input)
-    }
-  } else {
-    let input = Url::from_file_path(&args.file)
-      .map(|u| u.to_string())
-      .unwrap_or_else(|_| format!("file://{}", args.file));
-    (args.file.clone(), input)
-  };
-
-  let PreparedDocument {
-    html,
-    base_url: resource_base,
-    ..
-  } = PreparedDocument::new(fs::read_to_string(&path)?, input_url.clone());
-
-  media_prefs.apply_env();
-  let runtime_toggles = RuntimeToggles::from_env();
-  let _runtime_guard = runtime::set_runtime_toggles(Arc::new(runtime_toggles.clone()));
-
-  if args.scroll_x != 0.0 || args.scroll_y != 0.0 {
-    eprintln!(
-      "Applying scroll offset: x={:.1}px y={:.1}px",
-      args.scroll_x, args.scroll_y
-    );
-  }
-
-  let fetcher = Arc::new(
-    HttpFetcher::new()
-      .with_user_agent(args.user_agent.clone())
-      .with_accept_language(args.accept_language.clone()),
-  );
-  let mut renderer = FastRender::builder()
-    .device_pixel_ratio(args.dpr)
-    .compat_mode(args.compat.compat_profile())
-    .dom_compatibility_mode(args.compat.dom_compat_mode())
-    .base_url(resource_base.clone())
-    .fetcher(fetcher)
-    .runtime_toggles(runtime_toggles)
-    .build()?;
-
-  if args.dump_snapshot || args.dump_json.is_some() || args.render_overlay.is_some() {
-    run_dump_outputs(
-      &mut renderer,
-      &html,
-      &input_url,
-      &args,
-      (viewport_w, viewport_h),
-    )?;
-    return Ok(());
-  }
-
-  if let Ok(val) = env::var("FASTR_TRACE_BOXES") {
-    eprintln!("FASTR_TRACE_BOXES env in inspect_frag: {val}");
-  }
-  let inspect_mask = env::var("FASTR_INSPECT_MASK")
-    .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-    .unwrap_or(false);
-
-  let dom = renderer.parse_html(&html)?;
-
-  let media_ctx =
-    media_prefs.media_context_with_overrides((viewport_w, viewport_h), args.dpr, MediaType::Screen);
-  let mut media_query_cache = MediaQueryCache::default();
-  let style_set =
-    renderer.collect_document_style_set(&dom, &media_ctx, &mut media_query_cache, None)?;
-  let styled = apply_style_set_with_media_target_and_imports_cached_with_deadline(
-    &dom,
-    &style_set,
-    &media_ctx,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    Some(&mut media_query_cache),
-    None,
-  )?;
-
-  let mut styled_text = 0;
-  let mut styled_text_visible = 0;
-  let mut header_styles: Vec<(ComputedStyle, String)> = Vec::new();
-  let mut body_styles: Vec<(ComputedStyle, String)> = Vec::new();
-  let mut first_pagetop: Option<ComputedStyle> = None;
-  walk_styled(&styled, &mut |style, node| {
-    if matches!(node.node_type, DomNodeType::Text { .. }) {
-      styled_text += 1;
-      if !style.display.is_none() && matches!(style.visibility, Visibility::Visible) {
-        styled_text_visible += 1;
-      }
-    }
-    if first_pagetop.is_none() {
-      if let DomNodeType::Element { ref tag_name, .. } = node.node_type {
-        if tag_name == "span" {
-          if let Some(class_attr) = node.get_attribute("class") {
-            if class_attr.split_whitespace().any(|c| c == "pagetop") {
-              first_pagetop = Some(style.clone());
-            }
-          }
-        }
-      }
-    }
-    if let DomNodeType::Element { ref tag_name, .. } = node.node_type {
-      if inspect_mask {
-        if let Some(id) = node.get_attribute("id") {
-          if id == "target" || style.mask_layers.iter().any(|layer| layer.image.is_some()) {
-            let layer_summary = style
-              .mask_layers
-              .iter()
-              .enumerate()
-              .map(|(idx, layer)| {
-                let image_summary = match layer.image.as_ref() {
-                  None => "none".to_string(),
-                  Some(fastrender::style::types::BackgroundImage::LinearGradient {
-                    angle,
-                    stops,
-                  }) => format!("linear-gradient(angle={angle} stops={})", stops.len()),
-                  Some(fastrender::style::types::BackgroundImage::RepeatingLinearGradient {
-                    angle,
-                    stops,
-                  }) => format!(
-                    "repeating-linear-gradient(angle={angle} stops={})",
-                    stops.len()
-                  ),
-                  Some(fastrender::style::types::BackgroundImage::RadialGradient { stops, .. }) => {
-                    format!("radial-gradient(stops={})", stops.len())
-                  }
-                  Some(fastrender::style::types::BackgroundImage::RepeatingRadialGradient {
-                    stops,
-                    ..
-                  }) => format!("repeating-radial-gradient(stops={})", stops.len()),
-                  Some(fastrender::style::types::BackgroundImage::ConicGradient { stops, .. }) => {
-                    format!("conic-gradient(stops={})", stops.len())
-                  }
-                  Some(fastrender::style::types::BackgroundImage::RepeatingConicGradient {
-                    stops,
-                    ..
-                  }) => format!("repeating-conic-gradient(stops={})", stops.len()),
-                  Some(fastrender::style::types::BackgroundImage::Url(url)) => {
-                    format!("url({url})")
-                  }
-                  Some(fastrender::style::types::BackgroundImage::None) => "none".to_string(),
-                };
-
-                format!(
-                  "#{idx} img={image_summary} size={:?} repeat={:?} pos={:?} composite={:?} mode={:?} origin={:?} clip={:?}",
-                  layer.size,
-                  layer.repeat,
-                  layer.position,
-                  layer.composite,
-                  layer.mode,
-                  layer.origin,
-                  layer.clip
-                )
-              })
-              .collect::<Vec<_>>()
-              .join(", ");
-            eprintln!(
-              "mask debug: <{tag_name} id=\"{id}\"> mask_layers={} [{}]",
-              style.mask_layers.len(),
-              layer_summary
-            );
-          }
-        }
-      }
-      if tag_name == "nav" {
-        if let Some(id) = node.get_attribute("id") {
-          if id == "pageHeader" {
-            let mut summary = String::new();
-            summary.push_str(&format!(
-              "pageHeader bg=rgba({},{},{},{:.2}) color=rgba({},{},{},{:.2})",
-              style.background_color.r,
-              style.background_color.g,
-              style.background_color.b,
-              style.background_color.a,
-              style.color.r,
-              style.color.g,
-              style.color.b,
-              style.color.a
-            ));
-            if let Some(bg_var) = style.custom_properties.get("--theme-header__background") {
-              summary.push_str(&format!(
-                " var(--theme-header__background)={}",
-                bg_var.value
-              ));
-            }
-            if let Some(copy_var) = style.custom_properties.get("--theme-header__copy-accent") {
-              summary.push_str(&format!(
-                " var(--theme-header__copy-accent)={}",
-                copy_var.value
-              ));
-            }
-            header_styles.push((style.clone(), summary));
-          }
-        }
-      } else if tag_name == "body" {
-        let mut summary = String::new();
-        summary.push_str(&format!(
-          "body bg=rgba({},{},{},{:.2}) color=rgba({},{},{},{:.2})",
-          style.background_color.r,
-          style.background_color.g,
-          style.background_color.b,
-          style.background_color.a,
-          style.color.r,
-          style.color.g,
-          style.color.b,
-          style.color.a
-        ));
-        if let Some(bg_var) = style.custom_properties.get("--semantic-color-bg-primary") {
-          summary.push_str(&format!(
-            " var(--semantic-color-bg-primary)={}",
-            bg_var.value
-          ));
-        }
-        body_styles.push((style.clone(), summary));
-      }
-    }
-  });
-  println!(
-    "styled text nodes: {} (visible: {})",
-    styled_text, styled_text_visible
-  );
-
-  if let Ok(needle) = env::var("FASTR_FIND_TEXT") {
-    fn walk(node: &StyledNode, needle: &str, stack: &mut Vec<String>, found: &mut bool) {
-      stack.push(format!(
-        "{}({:?})",
-        node.node.tag_name().unwrap_or("text"),
-        node.styles.display
-      ));
-      if let dom::DomNodeType::Text { content } = &node.node.node_type {
-        if content.contains(needle) {
-          *found = true;
-          eprintln!(
-            "styled text node containing {:?}: display={:?} visibility={:?} opacity={} stack={}",
-            needle,
-            node.styles.display,
-            node.styles.visibility,
-            node.styles.opacity,
-            stack.join(" -> ")
-          );
-        }
-      }
-      for child in node.children.iter() {
-        walk(child, needle, stack, found);
-      }
-      stack.pop();
-    }
-
-    let mut stack = Vec::new();
-    let mut found = false;
-    walk(&styled, &needle, &mut stack, &mut found);
-    if !found {
-      eprintln!("styled text node containing {:?} not found", needle);
-    }
-  }
-  if let Some(style) = first_pagetop.as_ref() {
-    println!(
-            "first span.pagetop display={:?} margin=({:?},{:?},{:?},{:?}) padding=({},{},{},{}) line_height={:?} font_size={}",
-            style.display,
-            style.margin_top,
-            style.margin_right,
-            style.margin_bottom,
-            style.margin_left,
-            style.padding_top,
-            style.padding_right,
-            style.padding_bottom,
-            style.padding_left,
-            style.line_height,
-            style.font_size
-        );
-  } else {
-    println!("no span.pagetop found");
-  }
-  if !header_styles.is_empty() {
-    for (idx, (_style, summary)) in header_styles.iter().enumerate().take(3) {
-      println!("header[{idx}]: {summary}");
-    }
-  }
-  if !body_styles.is_empty() {
-    for (idx, (_style, summary)) in body_styles.iter().enumerate().take(1) {
-      println!("body[{idx}]: {summary}");
-    }
-  }
-
-  let find_box_text = env::var("FASTR_FIND_BOX_TEXT").ok();
-  let box_tree = generate_box_tree_with_anonymous_fixup(&styled)?;
-  let mut text_boxes = 0;
-  let mut path: Vec<String> = Vec::new();
-  walk_boxes(&box_tree.root, &mut path, &mut |node, ancestors| {
-    if matches!(node.box_type, fastrender::tree::box_tree::BoxType::Text(_)) {
-      text_boxes += 1;
-    }
-    if let Some(needle) = find_box_text.as_deref() {
-      if let fastrender::tree::box_tree::BoxType::Text(text) = &node.box_type {
-        if text.text.contains(needle) {
-          println!(
-                        "found box text {:?} display={:?} visibility={:?} position={:?} color={:?} id={} ancestors={}",
-                        text.text,
-                        node.style.display,
-                        node.style.visibility,
-                        node.style.position,
-                        node.style.color,
-                        node.id,
-                        ancestors.join(" -> ")
-                    );
-        }
-      }
-    }
-    if let fastrender::tree::box_tree::BoxType::Text(text) = &node.box_type {
-      if text.text.contains("New photos") {
-        println!(
-          "found headline text box display={:?} font_size={} color={:?}",
-          node.style.display, node.style.font_size, node.style.color
-        );
-        println!("ancestor chain (box types):");
-        for (depth, ancestor) in ancestors.iter().enumerate() {
-          println!("  {depth}: {ancestor}");
-        }
-      }
-    }
-  });
-  println!("text boxes: {}", text_boxes);
-
-  let mut layout_config =
-    LayoutConfig::for_viewport(Size::new(viewport_w as f32, viewport_h as f32));
-  if let Some(page_height) = env::var("FASTR_FRAGMENTATION_PAGE_HEIGHT")
-    .ok()
-    .and_then(|v| v.parse::<f32>().ok())
-  {
-    let gap = env::var("FASTR_FRAGMENTATION_GAP")
-      .ok()
-      .and_then(|v| v.parse::<f32>().ok())
-      .unwrap_or(0.0);
-    layout_config = LayoutConfig::for_pagination(Size::new(viewport_w as f32, page_height), gap);
-  }
-  let engine = LayoutEngine::with_font_context(layout_config, renderer.font_context().clone());
-  let fragment_tree = engine.layout_tree(&box_tree)?;
-  let scroll_offset = Point::new(-args.scroll_x, -args.scroll_y);
-  let scroll_state = ScrollState::with_viewport(Point::new(args.scroll_x, args.scroll_y));
   let mut box_debug: HashMap<usize, String> = HashMap::new();
-  collect_box_debug(&box_tree.root, &mut box_debug);
-  let mut box_styles: HashMap<usize, std::sync::Arc<ComputedStyle>> = HashMap::new();
-  collect_box_styles(&box_tree.root, &mut box_styles);
-  let mut dark_boxes = Vec::new();
-  collect_dark_boxes(&box_tree.root, &mut dark_boxes);
-  let mut li_nodes = Vec::new();
-  collect_tag_debug(&box_tree.root, "li", &mut li_nodes);
-  println!("first li nodes (id, debug):");
-  for (idx, (id, dbg)) in li_nodes.iter().take(5).enumerate() {
-    println!("  li#{idx}: id={id} {dbg}");
-  }
-  if let Some(body) = find_first_tag(&box_tree.root, "body") {
-    println!(
-      "body id={} children={} display={:?}",
-      body.id,
-      body.children.len(),
-      body.style.display
-    );
-    for (idx, child) in body.children.iter().take(10).enumerate() {
-      println!(
-        "  body child#{idx}: id={} type={:?} display={:?} is_block={} dbg={}",
-        child.id,
-        child.box_type,
-        child.style.display,
-        child.is_block_level(),
-        child
-          .debug_info
-          .as_ref()
-          .map(|d| format!("{d}"))
-          .unwrap_or_else(|| format!("{:?}", child.box_type))
-      );
-    }
-  }
-  if let Some(zone_outer) = find_box_by_id(&box_tree.root, 6527) {
-    let dbg = zone_outer
-      .debug_info
-      .as_ref()
-      .map(|d| d.to_selector())
-      .unwrap_or_else(|| "<anon>".to_string());
-    println!(
-            "zone__outer id={} selector={} display={:?} width={:?} min_w={:?} max_w={:?} margin=({:?},{:?})",
-            zone_outer.id,
-            dbg,
-            zone_outer.style.display,
-            zone_outer.style.width,
-            zone_outer.style.min_width,
-            zone_outer.style.max_width,
-            zone_outer.style.margin_left,
-            zone_outer.style.margin_right,
-        );
-  }
-  if let Some(main_wrapper) = find_box_by_id(&box_tree.root, 279) {
-    println!(
-      "box 279 subtree: type={:?} display={:?} children={}",
-      main_wrapper.box_type,
-      main_wrapper.style.display,
-      main_wrapper.children.len()
-    );
-    for (idx, child) in main_wrapper.children.iter().take(8).enumerate() {
-      println!(
-        "  child#{idx}: id={} type={:?} display={:?} dbg={}",
-        child.id,
-        child.box_type,
-        child.style.display,
-        child
-          .debug_info
-          .as_ref()
-          .map(|d| format!("{d}"))
-          .unwrap_or_else(|| format!("{:?}", child.box_type))
-      );
-    }
-  }
-  if !dark_boxes.is_empty() {
-    for (idx, entry) in dark_boxes.iter().take(10).enumerate() {
-      println!(
-        "dark box #{idx}: id={} bg=rgba({},{},{},{:.2}) {}",
-        entry.id, entry.r, entry.g, entry.b, entry.a, entry.debug
-      );
-    }
-  }
+  collect_box_debug(&output.box_tree.root, &mut box_debug);
 
-  println!("fragments: {}", fragment_tree.fragment_count());
-  let root_contexts = fragment_roots(&fragment_tree, scroll_offset);
-  println!("fragment roots (applied offsets):");
-  for ctx in &root_contexts {
-    let frag = ctx.fragment;
-    let base_desc = ctx
-      .base
-      .map(|b| {
-        format!(
-          " base=({:.1},{:.1}) include_base={}",
-          b.x, b.y, ctx.include_base
-        )
-      })
-      .unwrap_or_else(|| format!(" base=None include_base={}", ctx.include_base));
-    println!(
-      "  root[{}]: bounds=({:.1},{:.1},{:.1},{:.1}) offset=({:.1},{:.1}) fragmentainer={}/{}{}",
-      ctx.index,
-      frag.bounds.x(),
-      frag.bounds.y(),
-      frag.bounds.width(),
-      frag.bounds.height(),
-      ctx.offset.x,
-      ctx.offset.y,
-      frag.fragmentainer_index + 1,
-      frag.fragment_count,
-      base_desc
-    );
-  }
-
-  let mut fragments_abs: Vec<(Rect, &FragmentNode, usize)> = Vec::new();
-  for ctx in root_contexts.iter().copied() {
-    collect_fragments_abs(
-      ctx.fragment,
-      ctx.offset,
-      ctx.base,
-      ctx.include_base,
-      ctx.index,
-      &scroll_state,
-      &mut fragments_abs,
-    );
-  }
-
-  let mut fragments_by_box: HashMap<usize, Vec<(Rect, &FragmentNode, usize)>> = HashMap::new();
-  let mut transformed: Vec<(Rect, &FragmentNode, usize, Option<Transform3D>)> = Vec::new();
-
-  let mut text_count = 0;
-  let mut block_count = 0;
-  let mut line_count = 0;
-  let mut replaced_count = 0;
-  let mut minx = f32::MAX;
-  let mut miny = f32::MAX;
-  let mut maxx = f32::MIN;
-  let mut maxy = f32::MIN;
-
-  for (abs, frag, root_idx) in &fragments_abs {
-    minx = minx.min(abs.x());
-    miny = miny.min(abs.y());
-    maxx = maxx.max(abs.max_x());
-    maxy = maxy.max(abs.max_y());
-
-    match &frag.content {
-      FragmentContent::Text { text, .. } => {
-        text_count += 1;
-        if text_count <= 5 {
-          let preview: String = text.chars().take(50).collect();
-          println!("text {:?} @ {:?} [root {}]", preview, abs, root_idx);
+  if !args.trace_text.is_empty() {
+    for needle in &args.trace_text {
+      let mut found = None;
+      for (idx, root) in std::iter::once(&output.fragment_tree.root)
+        .chain(output.fragment_tree.additional_fragments.iter())
+        .enumerate()
+      {
+        let mut path = Vec::new();
+        if find_fragment_path_for_text(root, Point::ZERO, needle, &box_debug, &mut path) {
+          found = Some((idx, path));
+          break;
         }
       }
-      FragmentContent::Block { .. } => block_count += 1,
-      FragmentContent::Line { .. } => line_count += 1,
-      FragmentContent::Replaced { .. } => replaced_count += 1,
-      FragmentContent::Inline { .. }
-      | FragmentContent::RunningAnchor { .. }
-      | FragmentContent::FootnoteAnchor { .. } => {}
-    }
-
-    if let Some(box_id) = fragment_box_id(frag) {
-      fragments_by_box
-        .entry(box_id)
-        .or_default()
-        .push((*abs, *frag, *root_idx));
-    }
-    if let Some(style) = frag.style.as_deref() {
-      if style.has_transform() {
-        let matrix = DisplayListBuilder::debug_resolve_transform(
-          style,
-          Rect::from_xywh(abs.x(), abs.y(), abs.width(), abs.height()),
-          Some((viewport_w as f32, viewport_h as f32)),
-        );
-        transformed.push((*abs, *frag, *root_idx, matrix));
-      }
-    }
-  }
-
-  println!(
-    "text_count {} block {} line {} replaced {}",
-    text_count, block_count, line_count, replaced_count
-  );
-  println!("bbox [{minx:.1},{miny:.1}] -> [{maxx:.1},{maxy:.1}]");
-
-  let mut split_boxes: Vec<_> = fragments_by_box
-    .iter()
-    .filter(|(_, frags)| frags.len() > 1)
-    .collect();
-  split_boxes.sort_by_key(|(id, _)| **id);
-  println!(
-    "boxes with multiple fragments (column breaks/lines/pages): {}",
-    split_boxes.len()
-  );
-  for (idx, (box_id, frags)) in split_boxes.iter().enumerate().take(8) {
-    let label = box_debug
-      .get(box_id)
-      .cloned()
-      .unwrap_or_else(|| format!("box {box_id}"));
-    let ranges: Vec<String> = frags
-      .iter()
-      .map(|(rect, frag, root_idx)| {
-        let extra = match &frag.content {
-          FragmentContent::Inline { fragment_index, .. } => {
-            format!(" fragment_index={fragment_index}")
+      match found {
+        Some((root_idx, path)) => {
+          println!("path to text containing {:?} (root {}):", needle, root_idx);
+          for (idx, entry) in path.iter().enumerate() {
+            println!("  {idx}: {entry}");
           }
-          _ => String::new(),
-        };
-        format!(
-          "({:.1},{:.1},{:.1},{:.1}){} [root {}]",
-          rect.x(),
-          rect.y(),
-          rect.width(),
-          rect.height(),
-          extra,
-          root_idx
-        )
-      })
-      .collect();
-    println!(
-      "  #{idx}: box_id={} {} -> [{}]",
-      box_id,
-      label,
-      ranges.join(" | ")
-    );
-  }
-
-  println!("fragments with transforms: {}", transformed.len());
-  for (idx, (abs, frag, root_idx, matrix)) in transformed.iter().enumerate().take(8) {
-    let mut label = label_fragment(frag, *abs, &box_debug);
-    label.push_str(&format!(" [root {}]", root_idx));
-    if let Some(m) = matrix {
-      let mm = &m.m;
-      println!(
-        "  #{idx}: {} matrix=[[{:.3} {:.3} {:.3} {:.3}] [{:.3} {:.3} {:.3} {:.3}] [{:.3} {:.3} {:.3} {:.3}] [{:.3} {:.3} {:.3} {:.3}]]",
-        label,
-        mm[0], mm[4], mm[8], mm[12],
-        mm[1], mm[5], mm[9], mm[13],
-        mm[2], mm[6], mm[10], mm[14],
-        mm[3], mm[7], mm[11], mm[15]
-      );
-    } else {
-      println!("  #{idx}: {} matrix=<unresolved>", label);
-    }
-  }
-
-  let mut column_boxes = Vec::new();
-  let mut spanning_cells = Vec::new();
-  collect_column_info(&box_tree.root, &mut column_boxes, &mut spanning_cells);
-  if !column_boxes.is_empty() {
-    println!("table columns/colgroups: {}", column_boxes.len());
-    for (idx, (id, display, span, dbg)) in column_boxes.iter().enumerate().take(8) {
-      println!(
-        "  #{idx}: id={} display={:?} span={} {}",
-        id, display, span, dbg
-      );
-    }
-  }
-  if !spanning_cells.is_empty() {
-    println!("table cells with spans: {}", spanning_cells.len());
-    for (idx, (id, colspan, rowspan, dbg)) in spanning_cells.iter().enumerate().take(8) {
-      println!(
-        "  cell#{idx}: id={} colspan={} rowspan={} {}",
-        id, colspan, rowspan, dbg
-      );
-    }
-  }
-  // Optional viewport-overlap stats to understand what appears in the initial viewport.
-  let log_viewport = env::var("FASTR_LOG_VIEWPORT_OVERLAP")
-    .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-    .unwrap_or(false);
-  if log_viewport {
-    let viewport_rect = Rect::from_xywh(0.0, 0.0, viewport_w as f32, viewport_h as f32);
-    let mut in_view = 0usize;
-    let mut text_in_view = 0usize;
-    let mut samples: Vec<(f32, String)> = Vec::new();
-    for (abs, frag, _) in &fragments_abs {
-      let intersects = abs.x() < viewport_rect.x() + viewport_rect.width()
-        && abs.x() + abs.width() > viewport_rect.x()
-        && abs.y() < viewport_rect.y() + viewport_rect.height()
-        && abs.y() + abs.height() > viewport_rect.y();
-      if !intersects {
-        continue;
-      }
-      in_view += 1;
-      if let FragmentContent::Text { text, .. } = &frag.content {
-        text_in_view += 1;
-        let mut snippet = String::new();
-        for (idx, ch) in text.trim().replace('\n', " ").chars().enumerate() {
-          if idx >= 80 {
-            snippet.push('…');
-            break;
-          }
-          snippet.push(ch);
         }
-        samples.push((
-          abs.y(),
-          format!("y={:.1} h={:.1} \"{snippet}\"", abs.y(), abs.height()),
-        ));
+        None => println!("no fragment text found containing {:?}", needle),
       }
     }
-    samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let sample_strings: Vec<_> = samples.iter().take(10).map(|(_, s)| s.clone()).collect();
-    println!(
-      "viewport fragments: {} total, {} text; samples: [{}]",
-      in_view,
-      text_in_view,
-      sample_strings.join(" | ")
-    );
   }
-  let mut dark_backgrounds: Vec<(f32, f32, Rect, String)> = Vec::new();
-  for (abs, frag, root_idx) in &fragments_abs {
-    if let Some(style) = frag.style.as_deref() {
-      let bg = style.background_color;
-      if bg.a > 0.0 && bg.r == 12 && bg.g == 12 && bg.b == 12 {
-        dark_backgrounds.push((
-          abs.y(),
+
+  if !args.trace_box.is_empty() {
+    for target_id in &args.trace_box {
+      if let Some(node) = find_box_by_id(&output.box_tree.root, *target_id) {
+        println!(
+          "box#{id}: {debug} {style}",
+          id = node.id,
+          debug = format_debug_info(node),
+          style = style_summary(node.style.as_ref())
+        );
+      } else {
+        println!("box#{target_id}: not found in box tree");
+      }
+
+      let mut found = None;
+      for (idx, root) in std::iter::once(&output.fragment_tree.root)
+        .chain(output.fragment_tree.additional_fragments.iter())
+        .enumerate()
+      {
+        let mut path = Vec::new();
+        if find_fragment_path_for_box_id(root, Point::ZERO, *target_id, &box_debug, &mut path) {
+          found = Some((idx, path));
+          break;
+        }
+      }
+      match found {
+        Some((root_idx, path)) => {
+          println!("path to box_id {target_id} (root {root_idx}):");
+          for (idx, entry) in path.iter().enumerate() {
+            println!("  {idx}: {entry}");
+          }
+        }
+        None => println!("box_id {target_id} not found in fragments"),
+      }
+    }
+  }
+
+  if let Some(target_id) = args.dump_fragment {
+    let mut found = None;
+    for (idx, root) in std::iter::once(&output.fragment_tree.root)
+      .chain(output.fragment_tree.additional_fragments.iter())
+      .enumerate()
+    {
+      if let Some((fragment, abs)) = find_fragment_node_for_box_id(root, Point::ZERO, target_id) {
+        found = Some((idx, fragment, abs));
+        break;
+      }
+    }
+    match found {
+      Some((root_idx, fragment, abs)) => {
+        println!(
+          "fragment subtree for box_id {target_id} @ ({:.1},{:.1},{:.1},{:.1}) [root {}]",
           abs.x(),
-          *abs,
-          match &frag.content {
-            FragmentContent::Block { box_id } | FragmentContent::Inline { box_id, .. } => box_id
-              .and_then(|id| box_debug.get(&id))
-              .map(|dbg| format!("[root {root_idx}] {dbg}"))
-              .unwrap_or_else(|| format!("[root {root_idx}] {:?}", frag.content)),
-            _ => format!("[root {root_idx}] {:?}", frag.content),
-          },
-        ));
-      }
-    }
-  }
-  dark_backgrounds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-  for (idx, (_, _, rect, content)) in dark_backgrounds.iter().take(5).enumerate() {
-    println!("dark bg #{idx}: {content} @ {:?}", rect);
-  }
-  let mut all_text: Vec<(f32, f32, usize, String)> = Vec::new();
-  for ctx in root_contexts.iter().copied() {
-    collect_text_abs(
-      ctx.fragment,
-      ctx.offset,
-      ctx.base,
-      ctx.include_base,
-      ctx.index,
-      &scroll_state,
-      &mut all_text,
-    );
-  }
-  all_text.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-  println!("leftmost text fragments:");
-  for (idx, (x, y, root_idx, text)) in all_text.iter().take(10).enumerate() {
-    let preview: String = text.chars().take(40).collect();
-    println!("  {idx}: ({x:.1}, {y:.1}) [root {root_idx}] {preview:?}");
-  }
-  println!("rightmost text fragments:");
-  for (idx, (x, y, root_idx, text)) in all_text.iter().rev().take(10).enumerate() {
-    let preview: String = text.chars().take(40).collect();
-    println!("  {idx}: ({x:.1}, {y:.1}) [root {root_idx}] {preview:?}");
-  }
-  let mut ranks: Vec<(i32, f32, f32)> = Vec::new();
-  for (x, y, _, text) in &all_text {
-    if let Some(stripped) = text.strip_suffix('.') {
-      if let Ok(n) = stripped.trim().parse::<i32>() {
-        ranks.push((n, *x, *y));
-      }
-    }
-  }
-  ranks.sort_by_key(|(n, _, _)| *n);
-  println!("rank fragments (first 15):");
-  for (idx, (n, x, y)) in ranks.iter().take(15).enumerate() {
-    println!("  {idx}: rank={} at ({:.1},{:.1})", n, x, y);
-  }
-  // Surface far-right fragments to catch runaway translations.
-  let mut far_right: Vec<_> = fragments_abs
-    .iter()
-    .filter(|(abs, _, _)| abs.max_x() > 2000.0)
-    .map(|(abs, f, root_idx)| {
-      let (id, debug) = match &f.content {
-        FragmentContent::Block { box_id } | FragmentContent::Inline { box_id, .. } => {
-          if let Some(id) = box_id {
-            let dbg = box_debug
-              .get(id)
-              .cloned()
-              .unwrap_or_else(|| format!("{:?}", f.content));
-            (Some(*id), dbg)
-          } else {
-            (None, format!("{:?}", f.content))
-          }
-        }
-        _ => (None, format!("{:?}", f.content)),
-      };
-      (
-        abs.max_x(),
-        abs.x(),
-        abs.y(),
-        abs.width(),
-        abs.height(),
-        id,
-        format!("[root {root_idx}] {debug}"),
-      )
-    })
-    .collect();
-  far_right.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-  println!("far-right fragments (max_x > 2000): {}", far_right.len());
-  for (idx, (max_x, x, y, w, h, id, content)) in far_right.iter().take(10).enumerate() {
-    let id_part = id.map(|i| format!(" box_id={i}")).unwrap_or_default();
-    println!("  #{idx}: max_x={max_x:.1} at ({x:.1},{y:.1},{w:.1},{h:.1}){id_part} {content}");
-  }
-  let mut by_y = all_text.clone();
-  by_y.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-  println!("top-most text fragments:");
-  for (idx, (x, y, root_idx, text)) in by_y.iter().take(10).enumerate() {
-    let preview: String = text.chars().take(40).collect();
-    println!("  {idx}: ({x:.1}, {y:.1}) [root {root_idx}] {preview:?}");
-  }
-  println!("first 5 text fragments with color/font-size:");
-  for (abs, frag, root_idx) in fragments_abs
-    .iter()
-    .filter(|(_, f, _)| matches!(f.content, FragmentContent::Text { .. }))
-    .take(5)
-  {
-    if let FragmentContent::Text { text, .. } = &frag.content {
-      let style = frag.style.as_deref();
-      let color = style.map(|s| s.color);
-      let fs = style.map(|s| s.font_size).unwrap_or(0.0);
-      let vis = style
-        .map(|s| format!("{:?}", s.visibility))
-        .unwrap_or_else(|| "None".into());
-      let (r, g, b, a) = color
-        .map(|c| (c.r, c.g, c.b, c.a))
-        .unwrap_or((0, 0, 0, 0.0));
-      println!(
-        "  text {:?} @ ({:.1},{:.1}) [root {}] size={:.1} color=rgba({},{},{},{:.2}) visibility={}",
-        text.chars().take(40).collect::<String>(),
-        abs.x(),
-        abs.y(),
-        root_idx,
-        fs,
-        r,
-        g,
-        b,
-        a,
-        vis
-      );
-    }
-  }
-  println!("path to first 'US' text fragment (absolute bounds):");
-  let mut found_us = false;
-  for ctx in root_contexts.iter().copied() {
-    let mut path: Vec<String> = Vec::new();
-    if find_us_fragment(
-      ctx.fragment,
-      ctx.offset,
-      ctx.base,
-      ctx.include_base,
-      ctx.index,
-      &scroll_state,
-      &mut path,
-    ) {
-      found_us = true;
-      break;
-    }
-  }
-  if !found_us {
-    println!("  (not found)");
-  }
-
-  let mut stacks = Vec::new();
-  for ctx in root_contexts.iter().copied() {
-    collect_stacking_contexts(
-      ctx.fragment,
-      ctx.offset,
-      ctx.base,
-      ctx.include_base,
-      None,
-      true,
-      ctx.index,
-      &mut stacks,
-    );
-  }
-  stacks.sort_by(|a, b| {
-    a.1
-      .rect
-      .y()
-      .partial_cmp(&b.1.rect.y())
-      .unwrap_or(std::cmp::Ordering::Equal)
-  });
-  println!("stacking contexts (top to bottom): {}", stacks.len());
-  for (idx, (root_idx, ctx)) in stacks.iter().enumerate() {
-    let bg = ctx.style.background_color;
-    let bg = format!("rgba({},{},{},{:.2})", bg.r, bg.g, bg.b, bg.a);
-    println!(
-            "  #{idx}: ({:.1}, {:.1}, {:.1}, {:.1}) display={:?} pos={:?} z={:?} opacity={:.2} transform_ops={} bg={} [root {}]",
-            ctx.rect.x(),
-            ctx.rect.y(),
-            ctx.rect.width(),
-            ctx.rect.height(),
-            ctx.display,
-            ctx.position,
-            ctx.z_index,
-            ctx.opacity,
-            ctx.transform_ops,
-            bg,
-            root_idx
-        );
-    if idx < 5 {
-      // Show a couple of custom properties for early contexts when present.
-      for key in ["--theme-header__background", "--semantic-color-bg-primary"] {
-        if let Some(val) = ctx.style.custom_properties.get(key) {
-          println!("      var {key} = {}", val.value);
-        }
-      }
-    }
-  }
-  // Also list contexts intersecting the viewport to locate visible layers.
-  println!("viewport-intersecting stacking contexts:");
-  let viewport = Rect::from_xywh(0.0, 0.0, viewport_w as f32, viewport_h as f32);
-  for (root_idx, ctx) in stacks
-    .iter()
-    .filter(|(_, c)| c.rect.intersects(viewport))
-    .map(|(r, c)| (*r, c))
-  {
-    let bg = ctx.style.background_color;
-    println!(
-      "  vis: ({:.1},{:.1},{:.1},{:.1}) z={:?} display={:?} bg=rgba({},{},{},{:.2}) [root {}]",
-      ctx.rect.x(),
-      ctx.rect.y(),
-      ctx.rect.width(),
-      ctx.rect.height(),
-      ctx.z_index,
-      ctx.display,
-      bg.r,
-      bg.g,
-      bg.b,
-      bg.a,
-      root_idx
-    );
-  }
-
-  let mut backgrounds = Vec::new();
-  for (abs, frag, root_idx) in &fragments_abs {
-    if let Some(style) = frag.style.as_deref() {
-      let bg = style.background_color;
-      if bg.a > 0.0 {
-        backgrounds.push((
           abs.y(),
-          abs.x(),
-          bg,
-          format!("{:?}", frag.content),
           abs.width(),
           abs.height(),
-          *root_idx,
-        ));
+          root_idx
+        );
+        print_fragment_tree(fragment, 0, 2000);
       }
+      None => println!("no fragment found for box_id {target_id}"),
     }
   }
-  backgrounds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-  println!("first backgrounds with alpha > 0:");
-  for (idx, (y, x, bg, content, w, h, root_idx)) in backgrounds.iter().take(10).enumerate() {
-    println!(
-      "  #{idx}: ({x:.1},{y:.1},{w:.1},{h:.1}) bg=rgba({},{},{},{:.2}) content={} [root {}]",
-      bg.r, bg.g, bg.b, bg.a, content, root_idx
-    );
-  }
-  // Backgrounds that intersect the viewport
-  let viewport = Rect::from_xywh(0.0, 0.0, viewport_w as f32, viewport_h as f32);
-  let mut view_bgs: Vec<_> = fragments_abs
-    .iter()
-    .filter_map(|(abs, frag, root_idx)| {
-      frag
-        .style
-        .as_deref()
-        .map(|style| (style.background_color, *abs, frag, *root_idx))
-    })
-    .filter(|(bg, rect, _, _)| bg.a > 0.0 && rect.intersects(viewport))
-    .collect();
-  view_bgs.sort_by(|a, b| {
-    a.1
-      .y()
-      .partial_cmp(&b.1.y())
-      .unwrap_or(std::cmp::Ordering::Equal)
-  });
-  println!(
-    "viewport-intersecting backgrounds (alpha>0): {}",
-    view_bgs.len()
-  );
-  for (idx, (bg, rect, frag, root_idx)) in view_bgs
-    .iter()
-    .filter(|(_, r, _, _)| r.width() * r.height() > 1000.0)
-    .take(20)
-    .enumerate()
-  {
-    println!(
-      "  #{idx}: ({:.1},{:.1},{:.1},{:.1}) bg=rgba({},{},{},{:.2}) content={:?} [root {}]",
-      rect.x(),
-      rect.y(),
-      rect.width(),
-      rect.height(),
-      bg.r,
-      bg.g,
-      bg.b,
-      bg.a,
-      frag.content,
-      root_idx
-    );
-  }
-  let mut view_bgs_by_area: Vec<_> = view_bgs
-    .iter()
-    .map(|(bg, rect, frag, root_idx)| (rect.width() * rect.height(), *bg, rect, frag, *root_idx))
-    .collect();
-  view_bgs_by_area.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-  println!("largest viewport-intersecting backgrounds (alpha>0):");
-  for (idx, (area, bg, rect, frag, root_idx)) in view_bgs_by_area.iter().take(10).enumerate() {
-    println!(
-      "  #{idx}: area={:.1} rect=({:.1},{:.1},{:.1},{:.1}) bg=rgba({},{},{},{:.2}) content={:?} [root {}]",
-      *area,
-      rect.x(),
-      rect.y(),
-      rect.width(),
-      rect.height(),
-      bg.r,
-      bg.g,
-      bg.b,
-      bg.a,
-      frag.content,
-      root_idx
-    );
-  }
 
-  // Absolute-coordinate background analysis.
-  let mut abs_backgrounds: Vec<(Rect, &FragmentNode, usize)> = Vec::new();
-  for ctx in root_contexts.iter().copied() {
-    collect_backgrounds_abs(
-      ctx.fragment,
-      ctx.offset,
-      ctx.base,
-      ctx.include_base,
-      ctx.index,
-      &scroll_state,
-      &mut abs_backgrounds,
-    );
-  }
-  let mut abs_view_bgs: Vec<_> = abs_backgrounds
-    .iter()
-    .filter_map(|(rect, frag, root_idx)| {
-      frag
-        .style
-        .as_deref()
-        .map(|style| (rect, style.background_color, *frag, *root_idx))
-    })
-    .filter(|(rect, bg, _, _)| bg.a > 0.0 && rect.intersects(viewport))
-    .collect();
-  abs_view_bgs.sort_by(|a, b| {
-    a.0
-      .y()
-      .partial_cmp(&b.0.y())
-      .unwrap_or(std::cmp::Ordering::Equal)
-  });
-  println!(
-    "abs viewport-intersecting backgrounds (alpha>0): {}",
-    abs_view_bgs.len()
-  );
-  for (idx, (rect, bg, frag, root_idx)) in abs_view_bgs
-    .iter()
-    .filter(|(r, _, _, _)| r.width() * r.height() > 1000.0)
-    .take(20)
-    .enumerate()
-  {
-    println!(
-      "  #{idx}: ({:.1},{:.1},{:.1},{:.1}) bg=rgba({},{},{},{:.2}) content={:?} [root {}]",
-      rect.x(),
-      rect.y(),
-      rect.width(),
-      rect.height(),
-      bg.r,
-      bg.g,
-      bg.b,
-      bg.a,
-      frag.content,
-      root_idx
-    );
-  }
-  let mut abs_by_area: Vec<_> = abs_backgrounds
-    .iter()
-    .filter_map(|(rect, frag, root_idx)| {
-      frag.style.as_deref().map(|style| {
-        (
-          rect.width() * rect.height(),
-          *rect,
-          style.background_color,
-          *frag,
-          *root_idx,
-        )
-      })
-    })
-    .collect();
-  abs_by_area.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-  println!("largest absolute backgrounds (alpha>0):");
-  for (idx, (area, rect, bg, frag, root_idx)) in abs_by_area
-    .iter()
-    .filter(|(_, _, bg, _, _)| bg.a > 0.0)
-    .take(10)
-    .enumerate()
-  {
-    println!(
-      "  #{idx}: area={:.1} rect=({:.1},{:.1},{:.1},{:.1}) bg=rgba({},{},{},{:.2}) content={:?} [root {}]",
-      *area,
-      rect.x(),
-      rect.y(),
-      rect.width(),
-      rect.height(),
-      bg.r,
-      bg.g,
-      bg.b,
-      bg.a,
-      frag.content,
-      root_idx
-    );
-  }
-
-  // Trace nav/header positioning for HN: find first text containing "Hacker News" or ".pagetop" span.
-  let mut nav_found = false;
-  for ctx in root_contexts.iter().copied() {
-    let mut nav_path = Vec::new();
-    if find_fragment_with_text(
-      ctx.fragment,
-      ctx.offset,
-      ctx.base,
-      ctx.include_base,
-      "Hacker News",
-      &mut nav_path,
-    ) {
-      println!("path to 'Hacker News' fragment (root {}):", ctx.index);
-      for (idx, entry) in nav_path.iter().enumerate() {
-        println!("  {idx}: {entry}");
+  if args.find_skinny_fragments {
+    let mut skinny: Vec<(Rect, String, usize)> = Vec::new();
+    for (root_idx, root) in std::iter::once(&output.fragment_tree.root)
+      .chain(output.fragment_tree.additional_fragments.iter())
+      .enumerate()
+    {
+      let mut stack: Vec<(Point, &FragmentNode)> = vec![(Point::ZERO, root)];
+      while let Some((offset, fragment)) = stack.pop() {
+        let (abs, next_offset) = absolute_rect(fragment, offset);
+        if abs.width() <= args.skinny_max_width && abs.height() >= args.skinny_min_height {
+          skinny.push((abs, label_fragment(fragment, abs, &box_debug), root_idx));
+        }
+        for child in fragment.children.iter() {
+          stack.push((next_offset, child));
+        }
       }
-      nav_found = true;
-      break;
     }
-  }
-  if !nav_found {
-    println!("no 'Hacker News' text fragment found");
-  }
-
-  // Surface fragments that have effectively zero width but large height, which can
-  // inflate the document height (seen on CNN flex items).
-  let mut skinny: Vec<_> = abs_backgrounds
-        .iter()
-        .filter(|(rect, _, _)| rect.width() <= 5.0 && rect.height() >= 600.0)
-        .map(|(rect, frag, root_idx)| {
-            let mut info = match &frag.content {
-                FragmentContent::Block { .. } => "block".to_string(),
-                FragmentContent::Inline { .. } => "inline".to_string(),
-                FragmentContent::Line { .. } => "line".to_string(),
-                FragmentContent::Text { text, .. } => format!("text {:?}", text.chars().take(30).collect::<String>()),
-                FragmentContent::Replaced { .. } => "replaced".to_string(),
-                FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
-                FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
-            };
-            if let Some(style) = frag.style.as_deref() {
-                info.push_str(&format!(
-                    " display={:?} pos={:?} flex=({:?},{:?},{:?},{:?},{:?}) align=({:?},{:?}) size=({:?},{:?}) min=({:?},{:?}) max=({:?},{:?})",
-                    style.display,
-                    style.position,
-                    style.flex_direction,
-                    style.flex_wrap,
-                    style.flex_basis,
-                    style.flex_grow,
-                    style.flex_shrink,
-                    style.align_items,
-                    style.align_self,
-                    style.width,
-                    style.height,
-                    style.min_width,
-                    style.min_height,
-                    style.max_width,
-                    style.max_height
-                ));
-            }
-            if let Some(box_id) = match &frag.content {
-                FragmentContent::Block { box_id } => *box_id,
-                FragmentContent::Inline { box_id, .. } => *box_id,
-                FragmentContent::Replaced { box_id, .. } => *box_id,
-                _ => None,
-            } {
-                if let Some(debug) = box_debug.get(&box_id) {
-                    info.push_str(&format!(" box#{box_id} {debug} [root {root_idx}]"));
-                } else {
-                    info.push_str(&format!(" box#{box_id} [root {root_idx}]"));
-                }
-            }
-            (*rect, info)
+    skinny.sort_by(|a, b| {
+      a.0
+        .y()
+        .partial_cmp(&b.0.y())
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| {
+          a.0
+            .x()
+            .partial_cmp(&b.0.x())
+            .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .collect();
-  skinny.sort_by(|a, b| {
-    a.0
-      .y()
-      .partial_cmp(&b.0.y())
-      .unwrap_or(std::cmp::Ordering::Equal)
-  });
-  println!(
-    "skinny/tall fragments (<=5px wide, >=600px tall): {}",
-    skinny.len()
-  );
-  for (idx, (rect, info)) in skinny.iter().take(20).enumerate() {
+    });
     println!(
-      "  #{idx}: ({:.1},{:.1},{:.1},{:.1}) {}",
-      rect.x(),
-      rect.y(),
-      rect.width(),
-      rect.height(),
-      info
+      "skinny fragments (<= {:.1}px wide, >= {:.1}px tall): {}",
+      args.skinny_max_width,
+      args.skinny_min_height,
+      skinny.len()
     );
-  }
-  if skinny.len() > 20 {
-    println!("  ...");
-    for (idx, (rect, info)) in skinny.iter().rev().take(10).enumerate() {
-      let global_idx = skinny.len().saturating_sub(idx + 1);
+    for (idx, (rect, label, root_idx)) in skinny.iter().take(50).enumerate() {
       println!(
-        "  #{}: ({:.1},{:.1},{:.1},{:.1}) {}",
-        global_idx,
+        "  #{idx}: ({:.1},{:.1},{:.1},{:.1}) [root {}] {label}",
         rect.x(),
         rect.y(),
         rect.width(),
         rect.height(),
-        info
+        root_idx
       );
     }
-  }
-  if let Some(path) = root_contexts.iter().copied().find_map(|ctx| {
-    find_first_skinny(
-      ctx.fragment,
-      ctx.offset,
-      ctx.base,
-      ctx.include_base,
-      ctx.index,
-      &box_debug,
-    )
-  }) {
-    println!("path to first skinny fragment:");
-    for (idx, entry) in path.iter().enumerate() {
-      println!("  {idx}: {entry}");
-    }
-  }
-  if let Some((rect, frag, root_idx)) = abs_backgrounds
-    .iter()
-    .find(|(rect, _, _)| rect.width() <= 5.0 && rect.height() >= 600.0)
-  {
-    println!(
-            "first skinny fragment children (absolute coords, first 10): parent @ ({:.1},{:.1},{:.1},{:.1}) [root {}]",
-            rect.x(),
-            rect.y(),
-            rect.width(),
-            rect.height(),
-            root_idx
-        );
-    for (idx, child) in frag.children.iter().take(10).enumerate() {
-      let child_abs = Rect::from_xywh(
-        rect.x() + child.bounds.x(),
-        rect.y() + child.bounds.y(),
-        child.bounds.width(),
-        child.bounds.height(),
-      );
-      println!(
-        "  child#{idx}: {}",
-        label_fragment(child, child_abs, &box_debug)
-      );
-    }
-  }
-
-  // Trace a problematic headline (or a caller-provided needle) to understand how its ancestors
-  // are sized/positioned.
-  let needle =
-    env::var("FASTR_NEEDLE").unwrap_or_else(|_| "New photos released from Epstein".into());
-  if !needle.is_empty() {
-    let mut found_path = false;
-    for ctx in root_contexts.iter().copied() {
-      if let Some(path) = find_fragment_path(
-        ctx.fragment,
-        ctx.offset,
-        ctx.base,
-        ctx.include_base,
-        &needle,
-      ) {
-        println!(
-          "ancestor chain for text containing {:?} (root {}):",
-          needle, ctx.index
-        );
-        for (depth, (label, rect)) in path.iter().enumerate() {
-          println!(
-            "  {depth}: {label} @ ({:.1},{:.1},{:.1},{:.1})",
-            rect.x(),
-            rect.y(),
-            rect.width(),
-            rect.height()
-          );
-        }
-        found_path = true;
-        break;
-      }
-    }
-    if !found_path {
-      println!("no fragment found containing {:?}", needle);
-    }
-  }
-
-  let mut trace_ids = vec![210usize, 200, 180, 6912, 6457, 279, 281, 6909];
-  if let Some((first_li, _)) = li_nodes.first() {
-    trace_ids.push(*first_li);
-  }
-  if let Ok(env_ids) = env::var("FASTR_TRACE_BOXES") {
-    for id in env_ids
-      .split(',')
-      .filter_map(|tok| tok.trim().parse::<usize>().ok())
-    {
-      trace_ids.push(id);
-    }
-  }
-  if let Ok(info_ids) = env::var("FASTR_TRACE_BOX_INFO") {
-    for id in info_ids
-      .split(',')
-      .filter_map(|tok| tok.trim().parse::<usize>().ok())
-    {
-      if let Some(node) = find_box_by_id(&box_tree.root, id) {
-        println!(
-                    "box {} info: display={:?} position={:?} visibility={:?} opacity={} size=({:?},{:?}) min=({:?},{:?}) max=({:?},{:?}) overflow=({:?},{:?}) flex=({:.2},{:.2},{:?}) order={} selector={:?}",
-                    id,
-                    node.style.display,
-                    node.style.position,
-                    node.style.visibility,
-                    node.style.opacity,
-                    node.style.width,
-                    node.style.height,
-                    node.style.min_width,
-                    node.style.min_height,
-                    node.style.max_width,
-                    node.style.max_height,
-                    node.style.overflow_x,
-                    node.style.overflow_y,
-                    node.style.flex_grow,
-                    node.style.flex_shrink,
-                    node.style.flex_basis,
-                    node.style.order,
-                    node.debug_info.as_ref().map(|d| d.to_selector())
-                );
-      }
-    }
-  }
-  if let Some(dump_id) = env::var("FASTR_DUMP_FRAGMENT")
-    .ok()
-    .and_then(|v| v.parse::<usize>().ok())
-  {
-    let mut found_fragment = false;
-    for ctx in root_contexts.iter().copied() {
-      if let Some(fragment) = find_fragment_node(
-        ctx.fragment,
-        ctx.offset,
-        ctx.base,
-        ctx.include_base,
-        dump_id,
-      ) {
-        println!(
-          "fragment subtree for box_id {}: text_fragments={} [root {}]",
-          dump_id,
-          count_text_fragments(fragment),
-          ctx.index
-        );
-        print_fragment_tree(fragment, 0, 80);
-        found_fragment = true;
-        break;
-      }
-    }
-    if !found_fragment {
-      println!("no fragment found for box_id {}", dump_id);
-    }
-  }
-  for target_id in trace_ids {
-    let mut found = false;
-    for ctx in root_contexts.iter().copied() {
-      if let Some(path) = find_fragment_by_box_id(
-        ctx.fragment,
-        ctx.offset,
-        ctx.base,
-        ctx.include_base,
-        target_id,
-        &box_debug,
-      ) {
-        println!("path to box_id {target_id} (root {}):", ctx.index);
-        for (idx, entry) in path.iter().enumerate() {
-          println!("  {idx}: {entry}");
-        }
-        if let Some(style) = box_styles.get(&target_id) {
-          println!(
-                      "  style: display={:?} position={:?} width={:?} height={:?} min=({:?},{:?}) max=({:?},{:?}) flex=({:?},{:?},{:?}) flex_dir={:?} flex_wrap={:?} align=({:?},{:?}) justify={:?} opacity={:.2} visibility={:?}",
-                      style.display,
-                      style.position,
-                      style.width,
-                      style.height,
-                      style.min_width,
-                      style.min_height,
-                      style.max_width,
-                      style.max_height,
-                      style.flex_grow,
-                      style.flex_shrink,
-                      style.flex_basis,
-                      style.flex_direction,
-                      style.flex_wrap,
-                      style.align_items,
-                      style.align_self,
-                      style.justify_content,
-                      style.opacity,
-                      style.visibility,
-                  );
-
-          if !style.background_layers.is_empty() {
-            let summaries: Vec<String> = style
-              .background_layers
-              .iter()
-              .map(|layer| match &layer.image {
-                Some(fastrender::style::types::BackgroundImage::Url(url)) => {
-                  format!("url({})", url)
-                }
-                Some(fastrender::style::types::BackgroundImage::None) => "none".to_string(),
-                Some(_) => "gradient".to_string(),
-                None => "(none)".to_string(),
-              })
-              .collect();
-            println!("  backgrounds: {:?}", summaries);
-          }
-        }
-        found = true;
-        break;
-      }
-    }
-    if !found {
-      println!("box_id {target_id} not found in fragments");
-    }
-  }
-  let mut max_path_root = None;
-  let mut max_path = None;
-  for ctx in root_contexts.iter().copied() {
-    if let Some(path) = find_max_x_fragment(ctx.fragment, ctx.offset, ctx.base, ctx.include_base) {
-      max_path_root = Some(ctx.index);
-      max_path = Some(path);
-      break;
-    }
-  }
-  if let (Some(root_idx), Some(path)) = (max_path_root, max_path) {
-    println!("path to fragment with largest max_x (root {}):", root_idx);
-    for (idx, entry) in path.iter().enumerate() {
-      println!("  {idx}: {entry}");
-    }
-  }
-
-  // Inspect the subtree of the first ribbon list item to understand why it balloons vertically.
-  if let Some(li_279) = find_box_by_id(&box_tree.root, 279) {
-    println!(
-      "box 279 debug: type={:?} display={:?} children={}",
-      li_279.box_type,
-      li_279.style.display,
-      li_279.children.len()
-    );
-    for (idx, child) in li_279.children.iter().take(10).enumerate() {
-      let tag = child
-        .debug_info
-        .as_ref()
-        .and_then(|d| d.tag_name.clone())
-        .unwrap_or_else(|| format!("{:?}", child.box_type));
-      println!(
-        "  child#{idx}: id={} type={:?} display={:?} tag={}",
-        child.id, child.box_type, child.style.display, tag
-      );
-    }
-    let mut nested_lis = Vec::new();
-    collect_tag_ids(li_279, "li", &mut nested_lis);
-    println!(
-      "box 279 contains {} <li> descendants (including itself)",
-      nested_lis.len()
-    );
-    for id in nested_lis.iter().filter(|id| **id != 279).take(5) {
-      println!("  nested li id={}", id);
+    if skinny.len() > 50 {
+      println!("  ...");
     }
   }
 
   Ok(())
 }
 
-fn collect_tag_ids(node: &BoxNode, tag: &str, out: &mut Vec<usize>) {
-  if node
-    .debug_info
-    .as_ref()
-    .and_then(|d| d.tag_name.as_deref())
-    .map(|t| t.eq_ignore_ascii_case(tag))
-    .unwrap_or(false)
-  {
-    out.push(node.id);
-  }
-  for child in node.children.iter() {
-    collect_tag_ids(child, tag, out);
-  }
-}
-
-fn find_fragment_node(
-  node: &FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  target: usize,
-) -> Option<&FragmentNode> {
-  let (_abs, next_offset) = absolute_rect(node, offset, base, include_base);
-  let mut matches = false;
-  match &node.content {
-    FragmentContent::Block { box_id }
-    | FragmentContent::Inline { box_id, .. }
-    | FragmentContent::Replaced { box_id, .. } => {
-      if box_id == &Some(target) {
-        matches = true;
-      }
-    }
-    _ => {}
-  }
-  if matches {
-    return Some(node);
-  }
-  let child_base = if include_base { None } else { base };
-  for child in node.children.iter() {
-    if let Some(found) = find_fragment_node(child, next_offset, child_base, false, target) {
-      return Some(found);
-    }
-  }
-  None
-}
-
-fn count_text_fragments(fragment: &FragmentNode) -> usize {
-  fn walk(node: &FragmentNode, total: &mut usize) {
-    if matches!(node.content, FragmentContent::Text { .. }) {
-      *total += 1;
-    }
-    for child in node.children.iter() {
-      walk(child, total);
-    }
-  }
-
-  let mut total = 0;
-  walk(fragment, &mut total);
-  total
-}
-
-fn print_fragment_tree(node: &FragmentNode, indent: usize, max_lines: usize) {
-  fn fmt_content(node: &FragmentNode) -> String {
-    match &node.content {
-      FragmentContent::Block { box_id } => format!("block box_id={:?}", box_id),
-      FragmentContent::Inline { box_id, .. } => format!("inline box_id={:?}", box_id),
-      FragmentContent::Line { .. } => "line".into(),
-      FragmentContent::Text { text, .. } => format!("text {:?}", text),
-      FragmentContent::Replaced { box_id, .. } => format!("replaced box_id={:?}", box_id),
-      FragmentContent::RunningAnchor { name, .. } => format!("running-anchor name={name}"),
-      FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".into(),
-    }
-  }
-
-  fn walk(node: &FragmentNode, indent: usize, remaining: &mut usize) {
-    if *remaining == 0 {
-      return;
-    }
-    *remaining -= 1;
-    println!(
-      "{space}{desc}",
-      space = " ".repeat(indent * 2),
-      desc = fmt_content(node)
-    );
-    for child in node.children.iter() {
-      walk(child, indent + 1, remaining);
-      if *remaining == 0 {
-        break;
-      }
-    }
-  }
-
-  let mut remaining = max_lines;
-  walk(node, indent, &mut remaining);
-}
-
-fn find_box_by_id(node: &BoxNode, target: usize) -> Option<&BoxNode> {
-  if node.id == target {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_box_by_id(child, target) {
-      return Some(found);
-    }
-  }
-  None
-}
-
-fn collect_tag_debug(node: &BoxNode, tag: &str, out: &mut Vec<(usize, String)>) {
-  if node
-    .debug_info
-    .as_ref()
-    .and_then(|d| d.tag_name.as_deref())
-    .map(|t| t.eq_ignore_ascii_case(tag))
-    .unwrap_or(false)
-  {
-    let dbg = node
-      .debug_info
-      .as_ref()
-      .map(|d| format!("{d}"))
-      .unwrap_or_else(|| format!("{:?}", node.box_type));
-    out.push((node.id, dbg));
-  }
-  for child in node.children.iter() {
-    collect_tag_debug(child, tag, out);
-  }
-}
-
-fn find_first_tag<'a>(node: &'a BoxNode, tag: &str) -> Option<&'a BoxNode> {
-  if node
-    .debug_info
-    .as_ref()
-    .and_then(|d| d.tag_name.as_deref())
-    .map(|t| t.eq_ignore_ascii_case(tag))
-    .unwrap_or(false)
-  {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_first_tag(child, tag) {
-      return Some(found);
-    }
-  }
-  None
-}
-
-fn walk_boxes<F: FnMut(&BoxNode, &[String])>(node: &BoxNode, path: &mut Vec<String>, f: &mut F) {
-  f(node, path);
-  if let fastrender::tree::box_tree::BoxType::Text(text) = &node.box_type {
-    if text.text.trim() == "US" {
-      println!(
-        "debug text box 'US' display={:?} position={:?} width={:?} flex=({}, {}, {:?})",
-        node.style.display,
-        node.style.position,
-        node.style.width,
-        node.style.flex_grow,
-        node.style.flex_shrink,
-        node.style.flex_basis
-      );
-      println!("  ancestors {:?}", path);
-    }
-  }
-  path.push(format!("#{} {:?}", node.id, node.box_type));
-  for child in node.children.iter() {
-    walk_boxes(child, path, f);
-  }
-  path.pop();
-}
-
-fn find_fragment_path(
-  node: &FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  needle: &str,
-) -> Option<Vec<(String, Rect)>> {
-  let (abs, next_offset) = absolute_rect(node, offset, base, include_base);
-  let mut label = match &node.content {
-    FragmentContent::Text { text, .. } => {
-      format!("text {:?}", text.chars().take(40).collect::<String>())
-    }
-    FragmentContent::Inline { .. } => "inline".to_string(),
-    FragmentContent::Line { .. } => "line".to_string(),
-    FragmentContent::Block { .. } => "block".to_string(),
-    FragmentContent::Replaced { .. } => "replaced".to_string(),
-    FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
-    FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
-  };
-  if let Some(style) = node.style.as_deref() {
-    label.push_str(&format!(
-      " display={:?} pos={:?}",
-      style.display, style.position
-    ));
-  }
-  append_fragmentainer(&mut label, node);
-
-  let mut path = vec![(label, abs)];
-
-  if let FragmentContent::Text { text, .. } = &node.content {
-    if text.contains(needle) {
-      return Some(path);
-    }
-  }
-
-  let child_base = if include_base { None } else { base };
-  for child in node.children.iter() {
-    if let Some(mut child_path) =
-      find_fragment_path(child, next_offset, child_base, include_base, needle)
-    {
-      path.append(&mut child_path);
-      return Some(path);
-    }
-  }
-
-  None
-}
-
-fn find_fragment_by_box_id(
-  node: &FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  target: usize,
-  box_debug: &HashMap<usize, String>,
-) -> Option<Vec<String>> {
-  let (abs, next_offset) = absolute_rect(node, offset, base, include_base);
-  let mut label = match &node.content {
-    FragmentContent::Block { box_id }
-    | FragmentContent::Inline { box_id, .. }
-    | FragmentContent::Replaced { box_id, .. } => {
-      if let Some(id) = box_id {
-        let dbg = box_debug
-          .get(id)
-          .cloned()
-          .unwrap_or_else(|| format!("{:?}", node.content));
-        format!("id={id} {dbg}")
-      } else {
-        format!("{:?}", node.content)
-      }
-    }
-    _ => format!("{:?}", node.content),
-  };
-  label.push_str(&format!(
-    " @ ({:.1},{:.1},{:.1},{:.1})",
-    abs.x(),
-    abs.y(),
-    abs.width(),
-    abs.height()
-  ));
-  append_fragmentainer(&mut label, node);
-
-  let mut path = vec![label];
-  let mut matches = false;
-  match &node.content {
-    FragmentContent::Block { box_id }
-    | FragmentContent::Inline { box_id, .. }
-    | FragmentContent::Replaced { box_id, .. } => {
-      if box_id == &Some(target) {
-        matches = true;
-      }
-    }
-    _ => {}
-  }
-
-  for child in node.children.iter() {
-    let child_base = if include_base { None } else { base };
-    if let Some(mut child_path) = find_fragment_by_box_id(
-      child,
-      next_offset,
-      child_base,
-      include_base,
-      target,
-      box_debug,
-    ) {
-      path.append(&mut child_path);
-      matches = true;
-      break;
-    }
-  }
-
-  if matches {
-    Some(path)
-  } else {
-    None
-  }
-}
-
-fn find_max_x_fragment(
-  node: &FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-) -> Option<Vec<String>> {
-  fn walk(
-    node: &FragmentNode,
-    offset: Point,
-    base: Option<Point>,
-    include_base: bool,
-    best: &mut (f32, Vec<String>),
-    current: &mut Vec<String>,
-  ) {
-    let (abs, next_offset) = absolute_rect(node, offset, base, include_base);
-    let label = match &node.content {
-      FragmentContent::Block { .. } => "block",
-      FragmentContent::Inline { .. } => "inline",
-      FragmentContent::Line { .. } => "line",
-      FragmentContent::Text { .. } => "text",
-      FragmentContent::Replaced { .. } => "replaced",
-      FragmentContent::RunningAnchor { .. } => "running-anchor",
-      FragmentContent::FootnoteAnchor { .. } => "footnote-anchor",
-    };
-    let mut entry = format!(
-      "{} @ ({:.1},{:.1},{:.1},{:.1})",
-      label,
-      abs.x(),
-      abs.y(),
-      abs.width(),
-      abs.height()
-    );
-    if let Some(style) = node.style.as_deref() {
-      entry.push_str(&format!(
-        " display={:?} pos={:?} transform_ops={} z={:?}",
-        style.display,
-        style.position,
-        style.transform.len(),
-        style.z_index
-      ));
-    }
-    append_fragmentainer(&mut entry, node);
-    current.push(entry);
-    if abs.max_x() > best.0 {
-      best.0 = abs.max_x();
-      best.1 = current.clone();
-    }
-    let child_base = if include_base { None } else { base };
-    for child in node.children.iter() {
-      walk(child, next_offset, child_base, include_base, best, current);
-    }
-    current.pop();
-  }
-
-  let mut best = (f32::MIN, Vec::new());
-  let mut current = Vec::new();
-  walk(node, offset, base, include_base, &mut best, &mut current);
-  if best.1.is_empty() {
-    None
-  } else {
-    Some(best.1)
-  }
-}
-
-fn walk_styled<F: FnMut(&ComputedStyle, &dom::DomNode)>(node: &StyledNode, f: &mut F) {
-  f(&node.styles, &node.node);
-  if let Some(before) = &node.before_styles {
-    f(before, &node.node);
-  }
-  if let Some(after) = &node.after_styles {
-    f(after, &node.node);
-  }
-  if let Some(marker) = &node.marker_styles {
-    f(marker, &node.node);
-  }
-  for child in node.children.iter() {
-    walk_styled(child, f);
-  }
-}
-
-fn collect_box_debug(node: &BoxNode, out: &mut HashMap<usize, String>) {
-  out.insert(node.id, format_debug_info(node));
-  for child in node.children.iter() {
-    collect_box_debug(child, out);
-  }
-}
-
-fn format_debug_info(node: &BoxNode) -> String {
-  let mut label = node
-    .debug_info
-    .as_ref()
-    .map(|info| info.to_selector())
-    .unwrap_or_else(|| format!("{:?}", node.box_type));
-
-  let mut spans = Vec::new();
-  let colspan = node.table_colspan();
-  if colspan > 1 {
-    spans.push(format!("colspan={colspan}"));
-  }
-  let rowspan = node.table_rowspan();
-  if rowspan > 1 {
-    spans.push(format!("rowspan={rowspan}"));
-  }
-  let column_span = node.table_column_span();
-  if column_span > 1 {
-    spans.push(format!("column-span={column_span}"));
-  }
-  if !spans.is_empty() {
-    label.push_str(&format!(" ({})", spans.join(" ")));
-  }
-
-  label
-}
-
 #[cfg(test)]
 mod tests {
-  use super::format_debug_info;
-  use fastrender::style::display::{Display, FormattingContextType};
-  use fastrender::style::ComputedStyle;
-  use fastrender::tree::box_tree::BoxNode;
-  use fastrender::tree::debug::DebugInfo;
-  use std::sync::Arc;
+  use super::*;
 
   #[test]
-  fn format_debug_info_includes_table_cell_spans_from_metadata() {
-    let mut style = ComputedStyle::default();
-    style.display = Display::TableCell;
-    let cell = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
-      .with_table_cell_spans(2, 3)
-      .with_debug_info(DebugInfo::new(Some("td".to_string()), None, vec![]));
-
-    let label = format_debug_info(&cell);
-    assert!(label.contains("colspan=2"), "label: {label}");
-    assert!(label.contains("rowspan=3"), "label: {label}");
-  }
-
-  #[test]
-  fn format_debug_info_includes_column_span_from_metadata() {
-    let mut style = ComputedStyle::default();
-    style.display = Display::TableColumn;
-    let col = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
-      .with_table_column_span(3)
-      .with_debug_info(DebugInfo::new(Some("col".to_string()), None, vec![]));
-
-    let label = format_debug_info(&col);
-    assert!(label.contains("column-span=3"), "label: {label}");
-  }
-}
-
-fn collect_box_styles(node: &BoxNode, out: &mut HashMap<usize, std::sync::Arc<ComputedStyle>>) {
-  out.insert(node.id, node.style.clone());
-  for child in node.children.iter() {
-    collect_box_styles(child, out);
-  }
-}
-
-fn collect_column_info(
-  node: &BoxNode,
-  columns: &mut Vec<(usize, Display, usize, String)>,
-  spanning_cells: &mut Vec<(usize, usize, usize, String)>,
-) {
-  let display = node.style.display;
-  if matches!(display, Display::TableColumn | Display::TableColumnGroup) {
-    let span = node.table_column_span();
-    columns.push((node.id, display, span, format_debug_info(node)));
-  }
-  if matches!(display, Display::TableCell) {
-    let colspan = node.table_colspan();
-    let rowspan = node.table_rowspan();
-    if colspan > 1 || rowspan > 1 {
-      spanning_cells.push((node.id, colspan, rowspan, format_debug_info(node)));
-    }
-  }
-
-  for child in node.children.iter() {
-    collect_column_info(child, columns, spanning_cells);
-  }
-}
-
-#[derive(Debug)]
-struct DarkBox {
-  id: usize,
-  r: u8,
-  g: u8,
-  b: u8,
-  a: f32,
-  debug: String,
-}
-
-fn collect_dark_boxes(node: &BoxNode, out: &mut Vec<DarkBox>) {
-  let bg = node.style.background_color;
-  if bg.a > 0.0 && bg.r == 12 && bg.g == 12 && bg.b == 12 {
-    let debug = node
-      .debug_info
-      .as_ref()
-      .map(|d| format!("{d}"))
-      .unwrap_or_else(|| format!("{:?}", node.box_type));
-    out.push(DarkBox {
-      id: node.id,
-      r: bg.r,
-      g: bg.g,
-      b: bg.b,
-      a: bg.a,
-      debug,
-    });
-  }
-  for child in node.children.iter() {
-    collect_dark_boxes(child, out);
-  }
-}
-
-#[derive(Clone, Copy)]
-struct RootContext<'a> {
-  index: usize,
-  fragment: &'a FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-}
-
-fn fragment_roots<'a>(
-  fragment_tree: &'a fastrender::tree::fragment_tree::FragmentTree,
-  scroll_offset: Point,
-) -> Vec<RootContext<'a>> {
-  let mut roots = vec![RootContext {
-    index: 0,
-    fragment: &fragment_tree.root,
-    offset: scroll_offset,
-    base: None,
-    include_base: false,
-  }];
-  for (idx, fragment) in fragment_tree.additional_fragments.iter().enumerate() {
-    let base = Point::new(fragment.bounds.x(), fragment.bounds.y());
-    // Fragmentation sometimes translates the entire subtree by the fragmentainer origin;
-    // detect that so absolute coordinates don't double-count the page offset.
-    let translated_children = fragment.children.first().map_or(false, |child| {
-      (child.bounds.x() - base.x).abs() < 0.5 && (child.bounds.y() - base.y).abs() < 0.5
-    });
-    let offset = if translated_children {
-      scroll_offset
-    } else {
-      Point::new(scroll_offset.x + base.x, scroll_offset.y + base.y)
-    };
-    roots.push(RootContext {
-      index: idx + 1,
-      fragment,
-      offset,
-      base: if translated_children {
-        None
-      } else {
-        Some(base)
-      },
-      include_base: translated_children,
-    });
-  }
-  roots
-}
-
-fn absolute_rect(
-  fragment: &FragmentNode,
-  offset: Point,
-  _base: Option<Point>,
-  include_base: bool,
-) -> (Rect, Point) {
-  let abs = Rect::from_xywh(
-    fragment.bounds.x() + offset.x,
-    fragment.bounds.y() + offset.y,
-    fragment.bounds.width(),
-    fragment.bounds.height(),
-  );
-  let next_offset = if include_base { offset } else { abs.origin };
-  (abs, next_offset)
-}
-
-fn element_scroll(_fragment: &FragmentNode, _scroll: &ScrollState) -> Point {
-  Point::ZERO
-}
-
-fn collect_fragments_abs<'a>(
-  fragment: &'a FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  root_index: usize,
-  scroll_state: &ScrollState,
-  out: &mut Vec<(Rect, &'a FragmentNode, usize)>,
-) {
-  let (abs, mut next_offset) = absolute_rect(fragment, offset, base, include_base);
-  let element_scroll = element_scroll(fragment, scroll_state);
-  next_offset = Point::new(
-    next_offset.x - element_scroll.x,
-    next_offset.y - element_scroll.y,
-  );
-  out.push((abs, fragment, root_index));
-  let child_base = if include_base { None } else { base };
-  for child in fragment.children.iter() {
-    collect_fragments_abs(
-      child,
-      next_offset,
-      child_base,
-      include_base,
-      root_index,
-      scroll_state,
-      out,
-    );
-  }
-}
-
-fn collect_backgrounds_abs<'a>(
-  fragment: &'a FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  root_index: usize,
-  scroll_state: &ScrollState,
-  out: &mut Vec<(Rect, &'a FragmentNode, usize)>,
-) {
-  let (abs, mut next_offset) = absolute_rect(fragment, offset, base, include_base);
-  let element_scroll = element_scroll(fragment, scroll_state);
-  next_offset = Point::new(
-    next_offset.x - element_scroll.x,
-    next_offset.y - element_scroll.y,
-  );
-  out.push((abs, fragment, root_index));
-  let child_base = if include_base { None } else { base };
-  for child in fragment.children.iter() {
-    collect_backgrounds_abs(
-      child,
-      next_offset,
-      child_base,
-      include_base,
-      root_index,
-      scroll_state,
-      out,
-    );
-  }
-}
-
-fn collect_text_abs(
-  fragment: &FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  root_index: usize,
-  scroll_state: &ScrollState,
-  out: &mut Vec<(f32, f32, usize, String)>,
-) {
-  let (abs, mut next_offset) = absolute_rect(fragment, offset, base, include_base);
-  let element_scroll = element_scroll(fragment, scroll_state);
-  next_offset = Point::new(
-    next_offset.x - element_scroll.x,
-    next_offset.y - element_scroll.y,
-  );
-  if let FragmentContent::Text { text, .. } = &fragment.content {
-    out.push((abs.x(), abs.y(), root_index, text.to_string()));
-  }
-  let child_base = if include_base { None } else { base };
-  for child in fragment.children.iter() {
-    collect_text_abs(
-      child,
-      next_offset,
-      child_base,
-      include_base,
-      root_index,
-      scroll_state,
-      out,
-    );
-  }
-}
-
-fn find_us_fragment(
-  node: &FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  root_index: usize,
-  scroll_state: &ScrollState,
-  path: &mut Vec<String>,
-) -> bool {
-  let (abs, mut next_offset) = absolute_rect(node, offset, base, include_base);
-  let element_scroll = element_scroll(node, scroll_state);
-  next_offset = Point::new(
-    next_offset.x - element_scroll.x,
-    next_offset.y - element_scroll.y,
-  );
-  let style = node.style.as_deref();
-  let mut label = match &node.content {
-    FragmentContent::Text { text, .. } => {
-      format!("text \"{}\"", text.chars().take(30).collect::<String>())
-    }
-    FragmentContent::Inline { .. } => "inline".to_string(),
-    FragmentContent::Line { .. } => "line".to_string(),
-    FragmentContent::Block { .. } => "block".to_string(),
-    FragmentContent::Replaced { .. } => "replaced".to_string(),
-    FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
-    FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
-  };
-  let extra = style.map(|s| {
-    format!(
-      " display={:?} flex=({:?}, {:?}, {:?}) opacity={} visibility={:?}",
-      s.display, s.flex_direction, s.flex_wrap, s.flex_basis, s.opacity, s.visibility
+  fn meta_base_hint_selection_uses_meta_url() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let html_path = dir.path().join("page.html");
+    fs::write(&html_path, "<!doctype html><html><body>ok</body></html>").expect("write html");
+    fs::write(
+      html_path.with_extension("html.meta"),
+      "url: https://example.com/x\n",
     )
-  });
-  append_fragmentainer(&mut label, node);
-  path.push(format!(
-    "{label} @ ({:.1},{:.1},{:.1},{:.1}){}",
-    abs.x(),
-    abs.y(),
-    abs.width(),
-    abs.height(),
-    extra.unwrap_or_default()
-  ));
+    .expect("write meta");
 
-  let found = match &node.content {
-    FragmentContent::Text { text, .. } if text.trim() == "US" => true,
-    _ => {
-      let child_base = if include_base { None } else { base };
-      node.children.iter().any(|child| {
-        find_us_fragment(
-          child,
-          next_offset,
-          child_base,
-          include_base,
-          root_index,
-          scroll_state,
-          path,
-        )
-      })
-    }
-  };
-
-  if found {
-    println!("  root {}", root_index);
-    for (idx, entry) in path.iter().enumerate() {
-      println!("  {idx}: {entry}");
-    }
-  }
-  path.pop();
-  found
-}
-
-#[derive(Debug)]
-struct StackCtx<'a> {
-  rect: Rect,
-  display: Display,
-  position: Position,
-  z_index: Option<i32>,
-  opacity: f32,
-  transform_ops: usize,
-  style: &'a ComputedStyle,
-}
-
-fn collect_stacking_contexts<'a>(
-  fragment: &'a FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  parent_style: Option<&'a ComputedStyle>,
-  is_root: bool,
-  root_index: usize,
-  out: &mut Vec<(usize, StackCtx<'a>)>,
-) {
-  let (abs, next_offset) = absolute_rect(fragment, offset, base, include_base);
-  let style = fragment.style.as_deref();
-  let establishes = style
-    .map(|s| creates_stacking_context(s, parent_style, is_root))
-    .unwrap_or(is_root);
-
-  let next_parent = style.or(parent_style);
-
-  if establishes {
-    if let Some(style) = style {
-      out.push((
-        root_index,
-        StackCtx {
-          rect: abs,
-          display: style.display,
-          position: style.position,
-          z_index: style.z_index,
-          opacity: style.opacity,
-          transform_ops: style.transform.len(),
-          style,
-        },
-      ));
-    }
+    let args =
+      Args::try_parse_from(["inspect_frag", html_path.to_str().unwrap()]).expect("parse args");
+    let input = load_input_document(&args).expect("load input");
+    assert_eq!(input.base_hint, "https://example.com/x");
   }
 
-  let child_base = if include_base { None } else { base };
-  for child in fragment.children.iter() {
-    collect_stacking_contexts(
-      child,
-      next_offset,
-      child_base,
-      include_base,
-      next_parent,
-      false,
-      root_index,
-      out,
+  #[test]
+  fn pageset_resolution_selects_cached_html() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let html_dir = dir.path().join("fetches/html");
+    fs::create_dir_all(&html_dir).expect("mkdir");
+    let cached = html_dir.join("example.com.html");
+    fs::write(&cached, "<!doctype html><html><body>ok</body></html>").expect("write cached html");
+
+    let args = Args::try_parse_from([
+      "inspect_frag",
+      "--pageset",
+      "https://example.com",
+      "--html-dir",
+      html_dir.to_str().unwrap(),
+    ])
+    .expect("parse args");
+    let input = load_input_document(&args).expect("load input");
+    assert_eq!(input.path, cached);
+  }
+
+  #[cfg(not(feature = "disk_cache"))]
+  #[test]
+  fn offline_requires_disk_cache_feature() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let html_path = dir.path().join("page.html");
+    fs::write(&html_path, "<!doctype html><html><body>ok</body></html>").expect("write html");
+
+    let args = Args::try_parse_from(["inspect_frag", html_path.to_str().unwrap(), "--offline"])
+      .expect("parse args");
+
+    let err = build_fetcher(&args).expect_err("expected offline error");
+    assert!(
+      err.to_string().contains("disk_cache"),
+      "error should mention disk_cache: {err}"
     );
   }
-}
 
-fn append_fragmentainer(label: &mut String, fragment: &FragmentNode) {
-  if fragment.fragment_count > 1 {
-    label.push_str(&format!(
-      " fragmentainer={}/{}",
-      fragment.fragmentainer_index + 1,
-      fragment.fragment_count
-    ));
-  }
-}
+  #[cfg(feature = "disk_cache")]
+  #[test]
+  fn offline_mode_uses_disk_cache_and_never_hits_network() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::thread;
 
-fn label_fragment(
-  fragment: &FragmentNode,
-  abs: Rect,
-  box_debug: &HashMap<usize, String>,
-) -> String {
-  let mut label = match &fragment.content {
-    FragmentContent::Block { .. } => "block".to_string(),
-    FragmentContent::Inline { .. } => "inline".to_string(),
-    FragmentContent::Line { .. } => "line".to_string(),
-    FragmentContent::Text { text, .. } => {
-      format!("text {:?}", text.chars().take(40).collect::<String>())
-    }
-    FragmentContent::Replaced { .. } => "replaced".to_string(),
-    FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
-    FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
-  };
-  label.push_str(&format!(
-    " @ ({:.1},{:.1},{:.1},{:.1})",
-    abs.x(),
-    abs.y(),
-    abs.width(),
-    abs.height()
-  ));
-  if let Some(style) = fragment.style.as_deref() {
-    label.push_str(&format!(
-            " display={:?} pos={:?} flex=({:?},{:?},{:?},{:?},{:?}) align=({:?},{:?}) size=({:?},{:?}) min=({:?},{:?}) max=({:?},{:?})",
-            style.display,
-            style.position,
-            style.flex_direction,
-            style.flex_wrap,
-            style.flex_basis,
-            style.flex_grow,
-            style.flex_shrink,
-            style.align_items,
-            style.align_self,
-            style.width,
-            style.height,
-            style.min_width,
-            style.min_height,
-            style.max_width,
-            style.max_height
-        ));
-  }
-  if fragment.fragment_count > 1 {
-    label.push_str(&format!(
-      " fragmentainer={}/{}",
-      fragment.fragmentainer_index + 1,
-      fragment.fragment_count
-    ));
-  }
-  if let Some(box_id) = match &fragment.content {
-    FragmentContent::Block { box_id } => *box_id,
-    FragmentContent::Inline { box_id, .. } => *box_id,
-    FragmentContent::Replaced { box_id, .. } => *box_id,
-    _ => None,
-  } {
-    if let Some(debug) = box_debug.get(&box_id) {
-      label.push_str(&format!(" box#{box_id} {debug}"));
-    } else {
-      label.push_str(&format!(" box#{box_id}"));
-    }
-  }
-  label
-}
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cache_dir = dir.path().join("assets");
+    fs::create_dir_all(&cache_dir).expect("mkdir cache");
 
-fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
-  match &fragment.content {
-    FragmentContent::Block { box_id }
-    | FragmentContent::Inline { box_id, .. }
-    | FragmentContent::Text { box_id, .. }
-    | FragmentContent::Replaced { box_id, .. } => *box_id,
-    FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. } => None,
-    FragmentContent::Line { .. } => None,
-  }
-}
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let addr = listener.local_addr().expect("addr");
 
-fn find_first_skinny(
-  fragment: &FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  root_index: usize,
-  box_debug: &HashMap<usize, String>,
-) -> Option<Vec<String>> {
-  let (abs, next_offset) = absolute_rect(fragment, offset, base, include_base);
-  let mut label = label_fragment(fragment, abs, box_debug);
-  label.push_str(&format!(" [root {root_index}]"));
-  let is_skinny = abs.width() <= 5.0 && abs.height() >= 600.0;
+    let hits = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let hits_thread = Arc::clone(&hits);
+    let stop_thread = Arc::clone(&stop);
 
-  if is_skinny {
-    return Some(vec![label]);
-  }
+    let handle = thread::spawn(move || {
+      while !stop_thread.load(Ordering::SeqCst) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            hits_thread.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req
+              .lines()
+              .next()
+              .and_then(|line| line.split_whitespace().nth(1))
+              .unwrap_or("/");
+            let (status, body) = match path {
+              "/hit.css" => (200, "body{color:red}"),
+              _ => (404, "not found"),
+            };
+            let status_line = if status == 200 { "OK" } else { "Not Found" };
+            let resp = format!(
+              "HTTP/1.1 {status} {status_line}\r\nContent-Type: text/css\r\nCache-Control: max-age=3600\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+              body.len(),
+              body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+          }
+          Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(_) => break,
+        }
+      }
+    });
 
-  let child_base = if include_base { None } else { base };
-  for child in fragment.children.iter() {
-    if let Some(mut path) = find_first_skinny(
-      child,
-      next_offset,
-      child_base,
-      include_base,
-      root_index,
-      box_debug,
-    ) {
-      path.insert(0, label.clone());
-      return Some(path);
-    }
-  }
-  None
-}
+    let html_path = dir.path().join("page.html");
+    fs::write(
+      &html_path,
+      "<!doctype html><html><head>\
+      <link rel=\"stylesheet\" href=\"/hit.css\">\
+      <link rel=\"stylesheet\" href=\"/miss.css\">\
+      </head><body>ok</body></html>",
+    )
+    .expect("write html");
 
-fn find_fragment_with_text(
-  fragment: &FragmentNode,
-  offset: Point,
-  base: Option<Point>,
-  include_base: bool,
-  needle: &str,
-  path: &mut Vec<String>,
-) -> bool {
-  let (abs, next_offset) = absolute_rect(fragment, offset, base, include_base);
-  let mut label = format!(
-    "{:?} @ ({:.1},{:.1},{:.1},{:.1})",
-    fragment.content,
-    abs.x(),
-    abs.y(),
-    abs.width(),
-    abs.height()
-  );
-  if let Some(style) = fragment.style.as_deref() {
-    label.push_str(&format!(
-      " display={:?} pos={:?}",
-      style.display, style.position
-    ));
-  }
-  append_fragmentainer(&mut label, fragment);
+    let base_hint = format!("http://{addr}/page.html");
+    let hit_url = format!("http://{addr}/hit.css");
+    let miss_url = format!("http://{addr}/miss.css");
 
-  if let FragmentContent::Text { text, .. } = &fragment.content {
-    if text.contains(needle) {
-      path.push(label);
-      return true;
-    }
-  }
+    // Populate the disk cache with hit.css using the normal (online) fetcher stack.
+    let populate_args = Args::try_parse_from([
+      "inspect_frag",
+      html_path.to_str().unwrap(),
+      "--base-hint",
+      &base_hint,
+      "--cache-dir",
+      cache_dir.to_str().unwrap(),
+    ])
+    .expect("parse populate args");
+    let fetcher = build_fetcher(&populate_args).expect("build fetcher");
+    fetcher
+      .fetch_with_context(fastrender::resource::FetchContextKind::Stylesheet, &hit_url)
+      .expect("populate fetch");
 
-  let child_base = if include_base { None } else { base };
-  for child in fragment.children.iter() {
-    if find_fragment_with_text(child, next_offset, child_base, false, needle, path) {
-      path.insert(0, label);
-      return true;
-    }
+    // Ensure exactly one network request occurred so far.
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    // Render under offline mode; hit.css should be served from disk cache, and miss.css should fail
+    // without touching the network.
+    let offline_args = Args::try_parse_from([
+      "inspect_frag",
+      html_path.to_str().unwrap(),
+      "--base-hint",
+      &base_hint,
+      "--cache-dir",
+      cache_dir.to_str().unwrap(),
+      "--offline",
+    ])
+    .expect("parse offline args");
+
+    let input = load_input_document(&offline_args).expect("load input");
+    let fetcher = build_fetcher(&offline_args).expect("build offline fetcher");
+    let runtime_toggles = RuntimeToggles::from_env();
+    let mut renderer = FastRender::builder()
+      .device_pixel_ratio(offline_args.dpr)
+      .compat_mode(offline_args.compat.compat_profile())
+      .dom_compatibility_mode(offline_args.compat.dom_compat_mode())
+      .fetcher(fetcher)
+      .runtime_toggles(runtime_toggles)
+      .build()
+      .expect("build renderer");
+
+    let out = inspect_pipeline(&mut renderer, &input, &offline_args).expect("render");
+    assert_eq!(
+      hits.load(Ordering::SeqCst),
+      1,
+      "offline render should not hit the network"
+    );
+
+    assert!(
+      out
+        .diagnostics
+        .fetch_errors
+        .iter()
+        .any(|e| e.url == miss_url),
+      "expected cache miss to be recorded as a fetch error"
+    );
+    assert!(
+      !out
+        .diagnostics
+        .fetch_errors
+        .iter()
+        .any(|e| e.url == hit_url),
+      "expected cached hit.css to not produce a fetch error"
+    );
+
+    stop.store(true, Ordering::SeqCst);
+    let _ = handle.join();
   }
-  false
 }
