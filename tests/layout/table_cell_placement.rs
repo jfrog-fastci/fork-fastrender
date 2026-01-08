@@ -243,3 +243,208 @@ fn table_cell_offsets_and_spans_use_cached_metrics_rtl() {
     "table baseline should align with first baseline cell (table {table_baseline}, cell {a_baseline_abs})"
   );
 }
+
+#[test]
+fn table_cell_offsets_and_spans_use_cached_metrics_collapsed_border_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: collapse;
+            border-spacing: 10px 6px;
+            table-layout: fixed;
+            border: none;
+            padding: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; vertical-align: baseline; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr>
+            <td style="height: 14px;">A</td>
+            <td style="height: 14px;">B</td>
+            <td style="height: 14px;">C</td>
+          </tr>
+          <tr>
+            <td rowspan="2" style="height: 22px;">D</td>
+            <td colspan="2" style="height: 16px;">E</td>
+          </tr>
+          <tr>
+            <td style="height: 12px;">F</td>
+            <td style="height: 18px;">G</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert_eq!(cells.len(), 7, "expected to collect all table cells");
+
+  let a = cells.get(&'A').unwrap();
+  let b = cells.get(&'B').unwrap();
+  let c = cells.get(&'C').unwrap();
+  let d = cells.get(&'D').unwrap();
+  let e = cells.get(&'E').unwrap();
+  let f = cells.get(&'F').unwrap();
+
+  // `border-spacing` is ignored when `border-collapse: collapse` is used, so cell placement must
+  // not include gaps at row/column boundaries.
+  let spacing_x1 = b.rect.x() - (a.rect.x() + a.rect.width());
+  let spacing_x2 = c.rect.x() - (b.rect.x() + b.rect.width());
+  assert!(
+    spacing_x1.abs() < 0.1 && (spacing_x1 - spacing_x2).abs() < 0.05,
+    "horizontal spacing should be 0 in collapsed model (got {spacing_x1} and {spacing_x2})"
+  );
+
+  let expected_e_width = (c.rect.x() + c.rect.width()) - b.rect.x();
+  assert!(
+    (e.rect.width() - expected_e_width).abs() < 0.05,
+    "colspan cell width should span adjacent columns (expected {expected_e_width}, got {})",
+    e.rect.width()
+  );
+
+  let spacing_y1 = e.rect.y() - (a.rect.y() + a.rect.height());
+  let spacing_y2 = f.rect.y() - (e.rect.y() + e.rect.height());
+  assert!(
+    spacing_y1.abs() < 0.1 && (spacing_y1 - spacing_y2).abs() < 0.05,
+    "vertical spacing should be 0 in collapsed model (got {spacing_y1} and {spacing_y2})"
+  );
+
+  let expected_d_height = (f.rect.y() + f.rect.height()) - d.rect.y();
+  assert!(
+    (d.rect.height() - expected_d_height).abs() < 0.05,
+    "rowspan height should not include any intermediate spacing (expected {expected_d_height}, got {})",
+    d.rect.height()
+  );
+
+  let table_baseline = table.baseline.expect("table baseline");
+  let a_baseline = a.baseline.expect("cell baseline");
+  let a_baseline_abs = a.rect.y() + a_baseline;
+  assert!(
+    (table_baseline - a_baseline_abs).abs() < 0.1,
+    "table baseline should align with first baseline cell (table {table_baseline}, cell {a_baseline_abs})"
+  );
+}
+
+#[test]
+fn table_cell_offsets_and_spans_use_cached_metrics_collapsed_border_model_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: collapse;
+            border-spacing: 10px 6px;
+            table-layout: fixed;
+            border: none;
+            padding: 0;
+            direction: rtl;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; vertical-align: baseline; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr>
+            <td style="height: 14px;">A</td>
+            <td style="height: 14px;">B</td>
+            <td style="height: 14px;">C</td>
+          </tr>
+          <tr>
+            <td rowspan="2" style="height: 22px;">D</td>
+            <td colspan="2" style="height: 16px;">E</td>
+          </tr>
+          <tr>
+            <td style="height: 12px;">F</td>
+            <td style="height: 18px;">G</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert_eq!(cells.len(), 7, "expected to collect all table cells");
+
+  let a = cells.get(&'A').unwrap();
+  let b = cells.get(&'B').unwrap();
+  let c = cells.get(&'C').unwrap();
+  let d = cells.get(&'D').unwrap();
+  let e = cells.get(&'E').unwrap();
+  let f = cells.get(&'F').unwrap();
+
+  assert!(
+    a.rect.x() > b.rect.x() && b.rect.x() > c.rect.x(),
+    "expected RTL visual order A (right) > B > C (left), got A.x={:.2} B.x={:.2} C.x={:.2}",
+    a.rect.x(),
+    b.rect.x(),
+    c.rect.x()
+  );
+
+  let spacing_x1 = a.rect.x() - (b.rect.x() + b.rect.width());
+  let spacing_x2 = b.rect.x() - (c.rect.x() + c.rect.width());
+  assert!(
+    spacing_x1.abs() < 0.1 && (spacing_x1 - spacing_x2).abs() < 0.05,
+    "horizontal spacing should be 0 in collapsed RTL (got {spacing_x1} and {spacing_x2})"
+  );
+
+  let expected_e_width = (b.rect.x() + b.rect.width()) - c.rect.x();
+  assert!(
+    (e.rect.width() - expected_e_width).abs() < 0.05,
+    "colspan cell width should span adjacent columns in RTL (expected {expected_e_width}, got {})",
+    e.rect.width()
+  );
+
+  let spacing_y1 = e.rect.y() - (a.rect.y() + a.rect.height());
+  let spacing_y2 = f.rect.y() - (e.rect.y() + e.rect.height());
+  assert!(
+    spacing_y1.abs() < 0.1 && (spacing_y1 - spacing_y2).abs() < 0.05,
+    "vertical spacing should be 0 in collapsed RTL (got {spacing_y1} and {spacing_y2})"
+  );
+
+  let expected_d_height = (f.rect.y() + f.rect.height()) - d.rect.y();
+  assert!(
+    (d.rect.height() - expected_d_height).abs() < 0.05,
+    "rowspan height should not include any intermediate spacing in RTL (expected {expected_d_height}, got {})",
+    d.rect.height()
+  );
+
+  let table_baseline = table.baseline.expect("table baseline");
+  let a_baseline = a.baseline.expect("cell baseline");
+  let a_baseline_abs = a.rect.y() + a_baseline;
+  assert!(
+    (table_baseline - a_baseline_abs).abs() < 0.1,
+    "table baseline should align with first baseline cell (table {table_baseline}, cell {a_baseline_abs})"
+  );
+}
