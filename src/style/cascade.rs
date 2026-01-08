@@ -1988,6 +1988,10 @@ fn eval_style_range_value(
     (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
   };
 
+  let numeric_equal = |a: NumericValue, b: NumericValue| -> bool {
+    a.ty == b.ty && (a.value - b.value).abs() < 1e-6
+  };
+
   let margin_for_side = |side: crate::style::PhysicalSide| -> Option<NumericValue> {
     let len = match side {
       crate::style::PhysicalSide::Top => styles.margin_top.as_ref(),
@@ -2286,6 +2290,38 @@ fn eval_style_range_value(
         crate::style::types::InsetValue::Length(len) => length_to_numeric(len, container, ctx),
         crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => None,
       },
+      "inset" => {
+        let top = inset_for_side(crate::style::PhysicalSide::Top)?;
+        let right = inset_for_side(crate::style::PhysicalSide::Right)?;
+        let bottom = inset_for_side(crate::style::PhysicalSide::Bottom)?;
+        let left = inset_for_side(crate::style::PhysicalSide::Left)?;
+        if numeric_equal(top, right)
+          && numeric_equal(top, bottom)
+          && numeric_equal(top, left)
+        {
+          Some(top)
+        } else {
+          None
+        }
+      }
+      "inset-inline" => {
+        let start = inset_for_side(inline_sides.0)?;
+        let end = inset_for_side(inline_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
+        } else {
+          None
+        }
+      }
+      "inset-block" => {
+        let start = inset_for_side(block_sides.0)?;
+        let end = inset_for_side(block_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
+        } else {
+          None
+        }
+      }
       "inset-inline-start" => inset_for_side(inline_sides.0),
       "inset-inline-end" => inset_for_side(inline_sides.1),
       "inset-block-start" => inset_for_side(block_sides.0),
@@ -2377,11 +2413,29 @@ fn eval_style_range_value(
         let right = margin_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = margin_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = margin_for_side(crate::style::PhysicalSide::Left)?;
-        let equals = |a: NumericValue, b: NumericValue| -> bool {
-          a.ty == b.ty && (a.value - b.value).abs() < 1e-6
-        };
-        if equals(top, right) && equals(top, bottom) && equals(top, left) {
+        if numeric_equal(top, right)
+          && numeric_equal(top, bottom)
+          && numeric_equal(top, left)
+        {
           Some(top)
+        } else {
+          None
+        }
+      }
+      "margin-inline" => {
+        let start = margin_for_side(inline_sides.0)?;
+        let end = margin_for_side(inline_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
+        } else {
+          None
+        }
+      }
+      "margin-block" => {
+        let start = margin_for_side(block_sides.0)?;
+        let end = margin_for_side(block_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
         } else {
           None
         }
@@ -2411,11 +2465,29 @@ fn eval_style_range_value(
         let right = padding_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = padding_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = padding_for_side(crate::style::PhysicalSide::Left)?;
-        let equals = |a: NumericValue, b: NumericValue| -> bool {
-          a.ty == b.ty && (a.value - b.value).abs() < 1e-6
-        };
-        if equals(top, right) && equals(top, bottom) && equals(top, left) {
+        if numeric_equal(top, right)
+          && numeric_equal(top, bottom)
+          && numeric_equal(top, left)
+        {
           Some(top)
+        } else {
+          None
+        }
+      }
+      "padding-inline" => {
+        let start = padding_for_side(inline_sides.0)?;
+        let end = padding_for_side(inline_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
+        } else {
+          None
+        }
+      }
+      "padding-block" => {
+        let start = padding_for_side(block_sides.0)?;
+        let end = padding_for_side(block_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
         } else {
           None
         }
@@ -2428,6 +2500,38 @@ fn eval_style_range_value(
       "padding-inline-end" => padding_for_side(inline_sides.1),
       "padding-block-start" => padding_for_side(block_sides.0),
       "padding-block-end" => padding_for_side(block_sides.1),
+      "scroll-padding" => {
+        let top = scroll_padding_for_side(crate::style::PhysicalSide::Top)?;
+        let right = scroll_padding_for_side(crate::style::PhysicalSide::Right)?;
+        let bottom = scroll_padding_for_side(crate::style::PhysicalSide::Bottom)?;
+        let left = scroll_padding_for_side(crate::style::PhysicalSide::Left)?;
+        if numeric_equal(top, right)
+          && numeric_equal(top, bottom)
+          && numeric_equal(top, left)
+        {
+          Some(top)
+        } else {
+          None
+        }
+      }
+      "scroll-padding-inline" => {
+        let start = scroll_padding_for_side(inline_sides.0)?;
+        let end = scroll_padding_for_side(inline_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
+        } else {
+          None
+        }
+      }
+      "scroll-padding-block" => {
+        let start = scroll_padding_for_side(block_sides.0)?;
+        let end = scroll_padding_for_side(block_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
+        } else {
+          None
+        }
+      }
       "scroll-padding-top" => length_to_numeric(&styles.scroll_padding_top, container, ctx),
       "scroll-padding-right" => length_to_numeric(&styles.scroll_padding_right, container, ctx),
       "scroll-padding-bottom" => length_to_numeric(&styles.scroll_padding_bottom, container, ctx),
@@ -2436,6 +2540,38 @@ fn eval_style_range_value(
       "scroll-padding-inline-end" => scroll_padding_for_side(inline_sides.1),
       "scroll-padding-block-start" => scroll_padding_for_side(block_sides.0),
       "scroll-padding-block-end" => scroll_padding_for_side(block_sides.1),
+      "scroll-margin" => {
+        let top = scroll_margin_for_side(crate::style::PhysicalSide::Top)?;
+        let right = scroll_margin_for_side(crate::style::PhysicalSide::Right)?;
+        let bottom = scroll_margin_for_side(crate::style::PhysicalSide::Bottom)?;
+        let left = scroll_margin_for_side(crate::style::PhysicalSide::Left)?;
+        if numeric_equal(top, right)
+          && numeric_equal(top, bottom)
+          && numeric_equal(top, left)
+        {
+          Some(top)
+        } else {
+          None
+        }
+      }
+      "scroll-margin-inline" => {
+        let start = scroll_margin_for_side(inline_sides.0)?;
+        let end = scroll_margin_for_side(inline_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
+        } else {
+          None
+        }
+      }
+      "scroll-margin-block" => {
+        let start = scroll_margin_for_side(block_sides.0)?;
+        let end = scroll_margin_for_side(block_sides.1)?;
+        if numeric_equal(start, end) {
+          Some(start)
+        } else {
+          None
+        }
+      }
       "scroll-margin-top" => length_to_numeric(&styles.scroll_margin_top, container, ctx),
       "scroll-margin-right" => length_to_numeric(&styles.scroll_margin_right, container, ctx),
       "scroll-margin-bottom" => length_to_numeric(&styles.scroll_margin_bottom, container, ctx),
@@ -2449,10 +2585,10 @@ fn eval_style_range_value(
         let right = border_width_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = border_width_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = border_width_for_side(crate::style::PhysicalSide::Left)?;
-        let equals = |a: NumericValue, b: NumericValue| -> bool {
-          a.ty == b.ty && (a.value - b.value).abs() < 1e-6
-        };
-        if equals(top, right) && equals(top, bottom) && equals(top, left) {
+        if numeric_equal(top, right)
+          && numeric_equal(top, bottom)
+          && numeric_equal(top, left)
+        {
           Some(top)
         } else {
           None
@@ -2461,7 +2597,7 @@ fn eval_style_range_value(
       "border-inline-width" => {
         let start = border_width_for_side(inline_sides.0)?;
         let end = border_width_for_side(inline_sides.1)?;
-        if start.ty == end.ty && (start.value - end.value).abs() < 1e-6 {
+        if numeric_equal(start, end) {
           Some(start)
         } else {
           None
@@ -2470,7 +2606,7 @@ fn eval_style_range_value(
       "border-block-width" => {
         let start = border_width_for_side(block_sides.0)?;
         let end = border_width_for_side(block_sides.1)?;
-        if start.ty == end.ty && (start.value - end.value).abs() < 1e-6 {
+        if numeric_equal(start, end) {
           Some(start)
         } else {
           None

@@ -1672,6 +1672,102 @@ fn container_style_query_range_feature_matches_left() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_inset() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; position: relative; inset: 1px; }
+      .container-high { container-type: inline-size; position: relative; inset: 3px; }
+      .container-mixed { container-type: inline-size; position: relative; inset: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(inset > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_inset_inline() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; position: relative; inset-inline: 1px; }
+      .container-high { container-type: inline-size; position: relative; inset-inline: 3px; }
+      .container-mixed { container-type: inline-size; position: relative; inset-inline: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(inset-inline > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_inset_block() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; position: relative; inset-block: 1px; }
+      .container-high { container-type: inline-size; position: relative; inset-block: 3px; }
+      .container-mixed { container-type: inline-size; position: relative; inset-block: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(inset-block > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_inset_inline_start() {
   let html = r#"
     <style>
@@ -1944,6 +2040,82 @@ fn container_style_query_range_feature_matches_margin() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_margin_inline() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; margin-inline: 1px; }
+      .container-thick { container-type: inline-size; margin-inline: 3px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; margin-inline: 3px; }
+      .container-mixed { container-type: inline-size; margin-inline: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(margin-inline > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_margin_block() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; margin-block: 1px; }
+      .container-thick { container-type: inline-size; margin-block: 3px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; margin-block: 3px; }
+      .container-mixed { container-type: inline-size; margin-block: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(margin-block > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_margin_left_length() {
   let html = r#"
     <style>
@@ -2056,6 +2228,82 @@ fn container_style_query_range_feature_matches_padding() {
   let mixed = find_by_id(&styled, "mixed").expect("mixed element");
   assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_padding_inline() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; padding-inline: 1px; }
+      .container-thick { container-type: inline-size; padding-inline: 3px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; padding-inline: 3px; }
+      .container-mixed { container-type: inline-size; padding-inline: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(padding-inline > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_padding_block() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; padding-block: 1px; }
+      .container-thick { container-type: inline-size; padding-block: 3px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; padding-block: 3px; }
+      .container-mixed { container-type: inline-size; padding-block: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(padding-block > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
   assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
 }
 
@@ -2254,6 +2502,114 @@ fn container_style_query_range_feature_matches_text_underline_offset() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_scroll_margin() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; scroll-margin: 1px; }
+      .container-thick { container-type: inline-size; scroll-margin: 3px; }
+      .container-mixed { container-type: inline-size; scroll-margin: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(scroll-margin > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_scroll_margin_inline() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; scroll-margin-left: 1px; scroll-margin-right: 1px; }
+      .container-thick { container-type: inline-size; scroll-margin-left: 3px; scroll-margin-right: 3px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; scroll-margin-top: 3px; scroll-margin-bottom: 3px; }
+      .container-mixed { container-type: inline-size; scroll-margin-left: 3px; scroll-margin-right: 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(scroll-margin-inline > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_scroll_margin_block() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; scroll-margin-top: 1px; scroll-margin-bottom: 1px; }
+      .container-thick { container-type: inline-size; scroll-margin-top: 3px; scroll-margin-bottom: 3px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; scroll-margin-left: 3px; scroll-margin-right: 3px; }
+      .container-mixed { container-type: inline-size; scroll-margin-top: 3px; scroll-margin-bottom: 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(scroll-margin-block > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_scroll_margin_left() {
   let html = r#"
     <style>
@@ -2309,6 +2665,114 @@ fn container_style_query_range_feature_matches_scroll_margin_inline_start() {
   assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(ltr.styles.color, Rgba::rgb(255, 0, 0));
   assert_eq!(rtl.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_scroll_padding() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; scroll-padding: 1px; }
+      .container-thick { container-type: inline-size; scroll-padding: 3px; }
+      .container-mixed { container-type: inline-size; scroll-padding: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(scroll-padding > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_scroll_padding_inline() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; scroll-padding-left: 1px; scroll-padding-right: 1px; }
+      .container-thick { container-type: inline-size; scroll-padding-left: 3px; scroll-padding-right: 3px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; scroll-padding-top: 3px; scroll-padding-bottom: 3px; }
+      .container-mixed { container-type: inline-size; scroll-padding-left: 3px; scroll-padding-right: 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(scroll-padding-inline > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_scroll_padding_block() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; scroll-padding-top: 1px; scroll-padding-bottom: 1px; }
+      .container-thick { container-type: inline-size; scroll-padding-top: 3px; scroll-padding-bottom: 3px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; scroll-padding-left: 3px; scroll-padding-right: 3px; }
+      .container-mixed { container-type: inline-size; scroll-padding-top: 3px; scroll-padding-bottom: 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(scroll-padding-block > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
 }
 
 #[test]
