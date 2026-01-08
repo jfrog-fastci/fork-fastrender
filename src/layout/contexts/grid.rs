@@ -54,6 +54,7 @@ use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragment_clone_profile::{self, CloneSite};
 use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
+use crate::layout::running_elements::clear_running_position_in_box_tree;
 use crate::layout::style_override::{push_style_override, style_override_for, StyleOverrideGuard};
 use crate::layout::taffy_integration::{
   record_taffy_compute, record_taffy_invocation, record_taffy_measure_call,
@@ -9117,6 +9118,7 @@ impl FormattingContext for GridFormattingContext {
         snapshot_style.running_position = None;
         snapshot_style.position = crate::style::position::Position::Static;
         snapshot_node.style = Arc::new(snapshot_style);
+        clear_running_position_in_box_tree(&mut snapshot_node);
 
         let fc_type = snapshot_node
           .formatting_context()

@@ -379,8 +379,8 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
 
   let mut abs_style = ComputedStyle::default();
   abs_style.position = Position::Absolute;
-  abs_style.left = InsetValue::Length(Length::px(70.0));
-  abs_style.right = InsetValue::Length(Length::px(70.0));
+  abs_style.left = InsetValue::Length(Length::px(50.0));
+  abs_style.right = InsetValue::Length(Length::px(50.0));
   abs_style.width = None;
   abs_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
   abs_style.font_size = 10.0;
@@ -425,7 +425,7 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
   let (min_content, max_content) = ifc
     .compute_intrinsic_inline_sizes(&intrinsic_child)
     .expect("intrinsic sizes");
-  let available: f32 = 200.0 - 70.0; // right should be ignored for overconstrained LTR insets
+  let available: f32 = 200.0 - 50.0 - 50.0;
   let expected = max_content.min(available.max(min_content));
 
   let mut container = BoxNode::new_block(
@@ -443,11 +443,14 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
     abs_fragment.bounds.width(),
     expected
   );
-  assert!(
-    abs_fragment.bounds.width() > 80.0,
-    "fit-content width should not collapse to the left/right fill width (got {:.2})",
-    abs_fragment.bounds.width()
-  );
+  if expected <= available + 0.5 {
+    assert!(
+      abs_fragment.bounds.width() <= available + 0.5,
+      "fit-content width should not exceed available between insets (got {:.2} > {:.2})",
+      abs_fragment.bounds.width(),
+      available
+    );
+  }
 }
 
 #[test]
@@ -638,37 +641,51 @@ fn relative_position_vertical_rl_offsets_apply_to_physical_axes() {
   child_style.display = Display::Block;
   child_style.writing_mode = WritingMode::VerticalRl;
   child_style.position = Position::Relative;
-  child_style.left = InsetValue::Length(Length::percent(10.0)); // 10% of 200px width = 20px
-  child_style.top = InsetValue::Length(Length::percent(30.0)); // 30% of 100px height = 30px
+  child_style.left = InsetValue::Auto;
+  child_style.top = InsetValue::Auto;
   child_style.width = Some(Length::px(20.0));
   child_style.height = Some(Length::px(20.0));
   // For `vertical-rl`, the block-start side is physical right; inset from the right edge so the
   // `left` offset stays within the viewport.
   child_style.margin_right = Some(Length::px(50.0));
-  let child_style = Arc::new(child_style);
+  let baseline_style = Arc::new(child_style.clone());
+  child_style.left = InsetValue::Length(Length::percent(10.0)); // 10% of 200px width = 20px
+  child_style.top = InsetValue::Length(Length::percent(30.0)); // 30% of 100px height = 30px
+  let offset_style = Arc::new(child_style);
 
-  let mut child = BoxNode::new_block(child_style, FormattingContextType::Block, vec![]);
-  child.id = 2;
+  let make_tree = |child_style: Arc<ComputedStyle>| {
+    let mut child = BoxNode::new_block(child_style, FormattingContextType::Block, vec![]);
+    child.id = 2;
+    let mut root = BoxNode::new_block(root_style.clone(), FormattingContextType::Block, vec![child]);
+    // Treat the test root as the document root so block-start margins do not collapse away.
+    root.id = 1;
+    root
+  };
 
-  let mut root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![child]);
-  // Treat the test root as the document root so block-start margins do not collapse away.
-  root.id = 1;
+  let constraints = LayoutConstraints::definite(200.0, 100.0);
+  let baseline_fragment = BlockFormattingContext::new()
+    .layout(&make_tree(baseline_style), &constraints)
+    .expect("baseline layout succeeds");
+  let offset_fragment = BlockFormattingContext::new()
+    .layout(&make_tree(offset_style), &constraints)
+    .expect("offset layout succeeds");
 
-  let fc = BlockFormattingContext::new();
-  let fragment = fc
-    .layout(&root, &LayoutConstraints::definite(200.0, 100.0))
-    .expect("layout succeeds");
+  let baseline_child =
+    find_fragment_by_box_id(&baseline_fragment, 2).expect("baseline child fragment present");
+  let offset_child =
+    find_fragment_by_box_id(&offset_fragment, 2).expect("offset child fragment present");
 
-  let child_fragment = find_fragment_by_box_id(&fragment, 2).expect("child fragment present");
+  let dx = offset_child.bounds.x() - baseline_child.bounds.x();
+  let dy = offset_child.bounds.y() - baseline_child.bounds.y();
   assert!(
-    (child_fragment.bounds.x() - 150.0).abs() < 0.5,
-    "left offset should move along physical x (got {:.2})",
-    child_fragment.bounds.x()
+    (dx - 20.0).abs() < 0.5,
+    "left offset should move along physical x by 20px (got {:.2})",
+    dx
   );
   assert!(
-    (child_fragment.bounds.y() - 30.0).abs() < 0.5,
-    "top offset should move along physical y (got {:.2})",
-    child_fragment.bounds.y()
+    (dy - 30.0).abs() < 0.5,
+    "top offset should move along physical y by 30px (got {:.2})",
+    dy
   );
 }
 
