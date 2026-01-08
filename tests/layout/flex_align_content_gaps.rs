@@ -154,6 +154,38 @@ fn align_content_space_around_respects_row_gap_between_lines() {
 }
 
 #[test]
+fn align_content_space_between_respects_row_gap_between_lines() {
+  let fc = FlexFormattingContext::new();
+
+  let container = build_multiline_container(
+    AlignContent::SpaceBetween,
+    WritingMode::HorizontalTb,
+    FlexDirection::Row,
+    FlexWrap::Wrap,
+    60.0,
+    55.0,
+    5.0,
+    0.0,
+    30.0,
+    10.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(60.0, 55.0))
+    .expect("layout succeeds");
+
+  // Container: 55px tall
+  // Two flex lines (each 10px), plus a 5px row-gap => used cross size = 25px, free = 30px.
+  // align-content: space-between => first line y = 0, second line y = 10 + 5 + 30 = 45.
+  let epsilon = 0.6;
+  let first_line_y = 0.0;
+  let second_line_y = 10.0 + 5.0 + 30.0;
+
+  assert_approx(find_block_child(&fragment, 1).bounds.y(), first_line_y, epsilon, "child1 y");
+  assert_approx(find_block_child(&fragment, 2).bounds.y(), first_line_y, epsilon, "child2 y");
+  assert_approx(find_block_child(&fragment, 3).bounds.y(), second_line_y, epsilon, "child3 y");
+}
+
+#[test]
 fn column_gap_affects_main_axis_spacing_not_cross_axis_offsets() {
   let fc = FlexFormattingContext::new();
 
