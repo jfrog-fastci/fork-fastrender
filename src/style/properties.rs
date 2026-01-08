@@ -2761,33 +2761,64 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
 
   if starts_with_ignore_ascii_case(trimmed, "cubic-bezier(") && trimmed.ends_with(')') {
     let args = &trimmed["cubic-bezier(".len()..trimmed.len() - 1];
-    let nums: Vec<f32> = args
-      .split(',')
-      .filter_map(|n| n.trim().parse::<f32>().ok())
-      .collect();
-    if nums.len() == 4 {
-      return Some(TransitionTimingFunction::CubicBezier(
-        nums[0], nums[1], nums[2], nums[3],
-      ));
+    let parts: Vec<&str> = args.split(',').map(|p| p.trim()).collect();
+    if parts.len() != 4 {
+      return None;
     }
-    return None;
+    let mut nums = [0.0f32; 4];
+    for (idx, part) in parts.iter().enumerate() {
+      if part.is_empty() {
+        return None;
+      }
+      let num = part.parse::<f32>().ok()?;
+      if !num.is_finite() {
+        return None;
+      }
+      nums[idx] = num;
+    }
+    // x1 and x2 must be in [0, 1] per CSS Easing.
+    if !(0.0..=1.0).contains(&nums[0]) || !(0.0..=1.0).contains(&nums[2]) {
+      return None;
+    }
+    return Some(TransitionTimingFunction::CubicBezier(
+      nums[0], nums[1], nums[2], nums[3],
+    ));
   }
 
   if starts_with_ignore_ascii_case(trimmed, "steps(") && trimmed.ends_with(')') {
     let args = &trimmed["steps(".len()..trimmed.len() - 1];
-    let mut parts = args.split(',').map(|p| p.trim());
-    if let Some(count) = parts.next().and_then(|p| p.parse::<u32>().ok()) {
-      let position = match parts.next() {
-        Some(p) if p.eq_ignore_ascii_case("start") => StepPosition::Start,
-        Some(p) if p.eq_ignore_ascii_case("end") => StepPosition::End,
-        Some(p) if p.eq_ignore_ascii_case("jump-start") => StepPosition::Start,
-        Some(p) if p.eq_ignore_ascii_case("jump-end") => StepPosition::End,
-        Some(p) if p.eq_ignore_ascii_case("jump-none") => StepPosition::JumpNone,
-        Some(p) if p.eq_ignore_ascii_case("jump-both") => StepPosition::JumpBoth,
-        _ => StepPosition::End,
-      };
-      return Some(TransitionTimingFunction::Steps(count, position));
+    let parts: Vec<&str> = args.split(',').map(|p| p.trim()).collect();
+    if parts.is_empty() || parts.len() > 2 {
+      return None;
     }
+    let count = parts[0].parse::<u32>().ok()?;
+    if count == 0 {
+      return None;
+    }
+    let position = if parts.len() == 2 {
+      let pos = parts[1];
+      if pos.is_empty() {
+        return None;
+      }
+      if pos.eq_ignore_ascii_case("start") || pos.eq_ignore_ascii_case("jump-start") {
+        StepPosition::Start
+      } else if pos.eq_ignore_ascii_case("end") || pos.eq_ignore_ascii_case("jump-end") {
+        StepPosition::End
+      } else if pos.eq_ignore_ascii_case("jump-none") {
+        StepPosition::JumpNone
+      } else if pos.eq_ignore_ascii_case("jump-both") {
+        StepPosition::JumpBoth
+      } else {
+        return None;
+      }
+    } else {
+      StepPosition::End
+    };
+    // For jump-none, the step count must be > 1.
+    if position == StepPosition::JumpNone && count <= 1 {
+      return None;
+    }
+    return Some(TransitionTimingFunction::Steps(count, position));
   }
 
   None

@@ -661,3 +661,109 @@ fn animation_timing_function_ignores_invalid_value() {
     vec![TransitionTimingFunction::Linear].into()
   );
 }
+
+#[test]
+fn transition_timing_function_rejects_invalid_steps_function() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  for value in ["steps(0)", "steps(1, jump-none)", "steps(5, wat)", "steps(5, start, end)"] {
+    let invalid_decl = Declaration {
+      property: "transition-timing-function".into(),
+      value: PropertyValue::Keyword(value.into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration_with_base(
+      &mut styles,
+      &invalid_decl,
+      &parent,
+      &ComputedStyle::default(),
+      None,
+      parent.font_size,
+      parent.root_font_size,
+      DEFAULT_VIEWPORT,
+      false,
+    );
+    assert_eq!(
+      styles.transition_timing_functions,
+      vec![TransitionTimingFunction::Linear].into()
+    );
+  }
+}
+
+#[test]
+fn transition_timing_function_rejects_invalid_cubic_bezier_function() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  // x1/x2 out of range and extra parameters are invalid per CSS Easing.
+  for value in [
+    "cubic-bezier(-0.1, 0, 0.5, 1)",
+    "cubic-bezier(0, 0, 1.1, 1)",
+    "cubic-bezier(0, 0, 0, 0, wat)",
+  ] {
+    let invalid_decl = Declaration {
+      property: "transition-timing-function".into(),
+      value: PropertyValue::Keyword(value.into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration_with_base(
+      &mut styles,
+      &invalid_decl,
+      &parent,
+      &ComputedStyle::default(),
+      None,
+      parent.font_size,
+      parent.root_font_size,
+      DEFAULT_VIEWPORT,
+      false,
+    );
+
+    assert_eq!(
+      styles.transition_timing_functions,
+      vec![TransitionTimingFunction::Linear].into()
+    );
+  }
+}
