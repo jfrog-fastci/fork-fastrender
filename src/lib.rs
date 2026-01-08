@@ -205,6 +205,7 @@ pub mod resource;
 pub(crate) mod rayon_init;
 pub mod svg;
 pub(crate) mod svg_path;
+pub(crate) mod thread_pool_cache;
 pub mod memory;
 pub mod process_limits;
 pub(crate) mod rayon_global;

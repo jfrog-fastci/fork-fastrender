@@ -207,6 +207,7 @@ High eviction counts typically imply cache pressure (raise `FASTR_TEXT_FALLBACK_
 - `FASTR_PAINT_PARALLEL=off|on|auto` – control tiled parallel rasterization when painting display lists (default `auto`).
 - `FASTR_PAINT_PARALLEL_MAX_THREADS=<N>` – cap Rayon worker threads used during tiled paint fan-out (defaults to unlimited; useful when running many worker processes).
 - `FASTR_PAINT_THREADS=<N>` – opt into a dedicated Rayon thread pool for paint build/rasterize. When unset, paint uses the current/global pool. This is useful when pageset workers set `RAYON_NUM_THREADS=1` but paint should still use multiple cores.
+- `FASTR_THREAD_POOL_CACHE_MAX=<N>` – cap the number of distinct dedicated Rayon pools cached by thread-count for layout/paint (default `4`; set `0` to disable caching).
 - `FASTR_LAYOUT_PARALLEL=off|on|auto` – override layout fan-out mode regardless of RenderOptions/FastRenderConfig. When unset, the effective default comes from the caller (the CLI tools default to `auto`; the library defaults to `off`).
 - `FASTR_LAYOUT_PARALLEL_MIN_FANOUT=<N>` – sibling threshold before layout attempts to fan out (default 8).
 - `FASTR_LAYOUT_PARALLEL_MAX_THREADS=<N>` – cap Rayon worker threads used during layout fan-out.

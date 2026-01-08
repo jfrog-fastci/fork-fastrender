@@ -43,10 +43,11 @@ use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
+use lru::LruCache;
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -77,7 +78,7 @@ const DEFAULT_LAYOUT_RAYON_STACK_SIZE: usize = crate::system::DEFAULT_RENDER_STA
 pub const DEFAULT_LAYOUT_AUTO_MAX_THREADS: usize = 16;
 
 static DEFAULT_LAYOUT_THREAD_POOL: OnceLock<Result<Arc<ThreadPool>, String>> = OnceLock::new();
-static LAYOUT_THREAD_POOL_CACHE: OnceLock<Mutex<HashMap<usize, Result<Arc<ThreadPool>, String>>>> =
+static LAYOUT_THREAD_POOL_CACHE: OnceLock<Mutex<LruCache<usize, Result<Arc<ThreadPool>, String>>>> =
   OnceLock::new();
 
 pub(crate) fn default_layout_thread_budget() -> usize {
@@ -110,7 +111,10 @@ fn default_layout_thread_pool() -> Option<Arc<ThreadPool>> {
 }
 
 pub(crate) fn layout_thread_pool_for_threads(threads: usize) -> Option<Arc<ThreadPool>> {
-  let threads = threads.max(1);
+  #[cfg(test)]
+  let _test_lock = crate::thread_pool_cache::thread_pool_cache_test_lock();
+
+  let threads = crate::thread_pool_cache::clamp_thread_count(threads);
   if threads <= 1 {
     return None;
   }
@@ -127,8 +131,9 @@ pub(crate) fn layout_thread_pool_for_threads(threads: usize) -> Option<Arc<Threa
       .map(Arc::new);
   }
 
-  let cache = LAYOUT_THREAD_POOL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-  if let Ok(guard) = cache.lock() {
+  let cache = LAYOUT_THREAD_POOL_CACHE.get_or_init(|| Mutex::new(LruCache::unbounded()));
+  {
+    let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(result) = guard.get(&threads) {
       return result.as_ref().ok().cloned();
     }
@@ -142,9 +147,24 @@ pub(crate) fn layout_thread_pool_for_threads(threads: usize) -> Option<Arc<Threa
     .map(Arc::new)
     .map_err(|err| err.to_string());
 
-  if let Ok(mut guard) = cache.lock() {
-    guard.insert(threads, built.clone());
+  let cache_max = crate::thread_pool_cache::thread_pool_cache_max();
+  if cache_max == 0 {
+    return built.ok();
   }
+
+  let mut evicted = Vec::new();
+  {
+    let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.put(threads, built.clone());
+    while guard.len() > cache_max {
+      if let Some((_key, value)) = guard.pop_lru() {
+        evicted.push(value);
+      } else {
+        break;
+      }
+    }
+  }
+  drop(evicted);
   built.ok()
 }
 
@@ -1283,6 +1303,7 @@ mod tests {
   use crate::style::display::FormattingContextType;
   use crate::style::ComputedStyle;
   use crate::tree::box_tree::{BoxNode, BoxTree};
+  use std::collections::HashMap;
   use std::sync::Arc;
 
   fn default_style() -> Arc<ComputedStyle> {
@@ -1849,5 +1870,43 @@ mod tests {
     let box_tree = BoxTree::new(current);
     let result = engine.layout_tree(&box_tree);
     assert!(result.is_ok());
+  }
+
+  #[test]
+  fn layout_thread_pool_cache_is_bounded() {
+    let _lock = crate::thread_pool_cache::thread_pool_cache_test_lock();
+
+    let cache = LAYOUT_THREAD_POOL_CACHE.get_or_init(|| Mutex::new(LruCache::unbounded()));
+    {
+      let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      guard.clear();
+    }
+
+    let mut raw = HashMap::new();
+    raw.insert(
+      crate::thread_pool_cache::THREAD_POOL_CACHE_MAX_ENV.to_string(),
+      "1".to_string(),
+    );
+    let toggles = Arc::new(crate::debug::runtime::RuntimeToggles::from_map(raw));
+
+    crate::debug::runtime::with_thread_runtime_toggles(toggles, || {
+      for threads in 2..4 {
+        let _ = layout_thread_pool_for_threads(threads);
+        let len = cache
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .len();
+        assert!(
+          len <= 1,
+          "layout thread pool cache should stay within configured bound"
+        );
+      }
+    });
+
+    // Avoid leaving dedicated pools alive for the remainder of the test suite.
+    {
+      let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      guard.clear();
+    }
   }
 }

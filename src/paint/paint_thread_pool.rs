@@ -1,47 +1,68 @@
+use lru::LruCache;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 const PAINT_THREADS_ENV: &str = "FASTR_PAINT_THREADS";
 
-#[derive(Debug)]
-struct PaintThreadPool {
-  pool: ThreadPool,
-  threads: usize,
-}
+static PAINT_THREAD_POOLS: LazyLock<Mutex<LruCache<usize, Result<Arc<ThreadPool>, String>>>> =
+  LazyLock::new(|| Mutex::new(LruCache::unbounded()));
 
-#[derive(Debug)]
-enum PaintThreadPoolState {
-  Ready(PaintThreadPool),
-  Error(String),
-}
+fn paint_thread_pool_state(threads: usize) -> Result<Arc<ThreadPool>, String> {
+  #[cfg(test)]
+  let _test_lock = crate::thread_pool_cache::thread_pool_cache_test_lock();
 
-static PAINT_THREAD_POOLS: LazyLock<Mutex<HashMap<usize, &'static PaintThreadPoolState>>> =
-  LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn paint_thread_pool_state(threads: usize) -> &'static PaintThreadPoolState {
-  let mut guard = PAINT_THREAD_POOLS
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
-  if let Some(existing) = guard.get(&threads) {
-    return *existing;
+  let threads = crate::thread_pool_cache::clamp_thread_count(threads);
+  if threads <= 1 {
+    return Err("thread pool thread count must be > 1".to_string());
   }
-  let state = match ThreadPoolBuilder::new().num_threads(threads).build() {
-    Ok(pool) => PaintThreadPoolState::Ready(PaintThreadPool { pool, threads }),
-    Err(err) => PaintThreadPoolState::Error(err.to_string()),
-  };
-  let leaked = Box::leak(Box::new(state));
-  guard.insert(threads, leaked);
-  leaked
+
+  let cache_max = crate::thread_pool_cache::thread_pool_cache_max();
+  if cache_max > 0 {
+    {
+      let mut guard = PAINT_THREAD_POOLS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      if let Some(existing) = guard.get(&threads) {
+        return existing.clone();
+      }
+    }
+  }
+
+  let built = ThreadPoolBuilder::new()
+    .num_threads(threads)
+    .build()
+    .map(Arc::new)
+    .map_err(|err| err.to_string());
+
+  if cache_max == 0 {
+    return built;
+  }
+
+  let mut evicted = Vec::new();
+  {
+    let mut guard = PAINT_THREAD_POOLS
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.put(threads, built.clone());
+    while guard.len() > cache_max {
+      if let Some((_key, value)) = guard.pop_lru() {
+        evicted.push(value);
+      } else {
+        break;
+      }
+    }
+  }
+  drop(evicted);
+  built
 }
 
 #[derive(Debug)]
-pub(crate) struct PaintPoolSelection<'a> {
+pub(crate) struct PaintPoolSelection {
   /// Thread pool to install before running paint-related Rayon work.
   ///
   /// `None` means we should run Rayon work in the current/global pool.
-  pub(crate) pool: Option<&'a ThreadPool>,
+  pub(crate) pool: Option<Arc<ThreadPool>>,
   /// Thread count available for parallel paint work.
   pub(crate) threads: usize,
   /// If no dedicated pool is selected, describes why.
@@ -71,7 +92,7 @@ fn parse_paint_threads_env() -> Result<Option<usize>, String> {
 ///
 /// When `FASTR_PAINT_THREADS` is set to a value greater than 1, a lazily-initialised dedicated
 /// thread pool is returned. Otherwise, callers should use the current/global Rayon pool.
-pub(crate) fn paint_pool() -> PaintPoolSelection<'static> {
+pub(crate) fn paint_pool() -> PaintPoolSelection {
   crate::rayon_init::ensure_global_rayon_pool();
   // Rayon may still observe the host CPU count inside cgroup-quotad containers. Clamp the reported
   // pool size by our process CPU budget so default paint fan-out doesn't oversubscribe CI runs.
@@ -94,14 +115,23 @@ pub(crate) fn paint_pool() -> PaintPoolSelection<'static> {
       ))),
     },
     Ok(Some(threads)) => {
-      let state = paint_thread_pool_state(threads);
-      match state {
-        PaintThreadPoolState::Ready(pool) => PaintPoolSelection {
-          pool: Some(&pool.pool),
-          threads: pool.threads.max(1),
+      let threads = crate::thread_pool_cache::clamp_thread_count(threads);
+      if threads <= 1 {
+        return PaintPoolSelection {
+          pool: None,
+          threads: current_threads,
+          dedicated_fallback: Some(Cow::Owned(format!(
+            "dedicated paint pool disabled ({PAINT_THREADS_ENV} clamped to {threads})"
+          ))),
+        };
+      }
+      match paint_thread_pool_state(threads) {
+        Ok(pool) => PaintPoolSelection {
+          pool: Some(pool),
+          threads: threads.max(1),
           dedicated_fallback: None,
         },
-        PaintThreadPoolState::Error(err) => PaintPoolSelection {
+        Err(err) => PaintPoolSelection {
           pool: None,
           threads: current_threads,
           dedicated_fallback: Some(Cow::Owned(format!(
@@ -117,5 +147,53 @@ pub(crate) fn paint_pool() -> PaintPoolSelection<'static> {
         "dedicated paint pool disabled ({reason})"
       ))),
     },
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+  use std::collections::HashMap;
+  use std::sync::Arc;
+
+  fn clear_cache() {
+    let mut guard = PAINT_THREAD_POOLS
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.clear();
+  }
+
+  fn cache_len() -> usize {
+    PAINT_THREAD_POOLS
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .len()
+  }
+
+  #[test]
+  fn paint_thread_pool_cache_is_bounded() {
+    let _lock = crate::thread_pool_cache::thread_pool_cache_test_lock();
+    clear_cache();
+
+    let mut raw = HashMap::new();
+    raw.insert(
+      crate::thread_pool_cache::THREAD_POOL_CACHE_MAX_ENV.to_string(),
+      "2".to_string(),
+    );
+    let toggles = Arc::new(RuntimeToggles::from_map(raw));
+
+    with_thread_runtime_toggles(toggles, || {
+      for threads in 2..10 {
+        let _ = paint_thread_pool_state(threads);
+        assert!(
+          cache_len() <= 2,
+          "paint thread pool cache should stay within configured bound"
+        );
+      }
+    });
+
+    // Avoid leaving dedicated pools alive for the remainder of the test suite.
+    clear_cache();
   }
 }
