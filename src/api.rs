@@ -12531,6 +12531,13 @@ fn hash_image_orientation(value: &crate::style::types::ImageOrientation, hasher:
   }
 }
 
+fn hash_font_stretch(value: &crate::style::types::FontStretch, hasher: &mut DefaultHasher) {
+  hash_enum_discriminant(value, hasher);
+  if let crate::style::types::FontStretch::Percentage(v) = value {
+    hash_f32(*v, hasher);
+  }
+}
+
 fn hash_contain_intrinsic_size_axis(
   value: &crate::style::types::ContainIntrinsicSizeAxis,
   hasher: &mut DefaultHasher,
@@ -12547,6 +12554,16 @@ fn hash_appearance(value: &crate::style::types::Appearance, hasher: &mut Default
       2u8.hash(hasher);
       name.hash(hasher);
     }
+  }
+}
+
+fn hash_text_combine_upright(
+  value: &crate::style::types::TextCombineUpright,
+  hasher: &mut DefaultHasher,
+) {
+  hash_enum_discriminant(value, hasher);
+  if let crate::style::types::TextCombineUpright::Digits(v) = value {
+    v.hash(hasher);
   }
 }
 
@@ -13613,7 +13630,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.font_optical_sizing, &mut h);
   hash_font_language_override(&style.font_language_override, &mut h);
   hash_enum_discriminant(&style.font_variant_emoji, &mut h);
-  hash_enum_discriminant(&style.font_stretch, &mut h);
+  hash_font_stretch(&style.font_stretch, &mut h);
   hash_enum_discriminant(&style.font_kerning, &mut h);
   hash_f32(style.font_size, &mut h);
   hash_f32(style.root_font_size, &mut h);
@@ -13630,7 +13647,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.text_rendering, &mut h);
   hash_text_transform(&style.text_transform, &mut h);
   hash_enum_discriminant(&style.text_orientation, &mut h);
-  hash_enum_discriminant(&style.text_combine_upright, &mut h);
+  hash_text_combine_upright(&style.text_combine_upright, &mut h);
   hash_text_emphasis_style(&style.text_emphasis_style, &mut h);
   match &style.text_emphasis_color {
     Some(c) => {
@@ -15511,6 +15528,36 @@ pub(crate) fn render_html_with_shared_resources(
       base_fp,
       super::style_layout_fingerprint(&cloned),
       "expected box-decoration-break to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_font_stretch_percentage() {
+    let mut a = ComputedStyle::default();
+    a.font_stretch = crate::style::types::FontStretch::Percentage(80.0);
+
+    let mut b = a.clone();
+    b.font_stretch = crate::style::types::FontStretch::Percentage(90.0);
+
+    assert_ne!(
+      super::style_layout_fingerprint(&a),
+      super::style_layout_fingerprint(&b),
+      "expected font-stretch percentage to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_text_combine_upright_digits() {
+    let mut a = ComputedStyle::default();
+    a.text_combine_upright = crate::style::types::TextCombineUpright::Digits(2);
+
+    let mut b = a.clone();
+    b.text_combine_upright = crate::style::types::TextCombineUpright::Digits(3);
+
+    assert_ne!(
+      super::style_layout_fingerprint(&a),
+      super::style_layout_fingerprint(&b),
+      "expected text-combine-upright digit count to affect layout fingerprints"
     );
   }
 
