@@ -11849,6 +11849,92 @@ mod tests {
   }
 
   #[test]
+  fn column_and_colgroup_backgrounds_paint_before_rows_rtl() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.direction = Direction::Rtl;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut colgroup_style = ComputedStyle::default();
+    colgroup_style.display = Display::TableColumnGroup;
+    colgroup_style.background_color = Rgba::from_rgba8(255, 0, 0, 255);
+    colgroup_style.border_top_width = Length::px(3.0);
+    colgroup_style.border_top_style = BorderStyle::Solid;
+
+    let mut col_style = ComputedStyle::default();
+    col_style.display = Display::TableColumn;
+    col_style.background_color = Rgba::from_rgba8(0, 0, 255, 255);
+    col_style.border_left_width = Length::px(2.0);
+    col_style.border_left_style = BorderStyle::Solid;
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+    row_style.background_color = Rgba::from_rgba8(0, 200, 0, 255);
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.height = Some(Length::px(10.0));
+    child_style.height_keyword = None;
+    let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+    let cell1 = BoxNode::new_block(
+      Arc::new(cell_style.clone()),
+      FormattingContextType::Block,
+      vec![child.clone()],
+    );
+    let cell2 = BoxNode::new_block(
+      Arc::new(cell_style),
+      FormattingContextType::Block,
+      vec![child],
+    );
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell1, cell2],
+    );
+
+    let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![]);
+    let colgroup = BoxNode::new_block(
+      Arc::new(colgroup_style),
+      FormattingContextType::Block,
+      vec![col],
+    );
+
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![colgroup, row],
+    );
+
+    let fc = TableFormattingContext::with_factory(FormattingContextFactory::new());
+    let fragment = fc
+      .layout(
+        &table,
+        &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite),
+      )
+      .expect("layout");
+
+    let colors: Vec<Rgba> = fragment
+      .children
+      .iter()
+      .filter_map(|f| f.style.as_ref().map(|s| s.background_color))
+      .collect();
+    assert!(
+      colors.len() >= 2,
+      "column group and column backgrounds should be present before cells"
+    );
+    assert_eq!(colors[0], Rgba::from_rgba8(255, 0, 0, 255));
+    assert_eq!(colors[1], Rgba::from_rgba8(0, 0, 255, 255));
+    assert!(
+      colors.contains(&Rgba::from_rgba8(0, 200, 0, 255)),
+      "row background should still be painted"
+    );
+  }
+
+  #[test]
   fn empty_cells_hide_preserves_border_widths_in_separate_model() {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
