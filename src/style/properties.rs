@@ -1276,22 +1276,32 @@ fn parse_named_timeline_name_list(raw: &str) -> Option<Vec<Option<String>>> {
   }
 }
 
-fn parse_timeline_axis_list(raw: &str) -> Vec<TimelineAxis> {
-  let trimmed = raw.trim();
-  if trimmed.is_empty() {
-    return Vec::new();
-  }
-  let mut axes = Vec::new();
-  for part in split_top_level_commas(trimmed) {
-    let token = part.trim();
-    if token.is_empty() {
-      continue;
+fn parse_timeline_axis_list(raw: &str) -> Option<Vec<TimelineAxis>> {
+  let parts = split_top_level_commas_strict(raw)?;
+  let mut axes = Vec::with_capacity(parts.len());
+  for part in parts {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+      return None;
     }
-    if let Some(axis) = parse_timeline_axis(&token.to_ascii_lowercase()) {
-      axes.push(axis);
+    let mut input = ParserInput::new(trimmed);
+    let mut parser = Parser::new(&mut input);
+    parser.skip_whitespace();
+    let token = parser.next_including_whitespace().ok()?;
+    let axis = match token {
+      Token::Ident(ident) => {
+        let lower = ident.as_ref().to_ascii_lowercase();
+        parse_timeline_axis(&lower)?
+      }
+      _ => return None,
+    };
+    parser.skip_whitespace();
+    if !parser.is_exhausted() {
+      return None;
     }
+    axes.push(axis);
   }
-  axes
+  if axes.is_empty() { None } else { Some(axes) }
 }
 
 fn parse_view_timeline_list(raw: &str) -> Option<Vec<ViewTimeline>> {
@@ -1379,41 +1389,40 @@ fn parse_view_timeline_list(raw: &str) -> Option<Vec<ViewTimeline>> {
   Some(timelines)
 }
 
-fn parse_view_timeline_inset_list(raw: &str) -> Vec<Option<ViewTimelineInset>> {
-  let trimmed = raw.trim();
-  if trimmed.is_empty() {
-    return Vec::new();
-  }
-  let mut insets = Vec::new();
-  for part in split_top_level_commas(trimmed) {
+fn parse_view_timeline_inset_list(raw: &str) -> Option<Vec<Option<ViewTimelineInset>>> {
+  let parts = split_top_level_commas_strict(raw)?;
+  let mut insets = Vec::with_capacity(parts.len());
+  for part in parts {
     let tokens = split_top_level_whitespace(&part);
-    if tokens.is_empty() {
-      continue;
+    if tokens.is_empty() || tokens.len() > 2 {
+      return None;
     }
-    let mut values: Vec<Option<Length>> = Vec::new();
-    for token in tokens.into_iter().take(2) {
+    let mut values: Vec<Option<Length>> = Vec::with_capacity(tokens.len());
+    for token in tokens {
       if token.eq_ignore_ascii_case("auto") {
         values.push(None);
         continue;
       }
       if let Some(len) = parse_length(&token) {
         values.push(Some(len));
+        continue;
       }
+      return None;
     }
     let inset = match values.len() {
-      0 => None,
       1 => Some(ViewTimelineInset {
         start: values[0],
         end: values[0],
       }),
-      _ => Some(ViewTimelineInset {
+      2 => Some(ViewTimelineInset {
         start: values[0],
         end: values[1],
       }),
+      _ => return None,
     };
     insets.push(inset);
   }
-  insets
+  if insets.is_empty() { None } else { Some(insets) }
 }
 
 fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
@@ -11507,10 +11516,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "scroll-timeline-axis" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let axes = parse_timeline_axis_list(css_text);
-      if axes.is_empty() {
+      let Some(axes) = parse_timeline_axis_list(css_text) else {
         return;
-      }
+      };
       let target_len = styles.scroll_timelines.len().max(axes.len());
       styles
         .scroll_timelines
@@ -11551,10 +11559,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "view-timeline-axis" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let axes = parse_timeline_axis_list(css_text);
-      if axes.is_empty() {
+      let Some(axes) = parse_timeline_axis_list(css_text) else {
         return;
-      }
+      };
       let target_len = styles.view_timelines.len().max(axes.len());
       styles.view_timelines.resize_with(target_len, ViewTimeline::default);
       let fallback = *axes.last().unwrap_or(&TimelineAxis::Block);
@@ -11565,10 +11572,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "view-timeline-inset" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let insets = parse_view_timeline_inset_list(css_text);
-      if insets.is_empty() {
+      let Some(insets) = parse_view_timeline_inset_list(css_text) else {
         return;
-      }
+      };
       let target_len = styles.view_timelines.len().max(insets.len());
       styles.view_timelines.resize_with(target_len, ViewTimeline::default);
       let fallback = insets.last().copied().unwrap_or(None);

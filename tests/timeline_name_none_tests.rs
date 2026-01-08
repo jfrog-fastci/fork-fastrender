@@ -152,3 +152,45 @@ fn view_timeline_rejects_css_wide_keywords_in_lists() {
   assert_eq!(div.styles.view_timelines[0].name.as_deref(), Some("viewy"));
   assert_eq!(div.styles.view_timelines[0].axis, TimelineAxis::Inline);
 }
+
+#[test]
+fn scroll_timeline_axis_rejects_invalid_list_items() {
+  let css = r#"
+    #box {
+      scroll-timeline: main block;
+      scroll-timeline-axis: block;
+      scroll-timeline-axis: inline, inherit;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+  assert_eq!(div.styles.scroll_timelines.len(), 1);
+  assert_eq!(div.styles.scroll_timelines[0].axis, TimelineAxis::Block);
+}
+
+#[test]
+fn view_timeline_inset_rejects_invalid_tokens() {
+  let css = r#"
+    #box {
+      view-timeline: viewy inline;
+      view-timeline-inset: 0px;
+      view-timeline-inset: 10px foo;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+  assert_eq!(div.styles.view_timelines.len(), 1);
+  assert_eq!(
+    div.styles.view_timelines[0].inset,
+    Some(fastrender::style::types::ViewTimelineInset {
+      start: Some(fastrender::Length::px(0.0)),
+      end: Some(fastrender::Length::px(0.0)),
+    })
+  );
+}
