@@ -187,7 +187,7 @@ impl BrowserDocument {
   }
 }
 
-fn prepare_dom_inner(
+pub(super) fn prepare_dom_inner(
   renderer: &mut super::FastRender,
   dom: &DomNode,
   options: RenderOptions,

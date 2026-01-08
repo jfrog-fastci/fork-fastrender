@@ -218,6 +218,9 @@ pub use tiny_skia::Pixmap;
 mod browser_document;
 pub use browser_document::BrowserDocument;
 
+mod browser_document_dom2;
+pub use browser_document_dom2::BrowserDocumentDom2;
+
 #[derive(Default, Debug, Clone)]
 struct ReplacedIntrinsicProfileState {
   start: Option<Instant>,
