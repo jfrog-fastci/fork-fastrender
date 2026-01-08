@@ -7,7 +7,7 @@ rust-version = "1.70"
 publish = false
 
 [workspace]
-members = ["xtask", "crates/webidl-ir"]
+members = ["xtask", "crates/webidl-ir", "crates/js-wpt-dom-runner"]
 resolver = "2"
 
 [features]
