@@ -1,0 +1,10 @@
+[advisories]
+# RUSTSEC-2022-0040 (owning_ref): `owning_ref` is unmaintained and has known soundness issues.
+# It is currently pulled in via `avif-decode`, which (as of v1.0.1) has no alternative release
+# without this dependency.
+#
+# Expiry: 2026-07-01 (revisit once `avif-decode` removes `owning_ref` or a maintained decoder is
+# available that supports our MSRV).
+ignore = [
+  "RUSTSEC-2022-0040",
+]
