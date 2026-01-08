@@ -410,6 +410,17 @@ impl Canvas {
     Some((backdrop, &mut self.pixmap))
   }
 
+  /// Marks the current (topmost) offscreen layer as having been initialized from the backdrop.
+  ///
+  /// This flag is used by [`Canvas::fill_backdrop_root_region`] to ensure Backdrop Root scoping is
+  /// preserved even when a non-isolated compositing group surface lazily injects backdrop pixels
+  /// (e.g. for descendant `mix-blend-mode` operations).
+  pub(crate) fn mark_current_layer_initialized_from_backdrop(&mut self) {
+    if let Some(record) = self.layer_stack.last_mut() {
+      record.init_from_backdrop = true;
+    }
+  }
+
   pub(crate) fn layer_stack_len(&self) -> usize {
     self.layer_stack.len()
   }

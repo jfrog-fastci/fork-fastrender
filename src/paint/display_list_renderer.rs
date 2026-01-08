@@ -10449,6 +10449,12 @@ impl DisplayListRenderer {
       Transform::identity(),
       None,
     );
+    // Keep Backdrop Root scoping correct for any descendant `backdrop-filter` sampling. The layer
+    // may now contain copied backdrop pixels, but those should not become visible through the
+    // Backdrop Root Image.
+    self
+      .canvas
+      .mark_current_layer_initialized_from_backdrop();
     self.mark_current_pixmap_mutated();
     if let Some(record) = self.stacking_layers.last_mut() {
       if record.layer_origin == layer_origin {

@@ -113,6 +113,51 @@ fn mix_blend_mode_establishes_a_backdrop_root() {
 }
 
 #[test]
+fn mix_blend_mode_backdrop_root_ignores_non_isolated_group_backdrop_init() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 255 255); }
+      #group { position: absolute; inset: 0; mix-blend-mode: multiply; }
+      /* Trigger non-isolated group surface initialization from backdrop. */
+      #trigger {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1px;
+        height: 1px;
+        background: rgb(255 0 0);
+        mix-blend-mode: difference;
+      }
+      #overlay {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="group">
+      <div id="trigger"></div>
+      <div id="overlay"></div>
+    </div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // `mix-blend-mode` establishes a Backdrop Root boundary for descendant backdrop-filter sampling.
+  // Even if the group surface is lazily initialized from the page backdrop for descendant blending,
+  // the Backdrop Root Image must treat that initialization backdrop as transparent.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 255, 255, 255));
+}
+
+#[test]
 fn clip_path_establishes_a_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
@@ -143,4 +188,3 @@ fn clip_path_establishes_a_backdrop_root() {
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
-
