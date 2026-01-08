@@ -6291,7 +6291,18 @@ impl<'a> Element for ElementRef<'a> {
             .map(|t| t.eq_ignore_ascii_case("html"))
             .unwrap_or(false)
       }
-      PseudoClass::Defined => true,
+      PseudoClass::Defined => {
+        if _context.extra_data.treat_custom_elements_as_defined {
+          true
+        } else {
+          // Spec-correct behavior: elements with a valid custom-element name (minimum: contains a
+          // hyphen) are undefined unless upgraded by the custom elements registry, which FastRender
+          // does not run.
+          //
+          // Non-custom element names (no hyphen) remain `:defined`.
+          !(self.is_html_element() && self.node.tag_name().is_some_and(|tag| tag.contains('-')))
+        }
+      }
       PseudoClass::FirstChild => self.element_index(_context) == Some(0),
       PseudoClass::LastChild => self
         .element_index_and_len(_context)
@@ -9919,6 +9930,14 @@ mod tests {
   }
 
   fn selector_matches(element: &ElementRef, selector: &Selector<FastRenderSelectorImpl>) -> bool {
+    selector_matches_with_custom_elements_defined(element, selector, true)
+  }
+
+  fn selector_matches_with_custom_elements_defined(
+    element: &ElementRef,
+    selector: &Selector<FastRenderSelectorImpl>,
+    treat_custom_elements_as_defined: bool,
+  ) -> bool {
     let mut caches = SelectorCaches::default();
     let cache_epoch = next_selector_cache_epoch();
     caches.set_epoch(cache_epoch);
@@ -9931,7 +9950,9 @@ mod tests {
       NeedsSelectorFlags::No,
       MatchingForInvalidation::No,
     );
-    context.extra_data = ShadowMatchData::for_document().with_sibling_cache(&sibling_cache);
+    context.extra_data = ShadowMatchData::for_document()
+      .with_custom_elements_defined(treat_custom_elements_as_defined)
+      .with_sibling_cache(&sibling_cache);
     matches_selector(selector, 0, None, element, &mut context)
   }
 
@@ -9973,10 +9994,20 @@ mod tests {
     let node_ref = ElementRef::with_ancestors(&node, &[]);
 
     let selector = parse_selector("details-dialog:defined");
-    assert!(selector_matches(&node_ref, &selector));
+    assert!(selector_matches_with_custom_elements_defined(
+      &node_ref, &selector, true
+    ));
+    assert!(!selector_matches_with_custom_elements_defined(
+      &node_ref, &selector, false
+    ));
 
     let selector = parse_selector("details-dialog:not(:defined)");
-    assert!(!selector_matches(&node_ref, &selector));
+    assert!(!selector_matches_with_custom_elements_defined(
+      &node_ref, &selector, true
+    ));
+    assert!(selector_matches_with_custom_elements_defined(
+      &node_ref, &selector, false
+    ));
   }
 
   #[test]

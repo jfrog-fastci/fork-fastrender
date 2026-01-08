@@ -15459,6 +15459,7 @@ mod tests {
       sibling_cache: Some(sibling_cache),
       element_attr_cache: None,
       form_validity_index: Some(&dom_maps.form_validity_index),
+      treat_custom_elements_as_defined: true,
     };
 
     let mut matched = BTreeSet::new();
@@ -28615,6 +28616,7 @@ fn find_matching_rules<'a>(
     sibling_cache: Some(sibling_cache),
     element_attr_cache,
     form_validity_index: Some(&dom_maps.form_validity_index),
+    treat_custom_elements_as_defined: true,
   };
 
   let scope_allows = |scope: &RuleScope, is_slotted: bool| -> bool {
@@ -29304,6 +29306,7 @@ fn find_pseudo_element_rules<'a>(
     sibling_cache: Some(sibling_cache),
     element_attr_cache,
     form_validity_index,
+    treat_custom_elements_as_defined: true,
   };
 
   let include_self_container =

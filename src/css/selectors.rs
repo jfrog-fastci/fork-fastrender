@@ -43,7 +43,7 @@ pub enum TextDirection {
 pub struct FastRenderSelectorImpl;
 
 /// Additional per-match context needed for shadow-aware selector evaluation.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ShadowMatchData<'a> {
   /// The shadow host for the stylesheet being matched, or None for document styles.
   pub shadow_host: Option<OpaqueElement>,
@@ -63,6 +63,32 @@ pub struct ShadowMatchData<'a> {
   pub element_attr_cache: Option<&'a ElementAttrCache>,
   /// Per-pass cache for `form:valid/invalid` and `fieldset:valid/invalid` propagation.
   pub form_validity_index: Option<&'a FormValidityIndex>,
+  /// When true, treat custom elements as always defined for `:defined` pseudo-class matching.
+  ///
+  /// The spec behavior is that elements with a valid custom-element name are *not* `:defined`
+  /// unless they have been upgraded by the custom elements registry. FastRender does not run the
+  /// registry, but always treating custom elements as defined can improve real-world compatibility
+  /// (many pages hide content behind `:not(:defined)`).
+  ///
+  /// Default: `true` (compatibility).
+  pub treat_custom_elements_as_defined: bool,
+}
+
+impl<'a> Default for ShadowMatchData<'a> {
+  fn default() -> Self {
+    Self {
+      shadow_host: None,
+      slot_map: None,
+      part_export_map: None,
+      deadline_error: None,
+      selector_blooms: None,
+      node_to_id: None,
+      sibling_cache: None,
+      element_attr_cache: None,
+      form_validity_index: None,
+      treat_custom_elements_as_defined: true,
+    }
+  }
 }
 
 impl<'a> ShadowMatchData<'a> {
@@ -121,6 +147,11 @@ impl<'a> ShadowMatchData<'a> {
 
   pub fn with_form_validity_index(mut self, form_validity_index: &'a FormValidityIndex) -> Self {
     self.form_validity_index = Some(form_validity_index);
+    self
+  }
+
+  pub fn with_custom_elements_defined(mut self, enabled: bool) -> Self {
+    self.treat_custom_elements_as_defined = enabled;
     self
   }
 }
