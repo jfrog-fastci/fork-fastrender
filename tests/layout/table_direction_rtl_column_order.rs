@@ -222,6 +222,69 @@ fn table_direction_rtl_column_order_inherits_direction_from_body() {
 }
 
 #[test]
+fn table_direction_ltr_overrides_inherited_rtl_separate_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; direction: rtl; }
+          table {
+            width: 150px;
+            table-layout: fixed;
+            border-collapse: separate;
+            border-spacing: 0;
+            direction: ltr;
+            padding: 0;
+            border: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr><td>A</td><td>B</td><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let cells = layout_table_cells(html);
+  let a = cells.get(&'A').expect("cell A present");
+  let b = cells.get(&'B').expect("cell B present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  assert!(
+    a.x() < b.x() && b.x() < c.x(),
+    "expected LTR visual order A (left) < B < C (right), got A.x={:.2} B.x={:.2} C.x={:.2}",
+    a.x(),
+    b.x(),
+    c.x()
+  );
+
+  assert!(
+    (a.width() - 40.0).abs() < 0.1,
+    "expected A width 40px, got {:.2}",
+    a.width()
+  );
+  assert!(
+    (b.width() - 60.0).abs() < 0.1,
+    "expected B width 60px, got {:.2}",
+    b.width()
+  );
+  assert!(
+    (c.width() - 50.0).abs() < 0.1,
+    "expected C width 50px, got {:.2}",
+    c.width()
+  );
+}
+
+#[test]
 fn table_direction_rtl_column_order_inherits_direction_from_body_collapsed_model() {
   let html = r#"
     <html>
@@ -255,6 +318,69 @@ fn table_direction_rtl_column_order_inherits_direction_from_body_collapsed_model
 
   let cells = layout_table_cells(html);
   assert_rtl_column_order(&cells);
+}
+
+#[test]
+fn table_direction_ltr_overrides_inherited_rtl_collapsed_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; direction: rtl; }
+          table {
+            width: 150px;
+            table-layout: fixed;
+            border-collapse: collapse;
+            border-spacing: 0;
+            direction: ltr;
+            padding: 0;
+            border: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr><td>A</td><td>B</td><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let cells = layout_table_cells(html);
+  let a = cells.get(&'A').expect("cell A present");
+  let b = cells.get(&'B').expect("cell B present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  assert!(
+    a.x() < b.x() && b.x() < c.x(),
+    "expected LTR visual order A (left) < B < C (right), got A.x={:.2} B.x={:.2} C.x={:.2}",
+    a.x(),
+    b.x(),
+    c.x()
+  );
+
+  assert!(
+    (a.width() - 40.0).abs() < 0.1,
+    "expected A width 40px, got {:.2}",
+    a.width()
+  );
+  assert!(
+    (b.width() - 60.0).abs() < 0.1,
+    "expected B width 60px, got {:.2}",
+    b.width()
+  );
+  assert!(
+    (c.width() - 50.0).abs() < 0.1,
+    "expected C width 50px, got {:.2}",
+    c.width()
+  );
 }
 
 #[test]
