@@ -3245,6 +3245,11 @@ fn resolve_progress_offset(
 ) -> f32 {
   match offset {
     RangeOffset::Progress(p) => base_start + (base_end - base_start) * *p,
+    RangeOffset::Length(len) => {
+      let range = base_end - base_start;
+      let resolved = len.resolve_against(range).unwrap_or_else(|| len.to_px());
+      base_start + resolved
+    }
     RangeOffset::View(phase, adj) => {
       let Some((entry, contain, cover, exit)) = phases else {
         return base_start;

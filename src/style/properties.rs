@@ -1116,13 +1116,6 @@ fn parse_percentage(token: &str) -> Option<f32> {
   pct.trim().parse::<f32>().ok()
 }
 
-fn parse_progress_value(token: &str) -> Option<f32> {
-  if let Some(pct) = parse_percentage(token) {
-    return Some(pct / 100.0);
-  }
-  token.trim().parse::<f32>().ok()
-}
-
 fn parse_view_phase(token: &str) -> Option<ViewTimelinePhase> {
   match token {
     "entry" => Some(ViewTimelinePhase::Entry),
@@ -1620,20 +1613,18 @@ fn parse_range_offset(
   let lower = tokens[0].to_ascii_lowercase();
   if let Some(phase) = parse_view_phase(&lower) {
     if tokens.len() >= 2 {
-      if let Some(len) = parse_length(&tokens[1]) {
-        return Some((RangeOffset::View(phase, len), 2));
-      }
-      if let Some(progress) = parse_progress_value(&tokens[1]) {
-        return Some((
-          RangeOffset::View(phase, Length::percent(progress * 100.0)),
-          2,
-        ));
-      }
+      let Some(len) = parse_length(&tokens[1]) else {
+        return None;
+      };
+      return Some((RangeOffset::View(phase, len), 2));
     }
     return Some((RangeOffset::View(phase, default_view_offset), 1));
   }
-  if let Some(progress) = parse_progress_value(&tokens[0]) {
-    return Some((RangeOffset::Progress(progress), 1));
+  if let Some(pct) = parse_percentage(&tokens[0]) {
+    return Some((RangeOffset::Progress(pct / 100.0), 1));
+  }
+  if let Some(len) = parse_length(&tokens[0]) {
+    return Some((RangeOffset::Length(len), 1));
   }
   None
 }
@@ -1674,7 +1665,7 @@ fn parse_animation_range_list(raw: &str) -> Option<Vec<AnimationRange>> {
     let (end, consumed_end) = if remaining.is_empty() {
       match start {
         RangeOffset::View(phase, _) => (RangeOffset::View(phase, Length::percent(100.0)), 0),
-        RangeOffset::Progress(_) => (RangeOffset::Progress(1.0), 0),
+        _ => (RangeOffset::Progress(1.0), 0),
       }
     } else {
       parse_animation_range_offset(

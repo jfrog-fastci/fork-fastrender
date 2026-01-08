@@ -1194,6 +1194,8 @@ pub enum ViewTimelinePhase {
 pub enum RangeOffset {
   /// Position expressed as normalized progress (0-1) on the timeline.
   Progress(f32),
+  /// Position expressed as a length-percentage measured from the start of the timeline.
+  Length(Length),
   /// Position based on a view-timeline phase plus optional adjustment.
   ///
   /// The adjustment is a length-percentage resolved against the scrollport size.
