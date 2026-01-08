@@ -10181,7 +10181,6 @@ impl DisplayListRenderer {
           rect: bounds,
           transform: clip_transform,
         });
-
         // Non-isolated group surfaces may be lazily initialized from backdrop once a descendant
         // `mix-blend-mode` operation needs it (see `maybe_init_non_isolated_group_backdrop`).
         let init_from_backdrop = false;

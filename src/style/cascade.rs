@@ -1662,22 +1662,32 @@ struct NumericValue {
   value: f32,
 }
 
-fn coerce_zero_number_to_length(lhs: NumericValue, rhs: NumericValue) -> (NumericValue, NumericValue) {
+fn coerce_unitless_zero_number(lhs: NumericValue, rhs: NumericValue) -> (NumericValue, NumericValue) {
   match (lhs.ty, rhs.ty) {
-    (NumericType::Number, NumericType::LengthPx) if lhs.value == 0.0 => (
-      NumericValue {
-        ty: NumericType::LengthPx,
-        value: 0.0,
-      },
-      rhs,
-    ),
-    (NumericType::LengthPx, NumericType::Number) if rhs.value == 0.0 => (
-      lhs,
-      NumericValue {
-        ty: NumericType::LengthPx,
-        value: 0.0,
-      },
-    ),
+    (NumericType::Number, ty)
+      if lhs.value == 0.0
+        && matches!(
+          ty,
+          NumericType::LengthPx | NumericType::AngleDeg | NumericType::TimeMs
+        ) =>
+    {
+      (
+        NumericValue { ty, value: 0.0 },
+        rhs,
+      )
+    }
+    (ty, NumericType::Number)
+      if rhs.value == 0.0
+        && matches!(
+          ty,
+          NumericType::LengthPx | NumericType::AngleDeg | NumericType::TimeMs
+        ) =>
+    {
+      (
+        lhs,
+        NumericValue { ty, value: 0.0 },
+      )
+    }
     _ => (lhs, rhs),
   }
 }
@@ -1701,7 +1711,7 @@ fn eval_style_range(range: &StyleRange, container: &ContainerQueryInfo, ctx: &Co
       let Some(rhs) = eval_style_range_value(right, container, ctx) else {
         return false;
       };
-      let (lhs, rhs) = coerce_zero_number_to_length(lhs, rhs);
+      let (lhs, rhs) = coerce_unitless_zero_number(lhs, rhs);
       if lhs.ty != rhs.ty {
         return false;
       }
@@ -1723,8 +1733,8 @@ fn eval_style_range(range: &StyleRange, container: &ContainerQueryInfo, ctx: &Co
         return false;
       };
 
-      let (a, b) = coerce_zero_number_to_length(a, b);
-      let (b, c) = coerce_zero_number_to_length(b, c);
+      let (a, b) = coerce_unitless_zero_number(a, b);
+      let (b, c) = coerce_unitless_zero_number(b, c);
       if a.ty != b.ty || b.ty != c.ty {
         return false;
       }

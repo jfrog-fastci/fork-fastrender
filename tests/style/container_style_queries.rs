@@ -820,6 +820,46 @@ fn container_style_query_range_feature_matches_word_spacing() {
 }
 
 #[test]
+fn container_style_query_range_feature_coerces_unitless_zero_to_time() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; --t: 1s; }
+      .child { color: rgb(0 0 255); }
+      @container style(--t > 0) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_coerces_unitless_zero_to_angle() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; --a: 1deg; }
+      .child { color: rgb(0 0 255); }
+      @container style(--a > 0) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_resolves_var_value() {
   let html = r#"
     <style>
