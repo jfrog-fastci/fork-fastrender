@@ -1466,11 +1466,15 @@ pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTi
   }
 }
 
+fn custom_ident_is_excluded_keyword(ident_lower: &str) -> bool {
+  matches!(
+    ident_lower,
+    "inherit" | "initial" | "unset" | "revert" | "revert-layer" | "default"
+  )
+}
+
 fn parse_animation_names(raw: &str) -> Option<Vec<String>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
 
   let mut names = Vec::with_capacity(parts.len());
   let mut first_is_none_ident = false;
@@ -1484,7 +1488,13 @@ fn parse_animation_names(raw: &str) -> Option<Vec<String>> {
     parser.skip_whitespace();
     let token = parser.next_including_whitespace().ok()?;
     let (name, is_none_ident) = match token {
-      Token::Ident(ident) => (ident.to_string(), ident.eq_ignore_ascii_case("none")),
+      Token::Ident(ident) => {
+        let lower = ident.as_ref().to_ascii_lowercase();
+        if custom_ident_is_excluded_keyword(&lower) {
+          return None;
+        }
+        (ident.to_string(), ident.eq_ignore_ascii_case("none"))
+      }
       Token::QuotedString(s) => (s.to_string(), false),
       _ => return None,
     };
@@ -1777,6 +1787,95 @@ pub(crate) fn split_top_level_commas(raw: &str) -> Vec<String> {
     parts.push(current.trim().to_string());
   }
   parts
+}
+
+fn split_top_level_commas_strict(raw: &str) -> Option<Vec<String>> {
+  let mut parts = Vec::new();
+  let mut current = String::new();
+  let mut depth = 0i32;
+  let mut bracket = 0i32;
+  let mut brace = 0i32;
+  let mut in_string: Option<char> = None;
+  let mut chars = raw.chars().peekable();
+  while let Some(ch) = chars.next() {
+    if let Some(quote) = in_string {
+      current.push(ch);
+      if ch == '\\' {
+        if let Some(next) = chars.next() {
+          current.push(next);
+        }
+        continue;
+      }
+      if ch == quote {
+        in_string = None;
+      }
+      continue;
+    }
+
+    if ch == '\\' {
+      current.push(ch);
+      if let Some(next) = chars.next() {
+        current.push(next);
+      }
+      continue;
+    }
+
+    if ch == '/' && chars.peek() == Some(&'*') {
+      chars.next();
+      let mut saw_star = false;
+      while let Some(inner) = chars.next() {
+        if saw_star && inner == '/' {
+          break;
+        }
+        saw_star = inner == '*';
+      }
+      // Comments behave like whitespace in CSS.
+      current.push(' ');
+      continue;
+    }
+
+    match ch {
+      '(' => {
+        depth += 1;
+        current.push(ch);
+      }
+      ')' => {
+        depth = (depth - 1).max(0);
+        current.push(ch);
+      }
+      '[' => {
+        bracket += 1;
+        current.push(ch);
+      }
+      ']' => {
+        bracket = (bracket - 1).max(0);
+        current.push(ch);
+      }
+      '{' => {
+        brace += 1;
+        current.push(ch);
+      }
+      '}' => {
+        brace = (brace - 1).max(0);
+        current.push(ch);
+      }
+      '"' | '\'' => {
+        in_string = Some(ch);
+        current.push(ch);
+      }
+      ',' if depth == 0 && bracket == 0 && brace == 0 => {
+        parts.push(current.trim().to_string());
+        current.clear();
+      }
+      _ => current.push(ch),
+    }
+  }
+  parts.push(current.trim().to_string());
+  if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
+    None
+  } else {
+    Some(parts)
+  }
 }
 
 fn split_top_level_whitespace(raw: &str) -> Vec<String> {
@@ -2424,10 +2523,7 @@ fn parse_number_or_calc(raw: &str) -> Option<f32> {
 }
 
 fn parse_animation_duration_list(raw: &str) -> Option<Vec<f32>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
 
   let mut times = Vec::with_capacity(parts.len());
   for part in parts {
@@ -2466,10 +2562,7 @@ fn parse_animation_iteration_count(raw: &str) -> Option<AnimationIterationCount>
 }
 
 fn parse_animation_iteration_count_list(raw: &str) -> Option<Vec<AnimationIterationCount>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
   let mut counts = Vec::with_capacity(parts.len());
   for part in parts {
     counts.push(parse_animation_iteration_count(&part)?);
@@ -2488,10 +2581,7 @@ fn parse_animation_direction(raw: &str) -> Option<AnimationDirection> {
 }
 
 fn parse_animation_direction_list(raw: &str) -> Option<Vec<AnimationDirection>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
   let mut dirs = Vec::with_capacity(parts.len());
   for part in parts {
     dirs.push(parse_animation_direction(&part)?);
@@ -2510,10 +2600,7 @@ fn parse_animation_fill_mode(raw: &str) -> Option<AnimationFillMode> {
 }
 
 fn parse_animation_fill_mode_list(raw: &str) -> Option<Vec<AnimationFillMode>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
   let mut modes = Vec::with_capacity(parts.len());
   for part in parts {
     modes.push(parse_animation_fill_mode(&part)?);
@@ -2531,10 +2618,7 @@ fn parse_animation_composition(raw: &str) -> Option<AnimationComposition> {
 }
 
 fn parse_animation_composition_list(raw: &str) -> Option<Vec<AnimationComposition>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
   let mut compositions = Vec::with_capacity(parts.len());
   for part in parts {
     compositions.push(parse_animation_composition(&part)?);
@@ -2551,10 +2635,7 @@ fn parse_animation_play_state(raw: &str) -> Option<AnimationPlayState> {
 }
 
 fn parse_animation_play_state_list(raw: &str) -> Option<Vec<AnimationPlayState>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
   let mut states = Vec::with_capacity(parts.len());
   for part in parts {
     states.push(parse_animation_play_state(&part)?);
@@ -2563,10 +2644,7 @@ fn parse_animation_play_state_list(raw: &str) -> Option<Vec<AnimationPlayState>>
 }
 
 fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
   if parts.len() == 1 && parts[0].trim().eq_ignore_ascii_case("none") {
     return Some(vec![TransitionProperty::None]);
   }
@@ -2602,6 +2680,9 @@ fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> 
       // `none, opacity`.
       return None;
     }
+    if custom_ident_is_excluded_keyword(&lower) {
+      return None;
+    }
     if lower == "all" {
       props.push(TransitionProperty::All);
     } else {
@@ -2614,10 +2695,7 @@ fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> 
 }
 
 fn parse_transition_time_list(raw: &str, allow_negative: bool) -> Option<Vec<f32>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
   let mut times = Vec::new();
   for part in parts {
     let ms = parse_time_ms(&part)?;
@@ -2650,14 +2728,10 @@ fn parse_transition_behavior(raw: &str) -> Option<TransitionBehavior> {
 
 fn parse_transition_behavior_list(raw: &str) -> Option<Vec<TransitionBehavior>> {
   let mut behaviors = Vec::new();
-  for part in split_top_level_commas(raw) {
+  for part in split_top_level_commas_strict(raw)? {
     behaviors.push(parse_transition_behavior(&part)?);
   }
-  if behaviors.is_empty() {
-    None
-  } else {
-    Some(behaviors)
-  }
+  Some(behaviors)
 }
 
 pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTimingFunction> {
@@ -2691,7 +2765,7 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
   if starts_with_ignore_ascii_case(trimmed, "linear(") && trimmed.ends_with(')') {
     let args = &trimmed["linear(".len()..trimmed.len() - 1];
     let mut raw_stops: Vec<(Option<f32>, f32)> = Vec::new();
-    for stop in split_top_level_commas(args) {
+    for stop in split_top_level_commas_strict(args)? {
       let pieces: Vec<&str> = stop.split_whitespace().collect();
       if pieces.is_empty() {
         return None;
@@ -2851,10 +2925,7 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
 }
 
 fn parse_transition_timing_function_list(raw: &str) -> Option<Vec<TransitionTimingFunction>> {
-  let parts = split_top_level_commas(raw);
-  if parts.is_empty() {
-    return None;
-  }
+  let parts = split_top_level_commas_strict(raw)?;
   let mut funcs = Vec::with_capacity(parts.len());
   for part in parts {
     funcs.push(parse_transition_timing_function(&part)?);
@@ -2888,7 +2959,7 @@ fn parse_animation_shorthand(
 
   let mut saw_any = false;
 
-  for part in split_top_level_commas(raw) {
+  for part in split_top_level_commas_strict(raw)? {
     let mut name: Option<(String, bool)> = None;
     let mut duration: Option<f32> = None;
     let mut delay: Option<f32> = None;
@@ -3001,7 +3072,14 @@ fn parse_animation_shorthand(
           }
         };
         let (parsed, is_none_keyword) = match token {
-          Token::Ident(ident) => (Some(ident.to_string()), ident.eq_ignore_ascii_case("none")),
+          Token::Ident(ident) => {
+            let lower = ident.as_ref().to_ascii_lowercase();
+            if custom_ident_is_excluded_keyword(&lower) {
+              (None, false)
+            } else {
+              (Some(ident.to_string()), ident.eq_ignore_ascii_case("none"))
+            }
+          }
           Token::QuotedString(s) => (Some(s.to_string()), false),
           _ => (None, false),
         };
@@ -3080,7 +3158,7 @@ fn parse_transition_shorthand(
 
   let mut saw_any = false;
 
-  for part in split_top_level_commas(raw) {
+  for part in split_top_level_commas_strict(raw)? {
     let mut property: Option<TransitionProperty> = None;
     let mut duration: Option<f32> = None;
     let mut delay: Option<f32> = None;
@@ -3136,6 +3214,10 @@ fn parse_transition_shorthand(
           property = Some(TransitionProperty::Name(trimmed.to_string()));
         } else {
           let lower = trimmed.to_ascii_lowercase();
+          if custom_ident_is_excluded_keyword(&lower) {
+            invalid = true;
+            break;
+          }
           let canonical =
             crate::css::properties::vendor_prefixed_property_alias(&lower).unwrap_or(lower.as_str());
           property = Some(match canonical {
