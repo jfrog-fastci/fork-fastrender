@@ -8519,7 +8519,7 @@ mod tests {
   }
 
   #[test]
-  fn required_multi_select_is_valid_when_only_disabled_options_selected() {
+  fn required_multi_select_is_invalid_when_only_disabled_options_selected() {
     let select = element_with_attrs(
       "select",
       vec![("multiple", ""), ("required", "")],
@@ -8529,7 +8529,7 @@ mod tests {
       ],
     );
 
-    assert!(ElementRef::new(&select).is_valid_control());
+    assert!(!ElementRef::new(&select).is_valid_control());
   }
 
   #[test]
@@ -11909,6 +11909,48 @@ mod tests {
     ));
     assert!(!matches(
       &invalid_multiple_select_disabled_selected,
+      &[],
+      &PseudoClass::Valid
+    ));
+
+    let invalid_multiple_select_selected_in_disabled_optgroup = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("required".to_string(), "true".to_string()),
+          ("multiple".to_string(), "multiple".to_string()),
+        ],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "optgroup".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![
+            ("disabled".to_string(), "disabled".to_string()),
+            ("label".to_string(), "g".to_string()),
+          ],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("selected".to_string(), "selected".to_string()),
+              ("value".to_string(), "a".to_string()),
+            ],
+          },
+          children: vec![],
+        }],
+      }],
+    };
+    assert!(matches(
+      &invalid_multiple_select_selected_in_disabled_optgroup,
+      &[],
+      &PseudoClass::Invalid
+    ));
+    assert!(!matches(
+      &invalid_multiple_select_selected_in_disabled_optgroup,
       &[],
       &PseudoClass::Valid
     ));
