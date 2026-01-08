@@ -2485,6 +2485,8 @@ fn collect_forced_boundaries_with_axes_internal(
   axes: FragmentAxes,
   suppress_parallel_grid_item_descendants: bool,
 ) -> Vec<ForcedBoundary> {
+  let page_progression_is_ltr = axes.page_progression_is_ltr();
+
   fn is_forced_page_break(between: BreakBetween) -> bool {
     matches!(
       between,
@@ -2497,10 +2499,20 @@ fn collect_forced_boundaries_with_axes_internal(
     )
   }
 
-  fn break_side_hint(between: BreakBetween) -> Option<PageSide> {
+  fn break_side_hint(between: BreakBetween, page_progression_is_ltr: bool) -> Option<PageSide> {
     match between {
-      BreakBetween::Left | BreakBetween::Verso => Some(PageSide::Left),
-      BreakBetween::Right | BreakBetween::Recto => Some(PageSide::Right),
+      BreakBetween::Left => Some(PageSide::Left),
+      BreakBetween::Right => Some(PageSide::Right),
+      BreakBetween::Verso => Some(if page_progression_is_ltr {
+        PageSide::Left
+      } else {
+        PageSide::Right
+      }),
+      BreakBetween::Recto => Some(if page_progression_is_ltr {
+        PageSide::Right
+      } else {
+        PageSide::Left
+      }),
       _ => None,
     }
   }
@@ -2533,6 +2545,7 @@ fn collect_forced_boundaries_with_axes_internal(
     axis: &FragmentAxis,
     parent_block_size: f32,
     suppress_parallel_grid_item_descendants: bool,
+    page_progression_is_ltr: bool,
   ) {
     let node_style = node
       .style
@@ -2575,14 +2588,20 @@ fn collect_forced_boundaries_with_axes_internal(
             if is_forced_page_break(child_style.break_before) {
               let boundary_idx = start_line.saturating_sub(1) as usize;
               if let Some(req) = boundary_reqs.get_mut(boundary_idx) {
-                record_boundary(req, break_side_hint(child_style.break_before));
+                record_boundary(
+                  req,
+                  break_side_hint(child_style.break_before, page_progression_is_ltr),
+                );
               }
             }
 
             if is_forced_page_break(child_style.break_after) {
               let boundary_idx = end_line.saturating_sub(1) as usize;
               if let Some(req) = boundary_reqs.get_mut(boundary_idx) {
-                record_boundary(req, break_side_hint(child_style.break_after));
+                record_boundary(
+                  req,
+                  break_side_hint(child_style.break_after, page_progression_is_ltr),
+                );
               }
             }
           }
@@ -2661,7 +2680,7 @@ fn collect_forced_boundaries_with_axes_internal(
         if idx >= grid_item_count {
           forced.push(ForcedBoundary {
             position: child_abs_start,
-            page_side: break_side_hint(child_style.break_before),
+            page_side: break_side_hint(child_style.break_before, page_progression_is_ltr),
           });
         }
       }
@@ -2688,8 +2707,8 @@ fn collect_forced_boundaries_with_axes_internal(
           }
           forced.push(ForcedBoundary {
             position: boundary,
-            page_side: break_side_hint(next_style.break_before)
-              .or(break_side_hint(child_style.break_after)),
+            page_side: break_side_hint(next_style.break_before, page_progression_is_ltr)
+              .or(break_side_hint(child_style.break_after, page_progression_is_ltr)),
           });
         }
       }
@@ -2708,6 +2727,7 @@ fn collect_forced_boundaries_with_axes_internal(
           axis,
           child_block_size,
           suppress_parallel_grid_item_descendants,
+          page_progression_is_ltr,
         );
       }
     }
@@ -2724,6 +2744,7 @@ fn collect_forced_boundaries_with_axes_internal(
     &axis,
     axis.block_size(&node.bounds),
     suppress_parallel_grid_item_descendants,
+    page_progression_is_ltr,
   );
   boundaries
 }

@@ -63,6 +63,23 @@ impl FragmentAxes {
     self.inline_positive
   }
 
+  /// Returns true when paged media should progress left-to-right.
+  ///
+  /// CSS Paged Media Level 3 defines the page progression direction based on the
+  /// document's principal writing mode and direction:
+  ///
+  /// - When text is laid out in horizontal lines (`writing-mode: horizontal-tb`),
+  ///   progression follows the inline base direction (`direction`).
+  /// - When text is laid out in vertical lines (`vertical-*`/`sideways-*`),
+  ///   progression follows the block flow direction.
+  pub fn page_progression_is_ltr(&self) -> bool {
+    if self.block_axis == PhysicalAxis::X {
+      self.block_positive
+    } else {
+      self.inline_positive
+    }
+  }
+
   pub fn block_size(&self, rect: &Rect) -> f32 {
     match self.block_axis {
       PhysicalAxis::X => rect.width(),

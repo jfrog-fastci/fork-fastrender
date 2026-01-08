@@ -97,6 +97,7 @@ use crate::image_loader::ImageCache;
 use crate::image_output::encode_image;
 use crate::image_output::OutputFormat;
 use crate::layout::absolute_positioning::resolve_positioned_style;
+use crate::layout::axis::{FragmentAxes, PhysicalAxis};
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::layout::contexts::inline::line_builder::TextItem;
 use crate::layout::contexts::positioned::ContainingBlock;
@@ -9030,23 +9031,29 @@ impl FastRender {
     let mut first_page_style = None;
     let mut page_base_style: Option<Arc<ComputedStyle>> = None;
     if !page_rules.is_empty() {
-      fn find_body_node(
-        node: &crate::style::cascade::StyledNode,
-      ) -> Option<&crate::style::cascade::StyledNode> {
+      fn find_element_node<'a>(
+        node: &'a crate::style::cascade::StyledNode,
+        tag: &str,
+      ) -> Option<&'a crate::style::cascade::StyledNode> {
         if let crate::dom::DomNodeType::Element { tag_name, .. } = &node.node.node_type {
-          if tag_name.eq_ignore_ascii_case("body") {
+          if tag_name.eq_ignore_ascii_case(tag) {
             return Some(node);
           }
         }
         for child in node.children.iter() {
-          if let Some(node) = find_body_node(child) {
+          if let Some(node) = find_element_node(child, tag) {
             return Some(node);
           }
         }
         None
       }
 
-      let body_node = find_body_node(&styled_tree);
+      let html_node = find_element_node(&styled_tree, "html");
+      let body_node = find_element_node(&styled_tree, "body");
+
+      // Use the body style as the base for @page margin boxes so inherited properties (e.g.
+      // color/quotes/font-size) match the document styling, while still deriving page progression
+      // from the principal (html) writing mode + direction.
       let base_style = body_node
         .map(|node| &node.styles)
         .unwrap_or(&styled_tree.styles);
@@ -9066,13 +9073,26 @@ impl FastRender {
             })
             .and_then(|child| child.styles.page.clone())
         })
+        .or_else(|| html_node.and_then(|node| node.styles.page.clone()))
         .or_else(|| styled_tree.styles.page.clone());
       let base_style = Arc::clone(base_style);
+      let progression_style = html_node
+        .map(|node| node.styles.as_ref())
+        .unwrap_or(base_style.as_ref());
+      let progression_axes = FragmentAxes::from_writing_mode_and_direction(
+        progression_style.writing_mode,
+        progression_style.direction,
+      );
+      let first_page_side = if progression_axes.page_progression_is_ltr() {
+        PageSide::Right
+      } else {
+        PageSide::Left
+      };
       let style = resolve_page_style(
         &page_rules,
         0,
         page_name_hint.as_deref(),
-        PageSide::Right,
+        first_page_side,
         false,
         fallback_page_size,
         styled_tree.styles.root_font_size,
@@ -9393,9 +9413,22 @@ impl FastRender {
     let _fragmentainer_hint = if page_rules.is_empty() {
       None
     } else {
-      Some(set_fragmentainer_block_size_hint(Some(
-        layout_viewport.height,
-      )))
+      let page_axes = FragmentAxes::from_writing_mode_and_direction(
+        page_base_style
+          .as_ref()
+          .unwrap_or(&box_tree.root.style)
+          .writing_mode,
+        page_base_style
+          .as_ref()
+          .unwrap_or(&box_tree.root.style)
+          .direction,
+      );
+      let block_size_hint = if page_axes.block_axis() == PhysicalAxis::X {
+        layout_viewport.width
+      } else {
+        layout_viewport.height
+      };
+      Some(set_fragmentainer_block_size_hint(Some(block_size_hint)))
     };
     let layout_timer = stats.as_deref().and_then(|rec| rec.timer());
     let _layout_span = trace.span("layout_tree", "layout");
@@ -9656,9 +9689,22 @@ impl FastRender {
           let _fragmentainer_hint = if page_rules.is_empty() {
             None
           } else {
-            Some(set_fragmentainer_block_size_hint(Some(
-              layout_viewport.height,
-            )))
+            let page_axes = FragmentAxes::from_writing_mode_and_direction(
+              page_base_style
+                .as_ref()
+                .unwrap_or(&box_tree.root.style)
+                .writing_mode,
+              page_base_style
+                .as_ref()
+                .unwrap_or(&box_tree.root.style)
+                .direction,
+            );
+            let block_size_hint = if page_axes.block_axis() == PhysicalAxis::X {
+              layout_viewport.width
+            } else {
+              layout_viewport.height
+            };
+            Some(set_fragmentainer_block_size_hint(Some(block_size_hint)))
           };
 
           layout_start = timings_enabled.then(Instant::now);

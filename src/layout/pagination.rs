@@ -60,11 +60,18 @@ impl Default for PaginateOptions {
 
 const EPSILON: f32 = 0.01;
 
-fn page_side_for_index(page_index: usize) -> PageSide {
-  if (page_index + 1) % 2 == 0 {
-    PageSide::Left
+fn opposite_page_side(side: PageSide) -> PageSide {
+  match side {
+    PageSide::Left => PageSide::Right,
+    PageSide::Right => PageSide::Left,
+  }
+}
+
+fn page_side_for_index(page_index: usize, first_page_side: PageSide) -> PageSide {
+  if page_index % 2 == 0 {
+    first_page_side
   } else {
-    PageSide::Right
+    opposite_page_side(first_page_side)
   }
 }
 
@@ -302,31 +309,52 @@ pub fn paginate_fragment_tree(
       .or_insert_with(|| CachedLayout::from_root(root.clone(), style, fallback_page_name, root_axes));
   }
 
-  let base_style = resolve_page_style(
-    rules,
-    0,
-    initial_page_name.as_deref(),
-    PageSide::Right,
-    false,
-    fallback_page_size,
-    root_font_size,
-    base_style_for_margins,
-  );
-  let base_key = PageLayoutKey::new(&base_style, style_hash, font_generation);
-  let base_layout = layout_for_style(
-    &base_style,
-    base_key,
-    &mut layouts,
-    box_tree,
-    font_ctx,
-    fallback_page_name,
-    root_axes,
-    enable_layout_cache,
-  )?;
-  let base_total_height = base_layout.total_height.max(EPSILON);
-  let base_page_names = base_layout.page_name_transitions.clone();
-  let base_forced = base_layout.forced_boundaries.clone();
-  let base_root = base_layout.root.clone();
+  let mut first_page_side = if root_axes.page_progression_is_ltr() {
+    PageSide::Right
+  } else {
+    PageSide::Left
+  };
+
+  let (base_total_height, base_page_names, base_forced, base_root) = loop {
+    let base_style = resolve_page_style(
+      rules,
+      0,
+      initial_page_name.as_deref(),
+      first_page_side,
+      false,
+      fallback_page_size,
+      root_font_size,
+      base_style_for_margins,
+    );
+    let base_key = PageLayoutKey::new(&base_style, style_hash, font_generation);
+    let base_layout = layout_for_style(
+      &base_style,
+      base_key,
+      &mut layouts,
+      box_tree,
+      font_ctx,
+      fallback_page_name,
+      root_axes,
+      enable_layout_cache,
+    )?;
+
+    // CSS Page 3 requires UAs to suppress leading blank pages. If the document starts with a forced
+    // side constraint (e.g. `break-before: left` on the first element), treat that requirement as
+    // the initial page side rather than emitting empty pages.
+    if let Some(required) = required_page_side(&base_layout.forced_boundaries, 0.0) {
+      if required != first_page_side {
+        first_page_side = required;
+        continue;
+      }
+    }
+
+    break (
+      base_layout.total_height.max(EPSILON),
+      base_layout.page_name_transitions.clone(),
+      base_layout.forced_boundaries.clone(),
+      base_layout.root.clone(),
+    );
+  };
 
   let mut string_set_events = collect_string_set_events(&base_root, box_tree, root_axes);
   string_set_events.sort_by(|a, b| {
@@ -350,7 +378,7 @@ pub fn paginate_fragment_tree(
     let start_in_base = consumed_base;
     let mut page_name =
       page_name_for_position(&base_page_names, start_in_base, fallback_page_name);
-    let side = page_side_for_index(page_index);
+    let side = page_side_for_index(page_index, first_page_side);
     let required_side = required_page_side(&base_forced, start_in_base);
     let is_blank_page = required_side.map_or(false, |required| required != side);
 

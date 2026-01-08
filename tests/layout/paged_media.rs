@@ -2182,6 +2182,137 @@ fn floats_defer_to_next_page_and_clear_following_text() {
 }
 
 #[test]
+fn rtl_direction_flips_first_page_side() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          body { margin: 0; }
+          .tall { height: 600px; }
+        </style>
+      </head>
+      <body>
+        <div class="tall"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2);
+  assert!(find_text(page_roots[0], "LEFT").is_some());
+  assert!(find_text(page_roots[0], "RIGHT").is_none());
+  assert!(find_text(page_roots[1], "RIGHT").is_some());
+}
+
+#[test]
+fn vertical_rl_flips_first_page_side() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { writing-mode: vertical-rl; }
+          @page { size: 160px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          body { margin: 0; }
+          .block { block-size: 100px; inline-size: 40px; }
+        </style>
+      </head>
+      <body>
+        <div class="block">A</div>
+        <div class="block">B</div>
+        <div class="block">C</div>
+        <div class="block">D</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2);
+  assert!(find_text(page_roots[0], "LEFT").is_some());
+  assert!(find_text(page_roots[0], "RIGHT").is_none());
+  assert!(find_text(page_roots[1], "RIGHT").is_some());
+}
+
+#[test]
+fn recto_break_depends_on_page_progression() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :blank { @top-center { content: "Blank"; } }
+          body { margin: 0; }
+          .first { height: 80px; }
+          .second { break-before: recto; height: 80px; }
+        </style>
+      </head>
+      <body>
+        <div class="first">First</div>
+        <div class="second">Second</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 3);
+
+  let blank_page = page_roots[1];
+  assert!(find_text(blank_page, "Blank").is_some());
+  assert!(find_text(blank_page, "First").is_none());
+  assert!(find_text(blank_page, "Second").is_none());
+
+  assert!(find_text(page_roots[2], "Second").is_some());
+}
+
+#[test]
+fn forced_start_side_suppresses_leading_blank_pages() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          body { margin: 0; }
+          .first { break-before: left; height: 80px; }
+        </style>
+      </head>
+      <body>
+        <div class="first">Content</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 1);
+  assert!(find_text(page_roots[0], "Content").is_some());
+  assert!(find_text(page_roots[0], "LEFT").is_some());
+  assert!(find_text(page_roots[0], "RIGHT").is_none());
+}
+
+#[test]
 fn blank_page_inserted_for_forced_side() {
   let html = r#"
     <html>
