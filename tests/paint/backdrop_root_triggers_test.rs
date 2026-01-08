@@ -157,6 +157,43 @@ fn mask_image_triggers_backdrop_root() {
 }
 
 #[test]
+fn mask_image_url_triggers_backdrop_root_even_when_unresolved() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #parent {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        /* The mask image cannot be resolved, but per filter-effects-2 the property presence still
+           establishes a Backdrop Root boundary. */
+        mask-image: url(#missing);
+        mask-mode: alpha;
+        mask-repeat: no-repeat;
+        mask-size: 100% 100%;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // The mask-image itself does not affect output (it is missing), but it must still stop
+  // backdrop-filter sampling at `#parent`.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn mask_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
