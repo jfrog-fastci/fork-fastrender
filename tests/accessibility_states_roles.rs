@@ -700,3 +700,29 @@ fn textarea_required_uses_text_content_value() {
   assert!(!textarea.states.invalid);
   assert_eq!(textarea.value.as_deref(), Some("ok"));
 }
+
+#[test]
+fn aria_idref_lists_dedupe_duplicate_tokens() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <div id="controller" aria-controls="target target target" aria-owns="owned owned">
+          Controller
+        </div>
+        <div id="target">Target</div>
+        <div id="owned">Owned</div>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let controller = find_by_id(&tree, "controller").expect("controller");
+  let relations = controller.relations.as_ref().expect("relations");
+  assert_eq!(relations.controls, vec!["target".to_string()]);
+  assert_eq!(relations.owns, vec!["owned".to_string()]);
+}

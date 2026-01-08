@@ -2100,7 +2100,11 @@ fn compute_description(node: &StyledNode, ctx: &BuildContext) -> Option<String> 
 
 fn resolve_idref_list(ctx: &BuildContext, origin: &StyledNode, attr_value: &str) -> Vec<String> {
   let mut out = Vec::new();
+  let mut seen_tokens: HashSet<&str> = HashSet::new();
   for token in attr_value.split_whitespace() {
+    if !seen_tokens.insert(token) {
+      continue;
+    }
     if let Some(target) = ctx.node_for_id_scoped(origin.node_id, token) {
       if let Some(id) = target
         .node
