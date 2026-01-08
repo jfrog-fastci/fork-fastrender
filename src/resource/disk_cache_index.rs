@@ -730,7 +730,13 @@ impl DiskCacheIndex {
     data_path: &Path,
     meta_path: &Path,
   ) -> Option<(StoredMetadata, u64)> {
-    let meta_bytes = fs::read(meta_path).ok()?;
+    let meta_bytes = super::read_path_prefix_with_deadline(
+      meta_path,
+      super::DISK_META_READ_STAGE,
+      super::DISK_META_READ_CHUNK_SIZE,
+      super::DISK_META_MAX_BYTES,
+    )
+    .ok()?;
     let meta: StoredMetadata = serde_json::from_slice(&meta_bytes).ok()?;
     let len = meta.len as u64;
     let Ok(data_meta) = fs::metadata(data_path) else {

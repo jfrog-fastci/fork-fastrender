@@ -137,6 +137,13 @@ const DISK_READ_MIN_CHUNK_SIZE: usize = 4 * 1024;
 /// reusable scratch buffer on threads that only touch metadata. (The scratch buffer is shared with
 /// data reads; once it grows for larger resources it is intentionally retained for reuse.)
 const DISK_META_READ_CHUNK_SIZE: usize = 8 * 1024;
+/// Maximum size accepted when reading JSON metadata blobs from disk.
+///
+/// These files are written by FastRender and should remain tiny (typically a handful of headers).
+/// Bounding the read prevents corrupted cache entries from forcing unbounded allocations.
+const DISK_META_MAX_BYTES: usize = 256 * 1024;
+const DISK_LOCK_MAX_BYTES: usize = 8 * 1024;
+const DISK_ALIAS_MAX_BYTES: usize = 8 * 1024;
 const DISK_META_READ_STAGE: RenderStage = RenderStage::Paint;
 
 const DEFAULT_ERROR_ENTRY_TTL: Duration = Duration::from_secs(60 * 60);
@@ -738,7 +745,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let key = self.variant_key_for_base_key(&base_key, &vary_key);
     let data_path = self.data_path_for_key(&key);
     let meta_path = self.meta_path_for_data(&data_path);
-    let meta_bytes = fs::read(meta_path).ok()?;
+    let meta_bytes = read_path_prefix_with_deadline(
+      &meta_path,
+      DISK_META_READ_STAGE,
+      DISK_META_READ_CHUNK_SIZE,
+      DISK_META_MAX_BYTES,
+    )
+    .ok()?;
     let meta: StoredMetadata = serde_json::from_slice(&meta_bytes).ok()?;
     Some(meta.stored_at)
   }
@@ -785,9 +798,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let writeback_disabled = self.disk_writeback_disabled();
     match fs::metadata(&lock_path) {
       Ok(meta) => {
-        let contents = fs::read(&lock_path)
-          .ok()
-          .and_then(|bytes| serde_json::from_slice::<LockFileContents>(&bytes).ok());
+        let contents = read_path_prefix_with_deadline(
+          &lock_path,
+          DISK_META_READ_STAGE,
+          DISK_META_READ_CHUNK_SIZE,
+          DISK_LOCK_MAX_BYTES,
+        )
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<LockFileContents>(&bytes).ok());
         let pid_alive = contents
           .as_ref()
           .and_then(|contents| pid_is_alive(contents.pid));
@@ -1580,7 +1598,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     request_sig: &str,
   ) -> Option<String> {
     let alias_path = self.alias_path_with_partition(kind, url, origin_key, credentials_mode);
-    fs::read(&alias_path)
+    read_path_prefix_with_deadline(
+      &alias_path,
+      DISK_META_READ_STAGE,
+      DISK_META_READ_CHUNK_SIZE,
+      DISK_ALIAS_MAX_BYTES,
+    )
       .ok()
       .and_then(|bytes| serde_json::from_slice::<StoredAlias>(&bytes).ok())
       .and_then(|alias| alias.target_for_sig(request_sig).map(|s| s.to_string()))

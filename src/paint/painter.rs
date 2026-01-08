@@ -32,6 +32,7 @@ use crate::error::Error;
 use crate::error::RenderError;
 use crate::error::RenderStage;
 use crate::error::Result;
+use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
@@ -154,7 +155,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -11506,12 +11507,29 @@ fn approx_same_rect(a: Rect, b: Rect) -> bool {
     && (a.height() - b.height()).abs() <= eps
 }
 
+const MAX_IMPORTED_CSS_BYTES: usize = 2 * 1024 * 1024;
+
 fn decode_data_url_to_string(data_url: &str) -> Result<String> {
-  let decoded = crate::resource::decode_data_url(data_url)
+  let decoded = crate::resource::data_url::decode_data_url_prefix(
+    data_url,
+    MAX_IMPORTED_CSS_BYTES.saturating_add(1),
+  )
     .map(|resource| resource.bytes)
     .map_err(|err| RenderError::InvalidParameters {
       message: format!("Invalid data URL: {err}"),
     })?;
+
+  if decoded.len() > MAX_IMPORTED_CSS_BYTES {
+    return Err(
+      RenderError::InvalidParameters {
+        message: format!(
+          "Inline @import stylesheet exceeds {} bytes",
+          MAX_IMPORTED_CSS_BYTES
+        ),
+      }
+      .into(),
+    );
+  }
 
   if let Some((enc, bom_len)) = Encoding::for_bom(&decoded) {
     return Ok(
@@ -11523,6 +11541,19 @@ fn decode_data_url_to_string(data_url: &str) -> Result<String> {
   }
 
   Ok(String::from_utf8_lossy(&decoded).into_owned())
+}
+
+fn read_css_import_bytes<R: Read>(reader: &mut R, context: &'static str) -> Result<Vec<u8>> {
+  let mut buf = [0u8; 8 * 1024];
+  let mut out = FallibleVecWriter::new(MAX_IMPORTED_CSS_BYTES, context);
+  loop {
+    let read = reader.read(&mut buf)?;
+    if read == 0 {
+      break;
+    }
+    out.write_all(&buf[..read])?;
+  }
+  Ok(out.into_inner())
 }
 
 struct EmbeddedImportFetcher {
@@ -11577,7 +11608,22 @@ impl css::types::CssImportLoader for EmbeddedImportFetcher {
           .map_err(|()| RenderError::InvalidParameters {
             message: format!("Invalid file URL for @import: {}", resolved),
           })?;
-        let bytes = std::fs::read(&path)?;
+        let mut file = std::fs::File::open(&path)?;
+        if let Ok(meta) = file.metadata() {
+          if meta.len() > MAX_IMPORTED_CSS_BYTES as u64 {
+            return Err(
+              RenderError::InvalidParameters {
+                message: format!(
+                  "@import stylesheet exceeds {} bytes: {}",
+                  MAX_IMPORTED_CSS_BYTES,
+                  resolved
+                ),
+              }
+              .into(),
+            );
+          }
+        }
+        let bytes = read_css_import_bytes(&mut file, "css @import file")?;
         Ok(css::encoding::decode_css_bytes(&bytes, None))
       }
       "http" | "https" => {
@@ -11594,9 +11640,27 @@ impl css::types::CssImportLoader for EmbeddedImportFetcher {
           .get("content-type")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
-        let mut body = Vec::new();
+        if let Some(content_len) = response
+          .headers()
+          .get("content-length")
+          .and_then(|h| h.to_str().ok())
+          .and_then(|s| s.parse::<u64>().ok())
+        {
+          if content_len > MAX_IMPORTED_CSS_BYTES as u64 {
+            return Err(
+              RenderError::InvalidParameters {
+                message: format!(
+                  "@import stylesheet exceeds {} bytes: {}",
+                  MAX_IMPORTED_CSS_BYTES,
+                  resolved
+                ),
+              }
+              .into(),
+            );
+          }
+        }
         let mut reader = response.into_body().into_reader();
-        reader.read_to_end(&mut body)?;
+        let body = read_css_import_bytes(&mut reader, "css @import http body")?;
         Ok(css::encoding::decode_css_bytes(
           &body,
           content_type.as_deref(),
@@ -15742,6 +15806,22 @@ mod tests {
     let url = "data:text/css;base64,Ym9k eXtjb2xv\ncjpyZWQ7fQ";
     let css = fetcher.load(url).expect("load data url");
     assert_eq!(css, "body{color:red;}");
+  }
+
+  #[test]
+  fn embedded_import_fetcher_rejects_oversized_file_urls() {
+    use crate::css::types::CssImportLoader;
+
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("large.css");
+    let file = std::fs::File::create(&path).expect("create css file");
+    file
+      .set_len((MAX_IMPORTED_CSS_BYTES as u64) + 1)
+      .expect("set file length");
+
+    let url = Url::from_file_path(&path).expect("file url");
+    let fetcher = EmbeddedImportFetcher { base_url: None };
+    assert!(fetcher.load(url.as_str()).is_err());
   }
 
   #[test]
