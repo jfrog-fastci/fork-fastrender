@@ -77,6 +77,7 @@ mod running_position_flex;
 mod running_position_grid;
 mod scroll_snap_nan_regression;
 mod scroll_snap_pagination;
+mod scroll_snap_writing_mode;
 mod scrollbar_gutter;
 mod shadow_dom;
 mod shape_outside;
