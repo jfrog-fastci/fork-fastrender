@@ -7814,6 +7814,20 @@ impl FastRender {
       ReferrerPolicy::default(),
     ));
     let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)? {
+      let needs_update = self
+        .resource_context
+        .as_ref()
+        .is_some_and(|ctx| ctx.referrer_policy != policy);
+      if needs_update {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          ctx.referrer_policy = policy;
+          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+          // resource context.
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
     let artifacts_result = self.layout_document_for_media_with_artifacts(
       dom,
       width,
@@ -7867,6 +7881,20 @@ impl FastRender {
       ReferrerPolicy::default(),
     ));
     let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)? {
+      let needs_update = self
+        .resource_context
+        .as_ref()
+        .is_some_and(|ctx| ctx.referrer_policy != policy);
+      if needs_update {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          ctx.referrer_policy = policy;
+          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+          // resource context.
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
     let artifacts_result = self.layout_document_for_media_with_artifacts(
       dom,
       width,

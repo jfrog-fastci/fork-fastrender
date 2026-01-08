@@ -12,7 +12,7 @@ mod test_public_api {
   use fastrender::compat::CompatProfile;
   use fastrender::debug::runtime::RuntimeToggles;
   use fastrender::dom::DomCompatibilityMode;
-  use fastrender::resource::FetchedResource;
+  use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy};
   use fastrender::{
     FontConfig, LayoutParallelism, PaintParallelism, RenderOptions, ResourceFetcher, ResourceKind,
     ResourcePolicy, Rgba,
@@ -510,6 +510,52 @@ mod test_public_api {
       "expected policy-blocked error, got: {:?}",
       entry.message
     );
+  }
+
+  #[test]
+  fn test_layout_document_applies_meta_referrer_policy_to_stylesheet_requests() {
+    #[derive(Clone)]
+    struct ReferrerPolicyFetcher;
+
+    impl ResourceFetcher for ReferrerPolicyFetcher {
+      fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+        panic!("unexpected non-request fetch for {url}");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+        assert_eq!(req.url, "https://example.com/style.css");
+        assert_eq!(req.destination, FetchDestination::Style);
+        assert_eq!(req.referrer_policy, ReferrerPolicy::NoReferrer);
+        Ok(FetchedResource::with_final_url(
+          b"body { margin: 0; }".to_vec(),
+          Some("text/css".to_string()),
+          Some(req.url.to_string()),
+        ))
+      }
+    }
+
+    let fetcher = Arc::new(ReferrerPolicyFetcher) as Arc<dyn ResourceFetcher>;
+    let config = deterministic_config().with_base_url("https://origin.test/page.html");
+    let mut renderer =
+      FastRender::with_config_and_fetcher(config, Some(fetcher)).expect("renderer");
+
+    let html = r#"
+        <!doctype html>
+        <html>
+          <head>
+            <meta name="referrer" content="no-referrer">
+            <link rel="stylesheet" href="https://example.com/style.css">
+          </head>
+          <body>OK</body>
+        </html>
+    "#;
+
+    let dom = renderer.parse_html(html).expect("parse html");
+    let fragment_tree = renderer
+      .layout_document(&dom, 32, 32)
+      .expect("layout document");
+    assert_eq!(fragment_tree.viewport_size().width, 32.0);
+    assert_eq!(fragment_tree.viewport_size().height, 32.0);
   }
 
   #[test]
