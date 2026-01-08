@@ -768,6 +768,71 @@ fn invalid_mask_border_shorthand_is_ignored_and_does_not_establish_backdrop_root
 }
 
 #[test]
+fn mask_shorthand_resets_mask_border() {
+  let html_with_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        mask-border: url(#missing) 30;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+  let pixmap = render(html_with_backdrop_root, 64, 64);
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  assert_eq!(
+    pixel(&pixmap, 15, 15),
+    (255, 0, 0, 255),
+    "sanity: mask-border should establish a Backdrop Root boundary"
+  );
+
+  let html_with_mask_border_reset = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        mask-border: url(#missing) 30;
+        /* The `mask` shorthand resets all `mask-border-*` properties. */
+        mask: none;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+  let pixmap = render(html_with_mask_border_reset, 64, 64);
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  assert_eq!(
+    pixel(&pixmap, 15, 15),
+    (0, 255, 255, 255),
+    "`mask` should reset `mask-border` so the overlay can sample the body backdrop"
+  );
+}
+
+#[test]
 fn webkit_mask_box_image_url_triggers_backdrop_root_even_when_unresolved() {
   let html_without_backdrop_root = r#"<!doctype html>
     <style>

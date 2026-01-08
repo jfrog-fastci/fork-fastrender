@@ -12539,6 +12539,7 @@ fn apply_declaration_with_base_internal_with_order(
         }
         layers.push(layer);
       }
+      styles.mask_border = false;
       styles.set_mask_layers(layers);
       styles.rebuild_mask_layers();
     }
