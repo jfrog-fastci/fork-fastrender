@@ -146,6 +146,54 @@ fn col_span_background_respects_direction_rtl_column_mapping() {
 }
 
 #[test]
+fn col_span_background_respects_direction_rtl_column_mapping_in_collapsed_border_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: collapse;
+            border: none;
+            table-layout: fixed;
+            width: 150px;
+            direction: rtl;
+          }
+          td { padding: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col span="2" style="background: rgb(10,20,30);">
+          <tr>
+            <td style="width: 40px;">A</td>
+            <td style="width: 60px;">B</td>
+            <td style="width: 50px;">C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let mut fragments = Vec::new();
+  collect_fragments_with_display(&tree.root, Display::TableColumn, &mut fragments);
+  for fragment in &tree.additional_fragments {
+    collect_fragments_with_display(fragment, Display::TableColumn, &mut fragments);
+  }
+
+  let widths: Vec<f32> = fragments.iter().map(|fragment| fragment.bounds.width()).collect();
+  assert!(
+    widths.iter().any(|w| (*w - 100.0).abs() < 0.1),
+    "expected a TableColumn fragment spanning ~100px (40px+60px) for RTL <col span> in collapsed border model, got widths {:?}",
+    widths
+  );
+}
+
+#[test]
 fn colgroup_span_background_respects_direction_rtl_column_mapping() {
   let html = r#"
     <html>
