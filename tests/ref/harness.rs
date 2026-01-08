@@ -48,6 +48,7 @@
 use super::compare::compare_images;
 use super::compare::CompareConfig;
 use super::compare::ImageDiff;
+use super::compare::load_png_from_bytes;
 use fastrender::FastRender;
 use std::fs;
 use std::path::Path;
@@ -561,8 +562,11 @@ impl RefTestHarness {
 
     match result {
       Ok(png_data) => {
-        // Decode PNG to Pixmap
-        png_to_pixmap(&png_data)
+        // Decode PNG output produced by `FastRender::render_to_png`.
+        //
+        // Note: tiny-skia pixmaps store pixels as premultiplied RGBA. Use the shared
+        // `ref::compare` helpers so the decode path matches the comparison code.
+        load_png_from_bytes(&png_data)
       }
       Err(e) => Err(format!("Rendering failed: {:?}", e)),
     }
@@ -686,55 +690,41 @@ fn extract_body_content(html: &str) -> String {
   html.to_string()
 }
 
-/// Converts PNG data to a Pixmap
-fn png_to_pixmap(png_data: &[u8]) -> Result<Pixmap, String> {
-  use std::io::Cursor;
-
-  let cursor = Cursor::new(png_data);
-  let decoder = image::codecs::png::PngDecoder::new(cursor)
-    .map_err(|e| format!("Failed to decode PNG: {}", e))?;
-
-  use image::ImageDecoder;
-  let (width, height) = decoder.dimensions();
-
-  let mut rgba_data = vec![0u8; (width * height * 4) as usize];
-  decoder
-    .read_image(&mut rgba_data)
-    .map_err(|e| format!("Failed to read PNG data: {}", e))?;
-
-  let mut pixmap = Pixmap::new(width, height)
-    .ok_or_else(|| format!("Failed to create pixmap {}x{}", width, height))?;
-
-  // Convert from RGBA to BGRA premultiplied (tiny-skia format)
-  let dst_data = pixmap.data_mut();
-  for i in 0..(width * height) as usize {
-    let src_idx = i * 4;
-    let dst_idx = i * 4;
-
-    let r = rgba_data[src_idx];
-    let g = rgba_data[src_idx + 1];
-    let b = rgba_data[src_idx + 2];
-    let a = rgba_data[src_idx + 3];
-
-    // Premultiply alpha
-    let alpha = a as f32 / 255.0;
-    let pm_r = (r as f32 * alpha) as u8;
-    let pm_g = (g as f32 * alpha) as u8;
-    let pm_b = (b as f32 * alpha) as u8;
-
-    // Store as BGRA
-    dst_data[dst_idx] = pm_b;
-    dst_data[dst_idx + 1] = pm_g;
-    dst_data[dst_idx + 2] = pm_r;
-    dst_data[dst_idx + 3] = a;
-  }
-
-  Ok(pixmap)
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn test_render_html_preserves_color_channels() {
+    // Ensure the PNG decode path used by the harness preserves RGBA channel order.
+    // (A prior implementation accidentally swapped red/blue when converting decoded PNG bytes
+    // into a tiny-skia Pixmap.)
+    let mut harness = RefTestHarness::with_config(RefTestConfig::with_viewport(10, 10));
+    let html = r#"
+      <html>
+        <head>
+          <style>
+            body { margin: 0; }
+            .box { width: 10px; height: 10px; background: rgb(0, 0, 255); }
+          </style>
+        </head>
+        <body>
+          <div class="box"></div>
+        </body>
+      </html>
+    "#;
+
+    let pixmap = harness.render_html(html).expect("render_html");
+    let px = pixmap.pixel(0, 0).expect("pixel");
+    assert!(
+      px.blue() > 200 && px.red() < 50,
+      "expected blue pixel at (0,0); got rgba=({}, {}, {}, {})",
+      px.red(),
+      px.green(),
+      px.blue(),
+      px.alpha()
+    );
+  }
 
   #[test]
   fn test_ref_test_config_default() {
