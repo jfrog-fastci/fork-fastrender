@@ -54,8 +54,10 @@
 //!
 //! `FastRender` is `Send` but not `Sync`. Each instance maintains internal
 //! caches that are not thread-safe. For multi-threaded rendering, create one
-//! instance per thread or use [`FastRenderPool`] to share immutable resources
-//! while keeping per-worker caches isolated.
+//! instance per thread, use [`FastRenderPool`] for one-off renders with pooled
+//! workers, or use [`FastRenderFactory`] to build long-lived per-tab/per-thread
+//! renderers that still share expensive immutable resources (system font list,
+//! decoded image cache, shared HTTP/disk cache).
 
 use crate::accessibility::AccessibilityNode;
 use crate::animation;
@@ -3280,13 +3282,87 @@ impl FastRenderPoolConfig {
   }
 }
 
+/// Shared-resource factory for constructing multiple independent [`FastRender`] instances.
+///
+/// Each renderer built by the factory has its own per-instance caches, while
+/// sharing expensive immutable state such as the system font list, decoded image
+/// cache, and any configured HTTP/disk cache.
+///
+/// This is intended for “one renderer per tab/thread” architectures (e.g. a UI
+/// app with tabs where each tab owns a long-lived `FastRender`).
+///
+/// For high-throughput one-off rendering, use [`FastRenderPool`] instead.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use fastrender::api::{FastRenderFactory, FastRenderPoolConfig, RenderOptions};
+/// # fn main() -> fastrender::Result<()> {
+/// let factory = FastRenderFactory::with_config(FastRenderPoolConfig::new())?;
+///
+/// let mut renderer = factory.build_renderer()?;
+/// let prepared =
+///   renderer.prepare_html("<p>Hello</p>", RenderOptions::new().with_viewport(800, 600))?;
+/// let pixmap = prepared.paint_default()?;
+/// # let _ = pixmap;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Note: [`FastRenderPoolConfig::pool_size`] is ignored by factories.
+#[derive(Clone)]
+pub struct FastRenderFactory {
+  shared: Arc<SharedRendererResources>,
+}
+
+impl FastRenderFactory {
+  /// Create a new factory using the default configuration.
+  pub fn new() -> Result<Self> {
+    Self::with_config(FastRenderPoolConfig::default())
+  }
+
+  /// Create a new factory using the provided configuration.
+  ///
+  /// Note: [`FastRenderPoolConfig::pool_size`] is ignored by factories.
+  pub fn with_config(config: FastRenderPoolConfig) -> Result<Self> {
+    let (shared, _pool_size) = build_shared_renderer_resources(config);
+    Ok(Self { shared })
+  }
+
+  /// Construct a fresh [`FastRender`] instance using the shared resources.
+  pub fn build_renderer(&self) -> Result<FastRender> {
+    self.shared.build_renderer()
+  }
+}
+
+/// Pool of reusable [`FastRender`] instances.
+///
+/// Pooled renderers share expensive immutable resources (font database, image
+/// cache, resource fetcher) while keeping each `FastRender`'s internal caches
+/// isolated.
+///
+/// This is ideal for high-throughput one-off rendering jobs.
+/// For “one renderer per tab/thread”, prefer [`FastRenderFactory`].
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use fastrender::api::FastRenderPool;
+/// # fn main() -> fastrender::Result<()> {
+/// let pool = FastRenderPool::new()?;
+/// let pixmap = pool.render_html("<h1>Hello</h1>", 800, 600)?;
+/// # let _ = pixmap;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct FastRenderPool {
   inner: Arc<PoolInner>,
 }
 
 struct PoolInner {
-  shared: Arc<SharedPoolResources>,
+  shared: Arc<SharedRendererResources>,
+  pool_size: usize,
   state: Mutex<PoolState>,
   available: Condvar,
 }
@@ -3499,18 +3575,89 @@ mod pool_prepare_tests {
       assert_eq!(pixmap.height(), 10);
     }
   }
+
+  #[test]
+  fn fast_render_pool_prepare_html_document_builds_prepared_document() {
+    let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+    let pool = FastRenderPool::with_config(
+      FastRenderPoolConfig::new()
+        .with_renderer_config(renderer)
+        .with_pool_size(1),
+    )
+    .expect("pool");
+
+    let prepared = pool
+      .prepare_html_document(
+        "<!doctype html><html><body>Hello</body></html>",
+        RenderOptions::new().with_viewport(10, 10),
+      )
+      .expect("prepare_html_document");
+    let pixmap = prepared.paint_default().expect("paint");
+    assert_eq!(pixmap.width(), 10);
+    assert_eq!(pixmap.height(), 10);
+
+    let prepared_default = pool
+      .prepare_html_default("<!doctype html><html><body>Hello</body></html>")
+      .expect("prepare_html_default");
+    let region = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let pixmap = prepared_default.paint_region(region).expect("paint_region");
+    assert_eq!(pixmap.width(), 10);
+    assert_eq!(pixmap.height(), 10);
+  }
 }
 
-struct SharedPoolResources {
+#[cfg(test)]
+mod shared_resource_factory_tests {
+  use super::*;
+
+  #[test]
+  fn fast_render_factory_builds_renderers_sharing_resources() {
+    let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+    let factory = FastRenderFactory::with_config(
+      FastRenderPoolConfig::new()
+        .with_renderer_config(renderer)
+        .with_pool_size(1),
+    )
+    .expect("factory");
+
+    let mut renderer_a = factory.build_renderer().expect("renderer_a");
+    let mut renderer_b = factory.build_renderer().expect("renderer_b");
+
+    let db_a = renderer_a.font_context().database().shared_db();
+    let db_b = renderer_b.font_context().database().shared_db();
+    assert!(
+      Arc::ptr_eq(&db_a, &db_b),
+      "expected shared fontdb metadata across renderers"
+    );
+
+    assert_eq!(
+      renderer_a.image_cache.instance_id(),
+      renderer_b.image_cache.instance_id(),
+      "expected shared image cache backing store across renderers"
+    );
+
+    assert!(
+      Arc::ptr_eq(&renderer_a.fetcher, &renderer_b.fetcher),
+      "expected shared ResourceFetcher across renderers"
+    );
+
+    let pixmap = renderer_a
+      .render_html("<!doctype html><html><body>Hello</body></html>", 10, 10)
+      .expect("render");
+    assert_eq!(pixmap.width(), 10);
+    assert_eq!(pixmap.height(), 10);
+  }
+}
+
+struct SharedRendererResources {
   config: FastRenderConfig,
   font_cache: FontCacheConfig,
   fetcher: Arc<dyn ResourceFetcher>,
   font_db: Arc<FontDbDatabase>,
-  pool_size: usize,
   image_cache: ImageCache,
 }
 
-impl SharedPoolResources {
+impl SharedRendererResources {
   fn build_renderer(&self) -> Result<FastRender> {
     let font_context = FontContext::with_shared_resource_fetcher(
       Arc::clone(&self.font_db),
@@ -3527,6 +3674,34 @@ impl SharedPoolResources {
   }
 }
 
+fn build_shared_renderer_resources(
+  config: FastRenderPoolConfig,
+) -> (Arc<SharedRendererResources>, usize) {
+  let FastRenderPoolConfig {
+    renderer,
+    pool_size,
+    font_cache,
+    image_cache,
+    fetcher,
+  } = config;
+  let pool_size = pool_size.max(1);
+  let fetcher = resolve_fetcher(&renderer, fetcher);
+  let shared_image_cache =
+    build_image_cache(&renderer.base_url, Arc::clone(&fetcher), image_cache);
+  let font_db = font_db_for_pool(&renderer.font_config);
+
+  (
+    Arc::new(SharedRendererResources {
+      config: renderer,
+      font_cache,
+      fetcher,
+      font_db,
+      image_cache: shared_image_cache,
+    }),
+    pool_size,
+  )
+}
+
 impl FastRenderPool {
   /// Create a new pool using the default configuration.
   pub fn new() -> Result<Self> {
@@ -3535,27 +3710,10 @@ impl FastRenderPool {
 
   /// Create a new pool using the provided configuration.
   pub fn with_config(config: FastRenderPoolConfig) -> Result<Self> {
-    let FastRenderPoolConfig {
-      renderer,
-      pool_size,
-      font_cache,
-      image_cache,
-      fetcher,
-    } = config;
-    let pool_size = pool_size.max(1);
-    let fetcher = resolve_fetcher(&renderer, fetcher);
-    let shared_image_cache =
-      build_image_cache(&renderer.base_url, Arc::clone(&fetcher), image_cache);
-    let font_db = font_db_for_pool(&renderer.font_config);
+    let (shared, pool_size) = build_shared_renderer_resources(config);
     let inner = PoolInner {
-      shared: Arc::new(SharedPoolResources {
-        config: renderer,
-        font_cache,
-        fetcher,
-        font_db,
-        pool_size,
-        image_cache: shared_image_cache,
-      }),
+      shared,
+      pool_size,
       state: Mutex::new(PoolState {
         idle: Vec::with_capacity(pool_size),
         total: 0,
@@ -3568,13 +3726,23 @@ impl FastRenderPool {
     })
   }
 
+  /// Returns a [`FastRenderFactory`] that shares this pool's underlying immutable resources.
+  ///
+  /// This can be useful for “one renderer per tab/thread” patterns where you want
+  /// long-lived renderers, but also want a pool for one-off work.
+  pub fn factory(&self) -> FastRenderFactory {
+    FastRenderFactory {
+      shared: Arc::clone(&self.inner.shared),
+    }
+  }
+
   fn acquire_renderer(&self) -> Result<FastRender> {
     let mut guard = self.lock_state();
     loop {
       if let Some(renderer) = guard.idle.pop() {
         return Ok(renderer);
       }
-      if guard.total < self.inner.shared.pool_size {
+      if guard.total < self.inner.pool_size {
         guard.total += 1;
         let shared = Arc::clone(&self.inner.shared);
         drop(guard);
@@ -3666,6 +3834,16 @@ impl FastRenderPool {
   /// Fetch and prepare a document from a URL using a pooled renderer.
   pub fn prepare_url(&self, url: &str, options: RenderOptions) -> Result<PreparedDocumentReport> {
     self.with_renderer(move |renderer| renderer.prepare_url(url, options))
+  }
+
+  /// Prepare an HTML string into a [`PreparedDocument`] using a pooled renderer.
+  pub fn prepare_html_document(&self, html: &str, options: RenderOptions) -> Result<PreparedDocument> {
+    self.with_renderer(move |renderer| renderer.prepare_html(html, options))
+  }
+
+  /// Convenience wrapper for [`FastRenderPool::prepare_html_document`] using default options.
+  pub fn prepare_html_default(&self, html: &str) -> Result<PreparedDocument> {
+    self.prepare_html_document(html, RenderOptions::new())
   }
 }
 
