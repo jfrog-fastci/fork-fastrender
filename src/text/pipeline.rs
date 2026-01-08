@@ -6363,11 +6363,40 @@ impl ShapingPipeline {
       }
     };
 
+    // Like `map_boundary`, but maps an *exclusive* shaped boundary to the end of the last original
+    // character that contributes to `[0, shaped_end)`.
+    //
+    // This matters when a single original character expands to multiple codepoints via
+    // `to_uppercase()` (e.g. U+FB03 "ﬃ" → "FFI"). Font fallback can legitimately split the
+    // expanded string mid-expansion, and we still need to map every shaped run back to a non-empty
+    // slice of the original text so cluster indices remain valid.
+    let map_boundary_end = |shaped_end: usize| -> usize {
+      if shaped_end == 0 {
+        return 0;
+      }
+
+      let idx = match mapping_with_end.binary_search_by_key(&shaped_end, |(shaped, _)| *shaped) {
+        Ok(idx) | Err(idx) => idx,
+      };
+
+      let Some((_, last_orig_start)) = mapping_with_end.get(idx.saturating_sub(1)) else {
+        return 0;
+      };
+
+      for (_, next_orig) in mapping_with_end.iter().skip(idx) {
+        if next_orig != last_orig_start {
+          return *next_orig;
+        }
+      }
+
+      segment_len
+    };
+
     for run in &mut shaped {
       let shaped_start = run.start;
       let shaped_end = run.end;
       let orig_start = map_boundary(shaped_start).min(segment_len);
-      let orig_end = map_boundary(shaped_end).min(segment_len);
+      let orig_end = map_boundary_end(shaped_end).min(segment_len);
 
       run.start = base_offset.saturating_add(orig_start);
       run.end = base_offset.saturating_add(orig_end).min(segment_end);
