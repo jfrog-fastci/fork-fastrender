@@ -248,9 +248,9 @@ fn preserves_none_entries_in_animation_timeline_lists() {
 #[test]
 fn parses_animation_range_view_offsets_with_lengths() {
   let css = r#"
-    #box {
-      animation-range: entry 100px entry 500px;
-    }
+     #box {
+       animation-range: entry 100px entry 500px;
+     }
   "#;
   let html = r#"<div id="box"></div>"#;
   let dom = dom::parse_html(html).unwrap();
@@ -267,6 +267,31 @@ fn parses_animation_range_view_offsets_with_lengths() {
   assert_eq!(
     range.end,
     RangeOffset::View(ViewTimelinePhase::Entry, Length::px(500.0))
+  );
+}
+
+#[test]
+fn parses_animation_range_view_offsets_with_crossing_ranges() {
+  let css = r#"
+    #box {
+      animation-range: entry-crossing 0% exit-crossing 100%;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+
+  assert_eq!(div.styles.animation_ranges.len(), 1);
+  let range = &div.styles.animation_ranges[0];
+  assert_eq!(
+    range.start,
+    RangeOffset::View(ViewTimelinePhase::EntryCrossing, Length::percent(0.0))
+  );
+  assert_eq!(
+    range.end,
+    RangeOffset::View(ViewTimelinePhase::ExitCrossing, Length::percent(100.0))
   );
 }
 
@@ -354,6 +379,72 @@ fn view_timeline_progress_supports_entry_length_offsets() {
   assert!(
     (progress_end - 1.0).abs() < 1e-6,
     "progress_end={progress_end}"
+  );
+}
+
+#[test]
+fn view_timeline_progress_supports_entry_crossing_range() {
+  let timeline = ViewTimeline::default();
+  let view_size = 100.0;
+  let target_start = 150.0;
+  let target_end = 350.0;
+
+  // Geometry notes:
+  // - entry edge (start crosses visibility-end): target_start - view_size == 50
+  // - contain start (for tall targets): target_start == 150
+  // - contain edge (end crosses visibility-end): target_end - view_size == 250
+  let contain_start = target_start;
+  let contain_edge = target_end - view_size;
+
+  let entry_range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(100.0)),
+  };
+  let entry_crossing_range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::EntryCrossing, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::EntryCrossing, Length::percent(100.0)),
+  };
+
+  let progress_entry_end = view_timeline_progress(
+    &timeline,
+    target_start,
+    target_end,
+    view_size,
+    contain_start,
+    &entry_range,
+  )
+  .unwrap();
+  assert!(
+    (progress_entry_end - 1.0).abs() < 1e-6,
+    "progress_entry_end={progress_entry_end}"
+  );
+
+  let progress_crossing_mid = view_timeline_progress(
+    &timeline,
+    target_start,
+    target_end,
+    view_size,
+    contain_start,
+    &entry_crossing_range,
+  )
+  .unwrap();
+  assert!(
+    (progress_crossing_mid - 0.5).abs() < 1e-6,
+    "progress_crossing_mid={progress_crossing_mid}"
+  );
+
+  let progress_crossing_end = view_timeline_progress(
+    &timeline,
+    target_start,
+    target_end,
+    view_size,
+    contain_edge,
+    &entry_crossing_range,
+  )
+  .unwrap();
+  assert!(
+    (progress_crossing_end - 1.0).abs() < 1e-6,
+    "progress_crossing_end={progress_crossing_end}"
   );
 }
 

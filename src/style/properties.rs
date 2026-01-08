@@ -1119,10 +1119,11 @@ fn parse_percentage(token: &str) -> Option<f32> {
 fn parse_view_phase(token: &str) -> Option<ViewTimelinePhase> {
   match token {
     "entry" => Some(ViewTimelinePhase::Entry),
+    "entry-crossing" => Some(ViewTimelinePhase::EntryCrossing),
     "contain" => Some(ViewTimelinePhase::Contain),
     "cover" => Some(ViewTimelinePhase::Cover),
+    "cross" => Some(ViewTimelinePhase::Contain),
     "exit" => Some(ViewTimelinePhase::Exit),
-    "entry-crossing" => Some(ViewTimelinePhase::EntryCrossing),
     "exit-crossing" => Some(ViewTimelinePhase::ExitCrossing),
     _ => None,
   }

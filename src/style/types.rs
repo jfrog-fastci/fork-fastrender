@@ -1184,10 +1184,10 @@ impl Default for AnimationTimeline {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewTimelinePhase {
   Entry,
+  EntryCrossing,
   Contain,
   Cover,
   Exit,
-  EntryCrossing,
   ExitCrossing,
 }
 
