@@ -344,6 +344,7 @@ fn will_change_webkit_filter_establishes_backdrop_root() {
 
 #[test]
 fn will_change_ms_filter_is_not_aliased_to_filter() {
+  let _guard = lock_tests();
   // `-ms-filter` is the old IE filter syntax and does not alias modern `filter`. Ensure we do not
   // treat it as a Backdrop Root trigger when it appears in `will-change`.
   let pixmap = render_backdrop_invert_with_parent_will_change("-ms-filter");
@@ -386,6 +387,7 @@ fn will_change_webkit_mask_image_establishes_backdrop_root() {
 
 #[test]
 fn will_change_webkit_mask_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `-webkit-mask` is a legacy alias for the `mask` shorthand; treat it equivalently for Backdrop
   // Root semantics.
   let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-mask");
@@ -395,6 +397,7 @@ fn will_change_webkit_mask_establishes_backdrop_root() {
 
 #[test]
 fn will_change_webkit_clip_path_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `-webkit-clip-path` aliases `clip-path`; will-change hints should behave equivalently for
   // Backdrop Root semantics.
   let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-clip-path");
@@ -755,6 +758,7 @@ fn will_change_all_is_invalid_and_does_not_override() {
 
 #[test]
 fn will_change_will_change_is_invalid_and_does_not_override() {
+  let _guard = lock_tests();
   // css-will-change-1 excludes `will-change` from <<custom-ident>>, so it is invalid as a hint and
   // should not override the earlier Backdrop Root-triggering value.
   let html = r#"<!doctype html>
