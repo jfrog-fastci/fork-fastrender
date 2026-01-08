@@ -6329,6 +6329,20 @@ impl<'a> Element for ElementRef<'a> {
       PseudoElement::Placeholder => {
         self.is_html_element() && self.is_placeholder_shown()
       }
+      PseudoElement::FileSelectorButton => {
+        if !self.is_html_element() {
+          return false;
+        }
+
+        match self.node.tag_name() {
+          Some(tag) if tag.eq_ignore_ascii_case("input") => self
+            .node
+            .get_attribute_ref("type")
+            .unwrap_or("text")
+            .eq_ignore_ascii_case("file"),
+          _ => false,
+        }
+      }
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
         if !self.is_html_element() {
           return false;
@@ -12581,10 +12595,21 @@ mod tests {
     let input_text = element_with_attrs("input", vec![("type", "text")], vec![]);
     let input_text_ref = ElementRef::new(&input_text);
     assert!(!input_text_ref.match_pseudo_element(&PseudoElement::SliderThumb, &mut context));
+    assert!(
+      !input_text_ref.match_pseudo_element(&PseudoElement::FileSelectorButton, &mut context),
+      "file-selector-button should not match non-file inputs"
+    );
 
     let input_range = element_with_attrs("input", vec![("type", "range")], vec![]);
     let input_range_ref = ElementRef::new(&input_range);
     assert!(input_range_ref.match_pseudo_element(&PseudoElement::SliderThumb, &mut context));
+
+    let input_file = element_with_attrs("input", vec![("type", "file")], vec![]);
+    let input_file_ref = ElementRef::new(&input_file);
+    assert!(
+      input_file_ref.match_pseudo_element(&PseudoElement::FileSelectorButton, &mut context),
+      "file-selector-button should match file inputs"
+    );
 
     let placeholder_empty = element_with_attrs(
       "input",

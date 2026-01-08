@@ -1643,6 +1643,17 @@ mod tests {
       selectors,
       vec!["summary::marker".to_string(), "summary::marker".to_string()]
     );
+
+    // `::-webkit-file-upload-button` should behave like an alias and serialize to the standard form.
+    let list = parse_selector_list("input::-webkit-file-upload-button, input::file-selector-button");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec![
+        "input::file-selector-button".to_string(),
+        "input::file-selector-button".to_string()
+      ]
+    );
   }
 
   #[test]
@@ -2237,6 +2248,16 @@ mod tests {
     let selector = list.slice().first().expect("one selector");
     assert_eq!(selector.pseudo_element(), Some(&PseudoElement::Placeholder));
 
+    let mut input = ParserInput::new("input::file-selector-button");
+    let mut parser = Parser::new(&mut input);
+    let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+      .expect("parse file-selector-button selector");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(
+      selector.pseudo_element(),
+      Some(&PseudoElement::FileSelectorButton)
+    );
+
     let mut input = ParserInput::new(".range::-webkit-slider-thumb");
     let mut parser = Parser::new(&mut input);
     let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
@@ -2280,6 +2301,23 @@ mod tests {
         Some(&PseudoElement::Placeholder),
         "{selector_text} should parse as ::placeholder"
       );
+    }
+
+    for (selector_text, canonical) in [
+      ("input:file-selector-button", "input::file-selector-button"),
+      ("input:-webkit-file-upload-button", "input::file-selector-button"),
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      let list =
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).expect("parse");
+      let selector = list.slice().first().expect("one selector");
+      assert_eq!(
+        selector.pseudo_element(),
+        Some(&PseudoElement::FileSelectorButton),
+        "{selector_text} should parse as ::file-selector-button"
+      );
+      assert_eq!(selector.to_css_string(), canonical);
     }
 
     for selector_text in [
