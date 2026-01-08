@@ -15077,22 +15077,14 @@ fn parse_background_size(value: &PropertyValue) -> Option<BackgroundSize> {
       }
     }
     PropertyValue::Multiple(values) => {
-      if values.len() == 1 {
-        if let Some(single) = parse_background_size(&values[0]) {
-          return Some(single);
-        }
-      }
-      let components: Vec<BackgroundSizeComponent> = values
-        .iter()
-        .filter_map(parse_background_size_component)
-        .collect();
-      match components.len() {
+      match values.len() {
         0 => None,
-        1 => Some(BackgroundSize::Explicit(
-          components[0],
-          BackgroundSizeComponent::Auto,
+        1 => parse_background_size(&values[0]),
+        2 => Some(BackgroundSize::Explicit(
+          parse_background_size_component(&values[0])?,
+          parse_background_size_component(&values[1])?,
         )),
-        _ => Some(BackgroundSize::Explicit(components[0], components[1])),
+        _ => None,
       }
     }
     _ => parse_background_size_component(value)
@@ -31843,7 +31835,13 @@ fn parse_mask_shorthand(tokens: &[PropertyValue]) -> Option<MaskShorthand> {
       let is_size_token = match t {
         PropertyValue::Length(_) | PropertyValue::Percentage(_) => true,
         PropertyValue::Number(n) if *n == 0.0 => true,
-        PropertyValue::Keyword(k) if k == "auto" || k == "cover" || k == "contain" => true,
+        PropertyValue::Keyword(k)
+          if k.eq_ignore_ascii_case("auto")
+            || k.eq_ignore_ascii_case("cover")
+            || k.eq_ignore_ascii_case("contain") =>
+        {
+          true
+        }
         _ => false,
       };
       if is_size_token {
@@ -32012,7 +32010,13 @@ fn parse_background_shorthand(
       let is_size_token = match t {
         PropertyValue::Length(_) | PropertyValue::Percentage(_) => true,
         PropertyValue::Number(n) if *n == 0.0 => true,
-        PropertyValue::Keyword(k) if k == "auto" || k == "cover" || k == "contain" => true,
+        PropertyValue::Keyword(k)
+          if k.eq_ignore_ascii_case("auto")
+            || k.eq_ignore_ascii_case("cover")
+            || k.eq_ignore_ascii_case("contain") =>
+        {
+          true
+        }
         _ => false,
       };
       if is_size_token {
