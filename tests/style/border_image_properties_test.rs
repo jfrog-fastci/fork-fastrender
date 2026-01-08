@@ -44,6 +44,30 @@ fn border_image_slice_parses_numbers_and_fill() {
 }
 
 #[test]
+fn border_image_slice_parses_percentages() {
+  let mut styles = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-slice", "10% 20% 30% 40% fill"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert_eq!(
+    styles.border_image.slice,
+    BorderImageSlice {
+      top: BorderImageSliceValue::Percentage(10.0),
+      right: BorderImageSliceValue::Percentage(20.0),
+      bottom: BorderImageSliceValue::Percentage(30.0),
+      left: BorderImageSliceValue::Percentage(40.0),
+      fill: true,
+    }
+  );
+}
+
+#[test]
 fn border_image_width_parses_lengths() {
   let mut styles = ComputedStyle::default();
 
@@ -211,4 +235,76 @@ fn border_image_repeat_rejects_too_many_keywords() {
     16.0,
   );
   assert_eq!(styles.border_image.repeat, expected);
+}
+
+#[test]
+fn border_image_shorthand_rejects_too_many_repeat_keywords() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image", "url(a) 30 / 10px / 0 stretch"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  let expected = styles.border_image.clone();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image", "url(b) 30 / 10px / 0 stretch round space"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image, expected);
+}
+
+#[test]
+fn border_image_shorthand_rejects_too_many_slashes() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image", "url(a) 30 / 10px / 0 stretch"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  let expected = styles.border_image.clone();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image", "url(b) 30 / 10px / 0 / 1 stretch"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image, expected);
+}
+
+#[test]
+fn border_image_shorthand_rejects_slashes_without_slice() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image", "url(a) 30 / 10px / 0 stretch"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  let expected = styles.border_image.clone();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image", "url(b) / 10px / 0 stretch"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image, expected);
 }

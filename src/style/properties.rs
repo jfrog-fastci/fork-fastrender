@@ -13897,9 +13897,19 @@ fn parse_border_image_slice_values(values: &[PropertyValue]) -> Option<BorderIma
         }
         fill = true
       }
-      PropertyValue::Number(n) if *n >= 0.0 => numeric.push(BorderImageSliceValue::Number(*n)),
-      PropertyValue::Percentage(p) if *p >= 0.0 => {
+      PropertyValue::Number(n) if n.is_finite() && *n >= 0.0 => {
+        numeric.push(BorderImageSliceValue::Number(*n))
+      }
+      PropertyValue::Percentage(p) if p.is_finite() && *p >= 0.0 => {
         numeric.push(BorderImageSliceValue::Percentage(*p))
+      }
+      PropertyValue::Length(len)
+        if len.calc.is_none()
+          && len.unit == LengthUnit::Percent
+          && len.value.is_finite()
+          && len.value >= 0.0 =>
+      {
+        numeric.push(BorderImageSliceValue::Percentage(len.value))
       }
       _ => return None,
     }
@@ -14067,7 +14077,6 @@ fn parse_border_image_repeat(
 }
 
 fn parse_border_image_shorthand(value: &PropertyValue) -> Option<BorderImage> {
-  let mut img = BorderImage::default();
   let tokens: Vec<PropertyValue> = match value {
     PropertyValue::Multiple(v) => v.clone(),
     other => vec![other.clone()],
@@ -14076,58 +14085,252 @@ fn parse_border_image_shorthand(value: &PropertyValue) -> Option<BorderImage> {
     return None;
   }
 
-  let mut segments: Vec<Vec<PropertyValue>> = Vec::new();
-  let mut current = Vec::new();
-  for t in tokens {
-    if matches!(&t, PropertyValue::Keyword(k) if k == "/") {
-      segments.push(current);
-      current = Vec::new();
+  let is_repeat_keyword = |token: &PropertyValue| -> bool {
+    matches!(
+      token,
+      PropertyValue::Keyword(kw)
+        if matches!(kw.as_str(), "stretch" | "repeat" | "round" | "space")
+    )
+  };
+
+  let is_fill_keyword =
+    |token: &PropertyValue| matches!(token, PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("fill"));
+
+  let is_slice_value = |token: &PropertyValue| -> bool {
+    match token {
+      PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
+      PropertyValue::Percentage(p) => p.is_finite() && *p >= 0.0,
+      PropertyValue::Length(len)
+        if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent) =>
+      {
+        len.value.is_finite() && len.value >= 0.0
+      }
+      _ => false,
+    }
+  };
+
+  let is_width_value = |token: &PropertyValue| -> bool {
+    match token {
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => true,
+      PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
+      PropertyValue::Length(len) => len.value.is_finite() && len.value >= 0.0,
+      _ => false,
+    }
+  };
+
+  let is_outset_value = |token: &PropertyValue| -> bool {
+    match token {
+      PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
+      PropertyValue::Length(len) => {
+        if !len.value.is_finite() || len.value < 0.0 {
+          return false;
+        }
+        if len.unit.is_percentage() {
+          return false;
+        }
+        if len.calc.is_some_and(|calc| calc.has_percentage()) {
+          return false;
+        }
+        true
+      }
+      _ => false,
+    }
+  };
+
+  let mut slash_positions = Vec::new();
+  for (idx, token) in tokens.iter().enumerate() {
+    if matches!(token, PropertyValue::Keyword(k) if k == "/") {
+      slash_positions.push(idx);
+    }
+  }
+  if slash_positions.len() > 2 {
+    return None;
+  }
+
+  let mut img = BorderImage::default();
+
+  // Track which tokens are consumed by the slice/width/outset portions of the shorthand so we can
+  // validate the remaining tokens as source/repeat.
+  let mut used = vec![false; tokens.len()];
+  for idx in &slash_positions {
+    used[*idx] = true;
+  }
+
+  // Parse slice (and optionally width/outset when slashes are present).
+  if slash_positions.is_empty() {
+    // Without slashes, any `<number>` / `<percentage>` / `fill` tokens must form a single
+    // contiguous slice group (if present).
+    let slice_indices: Vec<usize> = tokens
+      .iter()
+      .enumerate()
+      .filter_map(|(idx, token)| (is_slice_value(token) || is_fill_keyword(token)).then_some(idx))
+      .collect();
+
+    if !slice_indices.is_empty() {
+      let start = slice_indices[0];
+      let end = *slice_indices.last().unwrap();
+      let mut slice_values = 0usize;
+      let mut fill = false;
+      for idx in start..=end {
+        let token = &tokens[idx];
+        if is_slice_value(token) {
+          slice_values += 1;
+          if slice_values > 4 {
+            return None;
+          }
+          used[idx] = true;
+          continue;
+        }
+        if is_fill_keyword(token) {
+          if fill {
+            return None;
+          }
+          fill = true;
+          used[idx] = true;
+          continue;
+        }
+        // Slice group must be contiguous; anything else between the first/last slice token is
+        // invalid.
+        return None;
+      }
+      if slice_values == 0 {
+        return None;
+      }
+      img.slice = parse_border_image_slice_values(&tokens[start..=end])?;
+    }
+  } else {
+    // With slashes, the slice group must be an uninterrupted suffix before the first slash.
+    let first_slash = slash_positions[0];
+    if first_slash == 0 || first_slash + 1 >= tokens.len() {
+      return None;
+    }
+
+    let mut slice_values = 0usize;
+    let mut fill = false;
+    let mut slice_start = first_slash;
+    while slice_start > 0 {
+      let token = &tokens[slice_start - 1];
+      if is_slice_value(token) {
+        slice_values += 1;
+        if slice_values > 4 {
+          return None;
+        }
+        slice_start -= 1;
+        continue;
+      }
+      if is_fill_keyword(token) {
+        if fill {
+          return None;
+        }
+        fill = true;
+        slice_start -= 1;
+        continue;
+      }
+      break;
+    }
+    if slice_values == 0 {
+      return None;
+    }
+    // No slice tokens may precede the slice suffix; widths/outsets can only appear after `/`.
+    for token in &tokens[..slice_start] {
+      if is_slice_value(token) || is_fill_keyword(token) {
+        return None;
+      }
+    }
+    for idx in slice_start..first_slash {
+      used[idx] = true;
+    }
+    img.slice = parse_border_image_slice_values(&tokens[slice_start..first_slash])?;
+
+    let width_start = first_slash + 1;
+    if slash_positions.len() == 2 {
+      let second_slash = slash_positions[1];
+      if second_slash < width_start || second_slash + 1 >= tokens.len() {
+        return None;
+      }
+
+      let width_tokens = &tokens[width_start..second_slash];
+      if width_tokens.len() > 4 {
+        return None;
+      }
+      if !width_tokens.is_empty() {
+        img.width = parse_border_image_width_list(width_tokens)?;
+        for idx in width_start..second_slash {
+          used[idx] = true;
+        }
+      }
+
+      let outset_start = second_slash + 1;
+      let mut outset_end = outset_start;
+      let mut outset_values = 0usize;
+      while outset_end < tokens.len() && is_outset_value(&tokens[outset_end]) {
+        outset_values += 1;
+        if outset_values > 4 {
+          return None;
+        }
+        used[outset_end] = true;
+        outset_end += 1;
+      }
+      if outset_values == 0 {
+        return None;
+      }
+      img.outset = parse_border_image_outset_list(&tokens[outset_start..outset_end])?;
     } else {
-      current.push(t);
-    }
-  }
-  segments.push(current);
-
-  // First segment: source, slice, repeat
-  if let Some(first) = segments.first() {
-    let mut items = first.clone();
-    // Extract repeat keywords from the end (1 or 2 tokens)
-    let mut rep_tokens: Vec<PropertyValue> = Vec::new();
-    while let Some(PropertyValue::Keyword(k)) = items.last() {
-      if ["stretch", "repeat", "round", "space"].contains(&k.as_str()) {
-        rep_tokens.push(items.pop().unwrap());
-      } else {
-        break;
+      let mut width_end = width_start;
+      let mut width_values = 0usize;
+      while width_end < tokens.len() && is_width_value(&tokens[width_end]) {
+        width_values += 1;
+        if width_values > 4 {
+          return None;
+        }
+        used[width_end] = true;
+        width_end += 1;
       }
-      if rep_tokens.len() == 2 {
-        break;
+      if width_values == 0 {
+        return None;
       }
-    }
-    rep_tokens.reverse();
-    if !rep_tokens.is_empty() {
-      if let Some(rep) = parse_border_image_repeat(&PropertyValue::Multiple(rep_tokens)) {
-        img.repeat = rep;
-      }
-    }
-
-    if let Some(src) = items.first().and_then(|t| parse_border_image_source(t)) {
-      img.source = src;
-      items.remove(0);
-    }
-    if let Some(slice) = parse_border_image_slice_values(&items) {
-      img.slice = slice;
+      img.width = parse_border_image_width_list(&tokens[width_start..width_end])?;
     }
   }
 
-  if let Some(seg) = segments.get(1) {
-    if let Some(width) = parse_border_image_width_list(seg) {
-      img.width = width;
+  let mut source: Option<BorderImageSource> = None;
+  let mut repeat_indices: Vec<usize> = Vec::new();
+  for (idx, token) in tokens.iter().enumerate() {
+    if used[idx] {
+      continue;
     }
+    if let Some(parsed_source) = parse_border_image_source(token) {
+      if source.is_some() {
+        return None;
+      }
+      source = Some(parsed_source);
+      continue;
+    }
+    if is_repeat_keyword(token) {
+      repeat_indices.push(idx);
+      if repeat_indices.len() > 2 {
+        return None;
+      }
+      continue;
+    }
+    // Unknown token -> invalid shorthand value, ignore declaration.
+    return None;
   }
-  if let Some(seg) = segments.get(2) {
-    if let Some(outset) = parse_border_image_outset_list(seg) {
-      img.outset = outset;
-    }
+
+  if repeat_indices.len() == 2 && repeat_indices[1] != repeat_indices[0] + 1 {
+    return None;
+  }
+
+  if let Some(src) = source {
+    img.source = src;
+  }
+
+  if !repeat_indices.is_empty() {
+    let rep_tokens: Vec<PropertyValue> = repeat_indices
+      .into_iter()
+      .map(|idx| tokens[idx].clone())
+      .collect();
+    img.repeat = parse_border_image_repeat(&PropertyValue::Multiple(rep_tokens))?;
   }
 
   Some(img)
