@@ -1891,6 +1891,7 @@ fn eval_style_range_value(
   }
 
   let styles = container.styles.as_ref();
+  let inline_horizontal = crate::style::inline_axis_is_horizontal(styles.writing_mode);
   match value {
     StyleRangeValue::Property(name) => match name.as_str() {
       "font-size" => Some(NumericValue {
@@ -1925,6 +1926,48 @@ fn eval_style_range_value(
         ty: NumericType::Number,
         value: styles.order as f32,
       }),
+      "width" => styles
+        .width
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "height" => styles
+        .height
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "min-width" => styles
+        .min_width
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "min-height" => styles
+        .min_height
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "max-width" => styles
+        .max_width
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "max-height" => styles
+        .max_height
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "inline-size" => (if inline_horizontal { &styles.width } else { &styles.height })
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "block-size" => (if inline_horizontal { &styles.height } else { &styles.width })
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "min-inline-size" => (if inline_horizontal { &styles.min_width } else { &styles.min_height })
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "min-block-size" => (if inline_horizontal { &styles.min_height } else { &styles.min_width })
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "max-inline-size" => (if inline_horizontal { &styles.max_width } else { &styles.max_height })
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "max-block-size" => (if inline_horizontal { &styles.max_height } else { &styles.max_width })
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
       "margin-top" => styles
         .margin_top
         .as_ref()

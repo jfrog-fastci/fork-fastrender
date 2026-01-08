@@ -966,6 +966,58 @@ fn container_style_query_range_feature_matches_order() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_width() {
+  let html = r#"
+    <style>
+      .container-narrow { container-type: inline-size; width: 100px; }
+      .container-wide { container-type: inline-size; width: 200px; }
+      .child { color: rgb(0 0 255); }
+      @container style(width > 150px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-narrow">
+      <div id="narrow" class="child">hello</div>
+    </div>
+    <div class="container-wide">
+      <div id="wide" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let narrow = find_by_id(&styled, "narrow").expect("narrow element");
+  let wide = find_by_id(&styled, "wide").expect("wide element");
+  assert_eq!(narrow.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(wide.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_inline_size() {
+  let html = r#"
+    <style>
+      .container-narrow { container-type: inline-size; inline-size: 100px; }
+      .container-wide { container-type: inline-size; inline-size: 200px; }
+      .child { color: rgb(0 0 255); }
+      @container style(inline-size > 150px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-narrow">
+      <div id="narrow" class="child">hello</div>
+    </div>
+    <div class="container-wide">
+      <div id="wide" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let narrow = find_by_id(&styled, "narrow").expect("narrow element");
+  let wide = find_by_id(&styled, "wide").expect("wide element");
+  assert_eq!(narrow.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(wide.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_margin_left_length() {
   let html = r#"
     <style>
