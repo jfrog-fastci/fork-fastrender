@@ -218,7 +218,7 @@ impl BundledResource {
 }
 
 fn bundle_key_is_request_partitioned(key: &str) -> bool {
-  key.contains("@@fastr:bundle:req_v1@@")
+  key.contains("@@fastr:bundle:req_v1@@") || key.contains("@@fastr:bundle:req_v2@@")
 }
 
 /// In-memory representation of a bundle.
@@ -477,7 +477,19 @@ impl ResourceFetcher for BundledFetcher {
     if let Some(partition_key) = super::cors_cache_partition_key(&req) {
       let key = request_partitioned_resource_key_v2(kind, req.url, &partition_key);
       if let Some(resource) = self.bundle.resource_for_url(&key) {
-        return Ok(resource.as_fetched());
+        let res = resource.as_fetched();
+        if let Some(vary) = res.vary.as_deref() {
+          if super::vary_contains_star(vary)
+            || (!super::allow_unhandled_vary_env()
+              && !super::vary_is_cacheable(vary, kind, Some("bundled")))
+          {
+            return Err(Error::Other(format!(
+              "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
+              req.url
+            )));
+          }
+        }
+        return Ok(res);
       }
 
       // Backward compatibility: older bundles used the v1 origin-based key.
@@ -1057,6 +1069,217 @@ mod tests {
         )
         .expect("fetch origin B");
       assert_eq!(b.bytes, b"b");
+    });
+  }
+
+  #[test]
+  fn bundled_fetcher_prefers_request_partitioned_v2_entries_for_cors_mode_requests() {
+    if !super::super::http_browser_headers_enabled() {
+      eprintln!(
+        "skipping bundled_fetcher_prefers_request_partitioned_v2_entries_for_cors_mode_requests: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+
+    let url = "https://cdn.example/font.woff2";
+    let key = request_partitioned_resource_key_v2(
+      FetchContextKind::Font,
+      url,
+      "https://a.test|cred=include",
+    );
+
+    std::fs::write(tmp.path().join("font_raw.woff2"), b"raw").expect("write raw font");
+    std::fs::write(tmp.path().join("font_v2.woff2"), b"v2").expect("write v2 font");
+
+    let base_info = BundledResourceInfo {
+      path: "font_raw.woff2".to_string(),
+      content_type: Some("font/woff2".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      access_control_allow_origin: Some("https://a.test".to_string()),
+      timing_allow_origin: None,
+      vary: None,
+      access_control_allow_credentials: true,
+    };
+
+    let v2_info = BundledResourceInfo {
+      path: "font_v2.woff2".to_string(),
+      ..base_info.clone()
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(url.to_string(), base_info), (key, v2_info)]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "1".to_string(),
+      ),
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+    ])));
+    with_thread_runtime_toggles(toggles, || {
+      let res = fetcher
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Font)
+            .with_referrer_url("https://a.test/page.html")
+            .with_credentials_mode(FetchCredentialsMode::Include),
+        )
+        .expect("fetch v2 entry");
+      assert_eq!(
+        res.bytes, b"v2",
+        "expected request-partitioned entry to override unpartitioned URL entry"
+      );
+    });
+  }
+
+  #[test]
+  fn bundled_fetcher_rejects_unhandled_vary_for_request_partitioned_v2_entries() {
+    if !super::super::http_browser_headers_enabled() {
+      eprintln!(
+        "skipping bundled_fetcher_rejects_unhandled_vary_for_request_partitioned_v2_entries: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("font_v2.woff2"), b"v2").expect("write v2 font");
+
+    let url = "https://cdn.example/font.woff2";
+    let key = request_partitioned_resource_key_v2(
+      FetchContextKind::Font,
+      url,
+      "https://a.test|cred=include",
+    );
+
+    let info = BundledResourceInfo {
+      path: "font_v2.woff2".to_string(),
+      content_type: Some("font/woff2".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      access_control_allow_origin: Some("https://a.test".to_string()),
+      timing_allow_origin: None,
+      vary: Some("x-foo".to_string()),
+      access_control_allow_credentials: true,
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(key, info)]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "1".to_string(),
+      ),
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+      ("FASTR_CACHE_ALLOW_VARY_UNHANDLED".to_string(), "0".to_string()),
+    ])));
+    with_thread_runtime_toggles(toggles, || {
+      let err = fetcher
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Font)
+            .with_referrer_url("https://a.test/page.html")
+            .with_credentials_mode(FetchCredentialsMode::Include),
+        )
+        .unwrap_err();
+      match err {
+        Error::Other(message) => assert!(
+          message.contains("unhandled Vary"),
+          "unexpected error message: {message}"
+        ),
+        other => panic!("expected Error::Other, got {other:?}"),
+      }
     });
   }
 
