@@ -5,8 +5,10 @@
 //! incrementally on top of these primitives.
 
 pub mod dom_scripts;
+pub mod event_loop;
 
 pub use dom_scripts::extract_script_elements;
+pub use event_loop::{EventLoop, RunLimits, Task, TaskSource};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
