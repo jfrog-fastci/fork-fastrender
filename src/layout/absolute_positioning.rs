@@ -446,27 +446,6 @@ impl AbsoluteLayout {
       style.margin.right
     };
 
-    let overconstrained = left.is_some()
-      && !matches!(width_value, WidthValue::Auto)
-      && right.is_some()
-      && !margin_left_auto
-      && !margin_right_auto;
-    let (resolved_left, resolved_right) = if overconstrained {
-      match style.direction {
-        Direction::Ltr => (left, None),
-        Direction::Rtl => (None, right),
-      }
-    } else {
-      (left, right)
-    };
-
-    let available_for_shrink = cb_width
-      - resolved_left.unwrap_or(0.0)
-      - resolved_right.unwrap_or(0.0)
-      - margin_left
-      - margin_right
-      - total_horizontal_spacing;
-
     let resolve_keyword = |keyword: IntrinsicSizeKeyword, available: f32| -> Option<f32> {
       match keyword {
         IntrinsicSizeKeyword::MinContent => Some(preferred_min),
@@ -483,17 +462,70 @@ impl AbsoluteLayout {
           )
           .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
           .map(shrink),
-        },
+       },
       }
     };
 
-    let specified_width = match width_value {
+    // Pre-resolve the width without applying overconstraint rules so we can detect when the
+    // authored values actually satisfy the constraint equation (CSS 2.1 §10.3.7).
+    let available_for_shrink_full = cb_width
+      - left.unwrap_or(0.0)
+      - right.unwrap_or(0.0)
+      - margin_left
+      - margin_right
+      - total_horizontal_spacing;
+    let specified_width_full = match width_value {
       WidthValue::Auto => None,
       WidthValue::Length(len) => {
         resolve_length_for_positioned_size(&len, inline_base, viewport, style, &self.font_context)
           .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
       }
-      WidthValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink),
+      WidthValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink_full),
+    };
+
+    let has_all_edges = left.is_some() && right.is_some() && specified_width_full.is_some();
+    let overconstrained = has_all_edges
+      && !margin_left_auto
+      && !margin_right_auto
+      && {
+        let total = left.unwrap_or(0.0)
+          + margin_left
+          + border_left
+          + padding_left
+          + specified_width_full.unwrap_or(0.0)
+          + padding_right
+          + border_right
+          + margin_right
+          + right.unwrap_or(0.0);
+        (total - cb_width).abs() > 0.5
+      };
+
+    let (resolved_left, resolved_right) = if overconstrained {
+      match style.direction {
+        Direction::Ltr => (left, None),
+        Direction::Rtl => (None, right),
+      }
+    } else {
+      (left, right)
+    };
+
+    let available_for_shrink = cb_width
+      - resolved_left.unwrap_or(0.0)
+      - resolved_right.unwrap_or(0.0)
+      - margin_left
+      - margin_right
+      - total_horizontal_spacing;
+
+    let specified_width = match width_value {
+      WidthValue::Auto => None,
+      WidthValue::Length(_) => specified_width_full,
+      WidthValue::Keyword(keyword) => {
+        if overconstrained {
+          resolve_keyword(keyword, available_for_shrink)
+        } else {
+          specified_width_full
+        }
+      }
     };
 
     let min_width = style
@@ -697,24 +729,6 @@ impl AbsoluteLayout {
         .unwrap_or(HeightValue::Auto),
     };
 
-    // For overconstrained blocks (top + height + bottom specified), CSS 2.1 §10.6.4 treats the
-    // trailing inset (bottom) as auto (ignored) unless auto margins are present to resolve the
-    // constraint equation. This also affects the "available space" used by intrinsic sizing
-    // keywords like `fit-content`.
-    let insets_overconstrained = top.is_some()
-      && !matches!(height_value, HeightValue::Auto)
-      && bottom.is_some()
-      && !margin_top_auto
-      && !margin_bottom_auto;
-    let bottom_for_sizing = if insets_overconstrained { None } else { bottom };
-
-    let available_for_shrink = cb_height
-      - top.unwrap_or(0.0)
-      - bottom_for_sizing.unwrap_or(0.0)
-      - margin_top
-      - margin_bottom
-      - total_vertical_spacing;
-
     let resolve_keyword = |keyword: IntrinsicSizeKeyword, available: f32| -> Option<f32> {
       match keyword {
         IntrinsicSizeKeyword::MinContent => Some(preferred_min),
@@ -735,13 +749,58 @@ impl AbsoluteLayout {
       }
     };
 
-    let specified_height = match height_value {
+    let available_for_shrink_full = cb_height
+      - top.unwrap_or(0.0)
+      - bottom.unwrap_or(0.0)
+      - margin_top
+      - margin_bottom
+      - total_vertical_spacing;
+    let specified_height_full = match height_value {
       HeightValue::Auto => None,
       HeightValue::Length(len) => {
         resolve_length_for_positioned_size(&len, block_base, viewport, style, &self.font_context)
           .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing))
       }
-      HeightValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink),
+      HeightValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink_full),
+    };
+
+    // Only treat `top + height + bottom` as overconstrained when the computed values do not
+    // satisfy the constraint equation (CSS 2.1 §10.6.4).
+    let has_all_edges = top.is_some() && bottom.is_some() && specified_height_full.is_some();
+    let insets_overconstrained = has_all_edges
+      && !margin_top_auto
+      && !margin_bottom_auto
+      && {
+        let total = top.unwrap_or(0.0)
+          + margin_top
+          + border_top
+          + padding_top
+          + specified_height_full.unwrap_or(0.0)
+          + padding_bottom
+          + border_bottom
+          + margin_bottom
+          + bottom.unwrap_or(0.0);
+        (total - cb_height).abs() > 0.5
+      };
+    let bottom_for_sizing = if insets_overconstrained { None } else { bottom };
+
+    let available_for_shrink = cb_height
+      - top.unwrap_or(0.0)
+      - bottom_for_sizing.unwrap_or(0.0)
+      - margin_top
+      - margin_bottom
+      - total_vertical_spacing;
+
+    let specified_height = match height_value {
+      HeightValue::Auto => None,
+      HeightValue::Length(_) => specified_height_full,
+      HeightValue::Keyword(keyword) => {
+        if insets_overconstrained {
+          resolve_keyword(keyword, available_for_shrink)
+        } else {
+          specified_height_full
+        }
+      }
     };
 
     let min_height = style
@@ -776,11 +835,10 @@ impl AbsoluteLayout {
     }
 
     let (mut y, mut height, overconstrained) = match (top, specified_height, bottom) {
-      // All three specified (overconstrained) - ignore bottom
+      // All three specified; ignore bottom only when actually overconstrained.
       (Some(t), Some(h), Some(_b)) => {
         let y = t + margin_top + border_top + padding_top;
-        // Overconstrained only when margins are definite; auto margins may still resolve the equation.
-        (y, h, !margin_top_auto && !margin_bottom_auto)
+        (y, h, insets_overconstrained)
       }
 
       // top and height specified

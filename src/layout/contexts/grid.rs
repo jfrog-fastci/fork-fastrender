@@ -2585,30 +2585,61 @@ impl GridFormattingContext {
       let has_parent_grid = containing_grid_axis.is_some();
       let css_row_subgrid = style.grid_row_subgrid && has_parent_grid;
       let css_column_subgrid = style.grid_column_subgrid && has_parent_grid;
-      taffy_style.axes_swapped = !inline_is_horizontal_container;
+
+      // Taffy always interprets columns as the physical X axis and rows as the physical Y axis.
+      // CSS Grid axes, however, are defined in terms of the element's writing-mode (inline/block).
+      // When the inline axis is vertical we transpose all axis-dependent grid properties so that
+      // Taffy sees column data for the physical X axis and row data for the physical Y axis.
+      let swap_grid_axes = !inline_is_horizontal_container;
+
       // Grid template columns/rows.
-      //
-      // We always feed Taffy in logical inline/block axes (inline=x, block=y) and rely on
-      // `axes_swapped` + the fragment axis conversion phase to map into physical writing modes.
-      // Swapping the template axes here double-applies the writing-mode transform and results in
-      // vertical writing modes placing "rows" along the physical inline axis.
-      taffy_style.grid_template_columns = self.convert_grid_template(&style.grid_template_columns, style);
-      taffy_style.grid_template_rows = self.convert_grid_template(&style.grid_template_rows, style);
-      taffy_style.subgrid_columns = css_column_subgrid;
-      taffy_style.subgrid_rows = css_row_subgrid;
-      if css_column_subgrid && !style.subgrid_column_line_names.is_empty() {
-        taffy_style.subgrid_column_names = style.subgrid_column_line_names.clone();
+      if swap_grid_axes {
+        taffy_style.grid_template_columns =
+          self.convert_grid_template(&style.grid_template_rows, style);
+        taffy_style.grid_template_rows =
+          self.convert_grid_template(&style.grid_template_columns, style);
+      } else {
+        taffy_style.grid_template_columns =
+          self.convert_grid_template(&style.grid_template_columns, style);
+        taffy_style.grid_template_rows = self.convert_grid_template(&style.grid_template_rows, style);
       }
-      if css_row_subgrid && !style.subgrid_row_line_names.is_empty() {
-        taffy_style.subgrid_row_names = style.subgrid_row_line_names.clone();
+
+      // Subgrid flags + extra line names.
+      if swap_grid_axes {
+        taffy_style.subgrid_columns = css_row_subgrid;
+        taffy_style.subgrid_rows = css_column_subgrid;
+        if css_row_subgrid && !style.subgrid_row_line_names.is_empty() {
+          taffy_style.subgrid_column_names = style.subgrid_row_line_names.clone();
+        }
+        if css_column_subgrid && !style.subgrid_column_line_names.is_empty() {
+          taffy_style.subgrid_row_names = style.subgrid_column_line_names.clone();
+        }
+      } else {
+        taffy_style.subgrid_columns = css_column_subgrid;
+        taffy_style.subgrid_rows = css_row_subgrid;
+        if css_column_subgrid && !style.subgrid_column_line_names.is_empty() {
+          taffy_style.subgrid_column_names = style.subgrid_column_line_names.clone();
+        }
+        if css_row_subgrid && !style.subgrid_row_line_names.is_empty() {
+          taffy_style.subgrid_row_names = style.subgrid_row_line_names.clone();
+        }
       }
 
       // Line names.
-      if !style.grid_column_line_names.is_empty() {
-        taffy_style.grid_template_column_names = style.grid_column_line_names.clone();
-      }
-      if !style.grid_row_line_names.is_empty() {
-        taffy_style.grid_template_row_names = style.grid_row_line_names.clone();
+      if swap_grid_axes {
+        if !style.grid_row_line_names.is_empty() {
+          taffy_style.grid_template_column_names = style.grid_row_line_names.clone();
+        }
+        if !style.grid_column_line_names.is_empty() {
+          taffy_style.grid_template_row_names = style.grid_column_line_names.clone();
+        }
+      } else {
+        if !style.grid_column_line_names.is_empty() {
+          taffy_style.grid_template_column_names = style.grid_column_line_names.clone();
+        }
+        if !style.grid_row_line_names.is_empty() {
+          taffy_style.grid_template_row_names = style.grid_row_line_names.clone();
+        }
       }
       // Implicit track sizing
       if inline_is_horizontal_container {
@@ -2658,12 +2689,11 @@ impl GridFormattingContext {
           entries.sort_by(|a, b| a.0.cmp(&b.0));
           let mut areas = Vec::with_capacity(entries.len());
           for (name, (top, bottom, left, right)) in entries {
-            let (row_start, row_end, column_start, column_end) = (
-              (top as u16) + 1,
-              (bottom as u16) + 2,
-              (left as u16) + 1,
-              (right as u16) + 2,
-            );
+            let (row_start, row_end, column_start, column_end) = if swap_grid_axes {
+              ((left as u16) + 1, (right as u16) + 2, (top as u16) + 1, (bottom as u16) + 2)
+            } else {
+              ((top as u16) + 1, (bottom as u16) + 2, (left as u16) + 1, (right as u16) + 2)
+            };
             areas.push(GridTemplateArea {
               name,
               row_start,
@@ -2677,9 +2707,16 @@ impl GridFormattingContext {
       }
 
       // Gap
-      taffy_style.gap = taffy::geometry::Size {
-        width: self.convert_length_to_lp(&style.grid_column_gap, style),
-        height: self.convert_length_to_lp(&style.grid_row_gap, style),
+      taffy_style.gap = if swap_grid_axes {
+        taffy::geometry::Size {
+          width: self.convert_length_to_lp(&style.grid_row_gap, style),
+          height: self.convert_length_to_lp(&style.grid_column_gap, style),
+        }
+      } else {
+        taffy::geometry::Size {
+          width: self.convert_length_to_lp(&style.grid_column_gap, style),
+          height: self.convert_length_to_lp(&style.grid_row_gap, style),
+        }
       };
       taffy_style.subgrid_gap = taffy::geometry::Size {
         width: if inline_is_horizontal_container {
@@ -2707,21 +2744,45 @@ impl GridFormattingContext {
       };
 
       // Alignment
-      taffy_style.align_content =
-        Some(self.convert_align_content(&style.align_content, block_positive_container));
-      taffy_style.justify_content =
-        Some(self.convert_justify_content(&style.justify_content, inline_positive_container));
+      if swap_grid_axes {
+        taffy_style.align_content =
+          Some(self.convert_justify_content(&style.justify_content, inline_positive_container));
+        taffy_style.justify_content =
+          Some(self.convert_align_content(&style.align_content, block_positive_container));
+      } else {
+        taffy_style.align_content =
+          Some(self.convert_align_content(&style.align_content, block_positive_container));
+        taffy_style.justify_content =
+          Some(self.convert_justify_content(&style.justify_content, inline_positive_container));
+      }
     }
-    taffy_style.align_items = Some(self.convert_align_items(&style.align_items, block_positive_container));
-    taffy_style.justify_items =
-      Some(self.convert_align_items(&style.justify_items, inline_positive_container));
+    if inline_is_horizontal_container {
+      taffy_style.align_items =
+        Some(self.convert_align_items(&style.align_items, block_positive_container));
+      taffy_style.justify_items =
+        Some(self.convert_align_items(&style.justify_items, inline_positive_container));
+    } else {
+      taffy_style.align_items =
+        Some(self.convert_align_items(&style.justify_items, inline_positive_container));
+      taffy_style.justify_items =
+        Some(self.convert_align_items(&style.align_items, block_positive_container));
+    }
 
-    taffy_style.align_self = style
-      .align_self
-      .map(|a| self.convert_align_items(&a, block_positive_item));
-    taffy_style.justify_self = style
-      .justify_self
-      .map(|a| self.convert_align_items(&a, inline_positive_item));
+    if inline_is_horizontal_item {
+      taffy_style.align_self = style
+        .align_self
+        .map(|a| self.convert_align_items(&a, block_positive_item));
+      taffy_style.justify_self = style
+        .justify_self
+        .map(|a| self.convert_align_items(&a, inline_positive_item));
+    } else {
+      taffy_style.align_self = style
+        .justify_self
+        .map(|a| self.convert_align_items(&a, inline_positive_item));
+      taffy_style.justify_self = style
+        .align_self
+        .map(|a| self.convert_align_items(&a, block_positive_item));
+    }
 
     if let Some(containing_grid) = containing_grid {
       if inline_is_horizontal_item {
@@ -2904,16 +2965,23 @@ impl GridFormattingContext {
     }
 
     // Grid item properties using raw line numbers.
-    taffy_style.grid_column = self.convert_grid_placement(
+    let css_grid_column = self.convert_grid_placement(
       style.grid_column_raw.as_deref(),
       style.grid_column_start,
       style.grid_column_end,
     );
-    taffy_style.grid_row = self.convert_grid_placement(
+    let css_grid_row = self.convert_grid_placement(
       style.grid_row_raw.as_deref(),
       style.grid_row_start,
       style.grid_row_end,
     );
+    if inline_is_horizontal_item {
+      taffy_style.grid_column = css_grid_column;
+      taffy_style.grid_row = css_grid_row;
+    } else {
+      taffy_style.grid_column = css_grid_row;
+      taffy_style.grid_row = css_grid_column;
+    }
 
     taffy_style
   }

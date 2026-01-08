@@ -2823,151 +2823,167 @@ impl<'a> LineBuilder<'a> {
 
   /// Adds a breakable item (text or inline box), handling line breaking
   fn add_breakable_item(&mut self, item: InlineItem) -> Result<(), LayoutError> {
-    if let InlineItem::Text(text_item) = item {
-      let remaining_width = (self.current_line_width() - self.current_x).max(0.0);
-
-      if log_line_width_enabled() {
-        eprintln!(
-          "[line-width] remaining {:.2} advance {:.2} breaks {}",
-          remaining_width,
-          text_item.advance_for_layout,
-          text_item.break_opportunities.len()
-        );
+    let mut item = item;
+    loop {
+      if self.line_clamp_reached {
+        self.truncated = true;
+        return Ok(());
       }
+      check_layout_deadline(&mut self.deadline_counter)?;
 
-      let mut break_opportunity = text_item.find_break_point(remaining_width);
-      if break_opportunity.is_none() && self.current_line.is_empty() {
-        // No break fits within the remaining width, but the line is empty.
-        // Split at the earliest opportunity to avoid keeping multiple words
-        // on an overflowing line.
-        break_opportunity = text_item.break_opportunities.first().copied();
-        if break_opportunity.is_none()
-          && allows_soft_wrap(text_item.style.as_ref())
-          && (matches!(
-            text_item.style.word_break,
-            WordBreak::BreakWord | WordBreak::Anywhere
-          ) || matches!(
-            text_item.style.overflow_wrap,
-            OverflowWrap::BreakWord | OverflowWrap::Anywhere
-          ))
-        {
-          if let Some((idx, _)) = text_item.text.char_indices().nth(1) {
-            break_opportunity = Some(BreakOpportunity::emergency(idx));
-          }
-        }
-      }
+      match item {
+        InlineItem::Text(text_item) => {
+          let remaining_width = (self.current_line_width() - self.current_x).max(0.0);
 
-      if let Some(mut candidate) = break_opportunity {
-        if candidate.adds_hyphen
-          && !self.break_fits_with_hyphen(&text_item, &candidate, remaining_width)
-        {
-          // The break was selected based on the pre-split advance, but inserting a hyphen
-          // increases the "before" width. Walk backwards to earlier breaks that still fit
-          // after accounting for the inserted hyphen width.
-          if let Some(fitting) = self
-            .find_fitting_break_at_or_before(
-              &text_item,
-              BreakOpportunityKind::Normal,
+          if log_line_width_enabled() {
+            eprintln!(
+              "[line-width] remaining {:.2} advance {:.2} breaks {}",
               remaining_width,
-            )
-            .or_else(|| {
-              self.find_fitting_break_at_or_before(
-                &text_item,
-                BreakOpportunityKind::Emergency,
-                remaining_width,
-              )
-            })
-          {
-            candidate = fitting;
+              text_item.advance_for_layout,
+              text_item.break_opportunities.len()
+            );
           }
-        }
-        break_opportunity = Some(candidate);
-      }
 
-      if let Some(break_opportunity) = break_opportunity {
-        // Split at break point
-        if let Some((before, after)) = text_item.split_at(
-          break_opportunity.byte_offset,
-          break_opportunity.adds_hyphen,
-          &self.shaper,
-          &self.font_context,
-          &mut self.reshape_cache,
-        ) {
-          let mut before = before;
-          let mut drop_before = false;
-          if matches!(break_opportunity.break_type, BreakType::Allowed)
-            && matches!(
-              text_item.style.white_space,
-              WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
-            )
-          {
-            let trimmed_len = before.text.trim_end_matches(' ').len();
-            if trimmed_len < before.text.len() {
-              if trimmed_len == 0 {
-                drop_before = true;
-              } else if let Some((trimmed, _)) = before.split_at(
-                trimmed_len,
-                false,
-                &self.shaper,
-                &self.font_context,
-                &mut self.reshape_cache,
-              ) {
-                before = trimmed;
+          let mut break_opportunity = text_item.find_break_point(remaining_width);
+          if break_opportunity.is_none() && self.current_line.is_empty() {
+            // No break fits within the remaining width, but the line is empty.
+            // Split at the earliest opportunity to avoid keeping multiple words
+            // on an overflowing line.
+            break_opportunity = text_item.break_opportunities.first().copied();
+            if break_opportunity.is_none()
+              && allows_soft_wrap(text_item.style.as_ref())
+              && (matches!(
+                text_item.style.word_break,
+                WordBreak::BreakWord | WordBreak::Anywhere
+              ) || matches!(
+                text_item.style.overflow_wrap,
+                OverflowWrap::BreakWord | OverflowWrap::Anywhere
+              ))
+            {
+              if let Some((idx, _)) = text_item.text.char_indices().nth(1) {
+                break_opportunity = Some(BreakOpportunity::emergency(idx));
               }
             }
           }
 
-          // Place the part that fits
-          if !drop_before && before.advance_for_layout > 0.0 {
-            let width = before.advance_for_layout;
-            self.place_item_with_width(InlineItem::Text(before), width);
+          if let Some(mut candidate) = break_opportunity {
+            if candidate.adds_hyphen
+              && !self.break_fits_with_hyphen(&text_item, &candidate, remaining_width)
+            {
+              // The break was selected based on the pre-split advance, but inserting a hyphen
+              // increases the "before" width. Walk backwards to earlier breaks that still fit
+              // after accounting for the inserted hyphen width.
+              if let Some(fitting) = self
+                .find_fitting_break_at_or_before(
+                  &text_item,
+                  BreakOpportunityKind::Normal,
+                  remaining_width,
+                )
+                .or_else(|| {
+                  self.find_fitting_break_at_or_before(
+                    &text_item,
+                    BreakOpportunityKind::Emergency,
+                    remaining_width,
+                  )
+                })
+              {
+                candidate = fitting;
+              }
+            }
+            break_opportunity = Some(candidate);
           }
 
-          // Start new line for the rest
-          if matches!(break_opportunity.break_type, BreakType::Mandatory) {
-            self.current_line.ends_with_hard_break = true;
-          }
-          self.finish_line()?;
+          if let Some(break_opportunity) = break_opportunity {
+            // Split at break point
+            if let Some((before, after)) = text_item.split_at(
+              break_opportunity.byte_offset,
+              break_opportunity.adds_hyphen,
+              &self.shaper,
+              &self.font_context,
+              &mut self.reshape_cache,
+            ) {
+              let mut before = before;
+              let mut drop_before = false;
+              if matches!(break_opportunity.break_type, BreakType::Allowed)
+                && matches!(
+                  text_item.style.white_space,
+                  WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+                )
+              {
+                let trimmed_len = before.text.trim_end_matches(' ').len();
+                if trimmed_len < before.text.len() {
+                  if trimmed_len == 0 {
+                    drop_before = true;
+                  } else if let Some((trimmed, _)) = before.split_at(
+                    trimmed_len,
+                    false,
+                    &self.shaper,
+                    &self.font_context,
+                    &mut self.reshape_cache,
+                  ) {
+                    before = trimmed;
+                  }
+                }
+              }
 
-          // Add remaining text (may need further breaking)
-          self.add_item(InlineItem::Text(after))?;
-        } else {
-          // If splitting fails, fall back to placing the whole item
-          let width = text_item.advance_for_layout;
-          if self.current_line.is_empty() {
+              // Place the part that fits
+              if !drop_before && before.advance_for_layout > 0.0 {
+                let width = before.advance_for_layout;
+                self.place_item_with_width(InlineItem::Text(before), width);
+              }
+
+              // Start new line for the rest
+              if matches!(break_opportunity.break_type, BreakType::Mandatory) {
+                self.current_line.ends_with_hard_break = true;
+              }
+              self.finish_line()?;
+
+              // Process remaining text (may need further breaking) without recursion.
+              item = InlineItem::Text(after);
+              continue;
+            }
+
+            // If splitting fails, fall back to placing the whole item
+            let width = text_item.advance_for_layout;
+            if self.current_line.is_empty() {
+              self.place_item_with_width(InlineItem::Text(text_item), width);
+            } else {
+              self.finish_line()?;
+              self.place_item_with_width(InlineItem::Text(text_item), width);
+            }
+            return Ok(());
+          }
+
+          // No break point found within remaining width
+          if self.current_line.is_empty() || !allows_soft_wrap(text_item.style.as_ref()) {
+            // Wrapping is disabled or nothing is on the line; overflow in place.
+            let width = text_item.advance_for_layout;
             self.place_item_with_width(InlineItem::Text(text_item), width);
-          } else {
+            return Ok(());
+          }
+
+          // Start new line and try again.
+          self.finish_line()?;
+          item = InlineItem::Text(text_item);
+        }
+        InlineItem::InlineBox(inline_box) => {
+          let remaining_width = (self.current_line_width() - self.current_x).max(0.0);
+          let total_width = inline_box.width();
+
+          if total_width <= remaining_width {
+            self.place_item_with_width(InlineItem::InlineBox(inline_box), total_width);
+            return Ok(());
+          }
+
+          if !self.current_line.is_empty() {
             self.finish_line()?;
-            self.place_item_with_width(InlineItem::Text(text_item), width);
           }
+          self.add_fragmented_inline_box(inline_box)?;
+          return Ok(());
         }
-      } else {
-        // No break point found within remaining width
-        if self.current_line.is_empty() || !allows_soft_wrap(text_item.style.as_ref()) {
-          // Wrapping is disabled or nothing is on the line; overflow in place.
-          let width = text_item.advance_for_layout;
-          self.place_item_with_width(InlineItem::Text(text_item), width);
-        } else {
-          // Start new line and try again
-          self.finish_line()?;
-          self.add_item(InlineItem::Text(text_item))?;
-        }
+        _ => return Ok(()),
       }
-    } else if let InlineItem::InlineBox(inline_box) = item {
-      let remaining_width = (self.current_line_width() - self.current_x).max(0.0);
-      let total_width = inline_box.width();
-
-      if total_width <= remaining_width {
-        self.place_item_with_width(InlineItem::InlineBox(inline_box), total_width);
-        return Ok(());
-      }
-
-      if !self.current_line.is_empty() {
-        self.finish_line()?;
-      }
-      self.add_fragmented_inline_box(inline_box)?;
     }
-    Ok(())
   }
 
   fn split_inline_box_for_line(
