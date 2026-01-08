@@ -12439,6 +12439,140 @@ fn hash_string_vec(list: &[String], hasher: &mut DefaultHasher) {
   }
 }
 
+fn running_element_select_fingerprint(select: crate::style::content::RunningElementSelect) -> u8 {
+  match select {
+    crate::style::content::RunningElementSelect::First => 0,
+    crate::style::content::RunningElementSelect::Start => 1,
+    crate::style::content::RunningElementSelect::Last => 2,
+    crate::style::content::RunningElementSelect::FirstExcept => 3,
+  }
+}
+
+fn string_reference_kind_fingerprint(kind: crate::style::content::StringReferenceKind) -> u8 {
+  match kind {
+    crate::style::content::StringReferenceKind::Start => 0,
+    crate::style::content::StringReferenceKind::First => 1,
+    crate::style::content::StringReferenceKind::Last => 2,
+    crate::style::content::StringReferenceKind::FirstExcept => 3,
+  }
+}
+
+fn hash_content_item(item: &crate::style::content::ContentItem, hasher: &mut DefaultHasher) {
+  use crate::style::content::ContentItem;
+
+  match item {
+    ContentItem::String(s) => {
+      0u8.hash(hasher);
+      s.hash(hasher);
+    }
+    ContentItem::StringReference { name, kind } => {
+      1u8.hash(hasher);
+      name.hash(hasher);
+      string_reference_kind_fingerprint(*kind).hash(hasher);
+    }
+    ContentItem::Attr {
+      name,
+      type_or_unit,
+      fallback,
+    } => {
+      2u8.hash(hasher);
+      name.hash(hasher);
+      match type_or_unit {
+        Some(v) => {
+          1u8.hash(hasher);
+          v.hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+      match fallback {
+        Some(v) => {
+          1u8.hash(hasher);
+          v.hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+    ContentItem::Counter { name, style } => {
+      3u8.hash(hasher);
+      name.hash(hasher);
+      match style {
+        Some(s) => {
+          1u8.hash(hasher);
+          s.hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+    ContentItem::Counters {
+      name,
+      separator,
+      style,
+    } => {
+      4u8.hash(hasher);
+      name.hash(hasher);
+      separator.hash(hasher);
+      match style {
+        Some(s) => {
+          1u8.hash(hasher);
+          s.hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+    ContentItem::OpenQuote => 5u8.hash(hasher),
+    ContentItem::CloseQuote => 6u8.hash(hasher),
+    ContentItem::NoOpenQuote => 7u8.hash(hasher),
+    ContentItem::NoCloseQuote => 8u8.hash(hasher),
+    ContentItem::Url(url) => {
+      9u8.hash(hasher);
+      url.hash(hasher);
+    }
+    ContentItem::Element { ident, select } => {
+      10u8.hash(hasher);
+      ident.hash(hasher);
+      running_element_select_fingerprint(*select).hash(hasher);
+    }
+  }
+}
+
+fn hash_content_value(value: &crate::style::content::ContentValue, hasher: &mut DefaultHasher) {
+  use crate::style::content::ContentValue;
+
+  match value {
+    ContentValue::None => 0u8.hash(hasher),
+    ContentValue::Normal => 1u8.hash(hasher),
+    ContentValue::Items(items) => {
+      2u8.hash(hasher);
+      items.len().hash(hasher);
+      for item in items {
+        hash_content_item(item, hasher);
+      }
+    }
+  }
+}
+
+fn hash_effective_content(style: &ComputedStyle, hasher: &mut DefaultHasher) {
+  use crate::style::content::ContentValue;
+
+  match &style.content_value {
+    ContentValue::Normal => {
+      let raw = style.content.trim();
+      if raw.is_empty() || raw.eq_ignore_ascii_case("normal") {
+        0u8.hash(hasher);
+      } else if raw.eq_ignore_ascii_case("none") {
+        1u8.hash(hasher);
+      } else {
+        // Legacy fallback: treat the raw string as literal content.
+        2u8.hash(hasher);
+        style.content.hash(hasher);
+      }
+    }
+    other => {
+      hash_content_value(other, hasher);
+    }
+  }
+}
+
 fn hash_text_transform(transform: &crate::style::types::TextTransform, hasher: &mut DefaultHasher) {
   hash_enum_discriminant(&transform.case, hasher);
   transform.full_width.hash(hasher);
@@ -12904,6 +13038,13 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_string_vec(&style.container_name, &mut h);
   hash_enum_discriminant(&style.containment, &mut h);
   hash_enum_discriminant(&style.position, &mut h);
+  match style.running_position.as_deref() {
+    Some(name) => {
+      1u8.hash(&mut h);
+      name.hash(&mut h);
+    }
+    None => 0u8.hash(&mut h),
+  }
   hash_position_anchor(&style.position_anchor, &mut h);
   style.anchor_names.hash(&mut h);
   hash_anchor_scope(&style.anchor_scope, &mut h);
@@ -13121,6 +13262,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_length(&style.perspective_origin.x, &mut h);
   hash_length(&style.perspective_origin.y, &mut h);
   hash_enum_discriminant(&style.backface_visibility, &mut h);
+  hash_effective_content(style, &mut h);
   h.finish()
 }
 
@@ -14507,6 +14649,38 @@ pub(crate) fn render_html_with_shared_resources(
     assert!(
       diffs.is_empty(),
       "expected -0.0 to match 0.0 in layout diffs, got {diffs:?}"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_running_position() {
+    let mut a = ComputedStyle::default();
+    a.running_position = Some("header".to_string());
+
+    let mut b = ComputedStyle::default();
+    b.running_position = Some("footer".to_string());
+
+    assert_ne!(
+      super::style_layout_fingerprint(&a),
+      super::style_layout_fingerprint(&b),
+      "expected running element identity to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_generated_content() {
+    let mut a = ComputedStyle::default();
+    a.content = "\"a\"".to_string();
+    a.content_value = crate::style::content::ContentValue::from_string("a");
+
+    let mut b = ComputedStyle::default();
+    b.content = "\"b\"".to_string();
+    b.content_value = crate::style::content::ContentValue::from_string("b");
+
+    assert_ne!(
+      super::style_layout_fingerprint(&a),
+      super::style_layout_fingerprint(&b),
+      "expected generated content to affect layout fingerprints"
     );
   }
 
