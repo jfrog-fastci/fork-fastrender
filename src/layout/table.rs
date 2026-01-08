@@ -2061,10 +2061,18 @@ impl TableStructure {
                     } else {
                       group_child.style.visibility
                     };
-                    col.author_min_width = group_child.style.min_width.clone();
-                    col.author_max_width = group_child.style.max_width.clone();
+                    col.author_min_width = group_child
+                      .style
+                      .min_width
+                      .clone()
+                      .or_else(|| child.style.min_width.clone());
+                    col.author_max_width = group_child
+                      .style
+                      .max_width
+                      .clone()
+                      .or_else(|| child.style.max_width.clone());
                     col.font_size = group_child.style.font_size;
-                    if let Some(width) = &group_child.style.width {
+                    if let Some(width) = group_child.style.width.as_ref().or(child.style.width.as_ref()) {
                       col.specified_width = Some(Self::length_to_specified_width(width));
                     }
                   }
