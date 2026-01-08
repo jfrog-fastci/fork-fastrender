@@ -3214,6 +3214,28 @@ fn axis_is_horizontal(axis: TimelineAxis, writing_mode: WritingMode) -> bool {
   }
 }
 
+fn axis_is_positive(axis: TimelineAxis, writing_mode: WritingMode, direction: Direction) -> bool {
+  let inline_horizontal = inline_axis_is_horizontal(writing_mode);
+  match axis {
+    TimelineAxis::Inline => crate::style::inline_axis_positive(writing_mode, direction),
+    TimelineAxis::Block => crate::style::block_axis_positive(writing_mode),
+    TimelineAxis::X => {
+      if inline_horizontal {
+        crate::style::inline_axis_positive(writing_mode, direction)
+      } else {
+        crate::style::block_axis_positive(writing_mode)
+      }
+    }
+    TimelineAxis::Y => {
+      if inline_horizontal {
+        crate::style::block_axis_positive(writing_mode)
+      } else {
+        crate::style::inline_axis_positive(writing_mode, direction)
+      }
+    }
+  }
+}
+
 fn resolve_offset_value(
   offset: &TimelineOffset,
   scroll_range: f32,
@@ -3388,25 +3410,7 @@ pub fn axis_scroll_state(
   // Scroll timelines measure offsets from the scroll origin. The scroll origin can flip depending
   // on writing-mode/direction, even for physical axes (x/y). See the note in Scroll Animations 1
   // under the `scroll()` notation.
-  let inline_horizontal = inline_axis_is_horizontal(writing_mode);
-  let axis_positive = match axis {
-    TimelineAxis::Inline => crate::style::inline_axis_positive(writing_mode, direction),
-    TimelineAxis::Block => crate::style::block_axis_positive(writing_mode),
-    TimelineAxis::X => {
-      if inline_horizontal {
-        crate::style::inline_axis_positive(writing_mode, direction)
-      } else {
-        crate::style::block_axis_positive(writing_mode)
-      }
-    }
-    TimelineAxis::Y => {
-      if inline_horizontal {
-        crate::style::block_axis_positive(writing_mode)
-      } else {
-        crate::style::inline_axis_positive(writing_mode, direction)
-      }
-    }
-  };
+  let axis_positive = axis_is_positive(axis, writing_mode, direction);
 
   let horizontal = axis_is_horizontal(axis, writing_mode);
   if horizontal {
@@ -3427,6 +3431,53 @@ pub fn axis_scroll_state(
       pos = range - pos;
     }
     (pos.clamp(0.0, range), range, view_height)
+  }
+}
+
+fn axis_view_state(
+  axis: TimelineAxis,
+  writing_mode: WritingMode,
+  direction: Direction,
+  target_start: f32,
+  target_end: f32,
+  scroll_pos: f32,
+  view_size: f32,
+  content_size: f32,
+) -> (f32, f32, f32, f32) {
+  let sanitize_non_negative = |value: f32| -> f32 {
+    if value.is_finite() {
+      value.max(0.0)
+    } else {
+      0.0
+    }
+  };
+  let sanitize = |value: f32| -> f32 {
+    if value.is_finite() {
+      value
+    } else {
+      0.0
+    }
+  };
+
+  // View timelines are also defined relative to the scroll origin along the selected axis.
+  // Match the origin flipping rules used by scroll timelines so `view-timeline-axis: x/y`
+  // is consistent with `inline/block` in RTL/vertical writing modes.
+  let axis_positive = axis_is_positive(axis, writing_mode, direction);
+  let target_start = sanitize(target_start);
+  let target_end = sanitize(target_end);
+  let view_size = sanitize_non_negative(view_size);
+  let content_size = sanitize_non_negative(content_size);
+  let scroll_pos = sanitize_non_negative(scroll_pos);
+  let range = (content_size - view_size).max(0.0);
+  let scroll_pos = scroll_pos.min(range);
+
+  if axis_positive {
+    (target_start, target_end, view_size, scroll_pos)
+  } else {
+    let flipped_scroll = range - scroll_pos;
+    let flipped_start = content_size - target_end;
+    let flipped_end = content_size - target_start;
+    (flipped_start, flipped_end, view_size, flipped_scroll.clamp(0.0, range))
   }
 }
 
@@ -4611,51 +4662,30 @@ fn resolved_view_timeline_inset(
   scroll_container: ScrollContainerContext,
   axis: TimelineAxis,
 ) -> ViewTimelineInset {
-  let (auto_start, auto_end) = match axis {
-    TimelineAxis::X => (
-      scroll_container.scroll_padding_left,
-      scroll_container.scroll_padding_right,
-    ),
-    TimelineAxis::Y => (
+  let horizontal = axis_is_horizontal(axis, scroll_container.writing_mode);
+  let positive = axis_is_positive(axis, scroll_container.writing_mode, scroll_container.direction);
+  let (auto_start, auto_end) = if horizontal {
+    if positive {
+      (
+        scroll_container.scroll_padding_left,
+        scroll_container.scroll_padding_right,
+      )
+    } else {
+      (
+        scroll_container.scroll_padding_right,
+        scroll_container.scroll_padding_left,
+      )
+    }
+  } else if positive {
+    (
       scroll_container.scroll_padding_top,
       scroll_container.scroll_padding_bottom,
-    ),
-    TimelineAxis::Inline | TimelineAxis::Block => {
-      let inline_axis = matches!(axis, TimelineAxis::Inline);
-      let horizontal = if inline_axis {
-        inline_axis_is_horizontal(scroll_container.writing_mode)
-      } else {
-        crate::style::block_axis_is_horizontal(scroll_container.writing_mode)
-      };
-      let positive = if inline_axis {
-        crate::style::inline_axis_positive(scroll_container.writing_mode, scroll_container.direction)
-      } else {
-        crate::style::block_axis_positive(scroll_container.writing_mode)
-      };
-      if horizontal {
-        if positive {
-          (
-            scroll_container.scroll_padding_left,
-            scroll_container.scroll_padding_right,
-          )
-        } else {
-          (
-            scroll_container.scroll_padding_right,
-            scroll_container.scroll_padding_left,
-          )
-        }
-      } else if positive {
-        (
-          scroll_container.scroll_padding_top,
-          scroll_container.scroll_padding_bottom,
-        )
-      } else {
-        (
-          scroll_container.scroll_padding_bottom,
-          scroll_container.scroll_padding_top,
-        )
-      }
-    }
+    )
+  } else {
+    (
+      scroll_container.scroll_padding_bottom,
+      scroll_container.scroll_padding_top,
+    )
   };
   let inset = inset.unwrap_or_default();
   ViewTimelineInset {
@@ -4726,6 +4756,21 @@ fn named_timeline_states_for_export(
     } else {
       view_timeline_context.scroll.y
     };
+    let content_size = if horizontal {
+      view_timeline_context.content.width
+    } else {
+      view_timeline_context.content.height
+    };
+    let (target_start, target_end, view_size, scroll_offset) = axis_view_state(
+      tl.axis,
+      view_timeline_context.writing_mode,
+      view_timeline_context.direction,
+      target_start,
+      target_end,
+      scroll_offset,
+      view_size,
+      content_size,
+    );
     let mut resolved_timeline = tl.clone();
     resolved_timeline.inset = Some(resolved_view_timeline_inset(
       tl.inset,
@@ -5139,6 +5184,21 @@ fn view_progress_for_function(
   } else {
     scroll_container.scroll.y
   };
+  let content_size = if horizontal {
+    scroll_container.content.width
+  } else {
+    scroll_container.content.height
+  };
+  let (target_start, target_end, view_size, scroll_offset) = axis_view_state(
+    func.axis,
+    scroll_container.writing_mode,
+    scroll_container.direction,
+    target_start,
+    target_end,
+    scroll_offset,
+    view_size,
+    content_size,
+  );
 
   let timeline = ViewTimeline {
     name: None,
@@ -5219,6 +5279,21 @@ fn apply_animations_to_node_scoped(
         } else {
           view_timeline_context.scroll.y
         };
+        let content_size = if horizontal {
+          view_timeline_context.content.width
+        } else {
+          view_timeline_context.content.height
+        };
+        let (target_start, target_end, view_size, scroll_offset) = axis_view_state(
+          tl.axis,
+          view_timeline_context.writing_mode,
+          view_timeline_context.direction,
+          target_start,
+          target_end,
+          scroll_offset,
+          view_size,
+          content_size,
+        );
         let mut resolved_timeline = tl.clone();
         resolved_timeline.inset = Some(resolved_view_timeline_inset(
           tl.inset,

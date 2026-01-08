@@ -2,9 +2,11 @@
 mod animation;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use fastrender::animation::{
-  axis_scroll_state, sample_keyframes, scroll_timeline_progress, view_timeline_progress,
+  apply_animations, axis_scroll_state, sample_keyframes, scroll_timeline_progress,
+  view_timeline_progress,
   AnimatedValue,
 };
 use fastrender::api::FastRender;
@@ -16,14 +18,15 @@ use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
-  AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize, BackgroundSizeComponent,
-  BasicShape, BorderStyle, ClipComponent, FilterFunction, OutlineColor, OutlineStyle, Overflow,
-  RangeOffset, ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis,
-  TimelineOffset, TransformOrigin, ViewTimeline, ViewTimelinePhase, WritingMode, Direction,
+  AnimationFillMode, AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize,
+  BackgroundSizeComponent, BasicShape, BorderStyle, ClipComponent, FilterFunction, OutlineColor,
+  OutlineStyle, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller,
+  TimelineAxis, TimelineOffset, TransformOrigin, TransitionTimingFunction, ViewTimeline,
+  ViewTimelinePhase, WritingMode, Direction,
 };
 use fastrender::Rgba;
 use fastrender::{
-  BoxNode, ComputedStyle, FragmentNode, FragmentTree, Length, Point, PreparedPaintOptions,
+  BoxNode, ComputedStyle, FragmentNode, FragmentTree, Length, Point, PreparedPaintOptions, Rect,
   RenderOptions, Size,
 };
 
@@ -1399,6 +1402,69 @@ fn scroll_timeline_progress_is_reversed_for_rtl_inline_axis() {
   let progress_end =
     scroll_timeline_progress(&timeline, pos_end, scroll_range, view_size, &range).unwrap();
   assert!((progress_end - 0.0).abs() < 1e-6, "progress_end={progress_end}");
+}
+
+#[test]
+fn view_timeline_progress_is_reversed_for_rtl_inline_axis() {
+  let sheet = parse_stylesheet("@keyframes fade { from { opacity: 0; } to { opacity: 1; } }")
+    .expect("stylesheet");
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = keyframes
+    .into_iter()
+    .next()
+    .expect("fade keyframes");
+
+  let mut root_style = ComputedStyle::default();
+  root_style.direction = Direction::Rtl;
+  root_style.writing_mode = WritingMode::HorizontalTb;
+
+  let mut target_style = ComputedStyle::default();
+  target_style.view_timelines = vec![ViewTimeline {
+    name: Some("--v".to_string()),
+    axis: TimelineAxis::Inline,
+    inset: None,
+  }];
+  target_style.animation_names = vec![Some("fade".to_string())];
+  target_style.animation_timelines = vec![AnimationTimeline::Named("--v".to_string())];
+  target_style.animation_ranges = vec![AnimationRange::default()];
+  target_style.animation_fill_modes = vec![AnimationFillMode::Both].into();
+  target_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+  let opacity_for_scroll_x = |scroll_x: f32| -> f32 {
+    let mut target = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 50.0, 100.0), vec![]);
+    target.style = Some(Arc::new(target_style.clone()));
+    let spacer = FragmentNode::new_block(Rect::from_xywh(150.0, 0.0, 50.0, 100.0), vec![]);
+
+    // Make the root content wider than the viewport so `scroll_x` affects view timeline progress.
+    let mut root =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![target, spacer]);
+    root.style = Some(Arc::new(root_style.clone()));
+    let mut tree = FragmentTree::new(root);
+    tree.keyframes.insert("fade".to_string(), rule.clone());
+
+    apply_animations(
+      &mut tree,
+      &ScrollState::with_viewport(Point::new(scroll_x, 0.0)),
+      None,
+    );
+    tree.root.children[0]
+      .style
+      .as_ref()
+      .expect("target style")
+      .opacity
+  };
+
+  // In RTL, the scroll origin for the inline axis is the right side. With physical `scroll_x`
+  // offsets measured from the left, the origin corresponds to `scroll_x == range`.
+  let opacity_origin = opacity_for_scroll_x(100.0);
+  let opacity_end = opacity_for_scroll_x(0.0);
+
+  assert!(
+    opacity_origin <= opacity_end + 1e-6,
+    "expected opacity to increase when scrolling away from the RTL origin (origin={opacity_origin}, end={opacity_end})"
+  );
+  assert!(opacity_origin < 0.2, "opacity_origin={opacity_origin}");
+  assert!(opacity_end > 0.2, "opacity_end={opacity_end}");
 }
 
 #[test]
