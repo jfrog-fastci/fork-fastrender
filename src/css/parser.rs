@@ -4211,6 +4211,29 @@ fn replace_nesting_selector(component: &str, parent: &str) -> (String, bool) {
   (out, found)
 }
 
+fn is_invalid_selector(selector: &selectors::parser::Selector<FastRenderSelectorImpl>) -> bool {
+  selector
+    .iter_raw_match_order()
+    .any(|component| matches!(component, selectors::parser::Component::Invalid(_)))
+}
+
+fn strip_invalid_selectors(
+  list: SelectorList<FastRenderSelectorImpl>,
+) -> Option<SelectorList<FastRenderSelectorImpl>> {
+  let selectors: Vec<selectors::parser::Selector<FastRenderSelectorImpl>> = list
+    .slice()
+    .iter()
+    .cloned()
+    .filter(|selector| !is_invalid_selector(selector))
+    .collect();
+
+  if selectors.is_empty() {
+    return None;
+  }
+
+  Some(SelectorList::from_iter(selectors.into_iter()))
+}
+
 fn combine_nested_selectors(
   parent_selectors: &SelectorList<FastRenderSelectorImpl>,
   nested_text: &str,
@@ -4255,12 +4278,13 @@ fn combine_nested_selectors(
   let combined = combined_parts.join(", ");
   let mut input = ParserInput::new(&combined);
   let mut parser = Parser::new(&mut input);
-  SelectorList::parse(
+  let selectors = SelectorList::parse_forgiving(
     &PseudoClassParser,
     &mut parser,
     selectors::parser::ParseRelative::No,
   )
-  .ok()
+  .ok()?;
+  strip_invalid_selectors(selectors)
 }
 
 /// Skip an unknown @-rule
@@ -4514,12 +4538,22 @@ fn parse_style_rule<'i, 't>(
     combined
   } else {
     parser.parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |parser| {
-      SelectorList::parse(
+      SelectorList::parse_forgiving(
         &PseudoClassParser,
         parser,
         selectors::parser::ParseRelative::No,
       )
     })?
+  };
+
+  let selectors = if parent_selectors.is_some() {
+    selectors
+  } else {
+    let Some(selectors) = strip_invalid_selectors(selectors) else {
+      skip_at_rule(parser);
+      return Ok(None);
+    };
+    selectors
   };
 
   parser.expect_curly_bracket_block().map_err(|_| {
@@ -5516,6 +5550,57 @@ mod tests {
       serialized,
       vec!["input::placeholder".to_string(), "input::placeholder".to_string()]
     );
+  }
+
+  #[test]
+  fn unsupported_selectors_do_not_invalidate_selector_lists_in_style_rules() {
+    let css = "a:unsupported-pseudo, a { color: red }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert_eq!(sheet.rules.len(), 1);
+    let CssRule::Style(rule) = &sheet.rules[0] else {
+      panic!("expected style rule");
+    };
+    assert_eq!(rule.selectors.slice().len(), 1);
+    assert_eq!(rule.selectors.to_css_string(), "a");
+  }
+
+  #[test]
+  fn unsupported_pseudo_elements_do_not_invalidate_selector_lists_in_style_rules() {
+    let css = "div::unsupported-element, div { color: red }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert_eq!(sheet.rules.len(), 1);
+    let CssRule::Style(rule) = &sheet.rules[0] else {
+      panic!("expected style rule");
+    };
+    assert_eq!(rule.selectors.slice().len(), 1);
+    assert_eq!(rule.selectors.to_css_string(), "div");
+  }
+
+  #[test]
+  fn style_rules_with_only_invalid_selectors_are_skipped() {
+    let css = "a:unsupported-pseudo { color: red }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert!(
+      sheet.rules.is_empty(),
+      "expected rule with only invalid selectors to be dropped"
+    );
+  }
+
+  #[test]
+  fn unsupported_nested_selectors_do_not_invalidate_selector_lists() {
+    let css = "div { &:unsupported-pseudo, & { color: red; } }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert_eq!(sheet.rules.len(), 1);
+
+    let CssRule::Style(rule) = &sheet.rules[0] else {
+      panic!("expected style rule");
+    };
+    assert_eq!(rule.nested_rules.len(), 1);
+
+    let CssRule::Style(nested) = &rule.nested_rules[0] else {
+      panic!("expected nested style rule");
+    };
+    assert_eq!(nested.selectors.to_css_string(), "div");
   }
 
   #[test]
