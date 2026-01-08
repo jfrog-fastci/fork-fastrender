@@ -301,9 +301,9 @@ pub struct CachedDocument {
 }
 
 /// Cached HTML documents are untrusted input; cap reads so a corrupt cache can't OOM the CLI.
-const MAX_CACHED_HTML_BYTES: u64 = 50 * 1024 * 1024; // 50MB
+pub const MAX_CACHED_HTML_BYTES: u64 = 50 * 1024 * 1024; // 50MB
 /// Sidecar metadata blobs are expected to be tiny; cap reads defensively.
-const MAX_CACHED_HTML_META_BYTES: usize = 256 * 1024;
+pub const MAX_CACHED_HTML_META_BYTES: usize = 256 * 1024;
 
 /// Decode a fetched HTML resource using the provided base URL hint.
 pub fn decode_html_resource(resource: &FetchedResource, base_hint: &str) -> PreparedDocument {

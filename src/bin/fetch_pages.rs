@@ -7,6 +7,7 @@ mod common;
 use clap::Parser;
 use common::args::{default_jobs, parse_shard, TimeoutArgs};
 use common::render_pipeline::build_http_fetcher;
+use common::render_pipeline::{MAX_CACHED_HTML_BYTES, MAX_CACHED_HTML_META_BYTES};
 use fastrender::pageset::{
   cache_html_path, pageset_entries_with_collisions, PagesetEntry, PagesetFilter, CACHE_HTML_DIR,
 };
@@ -18,11 +19,14 @@ use fastrender::resource::{
 use rayon::ThreadPoolBuilder;
 use std::fmt::Write;
 use std::fs;
+use std::io;
+use std::io::Write as IoWrite;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tempfile::NamedTempFile;
 
 /// Fetch and cache HTML pages for testing
 #[derive(Parser, Debug)]
@@ -31,6 +35,14 @@ struct Args {
   /// Re-fetch all pages even if cached
   #[arg(long)]
   refresh: bool,
+
+  /// Validate cached HTML snapshots without performing any network fetches.
+  #[arg(long)]
+  validate_cache: bool,
+
+  /// Delete invalid cache entries (HTML + meta sidecar) during `--validate-cache`.
+  #[arg(long, requires = "validate_cache")]
+  prune_invalid: bool,
 
   /// Number of parallel fetches
   #[arg(long, short, default_value_t = default_jobs())]
@@ -73,6 +85,113 @@ struct Args {
   allow_http_error_status: bool,
 }
 
+#[derive(Debug, Default)]
+struct CacheValidationReport {
+  errors: Vec<String>,
+  warnings: Vec<String>,
+  pruned: usize,
+}
+
+fn validate_cache_dir(cache_dir: &Path, prune_invalid: bool) -> io::Result<CacheValidationReport> {
+  let mut report = CacheValidationReport::default();
+
+  let entries = fs::read_dir(cache_dir).map_err(|err| {
+    io::Error::new(
+      err.kind(),
+      format!("failed to read cache dir {}: {err}", cache_dir.display()),
+    )
+  })?;
+
+  let mut found_html = false;
+
+  for entry in entries {
+    let entry = entry?;
+    if entry.file_type()?.is_dir() {
+      continue;
+    }
+    let path = entry.path();
+    if path.extension().and_then(|ext| ext.to_str()) != Some("html") {
+      continue;
+    }
+    found_html = true;
+
+    let meta = match fs::metadata(&path) {
+      Ok(meta) => meta,
+      Err(err) => {
+        report
+          .errors
+          .push(format!("failed to stat {}: {err}", path.display()));
+        continue;
+      }
+    };
+    let len = meta.len();
+    let mut invalid = false;
+    if len == 0 {
+      report
+        .errors
+        .push(format!("empty cached HTML file: {}", path.display()));
+      invalid = true;
+    } else if len > MAX_CACHED_HTML_BYTES {
+      report.errors.push(format!(
+        "cached HTML file too large ({} bytes > {}): {}",
+        len,
+        MAX_CACHED_HTML_BYTES,
+        path.display()
+      ));
+      invalid = true;
+    }
+
+    let meta_path = path.with_extension("html.meta");
+    match fs::metadata(&meta_path) {
+      Ok(meta_meta) => {
+        let meta_len = meta_meta.len();
+        if meta_len > MAX_CACHED_HTML_META_BYTES as u64 {
+          report.errors.push(format!(
+            "cached HTML meta file too large ({} bytes > {}): {}",
+            meta_len,
+            MAX_CACHED_HTML_META_BYTES,
+            meta_path.display()
+          ));
+          invalid = true;
+        } else if meta_len == 0 {
+          report.warnings.push(format!(
+            "empty cached HTML meta file: {}",
+            meta_path.display()
+          ));
+        }
+      }
+      Err(err) if err.kind() == io::ErrorKind::NotFound => {
+        report.warnings.push(format!(
+          "missing cached HTML meta file: {}",
+          meta_path.display()
+        ));
+      }
+      Err(err) => {
+        report.errors.push(format!(
+          "failed to stat cached HTML meta file {}: {err}",
+          meta_path.display()
+        ));
+        invalid = true;
+      }
+    }
+
+    if invalid && prune_invalid {
+      let _ = fs::remove_file(&path);
+      let _ = fs::remove_file(&meta_path);
+      report.pruned += 1;
+    }
+  }
+
+  if !found_html {
+    report.warnings.push(format!(
+      "no cached HTML files found under {}",
+      cache_dir.display()
+    ));
+  }
+
+  Ok(report)
+}
+
 fn build_pageset_entries(
   allow_collisions: bool,
 ) -> Result<(Vec<PagesetEntry>, Vec<(String, Vec<String>)>), String> {
@@ -88,6 +207,33 @@ fn build_pageset_entries(
   }
 
   Ok((entries, collisions))
+}
+
+fn atomic_write_with_hook<F>(path: &Path, contents: &[u8], pre_rename_hook: F) -> io::Result<()>
+where
+  F: FnOnce(&Path) -> io::Result<()>,
+{
+  if let Some(parent) = path.parent() {
+    if !parent.as_os_str().is_empty() {
+      fs::create_dir_all(parent)?;
+    }
+  }
+  let dir = path
+    .parent()
+    .filter(|p| !p.as_os_str().is_empty())
+    .unwrap_or_else(|| Path::new("."));
+
+  let mut temp = NamedTempFile::new_in(dir)?;
+  temp.write_all(contents)?;
+  temp.flush()?;
+  temp.as_file_mut().sync_all()?;
+  let temp_path = temp.into_temp_path();
+  pre_rename_hook(temp_path.as_ref())?;
+  temp_path.persist(path).map_err(|e| e.error)
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+  atomic_write_with_hook(path, contents, |_| Ok(()))
 }
 
 fn selected_pages(
@@ -116,20 +262,20 @@ fn selected_pages(
   }
 }
 
-fn write_cached_html(
+fn write_cached_html_with_hooks<F, G>(
   cache_path: &Path,
   bytes: &[u8],
   content_type: Option<&str>,
   source_url: Option<&str>,
   status: Option<u16>,
   response_referrer_policy: Option<ReferrerPolicy>,
-) -> std::io::Result<()> {
-  if let Some(parent) = cache_path.parent() {
-    std::fs::create_dir_all(parent)?;
-  }
-
-  std::fs::write(cache_path, bytes)?;
-
+  pre_meta_rename_hook: F,
+  pre_html_rename_hook: G,
+) -> io::Result<()>
+where
+  F: FnOnce(&Path) -> io::Result<()>,
+  G: FnOnce(&Path) -> io::Result<()>,
+{
   let meta_path = cache_path.with_extension("html.meta");
   let mut meta = String::new();
   if let Some(ct) = content_type {
@@ -152,13 +298,82 @@ fn write_cached_html(
     }
   }
 
+  // Snapshot meta is part of the cached entry; if we fail to update the HTML afterwards, attempt
+  // to restore the previous meta so callers don't end up with a partially-updated cache entry.
+  enum PrevMeta {
+    Missing,
+    Present(Vec<u8>),
+    PresentTooLarge,
+  }
+
+  let prev_meta = match fs::metadata(&meta_path) {
+    Ok(existing) => {
+      if existing.len() > MAX_CACHED_HTML_META_BYTES as u64 {
+        PrevMeta::PresentTooLarge
+      } else {
+        PrevMeta::Present(fs::read(&meta_path)?)
+      }
+    }
+    Err(err) if err.kind() == io::ErrorKind::NotFound => PrevMeta::Missing,
+    Err(err) => return Err(err),
+  };
+
   if meta.is_empty() {
-    let _ = std::fs::remove_file(meta_path);
+    match fs::remove_file(&meta_path) {
+      Ok(()) => {}
+      Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+      Err(err) => return Err(err),
+    }
   } else {
-    let _ = std::fs::write(meta_path, meta);
+    atomic_write_with_hook(&meta_path, meta.as_bytes(), pre_meta_rename_hook)?;
+  }
+
+  if let Err(html_err) = atomic_write_with_hook(cache_path, bytes, pre_html_rename_hook) {
+    let restore_result = match prev_meta {
+      PrevMeta::Present(prev) => atomic_write(&meta_path, &prev),
+      PrevMeta::Missing => match fs::remove_file(&meta_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+      },
+      PrevMeta::PresentTooLarge => Ok(()),
+    };
+
+    if let Err(restore_err) = restore_result {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+          "failed to write cached HTML {}: {html_err}; additionally failed to restore cached meta {}: {restore_err}",
+          cache_path.display(),
+          meta_path.display()
+        ),
+      ));
+    }
+
+    return Err(html_err);
   }
 
   Ok(())
+}
+
+fn write_cached_html(
+  cache_path: &Path,
+  bytes: &[u8],
+  content_type: Option<&str>,
+  source_url: Option<&str>,
+  status: Option<u16>,
+  response_referrer_policy: Option<ReferrerPolicy>,
+) -> io::Result<()> {
+  write_cached_html_with_hooks(
+    cache_path,
+    bytes,
+    content_type,
+    source_url,
+    status,
+    response_referrer_policy,
+    |_| Ok(()),
+    |_| Ok(()),
+  )
 }
 
 fn cached_html_status(cache_path: &Path) -> Option<u16> {
@@ -239,6 +454,35 @@ fn fetch_page(
 fn main() {
   let args = Args::parse();
 
+  if args.validate_cache {
+    let report = match validate_cache_dir(Path::new(CACHE_HTML_DIR), args.prune_invalid) {
+      Ok(report) => report,
+      Err(err) => {
+        eprintln!("Cache validation failed: {err}");
+        std::process::exit(1);
+      }
+    };
+
+    for warning in &report.warnings {
+      eprintln!("Warning: {warning}");
+    }
+    for err in &report.errors {
+      eprintln!("Error: {err}");
+    }
+    if report.pruned > 0 {
+      if report.pruned == 1 {
+        eprintln!("Pruned 1 invalid cache entry.");
+      } else {
+        eprintln!("Pruned {} invalid cache entries.", report.pruned);
+      }
+    }
+    if !report.errors.is_empty() {
+      std::process::exit(1);
+    }
+    println!("Cache OK ({CACHE_HTML_DIR}/)");
+    std::process::exit(0);
+  }
+
   if args.jobs == 0 {
     eprintln!("jobs must be > 0");
     std::process::exit(2);
@@ -318,9 +562,7 @@ fn main() {
   let skipped = Arc::new(AtomicUsize::new(0));
   let failed_urls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-  let pool = ThreadPoolBuilder::new()
-    .num_threads(args.jobs)
-    .build();
+  let pool = ThreadPoolBuilder::new().num_threads(args.jobs).build();
   let pool = match pool {
     Ok(pool) => pool,
     Err(err) => {
@@ -699,6 +941,61 @@ mod tests {
     assert!(
       !meta_path.exists(),
       "meta should be removed when content type absent"
+    );
+  }
+
+  #[test]
+  fn write_cached_html_failure_leaves_existing_cache_intact() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cache_path = dir.path().join("page.html");
+    let meta_path = cache_path.with_extension("html.meta");
+
+    let original_html = "old html";
+    let original_meta = "status: 200\nurl: https://kept.test/\n";
+    std::fs::write(&cache_path, original_html).unwrap();
+    std::fs::write(&meta_path, original_meta).unwrap();
+
+    let err = write_cached_html_with_hooks(
+      &cache_path,
+      b"new html",
+      Some("text/html"),
+      Some("https://new.test/"),
+      Some(200),
+      None,
+      |_| Ok(()),
+      |temp_path| {
+        assert!(temp_path.exists());
+        Err(io::Error::new(
+          io::ErrorKind::Other,
+          "fail before rename for test",
+        ))
+      },
+    );
+    assert!(err.is_err());
+
+    let html = std::fs::read_to_string(&cache_path).unwrap();
+    assert_eq!(html, original_html);
+    let meta = std::fs::read_to_string(&meta_path).unwrap();
+    assert_eq!(meta, original_meta);
+
+    let remaining: Vec<_> = std::fs::read_dir(dir.path())
+      .unwrap()
+      .filter_map(|e| e.ok())
+      .collect();
+    assert_eq!(remaining.len(), 2);
+  }
+
+  #[test]
+  fn validate_cache_detects_empty_html_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("empty.html"), b"").unwrap();
+
+    let report = validate_cache_dir(dir.path(), false).expect("validation ok");
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+      report.errors[0].contains("empty cached HTML file"),
+      "expected empty file error, got: {:?}",
+      report.errors
     );
   }
 
