@@ -3,6 +3,10 @@ use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::error::{Error, Result};
 use fastrender::resource::{origin_from_url, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
 use fastrender::style::media::MediaType;
+use image::codecs::png::PngEncoder;
+use image::ColorType;
+use image::ImageEncoder;
+use image::RgbaImage;
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -38,6 +42,14 @@ impl RecordingFetcher {
     self.responses.insert(
       url.to_string(),
       (body.to_vec(), None, final_url.map(|u| u.to_string())),
+    );
+    self
+  }
+
+  fn with_png(mut self, url: &str, bytes: Vec<u8>, final_url: Option<&str>) -> Self {
+    self.responses.insert(
+      url.to_string(),
+      (bytes, Some("image/png".to_string()), final_url.map(|u| u.to_string())),
     );
     self
   }
@@ -87,6 +99,15 @@ impl ResourceFetcher for RecordingFetcher {
       });
     self.fetch(req.url)
   }
+}
+
+fn png_bytes() -> Vec<u8> {
+  let img = RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]));
+  let mut out = Vec::new();
+  PngEncoder::new(&mut out)
+    .write_image(img.as_raw(), 1, 1, ColorType::Rgba8.into())
+    .expect("encode png");
+  out
 }
 
 fn renderer_for(fetcher: Arc<RecordingFetcher>) -> FastRender {
@@ -544,4 +565,46 @@ fn font_face_from_imported_stylesheet_uses_import_url_as_referrer() {
     "expected font request referrer to be the imported stylesheet URL"
   );
   assert_eq!(font_request.client_origin.as_deref(), Some(expected_origin.as_str()));
+}
+
+#[test]
+fn css_background_image_from_inline_style_uses_document_referrer_even_with_base_href() {
+  let document_url = "https://example.test/page.html";
+  let base_href = "https://cdn.example.test/assets/";
+  let image_url = "https://cdn.example.test/assets/img.png";
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
+
+  let fetcher = Arc::new(
+    RecordingFetcher::default().with_png(image_url, png_bytes(), None),
+  );
+
+  let mut renderer = renderer_for(fetcher.clone());
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+        <base href="{base_href}">
+        <style>
+          body {{ margin: 0; }}
+          #target {{ width: 1px; height: 1px; background: url("img.png") no-repeat; }}
+        </style>
+      </head><body><div id="target"></div></body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(16, 16),
+    )
+    .expect("render");
+
+  let requests = fetcher.requests();
+  let image_request = requests
+    .iter()
+    .find(|r| r.url == image_url && r.destination == FetchDestination::Image)
+    .expect("request for background image");
+  assert_eq!(image_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    image_request.client_origin.as_deref(),
+    Some(expected_origin.as_str())
+  );
 }
