@@ -3318,6 +3318,11 @@ fn raw_progress(position: f32, start: f32, end: f32) -> f32 {
   }
 }
 
+/// Computes progress for a scroll timeline.
+///
+/// `scroll_position` should be measured from the scroll origin along the selected axis. Use
+/// [`axis_scroll_state`] to derive an origin-corrected scroll offset when working with physical
+/// scroll offsets (`scrollLeft`/`scrollTop`).
 pub fn scroll_timeline_progress(
   timeline: &ScrollTimeline,
   scroll_position: f32,
@@ -3337,6 +3342,10 @@ pub fn scroll_timeline_progress(
 
 /// Computes view timeline progress using the target position relative to the
 /// containing scroll port.
+///
+/// Inputs are measured along the timeline axis in a coordinate system whose origin is the scroll
+/// origin. For writing modes where the scroll origin is reversed, callers should flip the inputs
+/// accordingly.
 pub fn view_timeline_progress(
   timeline: &ViewTimeline,
   target_start: f32,
@@ -3387,7 +3396,12 @@ pub fn view_timeline_progress(
 }
 
 /// Determines the scroll position and range along the requested axis given
-/// container and content sizes. The returned tuple is `(position, range, size)`.
+/// container and content sizes.
+///
+/// The returned position is measured from the *scroll origin*, which can flip depending on
+/// `writing-mode` and `direction` (even for physical axes like `x`/`y`).
+///
+/// The returned tuple is `(position_from_origin, range, viewport_size_along_axis)`.
 pub fn axis_scroll_state(
   axis: TimelineAxis,
   writing_mode: WritingMode,
