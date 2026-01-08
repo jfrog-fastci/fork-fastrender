@@ -1202,29 +1202,43 @@ fn parse_scroll_timeline_list(raw: &str) -> Vec<ScrollTimeline> {
 }
 
 fn parse_named_timeline_name_list(raw: &str) -> Option<Vec<Option<String>>> {
-  let trimmed = raw.trim();
-  if trimmed.is_empty() {
-    return None;
-  }
-  let mut names = Vec::new();
-  for part in split_top_level_commas(trimmed) {
-    let name = part.trim();
-    if name.is_empty() {
-      continue;
+  let parts = split_top_level_commas_strict(raw)?;
+  let mut names = Vec::with_capacity(parts.len());
+  for part in parts {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+      return None;
     }
-    if name.eq_ignore_ascii_case("none") {
-      names.push(None);
-    } else {
-      names.push(Some(name.to_string()));
+    let mut input = ParserInput::new(trimmed);
+    let mut parser = Parser::new(&mut input);
+    parser.skip_whitespace();
+    let token = parser.next_including_whitespace().ok()?;
+    let name = match token {
+      Token::Ident(ident) => {
+        if ident.eq_ignore_ascii_case("none") {
+          None
+        } else {
+          let lower = ident.as_ref().to_ascii_lowercase();
+          if custom_ident_is_excluded_keyword(&lower) {
+            return None;
+          }
+          Some(ident.to_string())
+        }
+      }
+      _ => return None,
+    };
+    parser.skip_whitespace();
+    if !parser.is_exhausted() {
+      return None;
     }
+    names.push(name);
   }
-  if names.is_empty() {
-    return None;
-  }
+
   if names.len() == 1 && names[0].is_none() {
-    return Some(Vec::new());
+    Some(Vec::new())
+  } else {
+    Some(names)
   }
-  Some(names)
 }
 
 fn parse_timeline_axis_list(raw: &str) -> Vec<TimelineAxis> {
