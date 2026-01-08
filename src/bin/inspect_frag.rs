@@ -730,6 +730,27 @@ fn style_summary(style: &fastrender::style::ComputedStyle) -> String {
   out
 }
 
+fn fmt_rgba_compact(rgba: fastrender::Rgba) -> String {
+  format!("rgba({},{},{},{:.2})", rgba.r, rgba.g, rgba.b, rgba.a)
+}
+
+fn find_styled_element_by_tag<'a>(
+  node: &'a fastrender::style::cascade::StyledNode,
+  tag: &str,
+) -> Option<&'a fastrender::style::cascade::StyledNode> {
+  if let DomNodeType::Element { tag_name, .. } = &node.node.node_type {
+    if tag_name.eq_ignore_ascii_case(tag) {
+      return Some(node);
+    }
+  }
+  for child in &node.children {
+    if let Some(found) = find_styled_element_by_tag(child, tag) {
+      return Some(found);
+    }
+  }
+  None
+}
+
 fn absolute_rect(fragment: &FragmentNode, offset: Point) -> (Rect, Point) {
   let abs = Rect::from_xywh(
     fragment.bounds.x() + offset.x,
@@ -1326,6 +1347,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if skinny.len() > 50 {
       println!("  ...");
+    }
+  }
+
+  let has_explicit_output = args.dump_json.is_some()
+    || args.dump_snapshot
+    || args.render_overlay.is_some()
+    || !args.trace_text.is_empty()
+    || !args.trace_box.is_empty()
+    || args.dump_fragment.is_some()
+    || args.find_skinny_fragments;
+
+  if !has_explicit_output {
+    if let Some(body) = find_styled_element_by_tag(&output.styled, "body") {
+      let style = body.styles.as_ref();
+      println!(
+        "body bg={} color={}",
+        fmt_rgba_compact(style.background_color),
+        fmt_rgba_compact(style.color)
+      );
     }
   }
 
