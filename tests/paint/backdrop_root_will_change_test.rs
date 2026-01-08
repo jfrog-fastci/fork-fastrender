@@ -651,6 +651,24 @@ fn will_change_filter_is_case_insensitive() {
 }
 
 #[test]
+fn will_change_filter_with_comment_establishes_backdrop_root() {
+  let _guard = lock_tests();
+  // CSS comments are ignored during parsing; they must not affect will-change hint recognition.
+  let pixmap = render_backdrop_invert_with_parent_will_change("filter/*comment*/");
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_auto_with_comment_does_not_establish_backdrop_root() {
+  let _guard = lock_tests();
+  let pixmap = render_backdrop_invert_with_parent_will_change("auto/*comment*/");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_ident_function_establishes_backdrop_root() {
   let _guard = lock_tests();
   // CSS Values defines `ident()` to produce custom-ident values. `will-change` accepts custom-ident
