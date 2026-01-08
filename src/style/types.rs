@@ -263,10 +263,12 @@ pub struct BorderImageSlice {
 impl Default for BorderImageSlice {
   fn default() -> Self {
     Self {
-      top: BorderImageSliceValue::Number(100.0),
-      right: BorderImageSliceValue::Number(100.0),
-      bottom: BorderImageSliceValue::Number(100.0),
-      left: BorderImageSliceValue::Number(100.0),
+      // https://www.w3.org/TR/css-backgrounds-3/#the-border-image-slice
+      // Initial value is `100%`, not `100`.
+      top: BorderImageSliceValue::Percentage(100.0),
+      right: BorderImageSliceValue::Percentage(100.0),
+      bottom: BorderImageSliceValue::Percentage(100.0),
+      left: BorderImageSliceValue::Percentage(100.0),
       fill: false,
     }
   }
@@ -293,10 +295,12 @@ pub struct BorderImageWidth {
 impl Default for BorderImageWidth {
   fn default() -> Self {
     Self {
-      top: BorderImageWidthValue::Auto,
-      right: BorderImageWidthValue::Auto,
-      bottom: BorderImageWidthValue::Auto,
-      left: BorderImageWidthValue::Auto,
+      // https://www.w3.org/TR/css-backgrounds-3/#border-image-width
+      // Initial value is `1` (a multiplier of the corresponding border-width), not `auto`.
+      top: BorderImageWidthValue::Number(1.0),
+      right: BorderImageWidthValue::Number(1.0),
+      bottom: BorderImageWidthValue::Number(1.0),
+      left: BorderImageWidthValue::Number(1.0),
     }
   }
 }

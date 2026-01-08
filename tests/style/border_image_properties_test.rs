@@ -148,6 +148,48 @@ fn border_image_shorthand_splits_segments() {
 }
 
 #[test]
+fn border_image_shorthand_source_only_uses_initial_slice_and_width() {
+  let mut styles = ComputedStyle::default();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image", "url(a)"),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  match &styles.border_image.source {
+    BorderImageSource::Image(img) => match &**img {
+      BackgroundImage::Url(url) => assert_eq!(url, "a"),
+      other => panic!("unexpected background image variant: {:?}", other),
+    },
+    other => panic!("unexpected border image source: {:?}", other),
+  }
+
+  assert_eq!(
+    styles.border_image.slice,
+    BorderImageSlice {
+      top: BorderImageSliceValue::Percentage(100.0),
+      right: BorderImageSliceValue::Percentage(100.0),
+      bottom: BorderImageSliceValue::Percentage(100.0),
+      left: BorderImageSliceValue::Percentage(100.0),
+      fill: false,
+    }
+  );
+
+  assert_eq!(
+    styles.border_image.width,
+    BorderImageWidth {
+      top: BorderImageWidthValue::Number(1.0),
+      right: BorderImageWidthValue::Number(1.0),
+      bottom: BorderImageWidthValue::Number(1.0),
+      left: BorderImageWidthValue::Number(1.0),
+    }
+  );
+}
+
+#[test]
 fn border_image_slice_rejects_duplicate_fill() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
