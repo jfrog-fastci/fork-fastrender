@@ -3685,6 +3685,14 @@ fn build_table_collapsed_borders_metadata(
 }
 
 fn find_first_baseline(fragment: &FragmentNode, parent_offset: f32) -> Option<f32> {
+  if let Some(style) = fragment.style.as_deref() {
+    if matches!(
+      style.position,
+      crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+    ) {
+      return None;
+    }
+  }
   let origin = parent_offset + fragment.bounds.y();
   if let Some(baseline) = fragment.baseline {
     return Some(origin + baseline);
@@ -14804,6 +14812,26 @@ mod tests {
     let fragment = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 20.0), vec![]);
     let baseline = cell_baseline(&fragment).expect("baseline");
     assert!((baseline - 20.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn cell_baseline_ignores_absolute_positioned_descendants() {
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = Position::Absolute;
+    let abs_child = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![],
+      Arc::new(abs_style),
+    )
+    .with_baseline(5.0);
+
+    let root =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 20.0), vec![abs_child]);
+    let baseline = cell_baseline(&root).expect("baseline");
+    assert!(
+      (baseline - 20.0).abs() < 0.01,
+      "baseline should ignore abspos descendants and fall back to cell bottom"
+    );
   }
 
   fn make_style(display: Display) -> Arc<ComputedStyle> {
