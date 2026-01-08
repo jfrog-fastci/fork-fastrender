@@ -27,6 +27,7 @@ use crate::render_control;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -144,6 +145,7 @@ const DISK_META_READ_CHUNK_SIZE: usize = 8 * 1024;
 const DISK_META_MAX_BYTES: usize = 256 * 1024;
 const DISK_LOCK_MAX_BYTES: usize = 8 * 1024;
 const DISK_ALIAS_MAX_BYTES: usize = 8 * 1024;
+const DISK_VARY_MAX_BYTES: usize = 8 * 1024;
 const DISK_META_READ_STAGE: RenderStage = RenderStage::Paint;
 
 const DEFAULT_ERROR_ENTRY_TTL: Duration = Duration::from_secs(60 * 60);
@@ -655,15 +657,45 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
   }
 
-  fn read_vary_for_base_key(&self, base_key: &str) -> Option<String> {
+  fn read_vary_for_base_key(&self, base_key: &str) -> Option<Cow<'static, str>> {
     let path = self.vary_metadata_path_for_base_key(base_key);
-    let contents = fs::read_to_string(path).ok()?;
+    let mut file = match fs::File::open(&path) {
+      Ok(file) => file,
+      Err(err) if err.kind() == ErrorKind::NotFound => return None,
+      Err(_) => return Some(Cow::Borrowed("*")),
+    };
+
+    if let Ok(meta) = file.metadata() {
+      if meta.len() > DISK_VARY_MAX_BYTES as u64 {
+        return Some(Cow::Borrowed("*"));
+      }
+    }
+
+    let bytes = match read_prefix_with_deadline(
+      &mut file,
+      DISK_META_READ_STAGE,
+      DISK_META_READ_CHUNK_SIZE,
+      DISK_VARY_MAX_BYTES,
+    ) {
+      Ok(bytes) => bytes,
+      Err(_) => return Some(Cow::Borrowed("*")),
+    };
+    let contents = match std::str::from_utf8(&bytes) {
+      Ok(s) => s,
+      Err(_) => return Some(Cow::Borrowed("*")),
+    };
+
     let trimmed = contents.trim();
     if trimmed.is_empty() {
-      None
-    } else {
-      Some(trimmed.to_string())
+      return None;
     }
+
+    let mut owned = String::new();
+    if owned.try_reserve_exact(trimmed.len()).is_err() {
+      return Some(Cow::Borrowed("*"));
+    }
+    owned.push_str(trimmed);
+    Some(Cow::Owned(owned))
   }
 
   fn persist_vary_for_base_key(&self, base_key: &str, vary: Option<&str>) {
