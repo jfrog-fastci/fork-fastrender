@@ -192,3 +192,153 @@ fn table_fixed_layout_colgroup_width_applies_to_col_children_rtl() {
   assert!(gap_bc.abs() < 0.1, "expected cells B/C adjacent (gap={gap_bc})");
 }
 
+#[test]
+fn table_fixed_layout_colgroup_width_applies_to_col_children_collapsed_border_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            table-layout: fixed;
+            width: 100px;
+            border-collapse: collapse;
+            border: none;
+            padding: 0;
+          }
+          td { padding: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <colgroup style="width: 40px">
+            <col />
+            <col />
+          </colgroup>
+          <col />
+          <tr><td>A</td><td>B</td><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let table_width = table.bounds.width();
+  assert!(
+    (table_width - 100.0).abs() < 0.1,
+    "expected table width ~100px, got {table_width}"
+  );
+
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+  assert_eq!(cells.len(), 3, "expected three table cells");
+
+  let a = cells.get(&'A').expect("cell A");
+  let b = cells.get(&'B').expect("cell B");
+  let c = cells.get(&'C').expect("cell C");
+
+  assert!(
+    (a.width() - 40.0).abs() < 0.1,
+    "expected first column width ~40px from <colgroup>, got {}",
+    a.width()
+  );
+  assert!(
+    (b.width() - 40.0).abs() < 0.1,
+    "expected second column width ~40px from <colgroup>, got {}",
+    b.width()
+  );
+  assert!(
+    (c.width() - 20.0).abs() < 0.1,
+    "expected third column to take remaining width (~20px), got {}",
+    c.width()
+  );
+
+  let gap_ab = b.x() - (a.x() + a.width());
+  assert!(gap_ab.abs() < 0.1, "expected cells A/B adjacent (gap={gap_ab})");
+  let gap_bc = c.x() - (b.x() + b.width());
+  assert!(gap_bc.abs() < 0.1, "expected cells B/C adjacent (gap={gap_bc})");
+}
+
+#[test]
+fn table_fixed_layout_colgroup_width_applies_to_col_children_collapsed_border_model_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            table-layout: fixed;
+            width: 100px;
+            border-collapse: collapse;
+            border: none;
+            padding: 0;
+            direction: rtl;
+          }
+          td { padding: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <colgroup style="width: 40px">
+            <col />
+            <col />
+          </colgroup>
+          <col />
+          <tr><td>A</td><td>B</td><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let table_width = table.bounds.width();
+  assert!(
+    (table_width - 100.0).abs() < 0.1,
+    "expected table width ~100px, got {table_width}"
+  );
+
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+  assert_eq!(cells.len(), 3, "expected three table cells");
+
+  let a = cells.get(&'A').expect("cell A");
+  let b = cells.get(&'B').expect("cell B");
+  let c = cells.get(&'C').expect("cell C");
+
+  assert!(
+    a.x() > b.x() && b.x() > c.x(),
+    "expected RTL order A > B > C, got A.x={} B.x={} C.x={}",
+    a.x(),
+    b.x(),
+    c.x()
+  );
+
+  assert!(
+    (a.width() - 40.0).abs() < 0.1,
+    "expected first source column width ~40px from <colgroup> in RTL, got {}",
+    a.width()
+  );
+  assert!(
+    (b.width() - 40.0).abs() < 0.1,
+    "expected second source column width ~40px from <colgroup> in RTL, got {}",
+    b.width()
+  );
+  assert!(
+    (c.width() - 20.0).abs() < 0.1,
+    "expected third source column to take remaining width (~20px) in RTL, got {}",
+    c.width()
+  );
+
+  let gap_ab = a.x() - (b.x() + b.width());
+  assert!(gap_ab.abs() < 0.1, "expected cells A/B adjacent (gap={gap_ab})");
+  let gap_bc = b.x() - (c.x() + c.width());
+  assert!(gap_bc.abs() < 0.1, "expected cells B/C adjacent (gap={gap_bc})");
+}
