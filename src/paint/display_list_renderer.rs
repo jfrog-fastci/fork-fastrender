@@ -10181,12 +10181,13 @@ impl DisplayListRenderer {
           rect: bounds,
           transform: clip_transform,
         });
+        let init_from_backdrop = false;
         self.stacking_layers.push(StackingRecord {
           establishes_backdrop_root: is_backdrop_root,
           needs_layer,
           is_isolated,
           mix_blend_mode: item.mix_blend_mode,
-          init_from_backdrop: false,
+          init_from_backdrop,
           filters: scaled_filters,
           radii,
           bounds,
