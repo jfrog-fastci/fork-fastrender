@@ -2305,12 +2305,12 @@ pub enum BlendMode {
 /// ### Rules of thumb
 ///
 /// - `is_isolated` (isolated group; Compositing & Blending):
-///   - **Set when**: `isolation:isolate`, `backdrop-filter`, `mix-blend-mode != normal`, or when
-///     we force isolation because there are blend-mode descendants.
+///   - **Set when**: `isolation:isolate`, `backdrop-filter`, or when we force isolation because
+///     there are blend-mode descendants (to correctly scope blending within this stacking context).
 ///   - **Layer allocation**: generally forces an offscreen layer so the group starts from a
 ///     transparent backdrop.
-///   - **`mix-blend-mode`**: confines descendant blending to the group (but the group itself still
-///     composites into its parent using `mix_blend_mode`).
+///   - **`mix-blend-mode`**: when isolated, confines descendant blending to the group (but the
+///     group itself still composites into its parent using `mix_blend_mode`).
 ///   - **`backdrop-filter`**: `backdrop-filter` implies `is_isolated` (it needs an intermediate
 ///     surface), but isolation alone does **not** stop backdrop sampling.
 ///   - **Parallel paint**: isolation is a compositing semantic, not a tiling constraint; the

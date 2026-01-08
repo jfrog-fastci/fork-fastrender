@@ -102,6 +102,46 @@ fn mix_blend_mode_isolation_baseline_no_intermediate_stacking_context() {
 }
 
 #[test]
+fn mix_blend_mode_group_surface_is_non_isolated_by_default_for_descendant_blending() {
+  // Regression for non-isolated group surface semantics: blend-mode descendants must see the
+  // already-painted backdrop when the blend-mode group itself is not isolated.
+  let html = r#"
+    <!doctype html>
+    <style>
+      html, body { background: white; margin: 0; }
+      .outer { width: 40px; height: 40px; mix-blend-mode: multiply; }
+      .inner { width: 40px; height: 40px; background: rgb(255 0 0); mix-blend-mode: difference; }
+    </style>
+    <div class="outer">
+      <div class="inner"></div>
+    </div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+  // `difference(red, white) == cyan`.
+  assert_close(pixel(&pixmap, 20, 20), (0, 255, 255, 255), 5);
+}
+
+#[test]
+fn mix_blend_mode_group_surface_isolation_isolate_confines_descendant_blending() {
+  let html = r#"
+    <!doctype html>
+    <style>
+      html, body { background: white; margin: 0; }
+      .outer { width: 40px; height: 40px; mix-blend-mode: multiply; isolation: isolate; }
+      .inner { width: 40px; height: 40px; background: rgb(255 0 0); mix-blend-mode: difference; }
+    </style>
+    <div class="outer">
+      <div class="inner"></div>
+    </div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+  // With isolation, the inner blend-mode sees a transparent backdrop, preserving red.
+  assert_close(pixel(&pixmap, 20, 20), (255, 0, 0, 255), 5);
+}
+
+#[test]
 fn mix_blend_mode_isolation_container_z_index_scopes_descendant_blend() {
   let html = r#"
     <!doctype html>

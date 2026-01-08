@@ -2409,8 +2409,10 @@ impl DisplayListBuilder {
   ///
   /// Rules of thumb:
   /// - Set for explicit `isolation:isolate`.
-  /// - Also set for `backdrop-filter` and `mix-blend-mode != normal` (both require group
-  ///   compositing), and when we need to confine blend-mode descendants.
+  /// - Also set for `backdrop-filter` (it needs an intermediate surface) and when we need to
+  ///   confine blend-mode descendants to this stacking context.
+  /// - Non-`normal` `mix-blend-mode` does **not** imply an isolated group; it only requires a
+  ///   compositing group surface (which may be non-isolated).
   ///
   /// Spec: <https://www.w3.org/TR/compositing-1/#isolatedgroups>
   fn stacking_context_is_isolated(
@@ -2418,13 +2420,15 @@ impl DisplayListBuilder {
     root_style: Option<&ComputedStyle>,
     has_blend_mode_children: bool,
   ) -> bool {
-    mix_blend_mode != BlendMode::Normal
-      || root_style
-        .map(|style| {
-          matches!(style.isolation, Isolation::Isolate) || !style.backdrop_filter.is_empty()
-        })
-        .unwrap_or(false)
-      || has_blend_mode_children
+    let style_isolated = root_style
+      .map(|style| matches!(style.isolation, Isolation::Isolate) || !style.backdrop_filter.is_empty())
+      .unwrap_or(false);
+
+    if mix_blend_mode != BlendMode::Normal {
+      style_isolated
+    } else {
+      style_isolated || has_blend_mode_children
+    }
   }
 
   /// Computes whether a stacking context establishes a Filter Effects Level 2 *Backdrop Root*.
