@@ -121,3 +121,21 @@ fn align_content_flex_end_distributes_lines() {
     "second line should start at y=40, got {last_y}"
   );
 }
+
+#[test]
+fn align_content_stretch_stretches_line_cross_sizes() {
+  let (first_y, last_y) = layout_with_align_content(AlignContent::Stretch);
+  let eps = 1e-3;
+  // Container height: 50px.
+  // Two flex lines with 10px cross size each => free cross space = 30px.
+  // align-content: stretch distributes the free space by increasing each line's cross size:
+  // (10+15)=25px per line, so the second line starts at y=25.
+  assert!(
+    (first_y - 0.0).abs() < eps,
+    "first line should start at y=0, got {first_y}"
+  );
+  assert!(
+    (last_y - 25.0).abs() < eps,
+    "second line should start at y=25 under stretch, got {last_y}"
+  );
+}
