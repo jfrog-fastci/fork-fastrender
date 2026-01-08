@@ -1252,6 +1252,110 @@ fn container_style_query_range_feature_matches_stroke_dashoffset() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_top() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; position: relative; top: 1px; }
+      .container-high { container-type: inline-size; position: relative; top: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(top > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_right() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; position: relative; right: 1px; }
+      .container-high { container-type: inline-size; position: relative; right: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(right > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_bottom() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; position: relative; bottom: 1px; }
+      .container-high { container-type: inline-size; position: relative; bottom: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(bottom > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_left() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; position: relative; left: 1px; }
+      .container-high { container-type: inline-size; position: relative; left: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(left > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_widows() {
   let html = r#"
     <style>

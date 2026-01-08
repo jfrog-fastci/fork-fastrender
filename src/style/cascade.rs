@@ -2039,6 +2039,22 @@ fn eval_style_range_value(
           value,
         }),
       }),
+      "top" => match &styles.top {
+        crate::style::types::InsetValue::Length(len) => length_to_numeric(len, container, ctx),
+        crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => None,
+      },
+      "right" => match &styles.right {
+        crate::style::types::InsetValue::Length(len) => length_to_numeric(len, container, ctx),
+        crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => None,
+      },
+      "bottom" => match &styles.bottom {
+        crate::style::types::InsetValue::Length(len) => length_to_numeric(len, container, ctx),
+        crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => None,
+      },
+      "left" => match &styles.left {
+        crate::style::types::InsetValue::Length(len) => length_to_numeric(len, container, ctx),
+        crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => None,
+      },
       "image-resolution" => {
         // `image-resolution: from-image` depends on the referenced image's metadata, which isn't
         // available during style query evaluation.
