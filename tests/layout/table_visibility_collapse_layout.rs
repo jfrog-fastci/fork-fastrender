@@ -112,6 +112,59 @@ fn collapsed_row_removal_removes_vertical_gap() {
 }
 
 #[test]
+fn collapsed_row_removal_removes_vertical_gap_collapsed_border_model() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { border-collapse: collapse; border: none; }
+          td { padding: 0; margin: 0; border: 0; height: 10px; font-size: 0; line-height: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td>A</td></tr>
+          <tr style="visibility: collapse;"><td>B</td></tr>
+          <tr><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed row cell should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("row 1 cell present");
+  let c = cells.get(&'C').expect("row 3 cell present");
+
+  assert!(
+    (a.rect.height() - 10.0).abs() < 0.1,
+    "row height should match explicit cell height (got {})",
+    a.rect.height()
+  );
+
+  let expected_c_y = a.rect.y() + a.rect.height();
+  let gap = c.rect.y() - expected_c_y;
+  assert!(
+    gap.abs() < 0.1,
+    "collapsed row should not create a gap in collapsed border model (expected row 3 y={expected_c_y}, got {}, gap={gap})",
+    c.rect.y()
+  );
+}
+
+#[test]
 fn collapsed_column_removal_adjusts_colspans_and_offsets() {
   ensure_rayon_threads();
   let html = r#"
@@ -699,6 +752,159 @@ fn rowspan_across_collapsed_row_is_shortened_rtl() {
   assert!(
     gap.abs() < 0.1,
     "next visible row should start immediately after first row in RTL (gap={gap})"
+  );
+}
+
+#[test]
+fn rowspan_across_collapsed_row_is_shortened_collapsed_border_model() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: collapse;
+            border: none;
+            table-layout: fixed;
+          }
+          td { height: 10px; padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 40px" />
+          <col style="width: 40px" />
+          <tr>
+            <td rowspan="2">A</td>
+            <td>X</td>
+          </tr>
+          <tr style="visibility: collapse">
+            <td>Z</td>
+          </tr>
+          <tr>
+            <td>B</td>
+            <td>Y</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'Z'),
+    "cell in collapsed row should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell A present");
+  let b = cells.get(&'B').expect("cell B present");
+
+  assert!(
+    (a.rect.height() - 10.0).abs() < 0.1,
+    "rowspan should not include collapsed row in collapsed border model (got {})",
+    a.rect.height()
+  );
+  let gap = b.rect.y() - (a.rect.y() + a.rect.height());
+  assert!(
+    gap.abs() < 0.1,
+    "next visible row should start immediately after first row in collapsed border model (gap={gap})"
+  );
+}
+
+#[test]
+fn rowspan_across_collapsed_row_is_shortened_collapsed_border_model_rtl() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: collapse;
+            border: none;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          td { height: 10px; padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 40px" />
+          <col style="width: 50px" />
+          <tr>
+            <td rowspan="2">A</td>
+            <td>X</td>
+          </tr>
+          <tr style="visibility: collapse">
+            <td>Z</td>
+          </tr>
+          <tr>
+            <td>B</td>
+            <td>Y</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'Z'),
+    "cell in collapsed row should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell A present");
+  let b = cells.get(&'B').expect("cell B present");
+  let x = cells.get(&'X').expect("cell X present");
+  let y = cells.get(&'Y').expect("cell Y present");
+
+  assert!(
+    (a.rect.height() - 10.0).abs() < 0.1,
+    "rowspan should not include collapsed row in RTL collapsed border model (got {})",
+    a.rect.height()
+  );
+
+  assert!(
+    a.rect.x() > x.rect.x(),
+    "expected RTL order A (right) > X (left), got A.x={} X.x={}",
+    a.rect.x(),
+    x.rect.x()
+  );
+  assert!(
+    b.rect.x() > y.rect.x(),
+    "expected RTL order B (right) > Y (left), got B.x={} Y.x={}",
+    b.rect.x(),
+    y.rect.x()
+  );
+  assert!(
+    (a.rect.x() - b.rect.x()).abs() < 0.1,
+    "expected A and B to share the same column x in RTL collapsed border model, got A.x={} B.x={}",
+    a.rect.x(),
+    b.rect.x()
+  );
+
+  let gap = b.rect.y() - (a.rect.y() + a.rect.height());
+  assert!(
+    gap.abs() < 0.1,
+    "next visible row should start immediately after first row in RTL collapsed border model (gap={gap})"
   );
 }
 
