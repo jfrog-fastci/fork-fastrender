@@ -415,6 +415,37 @@ fn vertical_rl_writing_mode_align_content_start_packs_lines_against_cross_start(
 }
 
 #[test]
+fn vertical_rl_writing_mode_align_content_end_packs_lines_against_cross_end() {
+  let fc = FlexFormattingContext::new();
+
+  // In `VerticalRl`, the cross-start edge for a row-direction flex container is on the physical
+  // right edge. `align-content: end` should instead pack the line box against the cross-end edge
+  // on the physical left, leaving all remaining free space on the right.
+  let container = build_multiline_container(
+    AlignContent::End,
+    WritingMode::VerticalRl,
+    FlexDirection::Row,
+    FlexWrap::Wrap,
+    50.0,
+    60.0,
+    5.0,
+    0.0,
+    10.0,
+    30.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(50.0, 60.0))
+    .expect("layout succeeds");
+
+  // Two lines (10px wide) plus 5px row-gap => total cross span 25px.
+  // Packed against cross-end (left): second line at x=0, first line at x=15.
+  let epsilon = 0.6;
+  assert_approx(find_block_child(&fragment, 1).bounds.x(), 15.0, epsilon, "child1 x");
+  assert_approx(find_block_child(&fragment, 2).bounds.x(), 15.0, epsilon, "child2 x");
+  assert_approx(find_block_child(&fragment, 3).bounds.x(), 0.0, epsilon, "child3 x");
+}
+
+#[test]
 fn space_evenly_respects_padding_and_row_gap_between_lines() {
   let fc = FlexFormattingContext::new();
 
