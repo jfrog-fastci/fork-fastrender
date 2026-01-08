@@ -37,9 +37,9 @@ jobs:
             exit 1
           fi
 
-          # Only initialize the curated semantics corpus, not the full upstream test262 or other
-          # heavyweight corpora.
-          git -C engines/ecma-rs submodule update --init test262-semantic/data
+          # Only initialize the curated semantics corpus, not the parser corpus or other optional
+          # heavyweight submodules.
+          git -C engines/ecma-rs submodule update --init --recursive test262-semantic/data
 
           if [ ! -d engines/ecma-rs/test262-semantic/data ]; then
             echo "::error::test262 semantic corpus directory engines/ecma-rs/test262-semantic/data is missing after submodule init." >&2
@@ -83,10 +83,19 @@ jobs:
           set -euo pipefail
           mkdir -p "$(dirname "${TEST262_REPORT}")"
           rm -f "${TEST262_REPORT}"
-          cargo xtask js test262
+          chmod +x scripts/run_limited.sh
+
+          status=0
+          scripts/run_limited.sh --as 64G -- \
+            cargo run -p xtask --release --locked -- \
+              js test262 \
+              --fail-on new \
+              --report "${TEST262_REPORT}" || status=$?
           test -s "${TEST262_REPORT}"
+          exit $status
 
       - name: Upload test262 semantic report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test262_semantic_report
