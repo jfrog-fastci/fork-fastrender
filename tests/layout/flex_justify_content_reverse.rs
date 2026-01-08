@@ -448,3 +448,71 @@ fn justify_content_flex_end_vertical_rl_column_reverse_aligns_to_block_start_edg
     child.bounds.x()
   );
 }
+
+#[test]
+fn justify_content_flex_start_vertical_rl_row_reverse_aligns_to_inline_end_edge() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::VerticalRl;
+  container_style.flex_direction = FlexDirection::RowReverse; // inline axis reversed (vertical)
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.width = Some(Length::px(10.0));
+  container_style.height = Some(Length::px(100.0));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.flex_shrink = 0.0;
+  let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  child.id = 1;
+
+  let container =
+    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(10.0, 100.0))
+    .expect("layout succeeds");
+
+  let child = find_child_by_id(&fragment, 1).unwrap_or_else(|| panic!("missing child"));
+  assert!(
+    (child.bounds.y() - 90.0).abs() < 1e-3,
+    "expected flex-start on vertical-rl row-reverse to align to inline-end (bottom) edge (got y={})",
+    child.bounds.y()
+  );
+}
+
+#[test]
+fn justify_content_flex_end_vertical_rl_row_reverse_aligns_to_inline_start_edge() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::VerticalRl;
+  container_style.flex_direction = FlexDirection::RowReverse; // inline axis reversed (vertical)
+  container_style.justify_content = JustifyContent::FlexEnd;
+  container_style.width = Some(Length::px(10.0));
+  container_style.height = Some(Length::px(100.0));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.flex_shrink = 0.0;
+  let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  child.id = 1;
+
+  let container =
+    BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![child]);
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(10.0, 100.0))
+    .expect("layout succeeds");
+
+  let child = find_child_by_id(&fragment, 1).unwrap_or_else(|| panic!("missing child"));
+  assert!(
+    (child.bounds.y() - 0.0).abs() < 1e-3,
+    "expected flex-end on vertical-rl row-reverse to align to inline-start (top) edge (got y={})",
+    child.bounds.y()
+  );
+}
