@@ -186,6 +186,81 @@ fn table_direction_rtl_column_order_separate_model() {
 }
 
 #[test]
+fn table_direction_rtl_column_order_inherits_direction_from_body() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; direction: rtl; }
+          table {
+            width: 150px;
+            table-layout: fixed;
+            border-collapse: separate;
+            border-spacing: 0;
+            padding: 0;
+            border: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr><td>A</td><td>B</td><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let cells = layout_table_cells(html);
+  assert_rtl_column_order(&cells);
+}
+
+#[test]
+fn table_direction_rtl_column_order_with_caption_separate_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            width: 150px;
+            table-layout: fixed;
+            border-collapse: separate;
+            border-spacing: 0;
+            direction: rtl;
+            padding: 0;
+            border: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          caption { caption-side: top; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <caption>caption</caption>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr><td>A</td><td>B</td><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let cells = layout_table_cells(html);
+  assert_rtl_column_order(&cells);
+}
+
+#[test]
 fn table_direction_rtl_column_order_auto_layout_separate_model() {
   let html = r#"
     <html>
