@@ -100,6 +100,26 @@ fn webkit_text_decoration_skip_objects_aliases_to_text_decoration_skip() {
 }
 
 #[test]
+fn webkit_text_decoration_skip_ink_aliases_to_text_decoration_skip() {
+  // Web-compat: `-webkit-text-decoration-skip: ink` is common in CSS resets for legacy Safari.
+  // Start from a non-initial value so the `ink` keyword actually changes computed state.
+  let dom =
+    dom::parse_html(r#"<div style="text-decoration-skip: none; -webkit-text-decoration-skip: ink"></div>"#)
+      .unwrap();
+  let stylesheet = parse_stylesheet("").unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let node = find_first(&styled, "div").expect("div");
+
+  assert_eq!(node.styles.text_decoration_skip_self, TextDecorationSkipSelf::Auto);
+  assert_eq!(node.styles.text_decoration_skip_box, TextDecorationSkipBox::None);
+  assert_eq!(
+    node.styles.text_decoration_skip_spaces,
+    TextDecorationSkipSpaces::StartEnd
+  );
+  assert_eq!(node.styles.text_decoration_skip_ink, TextDecorationSkipInk::Auto);
+}
+
+#[test]
 fn text_decoration_skip_self_does_not_inherit() {
   let dom = dom::parse_html(
     r#"<div style="text-decoration-skip-self: no-skip"><span>child</span></div>"#,

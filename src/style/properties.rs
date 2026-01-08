@@ -18780,11 +18780,14 @@ fn parse_text_decoration_skip(value: &PropertyValue) -> Option<ParsedTextDecorat
       spaces: TextDecorationSkipSpaces::None,
       ink: TextDecorationSkipInk::None,
     }),
-    // Web-compat: `-webkit-text-decoration-skip: objects` is common on real-world stylesheets.
-    // Map it to the initial behavior ("auto") so the declaration is accepted and enables the
-    // default atomic-inline skipping behavior.
+    // Web-compat: legacy `text-decoration-skip` values like `objects` and `ink` are common in
+    // CSS resets (often via `-webkit-text-decoration-skip: ink`). Map them to the initial
+    // behavior ("auto") so the declaration is accepted and enables the default atomic-inline
+    // skipping behavior.
     PropertyValue::Keyword(kw)
-      if kw.eq_ignore_ascii_case("auto") || kw.eq_ignore_ascii_case("objects") =>
+      if kw.eq_ignore_ascii_case("auto")
+        || kw.eq_ignore_ascii_case("objects")
+        || kw.eq_ignore_ascii_case("ink") =>
     {
       Some(ParsedTextDecorationSkip {
         self_: TextDecorationSkipSelf::Auto,
