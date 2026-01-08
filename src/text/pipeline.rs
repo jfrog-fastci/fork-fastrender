@@ -6236,6 +6236,7 @@ impl ShapingPipeline {
     let mut runs = Vec::new();
     let mut segment_start: usize = 0;
     let mut buffer = String::new();
+    let mut mapping: Vec<(usize, usize)> = Vec::new();
     let mut current_small = None;
     let all_small = matches!(style.font_variant_caps, FontVariantCaps::AllSmallCaps);
 
@@ -6243,10 +6244,20 @@ impl ShapingPipeline {
       let is_small = ch.is_lowercase() || (all_small && ch.is_uppercase());
       if let Some(flag) = current_small {
         if flag != is_small {
+          let Some(segment_original) = text.get(segment_start..idx) else {
+            return Err(TextError::ShapingFailed {
+              text: text.to_string(),
+              reason: "Invalid UTF-8 boundary for small-caps segment".to_string(),
+            }
+            .into());
+          };
           self.flush_small_caps_segment(
             &mut runs,
+            segment_original,
             &buffer,
+            &mapping,
             segment_start,
+            idx,
             flag,
             style,
             font_context,
@@ -6255,6 +6266,7 @@ impl ShapingPipeline {
             explicit_bidi,
           )?;
           buffer.clear();
+          mapping.clear();
           segment_start = idx;
           current_small = Some(is_small);
         }
@@ -6262,20 +6274,33 @@ impl ShapingPipeline {
         current_small = Some(is_small);
       }
 
+      let original_offset = idx.saturating_sub(segment_start);
       if is_small {
         for up in ch.to_uppercase() {
+          mapping.push((buffer.len(), original_offset));
           buffer.push(up);
         }
       } else {
+        mapping.push((buffer.len(), original_offset));
         buffer.push(ch);
       }
     }
 
     if !buffer.is_empty() {
+      let Some(segment_original) = text.get(segment_start..) else {
+        return Err(TextError::ShapingFailed {
+          text: text.to_string(),
+          reason: "Invalid UTF-8 boundary for small-caps segment".to_string(),
+        }
+        .into());
+      };
       self.flush_small_caps_segment(
         &mut runs,
+        segment_original,
         &buffer,
+        &mapping,
         segment_start,
+        text.len(),
         current_small.unwrap_or(false),
         style,
         font_context,
@@ -6291,8 +6316,11 @@ impl ShapingPipeline {
   fn flush_small_caps_segment(
     &self,
     out: &mut Vec<ShapedRun>,
+    original_text: &str,
     segment_text: &str,
+    mapping: &[(usize, usize)],
     base_offset: usize,
+    segment_end: usize,
     is_small: bool,
     style: &ComputedStyle,
     font_context: &FontContext,
@@ -6313,9 +6341,48 @@ impl ShapingPipeline {
       base_direction,
       explicit_bidi,
     )?;
+
+    let segment_len = original_text.len();
+    let mut mapping_with_end = Vec::with_capacity(mapping.len().saturating_add(1));
+    mapping_with_end.extend_from_slice(mapping);
+    mapping_with_end.push((segment_text.len(), segment_len));
+
+    let map_boundary = |offset: usize| -> usize {
+      match mapping_with_end.binary_search_by_key(&offset, |(shaped, _)| *shaped) {
+        Ok(idx) => mapping_with_end.get(idx).map(|(_, orig)| *orig).unwrap_or(offset),
+        Err(0) => mapping_with_end.first().map(|(_, orig)| *orig).unwrap_or(0),
+        Err(idx) => mapping_with_end
+          .get(idx.saturating_sub(1))
+          .map(|(_, orig)| *orig)
+          .unwrap_or(segment_len),
+      }
+    };
+
     for run in &mut shaped {
-      run.start += base_offset;
-      run.end += base_offset;
+      let shaped_start = run.start;
+      let shaped_end = run.end;
+      let orig_start = map_boundary(shaped_start).min(segment_len);
+      let orig_end = map_boundary(shaped_end).min(segment_len);
+
+      run.start = base_offset.saturating_add(orig_start);
+      run.end = base_offset.saturating_add(orig_end).min(segment_end);
+
+      let Some(run_text) = original_text.get(orig_start..orig_end) else {
+        return Err(TextError::ShapingFailed {
+          text: original_text.to_string(),
+          reason: "Invalid UTF-8 boundary for synthetic small-caps segment".to_string(),
+        }
+        .into());
+      };
+      run.text = run_text.to_string();
+
+      for glyph in &mut run.glyphs {
+        let cluster_in_run = glyph.cluster as usize;
+        let cluster_in_segment = shaped_start.saturating_add(cluster_in_run);
+        let orig_cluster =
+          map_cluster_offset(cluster_in_segment, &mapping_with_end).saturating_sub(orig_start);
+        glyph.cluster = orig_cluster as u32;
+      }
     }
     out.extend(shaped);
     Ok(())

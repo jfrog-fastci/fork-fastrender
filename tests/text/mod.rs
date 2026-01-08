@@ -35,6 +35,7 @@ mod font_palette_test;
 mod font_size_adjust_metrics;
 mod font_variant_position_synthesis_test;
 mod native_small_caps_feature_probe_test;
+mod synthetic_small_caps_mapping_test;
 mod font_variant_emoji_monochrome_test;
 mod font_variation_backend;
 mod generic_family_mapping_test;
