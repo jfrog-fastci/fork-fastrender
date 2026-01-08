@@ -6788,6 +6788,7 @@ impl Painter {
       &content.shared_css,
       &self.font_ctx,
       &self.image_cache,
+      self.scale,
       self.max_iframe_depth,
     ) {
       if let Some(injection) = injection {

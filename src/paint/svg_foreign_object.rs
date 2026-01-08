@@ -69,12 +69,19 @@ pub(crate) fn inline_svg_with_foreign_objects(
   shared_css: &str,
   font_ctx: &FontContext,
   image_cache: &ImageCache,
+  device_pixel_ratio: f32,
   max_iframe_depth: usize,
 ) -> Option<String> {
   let mut svg = svg.to_string();
   for (idx, foreign) in foreign_objects.iter().enumerate() {
-    let data_url =
-      render_foreign_object_data_url(foreign, shared_css, font_ctx, image_cache, max_iframe_depth)?;
+    let data_url = render_foreign_object_data_url(
+      foreign,
+      shared_css,
+      font_ctx,
+      image_cache,
+      device_pixel_ratio,
+      max_iframe_depth,
+    )?;
     let replacement = foreign_object_image_tag(foreign, &data_url, idx);
     let placeholder = if foreign.placeholder.is_empty() {
       format!("<!--FASTRENDER_FOREIGN_OBJECT_{}-->", idx)
@@ -176,6 +183,7 @@ fn render_foreign_object_data_url(
   shared_css: &str,
   font_ctx: &FontContext,
   image_cache: &ImageCache,
+  device_pixel_ratio: f32,
   max_iframe_depth: usize,
 ) -> Option<String> {
   let width = info.width.max(1.0).round() as u32;
@@ -184,6 +192,11 @@ fn render_foreign_object_data_url(
     return None;
   }
 
+  let device_pixel_ratio = if device_pixel_ratio.is_finite() && device_pixel_ratio > 0.0 {
+    device_pixel_ratio
+  } else {
+    1.0
+  };
   let html = build_foreign_object_document(info, shared_css, width, height);
   // ForeignObject "background" comes from the SVG element's computed CSS, not the nested HTML.
   // Render on a transparent canvas and apply the background via the `<body>` inline style so:
@@ -204,7 +217,7 @@ fn render_foreign_object_data_url(
     image_cache,
     Arc::clone(image_cache.fetcher()),
     image_cache.base_url(),
-    1.0,
+    device_pixel_ratio,
     policy,
     context,
     max_iframe_depth,
@@ -448,4 +461,55 @@ mod tests {
       "expected nearly full red channel after unpremultiplication, got {px:?}"
     );
   }
-}
+
+  #[test]
+  fn foreign_object_png_dimensions_scale_with_device_pixel_ratio() {
+    use crate::image_loader::ImageCache;
+    use crate::text::font_loader::FontContext;
+    use crate::tree::box_tree::ForeignObjectInfo;
+    use crate::ComputedStyle;
+    use crate::Overflow;
+    use std::sync::Arc;
+
+    let foreign = ForeignObjectInfo {
+      placeholder: "<!--FASTRENDER_FOREIGN_OBJECT_0-->".to_string(),
+      attributes: Vec::new(),
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 1.0,
+      background: None,
+      html: "<div xmlns=\"http://www.w3.org/1999/xhtml\"></div>".to_string(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Visible,
+      overflow_y: Overflow::Visible,
+    };
+
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::new();
+    let svg = "<svg><!--FASTRENDER_FOREIGN_OBJECT_0--></svg>";
+    let resolved = super::inline_svg_with_foreign_objects(
+      svg,
+      &[foreign],
+      "",
+      &font_ctx,
+      &image_cache,
+      2.0,
+      0,
+    )
+    .expect("resolved svg");
+
+    let href_prefix = "href=\"data:image/png;base64,";
+    let href_start = resolved.find(href_prefix).expect("href attribute") + href_prefix.len();
+    let href_end = resolved[href_start..].find('"').expect("closing quote") + href_start;
+    let encoded = &resolved[href_start..href_end];
+    let png = base64::engine::general_purpose::STANDARD
+      .decode(encoded)
+      .expect("decode base64");
+    let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+      .expect("decode png");
+    assert_eq!(decoded.width(), 2);
+    assert_eq!(decoded.height(), 2);
+  }
+} 

@@ -8971,12 +8971,13 @@ impl DisplayListBuilder {
       None
     } else {
       crate::paint::svg_foreign_object::inline_svg_with_foreign_objects(
-      &content.svg,
-      &content.foreign_objects,
-      &content.shared_css,
-      &self.font_ctx,
-      image_cache,
-      self.max_iframe_depth,
+        &content.svg,
+        &content.foreign_objects,
+        &content.shared_css,
+        &self.font_ctx,
+        image_cache,
+        self.device_pixel_ratio,
+        self.max_iframe_depth,
       )
     };
     let svg = if let Some(resolved) = resolved_svg.as_deref() {
