@@ -5095,6 +5095,16 @@ impl TableFormattingContext {
       Vec::new()
     };
 
+    // In fixed layout, unassigned columns should be able to absorb any amount of remaining table
+    // space (CSS 2.1 §17.5.2.1 step 3). Use an infinite max width baseline so that columns covered
+    // by colspans in the first row don't end up with a different (zero) max-width than columns
+    // represented by a concrete cell.
+    if matches!(mode, DistributionMode::Fixed) {
+      for col in constraints.iter_mut() {
+        col.max_width = f32::INFINITY;
+      }
+    }
+
     // Fixed layout sizing precedence (CSS 2.1 §17.5.2.1):
     // 1) `<col>`/`<colgroup>` widths
     // 2) First-row cell widths
