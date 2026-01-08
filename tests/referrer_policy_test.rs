@@ -139,6 +139,25 @@ impl HeaderCaptureServer {
 </html>"#
                   .to_vec(),
               ),
+              "/doc_links_style_import.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head>
+    <link rel="stylesheet" href="/style_import.css">
+  </head>
+  <body>
+    <div>hello</div>
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
+              "/doc_redirect_policy.html" => (
+                "302 Found",
+                "text/plain; charset=utf-8",
+                b"redirecting".to_vec(),
+              ),
               "/style_redirect.css" => (
                 "302 Found",
                 "text/plain; charset=utf-8",
@@ -203,6 +222,10 @@ body { font-family: "TestFont"; }"#
               }
             }
             if path == "/doc_response_policy.html" {
+              extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
+            }
+            if path == "/doc_redirect_policy.html" {
+              extra_headers.push_str("Location: /doc_links_style_import.html\r\n");
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
             if matches!(path.as_str(), "/style_redirect.css" | "/style_redirect_policy.css") {
@@ -1139,6 +1162,49 @@ fn document_response_referrer_policy_no_referrer_suppresses_referer_for_styleshe
     assert!(
       header_value(&req.headers, "referer").is_none(),
       "expected Referer header to be omitted for {path} due to document response Referrer-Policy; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
+fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests(
+) {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_redirect_policy.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in [
+    "/doc_redirect_policy.html",
+    "/doc_links_style_import.html",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert!(
+      header_value(&req.headers, "referer").is_none(),
+      "expected Referer header to be omitted for {path} due to redirect Referrer-Policy: no-referrer; got:\n{}",
       req.headers
     );
   }
