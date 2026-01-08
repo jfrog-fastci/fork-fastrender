@@ -2,6 +2,7 @@ use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use selectors::context::QuirksMode;
 
 pub mod error;
+pub mod events;
 pub mod import;
 mod attrs;
 
@@ -11,6 +12,11 @@ pub mod traversal;
 
 #[cfg(test)]
 mod query_tests;
+
+pub use events::{
+  DispatchResult, Event, EventListenerInvoker, EventListenerOptions, EventPhase, EventTargetId,
+  ListenerId,
+};
 
 #[derive(Debug, Clone)]
 pub struct RendererDomSnapshot {
@@ -88,6 +94,7 @@ pub struct Node {
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
+  events: events::EventListenerRegistry,
 }
 
 fn node_kind_to_dom_node_type(kind: &NodeKind) -> DomNodeType {
@@ -131,6 +138,7 @@ impl Document {
     let mut doc = Self {
       nodes: Vec::new(),
       root: NodeId(0),
+      events: events::EventListenerRegistry::default(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
