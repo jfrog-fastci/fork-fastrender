@@ -14132,6 +14132,20 @@ fn apply_first_line_fragment_style(
   }
 }
 
+fn refresh_first_letter_fragment_styles(
+  fragment: &mut FragmentNode,
+  first_letter_style: &Arc<ComputedStyle>,
+) {
+  const EPHEMERAL_BOX_ID_BASE: usize = 1usize << (usize::BITS - 1);
+  if fragment_box_id(fragment).is_some_and(|box_id| box_id & EPHEMERAL_BOX_ID_BASE != 0) {
+    fragment.style = Some(Arc::clone(first_letter_style));
+  }
+
+  for child in fragment.children_mut() {
+    refresh_first_letter_fragment_styles(child, first_letter_style);
+  }
+}
+
 fn refresh_fragment_styles(
   fragment: &mut FragmentNode,
   boxes: &HashMap<usize, &BoxNode>,
@@ -14179,9 +14193,7 @@ fn refresh_fragment_styles(
       return;
     };
     let base_key = styled_id << STYLE_KEY_SHIFT;
-    let Some(first_line_style) = styles.get(&(base_key | STYLE_KEY_FIRST_LINE)) else {
-      return;
-    };
+
     let Some(first_line_fragment) = fragment
       .children_mut()
       .iter_mut()
@@ -14190,7 +14202,12 @@ fn refresh_fragment_styles(
       return;
     };
 
-    apply_first_line_fragment_style(first_line_fragment, first_line_style.as_ref(), &base_style);
+    if let Some(first_letter_style) = styles.get(&(base_key | STYLE_KEY_FIRST_LETTER)) {
+      refresh_first_letter_fragment_styles(first_line_fragment, first_letter_style);
+    }
+    if let Some(first_line_style) = styles.get(&(base_key | STYLE_KEY_FIRST_LINE)) {
+      apply_first_line_fragment_style(first_line_fragment, first_line_style.as_ref(), &base_style);
+    }
   }
 }
 
@@ -15344,6 +15361,101 @@ pub(crate) fn render_html_with_shared_resources(
       .expect("text style refreshed");
     assert_eq!(text_style.color, first_line.color);
     assert!((text_style.font_size - first_line.font_size).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn refresh_fragment_styles_refreshes_first_letter_pseudo_overrides() {
+    let old_style = Arc::new(ComputedStyle::default());
+    let mut base_style = ComputedStyle::default();
+    base_style.color = Rgba::BLACK;
+    base_style.background_color = Rgba::TRANSPARENT;
+    let base_style = Arc::new(base_style);
+
+    let mut first_line = ComputedStyle::default();
+    first_line.color = Rgba::RED;
+    first_line.background_color = Rgba::RED;
+    let first_line = Arc::new(first_line);
+
+    let mut first_letter = ComputedStyle::default();
+    first_letter.color = Rgba::BLUE;
+    let first_letter = Arc::new(first_letter);
+
+    let mut root = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![]);
+    root.styled_node_id = Some(1);
+    let box_tree = BoxTree::new(root);
+    let root_id = box_tree.root.id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&box_tree.root, &mut box_map);
+
+    let base_key = 1 << super::STYLE_KEY_SHIFT;
+    let mut style_map = HashMap::new();
+    style_map.insert(base_key, base_style.clone());
+    style_map.insert(base_key | super::STYLE_KEY_FIRST_LINE, first_line.clone());
+    style_map.insert(base_key | super::STYLE_KEY_FIRST_LETTER, first_letter.clone());
+
+    const EPHEMERAL_ID_BASE: usize = 1usize << (usize::BITS - 1);
+    let inline_box_id = EPHEMERAL_ID_BASE | 111;
+    let text_box_id = EPHEMERAL_ID_BASE | 222;
+    let mut old_letter_style = ComputedStyle::default();
+    old_letter_style.color = Rgba::GREEN;
+    let old_letter_style = Arc::new(old_letter_style);
+
+    let letter_fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+      FragmentContent::Text {
+        text: Arc::from("H"),
+        box_id: Some(text_box_id),
+        baseline_offset: 0.0,
+        shaped: None,
+        is_marker: false,
+        emphasis_offset: Default::default(),
+      },
+      vec![],
+      old_letter_style.clone(),
+    );
+    let inline_fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+      FragmentContent::Inline {
+        box_id: Some(inline_box_id),
+        fragment_index: 0,
+      },
+      vec![letter_fragment],
+      old_letter_style,
+    );
+    let line_fragment = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      0.0,
+      vec![inline_fragment],
+    );
+    let mut root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      root_id,
+      vec![line_fragment],
+    );
+    root_fragment.style = Some(old_style);
+
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map);
+
+    assert!(
+      Arc::ptr_eq(
+        root_fragment.style.as_ref().expect("root style refreshed"),
+        &base_style
+      ),
+      "expected base style to refresh"
+    );
+    let inline_style = root_fragment.children[0].children[0]
+      .style
+      .as_ref()
+      .expect("inline style refreshed");
+    assert_eq!(inline_style.color, first_letter.color);
+    assert_eq!(inline_style.background_color, first_line.background_color);
+    let text_style = root_fragment.children[0].children[0].children[0]
+      .style
+      .as_ref()
+      .expect("text style refreshed");
+    assert_eq!(text_style.color, first_letter.color);
+    assert_eq!(text_style.background_color, first_line.background_color);
   }
 
   #[test]
