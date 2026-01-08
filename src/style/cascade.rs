@@ -1316,7 +1316,7 @@ fn eval_style_query(
 ) -> QueryResult {
   match query {
     StyleQueryExpr::Unknown => QueryResult::Unknown,
-    StyleQueryExpr::Feature(feature) => QueryResult::from_bool(eval_style_feature(feature, container, ctx)),
+    StyleQueryExpr::Feature(feature) => eval_style_feature(feature, container, ctx),
     StyleQueryExpr::Not(inner) => eval_style_query(inner, container, ctx).not(),
     StyleQueryExpr::And(list) => {
       let mut result = QueryResult::True;
@@ -1353,10 +1353,14 @@ fn eval_style_feature(
   feature: &StyleQueryFeature,
   container: &ContainerQueryInfo,
   ctx: &ContainerQueryContext,
-) -> bool {
+) -> QueryResult {
   match feature {
-    StyleQueryFeature::Plain { name, value } => eval_plain_style_feature(name, value, container, ctx),
-    StyleQueryFeature::Boolean { name } => eval_boolean_style_feature(name, container, ctx),
+    StyleQueryFeature::Plain { name, value } => {
+      QueryResult::from_bool(eval_plain_style_feature(name, value, container, ctx))
+    }
+    StyleQueryFeature::Boolean { name } => {
+      QueryResult::from_bool(eval_boolean_style_feature(name, container, ctx))
+    }
     StyleQueryFeature::Range(range) => eval_style_range(range, container, ctx),
   }
 }
@@ -1702,20 +1706,24 @@ fn compare_numeric(op: StyleRangeOp, left: f32, right: f32) -> bool {
   }
 }
 
-fn eval_style_range(range: &StyleRange, container: &ContainerQueryInfo, ctx: &ContainerQueryContext) -> bool {
+fn eval_style_range(
+  range: &StyleRange,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) -> QueryResult {
   match range {
     StyleRange::Single { left, op, right } => {
       let Some(lhs) = eval_style_range_value(left, container, ctx) else {
-        return false;
+        return QueryResult::Unknown;
       };
       let Some(rhs) = eval_style_range_value(right, container, ctx) else {
-        return false;
+        return QueryResult::Unknown;
       };
       let (lhs, rhs) = coerce_unitless_zero_number(lhs, rhs);
       if lhs.ty != rhs.ty {
-        return false;
+        return QueryResult::False;
       }
-      compare_numeric(*op, lhs.value, rhs.value)
+      QueryResult::from_bool(compare_numeric(*op, lhs.value, rhs.value))
     }
     StyleRange::Double {
       left,
@@ -1724,21 +1732,23 @@ fn eval_style_range(range: &StyleRange, container: &ContainerQueryInfo, ctx: &Co
       right,
     } => {
       let Some(a) = eval_style_range_value(left, container, ctx) else {
-        return false;
+        return QueryResult::Unknown;
       };
       let Some(b) = eval_style_range_value(middle, container, ctx) else {
-        return false;
+        return QueryResult::Unknown;
       };
       let Some(c) = eval_style_range_value(right, container, ctx) else {
-        return false;
+        return QueryResult::Unknown;
       };
 
       let (a, b) = coerce_unitless_zero_number(a, b);
       let (b, c) = coerce_unitless_zero_number(b, c);
       if a.ty != b.ty || b.ty != c.ty {
-        return false;
+        return QueryResult::False;
       }
-      compare_numeric(*op, a.value, b.value) && compare_numeric(*op, b.value, c.value)
+      QueryResult::from_bool(
+        compare_numeric(*op, a.value, b.value) && compare_numeric(*op, b.value, c.value),
+      )
     }
   }
 }
@@ -1818,8 +1828,33 @@ fn resolve_length_for_query(
 ) -> Option<f32> {
   // Style-query values are computed with respect to the query container.
   // Resolve container-query units relative to the query container itself.
-  let mut length = *length;
   let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
+  if length.unit.is_container_query_relative()
+    || length
+      .calc
+      .is_some_and(|calc| calc.has_container_query_relative())
+  {
+    let bases_known = |unit: LengthUnit| match unit {
+      LengthUnit::Cqw => cqw.is_finite(),
+      LengthUnit::Cqh => cqh.is_finite(),
+      LengthUnit::Cqi => cqi.is_finite(),
+      LengthUnit::Cqb => cqb.is_finite(),
+      LengthUnit::Cqmin | LengthUnit::Cqmax => cqi.is_finite() && cqb.is_finite(),
+      _ => true,
+    };
+
+    if let Some(calc) = length.calc {
+      for term in calc.terms() {
+        if term.unit.is_container_query_relative() && !bases_known(term.unit) {
+          return None;
+        }
+      }
+    } else if length.unit.is_container_query_relative() && !bases_known(length.unit) {
+      return None;
+    }
+  }
+
+  let mut length = *length;
   length = length.resolve_container_query_units(cqw, cqh, cqi, cqb);
 
   let viewport_width = ctx.base_media.viewport_width;
@@ -1947,7 +1982,13 @@ fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32
   );
   let supports_block = matches!(container.container_type, ContainerType::Size);
 
-  let clamp = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+  let clamp = |value: f32| {
+    if value.is_finite() {
+      value.max(0.0)
+    } else {
+      f32::NAN
+    }
+  };
 
   let cqi = if supports_inline { clamp(container.inline_size) } else { 0.0 };
   let cqb = if supports_block { clamp(container.block_size) } else { 0.0 };
