@@ -13,6 +13,7 @@ pub struct CaptureMissingFailureFixturesArgs {
   pub dpr: Option<String>,
   pub allow_missing_resources: bool,
   pub overwrite: bool,
+  pub include_scripts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +114,9 @@ fn build_bundle_page_cache_command(
     cmd.push("--dpr".to_string());
     cmd.push(dpr.to_string());
   }
+  if args.include_scripts {
+    cmd.push("--bundle-scripts".to_string());
+  }
 
   CommandSpec {
     program: "cargo".to_string(),
@@ -143,9 +147,48 @@ fn build_import_page_fixture_command(
   if args.allow_missing_resources {
     cmd.push("--allow-missing".to_string());
   }
+  if args.include_scripts {
+    cmd.push("--rewrite-scripts".to_string());
+  }
 
   CommandSpec {
     program: "cargo".to_string(),
     args: cmd,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn include_scripts_propagates_to_bundle_and_import_commands() {
+    let args = CaptureMissingFailureFixturesArgs {
+      progress_dir: PathBuf::from("progress"),
+      fixtures_root: PathBuf::from("fixtures"),
+      bundle_out_dir: PathBuf::from("bundles"),
+      asset_cache_dir: PathBuf::from("fetches/assets"),
+      user_agent: None,
+      accept_language: None,
+      viewport: None,
+      dpr: None,
+      allow_missing_resources: false,
+      overwrite: false,
+      include_scripts: true,
+    };
+
+    let bundle_cmd = build_bundle_page_cache_command("example.com", Path::new("out.tar"), &args);
+    assert!(
+      bundle_cmd.args.iter().any(|a| a == "--bundle-scripts"),
+      "expected bundle_page cache command to include --bundle-scripts when include_scripts is set: {:?}",
+      bundle_cmd.args
+    );
+
+    let import_cmd = build_import_page_fixture_command("example.com", Path::new("out.tar"), &args);
+    assert!(
+      import_cmd.args.iter().any(|a| a == "--rewrite-scripts"),
+      "expected import-page-fixture command to include --rewrite-scripts when include_scripts is set: {:?}",
+      import_cmd.args
+    );
   }
 }

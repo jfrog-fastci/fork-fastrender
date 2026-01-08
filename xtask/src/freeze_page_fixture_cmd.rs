@@ -56,6 +56,12 @@ pub struct FreezePageFixtureArgs {
   #[arg(long)]
   pub allow_missing_resources: bool,
 
+  /// Include `<script src>` resources in captured bundles and rewrite them to local fixture assets.
+  ///
+  /// This is intended for JS-enabled fixture capture. It can significantly increase bundle size.
+  #[arg(long, visible_alias = "js-enabled")]
+  pub include_scripts: bool,
+
   /// User-Agent header used for fetch/prefetch and for the disk cache namespace.
   #[arg(long, default_value = DEFAULT_USER_AGENT)]
   pub user_agent: String,
@@ -107,6 +113,7 @@ pub fn run_freeze_page_fixture(mut args: FreezePageFixtureArgs) -> Result<()> {
       bundle_out_dir: args.bundle_out_dir.clone(),
       overwrite: args.overwrite,
       allow_missing_resources: args.allow_missing_resources,
+      include_scripts: args.include_scripts,
       user_agent: args.user_agent.clone(),
       accept_language: args.accept_language.clone(),
       viewport: args.viewport,
@@ -151,29 +158,17 @@ pub fn run_freeze_page_fixture(mut args: FreezePageFixtureArgs) -> Result<()> {
       .with_context(|| format!("bundle_page cache {}", capture.cache_stem))?;
 
     println!("Importing fixture {}...", capture.fixture_name);
-    crate::import_page_fixture::run_import_page_fixture(
-      crate::import_page_fixture::ImportPageFixtureArgs {
-        bundle: capture.bundle_path.clone(),
-        fixture_name: capture.fixture_name.clone(),
-        output_root: args.fixtures_root.clone(),
-        overwrite: args.overwrite,
-        allow_missing: args.allow_missing_resources,
-        allow_http_references: false,
-        legacy_rewrite: false,
-        dry_run: false,
-      },
-    )
-    .with_context(|| format!("import-page-fixture {}", capture.fixture_name))?;
+    let mut import_cmd = build_import_page_fixture_command(&args, capture);
+    import_cmd.current_dir(&repo_root);
+    crate::run_command(import_cmd)
+      .with_context(|| format!("import-page-fixture {}", capture.fixture_name))?;
   }
 
   // Ensure the imported fixtures are fully offline unless the caller explicitly bypassed the
   // invariant.
-  crate::validate_page_fixtures::run_validate_page_fixtures(
-    crate::validate_page_fixtures::ValidatePageFixturesArgs {
-      fixtures_root: args.fixtures_root.clone(),
-      only: Some(selected_cache_stems),
-    },
-  )?;
+  let mut validate_cmd = build_validate_page_fixtures_command(&args, &selected_cache_stems);
+  validate_cmd.current_dir(&repo_root);
+  crate::run_command(validate_cmd).context("validate-page-fixtures")?;
 
   Ok(())
 }
@@ -224,9 +219,16 @@ fn run_fetch_pages_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Result
 }
 
 fn run_prefetch_assets_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Result<()> {
+  let repo_root = crate::repo_root();
+  let mut cmd = build_prefetch_assets_command(args, pages_csv);
+  cmd.current_dir(&repo_root);
+  crate::run_command(cmd).context("prefetch_assets")?;
+  Ok(())
+}
+
+fn build_prefetch_assets_command(args: &FreezePageFixtureArgs, pages_csv: &str) -> Command {
   use crate::DiskCacheFeatureExt;
 
-  let repo_root = crate::repo_root();
   let mut cmd = Command::new("cargo");
   cmd
     .arg("run")
@@ -246,13 +248,149 @@ fn run_prefetch_assets_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Re
     .arg("--prefetch-images")
     .arg("--prefetch-css-url-assets");
 
+  if args.include_scripts {
+    cmd.arg("--prefetch-scripts");
+  }
+
   if std::env::var_os("FASTR_DISK_CACHE_ALLOW_NO_STORE").is_none() {
     cmd.arg("--disk-cache-allow-no-store");
   }
+  cmd
+}
 
-  cmd.current_dir(&repo_root);
-  crate::run_command(cmd).context("prefetch_assets")?;
-  Ok(())
+fn build_import_page_fixture_command(
+  args: &FreezePageFixtureArgs,
+  capture: &xtask::freeze_page_fixture::FreezePageFixturePlanItem,
+) -> Command {
+  let mut cmd = Command::new("cargo");
+  cmd
+    .arg("xtask")
+    .arg("import-page-fixture")
+    .arg(&capture.bundle_path)
+    .arg(&capture.fixture_name)
+    .arg("--output-root")
+    .arg(&args.fixtures_root);
+
+  if args.overwrite {
+    cmd.arg("--overwrite");
+  }
+  if args.allow_missing_resources {
+    cmd.arg("--allow-missing");
+  }
+  if args.include_scripts {
+    cmd.arg("--rewrite-scripts");
+  }
+
+  cmd
+}
+
+fn build_validate_page_fixtures_command(
+  args: &FreezePageFixtureArgs,
+  selected_cache_stems: &[String],
+) -> Command {
+  let only_csv = selected_cache_stems.join(",");
+  let mut cmd = Command::new("cargo");
+  cmd
+    .arg("xtask")
+    .arg("validate-page-fixtures")
+    .arg("--fixtures-root")
+    .arg(&args.fixtures_root)
+    .arg("--only")
+    .arg(only_csv);
+
+  if args.include_scripts {
+    cmd.arg("--include-scripts");
+  }
+
+  cmd
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn include_scripts_plumbs_script_flags_to_commands() {
+    let repo_root = crate::repo_root();
+
+    let args = FreezePageFixtureArgs {
+      page: vec!["example.com".to_string()],
+      pages: None,
+      html_dir: repo_root.join("fetches/html"),
+      asset_cache_dir: repo_root.join("fetches/assets"),
+      no_fetch: true,
+      refresh: false,
+      fixtures_root: repo_root.join("tests/pages/fixtures"),
+      bundle_out_dir: repo_root.join("target/pageset_fixture_bundles"),
+      overwrite: false,
+      allow_missing_resources: false,
+      include_scripts: true,
+      user_agent: DEFAULT_USER_AGENT.to_string(),
+      accept_language: DEFAULT_ACCEPT_LANGUAGE.to_string(),
+      viewport: (1200, 800),
+      dpr: 1.0,
+    };
+
+    let plan = xtask::freeze_page_fixture::plan_freeze_page_fixture(
+      &xtask::freeze_page_fixture::FreezePageFixturePlanArgs {
+        pages: vec!["example.com".to_string()],
+        html_dir: args.html_dir.clone(),
+        asset_cache_dir: args.asset_cache_dir.clone(),
+        fixtures_root: args.fixtures_root.clone(),
+        bundle_out_dir: args.bundle_out_dir.clone(),
+        overwrite: args.overwrite,
+        allow_missing_resources: args.allow_missing_resources,
+        include_scripts: args.include_scripts,
+        user_agent: args.user_agent.clone(),
+        accept_language: args.accept_language.clone(),
+        viewport: args.viewport,
+        dpr: args.dpr,
+      },
+    )
+    .expect("plan");
+
+    assert_eq!(plan.pages.len(), 1);
+    let capture = &plan.pages[0];
+    assert!(
+      capture
+        .bundle_command
+        .args
+        .iter()
+        .any(|a| a == "--bundle-scripts"),
+      "bundle_page cache should include --bundle-scripts when --include-scripts is set: {:?}",
+      capture.bundle_command.args
+    );
+
+    let prefetch_cmd = build_prefetch_assets_command(&args, "example.com");
+    let prefetch_args: Vec<String> = prefetch_cmd
+      .get_args()
+      .map(|s| s.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      prefetch_args.iter().any(|a| a == "--prefetch-scripts"),
+      "prefetch_assets should include --prefetch-scripts when --include-scripts is set: {prefetch_args:?}"
+    );
+
+    let import_cmd = build_import_page_fixture_command(&args, capture);
+    let import_args: Vec<String> = import_cmd
+      .get_args()
+      .map(|s| s.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      import_args.iter().any(|a| a == "--rewrite-scripts"),
+      "import-page-fixture should include --rewrite-scripts when --include-scripts is set: {import_args:?}"
+    );
+
+    let validate_cmd = build_validate_page_fixtures_command(&args, &[capture.cache_stem.clone()]);
+    let validate_args: Vec<String> = validate_cmd
+      .get_args()
+      .map(|s| s.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      validate_args.iter().any(|a| a == "--include-scripts"),
+      "validate-page-fixtures should include --include-scripts when --include-scripts is set: {validate_args:?}"
+    );
+  }
 }
 
 fn remove_path_if_exists(path: &std::path::Path) -> Result<()> {

@@ -8,11 +8,11 @@ use std::process::Command;
 use tempfile::TempDir;
 use url::Url;
 
-mod chrome_baseline_fixtures;
 mod capability_map;
-mod freeze_page_fixture_cmd;
+mod chrome_baseline_fixtures;
 mod fixture_chrome_diff;
 mod fixture_determinism;
+mod freeze_page_fixture_cmd;
 mod generate_emoji_tables;
 mod import_page_fixture;
 mod lint_no_panics;
@@ -329,6 +329,10 @@ struct PagesetArgs {
   #[arg(long, requires = "capture_missing_failure_fixtures")]
   capture_missing_failure_fixtures_overwrite: bool,
 
+  /// Include `<script src>` resources when capturing/importing missing failure fixtures.
+  #[arg(long, requires = "capture_missing_failure_fixtures")]
+  capture_missing_failure_fixtures_include_scripts: bool,
+
   /// After the pageset run, auto-capture deterministic offline fixtures for ok pages with the
   /// worst accuracy diffs whose fixtures are missing.
   ///
@@ -362,6 +366,10 @@ struct PagesetArgs {
   /// Allow replacing existing fixture directories when importing worst accuracy fixtures.
   #[arg(long, requires = "capture_worst_accuracy_fixtures")]
   capture_worst_accuracy_fixtures_overwrite: bool,
+
+  /// Include `<script src>` resources when capturing/importing worst accuracy fixtures.
+  #[arg(long, requires = "capture_worst_accuracy_fixtures")]
+  capture_worst_accuracy_fixtures_include_scripts: bool,
 
   /// Extra arguments forwarded to `pageset_progress run` (use `--` before these).
   ///
@@ -411,6 +419,13 @@ struct CaptureAccuracyFixturesArgs {
   /// Allow replacing existing fixture directories when importing.
   #[arg(long)]
   overwrite: bool,
+
+  /// Include `<script src>` resources in captured bundles and rewrite them to local fixture assets.
+  ///
+  /// This is intended for JS-enabled offline fixture capture and can significantly increase bundle
+  /// size.
+  #[arg(long, visible_alias = "js-enabled")]
+  include_scripts: bool,
 
   /// Override the User-Agent header (propagated to `bundle_page cache`).
   #[arg(long)]
@@ -1110,6 +1125,15 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
   {
     prefetch_asset_args.push("--prefetch-css-url-assets".to_string());
   }
+  if disk_cache_enabled
+    && (args.capture_missing_failure_fixtures_include_scripts
+      || args.capture_worst_accuracy_fixtures_include_scripts)
+    && !prefetch_asset_args
+      .iter()
+      .any(|arg| arg == "--prefetch-scripts" || arg.starts_with("--prefetch-scripts="))
+  {
+    prefetch_asset_args.push("--prefetch-scripts".to_string());
+  }
   if disk_cache_enabled {
     println!(
       "Disk cache enabled (persisting subresources under {}). \
@@ -1459,6 +1483,7 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
         dpr: dpr_arg.clone(),
         allow_missing_resources: args.capture_missing_failure_fixtures_allow_missing_resources,
         overwrite: args.capture_missing_failure_fixtures_overwrite,
+        include_scripts: args.capture_missing_failure_fixtures_include_scripts,
       };
 
       let plan =
@@ -1573,6 +1598,7 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
         dpr: dpr_arg.clone(),
         allow_missing_resources: args.capture_worst_accuracy_fixtures_allow_missing_resources,
         overwrite: args.capture_worst_accuracy_fixtures_overwrite,
+        include_scripts: args.capture_worst_accuracy_fixtures_include_scripts,
         min_diff_percent: args.capture_worst_accuracy_fixtures_min_diff_percent,
         top: args.capture_worst_accuracy_fixtures_top,
       };
@@ -1638,6 +1664,7 @@ fn run_capture_accuracy_fixtures(args: CaptureAccuracyFixturesArgs) -> Result<()
     dpr,
     allow_missing_resources: args.allow_missing_resources,
     overwrite: args.overwrite,
+    include_scripts: args.include_scripts,
     min_diff_percent: args.min_diff_percent,
     top: args.top,
   };

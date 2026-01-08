@@ -79,6 +79,13 @@ pub struct UpdatePagesetGuardrailsArgs {
   #[arg(long)]
   pub allow_missing_resources: bool,
 
+  /// Include `<script src>` resources in captured bundles and rewrite them to local fixture assets.
+  ///
+  /// This is intended for JS-enabled offline fixture capture and can significantly increase bundle
+  /// size.
+  #[arg(long, visible_alias = "js-enabled")]
+  pub include_scripts: bool,
+
   /// Capture mode used when running `bundle_page fetch` for missing fixtures.
   #[arg(long, value_enum, default_value_t = FixtureCaptureMode::Crawl)]
   pub capture_mode: FixtureCaptureMode,
@@ -304,15 +311,26 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
     } else {
       ""
     };
+    let bundle_scripts_flag = if args.include_scripts {
+      " --bundle-scripts"
+    } else {
+      ""
+    };
+    let rewrite_scripts_flag = if args.include_scripts {
+      " --rewrite-scripts"
+    } else {
+      ""
+    };
     eprintln!("  - {} ({})", entry.name, entry.url);
     eprintln!("    Create it with:");
     match args.capture_mode {
       FixtureCaptureMode::Render => {
         eprintln!(
-          "      cargo run --release --bin bundle_page -- fetch '{}' --out '{}'{} --viewport {}x{} --dpr {}",
+          "      cargo run --release --bin bundle_page -- fetch '{}' --out '{}'{}{} --viewport {}x{} --dpr {}",
           entry.url,
           bundle_path.display(),
           fetch_timeout_flag,
+          bundle_scripts_flag,
           entry.viewport[0],
           entry.viewport[1],
           entry.dpr
@@ -320,10 +338,11 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
       }
       FixtureCaptureMode::Crawl => {
         eprintln!(
-          "      cargo run --release --bin bundle_page -- fetch '{}' --out '{}' --no-render{} --viewport {}x{} --dpr {}",
+          "      cargo run --release --bin bundle_page -- fetch '{}' --out '{}' --no-render{}{} --viewport {}x{} --dpr {}",
           entry.url,
           bundle_path.display(),
           fetch_timeout_flag,
+          bundle_scripts_flag,
           entry.viewport[0],
           entry.viewport[1],
           entry.dpr
@@ -331,7 +350,7 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
       }
       FixtureCaptureMode::Cache => {
         eprintln!(
-          "      cargo run --release --features disk_cache --bin bundle_page -- cache '{}' --out '{}'{}{}{}{} --viewport {}x{} --dpr {}",
+          "      cargo run --release --features disk_cache --bin bundle_page -- cache '{}' --out '{}'{}{}{}{}{} --viewport {}x{} --dpr {}",
           entry.name,
           bundle_path.display(),
           cache_dir_flag,
@@ -346,6 +365,7 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
             .map(|lang| format!(" --accept-language '{lang}'"))
             .unwrap_or_default(),
           allow_missing_flag,
+          bundle_scripts_flag,
           entry.viewport[0],
           entry.viewport[1],
           entry.dpr
@@ -353,12 +373,13 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
       }
     }
     eprintln!(
-      "      cargo xtask import-page-fixture '{}' '{}' --output-root '{}'{}{}",
+      "      cargo xtask import-page-fixture '{}' '{}' --output-root '{}'{}{}{}",
       bundle_path.display(),
       entry.name,
       args.fixtures_root.display(),
       overwrite_flag,
-      allow_missing_flag
+      allow_missing_flag,
+      rewrite_scripts_flag
     );
     eprintln!(
       "    Expected output: {}",
@@ -430,7 +451,7 @@ fn capture_missing(missing: &[MissingFixture], args: &UpdatePagesetGuardrailsArg
         }
       }
     }
-    bundle_cmd.args(["--out", bundle_path.to_string_lossy().as_ref()]);
+    bundle_cmd.arg("--out").arg(&bundle_path);
     if let Some(secs) = args.bundle_fetch_timeout_secs {
       if args.capture_mode != FixtureCaptureMode::Cache {
         bundle_cmd.args(["--fetch-timeout-secs", &secs.to_string()]);
@@ -442,22 +463,31 @@ fn capture_missing(missing: &[MissingFixture], args: &UpdatePagesetGuardrailsArg
         &format!("{}x{}", entry.viewport[0], entry.viewport[1]),
       ])
       .args(["--dpr", &entry.dpr.to_string()]);
+    if args.include_scripts {
+      bundle_cmd.arg("--bundle-scripts");
+    }
     bundle_cmd.current_dir(crate::repo_root());
     crate::run_command(bundle_cmd).with_context(|| format!("bundle {}", entry.name))?;
 
-    crate::import_page_fixture::run_import_page_fixture(
-      crate::import_page_fixture::ImportPageFixtureArgs {
-        bundle: bundle_path,
-        fixture_name: entry.name.clone(),
-        output_root: args.fixtures_root.clone(),
-        overwrite: args.overwrite_fixtures,
-        allow_missing: args.allow_missing_resources,
-        allow_http_references: false,
-        legacy_rewrite: false,
-        dry_run: false,
-      },
-    )
-    .with_context(|| format!("import {}", entry.name))?;
+    let mut import_cmd = Command::new("cargo");
+    import_cmd
+      .arg("xtask")
+      .arg("import-page-fixture")
+      .arg(&bundle_path)
+      .arg(&entry.name)
+      .arg("--output-root")
+      .arg(&args.fixtures_root);
+    if args.overwrite_fixtures {
+      import_cmd.arg("--overwrite");
+    }
+    if args.allow_missing_resources {
+      import_cmd.arg("--allow-missing");
+    }
+    if args.include_scripts {
+      import_cmd.arg("--rewrite-scripts");
+    }
+    import_cmd.current_dir(crate::repo_root());
+    crate::run_command(import_cmd).with_context(|| format!("import {}", entry.name))?;
   }
 
   Ok(())

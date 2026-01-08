@@ -88,6 +88,13 @@ pub struct RecapturePageFixturesArgs {
   #[arg(long)]
   pub allow_missing_resources: bool,
 
+  /// Include `<script src>` resources in captured bundles and rewrite them to local fixture assets.
+  ///
+  /// This is intended for JS-enabled offline fixture capture and can significantly increase bundle
+  /// size.
+  #[arg(long, visible_alias = "js-enabled")]
+  pub include_scripts: bool,
+
   /// Only operate on the listed fixture names (comma-separated).
   #[arg(long, value_delimiter = ',')]
   pub only: Option<Vec<String>>,
@@ -465,6 +472,17 @@ fn capture_bundle(
   url: Option<&str>,
   bundle_path: &Path,
 ) -> Result<()> {
+  let mut cmd = build_bundle_page_command(args, fixture, url, bundle_path)?;
+  cmd.current_dir(crate::repo_root());
+  crate::run_command(cmd).with_context(|| format!("bundle {}", fixture.name))
+}
+
+fn build_bundle_page_command(
+  args: &RecapturePageFixturesArgs,
+  fixture: &FixtureDefinition,
+  url: Option<&str>,
+  bundle_path: &Path,
+) -> Result<Command> {
   let mut cmd = Command::new("cargo");
   cmd.arg("run").arg("--quiet");
   if !args.debug {
@@ -506,7 +524,7 @@ fn capture_bundle(
       }
     }
   }
-  cmd.args(["--out", bundle_path.to_string_lossy().as_ref()]);
+  cmd.arg("--out").arg(bundle_path);
   if let Some(secs) = args.bundle_fetch_timeout_secs {
     if args.capture_mode != CaptureMode::Cache {
       cmd.args(["--fetch-timeout-secs", &secs.to_string()]);
@@ -523,9 +541,10 @@ fn capture_bundle(
   for origin in &args.allow_subresource_origin {
     cmd.args(["--allow-subresource-origin", origin]);
   }
-
-  cmd.current_dir(crate::repo_root());
-  crate::run_command(cmd).with_context(|| format!("bundle {}", fixture.name))
+  if args.include_scripts {
+    cmd.arg("--bundle-scripts");
+  }
+  Ok(cmd)
 }
 
 fn import_fixture(
@@ -538,23 +557,37 @@ fn import_fixture(
     return StepResult::Skipped("fixture exists (pass --overwrite)".to_string());
   }
 
-  match crate::import_page_fixture::run_import_page_fixture(
-    crate::import_page_fixture::ImportPageFixtureArgs {
-      bundle: bundle_path.to_path_buf(),
-      fixture_name: fixture.name.clone(),
-      output_root: args.fixtures_root.clone(),
-      overwrite: args.overwrite,
-      allow_missing: args.allow_missing_resources,
-      allow_http_references: false,
-      legacy_rewrite: false,
-      dry_run: false,
-    },
-  )
-  .with_context(|| format!("import {}", fixture.name))
-  {
+  let mut cmd = build_import_page_fixture_command(args, fixture, bundle_path);
+  cmd.current_dir(crate::repo_root());
+  match crate::run_command(cmd).with_context(|| format!("import {}", fixture.name)) {
     Ok(()) => StepResult::Ok,
     Err(err) => StepResult::Failed(err.to_string()),
   }
+}
+
+fn build_import_page_fixture_command(
+  args: &RecapturePageFixturesArgs,
+  fixture: &FixtureDefinition,
+  bundle_path: &Path,
+) -> Command {
+  let mut cmd = Command::new("cargo");
+  cmd
+    .arg("xtask")
+    .arg("import-page-fixture")
+    .arg(bundle_path)
+    .arg(&fixture.name)
+    .arg("--output-root")
+    .arg(&args.fixtures_root);
+  if args.overwrite {
+    cmd.arg("--overwrite");
+  }
+  if args.allow_missing_resources {
+    cmd.arg("--allow-missing");
+  }
+  if args.include_scripts {
+    cmd.arg("--rewrite-scripts");
+  }
+  cmd
 }
 
 fn remove_path(path: &Path) -> Result<()> {
@@ -607,6 +640,7 @@ mod tests {
     assert!(args.missing_only);
     assert!(args.overwrite);
     assert!(args.allow_missing_resources);
+    assert!(!args.include_scripts);
     assert_eq!(args.capture_mode, CaptureMode::Render);
     assert_eq!(args.bundle_fetch_timeout_secs, Some(15));
     assert!(!args.keep_going);
@@ -647,6 +681,7 @@ mod tests {
       allow_subresource_origin: Vec::new(),
       overwrite: false,
       allow_missing_resources: false,
+      include_scripts: false,
       only: None,
       missing_only: true,
       keep_going: true,
@@ -686,6 +721,7 @@ mod tests {
       allow_subresource_origin: Vec::new(),
       overwrite: false,
       allow_missing_resources: false,
+      include_scripts: false,
       only: Some(vec!["missing".to_string()]),
       missing_only: false,
       keep_going: true,
@@ -696,5 +732,57 @@ mod tests {
     let msg = err.to_string();
     assert!(msg.contains("--only referenced fixture"));
     assert!(msg.contains("missing"));
+  }
+
+  #[test]
+  fn include_scripts_plumbs_bundle_and_import_flags() {
+    let temp = TempDir::new().expect("tempdir");
+    let args = RecapturePageFixturesArgs {
+      manifest: PathBuf::from("manifest.json"),
+      fixtures_root: temp.path().join("fixtures"),
+      bundle_out_dir: temp.path().join("bundles"),
+      capture_mode: CaptureMode::Cache,
+      user_agent: None,
+      accept_language: None,
+      asset_cache_dir: PathBuf::from("fetches/assets"),
+      bundle_fetch_timeout_secs: None,
+      same_origin_subresources: false,
+      allow_subresource_origin: Vec::new(),
+      overwrite: false,
+      allow_missing_resources: false,
+      include_scripts: true,
+      only: None,
+      missing_only: false,
+      keep_going: true,
+      debug: true,
+    };
+
+    let fixture = FixtureDefinition {
+      name: "example.com".to_string(),
+      url: Some("https://example.com".to_string()),
+      viewport: DEFAULT_VIEWPORT,
+      dpr: DEFAULT_DPR,
+    };
+
+    let bundle_cmd =
+      build_bundle_page_command(&args, &fixture, None, Path::new("out.tar")).expect("bundle cmd");
+    let bundle_args: Vec<String> = bundle_cmd
+      .get_args()
+      .map(|s| s.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      bundle_args.iter().any(|a| a == "--bundle-scripts"),
+      "expected --bundle-scripts in bundle_page args when include_scripts is set: {bundle_args:?}"
+    );
+
+    let import_cmd = build_import_page_fixture_command(&args, &fixture, Path::new("out.tar"));
+    let import_args: Vec<String> = import_cmd
+      .get_args()
+      .map(|s| s.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      import_args.iter().any(|a| a == "--rewrite-scripts"),
+      "expected --rewrite-scripts in import-page-fixture args when include_scripts is set: {import_args:?}"
+    );
   }
 }

@@ -12,6 +12,7 @@ pub struct FreezePageFixturePlanArgs {
   pub bundle_out_dir: PathBuf,
   pub overwrite: bool,
   pub allow_missing_resources: bool,
+  pub include_scripts: bool,
   pub user_agent: String,
   pub accept_language: String,
   pub viewport: (u32, u32),
@@ -133,6 +134,9 @@ fn build_bundle_page_cache_command(
 
   if args.allow_missing_resources {
     cmd.push("--allow-missing".to_string());
+  }
+  if args.include_scripts {
+    cmd.push("--bundle-scripts".to_string());
   }
 
   CommandSpec {
