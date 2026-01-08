@@ -182,6 +182,9 @@ pub fn layout_parallelism_workload(
     for child in &node.children {
       walk(child, min_fanout, workload);
     }
+    if let Some(body) = node.footnote_body.as_deref() {
+      walk(body, min_fanout, workload);
+    }
   }
   walk(&box_tree.root, min_fanout, &mut workload);
   workload
@@ -1276,6 +1279,7 @@ mod tests {
   use crate::style::display::Display;
   use crate::style::display::FormattingContextType;
   use crate::style::ComputedStyle;
+  use crate::tree::box_tree::{BoxNode, BoxTree};
   use std::sync::Arc;
 
   fn default_style() -> Arc<ComputedStyle> {
@@ -1289,6 +1293,29 @@ mod tests {
   }
 
   // === LayoutConfig Tests ===
+
+  #[test]
+  fn parallelism_workload_counts_footnote_bodies() {
+    let mut root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![
+      BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]),
+      BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]),
+    ]);
+    root.footnote_body = Some(Box::new(BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![BoxNode::new_block(
+        default_style(),
+        FormattingContextType::Block,
+        vec![],
+      )],
+    )));
+    let tree = BoxTree::new(root);
+
+    let workload = layout_parallelism_workload(&tree, 2);
+    assert_eq!(workload.nodes, 5, "expected footnote body subtree to be counted");
+    assert_eq!(workload.max_fanout, 2);
+    assert_eq!(workload.parallel_children, 2);
+  }
 
   #[test]
   fn test_layout_config_new() {
