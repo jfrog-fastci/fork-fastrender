@@ -189,15 +189,26 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
   styles
 }
 
+#[inline]
+fn is_ascii_whitespace_html(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html)
+}
+
 /// Parse HTML width/height attribute
 ///
 /// Handles both percentage values like "85%" and pixel values like "18".
 pub fn parse_dimension_attribute(dim_str: &str) -> Option<Length> {
-  let dim_str = dim_str.trim();
+  let dim_str = trim_ascii_whitespace_html(dim_str);
 
   // Handle percentage like "85%"
   if dim_str.ends_with('%') {
-    if let Ok(value) = dim_str[..dim_str.len() - 1].trim().parse::<f32>() {
+    if let Ok(value) =
+      trim_ascii_whitespace_html(&dim_str[..dim_str.len() - 1]).parse::<f32>()
+    {
       return Some(Length::percent(value));
     }
   }
@@ -214,7 +225,7 @@ pub fn parse_dimension_attribute(dim_str: &str) -> Option<Length> {
 ///
 /// Handles hex colors like #ff6600 or ff6600, with 3 or 6 digit variants.
 pub fn parse_color_attribute(color_str: &str) -> Option<Rgba> {
-  let color_str = color_str.trim();
+  let color_str = trim_ascii_whitespace_html(color_str);
 
   // Handle hex colors like #ff6600 or ff6600
   if color_str.starts_with('#') {
@@ -275,6 +286,32 @@ mod tests {
     for child in node.children.iter() {
       collect_embed_object_widths(child, embeds, objects);
     }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_parse_dimension_attribute_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      parse_dimension_attribute(&format!("{nbsp}85%")).is_none(),
+      "NBSP must not be treated as ASCII whitespace"
+    );
+    assert!(
+      parse_dimension_attribute(&format!("{nbsp}18")).is_none(),
+      "NBSP must not be treated as ASCII whitespace"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_parse_color_attribute_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      parse_color_attribute(&format!("{nbsp}ff6600")).is_none(),
+      "NBSP must not be treated as ASCII whitespace"
+    );
+    assert!(
+      parse_color_attribute(&format!("{nbsp}#ff6600")).is_none(),
+      "NBSP must not be treated as ASCII whitespace"
+    );
   }
 
   fn layout_widths(toggle: &str) -> (Vec<f32>, Vec<f32>) {

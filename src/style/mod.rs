@@ -1940,8 +1940,17 @@ impl ComputedStyle {
 /// - Trims surrounding whitespace
 /// - Converts underscores to hyphens
 /// - Lowercases all subtags (BCP47 is case-insensitive; lowercase helps downstream consumers)
+#[inline]
+fn is_ascii_whitespace_html(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html)
+}
+
 pub(crate) fn normalize_language_tag(tag: &str) -> String {
-  let trimmed = tag.trim();
+  let trimmed = trim_ascii_whitespace_html(tag);
   if trimmed.is_empty() {
     return String::new();
   }
@@ -1981,6 +1990,12 @@ mod tests {
     assert_eq!(normalize_language_tag("En-US"), "en-us");
     assert_eq!(normalize_language_tag(" sr_Cyrl_RS "), "sr-cyrl-rs");
     assert_eq!(normalize_language_tag(""), "");
+  }
+
+  #[test]
+  fn non_ascii_whitespace_normalize_language_tag_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(normalize_language_tag(&format!("{nbsp}En-US")), format!("{nbsp}en-us"));
   }
 
   #[test]
