@@ -44,6 +44,71 @@ impl BrowserDocument {
     })
   }
 
+  /// Creates a new live document from a prepared layout result.
+  ///
+  /// This constructor avoids reparsing or re-running layout before the first paint, while still
+  /// allowing callers to mutate the DOM in-place and re-run the pipeline on demand.
+  pub fn from_prepared(
+    renderer: super::FastRender,
+    prepared: PreparedDocument,
+    options: RenderOptions,
+  ) -> Result<Self> {
+    let dom = prepared.dom.clone();
+    Ok(Self {
+      renderer,
+      dom,
+      options,
+      prepared: Some(prepared),
+      style_dirty: false,
+      layout_dirty: false,
+      // First frame still needs a paint.
+      paint_dirty: true,
+    })
+  }
+
+  /// Updates the renderer's document/base URL hints for the current navigation.
+  ///
+  /// - `document_url` is used for referrer/origin semantics (after redirects).
+  /// - `base_url` is used for resolving relative URLs (and can be overridden by `<base href>`).
+  pub fn set_navigation_urls(&mut self, document_url: Option<String>, base_url: Option<String>) {
+    match document_url {
+      Some(url) => self.renderer.set_document_url(url),
+      None => self.renderer.clear_document_url(),
+    }
+    match base_url {
+      Some(url) if !url.trim().is_empty() => self.renderer.set_base_url(url),
+      _ => self.renderer.clear_base_url(),
+    }
+  }
+
+  /// Replaces the live DOM, clears any cached preparation state, and marks the document dirty.
+  pub fn reset_with_dom(&mut self, dom: DomNode, options: RenderOptions) {
+    self.dom = dom;
+    self.options = options;
+    self.prepared = None;
+    self.invalidate_all();
+  }
+
+  /// Replaces the live DOM with a prepared document's DOM and installs the prepared cache.
+  ///
+  /// The next `render_if_needed` call will paint using the prepared layout without re-running
+  /// cascade/layout.
+  pub fn reset_with_prepared(&mut self, prepared: PreparedDocument, options: RenderOptions) {
+    self.dom = prepared.dom.clone();
+    self.options = options;
+    self.prepared = Some(prepared);
+    self.style_dirty = false;
+    self.layout_dirty = false;
+    self.paint_dirty = true;
+  }
+
+  /// Parses HTML using the internal renderer and resets the document state.
+  pub fn reset_with_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
+    let dom = self.renderer.parse_html(html)?;
+    self.reset_with_dom(dom, options);
+    Ok(())
+  }
+
   /// Returns an immutable reference to the live DOM tree.
   pub fn dom(&self) -> &DomNode {
     &self.dom
@@ -283,4 +348,60 @@ pub(super) fn prepare_dom_inner(
     paint_parallelism,
     runtime_toggles: std::sync::Arc::clone(&renderer.runtime_toggles),
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::render_control::{push_stage_listener, StageHeartbeat};
+  use std::sync::{Arc, Mutex};
+
+  fn capture_stages<T>(f: impl FnOnce() -> Result<T>) -> Result<Vec<StageHeartbeat>> {
+    let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+    let stages_for_listener = Arc::clone(&stages);
+    let _guard = push_stage_listener(Some(Arc::new(move |stage| {
+      stages_for_listener.lock().unwrap().push(stage);
+    })));
+    let _ = f()?;
+    let captured = stages.lock().unwrap().clone();
+    Ok(captured)
+  }
+
+  #[test]
+  fn reset_with_prepared_skips_layout_on_first_paint() -> Result<()> {
+    let mut renderer = super::super::FastRender::new()?;
+    let options = RenderOptions::default().with_viewport(64, 64);
+    let prepared = renderer.prepare_html("<div>hi</div>", options.clone())?;
+
+    let mut document = BrowserDocument::from_prepared(renderer, prepared, options.clone())?;
+    let stages = capture_stages(|| document.render_if_needed().map(|_| ()))?;
+
+    assert!(
+      !stages.contains(&StageHeartbeat::Layout),
+      "expected no layout stage; got {stages:?}"
+    );
+    assert!(
+      stages.contains(&StageHeartbeat::PaintBuild)
+        || stages.contains(&StageHeartbeat::PaintRasterize),
+      "expected paint stage heartbeats; got {stages:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn reset_with_html_clears_prepared_and_triggers_layout() -> Result<()> {
+    let mut renderer = super::super::FastRender::new()?;
+    let options = RenderOptions::default().with_viewport(64, 64);
+    let prepared = renderer.prepare_html("<div>old</div>", options.clone())?;
+
+    let mut document = BrowserDocument::from_prepared(renderer, prepared, options.clone())?;
+    document.reset_with_html("<div>new</div>", options.clone())?;
+
+    let stages = capture_stages(|| document.render_if_needed().map(|_| ()))?;
+    assert!(
+      stages.contains(&StageHeartbeat::Layout),
+      "expected layout stage after reset_with_html; got {stages:?}"
+    );
+    Ok(())
+  }
 }
