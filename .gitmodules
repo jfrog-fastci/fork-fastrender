@@ -4,3 +4,21 @@
 [submodule "specs/csswg-drafts"]
 	path = specs/csswg-drafts
 	url = https://github.com/w3c/csswg-drafts.git
+[submodule "engines/ecma-rs"]
+	path = engines/ecma-rs
+	url = git@github.com:wilsonzlin/ecma-rs.git
+[submodule "specs/tc39-ecma262"]
+	path = specs/tc39-ecma262
+	url = https://github.com/tc39/ecma262.git
+[submodule "specs/whatwg-dom"]
+	path = specs/whatwg-dom
+	url = https://github.com/whatwg/dom.git
+[submodule "specs/whatwg-webidl"]
+	path = specs/whatwg-webidl
+	url = https://github.com/whatwg/webidl.git
+[submodule "specs/whatwg-url"]
+	path = specs/whatwg-url
+	url = https://github.com/whatwg/url.git
+[submodule "specs/whatwg-fetch"]
+	path = specs/whatwg-fetch
+	url = https://github.com/whatwg/fetch.git

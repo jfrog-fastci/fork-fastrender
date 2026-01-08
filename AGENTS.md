@@ -9,15 +9,20 @@ Pick one workstream and follow its specific doc:
 - **Capability buildout (spec-first primitives)**: `instructions/capability_buildout.md`
 - **Pageset page loop (fix pages one-by-one)**: `instructions/pageset_page_loop.md`
 - **Browser UI / chrome (tabs, address bar, inputs)**: `instructions/browser_ui.md`
+- **JavaScript support (full JS + web APIs)**: `instructions/javascript_support.md`
+
+Supporting docs:
+
+- `ecma-rs` submodule workflow: `instructions/ecma_rs.md`
 
 ## Non-negotiables
 
-- **No author JavaScript execution.**
 - **No page-specific hacks** (no hostname/selector special-cases, no magic numbers for one site).
 - **No deviating-spec behavior** as a “compat shortcut”. Implement the spec behavior the page depends on (incomplete is OK; wrong is not).
 - **No post-layout pixel nudging**; keep the pipeline staged (parse → style → box tree → layout → paint).
 - **No panics** in production code. Return errors cleanly and bound work.
 - **Keep Taffy vendored** (`vendor/taffy/`) and only use it for flex/grid; do not update it via Cargo.
+- **JavaScript execution must be bounded**: the JS engine must support interrupts/timeouts and avoid unbounded host allocations.
 
 ## What counts
 

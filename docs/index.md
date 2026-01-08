@@ -10,6 +10,8 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Capability buildout workstream: [`instructions/capability_buildout.md`](../instructions/capability_buildout.md)
 - Pageset-by-page fixing loop: [`instructions/pageset_page_loop.md`](../instructions/pageset_page_loop.md)
 - Browser UI / chrome work: [`instructions/browser_ui.md`](../instructions/browser_ui.md)
+- JavaScript support workstream: [`instructions/javascript_support.md`](../instructions/javascript_support.md)
+- `ecma-rs` submodule workflow: [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)
 - Running the renderer: [running.md](running.md)
 - CLI tools & workflows: [cli.md](cli.md)
 - Evidence loop (spec → code → regression): see `AGENTS.md` plus [testing.md](testing.md) (WPT harness) and [cli.md](cli.md) (fixture tooling).

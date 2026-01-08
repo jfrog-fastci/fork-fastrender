@@ -1,6 +1,7 @@
 # Browser UI / chrome (cross-platform app frame)
 
 Common repo-wide rules (non-negotiables, resource limits, disk hygiene) live in `AGENTS.md`.
+JavaScript execution work lives in `instructions/javascript_support.md`.
 
 This repo is not just a “PNG renderer” long-term: we want an **interactive desktop app** (“a real browser”) that hosts the renderer with an address bar, tabs, navigation controls, and basic input handling.
 
