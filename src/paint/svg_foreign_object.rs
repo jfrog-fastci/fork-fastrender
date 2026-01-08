@@ -6,6 +6,7 @@
 //! back into the SVG as `<image href="data:image/png;base64,…">`.
 
 use crate::api::layout_html_with_shared_resources;
+use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::image_output::{encode_image, OutputFormat};
 use crate::image_loader::ImageCache;
 use crate::paint::display_list_renderer::PaintParallelism;
@@ -22,8 +23,14 @@ use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::fragment_tree::FragmentTree;
 use crate::{Point, Rect};
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::sync::Arc;
 use tiny_skia::{Pixmap, Transform};
+
+// ForeignObject rendering constructs a synthetic HTML document containing the serialized subtree
+// HTML plus a copy of the document-level CSS. Cap the total size so pathological SVGs cannot force
+// multi-megabyte allocations (and potentially OOM aborts) during this nested render path.
+const MAX_FOREIGN_OBJECT_DOC_BYTES: usize = 8 * 1024 * 1024;
 
 /// Compute the device pixel ratio to use when rasterizing `<foreignObject>` HTML into a PNG.
 ///
@@ -391,7 +398,7 @@ fn render_foreign_object_data_url(
   } else {
     1.0
   };
-  let html = build_foreign_object_document(info, shared_css, width, height);
+  let html = build_foreign_object_document(info, shared_css, width, height)?;
   // ForeignObject "background" comes from the SVG element's computed CSS, not the nested HTML.
   // Render on a transparent canvas and apply the background via the `<body>` inline style so:
   // - document-level shared CSS (e.g. `body { background: white }`) cannot override it
@@ -504,7 +511,7 @@ fn render_foreign_object_data_url(
   Some((data_url, image_bounds))
 }
 
-fn escape_style_end_tags(css: &str) -> String {
+fn escape_style_end_tags<W: std::io::Write>(css: &str, out: &mut W) -> std::io::Result<()> {
   const STYLE: [u8; 5] = [b's', b't', b'y', b'l', b'e'];
   let bytes = css.as_bytes();
 
@@ -518,10 +525,10 @@ fn escape_style_end_tags(css: &str) -> String {
   });
 
   if !has_sequence {
-    return css.to_string();
+    out.write_all(bytes)?;
+    return Ok(());
   }
 
-  let mut out = Vec::with_capacity(bytes.len());
   let mut idx = 0;
   while idx < bytes.len() {
     if idx + 7 <= bytes.len() && bytes[idx] == b'<' && bytes[idx + 1] == b'/' {
@@ -530,17 +537,17 @@ fn escape_style_end_tags(css: &str) -> String {
         .enumerate()
         .all(|(offset, expected)| bytes[idx + 2 + offset].to_ascii_lowercase() == *expected)
       {
-        out.extend_from_slice(b"<\\/style");
+        out.write_all(b"<\\/style")?;
         idx += 7;
         continue;
       }
     }
 
-    out.push(bytes[idx]);
+    out.write_all(&bytes[idx..idx + 1])?;
     idx += 1;
   }
 
-  String::from_utf8(out).unwrap_or_default()
+  Ok(())
 }
 
 fn build_foreign_object_document(
@@ -548,22 +555,26 @@ fn build_foreign_object_document(
   shared_css: &str,
   width: u32,
   height: u32,
-) -> String {
-  let mut html = format!(
-    "<!DOCTYPE html><html style=\"margin:0;padding:0;width:{width}px;height:{height}px;background:transparent !important;\"><head><meta charset=\"utf-8\">"
-  );
+) -> Option<String> {
+  let mut html = FallibleVecWriter::new(MAX_FOREIGN_OBJECT_DOC_BYTES, "foreignObject html");
+  write!(
+    html,
+    "<!DOCTYPE html><html style=\"margin:0;padding:0;width:{width}px;height:{height}px;background:transparent !important;\"><head><meta charset=\"utf-8\">",
+  )
+  .ok()?;
   if !shared_css.trim().is_empty() {
-    let sanitized_css = escape_style_end_tags(shared_css);
-    html.push_str("<style>");
-    html.push_str(&sanitized_css);
-    html.push_str("</style>");
+    html.write_all(b"<style>").ok()?;
+    escape_style_end_tags(shared_css, &mut html).ok()?;
+    html.write_all(b"</style>").ok()?;
   }
-  html.push_str("</head><body style=\"");
-  html.push_str(&foreign_object_body_style(info));
-  html.push_str("\">");
-  html.push_str(&info.html);
-  html.push_str("</body></html>");
+  html.write_all(b"</head><body style=\"").ok()?;
   html
+    .write_all(foreign_object_body_style(info).as_bytes())
+    .ok()?;
+  html.write_all(b"\">").ok()?;
+  html.write_all(info.html.as_bytes()).ok()?;
+  html.write_all(b"</body></html>").ok()?;
+  String::from_utf8(html.into_inner()).ok()
 }
 
 fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
@@ -733,6 +744,77 @@ mod tests {
       px[0] >= 254,
       "expected nearly full red channel after unpremultiplication, got {px:?}"
     );
+  }
+
+  #[test]
+  fn foreign_object_document_escapes_style_end_tags_inside_css() {
+    use crate::tree::box_tree::ForeignObjectInfo;
+    use crate::ComputedStyle;
+    use crate::Overflow;
+    use std::sync::Arc;
+
+    let foreign = ForeignObjectInfo {
+      placeholder: "<!--FASTRENDER_FOREIGN_OBJECT_0-->".to_string(),
+      attributes: Vec::new(),
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 1.0,
+      background: None,
+      html: "<div xmlns=\"http://www.w3.org/1999/xhtml\"></div>".to_string(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Visible,
+      overflow_y: Overflow::Visible,
+    };
+
+    let shared_css =
+      "body{color:red;}/*</STYLE><img src=\"https://example.com/evil.png\">*/";
+    let doc = super::build_foreign_object_document(&foreign, shared_css, 1, 1).expect("doc");
+
+    assert_eq!(
+      doc.match_indices("</style>").count(),
+      1,
+      "expected a single closing style tag in the generated document"
+    );
+
+    let start = doc.find("<style>").expect("style start") + "<style>".len();
+    let end = doc.find("</style>").expect("style end");
+    let style_content = &doc[start..end];
+    assert!(
+      !style_content.to_ascii_lowercase().contains("</style"),
+      "style content unexpectedly contains raw </style> sequence"
+    );
+    assert!(
+      style_content.contains("<\\/style"),
+      "expected escaped closing tag in style content, got {style_content:?}"
+    );
+  }
+
+  #[test]
+  fn foreign_object_document_rejects_oversized_payloads() {
+    use crate::tree::box_tree::ForeignObjectInfo;
+    use crate::ComputedStyle;
+    use crate::Overflow;
+    use std::sync::Arc;
+
+    let foreign = ForeignObjectInfo {
+      placeholder: "<!--FASTRENDER_FOREIGN_OBJECT_0-->".to_string(),
+      attributes: Vec::new(),
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 1.0,
+      background: None,
+      html: "<div xmlns=\"http://www.w3.org/1999/xhtml\"></div>".to_string(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Visible,
+      overflow_y: Overflow::Visible,
+    };
+
+    let shared_css = "a".repeat(super::MAX_FOREIGN_OBJECT_DOC_BYTES);
+    assert!(super::build_foreign_object_document(&foreign, &shared_css, 1, 1).is_none());
   }
 
   #[test]
