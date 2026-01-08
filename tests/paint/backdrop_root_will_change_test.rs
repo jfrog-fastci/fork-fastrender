@@ -324,6 +324,15 @@ fn will_change_webkit_filter_establishes_backdrop_root() {
 }
 
 #[test]
+fn will_change_ms_filter_is_not_aliased_to_filter() {
+  // `-ms-filter` is the old IE filter syntax and does not alias modern `filter`. Ensure we do not
+  // treat it as a Backdrop Root trigger when it appears in `will-change`.
+  let pixmap = render_backdrop_invert_with_parent_will_change("-ms-filter");
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_webkit_mask_image_establishes_backdrop_root() {
   // WebKit mask properties are widely used on the web; will-change should treat vendor-prefixed
   // property names as aliases of their unprefixed forms for Backdrop Root semantics.
