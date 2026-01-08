@@ -1,0 +1,931 @@
+//! Minimal WebIDL support used by the bindings/codegen pipeline.
+//!
+//! This module intentionally implements a small, forgiving subset of WebIDL parsing sufficient
+//! for WHATWG Bikeshed sources and deterministic resolution (partials/includes). We do *not*
+//! attempt full semantic validation here; the goal is to provide a stable, queryable API surface.
+//!
+//! The resolver lives in [`resolve`].
+
+use anyhow::Result;
+
+pub mod resolve;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendedAttribute {
+  pub name: String,
+  pub value: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ParsedWebIdlWorld {
+  /// Definitions in file/statement appearance order.
+  pub definitions: Vec<ParsedDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedDefinition {
+  Interface(ParsedInterface),
+  InterfaceMixin(ParsedInterfaceMixin),
+  Includes(ParsedIncludes),
+  Dictionary(ParsedDictionary),
+  Enum(ParsedEnum),
+  Typedef(ParsedTypedef),
+  /// A `callback Foo = ...;` definition.
+  Callback(ParsedCallback),
+  /// Unrecognized/unsupported top-level definition. Stored so callers can decide whether to warn.
+  Other { raw: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedIncludes {
+  pub target: String,
+  pub mixin: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedInterface {
+  pub name: String,
+  pub inherits: Option<String>,
+  pub partial: bool,
+  pub callback: bool,
+  pub ext_attrs: Vec<ExtendedAttribute>,
+  pub members: Vec<ParsedMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedInterfaceMixin {
+  pub name: String,
+  pub partial: bool,
+  pub ext_attrs: Vec<ExtendedAttribute>,
+  pub members: Vec<ParsedMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedDictionary {
+  pub name: String,
+  pub inherits: Option<String>,
+  pub partial: bool,
+  pub ext_attrs: Vec<ExtendedAttribute>,
+  pub members: Vec<ParsedMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedEnum {
+  pub name: String,
+  pub ext_attrs: Vec<ExtendedAttribute>,
+  pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedTypedef {
+  pub name: String,
+  pub ext_attrs: Vec<ExtendedAttribute>,
+  /// The RHS type as a raw string (no semantic validation yet).
+  pub type_: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedCallback {
+  pub name: String,
+  pub ext_attrs: Vec<ExtendedAttribute>,
+  /// The RHS type as a raw string (no semantic validation yet).
+  pub type_: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedMember {
+  pub ext_attrs: Vec<ExtendedAttribute>,
+  /// Member text without trailing `;`.
+  pub raw: String,
+  /// Best-effort extracted member name (for codegen queries).
+  pub name: Option<String>,
+}
+
+/// Extract WebIDL `<pre class=idl> ... </pre>` blocks from a Bikeshed source file (`*.bs`).
+///
+/// Returns raw IDL blocks with basic HTML entities decoded (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&#39;`).
+pub fn extract_webidl_blocks_from_bikeshed(source: &str) -> Vec<String> {
+  let mut out = Vec::new();
+  let mut in_idl = false;
+  let mut current = String::new();
+
+  for line in source.lines() {
+    if !in_idl {
+      if let Some(idx) = line.find("<pre") {
+        let tag = &line[idx..];
+        if tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\"") {
+          // Everything after the first '>' is IDL content (some blocks place it on the same line).
+          if let Some(gt) = tag.find('>') {
+            let after = &tag[gt + 1..];
+            if !after.is_empty() {
+              current.push_str(after);
+              current.push('\n');
+            }
+          }
+          in_idl = true;
+          continue;
+        }
+      }
+      continue;
+    }
+
+    if let Some(end) = line.find("</pre>") {
+      current.push_str(&line[..end]);
+      current.push('\n');
+      out.push(decode_basic_html_entities(current.trim()).to_string());
+      current.clear();
+      in_idl = false;
+      continue;
+    }
+
+    current.push_str(line);
+    current.push('\n');
+  }
+
+  out
+}
+
+pub fn parse_webidl(idl: &str) -> Result<ParsedWebIdlWorld> {
+  let mut world = ParsedWebIdlWorld::default();
+  for stmt in split_top_level_statements(idl) {
+    if let Some(def) = parse_definition(&stmt) {
+      world.definitions.push(def);
+    }
+  }
+  Ok(world)
+}
+
+fn parse_definition(stmt: &str) -> Option<ParsedDefinition> {
+  let stmt = strip_trailing_semicolon(stmt).trim();
+  if stmt.is_empty() {
+    return None;
+  }
+
+  let (ext_attrs, mut rest) = parse_leading_ext_attrs(stmt);
+  rest = strip_leading_ws_and_comments(rest);
+
+  let mut partial = false;
+  let mut callback = false;
+
+  if let Some(after) = consume_keyword(rest, "partial") {
+    partial = true;
+    rest = strip_leading_ws_and_comments(after);
+  }
+
+  if let Some(after) = consume_keyword(rest, "callback") {
+    callback = true;
+    rest = strip_leading_ws_and_comments(after);
+  }
+
+  rest = strip_leading_ws_and_comments(rest);
+  if rest.is_empty() {
+    return None;
+  }
+
+  // `callback interface Foo { ... };`
+  if let Some(after) = consume_keyword(rest, "interface") {
+    let after = strip_leading_ws_and_comments(after);
+    if let Some(after_mixin) = consume_keyword(after, "mixin") {
+      // interface mixin
+      let after_mixin = strip_leading_ws_and_comments(after_mixin);
+      return parse_interface_mixin(after_mixin, partial, ext_attrs);
+    }
+    // interface (regular or callback interface depending on `callback` flag)
+    return parse_interface(after, partial, callback, ext_attrs);
+  }
+
+  if let Some(after) = consume_keyword(rest, "dictionary") {
+    let after = strip_leading_ws_and_comments(after);
+    return parse_dictionary(after, partial, ext_attrs);
+  }
+
+  if let Some(after) = consume_keyword(rest, "enum") {
+    let after = strip_leading_ws_and_comments(after);
+    return parse_enum(after, ext_attrs);
+  }
+
+  if let Some(after) = consume_keyword(rest, "typedef") {
+    let after = strip_leading_ws_and_comments(after);
+    return parse_typedef(after, ext_attrs).map(ParsedDefinition::Typedef);
+  }
+
+  if callback {
+    // `callback Foo = ...;` (already stripped the `callback` keyword above).
+    return parse_callback(rest, ext_attrs).map(ParsedDefinition::Callback);
+  }
+
+  // `<A> includes <B>;`
+  if let Some(def) = parse_includes(rest) {
+    return Some(def);
+  }
+
+  Some(ParsedDefinition::Other {
+    raw: stmt.to_string(),
+  })
+}
+
+fn parse_interface(header_and_body: &str, partial: bool, callback: bool, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedDefinition> {
+  let (header, body) = extract_curly_body(header_and_body)?;
+
+  let (name, inherits) = parse_name_and_inherits(header)?;
+
+  let members = parse_members(body);
+  Some(ParsedDefinition::Interface(ParsedInterface {
+    name,
+    inherits,
+    partial,
+    callback,
+    ext_attrs,
+    members,
+  }))
+}
+
+fn parse_interface_mixin(header_and_body: &str, partial: bool, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedDefinition> {
+  let (header, body) = extract_curly_body(header_and_body)?;
+  let (name, _inherits) = parse_name_and_inherits(header)?;
+  let members = parse_members(body);
+  Some(ParsedDefinition::InterfaceMixin(ParsedInterfaceMixin {
+    name,
+    partial,
+    ext_attrs,
+    members,
+  }))
+}
+
+fn parse_dictionary(header_and_body: &str, partial: bool, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedDefinition> {
+  let (header, body) = extract_curly_body(header_and_body)?;
+  let (name, inherits) = parse_name_and_inherits(header)?;
+  let members = parse_members(body);
+  Some(ParsedDefinition::Dictionary(ParsedDictionary {
+    name,
+    inherits,
+    partial,
+    ext_attrs,
+    members,
+  }))
+}
+
+fn parse_enum(header_and_body: &str, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedDefinition> {
+  let (header, body) = extract_curly_body(header_and_body)?;
+  let (name, _inherits) = parse_name_and_inherits(header)?;
+  let values = parse_enum_values(body);
+  Some(ParsedDefinition::Enum(ParsedEnum {
+    name,
+    ext_attrs,
+    values,
+  }))
+}
+
+fn parse_typedef(rest: &str, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedTypedef> {
+  // `typedef <type> <name>`
+  let rest = strip_leading_ws_and_comments(rest).trim();
+  if rest.is_empty() {
+    return None;
+  }
+  let (name, type_) = split_trailing_identifier(rest)?;
+  Some(ParsedTypedef {
+    name: name.to_string(),
+    ext_attrs,
+    type_: type_.to_string(),
+  })
+}
+
+fn parse_callback(rest: &str, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedCallback> {
+  // `<name> = <type>`
+  let rest = strip_leading_ws_and_comments(rest).trim();
+  let (name, rhs) = rest.split_once('=')?;
+  let name = name.trim();
+  let rhs = rhs.trim();
+  if name.is_empty() || rhs.is_empty() {
+    return None;
+  }
+  Some(ParsedCallback {
+    name: name.to_string(),
+    ext_attrs,
+    type_: rhs.to_string(),
+  })
+}
+
+fn parse_includes(rest: &str) -> Option<ParsedDefinition> {
+  let rest = strip_leading_ws_and_comments(rest).trim();
+  let mut iter = rest.split_whitespace();
+  let target = iter.next()?;
+  if iter.next()? != "includes" {
+    return None;
+  }
+  let mixin = iter.next()?;
+  Some(ParsedDefinition::Includes(ParsedIncludes {
+    target: target.to_string(),
+    mixin: mixin.to_string(),
+  }))
+}
+
+fn parse_name_and_inherits(header: &str) -> Option<(String, Option<String>)> {
+  // `Name` or `Name : Parent`
+  let header = strip_leading_ws_and_comments(header).trim();
+  let (name, rest) = parse_identifier_prefix(header)?;
+  let rest = strip_leading_ws_and_comments(rest).trim_start();
+  if let Some(rest) = rest.strip_prefix(':') {
+    let rest = strip_leading_ws_and_comments(rest).trim_start();
+    let (parent, _rest) = parse_identifier_prefix(rest)?;
+    return Some((name.to_string(), Some(parent.to_string())));
+  }
+  Some((name.to_string(), None))
+}
+
+fn parse_members(body: &str) -> Vec<ParsedMember> {
+  let mut out = Vec::new();
+  for stmt in split_inner_statements(body) {
+    let stmt = strip_trailing_semicolon(&stmt).trim();
+    if stmt.is_empty() {
+      continue;
+    }
+    let (ext_attrs, rest) = parse_leading_ext_attrs(stmt);
+    let raw = strip_leading_ws_and_comments(rest).trim();
+    if raw.is_empty() {
+      continue;
+    }
+    out.push(ParsedMember {
+      name: extract_member_name(raw),
+      ext_attrs,
+      raw: raw.to_string(),
+    });
+  }
+  out
+}
+
+fn parse_enum_values(body: &str) -> Vec<String> {
+  let mut out = Vec::new();
+  let mut in_string = false;
+  let mut escape = false;
+  let mut current = String::new();
+
+  for ch in body.chars() {
+    if !in_string {
+      if ch == '"' {
+        in_string = true;
+        current.clear();
+      }
+      continue;
+    }
+
+    if escape {
+      current.push(ch);
+      escape = false;
+      continue;
+    }
+    if ch == '\\' {
+      escape = true;
+      continue;
+    }
+    if ch == '"' {
+      in_string = false;
+      out.push(current.clone());
+      current.clear();
+      continue;
+    }
+    current.push(ch);
+  }
+
+  out
+}
+
+fn decode_basic_html_entities(s: &str) -> String {
+  // Order matters: decode the more specific entities first, then `&amp;`.
+  s.replace("&lt;", "<")
+    .replace("&gt;", ">")
+    .replace("&quot;", "\"")
+    .replace("&#39;", "'")
+    .replace("&nbsp;", " ")
+    .replace("&amp;", "&")
+}
+
+fn strip_trailing_semicolon(s: &str) -> &str {
+  let s = s.trim_end();
+  s.strip_suffix(';').unwrap_or(s).trim_end()
+}
+
+fn strip_leading_ws_and_comments(mut s: &str) -> &str {
+  loop {
+    let trimmed = s.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("//") {
+      if let Some(nl) = rest.find('\n') {
+        s = &rest[nl + 1..];
+        continue;
+      }
+      return "";
+    }
+    if let Some(rest) = trimmed.strip_prefix("/*") {
+      if let Some(end) = rest.find("*/") {
+        s = &rest[end + 2..];
+        continue;
+      }
+      return "";
+    }
+    return trimmed;
+  }
+}
+
+fn consume_keyword<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
+  let s = strip_leading_ws_and_comments(s);
+  if !s.starts_with(kw) {
+    return None;
+  }
+  let after = &s[kw.len()..];
+  if after
+    .chars()
+    .next()
+    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+  {
+    return None;
+  }
+  Some(after)
+}
+
+fn parse_leading_ext_attrs(mut s: &str) -> (Vec<ExtendedAttribute>, &str) {
+  let mut out = Vec::new();
+  loop {
+    s = strip_leading_ws_and_comments(s);
+    if !s.starts_with('[') {
+      break;
+    }
+    if let Some((inside, rest)) = consume_bracket_block(s) {
+      out.extend(parse_ext_attr_list(inside));
+      s = rest;
+      continue;
+    }
+    break;
+  }
+  (out, s)
+}
+
+fn consume_bracket_block(s: &str) -> Option<(&str, &str)> {
+  let bytes = s.as_bytes();
+  if bytes.first().copied()? != b'[' {
+    return None;
+  }
+  let mut idx = 1usize;
+  let mut depth = 1u32;
+  let mut in_string: Option<u8> = None;
+  let mut escape = false;
+
+  while idx < bytes.len() {
+    let b = bytes[idx];
+    if let Some(q) = in_string {
+      if escape {
+        escape = false;
+        idx += 1;
+        continue;
+      }
+      if b == b'\\' {
+        escape = true;
+        idx += 1;
+        continue;
+      }
+      if b == q {
+        in_string = None;
+      }
+      idx += 1;
+      continue;
+    }
+
+    match b {
+      b'"' | b'\'' => {
+        in_string = Some(b);
+        idx += 1;
+      }
+      b'[' => {
+        depth += 1;
+        idx += 1;
+      }
+      b']' => {
+        depth -= 1;
+        if depth == 0 {
+          let inside = &s[1..idx];
+          let rest = &s[idx + 1..];
+          return Some((inside, rest));
+        }
+        idx += 1;
+      }
+      _ => idx += 1,
+    }
+  }
+
+  None
+}
+
+fn parse_ext_attr_list(content: &str) -> Vec<ExtendedAttribute> {
+  let mut out = Vec::new();
+  let mut start = 0usize;
+  let mut depth = 0u32; // paren depth
+  let mut in_string: Option<char> = None;
+  let mut escape = false;
+  let chars: Vec<(usize, char)> = content.char_indices().collect();
+
+  for (idx, ch) in chars.iter().copied() {
+    if let Some(q) = in_string {
+      if escape {
+        escape = false;
+        continue;
+      }
+      if ch == '\\' {
+        escape = true;
+        continue;
+      }
+      if ch == q {
+        in_string = None;
+      }
+      continue;
+    }
+
+    match ch {
+      '"' | '\'' => in_string = Some(ch),
+      '(' => depth += 1,
+      ')' => depth = depth.saturating_sub(1),
+      ',' if depth == 0 => {
+        let seg = content[start..idx].trim();
+        if !seg.is_empty() {
+          out.push(parse_ext_attr(seg));
+        }
+        start = idx + 1;
+      }
+      _ => {}
+    }
+  }
+
+  let tail = content[start..].trim();
+  if !tail.is_empty() {
+    out.push(parse_ext_attr(tail));
+  }
+
+  out
+}
+
+fn parse_ext_attr(item: &str) -> ExtendedAttribute {
+  let item = item.trim();
+  if let Some((name, rhs)) = item.split_once('=') {
+    return ExtendedAttribute {
+      name: name.trim().to_string(),
+      value: Some(rhs.trim().to_string()),
+    };
+  }
+  ExtendedAttribute {
+    name: item.to_string(),
+    value: None,
+  }
+}
+
+fn extract_curly_body(s: &str) -> Option<(&str, &str)> {
+  let bytes = s.as_bytes();
+
+  let mut i = 0usize;
+  let mut in_string: Option<u8> = None;
+  let mut in_line_comment = false;
+  let mut in_block_comment = false;
+  let mut escape = false;
+
+  // Find the first `{`.
+  while i < bytes.len() {
+    let b = bytes[i];
+    if in_line_comment {
+      if b == b'\n' {
+        in_line_comment = false;
+      }
+      i += 1;
+      continue;
+    }
+    if in_block_comment {
+      if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        in_block_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if escape {
+        escape = false;
+        i += 1;
+        continue;
+      }
+      if b == b'\\' {
+        escape = true;
+        i += 1;
+        continue;
+      }
+      if b == q {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    if b == b'/' && i + 1 < bytes.len() {
+      if bytes[i + 1] == b'/' {
+        in_line_comment = true;
+        i += 2;
+        continue;
+      }
+      if bytes[i + 1] == b'*' {
+        in_block_comment = true;
+        i += 2;
+        continue;
+      }
+    }
+
+    match b {
+      b'"' | b'\'' => {
+        in_string = Some(b);
+        i += 1;
+      }
+      b'{' => break,
+      _ => i += 1,
+    }
+  }
+
+  if i >= bytes.len() || bytes[i] != b'{' {
+    return None;
+  }
+
+  let header = &s[..i];
+  let body_start = i + 1;
+
+  // Find matching `}`.
+  i = body_start;
+  let mut depth = 1u32;
+  in_string = None;
+  in_line_comment = false;
+  in_block_comment = false;
+  escape = false;
+
+  while i < bytes.len() {
+    let b = bytes[i];
+    if in_line_comment {
+      if b == b'\n' {
+        in_line_comment = false;
+      }
+      i += 1;
+      continue;
+    }
+    if in_block_comment {
+      if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        in_block_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if escape {
+        escape = false;
+        i += 1;
+        continue;
+      }
+      if b == b'\\' {
+        escape = true;
+        i += 1;
+        continue;
+      }
+      if b == q {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    if b == b'/' && i + 1 < bytes.len() {
+      if bytes[i + 1] == b'/' {
+        in_line_comment = true;
+        i += 2;
+        continue;
+      }
+      if bytes[i + 1] == b'*' {
+        in_block_comment = true;
+        i += 2;
+        continue;
+      }
+    }
+
+    match b {
+      b'"' | b'\'' => {
+        in_string = Some(b);
+        i += 1;
+      }
+      b'{' => {
+        depth += 1;
+        i += 1;
+      }
+      b'}' => {
+        depth -= 1;
+        if depth == 0 {
+          let body = &s[body_start..i];
+          return Some((header, body));
+        }
+        i += 1;
+      }
+      _ => i += 1,
+    }
+  }
+
+  None
+}
+
+fn split_top_level_statements(idl: &str) -> Vec<String> {
+  split_semicolon_terminated(idl)
+}
+
+fn split_inner_statements(body: &str) -> Vec<String> {
+  split_semicolon_terminated(body)
+}
+
+fn split_semicolon_terminated(input: &str) -> Vec<String> {
+  let bytes = input.as_bytes();
+  let mut out = Vec::new();
+  let mut start = 0usize;
+  let mut i = 0usize;
+
+  let mut curly = 0u32;
+  let mut bracket = 0u32;
+  let mut paren = 0u32;
+
+  let mut in_string: Option<u8> = None;
+  let mut in_line_comment = false;
+  let mut in_block_comment = false;
+  let mut escape = false;
+
+  while i < bytes.len() {
+    let b = bytes[i];
+
+    if in_line_comment {
+      if b == b'\n' {
+        in_line_comment = false;
+      }
+      i += 1;
+      continue;
+    }
+    if in_block_comment {
+      if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        in_block_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if escape {
+        escape = false;
+        i += 1;
+        continue;
+      }
+      if b == b'\\' {
+        escape = true;
+        i += 1;
+        continue;
+      }
+      if b == q {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    if b == b'/' && i + 1 < bytes.len() {
+      if bytes[i + 1] == b'/' {
+        in_line_comment = true;
+        i += 2;
+        continue;
+      }
+      if bytes[i + 1] == b'*' {
+        in_block_comment = true;
+        i += 2;
+        continue;
+      }
+    }
+
+    match b {
+      b'"' | b'\'' => {
+        in_string = Some(b);
+        i += 1;
+      }
+      b'{' => {
+        curly += 1;
+        i += 1;
+      }
+      b'}' => {
+        curly = curly.saturating_sub(1);
+        i += 1;
+      }
+      b'[' => {
+        bracket += 1;
+        i += 1;
+      }
+      b']' => {
+        bracket = bracket.saturating_sub(1);
+        i += 1;
+      }
+      b'(' => {
+        paren += 1;
+        i += 1;
+      }
+      b')' => {
+        paren = paren.saturating_sub(1);
+        i += 1;
+      }
+      b';' => {
+        i += 1;
+        if curly == 0 && bracket == 0 && paren == 0 {
+          let seg = input[start..i].trim();
+          if !seg.is_empty() {
+            out.push(seg.to_string());
+          }
+          start = i;
+        }
+      }
+      _ => i += 1,
+    }
+  }
+
+  let tail = input[start..].trim();
+  if !tail.is_empty() {
+    out.push(tail.to_string());
+  }
+
+  out
+}
+
+fn parse_identifier_prefix(s: &str) -> Option<(&str, &str)> {
+  let s = strip_leading_ws_and_comments(s);
+  let bytes = s.as_bytes();
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let b = bytes[i];
+    let ok = if i == 0 {
+      b.is_ascii_alphabetic() || b == b'_'
+    } else {
+      b.is_ascii_alphanumeric() || b == b'_'
+    };
+    if !ok {
+      break;
+    }
+    i += 1;
+  }
+  if i == 0 {
+    return None;
+  }
+  Some((&s[..i], &s[i..]))
+}
+
+fn split_trailing_identifier(s: &str) -> Option<(&str, &str)> {
+  // Splits `... <name>` into (`name`, `...`).
+  let s = s.trim();
+  let mut end = s.len();
+  while end > 0 && s.as_bytes()[end - 1].is_ascii_whitespace() {
+    end -= 1;
+  }
+  let mut start = end;
+  while start > 0 {
+    let b = s.as_bytes()[start - 1];
+    if !(b.is_ascii_alphanumeric() || b == b'_') {
+      break;
+    }
+    start -= 1;
+  }
+  if start == end {
+    return None;
+  }
+  let name = &s[start..end];
+  let type_ = s[..start].trim_end();
+  Some((name, type_))
+}
+
+fn extract_member_name(raw: &str) -> Option<String> {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+
+  // Fast paths.
+  if raw.starts_with("constructor") {
+    return Some("constructor".to_string());
+  }
+
+  // Attributes: take the last identifier (e.g. `readonly attribute DOMString type` → `type`).
+  if raw.contains(" attribute ") || raw.starts_with("attribute ") || raw.starts_with("readonly attribute ") {
+    return split_trailing_identifier(raw).map(|(name, _)| name.to_string());
+  }
+
+  // Operations: pick the last identifier before the first `(`.
+  if let Some((before, _after)) = raw.split_once('(') {
+    return split_trailing_identifier(before).map(|(name, _)| name.to_string());
+  }
+
+  // Dictionary members / constants / misc statements: take the last identifier, ignoring defaults.
+  if let Some((before, _after)) = raw.split_once('=') {
+    return split_trailing_identifier(before).map(|(name, _)| name.to_string());
+  }
+
+  split_trailing_identifier(raw).map(|(name, _)| name.to_string())
+}

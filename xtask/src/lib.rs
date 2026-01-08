@@ -5,6 +5,7 @@ pub mod capture_missing_failure_fixtures;
 pub mod freeze_page_fixture;
 pub mod lint_no_panics;
 pub mod pageset_failure_fixtures;
+pub mod webidl;
 use serde::Deserialize;
 use std::process::Command;
 
