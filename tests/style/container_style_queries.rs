@@ -2352,6 +2352,64 @@ fn container_style_query_range_feature_matches_border_block_start_width() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_border_start_start_radius() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; direction: ltr; border-top-left-radius: 1px; }
+      .container-ltr { container-type: inline-size; direction: ltr; border-top-left-radius: 3px; }
+      .container-rtl { container-type: inline-size; direction: rtl; border-top-left-radius: 1px; border-top-right-radius: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(border-start-start-radius > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-ltr">
+      <div id="ltr" class="child">hello</div>
+    </div>
+    <div class="container-rtl">
+      <div id="rtl" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let ltr = find_by_id(&styled, "ltr").expect("ltr element");
+  let rtl = find_by_id(&styled, "rtl").expect("rtl element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(ltr.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(rtl.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_border_start_start_radius_vertical_rl() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; border-top-left-radius: 1px; }
+      .container-vertical { container-type: inline-size; writing-mode: vertical-rl; border-top-left-radius: 1px; border-top-right-radius: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(border-start-start-radius > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-vertical">
+      <div id="vertical" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let vertical = find_by_id(&styled, "vertical").expect("vertical element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_border_top_left_radius() {
   let html = r#"
     <style>

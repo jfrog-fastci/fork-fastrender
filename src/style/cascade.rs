@@ -2049,6 +2049,37 @@ fn eval_style_range_value(
       crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => None,
     }
   };
+
+  let border_radius_for_corner = |radius: &BorderCornerRadius| -> Option<NumericValue> {
+    if radius.x == radius.y {
+      length_to_numeric(&radius.x, container, ctx)
+    } else {
+      None
+    }
+  };
+
+  let border_radius_for_sides =
+    |a: crate::style::PhysicalSide, b: crate::style::PhysicalSide| -> Option<NumericValue> {
+      match (a, b) {
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Left)
+        | (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Top) => {
+          border_radius_for_corner(&styles.border_top_left_radius)
+        }
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Right)
+        | (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Top) => {
+          border_radius_for_corner(&styles.border_top_right_radius)
+        }
+        (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Right)
+        | (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Bottom) => {
+          border_radius_for_corner(&styles.border_bottom_right_radius)
+        }
+        (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Left)
+        | (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Bottom) => {
+          border_radius_for_corner(&styles.border_bottom_left_radius)
+        }
+        _ => None,
+      }
+    };
   match value {
     StyleRangeValue::Property(name) => match name.as_str() {
       "font-size" => Some(NumericValue {
@@ -2392,6 +2423,10 @@ fn eval_style_range_value(
       "border-inline-end-width" => border_width_for_side(inline_sides.1),
       "border-block-start-width" => border_width_for_side(block_sides.0),
       "border-block-end-width" => border_width_for_side(block_sides.1),
+      "border-start-start-radius" => border_radius_for_sides(block_sides.0, inline_sides.0),
+      "border-start-end-radius" => border_radius_for_sides(block_sides.0, inline_sides.1),
+      "border-end-start-radius" => border_radius_for_sides(block_sides.1, inline_sides.0),
+      "border-end-end-radius" => border_radius_for_sides(block_sides.1, inline_sides.1),
       "border-top-left-radius" => {
         if styles.border_top_left_radius.x == styles.border_top_left_radius.y {
           length_to_numeric(&styles.border_top_left_radius.x, container, ctx)
