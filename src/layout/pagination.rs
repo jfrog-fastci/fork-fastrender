@@ -8,16 +8,16 @@ use std::sync::Arc;
 
 use crate::css::types::{CollectedPageRule, PageMarginArea};
 use crate::geometry::{Point, Rect, Size};
-use crate::layout::axis::FragmentAxes;
+use crate::layout::axis::{FragmentAxes, PhysicalAxis};
 use crate::layout::engine::{LayoutConfig, LayoutEngine};
 use crate::layout::formatting_context::{
   layout_style_fingerprint, set_fragmentainer_block_size_hint, LayoutError,
 };
 use crate::layout::fragmentation::{
-  apply_grid_parallel_flow_forced_break_shifts, clip_node, collect_atomic_ranges,
-  collect_forced_boundaries_for_pagination, fragmentation_axis,
+  apply_grid_parallel_flow_forced_break_shifts, clip_node, collect_atomic_ranges_with_axes,
+  collect_forced_boundaries_for_pagination_with_axes, fragmentation_axis, FragmentAxis,
   normalize_atomic_ranges, normalize_fragment_margins, parallel_flow_content_extent,
-  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentAxis, FragmentationContext,
+  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentationContext,
 };
 use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
 use crate::style::content::{
@@ -156,12 +156,13 @@ impl CachedLayout {
     mut root: FragmentNode,
     style: &ResolvedPageStyle,
     fallback_page_name: Option<&str>,
+    axes: FragmentAxes,
   ) -> Self {
-    let axis = fragmentation_axis(&root);
-    let default_style = ComputedStyle::default();
-    let root_style = root.style.as_deref().unwrap_or(&default_style);
-    let axes = FragmentAxes::from_writing_mode_and_direction(root_style.writing_mode, root_style.direction);
-    let style_block_size = if axis.block_is_horizontal {
+    let axis = FragmentAxis {
+      block_is_horizontal: axes.block_axis() == PhysicalAxis::X,
+      block_positive: axes.block_positive(),
+    };
+    let style_block_size = if axes.block_axis() == PhysicalAxis::X {
       style.content_size.width
     } else {
       style.content_size.height
@@ -170,7 +171,7 @@ impl CachedLayout {
     apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, style_block_size);
     let page_name_transitions = collect_page_name_transitions(&root, &axis, fallback_page_name);
 
-    let mut forced = collect_forced_boundaries_for_pagination(&root, 0.0);
+    let mut forced = collect_forced_boundaries_for_pagination_with_axes(&root, 0.0, axes);
     forced.extend(
       page_name_transitions
         .iter()
@@ -181,9 +182,10 @@ impl CachedLayout {
         }),
     );
     let mut atomic_ranges = Vec::new();
-    collect_atomic_ranges(
+    collect_atomic_ranges_with_axes(
       &root,
       0.0,
+      axes,
       &mut atomic_ranges,
       FragmentationContext::Page,
       Some(style_block_size),
@@ -261,6 +263,12 @@ pub fn paginate_fragment_tree(
   initial_page_name: Option<String>,
   enable_layout_cache: bool,
 ) -> Result<Vec<FragmentNode>, LayoutError> {
+  let root_axes =
+    FragmentAxes::from_writing_mode_and_direction(root_style.writing_mode, root_style.direction);
+  let root_axis = FragmentAxis {
+    block_is_horizontal: root_axes.block_axis() == PhysicalAxis::X,
+    block_positive: root_axes.block_positive(),
+  };
   let log_running_elements =
     crate::debug::runtime::runtime_toggles().truthy("FASTR_LOG_RUNNING_ELEMENTS");
   if rules.is_empty() {
@@ -285,7 +293,7 @@ pub fn paginate_fragment_tree(
     let key = PageLayoutKey::new(style, style_hash, font_generation);
     layouts
       .entry(key)
-      .or_insert_with(|| CachedLayout::from_root(root.clone(), style, fallback_page_name));
+      .or_insert_with(|| CachedLayout::from_root(root.clone(), style, fallback_page_name, root_axes));
   }
 
   let base_style = resolve_page_style(
@@ -306,6 +314,7 @@ pub fn paginate_fragment_tree(
     box_tree,
     font_ctx,
     fallback_page_name,
+    root_axes,
     enable_layout_cache,
   )?;
   let base_total_height = base_layout.total_height.max(EPSILON);
@@ -313,12 +322,7 @@ pub fn paginate_fragment_tree(
   let base_forced = base_layout.forced_boundaries.clone();
   let base_root = base_layout.root.clone();
 
-  let base_axes = {
-    let default_style = ComputedStyle::default();
-    let style = base_root.style.as_deref().unwrap_or(&default_style);
-    FragmentAxes::from_writing_mode_and_direction(style.writing_mode, style.direction)
-  };
-  let mut string_set_events = collect_string_set_events(&base_root, box_tree, base_axes);
+  let mut string_set_events = collect_string_set_events(&base_root, box_tree, root_axes);
   string_set_events.sort_by(|a, b| {
     a.abs_block
       .partial_cmp(&b.abs_block)
@@ -362,9 +366,10 @@ pub fn paginate_fragment_tree(
       box_tree,
       font_ctx,
       fallback_page_name,
+      root_axes,
       enable_layout_cache,
     )?;
-    let axis = fragmentation_axis(&layout.root);
+    let axis = root_axis;
 
     let mut total_height = layout.total_height;
     if total_height <= EPSILON {
@@ -412,6 +417,7 @@ pub fn paginate_fragment_tree(
           box_tree,
           font_ctx,
           fallback_page_name,
+          root_axes,
           enable_layout_cache,
         )?;
         total_height = layout.total_height;
@@ -1695,6 +1701,7 @@ fn layout_for_style<'a>(
   box_tree: &BoxTree,
   font_ctx: &FontContext,
   fallback_page_name: Option<&str>,
+  root_axes: FragmentAxes,
   enable_layout_cache: bool,
 ) -> Result<&'a CachedLayout, LayoutError> {
   if !cache.contains_key(&key) {
@@ -1708,7 +1715,7 @@ fn layout_for_style<'a>(
     };
     let _hint = set_fragmentainer_block_size_hint(Some(block_size_hint));
     let layout_tree = engine.layout_tree(box_tree)?;
-    let layout = CachedLayout::from_root(layout_tree.root, style, fallback_page_name);
+    let layout = CachedLayout::from_root(layout_tree.root, style, fallback_page_name, root_axes);
     cache.insert(key, layout);
   }
 

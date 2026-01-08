@@ -451,7 +451,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
         let in_flow_count = grid_info.items.len().min(node.children.len());
         for idx in 0..in_flow_count {
           let placement = &grid_info.items[idx];
-          if !grid_item_spans_single_track(placement, axis) {
+          if !grid_item_spans_single_track(placement) {
             continue;
           }
           let Some(child) = node.children_mut().get_mut(idx) else {
@@ -543,7 +543,7 @@ fn grid_container_parallel_flow_required_block_size(
     if idx >= node.children.len() {
       break;
     }
-    if !grid_item_spans_single_track(placement, axis) {
+    if !grid_item_spans_single_track(placement) {
       continue;
     }
 
@@ -651,15 +651,8 @@ const LINE_FALLBACK_EPSILON: f32 = 1.0;
 const SIBLING_LIMIT_FALLBACK_MAX: f32 = 50.0;
 const SIBLING_LIMIT_FALLBACK_RATIO: f32 = 0.15;
 
-fn grid_item_spans_single_track(placement: &GridItemFragmentationData, axis: &FragmentAxis) -> bool {
-  if axis.block_is_horizontal {
-    placement
-      .column_end
-      .saturating_sub(placement.column_start)
-      == 1
-  } else {
-    placement.row_end.saturating_sub(placement.row_start) == 1
-  }
+fn grid_item_spans_single_track(placement: &GridItemFragmentationData) -> bool {
+  placement.row_end.saturating_sub(placement.row_start) == 1
 }
 
 impl FragmentationAnalyzer {
@@ -2122,7 +2115,15 @@ pub(crate) fn collect_forced_boundaries_for_pagination(
   node: &FragmentNode,
   abs_start: f32,
 ) -> Vec<ForcedBoundary> {
-  collect_forced_boundaries_with_axes_internal(node, abs_start, axes_from_root(node), true)
+  collect_forced_boundaries_for_pagination_with_axes(node, abs_start, axes_from_root(node))
+}
+
+pub(crate) fn collect_forced_boundaries_for_pagination_with_axes(
+  node: &FragmentNode,
+  abs_start: f32,
+  axes: FragmentAxes,
+) -> Vec<ForcedBoundary> {
+  collect_forced_boundaries_with_axes_internal(node, abs_start, axes, true)
 }
 
 pub(crate) fn collect_forced_boundaries_with_axes(
@@ -2206,11 +2207,7 @@ fn collect_forced_boundaries_with_axes_internal(
     let mut grid_item_count = 0usize;
     if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
       if let (Some(grid_tracks), Some(grid_items)) = (node.grid_tracks.as_deref(), grid_items) {
-        let tracks = if axis.block_is_horizontal {
-          &grid_tracks.columns
-        } else {
-          &grid_tracks.rows
-        };
+        let tracks = &grid_tracks.rows;
         if !tracks.is_empty() && !grid_items.items.is_empty() {
           let in_flow_count = grid_items.items.len().min(node.children.len());
           // One slot per grid line (track_count + 1). Index `i` corresponds to the boundary at line
@@ -2225,11 +2222,7 @@ fn collect_forced_boundaries_with_axes_internal(
               .map(|s| s.as_ref())
               .unwrap_or(default_style);
             let placement = &grid_items.items[idx];
-            let (start_line, end_line) = if axis.block_is_horizontal {
-              (placement.column_start, placement.column_end)
-            } else {
-              (placement.row_start, placement.row_end)
-            };
+            let (start_line, end_line) = (placement.row_start, placement.row_end);
 
             if is_forced_page_break(child_style.break_before) {
               let boundary_idx = start_line.saturating_sub(1) as usize;
@@ -2254,8 +2247,8 @@ fn collect_forced_boundaries_with_axes_internal(
             // pages when page sizes line up exactly with track ends).
             let mut track_flow_ends = Vec::with_capacity(tracks.len());
             for (track_start, track_end) in tracks.iter().copied() {
-              let track_size = track_end - track_start;
-              if track_size <= BREAK_EPSILON {
+              let track_size = (track_end - track_start).max(0.0);
+              if !track_start.is_finite() {
                 track_flow_ends.push(abs_start);
                 continue;
               }
@@ -2354,7 +2347,7 @@ fn collect_forced_boundaries_with_axes_internal(
         && idx < in_flow_grid_item_count
         && grid_items
           .and_then(|grid_items| grid_items.items.get(idx))
-          .map(|placement| grid_item_spans_single_track(placement, axis))
+          .map(grid_item_spans_single_track)
           .unwrap_or(false);
       if !skip_parallel_flow_descendants {
         collect(
@@ -2488,22 +2481,14 @@ fn collect_atomic_range_for_node(
 
   if matches!(style.display, Display::Grid | Display::InlineGrid) {
     if let Some(grid_tracks) = node.grid_tracks.as_deref() {
-      let tracks = if axis.block_is_horizontal {
-        &grid_tracks.columns
-      } else {
-        &grid_tracks.rows
-      };
+      let tracks = &grid_tracks.rows;
 
       // Treat each grid track as indivisible. Additionally, treat the inter-track gutter preceding
       // each track as part of the following track so pagination never splits a `row-gap`/`column-gap`
       // across fragmentainers (and avoids producing a fragmentainer that contains only the gap).
       let mut prev_flow_end: Option<f32> = None;
       for (track_start, track_end) in tracks.iter().copied() {
-        let track_size = track_end - track_start;
-        if track_size <= BREAK_EPSILON {
-          continue;
-        }
-
+        let track_size = (track_end - track_start).max(0.0);
         let flow_offset = axis.flow_offset(track_start, track_size, node_block_size);
         let mut start = abs_start + flow_offset;
         let end = start + track_size;
@@ -2514,6 +2499,10 @@ fn collect_atomic_range_for_node(
           }
         }
         prev_flow_end = Some(end);
+
+        if track_size <= BREAK_EPSILON {
+          continue;
+        }
 
         if matches!(context, FragmentationContext::Page) {
           if let Some(fragmentainer_size) = fragmentainer_size {
