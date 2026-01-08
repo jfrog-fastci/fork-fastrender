@@ -367,7 +367,6 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Inline;
   container_style.position = Position::Relative;
-  container_style.width = Some(Length::px(200.0));
   container_style.padding_left = Length::px(0.0);
   container_style.padding_right = Length::px(0.0);
   container_style.padding_top = Length::px(0.0);
@@ -379,8 +378,6 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
 
   let mut abs_style = ComputedStyle::default();
   abs_style.position = Position::Absolute;
-  abs_style.left = InsetValue::Length(Length::px(50.0));
-  abs_style.right = InsetValue::Length(Length::px(50.0));
   abs_style.width = None;
   abs_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
   abs_style.font_size = 10.0;
@@ -420,13 +417,27 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
   intrinsic_style.left = InsetValue::Auto;
   intrinsic_child.style = Arc::new(intrinsic_style);
 
-  let constraints = LayoutConstraints::definite_width(200.0);
   let ifc = InlineFormattingContext::new();
   let (min_content, max_content) = ifc
     .compute_intrinsic_inline_sizes(&intrinsic_child)
     .expect("intrinsic sizes");
-  let available: f32 = 200.0 - 50.0 - 50.0;
+  let left = 10.0;
+  let right = 10.0;
+  let available = max_content + 20.0;
   let expected = max_content.min(available.max(min_content));
+  let container_width = available + left + right;
+
+  container_style.width = Some(Length::px(container_width));
+  let constraints = LayoutConstraints::definite_width(container_width);
+
+  let mut abs_style = (*abs_style).clone();
+  abs_style.left = InsetValue::Length(Length::px(left));
+  abs_style.right = InsetValue::Length(Length::px(right));
+  let abs_style = Arc::new(abs_style);
+
+  let mut abs_child =
+    BoxNode::new_block(abs_style.clone(), FormattingContextType::Inline, abs_child.children.clone());
+  abs_child.id = abs_id;
 
   let mut container = BoxNode::new_block(
     Arc::new(container_style),
@@ -443,14 +454,12 @@ fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_spec
     abs_fragment.bounds.width(),
     expected
   );
-  if expected <= available + 0.5 {
-    assert!(
-      abs_fragment.bounds.width() <= available + 0.5,
-      "fit-content width should not exceed available between insets (got {:.2} > {:.2})",
-      abs_fragment.bounds.width(),
-      available
-    );
-  }
+  assert!(
+    abs_fragment.bounds.width() < available - 0.5,
+    "fit-content width should clamp at max-content instead of stretching (got {:.2}, available {:.2})",
+    abs_fragment.bounds.width(),
+    available
+  );
 }
 
 #[test]
