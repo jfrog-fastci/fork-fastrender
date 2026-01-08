@@ -8,7 +8,17 @@
 
 use anyhow::Result;
 
+pub mod analyze;
+pub mod ast;
+pub mod parse;
 pub mod resolve;
+
+pub use analyze::{
+  analyze_resolved_world, AnalyzedInterface, AnalyzedInterfaceMember, AnalyzedInterfaceMixin,
+  AnalyzedWebIdlWorld,
+};
+pub use ast::{Argument, BuiltinType, IdlLiteral, IdlType, InterfaceMember, SpecialOperation};
+pub use parse::{parse_idl_type, parse_interface_member};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendedAttribute {
