@@ -22,6 +22,7 @@ use crate::style::custom_property_store::CustomPropertyStore;
 use crate::style::display::Display;
 use crate::style::float::Clear;
 use crate::style::float::Float;
+use crate::style::grid::parse_grid_auto_flow_value;
 use crate::style::grid::parse_grid_shorthand;
 use crate::style::grid::parse_grid_template_areas;
 use crate::style::grid::parse_grid_template_shorthand;
@@ -9761,22 +9762,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "grid-auto-flow" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        let lower = kw.to_ascii_lowercase();
-        let dense = lower.contains("dense");
-        let primary = if lower.contains("column") {
-          "column"
-        } else if lower.contains("row") {
-          "row"
-        } else {
-          "row"
-        };
-        styles.grid_auto_flow = match (primary, dense) {
-          ("row", false) => GridAutoFlow::Row,
-          ("row", true) => GridAutoFlow::RowDense,
-          ("column", false) => GridAutoFlow::Column,
-          ("column", true) => GridAutoFlow::ColumnDense,
-          _ => GridAutoFlow::Row,
-        };
+        if let Some(flow) = parse_grid_auto_flow_value(kw) {
+          styles.grid_auto_flow = flow;
+        }
       }
     }
     "grid-gap" | "gap" => {

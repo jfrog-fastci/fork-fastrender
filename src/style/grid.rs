@@ -65,6 +65,68 @@ pub fn parse_grid_line<S: BuildHasher>(
   0
 }
 
+pub(crate) fn parse_grid_auto_flow_value(value: &str) -> Option<crate::style::types::GridAutoFlow> {
+  let value = value.trim();
+  if value.is_empty() {
+    return None;
+  }
+
+  let mut input = ParserInput::new(value);
+  let mut parser = Parser::new(&mut input);
+
+  let mut saw_primary = false;
+  let mut has_column = false;
+  let mut dense = false;
+
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::WhiteSpace(_) | Token::Comment(_) => continue,
+      Token::Ident(ident) => {
+        let ident = ident.as_ref();
+        if ident.eq_ignore_ascii_case("dense") {
+          if dense {
+            return None;
+          }
+          dense = true;
+          continue;
+        }
+
+        if ident.eq_ignore_ascii_case("row") {
+          if saw_primary {
+            return None;
+          }
+          saw_primary = true;
+          has_column = false;
+          continue;
+        }
+
+        if ident.eq_ignore_ascii_case("column") {
+          if saw_primary {
+            return None;
+          }
+          saw_primary = true;
+          has_column = true;
+          continue;
+        }
+
+        return None;
+      }
+      _ => return None,
+    }
+  }
+
+  if !saw_primary && !dense {
+    return None;
+  }
+
+  Some(match (has_column, dense) {
+    (false, false) => crate::style::types::GridAutoFlow::Row,
+    (false, true) => crate::style::types::GridAutoFlow::RowDense,
+    (true, false) => crate::style::types::GridAutoFlow::Column,
+    (true, true) => crate::style::types::GridAutoFlow::ColumnDense,
+  })
+}
+
 /// Parse `grid-template-areas` into row/column names, validating rectangular areas.
 ///
 /// Returns `None` on syntax errors or non-rectangular area definitions. The rows are stored with `None`
