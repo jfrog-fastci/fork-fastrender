@@ -938,6 +938,9 @@ impl TableStructureFixer {
       for child in node.children.iter_mut().rev() {
         stack.push(child as *mut BoxNode);
       }
+      if let Some(body) = node.footnote_body.as_deref_mut() {
+        stack.push(body as *mut BoxNode);
+      }
     }
 
     Ok(())
@@ -1734,6 +1737,29 @@ mod tests {
     );
     assert!(TableStructureFixer::validate_table_structure(inner));
     assert!(TableStructureFixer::is_table_row_group(&inner.children[0]));
+  }
+
+  #[test]
+  fn test_fixup_tree_traverses_footnote_body() {
+    // Tables inside detached footnote bodies should still receive table fixup.
+    let inner_table = table_box(vec![cell_box(vec![])]);
+    let body = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![inner_table],
+    );
+    let mut call = BoxNode::new_inline(default_style(), vec![]);
+    call.footnote_body = Some(Box::new(body));
+
+    let fixed = TableStructureFixer::fixup_tree_internals(call).unwrap();
+    let body = fixed.footnote_body.as_deref().expect("footnote body preserved");
+    assert_eq!(body.children.len(), 1);
+    let table = &body.children[0];
+    assert!(TableStructureFixer::is_table_box(table));
+    assert!(
+      TableStructureFixer::validate_table_structure(table),
+      "expected table fixup to apply within footnote body"
+    );
   }
 
   #[test]
