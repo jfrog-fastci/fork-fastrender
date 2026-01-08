@@ -87,6 +87,7 @@ use crate::paint::rasterize::{
   estimate_box_shadow_work_pixels, render_box_shadow_cached_with_clamp, BoxShadow,
   BoxShadowSurfaceClamp,
 };
+use crate::paint::text_decoration::{dash_offset_for_segment, wavy_phase_for_segment};
 use crate::paint::text_rasterize::{
   concat_transforms, shared_color_cache, shared_color_renderer, shared_glyph_cache,
   ColorGlyphCache, GlyphCache, TextRasterizer, TextRenderState,
@@ -2774,13 +2775,13 @@ fn apply_spread_horizontal(
         })?,
     )
     .ok_or(RenderError::InvalidParameters {
-      message: format!(
-        "drop shadow spread: buffer size overflow (width={width}, radius={radius})"
-      ),
+      message: format!("drop shadow spread: buffer size overflow (width={width}, radius={radius})"),
     })?;
-  let queue_capacity = window_size.checked_add(1).ok_or(RenderError::InvalidParameters {
-    message: format!("drop shadow spread: window size overflow (radius={radius})"),
-  })?;
+  let queue_capacity = window_size
+    .checked_add(1)
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("drop shadow spread: window size overflow (radius={radius})"),
+    })?;
   let deadline = active_deadline();
   dst
     .par_chunks_mut(width)
@@ -2789,13 +2790,18 @@ fn apply_spread_horizontal(
       with_deadline(deadline.as_ref(), || -> RenderResult<()> {
         check_active(RenderStage::Paint)?;
         let row_start = y * width;
-        let mut queues = [VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new()];
+        let mut queues = [
+          VecDeque::new(),
+          VecDeque::new(),
+          VecDeque::new(),
+          VecDeque::new(),
+        ];
         for queue in queues.iter_mut() {
-          queue
-            .try_reserve_exact(queue_capacity)
-            .map_err(|err| RenderError::InvalidParameters {
+          queue.try_reserve_exact(queue_capacity).map_err(|err| {
+            RenderError::InvalidParameters {
               message: format!("drop shadow spread: window buffer allocation failed: {err}"),
-            })?;
+            }
+          })?;
         }
         let mut deadline_counter = 0usize;
 
@@ -3909,12 +3915,14 @@ fn collect_scene_items(
   let mut items = Vec::new();
   let transform_style = node.context.transform_style;
 
-  let should_flatten = !in_preserve_context || !matches!(transform_style, TransformStyle::Preserve3d);
+  let should_flatten =
+    !in_preserve_context || !matches!(transform_style, TransformStyle::Preserve3d);
 
   let establishes_backdrop_root_layer = !node.context.is_root
     && node.context.establishes_backdrop_root
     && node.context.has_backdrop_sensitive_descendants;
-  let pushed_backdrop_root = if !should_flatten && !is_scene_root && establishes_backdrop_root_layer {
+  let pushed_backdrop_root = if !should_flatten && !is_scene_root && establishes_backdrop_root_layer
+  {
     let id = *backdrop_root_counter;
     *backdrop_root_counter = backdrop_root_counter.saturating_add(1);
     backdrop_root_chain.push(id);
@@ -4102,7 +4110,10 @@ impl DisplayListRenderer {
     projective: &Transform3D,
     parent_transform: Transform,
   ) -> Option<(Transform, Rect)> {
-    let visible_device = self.canvas.clip_bounds().unwrap_or_else(|| self.canvas.bounds());
+    let visible_device = self
+      .canvas
+      .clip_bounds()
+      .unwrap_or_else(|| self.canvas.bounds());
     if visible_device.width() <= 0.0 || visible_device.height() <= 0.0 {
       return None;
     }
@@ -4190,7 +4201,10 @@ impl DisplayListRenderer {
       return None;
     }
 
-    Some((Transform::from_row(sx, 0.0, 0.0, sy, tx, ty), local_bounds_css))
+    Some((
+      Transform::from_row(sx, 0.0, 0.0, sy, tx, ty),
+      local_bounds_css,
+    ))
   }
 
   #[inline]
@@ -7784,72 +7798,75 @@ impl DisplayListRenderer {
       let pending = record.pending_backdrop.take().unwrap();
       let layer_origin = record.layer_origin;
 
-      let projective_backdrop = record.projective_transform.and_then(|projective_transform| {
-        // Only apply projective backdrop compensation when the stacking context will be warped at
-        // `PopStackingContext` time. Otherwise we'd pre-unwarp the filtered backdrop but never
-        // re-apply the element's projective transform.
-        let warp_bounds = if record.filters.is_empty() {
-          record.css_bounds
-        } else {
-          let (out_l, out_t, out_r, out_b) =
-            filter_outset_with_bounds(&record.filters, 1.0, Some(record.css_bounds)).as_tuple();
-          let expanded = Rect::from_xywh(
-            record.css_bounds.x() - out_l,
-            record.css_bounds.y() - out_t,
-            record.css_bounds.width() + out_l + out_r,
-            record.css_bounds.height() + out_t + out_b,
-          );
-          if expanded.width() > 0.0 && expanded.height() > 0.0 {
-            expanded
-          } else {
+      let projective_backdrop = record
+        .projective_transform
+        .and_then(|projective_transform| {
+          // Only apply projective backdrop compensation when the stacking context will be warped at
+          // `PopStackingContext` time. Otherwise we'd pre-unwarp the filtered backdrop but never
+          // re-apply the element's projective transform.
+          let warp_bounds = if record.filters.is_empty() {
             record.css_bounds
+          } else {
+            let (out_l, out_t, out_r, out_b) =
+              filter_outset_with_bounds(&record.filters, 1.0, Some(record.css_bounds)).as_tuple();
+            let expanded = Rect::from_xywh(
+              record.css_bounds.x() - out_l,
+              record.css_bounds.y() - out_t,
+              record.css_bounds.width() + out_l + out_r,
+              record.css_bounds.height() + out_t + out_b,
+            );
+            if expanded.width() > 0.0 && expanded.height() > 0.0 {
+              expanded
+            } else {
+              record.css_bounds
+            }
+          };
+
+          let corners = [
+            (warp_bounds.min_x(), warp_bounds.min_y()),
+            (warp_bounds.max_x(), warp_bounds.min_y()),
+            (warp_bounds.max_x(), warp_bounds.max_y()),
+            (warp_bounds.min_x(), warp_bounds.max_y()),
+          ];
+
+          let mut src_quad = [Point::ZERO; 4];
+          let mut dst_quad_points = [Point::ZERO; 4];
+          let mut valid = true;
+
+          for (i, (x, y)) in corners.iter().enumerate() {
+            let sx = *x * self.scale;
+            let sy = *y * self.scale;
+            let src_x = sx * record.parent_transform.sx
+              + sy * record.parent_transform.kx
+              + record.parent_transform.tx;
+            let src_y = sx * record.parent_transform.ky
+              + sy * record.parent_transform.sy
+              + record.parent_transform.ty;
+            src_quad[i] = Point::new(src_x - layer_origin.0 as f32, src_y - layer_origin.1 as f32);
+
+            let (tx, ty, _tz, tw) = projective_transform.transform_point(*x, *y, 0.0);
+            if !tw.is_finite() || tw.abs() < 1e-6 {
+              valid = false;
+              break;
+            }
+            let px = (tx / tw) * self.scale;
+            let py = (ty / tw) * self.scale;
+            let dst_x = px * record.parent_transform.sx
+              + py * record.parent_transform.kx
+              + record.parent_transform.tx;
+            let dst_y = px * record.parent_transform.ky
+              + py * record.parent_transform.sy
+              + record.parent_transform.ty;
+            dst_quad_points[i] = Point::new(dst_x, dst_y);
           }
-        };
 
-        let corners = [
-          (warp_bounds.min_x(), warp_bounds.min_y()),
-          (warp_bounds.max_x(), warp_bounds.min_y()),
-          (warp_bounds.max_x(), warp_bounds.max_y()),
-          (warp_bounds.min_x(), warp_bounds.max_y()),
-        ];
-
-        let mut src_quad = [Point::ZERO; 4];
-        let mut dst_quad_points = [Point::ZERO; 4];
-        let mut valid = true;
-
-        for (i, (x, y)) in corners.iter().enumerate() {
-          let sx = *x * self.scale;
-          let sy = *y * self.scale;
-          let src_x = sx * record.parent_transform.sx
-            + sy * record.parent_transform.kx
-            + record.parent_transform.tx;
-          let src_y = sx * record.parent_transform.ky
-            + sy * record.parent_transform.sy
-            + record.parent_transform.ty;
-          src_quad[i] = Point::new(src_x - layer_origin.0 as f32, src_y - layer_origin.1 as f32);
-
-          let (tx, ty, _tz, tw) = projective_transform.transform_point(*x, *y, 0.0);
-          if !tw.is_finite() || tw.abs() < 1e-6 {
-            valid = false;
-            break;
-          }
-          let px = (tx / tw) * self.scale;
-          let py = (ty / tw) * self.scale;
-          let dst_x = px * record.parent_transform.sx
-            + py * record.parent_transform.kx
-            + record.parent_transform.tx;
-          let dst_y = px * record.parent_transform.ky
-            + py * record.parent_transform.sy
-            + record.parent_transform.ty;
-          dst_quad_points[i] = Point::new(dst_x, dst_y);
-        }
-
-        let warp_valid = valid && Homography::from_quad_to_quad(src_quad, dst_quad_points).is_some();
-        warp_valid.then_some(ProjectiveBackdropFilterContext {
-          transform: projective_transform,
-          parent_transform: record.parent_transform,
-        })
-      });
+          let warp_valid =
+            valid && Homography::from_quad_to_quad(src_quad, dst_quad_points).is_some();
+          warp_valid.then_some(ProjectiveBackdropFilterContext {
+            transform: projective_transform,
+            parent_transform: record.parent_transform,
+          })
+        });
 
       (pending, layer_origin, projective_backdrop)
     };
@@ -9165,10 +9182,11 @@ impl DisplayListRenderer {
           .map_err(Error::Render)?;
         let scene_item = &scene_items[idx];
         let nested_backdrop_needs_update = !nested_backdrop_buffers.is_empty()
-          && scene_item
-            .backdrop_root_chain
-            .iter()
-            .any(|id| nested_backdrop_buffers.get(*id).is_some_and(|buf| buf.is_some()));
+          && scene_item.backdrop_root_chain.iter().any(|id| {
+            nested_backdrop_buffers
+              .get(*id)
+              .is_some_and(|buf| buf.is_some())
+          });
         let sampling_backdrop_root = scene_item.backdrop_root_chain.last().copied();
         let scene_result = (|| -> Result<()> {
           let has_backdrop = !scene_item.backdrop_filters.is_empty();
@@ -10767,23 +10785,25 @@ impl DisplayListRenderer {
               combined_transform = concat_transforms(combined_transform, t);
             }
           }
-        } else if item.transform.is_some() || (!self.projective_warp_enabled && warp_candidate_is_projective)
+        } else if item.transform.is_some()
+          || (!self.projective_warp_enabled && warp_candidate_is_projective)
         {
           let mut uses_warp_candidate = false;
-          let transform_for_canvas = if !self.projective_warp_enabled && warp_candidate_is_projective {
-            uses_warp_candidate = true;
-            &warp_candidate
-          } else if item.transform.is_some()
-            && (self.projective_warp_depth > 0 || !parent_perspective.is_identity())
-          {
-            // Even when the combined transform is affine on the z=0 plane (e.g. `perspective` +
-            // `translateZ`), we must apply the ancestor perspective to get the correct projected
-            // scale/translation for this stacking context.
-            uses_warp_candidate = true;
-            &warp_candidate
-          } else {
-            &local_transform
-          };
+          let transform_for_canvas =
+            if !self.projective_warp_enabled && warp_candidate_is_projective {
+              uses_warp_candidate = true;
+              &warp_candidate
+            } else if item.transform.is_some()
+              && (self.projective_warp_depth > 0 || !parent_perspective.is_identity())
+            {
+              // Even when the combined transform is affine on the z=0 plane (e.g. `perspective` +
+              // `translateZ`), we must apply the ancestor perspective to get the correct projected
+              // scale/translation for this stacking context.
+              uses_warp_candidate = true;
+              &warp_candidate
+            } else {
+              &local_transform
+            };
           let (t, valid) = self.to_skia_transform_checked(transform_for_canvas);
           if valid {
             local_skia_transform = Some(t);
@@ -10969,7 +10989,12 @@ impl DisplayListRenderer {
                   )?;
                 self.push_layer_mutation_state();
               } else {
-                self.push_layer_bounded_tracked(opacity, Some(blend), layer_rect, is_backdrop_root)?;
+                self.push_layer_bounded_tracked(
+                  opacity,
+                  Some(blend),
+                  layer_rect,
+                  is_backdrop_root,
+                )?;
               }
             } else if init_from_backdrop {
               self
@@ -11082,9 +11107,9 @@ impl DisplayListRenderer {
             bounds: Rect::ZERO,
             mask_bounds: Rect::ZERO,
             mask: None,
-             css_bounds: Rect::ZERO,
-             manual_blend: None,
-             layer_bounds: None,
+            css_bounds: Rect::ZERO,
+            manual_blend: None,
+            layer_bounds: None,
             layer_origin: (0, 0),
             global_transform_3d: Transform3D::identity(),
             projective_transform: None,
@@ -11094,7 +11119,7 @@ impl DisplayListRenderer {
             clip: None,
             culled: false,
             pending_backdrop: None,
-           });
+          });
 
         let _ = self.transform_stack.pop();
         let _ = self.perspective_stack.pop();
@@ -11710,6 +11735,7 @@ impl DisplayListRenderer {
 
     let draw_stroked_line = |pixmap: &mut Pixmap,
                              paint: &tiny_skia::Paint,
+                             segment_start: f32,
                              start: f32,
                              len: f32,
                              center: f32,
@@ -11734,7 +11760,8 @@ impl DisplayListRenderer {
         tiny_skia::LineCap::Butt
       };
       if let Some(arr) = dash {
-        stroke.dash = tiny_skia::StrokeDash::new(arr, 0.0);
+        let offset = dash_offset_for_segment(&arr, segment_start);
+        stroke.dash = tiny_skia::StrokeDash::new(arr, offset);
       }
 
       pixmap.stroke_path(&path, paint, &stroke, transform, clip.as_ref());
@@ -11742,6 +11769,7 @@ impl DisplayListRenderer {
 
     let draw_wavy_line = |pixmap: &mut Pixmap,
                           paint: &tiny_skia::Paint,
+                          segment_start: f32,
                           start: f32,
                           len: f32,
                           center: f32,
@@ -11752,33 +11780,111 @@ impl DisplayListRenderer {
       let wavelength = (thickness * 4.0).max(6.0);
       let amplitude = (thickness * 0.75).max(thickness * 0.5);
 
-      let mut path = PathBuilder::new();
-      if inline_vertical {
-        path.move_to(center, start);
-      } else {
-        path.move_to(start, center);
+      if !wavelength.is_finite() || wavelength <= 0.0 || !segment_start.is_finite() {
+        return;
       }
-      let mut cursor = start;
-      let mut up = true;
-      while cursor < start + len {
-        let end = (cursor + wavelength).min(start + len);
-        let mid = cursor + (end - cursor) * 0.5;
-        if inline_vertical {
-          let control_x = if up {
-            center - amplitude
-          } else {
-            center + amplitude
-          };
-          path.quad_to(control_x, mid, center, end);
-        } else {
-          let control_y = if up {
-            center - amplitude
-          } else {
-            center + amplitude
-          };
-          path.quad_to(mid, control_y, end, center);
+
+      let lerp = |a: (f32, f32), b: (f32, f32), t: f32| -> (f32, f32) {
+        (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+      };
+
+      let split_quadratic = |p0: (f32, f32),
+                             p1: (f32, f32),
+                             p2: (f32, f32),
+                             t: f32|
+       -> (
+        ((f32, f32), (f32, f32), (f32, f32)),
+        ((f32, f32), (f32, f32), (f32, f32)),
+      ) {
+        let p01 = lerp(p0, p1, t);
+        let p12 = lerp(p1, p2, t);
+        let p0112 = lerp(p01, p12, t);
+        ((p0, p01, p0112), (p0112, p12, p2))
+      };
+
+      let point_on_quadratic = |p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), t: f32| {
+        let p01 = lerp(p0, p1, t);
+        let p12 = lerp(p1, p2, t);
+        lerp(p01, p12, t)
+      };
+
+      let quadratic_subsegment = |p0: (f32, f32),
+                                  p1: (f32, f32),
+                                  p2: (f32, f32),
+                                  t0: f32,
+                                  t1: f32|
+       -> ((f32, f32), (f32, f32), (f32, f32)) {
+        if t0 <= 0.0 && t1 >= 1.0 {
+          return (p0, p1, p2);
         }
-        cursor = end;
+        let (left, _) = split_quadratic(p0, p1, p2, t1);
+        if t0 <= 0.0 {
+          return left;
+        }
+        let u = if t1 > 0.0 {
+          (t0 / t1).clamp(0.0, 1.0)
+        } else {
+          0.0
+        };
+        let (_, right) = split_quadratic(left.0, left.1, left.2, u);
+        right
+      };
+
+      let wave_points_for_cursor =
+        |cursor: f32, up: bool| -> ((f32, f32), (f32, f32), (f32, f32)) {
+          let sign = if up { -1.0 } else { 1.0 };
+          if inline_vertical {
+            (
+              (center, cursor),
+              (center + sign * amplitude, cursor + wavelength * 0.5),
+              (center, cursor + wavelength),
+            )
+          } else {
+            (
+              (cursor, center),
+              (cursor + wavelength * 0.5, center + sign * amplitude),
+              (cursor + wavelength, center),
+            )
+          }
+        };
+
+      let (cursor_start, mut up) = wavy_phase_for_segment(wavelength, segment_start);
+      // `cursor_start` is relative to the decoration's start (inline_start); convert to
+      // absolute coords so it can be compared to `start`.
+      let mut cursor = inline_start + cursor_start;
+      let end_pos = start + len;
+
+      // Position the path at the correct point along the wave, even when the segment starts mid
+      // "wavelength" (e.g. when skip-ink introduces a gap).
+      let (p0, p1, p2) = wave_points_for_cursor(cursor, up);
+      let t0 = ((start - cursor) / wavelength).clamp(0.0, 1.0);
+      let (sx, sy) = point_on_quadratic(p0, p1, p2, t0);
+      let mut path = PathBuilder::new();
+      path.move_to(sx, sy);
+
+      while cursor < end_pos {
+        let wave_end = cursor + wavelength;
+        let draw_start = start.max(cursor);
+        let draw_end = end_pos.min(wave_end);
+        if draw_end <= draw_start {
+          // Advance to the next wave segment if this one ends before the visible segment begins.
+          cursor = wave_end;
+          up = !up;
+          continue;
+        }
+
+        let (p0, p1, p2) = wave_points_for_cursor(cursor, up);
+        let t0 = ((draw_start - cursor) / wavelength).clamp(0.0, 1.0);
+        let t1 = ((draw_end - cursor) / wavelength).clamp(0.0, 1.0);
+        if t1 > t0 {
+          let (_q0, q1, q2) = quadratic_subsegment(p0, p1, p2, t0, t1);
+          path.quad_to(q1.0, q1.1, q2.0, q2.1);
+        }
+
+        if draw_end >= end_pos {
+          break;
+        }
+        cursor = wave_end;
         up = !up;
       }
 
@@ -11793,6 +11899,7 @@ impl DisplayListRenderer {
     let render_line = |pixmap: &mut Pixmap,
                        paint: &tiny_skia::Paint,
                        style: TextDecorationStyle,
+                       segment_start: f32,
                        start: f32,
                        len: f32,
                        center: f32,
@@ -11822,6 +11929,7 @@ impl DisplayListRenderer {
         draw_stroked_line(
           pixmap,
           paint,
+          segment_start,
           start,
           len,
           center,
@@ -11834,6 +11942,7 @@ impl DisplayListRenderer {
         draw_stroked_line(
           pixmap,
           paint,
+          segment_start,
           start,
           len,
           center,
@@ -11842,7 +11951,9 @@ impl DisplayListRenderer {
           false,
         );
       }
-      TextDecorationStyle::Wavy => draw_wavy_line(pixmap, paint, start, len, center, thickness),
+      TextDecorationStyle::Wavy => {
+        draw_wavy_line(pixmap, paint, segment_start, start, len, center, thickness)
+      }
     };
 
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
@@ -11864,7 +11975,8 @@ impl DisplayListRenderer {
                 pixmap,
                 &paint,
                 deco.style,
-                item.line_start + *start,
+                *start,
+                inline_start + *start,
                 len,
                 underline.center,
                 underline.thickness,
@@ -11875,6 +11987,7 @@ impl DisplayListRenderer {
               pixmap,
               &paint,
               deco.style,
+              0.0,
               inline_start,
               inline_len,
               underline.center,
@@ -11882,6 +11995,7 @@ impl DisplayListRenderer {
             );
           }
         }
+
         if let Some(overline) = &deco.overline {
           if let Some(segments) = &overline.segments {
             for (start, end) in segments {
@@ -11893,7 +12007,8 @@ impl DisplayListRenderer {
                 pixmap,
                 &paint,
                 deco.style,
-                item.line_start + *start,
+                *start,
+                inline_start + *start,
                 len,
                 overline.center,
                 overline.thickness,
@@ -11904,6 +12019,7 @@ impl DisplayListRenderer {
               pixmap,
               &paint,
               deco.style,
+              0.0,
               inline_start,
               inline_len,
               overline.center,
@@ -11911,6 +12027,7 @@ impl DisplayListRenderer {
             );
           }
         }
+
         if let Some(strike) = &deco.line_through {
           if let Some(segments) = &strike.segments {
             for (start, end) in segments {
@@ -11922,7 +12039,8 @@ impl DisplayListRenderer {
                 pixmap,
                 &paint,
                 deco.style,
-                item.line_start + *start,
+                *start,
+                inline_start + *start,
                 len,
                 strike.center,
                 strike.thickness,
@@ -11933,6 +12051,7 @@ impl DisplayListRenderer {
               pixmap,
               &paint,
               deco.style,
+              0.0,
               inline_start,
               inline_len,
               strike.center,
@@ -17174,7 +17293,8 @@ mod tests {
       }
     }
 
-    let (x, y, p_left) = candidate.expect("expected to find a pixel whose inverse-mapped sample crosses the backdrop boundary");
+    let (x, y, p_left) = candidate
+      .expect("expected to find a pixel whose inverse-mapped sample crosses the backdrop boundary");
     let expected = if p_left {
       // Invert(red) -> cyan.
       (0, 255, 255, 255)
@@ -17452,11 +17572,11 @@ mod tests {
     let combined_pixmap = render(&combined);
     let bg = (255, 255, 255, 255);
     let nested_bounds = non_background_bounds(&nested_pixmap, bg).expect("nested draws pixels");
-    let combined_bounds = non_background_bounds(&combined_pixmap, bg).expect("combined draws pixels");
+    let combined_bounds =
+      non_background_bounds(&combined_pixmap, bg).expect("combined draws pixels");
 
     assert_eq!(
-      nested_bounds,
-      combined_bounds,
+      nested_bounds, combined_bounds,
       "expected nested stacking-context composition to match combined transform composition"
     );
   }
