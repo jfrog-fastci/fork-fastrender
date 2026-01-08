@@ -663,6 +663,193 @@ fn animation_timing_function_ignores_invalid_value() {
 }
 
 #[test]
+fn animation_duration_ignores_invalid_value() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "animation-duration".into(),
+    value: PropertyValue::Keyword("2s".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+  assert_eq!(styles.animation_durations, vec![2000.0].into());
+
+  let invalid_decl = Declaration {
+    property: "animation-duration".into(),
+    value: PropertyValue::Keyword("wat".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(styles.animation_durations, vec![2000.0].into());
+}
+
+#[test]
+fn animation_duration_rejects_negative_values() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "animation-duration".into(),
+    value: PropertyValue::Keyword("2s".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  let invalid_decl = Declaration {
+    property: "animation-duration".into(),
+    value: PropertyValue::Keyword("-1s".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(styles.animation_durations, vec![2000.0].into());
+}
+
+#[test]
+fn animation_delay_ignores_invalid_value() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "animation-delay".into(),
+    value: PropertyValue::Keyword("1s".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+  assert_eq!(styles.animation_delays, vec![1000.0].into());
+
+  let invalid_decl = Declaration {
+    property: "animation-delay".into(),
+    value: PropertyValue::Keyword("wat".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(styles.animation_delays, vec![1000.0].into());
+}
+
+#[test]
+fn animation_shorthand_rejects_negative_duration() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "animation".into(),
+    value: PropertyValue::Keyword("fade 1s linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  let invalid_decl = Declaration {
+    property: "animation".into(),
+    value: PropertyValue::Keyword("fade -1s linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(styles.animation_durations, vec![1000.0].into());
+  assert_eq!(styles.animation_names, vec!["fade".to_string()]);
+}
+
+#[test]
 fn transition_timing_function_rejects_invalid_steps_function() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();

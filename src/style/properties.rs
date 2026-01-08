@@ -2410,36 +2410,30 @@ fn parse_number_or_calc(raw: &str) -> Option<f32> {
     .ok()
 }
 
-fn parse_animation_duration_list(raw: &str) -> Vec<f32> {
-  let mut times = Vec::new();
-  for part in split_top_level_commas(raw) {
+fn parse_animation_duration_list(raw: &str) -> Option<Vec<f32>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
+  }
+
+  let mut times = Vec::with_capacity(parts.len());
+  for part in parts {
     if part.trim().eq_ignore_ascii_case("auto") {
       times.push(ANIMATION_DURATION_AUTO_SENTINEL_MS);
       continue;
     }
-    if let Some(ms) = parse_time_ms(&part) {
-      times.push(ms.max(0.0));
+    let ms = parse_time_ms(&part)?;
+    if !ms.is_finite() || ms < 0.0 {
+      return None;
     }
+    times.push(ms);
   }
-  if times.is_empty() {
-    vec![0.0]
-  } else {
-    times
-  }
+
+  Some(times)
 }
 
-fn parse_animation_delay_list(raw: &str) -> Vec<f32> {
-  let mut times = Vec::new();
-  for part in split_top_level_commas(raw) {
-    if let Some(ms) = parse_time_ms(&part) {
-      times.push(ms);
-    }
-  }
-  if times.is_empty() {
-    vec![0.0]
-  } else {
-    times
-  }
+fn parse_animation_delay_list(raw: &str) -> Option<Vec<f32>> {
+  parse_transition_time_list(raw, true)
 }
 
 fn parse_animation_iteration_count(raw: &str) -> Option<AnimationIterationCount> {
@@ -2883,8 +2877,16 @@ fn parse_animation_shorthand(
     for token in split_top_level_whitespace(&part) {
       if let Some(ms) = parse_time_ms(&token) {
         if duration.is_none() {
-          duration = Some(ms.max(0.0));
+          if !ms.is_finite() || ms < 0.0 {
+            invalid = true;
+            break;
+          }
+          duration = Some(ms);
         } else if delay.is_none() {
+          if !ms.is_finite() {
+            invalid = true;
+            break;
+          }
           delay = Some(ms);
         } else {
           invalid = true;
@@ -11333,11 +11335,15 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "animation-duration" | "-webkit-animation-duration" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_durations = parse_animation_duration_list(css_text).into();
+      if let Some(list) = parse_animation_duration_list(css_text) {
+        styles.animation_durations = list.into();
+      }
     }
     "animation-delay" | "-webkit-animation-delay" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_delays = parse_animation_delay_list(css_text).into();
+      if let Some(list) = parse_animation_delay_list(css_text) {
+        styles.animation_delays = list.into();
+      }
     }
     "animation-timing-function" | "-webkit-animation-timing-function" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
