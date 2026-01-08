@@ -1759,6 +1759,10 @@ fn eval_style_range_value(
         ty: NumericType::Number,
         value: styles.font_weight.to_u16() as f32,
       }),
+      "font-stretch" => Some(NumericValue {
+        ty: NumericType::Percentage,
+        value: styles.font_stretch.to_percentage(),
+      }),
       "letter-spacing" => Some(NumericValue {
         ty: NumericType::LengthPx,
         value: styles.letter_spacing,

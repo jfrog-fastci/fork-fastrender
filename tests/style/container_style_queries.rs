@@ -748,6 +748,54 @@ fn container_style_query_range_feature_resolves_var_in_font_weight_value() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_font_stretch() {
+  let html = r#"
+    <style>
+      .container-normal { container-type: inline-size; font-stretch: 100%; }
+      .container-wide { container-type: inline-size; font-stretch: 150%; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-stretch > 100%) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-normal">
+      <div id="normal" class="child">hello</div>
+    </div>
+    <div class="container-wide">
+      <div id="wide" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let normal = find_by_id(&styled, "normal").expect("normal element");
+  let wide = find_by_id(&styled, "wide").expect("wide element");
+  assert_eq!(normal.styles.font_stretch.to_percentage(), 100.0);
+  assert_eq!(wide.styles.font_stretch.to_percentage(), 150.0);
+  assert_eq!(normal.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(wide.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_resolves_var_in_font_stretch_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; font-stretch: 150%; --min: 125%; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-stretch > var(--min)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_letter_spacing() {
   let html = r#"
     <style>

@@ -10180,6 +10180,9 @@ fn apply_declaration_with_base_internal_with_order(
       PropertyValue::Percentage(p) => {
         styles.font_stretch = FontStretch::from_percentage(*p);
       }
+      PropertyValue::Length(len) if len.unit == LengthUnit::Percent => {
+        styles.font_stretch = FontStretch::from_percentage(len.value);
+      }
       _ => {}
     },
     "font-kerning" => {
