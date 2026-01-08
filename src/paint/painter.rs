@@ -5442,16 +5442,70 @@ impl Painter {
       scale_y = tile_h / height as f32;
     }
 
+    // Avoid panics/aborts when the destination is extremely thin and would require an unbounded
+    // number of tiles (e.g. a huge width with a near-zero height and repeat-x=space).
+    // Bound the work and fall back to a repeating pattern shader in pathological cases.
+    const MAX_BORDER_IMAGE_TILES_PER_AXIS: f32 = 4096.0;
+    let paint_repeated_patch = |painter: &mut Self| {
+      let device_clip = painter.device_rect(dest_rect);
+      let Some(dest_sk_rect) = SkiaRect::from_xywh(
+        device_clip.x(),
+        device_clip.y(),
+        device_clip.width(),
+        device_clip.height(),
+      ) else {
+        return;
+      };
+      let mut paint = Paint::default();
+      paint.shader = Pattern::new(
+        patch_pixmap.as_ref(),
+        SpreadMode::Repeat,
+        FilterQuality::Bilinear,
+        1.0,
+        Transform::from_row(
+          scale_x * painter.scale,
+          0.0,
+          0.0,
+          scale_y * painter.scale,
+          painter.device_x(dest_rect.x()),
+          painter.device_y(dest_rect.y()),
+        ),
+      );
+      paint.anti_alias = false;
+      painter
+        .pixmap
+        .fill_rect(dest_sk_rect, &paint, Transform::identity(), None);
+    };
+
+    let tiles_x = dest_rect.width() / tile_w;
+    let tiles_y = dest_rect.height() / tile_h;
+    let too_many_x = repeat_x != BorderImageRepeat::Stretch
+      && (!tiles_x.is_finite() || tiles_x > MAX_BORDER_IMAGE_TILES_PER_AXIS);
+    let too_many_y = repeat_y != BorderImageRepeat::Stretch
+      && (!tiles_y.is_finite() || tiles_y > MAX_BORDER_IMAGE_TILES_PER_AXIS);
+    if too_many_x || too_many_y {
+      paint_repeated_patch(self);
+      return;
+    }
+
     let positions_x = match repeat_x {
       BorderImageRepeat::Stretch => vec![dest_rect.x()],
       BorderImageRepeat::Round => {
-        let mut pos = Vec::new();
-        let mut cursor = dest_rect.x();
         let end = dest_rect.x() + dest_rect.width();
         if tile_w <= 0.0 {
           return;
         }
-        while cursor < end - 1e-3 {
+        let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let mut pos = Vec::new();
+        if pos.try_reserve_exact(count).is_err() {
+          paint_repeated_patch(self);
+          return;
+        }
+        let mut cursor = dest_rect.x();
+        for _ in 0..count {
+          if cursor >= end - 1e-3 {
+            break;
+          }
           pos.push(cursor);
           cursor += tile_w;
         }
@@ -5461,16 +5515,21 @@ impl Painter {
         if tile_w <= 0.0 {
           return;
         }
-        let count = (dest_rect.width() / tile_w).floor();
+        let count = tiles_x.floor();
         if count < 1.0 {
           vec![dest_rect.x() + (dest_rect.width() - tile_w) * 0.5]
         } else if count < 2.0 {
           vec![dest_rect.x() + (dest_rect.width() - tile_w) * 0.5]
         } else {
           let spacing = (dest_rect.width() - tile_w * count) / (count - 1.0);
-          let mut pos = Vec::with_capacity(count as usize);
+          let count = count as usize;
+          let mut pos = Vec::new();
+          if pos.try_reserve_exact(count).is_err() {
+            paint_repeated_patch(self);
+            return;
+          }
           let mut cursor = dest_rect.x();
-          for _ in 0..(count as usize) {
+          for _ in 0..count {
             pos.push(cursor);
             cursor += tile_w + spacing;
           }
@@ -5478,13 +5537,21 @@ impl Painter {
         }
       }
       BorderImageRepeat::Repeat => {
-        let mut pos = Vec::new();
-        let mut cursor = dest_rect.x();
         let end = dest_rect.x() + dest_rect.width();
         if tile_w <= 0.0 {
           return;
         }
-        while cursor < end - 1e-3 {
+        let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let mut pos = Vec::new();
+        if pos.try_reserve_exact(count).is_err() {
+          paint_repeated_patch(self);
+          return;
+        }
+        let mut cursor = dest_rect.x();
+        for _ in 0..count {
+          if cursor >= end - 1e-3 {
+            break;
+          }
           pos.push(cursor);
           cursor += tile_w;
         }
@@ -5495,13 +5562,21 @@ impl Painter {
     let positions_y = match repeat_y {
       BorderImageRepeat::Stretch => vec![dest_rect.y()],
       BorderImageRepeat::Round => {
-        let mut pos = Vec::new();
-        let mut cursor = dest_rect.y();
         let end = dest_rect.y() + dest_rect.height();
         if tile_h <= 0.0 {
           return;
         }
-        while cursor < end - 1e-3 {
+        let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let mut pos = Vec::new();
+        if pos.try_reserve_exact(count).is_err() {
+          paint_repeated_patch(self);
+          return;
+        }
+        let mut cursor = dest_rect.y();
+        for _ in 0..count {
+          if cursor >= end - 1e-3 {
+            break;
+          }
           pos.push(cursor);
           cursor += tile_h;
         }
@@ -5511,16 +5586,21 @@ impl Painter {
         if tile_h <= 0.0 {
           return;
         }
-        let count = (dest_rect.height() / tile_h).floor();
+        let count = tiles_y.floor();
         if count < 1.0 {
           vec![dest_rect.y() + (dest_rect.height() - tile_h) * 0.5]
         } else if count < 2.0 {
           vec![dest_rect.y() + (dest_rect.height() - tile_h) * 0.5]
         } else {
           let spacing = (dest_rect.height() - tile_h * count) / (count - 1.0);
-          let mut pos = Vec::with_capacity(count as usize);
+          let count = count as usize;
+          let mut pos = Vec::new();
+          if pos.try_reserve_exact(count).is_err() {
+            paint_repeated_patch(self);
+            return;
+          }
           let mut cursor = dest_rect.y();
-          for _ in 0..(count as usize) {
+          for _ in 0..count {
             pos.push(cursor);
             cursor += tile_h + spacing;
           }
@@ -5528,13 +5608,21 @@ impl Painter {
         }
       }
       BorderImageRepeat::Repeat => {
-        let mut pos = Vec::new();
-        let mut cursor = dest_rect.y();
         let end = dest_rect.y() + dest_rect.height();
         if tile_h <= 0.0 {
           return;
         }
-        while cursor < end - 1e-3 {
+        let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let mut pos = Vec::new();
+        if pos.try_reserve_exact(count).is_err() {
+          paint_repeated_patch(self);
+          return;
+        }
+        let mut cursor = dest_rect.y();
+        for _ in 0..count {
+          if cursor >= end - 1e-3 {
+            break;
+          }
           pos.push(cursor);
           cursor += tile_h;
         }
@@ -19716,6 +19804,42 @@ mod tests {
       ),
       (255, 0, 255)
     );
+  }
+
+  #[test]
+  fn paint_border_patch_space_repeat_does_not_panic_on_pathological_tile_counts() {
+    let mut painter = Painter::new(4, 4, Rgba::WHITE).expect("painter");
+
+    let mut source = Pixmap::new(1, 1).expect("pixmap");
+    source.fill(tiny_skia::Color::from_rgba8(255, 0, 255, 255));
+    let src_rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+
+    // Extremely thin destination height makes the computed tile width tiny, which historically led
+    // to `Vec::with_capacity(count as usize)` panicking when count overflowed.
+    let dest_rect_x = Rect::from_xywh(0.0, 0.0, 10.0, 1e-30);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      painter.paint_border_patch(
+        &source,
+        src_rect,
+        dest_rect_x,
+        BorderImageRepeat::Space,
+        BorderImageRepeat::Stretch,
+      );
+    }));
+    assert!(result.is_ok());
+
+    // Mirror the failure mode for the y axis by making the destination width tiny.
+    let dest_rect_y = Rect::from_xywh(0.0, 0.0, 1e-30, 10.0);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      painter.paint_border_patch(
+        &source,
+        src_rect,
+        dest_rect_y,
+        BorderImageRepeat::Stretch,
+        BorderImageRepeat::Space,
+      );
+    }));
+    assert!(result.is_ok());
   }
 
   #[test]
