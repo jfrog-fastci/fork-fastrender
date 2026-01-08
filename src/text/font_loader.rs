@@ -2792,30 +2792,42 @@ fn font_supports_feature(font: &LoadedFont, tag: [u8; 4]) -> bool {
     None => return false,
   };
 
-  let mut base = UnicodeBuffer::new();
-  base.push_str("x");
-  let base_shape = rustybuzz::shape(&face, &[], base);
-  let mut feature_buf = UnicodeBuffer::new();
-  feature_buf.push_str("x");
-  let feature = Feature {
-    tag: Tag::from_bytes(&tag),
-    value: 1,
-    start: 0,
-    end: u32::MAX,
-  };
-  let feature_shape = rustybuzz::shape(&face, &[feature], feature_buf);
-
-  let base_info = base_shape.glyph_infos().first().copied();
-  let feature_info = feature_shape.glyph_infos().first().copied();
-  let base_pos = base_shape.glyph_positions().first().copied();
-  let feature_pos = feature_shape.glyph_positions().first().copied();
-
-  if let (Some(bi), Some(fi), Some(bp), Some(fp)) = (base_info, feature_info, base_pos, feature_pos)
-  {
-    bi.glyph_id != fi.glyph_id || bp.x_advance != fp.x_advance || bp.y_offset != fp.y_offset
+  const DEFAULT_SAMPLES: [&str; 1] = ["x"];
+  const C2SC_SAMPLES: [&str; 2] = ["A", "X"];
+  let samples = if tag == *b"c2sc" {
+    &C2SC_SAMPLES[..]
   } else {
-    false
+    &DEFAULT_SAMPLES[..]
+  };
+
+  for sample in samples {
+    let mut base = UnicodeBuffer::new();
+    base.push_str(sample);
+    let base_shape = rustybuzz::shape(&face, &[], base);
+    let mut feature_buf = UnicodeBuffer::new();
+    feature_buf.push_str(sample);
+    let feature = Feature {
+      tag: Tag::from_bytes(&tag),
+      value: 1,
+      start: 0,
+      end: u32::MAX,
+    };
+    let feature_shape = rustybuzz::shape(&face, &[feature], feature_buf);
+
+    let base_info = base_shape.glyph_infos().first().copied();
+    let feature_info = feature_shape.glyph_infos().first().copied();
+    let base_pos = base_shape.glyph_positions().first().copied();
+    let feature_pos = feature_shape.glyph_positions().first().copied();
+
+    if let (Some(bi), Some(fi), Some(bp), Some(fp)) = (base_info, feature_info, base_pos, feature_pos)
+    {
+      if bi.glyph_id != fi.glyph_id || bp.x_advance != fp.x_advance || bp.y_offset != fp.y_offset {
+        return true;
+      }
+    }
   }
+
+  false
 }
 
 fn has_prefix_ignore_ascii_case(value: &str, prefix: &str) -> bool {
