@@ -12,6 +12,11 @@ const MAX_JS_REDIRECT_SCAN_BYTES: usize = 256 * 1024;
 const MAX_REFRESH_CONTENT_LEN: usize = 8 * 1024;
 const MAX_ATTRIBUTES_PER_TAG: usize = 128;
 
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn scan_html_prefix(html: &str, max_bytes: usize) -> &str {
   if html.len() <= max_bytes {
     return html;
@@ -478,7 +483,7 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
           i += 1;
         }
         if i > start {
-          let candidate = decoded[start..i].trim();
+          let candidate = trim_ascii_whitespace(&decoded[start..i]);
           if !candidate.is_empty()
             && candidate.len() <= MAX_REDIRECT_LEN
             && (starts_with_ignore_ascii_case(candidate, "http")
@@ -714,7 +719,7 @@ fn extract_js_string_literal(decoded: &str, start_idx: usize, max_len: usize) ->
   }
 
   let end = i.min(decoded.len());
-  let candidate = decoded[start..end].trim();
+  let candidate = trim_ascii_whitespace(&decoded[start..end]);
   if candidate.is_empty() || candidate.len() > max_len {
     return None;
   }
@@ -847,10 +852,8 @@ fn unescape_js_literal(s: &str) -> String {
 fn normalize_attr_value(value: &str) -> String {
   let unescaped = value.replace("\\\"", "\"").replace("\\'", "'");
   let trimmed_slashes = unescaped.trim_end_matches('\\');
-  trimmed_slashes
-    .trim_matches(|c| c == '"' || c == '\'')
-    .trim()
-    .to_string()
+  let unquoted = trimmed_slashes.trim_matches(|c| c == '"' || c == '\'');
+  trim_ascii_whitespace(unquoted).to_string()
 }
 
 fn parse_refresh_content(content: &str) -> Option<String> {
@@ -877,7 +880,7 @@ fn parse_refresh_content(content: &str) -> Option<String> {
           }
 
           let value = slice_until_unquoted_semicolon(&decoded, j);
-          let cleaned = value.trim().trim_matches(['"', '\'']);
+          let cleaned = trim_ascii_whitespace(value).trim_matches(['"', '\'']);
           if !cleaned.is_empty() {
             return Some(cleaned.to_string());
           }
@@ -930,9 +933,9 @@ fn decode_refresh_entities(content: &str) -> String {
     }
 
     let raw_entity = &content[i..j];
-    let entity = raw_entity.trim();
+    let entity = trim_ascii_whitespace(raw_entity);
     let decoded = if let Some(num) = entity.strip_prefix('#') {
-      let trimmed = num.trim();
+      let trimmed = trim_ascii_whitespace(num);
       let parsed = if let Some(hex) = trimmed.strip_prefix(['x', 'X']) {
         u32::from_str_radix(hex, 16).ok()
       } else {
@@ -1040,6 +1043,18 @@ mod tests {
     assert_eq!(
       extract_meta_refresh_url(html),
       Some("/html/?q=1&r=2".to_string())
+    );
+  }
+
+  #[test]
+  fn preserves_non_ascii_whitespace_in_meta_refresh_url() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      r#"<meta http-equiv="refresh" content="0; url={nbsp}/fallback.html">"#
+    );
+    assert_eq!(
+      extract_meta_refresh_url(&html),
+      Some(format!("{nbsp}/fallback.html"))
     );
   }
 
