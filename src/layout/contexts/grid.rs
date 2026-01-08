@@ -12370,8 +12370,8 @@ mod tests {
         );
         assert_eq!(fragment.children.len(), 1);
         let child_fragment = fragment.children.pop().unwrap();
-        match child_fragment.content {
-          FragmentContent::Block { box_id } => assert_eq!(box_id, Some(2)),
+        match &child_fragment.content {
+          FragmentContent::Block { box_id } => assert_eq!(*box_id, Some(2)),
           other => panic!("unexpected fragment content: {other:?}"),
         }
         assert!(child_fragment.style.is_some());

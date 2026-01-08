@@ -23,8 +23,10 @@ pub enum ScriptType {
   Unknown,
 }
 
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+// Notably, this does *not* include U+000B VT (vertical tab).
 fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| c.is_ascii_whitespace())
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
 /// A parsed `<script>` element, normalized into a scheduler-friendly record.
@@ -222,6 +224,20 @@ mod tests {
     assert_eq!(determine_script_type(&node), ScriptType::Unknown);
 
     let node = script(&[("type", js_trailing.as_str())]);
+    assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+  }
+
+  #[test]
+  fn type_trimming_excludes_vertical_tab() {
+    // HTML's ASCII whitespace definition does not include U+000B VT.
+    let vt = "\u{000B}";
+
+    let module_wrapped = format!("{vt}module{vt}");
+    let node = script(&[("type", module_wrapped.as_str())]);
+    assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+
+    let js_wrapped = format!("{vt}text/javascript{vt}");
+    let node = script(&[("type", js_wrapped.as_str())]);
     assert_eq!(determine_script_type(&node), ScriptType::Unknown);
   }
 }

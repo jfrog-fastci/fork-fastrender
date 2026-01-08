@@ -6617,7 +6617,7 @@ impl FastRender {
         options.element_scroll_offsets.clone(),
       ),
       animation_time: options.animation_time,
-      font_context: self.font_context.clone(),
+      font_context: self.font_context.snapshot(),
       image_cache: self.image_cache.clone(),
       max_iframe_depth: self.max_iframe_depth,
       paint_parallelism,
@@ -6920,18 +6920,24 @@ impl FastRender {
     let timings_enabled = std::env::var_os("FASTR_RENDER_TIMINGS").is_some();
     let mut stage_start = timings_enabled.then(Instant::now);
 
-    self.update_base_url_from_dom(&dom);
-    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)? {
-      let needs_update = self
-        .resource_context
-        .as_ref()
-        .is_some_and(|ctx| ctx.referrer_policy != policy);
-      if needs_update {
-        if let Some(mut ctx) = self.resource_context.clone() {
-          ctx.referrer_policy = policy;
-          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
-          // resource context.
-          self.push_resource_context(Some(ctx));
+    record_stage(StageHeartbeat::DomParse);
+    {
+      let _span = trace.span("dom_input", "prepare");
+      self.update_base_url_from_dom(&dom);
+      if let Some(policy) =
+        crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)?
+      {
+        let needs_update = self
+          .resource_context
+          .as_ref()
+          .is_some_and(|ctx| ctx.referrer_policy != policy);
+        if needs_update {
+          if let Some(mut ctx) = self.resource_context.clone() {
+            ctx.referrer_policy = policy;
+            // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+            // resource context.
+            self.push_resource_context(Some(ctx));
+          }
         }
       }
     }
@@ -7007,7 +7013,7 @@ impl FastRender {
         options.element_scroll_offsets.clone(),
       ),
       animation_time: options.animation_time,
-      font_context: self.font_context.clone(),
+      font_context: self.font_context.snapshot(),
       image_cache: self.image_cache.clone(),
       max_iframe_depth: self.max_iframe_depth,
       paint_parallelism,

@@ -4490,7 +4490,7 @@ impl BlockFormattingContext {
           offset
         };
         fragment_heights[index] = axis.block_size(&clipped.logical_bounding_box());
-        let mut children: Vec<_> = clipped.children.into_iter().collect();
+        let mut children: Vec<_> = std::mem::take(&mut clipped.children).into_iter().collect();
         for child in &mut children {
           let (child_wm, child_dir) = child
             .style
@@ -6949,8 +6949,7 @@ fn convert_fragment_axes(
     }
     let child_inline = inline_size;
     let child_block = block_size;
-    let mapped_children: Vec<_> = fragment
-      .children
+    let mapped_children: Vec<_> = std::mem::take(&mut fragment.children)
       .into_iter()
       .map(|c| convert_fragment_axes(c, child_inline, child_block, style_wm, dir))
       .collect();
@@ -6960,8 +6959,7 @@ fn convert_fragment_axes(
     // Keep axes; only recurse.
     let child_inline = inline_size;
     let child_block = block_size;
-    let mapped_children: Vec<_> = fragment
-      .children
+    let mapped_children: Vec<_> = std::mem::take(&mut fragment.children)
       .into_iter()
       .map(|c| convert_fragment_axes(c, child_inline, child_block, style_wm, dir))
       .collect();
@@ -7027,8 +7025,7 @@ fn unconvert_fragment_axes(
       Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size);
     let child_inline = inline_size;
     let child_block = block_size;
-    let mapped_children: Vec<_> = fragment
-      .children
+    let mapped_children: Vec<_> = std::mem::take(&mut fragment.children)
       .into_iter()
       .map(|c| unconvert_fragment_axes(c, child_inline, child_block, style_wm, dir))
       .collect();
@@ -7038,8 +7035,7 @@ fn unconvert_fragment_axes(
     // Keep axes; only recurse.
     let inline_size = fragment.bounds.width();
     let block_size = fragment.bounds.height();
-    let mapped_children: Vec<_> = fragment
-      .children
+    let mapped_children: Vec<_> = std::mem::take(&mut fragment.children)
       .into_iter()
       .map(|c| unconvert_fragment_axes(c, inline_size, block_size, style_wm, dir))
       .collect();
