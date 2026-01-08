@@ -1678,10 +1678,15 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
 
     let tmp = tmp_path(&alias_path);
-    let mut stored = fs::read(&alias_path)
-      .ok()
-      .and_then(|bytes| serde_json::from_slice::<StoredAlias>(&bytes).ok())
-      .unwrap_or_default();
+    let mut stored = read_path_prefix_with_deadline(
+      &alias_path,
+      DISK_META_READ_STAGE,
+      DISK_META_READ_CHUNK_SIZE,
+      DISK_ALIAS_MAX_BYTES,
+    )
+    .ok()
+    .and_then(|bytes| serde_json::from_slice::<StoredAlias>(&bytes).ok())
+    .unwrap_or_default();
     stored.target = None;
     stored
       .targets
