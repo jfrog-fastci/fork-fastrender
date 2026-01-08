@@ -28,6 +28,7 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
@@ -1014,13 +1015,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         referrer_policy: base_request.referrer_policy,
         credentials_mode,
       };
+      let request_sig = super::inflight_signature_for_request(&self.memory.inner, request);
       let Some(vary_key) =
         super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
       else {
         // If we can't compute the vary key (e.g. unknown header values or Vary:*), treat as a miss
         // rather than risking a poisoned reuse.
         let Some(next) =
-          self.read_alias_target(kind, &current, origin_key, credentials_mode)
+          self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
         else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1124,7 +1126,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         SnapshotRead::Miss => {}
       }
 
-      let Some(next) = self.read_alias_target(kind, &current, origin_key, credentials_mode) else {
+      let Some(next) =
+        self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+      else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -1172,11 +1176,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         referrer_policy: base_request.referrer_policy,
         credentials_mode,
       };
+      let request_sig = super::inflight_signature_for_request(&self.memory.inner, request);
       let Some(vary_key) =
         super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
       else {
         let Some(next) =
-          self.read_alias_target(kind, &current, origin_key, credentials_mode)
+          self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
         else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1288,7 +1293,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         SnapshotPrefixRead::Miss => {}
       }
 
-      let Some(next) = self.read_alias_target(kind, &current, origin_key, credentials_mode) else {
+      let Some(next) =
+        self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+      else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -1315,6 +1322,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
   ) -> SnapshotRead {
     if self.lock_is_active(data_path) {
       return SnapshotRead::Locked;
+    }
+
+    if !meta_path.exists() {
+      if data_path.exists() {
+        self.remove_entry_if_unlocked(key, data_path, meta_path);
+      }
+      return SnapshotRead::Miss;
     }
 
     let meta_bytes =
@@ -1456,6 +1470,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       return SnapshotPrefixRead::Locked;
     }
 
+    if !meta_path.exists() {
+      if data_path.exists() {
+        self.remove_entry_if_unlocked(key, data_path, meta_path);
+      }
+      return SnapshotPrefixRead::Miss;
+    }
+
     let meta_bytes =
       match read_path_with_deadline(meta_path, DISK_META_READ_STAGE, DISK_META_READ_CHUNK_SIZE) {
         Ok(bytes) => bytes,
@@ -1556,12 +1577,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     url: &str,
     origin_key: Option<&str>,
     credentials_mode: super::FetchCredentialsMode,
+    request_sig: &str,
   ) -> Option<String> {
     let alias_path = self.alias_path_with_partition(kind, url, origin_key, credentials_mode);
     fs::read(&alias_path)
       .ok()
       .and_then(|bytes| serde_json::from_slice::<StoredAlias>(&bytes).ok())
-      .map(|alias| alias.target)
+      .and_then(|alias| alias.target_for_sig(request_sig).map(|s| s.to_string()))
   }
 
   fn remove_alias_for(
@@ -1586,6 +1608,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     canonical: &str,
     origin_key: Option<&str>,
     credentials_mode: super::FetchCredentialsMode,
+    request_sig: &str,
   ) {
     if alias == canonical || self.should_skip_disk(alias) || self.should_skip_disk(canonical) {
       return;
@@ -1600,10 +1623,15 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
 
     let tmp = tmp_path(&alias_path);
-    let alias = StoredAlias {
-      target: canonical.to_string(),
-    };
-    match serde_json::to_vec(&alias) {
+    let mut stored = fs::read(&alias_path)
+      .ok()
+      .and_then(|bytes| serde_json::from_slice::<StoredAlias>(&bytes).ok())
+      .unwrap_or_default();
+    stored.target = None;
+    stored
+      .targets
+      .insert(request_sig.to_string(), canonical.to_string());
+    match serde_json::to_vec(&stored) {
       Ok(serialized)
         if !self.disk_writeback_disabled_for_len(serialized.len())
           && fs::write(&tmp, &serialized).is_ok() =>
@@ -2113,11 +2141,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         referrer_policy: base_request.referrer_policy,
         credentials_mode,
       };
+      let request_sig = super::inflight_signature_for_request(&self.memory.inner, request);
       let Some(vary_key) =
         super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
       else {
         let Some(next) =
-          self.read_alias_target(kind, &current, origin_key, credentials_mode)
+          self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
         else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -2223,7 +2252,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         SnapshotRead::Miss => {}
       }
 
-      let Some(next) = self.read_alias_target(kind, &current, origin_key, credentials_mode) else {
+      let Some(next) =
+        self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+      else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -2457,7 +2488,25 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       });
 
     if canonical != url {
-      self.persist_alias(kind, url, &canonical, origin_key, credentials_mode);
+      let request_sig = super::inflight_signature_for_request(
+        &self.memory.inner,
+        FetchRequest {
+          url,
+          destination: request.destination,
+          referrer_url: request.referrer_url,
+          client_origin: request.client_origin,
+          referrer_policy: request.referrer_policy,
+          credentials_mode,
+        },
+      );
+      self.persist_alias(
+        kind,
+        url,
+        &canonical,
+        origin_key,
+        credentials_mode,
+        &request_sig,
+      );
     }
   }
 
@@ -2513,6 +2562,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           ) {
             self.memory.cache_entry(
               &key,
+              request,
               res.vary.clone(),
               vary_key,
               super::CacheEntry {
@@ -2527,12 +2577,15 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           }
         }
         if canonical != url {
+          let request_sig =
+            super::inflight_signature_for_request(&self.memory.inner, request);
           self.persist_alias(
             kind,
             url,
             canonical,
             key.origin_key.as_deref(),
             key.credentials_mode,
+            &request_sig,
           );
         }
       }
@@ -2673,6 +2726,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
                   let canonical = self.memory.cache_entry(
                     &key,
+                    request,
                     stored_resource.vary.clone(),
                     vary_key,
                     super::CacheEntry {
@@ -2698,12 +2752,15 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                         canonical.credentials_mode,
                       );
                       if canonical.url != url {
+                        let request_sig =
+                          super::inflight_signature_for_request(&self.memory.inner, request);
                         self.persist_alias(
                           kind,
                           url,
                           &canonical.url,
                           canonical.origin_key.as_deref(),
                           canonical.credentials_mode,
+                          &request_sig,
                         );
                       }
                     }
@@ -2726,7 +2783,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 } else {
                   // If we can't compute the vary key (unknown request header values), treat as
                   // uncacheable to avoid poisoned reuse.
-                  self.memory.remove_cached(&key);
+                  self.memory.remove_cached(&key, request);
                   self.remove_entry_for_url(
                     kind,
                     &canonical_url,
@@ -2738,7 +2795,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                   }
                 }
               } else {
-                self.memory.remove_cached(&key);
+                self.memory.remove_cached(&key, request);
                 let canonical = self.canonical_url(url, ok.final_url.as_deref());
                 self.remove_entry_for_url(
                   kind,
@@ -2842,6 +2899,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
                   let canonical = self.memory.cache_entry(
                     &key,
+                    request,
                     res.vary.clone(),
                     vary_key,
                     super::CacheEntry {
@@ -2871,12 +2929,15 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                         canonical.credentials_mode,
                       );
                       if canonical.url != url {
+                        let request_sig =
+                          super::inflight_signature_for_request(&self.memory.inner, request);
                         self.persist_alias(
                           kind,
                           url,
                           &canonical.url,
                           canonical.origin_key.as_deref(),
                           canonical.credentials_mode,
+                          &request_sig,
                         );
                       }
                     }
@@ -2975,6 +3036,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               ) {
                 let canonical = self.memory.cache_entry(
                   &key,
+                  request,
                   res.vary.clone(),
                   vary_key,
                   entry,
@@ -3008,12 +3070,15 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                     );
                   }
                   if canonical.url != url {
+                    let request_sig =
+                      super::inflight_signature_for_request(&self.memory.inner, request);
                     self.persist_alias(
                       kind,
                       url,
                       &canonical.url,
                       canonical.origin_key.as_deref(),
                       canonical.credentials_mode,
+                      &request_sig,
                     );
                   }
                 } else {
@@ -3033,7 +3098,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                   }
                 }
               } else {
-                self.memory.remove_cached(&key);
+                self.memory.remove_cached(&key, request);
                 self.remove_entry_for_url(
                   kind,
                   &canonical_url,
@@ -3051,7 +3116,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               .unwrap_or(false)
               && !self.memory.config.allow_no_store
             {
-              self.memory.remove_cached(&key);
+              self.memory.remove_cached(&key, request);
               let canonical = self.canonical_url(url, res.final_url.as_deref());
               self.remove_entry_for_url(
                 kind,
@@ -3085,13 +3150,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               .lock()
               .ok()
               .map(|mut state| {
-                let canonical = self.memory.resolve_alias_locked(&mut state, &key);
+                let canonical = self.memory.resolve_alias_locked(&mut state, &key, request);
                 state.lru.peek(&canonical).is_some()
               })
               .unwrap_or(false);
             if !has_bucket {
               self.memory.cache_entry(
                 &key,
+                request,
                 None,
                 super::VARY_KEY_EMPTY.to_string(),
                 super::CacheEntry {
@@ -3414,9 +3480,25 @@ fn bool_is_false(value: &bool) -> bool {
   !*value
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 struct StoredAlias {
-  target: String,
+  /// Legacy alias target written by older FastRender versions.
+  ///
+  /// Newer cache entries use [`StoredAlias::targets`] keyed by request signature so redirects that
+  /// vary by request headers do not poison one another.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  target: Option<String>,
+  #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+  targets: HashMap<String, String>,
+}
+
+impl StoredAlias {
+  fn target_for_sig(&self, request_sig: &str) -> Option<&str> {
+    if !self.targets.is_empty() {
+      return self.targets.get(request_sig).map(String::as_str);
+    }
+    self.target.as_deref()
+  }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -6370,7 +6452,11 @@ mod tests {
     let alias_path = disk.alias_path(TEST_KIND, start_url);
     let alias_bytes = fs::read(&alias_path).expect("alias should be written");
     let alias: StoredAlias = serde_json::from_slice(&alias_bytes).expect("valid alias json");
-    assert_eq!(alias.target, canonical_url);
+    let request_sig = super::super::inflight_signature_for_request(
+      &disk.memory.inner,
+      FetchRequest::new(start_url, TEST_KIND.into()),
+    );
+    assert_eq!(alias.target_for_sig(&request_sig), Some(canonical_url));
 
     let second = disk.fetch(start_url).expect("fallback fetch");
     assert_eq!(second.bytes, b"cached");
@@ -6383,7 +6469,8 @@ mod tests {
     let alias_bytes = fs::read(&alias_path).expect("alias should remain after fallback");
     let alias: StoredAlias = serde_json::from_slice(&alias_bytes).expect("valid alias json");
     assert_eq!(
-      alias.target, canonical_url,
+      alias.target_for_sig(&request_sig),
+      Some(canonical_url),
       "HTTP error refresh should not overwrite alias target"
     );
 
@@ -6520,7 +6607,8 @@ mod tests {
     let alias_path = disk.alias_path(FetchContextKind::Stylesheet, start_url);
     let alias_bytes = fs::read(&alias_path).expect("alias should be written");
     let alias: StoredAlias = serde_json::from_slice(&alias_bytes).expect("valid alias json");
-    assert_eq!(alias.target, canonical_url);
+    let request_sig = super::super::inflight_signature_for_request(&disk.memory.inner, req);
+    assert_eq!(alias.target_for_sig(&request_sig), Some(canonical_url));
 
     let second = disk.fetch_with_request(req).expect("fallback fetch");
     assert_eq!(second.bytes, b"cached");
@@ -6533,7 +6621,8 @@ mod tests {
     let alias_bytes = fs::read(&alias_path).expect("alias should remain after fallback");
     let alias: StoredAlias = serde_json::from_slice(&alias_bytes).expect("valid alias json");
     assert_eq!(
-      alias.target, canonical_url,
+      alias.target_for_sig(&request_sig),
+      Some(canonical_url),
       "HTTP error refresh should not overwrite alias target"
     );
 
@@ -6549,6 +6638,105 @@ mod tests {
     assert_eq!(calls[1].url, start_url);
     assert_eq!(calls[1].etag.as_deref(), Some("etag1"));
     assert_eq!(calls[2].url, error_final_url);
+  }
+
+  #[test]
+  fn disk_cache_redirect_aliases_are_request_signature_aware() {
+    #[derive(Clone)]
+    struct ReferrerAliasingFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ReferrerAliasingFetcher {
+      fn new() -> Self {
+        Self {
+          calls: Arc::new(AtomicUsize::new(0)),
+        }
+      }
+
+      fn call_count(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+      }
+    }
+
+    impl ResourceFetcher for ReferrerAliasingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("fetch() should not be called by fetch_with_request tests");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let referer = req.referrer_url.unwrap_or("");
+        let (final_url, body) = if referer.contains("a.example") {
+          (
+            "https://example.com/canonical-a",
+            b"canonical-a".to_vec(),
+          )
+        } else {
+          (
+            "https://example.com/canonical-b",
+            b"canonical-b".to_vec(),
+          )
+        };
+        Ok(FetchedResource::with_final_url(
+          body,
+          Some("text/plain".to_string()),
+          Some(final_url.to_string()),
+        ))
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        match header_name {
+          "accept-encoding" => Some("gzip".to_string()),
+          "accept-language" => Some("en".to_string()),
+          "origin" => Some(req.client_origin.map(ToString::to_string).unwrap_or_default()),
+          "referer" => Some(req.referrer_url.unwrap_or("").to_string()),
+          "user-agent" => Some("fastrender-test".to_string()),
+          _ => None,
+        }
+      }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let fetcher = ReferrerAliasingFetcher::new();
+    let start_url = "https://example.com/start";
+    let canonical_a_url = "https://example.com/canonical-a";
+    let canonical_b_url = "https://example.com/canonical-b";
+
+    let req_a =
+      FetchRequest::new(start_url, FetchDestination::Other).with_referrer_url("https://a.example/");
+    let req_b =
+      FetchRequest::new(start_url, FetchDestination::Other).with_referrer_url("https://b.example/");
+
+    let disk = DiskCachingFetcher::new(fetcher.clone(), tmp.path());
+    let first = disk.fetch_with_request(req_a).expect("seed fetch");
+    assert_eq!(first.bytes, b"canonical-a");
+    assert_eq!(first.final_url.as_deref(), Some(canonical_a_url));
+    assert_eq!(fetcher.call_count(), 1);
+
+    let disk_again = DiskCachingFetcher::new(fetcher.clone(), tmp.path());
+    let second = disk_again.fetch_with_request(req_b).expect("second fetch");
+    assert_eq!(second.bytes, b"canonical-b");
+    assert_eq!(
+      second.final_url.as_deref(),
+      Some(canonical_b_url),
+      "second request should not follow redirect alias from the first request signature",
+    );
+    assert_eq!(
+      fetcher.call_count(),
+      2,
+      "redirect alias should not cause a disk-cache hit across request signatures",
+    );
+
+    let disk_third = DiskCachingFetcher::new(fetcher.clone(), tmp.path());
+    let third = disk_third.fetch_with_request(req_a).expect("third fetch");
+    assert_eq!(third.bytes, b"canonical-a");
+    assert_eq!(third.final_url.as_deref(), Some(canonical_a_url));
+    assert_eq!(
+      fetcher.call_count(),
+      2,
+      "third request should hit cached entry keyed by its request signature",
+    );
   }
 
   #[test]

@@ -7484,7 +7484,7 @@ impl CacheKey {
 struct CacheState {
   lru: LruCache<CacheKey, CacheVariants>,
   current_bytes: usize,
-  aliases: HashMap<CacheKey, CacheKey>,
+  aliases: HashMap<CacheKey, HashMap<String, CacheKey>>,
 }
 
 impl CacheState {
@@ -7881,39 +7881,48 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     self.evict_locked(state);
   }
 
-  fn set_alias_locked(&self, state: &mut CacheState, alias: &CacheKey, canonical: &CacheKey) {
-    if alias == canonical {
-      state.aliases.remove(alias);
-      return;
-    }
-
-    let mut target = canonical.clone();
-    let mut hops = 0usize;
-    let mut visited: HashSet<CacheKey> = HashSet::new();
-    while let Some(next) = state.aliases.get(&target) {
-      if hops >= MAX_ALIAS_HOPS || !visited.insert(target.clone()) {
-        return;
+  fn remove_alias_mapping_locked(state: &mut CacheState, alias: &CacheKey, request_sig: &str) {
+    if let Some(map) = state.aliases.get_mut(alias) {
+      map.remove(request_sig);
+      if map.is_empty() {
+        state.aliases.remove(alias);
       }
-      target = next.clone();
-      hops += 1;
     }
+  }
 
-    if &target == alias {
+  fn set_alias_locked(
+    &self,
+    state: &mut CacheState,
+    alias: &CacheKey,
+    request_sig: String,
+    canonical: &CacheKey,
+  ) {
+    if alias == canonical {
+      Self::remove_alias_mapping_locked(state, alias, &request_sig);
       return;
     }
 
-    state.aliases.insert(alias.clone(), target);
+    state
+      .aliases
+      .entry(alias.clone())
+      .or_default()
+      .insert(request_sig, canonical.clone());
   }
 
   fn remove_aliases_targeting(&self, state: &mut CacheState, key: &CacheKey) {
-    state
-      .aliases
-      .retain(|alias, target| alias != key && target != key);
+    state.aliases.retain(|alias, targets| {
+      if alias == key {
+        return false;
+      }
+      targets.retain(|_, target| target != key);
+      !targets.is_empty()
+    });
   }
 
   fn cache_entry(
     &self,
     requested: &CacheKey,
+    request: FetchRequest<'_>,
     vary: Option<String>,
     vary_key: String,
     entry: CacheEntry,
@@ -7925,6 +7934,17 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     if self.config.max_bytes > 0 && entry.weight() > self.config.max_bytes {
       return canonical;
     }
+
+    let request_sig = inflight_signature_for_request(&self.inner, request);
+    let canonical_request = FetchRequest {
+      url: &canonical_url,
+      destination: request.destination,
+      referrer_url: request.referrer_url,
+      client_origin: request.client_origin,
+      referrer_policy: request.referrer_policy,
+      credentials_mode: request.credentials_mode,
+    };
+    let canonical_sig = inflight_signature_for_request(&self.inner, canonical_request);
 
     if let Ok(mut state) = self.state.lock() {
       let mut bucket = state
@@ -7941,28 +7961,29 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
 
       let new_weight = bucket.weight();
       state.current_bytes = state.current_bytes.saturating_add(new_weight);
-      state.aliases.remove(&canonical);
+      Self::remove_alias_mapping_locked(&mut state, &canonical, &canonical_sig);
       state.lru.put(canonical.clone(), bucket);
       self.evict_locked(&mut state);
 
       if requested.url != canonical_url {
-        self.set_alias_locked(&mut state, requested, &canonical);
+        self.set_alias_locked(&mut state, requested, request_sig, &canonical);
+      } else {
+        Self::remove_alias_mapping_locked(&mut state, requested, &request_sig);
       }
     }
 
     canonical
   }
 
-  fn remove_cached(&self, key: &CacheKey) {
+  fn remove_cached(&self, key: &CacheKey, request: FetchRequest<'_>) {
+    let request_sig = inflight_signature_for_request(&self.inner, request);
     if let Ok(mut state) = self.state.lock() {
-      let canonical = self.resolve_alias_locked(&mut state, key);
+      let canonical = self.resolve_alias_locked(&mut state, key, request);
       if let Some((_k, bucket)) = state.lru.pop_entry(&canonical) {
         state.current_bytes = state.current_bytes.saturating_sub(bucket.weight());
       }
       self.remove_aliases_targeting(&mut state, &canonical);
-      if &canonical != key {
-        state.aliases.remove(key);
-      }
+      Self::remove_alias_mapping_locked(&mut state, key, &request_sig);
     }
   }
 
@@ -8021,16 +8042,49 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     }
   }
 
-  fn resolve_alias_locked(&self, state: &mut CacheState, key: &CacheKey) -> CacheKey {
+  fn resolve_alias_locked(
+    &self,
+    state: &mut CacheState,
+    key: &CacheKey,
+    base_request: FetchRequest<'_>,
+  ) -> CacheKey {
     let origin = key.clone();
     let mut current = origin.clone();
     let mut hops = 0usize;
     let mut visited: HashSet<CacheKey> = HashSet::new();
     let mut removed = false;
 
-    while let Some(next) = state.aliases.get(&current).cloned() {
+    while state.aliases.contains_key(&current) {
+      let request = FetchRequest {
+        url: &current.url,
+        destination: base_request.destination,
+        referrer_url: base_request.referrer_url,
+        client_origin: base_request.client_origin,
+        referrer_policy: base_request.referrer_policy,
+        credentials_mode: base_request.credentials_mode,
+      };
+      let request_sig = inflight_signature_for_request(&self.inner, request);
+      let next = state
+        .aliases
+        .get(&current)
+        .and_then(|targets| targets.get(&request_sig))
+        .cloned();
+      let Some(next) = next else {
+        break;
+      };
       if hops >= MAX_ALIAS_HOPS || !visited.insert(current.clone()) || next == current {
-        state.aliases.remove(&origin);
+        let origin_sig = inflight_signature_for_request(
+          &self.inner,
+          FetchRequest {
+            url: &origin.url,
+            destination: base_request.destination,
+            referrer_url: base_request.referrer_url,
+            client_origin: base_request.client_origin,
+            referrer_policy: base_request.referrer_policy,
+            credentials_mode: base_request.credentials_mode,
+          },
+        );
+        Self::remove_alias_mapping_locked(state, &origin, &origin_sig);
         removed = true;
         break;
       }
@@ -8039,7 +8093,22 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     }
 
     if !removed && current != origin {
-      state.aliases.insert(origin, current.clone());
+      let origin_sig = inflight_signature_for_request(
+        &self.inner,
+        FetchRequest {
+          url: &origin.url,
+          destination: base_request.destination,
+          referrer_url: base_request.referrer_url,
+          client_origin: base_request.client_origin,
+          referrer_policy: base_request.referrer_policy,
+          credentials_mode: base_request.credentials_mode,
+        },
+      );
+      state
+        .aliases
+        .entry(origin)
+        .or_default()
+        .insert(origin_sig, current.clone());
     }
 
     current
@@ -8047,28 +8116,26 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
 
   fn cached_entry(&self, key: &CacheKey, request: Option<FetchRequest<'_>>) -> Option<CachedSnapshot> {
     self.state.lock().ok().and_then(|mut state| {
-      let canonical = self.resolve_alias_locked(&mut state, key);
+      let base_request = request.unwrap_or_else(|| FetchRequest::new(&key.url, key.kind.into()));
+      let canonical = self.resolve_alias_locked(&mut state, key, base_request);
       let bucket = match state.lru.get(&canonical) {
         Some(bucket) => bucket,
         None => {
           if &canonical != key {
-            state.aliases.remove(key);
+            let request_sig = inflight_signature_for_request(&self.inner, base_request);
+            Self::remove_alias_mapping_locked(&mut state, key, &request_sig);
           }
           return None;
         }
       };
 
-      let request = if let Some(request) = request {
-        FetchRequest {
-          url: &canonical.url,
-          destination: request.destination,
-          referrer_url: request.referrer_url,
-          client_origin: request.client_origin,
-          referrer_policy: request.referrer_policy,
-          credentials_mode: request.credentials_mode,
-        }
-      } else {
-        FetchRequest::new(&canonical.url, canonical.kind.into())
+      let request = FetchRequest {
+        url: &canonical.url,
+        destination: base_request.destination,
+        referrer_url: base_request.referrer_url,
+        client_origin: base_request.client_origin,
+        referrer_policy: base_request.referrer_policy,
+        credentials_mode: base_request.credentials_mode,
       };
 
       let vary_key = compute_vary_key_for_request(&self.inner, request, bucket.vary.as_deref())?;
@@ -8109,6 +8176,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     self
       .cache_entry(
         &CacheKey::new(kind, url.to_string()),
+        request,
         vary,
         vary_key,
         CacheEntry {
@@ -8141,6 +8209,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     if let Some(entry) = self.build_cache_entry(&key, &resource, stored_at) {
       self.cache_entry(
         &key,
+        request,
         vary,
         vary_key,
         entry,
@@ -8340,6 +8409,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 ) {
                   let _ = self.cache_entry(
                     &key,
+                    request,
                     stored_resource.vary.clone(),
                     vary_key,
                     CacheEntry {
@@ -8354,10 +8424,10 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                     ok.final_url.as_deref(),
                   );
                 } else {
-                  self.remove_cached(&key);
+                  self.remove_cached(&key, request);
                 }
               } else {
-                self.remove_cached(&key);
+                self.remove_cached(&key, request);
               }
             }
             record_cache_revalidated_hit();
@@ -8434,6 +8504,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 {
                   let _ = self.cache_entry(
                     &key,
+                    request,
                     vary,
                     vary_key,
                     CacheEntry {
@@ -8461,7 +8532,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
           let stored_at = SystemTime::now();
           if let Some(entry) = self.build_cache_entry(&key, &res, stored_at) {
             let canonical_url = self.canonical_url(url, res.final_url.as_deref());
-            let request = FetchRequest {
+            let canonical_request = FetchRequest {
               url: &canonical_url,
               destination: request.destination,
               referrer_url: request.referrer_url,
@@ -8471,9 +8542,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             };
             let vary = res.vary.clone();
             if let Some(vary_key) =
-              compute_vary_key_for_request(&self.inner, request, vary.as_deref())
+              compute_vary_key_for_request(&self.inner, canonical_request, vary.as_deref())
             {
-              let _ = self.cache_entry(&key, vary, vary_key, entry, res.final_url.as_deref());
+              let _ = self.cache_entry(&key, request, vary, vary_key, entry, res.final_url.as_deref());
             }
           } else if !self.config.allow_no_store
             && res
@@ -8482,7 +8553,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
               .map(|p| p.no_store)
               .unwrap_or(false)
           {
-            self.remove_cached(&key);
+            self.remove_cached(&key, request);
           }
           record_cache_miss();
           (Ok(res), false)
@@ -8503,7 +8574,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             .lock()
             .ok()
             .map(|mut state| {
-              let canonical = self.resolve_alias_locked(&mut state, &key);
+              let canonical = self.resolve_alias_locked(&mut state, &key, request);
               state.lru.peek(&canonical).is_some()
             })
             .unwrap_or(false);
@@ -8511,6 +8582,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
           if self.config.cache_errors && !has_bucket {
             let _ = self.cache_entry(
               &key,
+              request,
               None,
               VARY_KEY_EMPTY.to_string(),
               CacheEntry {
@@ -8619,7 +8691,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
               }
               let stored_at = SystemTime::now();
               let canonical_url = self.canonical_url(url, ok.final_url.as_deref());
-              let request = FetchRequest {
+              let canonical_request = FetchRequest {
                 url: &canonical_url,
                 destination: req.destination,
                 referrer_url: req.referrer_url,
@@ -8657,11 +8729,12 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
               if should_store && memory_cacheable {
                 if let Some(vary_key) = compute_vary_key_for_request(
                   &self.inner,
-                  request,
+                  canonical_request,
                   stored_resource.vary.as_deref(),
                 ) {
                   let _ = self.cache_entry(
                     &key,
+                    req,
                     stored_resource.vary.clone(),
                     vary_key,
                     CacheEntry {
@@ -8676,10 +8749,10 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                     ok.final_url.as_deref(),
                   );
                 } else {
-                  self.remove_cached(&key);
+                  self.remove_cached(&key, req);
                 }
               } else {
-                self.remove_cached(&key);
+                self.remove_cached(&key, req);
               }
             }
             record_cache_revalidated_hit();
@@ -8733,7 +8806,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             let stored_at = SystemTime::now();
             if let Some(entry) = self.build_cache_entry(&key, &res, stored_at) {
               let canonical_url = self.canonical_url(url, res.final_url.as_deref());
-              let request = FetchRequest {
+              let canonical_request = FetchRequest {
                 url: &canonical_url,
                 destination: req.destination,
                 referrer_url: req.referrer_url,
@@ -8743,9 +8816,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
               };
               let vary = res.vary.clone();
               if let Some(vary_key) =
-                compute_vary_key_for_request(&self.inner, request, vary.as_deref())
+                compute_vary_key_for_request(&self.inner, canonical_request, vary.as_deref())
               {
-                let _ = self.cache_entry(&key, vary, vary_key, entry, res.final_url.as_deref());
+                let _ = self.cache_entry(&key, req, vary, vary_key, entry, res.final_url.as_deref());
               }
             } else if !self.config.allow_no_store
               && res
@@ -8754,7 +8827,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 .map(|p| p.no_store)
                 .unwrap_or(false)
             {
-              self.remove_cached(&key);
+              self.remove_cached(&key, req);
             }
             record_cache_miss();
             (Ok(res), false)
@@ -8776,7 +8849,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             .lock()
             .ok()
             .map(|mut state| {
-              let canonical = self.resolve_alias_locked(&mut state, &key);
+              let canonical = self.resolve_alias_locked(&mut state, &key, req);
               state.lru.peek(&canonical).is_some()
             })
             .unwrap_or(false);
@@ -8784,6 +8857,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
           if self.config.cache_errors && !has_bucket {
             let _ = self.cache_entry(
               &key,
+              req,
               None,
               VARY_KEY_EMPTY.to_string(),
               CacheEntry {
@@ -17958,10 +18032,14 @@ mod tests {
 
     let start_key = CacheKey::new(FetchContextKind::Stylesheet, start_url.to_string());
     let canonical_key = CacheKey::new(FetchContextKind::Stylesheet, canonical_url.to_string());
+    let request_sig = inflight_signature_for_request(&cache.inner, req);
     {
       let state = cache.state.lock().unwrap();
       assert_eq!(
-        state.aliases.get(&start_key),
+        state
+          .aliases
+          .get(&start_key)
+          .and_then(|targets| targets.get(&request_sig)),
         Some(&canonical_key),
         "expected alias to be created from the initial redirect"
       );
@@ -17977,7 +18055,10 @@ mod tests {
     {
       let state = cache.state.lock().unwrap();
       assert_eq!(
-        state.aliases.get(&start_key),
+        state
+          .aliases
+          .get(&start_key)
+          .and_then(|targets| targets.get(&request_sig)),
         Some(&canonical_key),
         "HTTP error refresh should not overwrite redirect aliases"
       );
@@ -17997,6 +18078,118 @@ mod tests {
     assert_eq!(calls[1].etag.as_deref(), Some("etag1"));
     assert_eq!(calls[2].url, error_final_url);
     assert_eq!(calls[2].destination, FetchDestination::Style);
+  }
+
+  #[test]
+  fn caching_fetcher_redirect_aliases_are_request_signature_aware() {
+    #[derive(Clone)]
+    struct ReferrerAliasingFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ReferrerAliasingFetcher {
+      fn new() -> Self {
+        Self {
+          calls: Arc::new(AtomicUsize::new(0)),
+        }
+      }
+
+      fn call_count(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+      }
+    }
+
+    impl ResourceFetcher for ReferrerAliasingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("fetch() should not be called by fetch_with_request tests");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let referer = req.referrer_url.unwrap_or("");
+        let (final_url, body) = if referer.contains("a.example") {
+          (
+            "https://example.com/canonical-a",
+            b"canonical-a".to_vec(),
+          )
+        } else {
+          (
+            "https://example.com/canonical-b",
+            b"canonical-b".to_vec(),
+          )
+        };
+        let mut resource = FetchedResource::new(body, Some("text/plain".to_string()));
+        resource.final_url = Some(final_url.to_string());
+        Ok(resource)
+      }
+
+      fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        match header_name {
+          "accept-encoding" => Some("gzip".to_string()),
+          "accept-language" => Some("en".to_string()),
+          "origin" => Some(req.client_origin.map(ToString::to_string).unwrap_or_default()),
+          "referer" => Some(req.referrer_url.unwrap_or("").to_string()),
+          "user-agent" => Some("fastrender-test".to_string()),
+          _ => None,
+        }
+      }
+    }
+
+    let fetcher = ReferrerAliasingFetcher::new();
+    let cache = CachingFetcher::new(fetcher.clone());
+
+    let start_url = "https://example.com/start";
+    let canonical_a_url = "https://example.com/canonical-a";
+    let canonical_b_url = "https://example.com/canonical-b";
+
+    let req_a =
+      FetchRequest::new(start_url, FetchDestination::Other).with_referrer_url("https://a.example/");
+    let req_b =
+      FetchRequest::new(start_url, FetchDestination::Other).with_referrer_url("https://b.example/");
+
+    let first = cache.fetch_with_request(req_a).expect("seed fetch");
+    assert_eq!(first.bytes, b"canonical-a");
+    assert_eq!(first.final_url.as_deref(), Some(canonical_a_url));
+
+    let second = cache.fetch_with_request(req_b).expect("second fetch");
+    assert_eq!(second.bytes, b"canonical-b");
+    assert_eq!(
+      second.final_url.as_deref(),
+      Some(canonical_b_url),
+      "second request should not follow redirect alias from the first request signature",
+    );
+
+    let third = cache.fetch_with_request(req_a).expect("third fetch");
+    assert_eq!(third.bytes, b"canonical-a");
+    assert_eq!(third.final_url.as_deref(), Some(canonical_a_url));
+    assert_eq!(
+      fetcher.call_count(),
+      2,
+      "distinct request signatures should require distinct network fetches",
+    );
+
+    let start_key = CacheKey::new(FetchContextKind::Other, start_url.to_string());
+    let canonical_a_key = CacheKey::new(FetchContextKind::Other, canonical_a_url.to_string());
+    let canonical_b_key = CacheKey::new(FetchContextKind::Other, canonical_b_url.to_string());
+    let request_sig_a = inflight_signature_for_request(&cache.inner, req_a);
+    let request_sig_b = inflight_signature_for_request(&cache.inner, req_b);
+    assert_ne!(request_sig_a, request_sig_b);
+
+    let state = cache.state.lock().unwrap();
+    assert_eq!(
+      state
+        .aliases
+        .get(&start_key)
+        .and_then(|targets| targets.get(&request_sig_a)),
+      Some(&canonical_a_key),
+    );
+    assert_eq!(
+      state
+        .aliases
+        .get(&start_key)
+        .and_then(|targets| targets.get(&request_sig_b)),
+      Some(&canonical_b_key),
+    );
   }
 
   #[test]

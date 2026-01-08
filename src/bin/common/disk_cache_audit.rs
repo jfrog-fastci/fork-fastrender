@@ -10,7 +10,8 @@ use std::time::{Duration, SystemTime};
 const META_SUFFIX: &str = ".bin.meta";
 /// Cached metadata blobs are expected to be tiny; cap reads so a corrupt file can't OOM the audit.
 const MAX_META_BYTES: usize = 256 * 1024;
-/// Alias files are even smaller (`{"target":"..."}`); cap reads defensively.
+/// Alias files are small JSON payloads (legacy `{"target":"..."}` or newer signature-keyed
+/// `{"targets":{"sig":"..."}}`); cap reads defensively.
 const MAX_ALIAS_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone)]
@@ -93,9 +94,22 @@ struct StoredMetadataLite {
   error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct StoredAliasLite {
-  target: String,
+  #[serde(default)]
+  target: Option<String>,
+  #[serde(default)]
+  targets: HashMap<String, String>,
+}
+
+impl StoredAliasLite {
+  fn iter_targets(&self) -> impl Iterator<Item = &str> {
+    self
+      .targets
+      .values()
+      .map(String::as_str)
+      .chain(self.target.as_deref().into_iter())
+  }
 }
 
 fn read_file_capped(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>> {
@@ -408,7 +422,10 @@ pub fn audit_disk_cache_dir(
       let Ok(alias) = serde_json::from_slice::<StoredAliasLite>(&bytes) else {
         continue;
       };
-      if deleted_entry_urls.contains(&alias.target) {
+      if alias
+        .iter_targets()
+        .any(|target| deleted_entry_urls.contains(target))
+      {
         report.deleted_alias_files += remove_file_if_present(&alias_path);
       }
     }
@@ -463,7 +480,7 @@ mod tests {
     // at the soon-to-be-deleted CSS URL to validate best-effort alias cleanup.
     fs::write(
       dir.join("redirect.alias"),
-      br#"{"target":"https://example.com/style.css"}"#,
+      br#"{"targets":{"sig":"https://example.com/style.css"}}"#,
     )
     .unwrap();
 
