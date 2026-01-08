@@ -5,6 +5,7 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
+use fastrender::style::types::BorderStyle;
 use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -167,6 +168,65 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_block_layout() {
   assert!(
     (image_fragment.bounds.width() - 50.0).abs() < 0.1,
     "replaced element should shrink-to-fit its intrinsic width when both insets are set"
+  );
+  assert!(
+    (image_fragment.bounds.x() - 10.0).abs() < 0.1,
+    "left inset should be honored when shrinking to intrinsic width (got x = {})",
+    image_fragment.bounds.x()
+  );
+}
+
+#[test]
+fn replaced_absolute_with_padding_and_border_includes_edges_in_block_layout() {
+  let mut root_style = ComputedStyle::default();
+  root_style.position = Position::Relative;
+
+  let mut img_style = ComputedStyle::default();
+  img_style.position = Position::Absolute;
+  img_style.left = InsetValue::Length(Length::px(10.0));
+  img_style.right = InsetValue::Length(Length::px(10.0));
+  img_style.top = InsetValue::Length(Length::px(0.0));
+  img_style.padding_left = Length::px(5.0);
+  img_style.padding_right = Length::px(5.0);
+  img_style.border_left_style = BorderStyle::Solid;
+  img_style.border_right_style = BorderStyle::Solid;
+  img_style.border_left_width = Length::px(2.0);
+  img_style.border_right_width = Length::px(2.0);
+
+  let img = BoxNode::new_replaced(
+    Arc::new(img_style),
+    ReplacedType::Image {
+      src: String::new(),
+      alt: None,
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
+      srcset: Vec::<SrcsetCandidate>::new(),
+      sizes: None,
+      picture_sources: Vec::new(),
+    },
+    Some(Size::new(50.0, 20.0)),
+    None,
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![img],
+  );
+  let constraints = LayoutConstraints::definite(200.0, 100.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&root, &constraints).expect("block layout");
+
+  let image_fragment = fragment
+    .children
+    .first()
+    .expect("absolute replaced fragment should be present");
+
+  // Intrinsic content width is 50px; add padding (5+5) and border (2+2) to get border-box width.
+  assert!(
+    (image_fragment.bounds.width() - 64.0).abs() < 0.1,
+    "replaced element border-box width should include padding/border edges (got {})",
+    image_fragment.bounds.width()
   );
   assert!(
     (image_fragment.bounds.x() - 10.0).abs() < 0.1,

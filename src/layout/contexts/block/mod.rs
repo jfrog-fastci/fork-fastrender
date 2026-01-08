@@ -4953,9 +4953,46 @@ impl FormattingContext for BlockFormattingContext {
         }
       }
 
+      // `compute_replaced_size` returns a content-box size. Fragment bounds are border-box sized,
+      // so include padding and border edges here; absolute positioning and container query sizing
+      // both expect border-box fragment geometry.
+      let inline_edges = if inline_is_horizontal {
+        horizontal_padding_and_borders(
+          style,
+          containing_width,
+          self.viewport_size,
+          &self.font_context,
+        )
+      } else {
+        vertical_padding_and_borders(
+          style,
+          containing_width,
+          self.viewport_size,
+          &self.font_context,
+        )
+      };
+      let block_edges = if inline_is_horizontal {
+        vertical_padding_and_borders(
+          style,
+          containing_width,
+          self.viewport_size,
+          &self.font_context,
+        )
+      } else {
+        horizontal_padding_and_borders(
+          style,
+          containing_width,
+          self.viewport_size,
+          &self.font_context,
+        )
+      };
+
       let bounds = Rect::new(
         Point::new(0.0, 0.0),
-        Size::new(used_size.width.max(0.0), used_size.height.max(0.0)),
+        Size::new(
+          (used_size.width + inline_edges).max(0.0),
+          (used_size.height + block_edges).max(0.0),
+        ),
       );
       let fragment = FragmentNode::new_with_style(
         bounds,
