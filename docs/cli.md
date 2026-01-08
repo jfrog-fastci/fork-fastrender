@@ -12,7 +12,7 @@ These are optional wrappers for the most common loops:
   - Defaults to `--features disk_cache`; set `DISK_CACHE=0` or `NO_DISK_CACHE=1` or pass `--no-disk-cache` to opt out; pass `--disk-cache` to force-enable.
   - Fonts: defaults to bundled fixtures; pass `--system-fonts` (alias `--no-bundled-fonts`) to run `pageset_progress` against host system fonts (useful for Chrome accuracy diffs). `--system-fonts` forces `FASTR_USE_BUNDLED_FONTS=0` and `CI=0` for the `pageset_progress` subprocess so the behavior is predictable even when those env vars are set.
   - Supports `--jobs/-j`, `--fetch-timeout`, `--render-timeout`, `--cache-dir`, `--no-fetch`, `--refresh`, `--pages`, `--shard`, `--allow-http-error-status`, `--allow-collisions`, `--timings`, `--bundled-fonts` (default) / `--system-fonts` (alias `--no-bundled-fonts`), `--accuracy` (plus `--accuracy-baseline`, `--accuracy-baseline-dir`, `--accuracy-tolerance`, `--accuracy-max-diff-percent`, and `--accuracy-diff-dir`), and `--capture-missing-failure-fixtures` (plus `--capture-missing-failure-fixtures-out-dir`, `--capture-missing-failure-fixtures-allow-missing-resources`, and `--capture-missing-failure-fixtures-overwrite`).
-  - Prefetch toggles like `--prefetch-fonts` / `--prefetch-images` passed after `--` are forwarded to `prefetch_assets` when disk cache is enabled.
+  - Prefetch/report flags like `--prefetch-fonts` / `--prefetch-images` / `--report-json` / `--discover-only` passed after `--` are forwarded to `prefetch_assets` when disk cache is enabled.
   - Pass extra `pageset_progress run` flags after `--` (for example `--accuracy`; consider `--system-fonts` for Chrome diffs so font substitution doesn’t dominate the results).
   - Use `--dry-run` to print the underlying `cargo xtask pageset ...` command instead of executing it.
 - Cached-pages Chrome-vs-FastRender diff (best-effort; non-deterministic): `scripts/chrome_vs_fastrender.sh [options] [--] [page_stem...]`
@@ -180,6 +180,12 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
     - `--max-image-urls-per-element`: cap how many URLs are prefetched per image element (primary + fallbacks) when `--prefetch-images` is enabled.
     - `--max-discovered-assets-per-page`: safety valve for pathological pages (0 disables the cap).
 - Disk cache tuning flags (`--disk-cache-max-age-secs`, `--disk-cache-max-bytes`, `--disk-cache-lock-stale-secs`, or the corresponding `FASTR_DISK_CACHE_*` env vars) match the pageset render binaries.
+- Reporting/debugging:
+  - `--dry-run` (alias `--discover-only`): scan cached HTML/CSS and populate the report without performing any network/disk cache fetches.
+  - `--report-json <path>`: write a deterministic JSON manifest of discovered assets and fetch outcomes.
+  - `--report-per-page-dir <dir>`: write one JSON report per page stem under `<dir>/<stem>.json`.
+  - `--max-report-urls-per-kind <n>`: cap the number of sampled URL strings per section (default 50; 0 => counts only).
+  - Note: the report tracks unique URL sets. A URL can appear in both `fetched` and `failed` if some attempts succeeded and others failed (for example, `Image` fetch succeeded but `ImageCors` failed).
 
 ## `disk_cache_audit`
 
