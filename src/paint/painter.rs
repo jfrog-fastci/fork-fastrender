@@ -6844,13 +6844,59 @@ impl Painter {
       return self.paint_svg(&content.svg, style, x, y, width, height, clip_mask);
     }
 
+    let foreign_object_dpr = (|| {
+      let meta = self.image_cache.probe_svg_content(&content.svg, "inline-svg").ok()?;
+      let image_resolution = style.map(|s| s.image_resolution).unwrap_or_default();
+      let orientation = style
+        .map(|s| s.image_orientation.resolve(meta.orientation, false))
+        .unwrap_or_else(|| ImageOrientation::default().resolve(meta.orientation, false));
+      let (img_w_raw, img_h_raw) = meta.oriented_dimensions(orientation);
+      if img_w_raw == 0 || img_h_raw == 0 {
+        return None;
+      }
+      let (img_w_css, img_h_css) =
+        meta.css_dimensions(orientation, &image_resolution, self.scale, None)?;
+      let has_intrinsic_ratio = meta.intrinsic_ratio(orientation).is_some();
+
+      let fit = style.map(|s| s.object_fit).unwrap_or(ObjectFit::Fill);
+      let pos = style
+        .map(|s| s.object_position)
+        .unwrap_or_else(default_object_position);
+      let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
+      let root_font_size = style.map(|s| s.root_font_size).unwrap_or(font_size);
+      let (_dest_x, _dest_y, dest_w, dest_h) = compute_object_fit(
+        fit,
+        pos,
+        width,
+        height,
+        img_w_css,
+        img_h_css,
+        has_intrinsic_ratio,
+        font_size,
+        root_font_size,
+        Some((self.css_width, self.css_height)),
+      )?;
+      if dest_w <= 0.0 || dest_h <= 0.0 {
+        return None;
+      }
+      Some(crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+        &content.svg,
+        self.scale,
+        dest_w,
+        dest_h,
+        img_w_css,
+        img_h_css,
+      ))
+    })()
+    .unwrap_or(self.scale);
+
     if let Some(svg) = crate::paint::svg_foreign_object::inline_svg_with_foreign_objects(
       &content.svg,
       &content.foreign_objects,
       &content.shared_css,
       &self.font_ctx,
       &self.image_cache,
-      self.scale,
+      foreign_object_dpr,
       self.max_iframe_depth,
     ) {
       if let Some(injection) = injection {

@@ -14,6 +14,7 @@ use crate::paint::painter::{
 };
 use crate::resource::data_url;
 use crate::scroll::ScrollState;
+use crate::svg::{parse_svg_view_box, SvgMeetOrSlice, SvgPreserveAspectRatio};
 use crate::style::color::Rgba;
 use crate::style::types::{Direction, FontStyle as CssFontStyle, Overflow, WritingMode};
 use crate::text::font_loader::FontContext;
@@ -23,6 +24,85 @@ use crate::{Point, Rect};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use tiny_skia::Pixmap;
+
+/// Compute the device pixel ratio to use when rasterizing `<foreignObject>` HTML into a PNG.
+///
+/// The nested HTML is laid out in CSS px that correspond to SVG user units. When the SVG is
+/// rendered at a different size (e.g. due to `viewBox` scaling or CSS object-fit), the
+/// `<foreignObject>` subtree needs to be rasterized at a higher/lower DPR so the embedded PNG lands
+/// at native resolution in the final SVG pixmap.
+pub(crate) fn foreign_object_html_device_pixel_ratio(
+  svg: &str,
+  outer_device_pixel_ratio: f32,
+  rendered_width_css: f32,
+  rendered_height_css: f32,
+  intrinsic_width_css: f32,
+  intrinsic_height_css: f32,
+) -> f32 {
+  let outer_device_pixel_ratio = if outer_device_pixel_ratio.is_finite() && outer_device_pixel_ratio > 0.0 {
+    outer_device_pixel_ratio
+  } else {
+    1.0
+  };
+  if !(rendered_width_css.is_finite()
+    && rendered_height_css.is_finite()
+    && rendered_width_css > 0.0
+    && rendered_height_css > 0.0)
+  {
+    return outer_device_pixel_ratio;
+  }
+
+  let root_parse = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(svg)));
+  let (view_box, preserve) = match root_parse {
+    Ok(Ok(doc)) => {
+      let root = doc.root_element();
+      if root.tag_name().name().eq_ignore_ascii_case("svg") {
+        let view_box = root.attribute("viewBox").and_then(parse_svg_view_box);
+        let preserve = SvgPreserveAspectRatio::parse(root.attribute("preserveAspectRatio"));
+        (view_box, Some(preserve))
+      } else {
+        (None, None)
+      }
+    }
+    _ => (None, None),
+  };
+
+  let scale_factor = if let (Some(view_box), Some(preserve)) = (view_box, preserve) {
+    let sx = rendered_width_css / view_box.width;
+    let sy = rendered_height_css / view_box.height;
+    if !(sx.is_finite() && sy.is_finite() && sx > 0.0 && sy > 0.0) {
+      1.0
+    } else if preserve.none {
+      sx.max(sy)
+    } else {
+      match preserve.meet_or_slice {
+        SvgMeetOrSlice::Meet => sx.min(sy),
+        SvgMeetOrSlice::Slice => sx.max(sy),
+      }
+    }
+  } else if intrinsic_width_css.is_finite()
+    && intrinsic_height_css.is_finite()
+    && intrinsic_width_css > 0.0
+    && intrinsic_height_css > 0.0
+  {
+    let sx = rendered_width_css / intrinsic_width_css;
+    let sy = rendered_height_css / intrinsic_height_css;
+    if sx.is_finite() && sy.is_finite() && sx > 0.0 && sy > 0.0 {
+      sx.max(sy)
+    } else {
+      1.0
+    }
+  } else {
+    1.0
+  };
+
+  let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+    scale_factor
+  } else {
+    1.0
+  };
+  outer_device_pixel_ratio * scale_factor
+}
 
 fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacement: &str) {
   if let Some(pos) = svg.find(placeholder) {
@@ -506,7 +586,7 @@ fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-  use super::{pixmap_to_data_url, replace_placeholder_or_insert};
+  use super::{foreign_object_html_device_pixel_ratio, pixmap_to_data_url, replace_placeholder_or_insert};
   use base64::Engine;
 
   #[test]
@@ -611,5 +691,12 @@ mod tests {
       .expect("decode png");
     assert_eq!(decoded.width(), 2);
     assert_eq!(decoded.height(), 2);
+  }
+
+  #[test]
+  fn foreign_object_raster_dpr_accounts_for_view_box_scale() {
+    let svg = r#"<svg width="160" height="160" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"></svg>"#;
+    let dpr = foreign_object_html_device_pixel_ratio(svg, 1.0, 160.0, 160.0, 160.0, 160.0);
+    assert!((dpr - 10.0).abs() < 0.01, "expected dpr ~10, got {dpr}");
   }
 } 

@@ -9874,33 +9874,16 @@ impl DisplayListBuilder {
       return false;
     };
 
-    let resolved_svg = if content.foreign_objects.is_empty() {
-      None
-    } else {
-      crate::paint::svg_foreign_object::inline_svg_with_foreign_objects(
-        &content.svg,
-        &content.foreign_objects,
-        &content.shared_css,
-        &self.font_ctx,
-        image_cache,
-        self.device_pixel_ratio,
-        self.max_iframe_depth,
-      )
-    };
-    let svg = if let Some(resolved) = resolved_svg.as_deref() {
-      resolved
-    } else if content.foreign_objects.is_empty() {
-      content.svg.as_str()
-    } else if !content.fallback_svg.is_empty() {
+    let base_svg = if content.svg.is_empty() {
       content.fallback_svg.as_str()
     } else {
       content.svg.as_str()
     };
-    if svg.is_empty() {
+    if base_svg.is_empty() {
       return false;
     }
 
-    let meta = match image_cache.probe_svg_content(svg, "inline-svg") {
+    let meta = match image_cache.probe_svg_content(base_svg, "inline-svg") {
       Ok(meta) => meta,
       Err(_) => return false,
     };
@@ -9966,6 +9949,45 @@ impl DisplayListBuilder {
     }
     let render_w = dest_w_device.ceil().max(1.0) as u32;
     let render_h = dest_h_device.ceil().max(1.0) as u32;
+
+    let resolved_svg = if content.foreign_objects.is_empty() {
+      None
+    } else {
+      let foreign_object_svg = if content.svg.is_empty() {
+        base_svg
+      } else {
+        content.svg.as_str()
+      };
+      let foreign_object_dpr = crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+        foreign_object_svg,
+        self.device_pixel_ratio,
+        dest_w,
+        dest_h,
+        img_w_css,
+        img_h_css,
+      );
+      crate::paint::svg_foreign_object::inline_svg_with_foreign_objects(
+        &content.svg,
+        &content.foreign_objects,
+        &content.shared_css,
+        &self.font_ctx,
+        image_cache,
+        foreign_object_dpr,
+        self.max_iframe_depth,
+      )
+    };
+    let svg = if let Some(resolved) = resolved_svg.as_deref() {
+      resolved
+    } else if content.foreign_objects.is_empty() {
+      content.svg.as_str()
+    } else if !content.fallback_svg.is_empty() {
+      content.fallback_svg.as_str()
+    } else {
+      content.svg.as_str()
+    };
+    if svg.is_empty() {
+      return false;
+    }
 
     let injection = content.document_css_injection.as_ref();
     let (content_hash, content_len) = match injection {
