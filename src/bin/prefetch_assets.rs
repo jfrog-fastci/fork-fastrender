@@ -520,6 +520,10 @@ mod disk_cache_main {
     fs::write(path, json)
   }
 
+  fn report_per_page_path(dir: &Path, stem: &str) -> PathBuf {
+    dir.join(format!("{stem}.json"))
+  }
+
   fn merge_page_summary(into: &mut PageSummary, other: PageSummary) {
     fn merge_outcomes(into: &mut UrlOutcomeSet, other: UrlOutcomeSet) {
       into.discovered.extend(other.discovered);
@@ -2807,6 +2811,15 @@ mod disk_cache_main {
         urls,
         vec!["https://example.com/a.png", "https://example.com/m.png"],
         "report URL samples should be sorted and capped"
+      );
+    }
+
+    #[test]
+    fn report_per_page_path_preserves_dotted_stems() {
+      let dir = Path::new("out");
+      assert_eq!(
+        report_per_page_path(dir, "example.com_path"),
+        PathBuf::from("out").join("example.com_path.json")
       );
     }
 
@@ -5199,7 +5212,7 @@ body { background-image: url(/bg.png); }
       }
       if let Some(dir) = &args.report_per_page_dir {
         for page in &report.pages {
-          let path = dir.join(format!("{}.json", page.stem));
+          let path = report_per_page_path(dir, &page.stem);
           let single = PrefetchAssetsReport {
             version: report.version,
             cache_dir: report.cache_dir.clone(),
