@@ -17,6 +17,7 @@ pub struct BrowserDocument {
   renderer: super::FastRender,
   dom: DomNode,
   options: RenderOptions,
+  document_url: Option<String>,
   prepared: Option<PreparedDocument>,
   style_dirty: bool,
   layout_dirty: bool,
@@ -32,10 +33,14 @@ impl BrowserDocument {
   /// Creates a new live document from an HTML string using the provided renderer.
   pub fn new(renderer: super::FastRender, html: &str, options: RenderOptions) -> Result<Self> {
     let dom = renderer.parse_html(html)?;
+    // Preserve the renderer's initial document URL hint so later `<base href>` mutations do not
+    // accidentally change origin/referrer semantics.
+    let document_url = renderer.document_url_hint().map(|url| url.to_string());
     Ok(Self {
       renderer,
       dom,
       options,
+      document_url,
       prepared: None,
       // First frame needs a full pipeline run.
       style_dirty: true,
@@ -114,6 +119,33 @@ impl BrowserDocument {
     &self.dom
   }
 
+  /// Returns the cached prepared document, if available.
+  pub fn prepared(&self) -> Option<&PreparedDocument> {
+    self.prepared.as_ref()
+  }
+
+  /// Returns a mutable reference to the cached prepared document, if available.
+  pub fn prepared_mut(&mut self) -> Option<&mut PreparedDocument> {
+    self.prepared.as_mut()
+  }
+
+  /// Updates the document URL used for origin/referrer policy decisions.
+  ///
+  /// This is intentionally distinct from the effective base URL derived from `<base href>`, which
+  /// is allowed to change as the DOM mutates.
+  pub fn set_document_url(&mut self, url: Option<String>) {
+    let sanitized = url.and_then(|url| (!super::trim_ascii_whitespace(&url).is_empty()).then_some(url));
+    if sanitized != self.document_url {
+      self.document_url = sanitized;
+      self.invalidate_all();
+    }
+  }
+
+  /// Returns the document URL used for origin/referrer policy decisions.
+  pub fn document_url(&self) -> Option<&str> {
+    self.document_url.as_deref()
+  }
+
   /// Returns a mutable reference to the live DOM tree, marking the document dirty.
   pub fn dom_mut(&mut self) -> &mut DomNode {
     self.invalidate_all();
@@ -142,20 +174,52 @@ impl BrowserDocument {
 
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
   pub fn set_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
-    self.options.scroll_x = scroll_x;
-    self.options.scroll_y = scroll_y;
-    self.paint_dirty = true;
+    if self.options.scroll_x != scroll_x || self.options.scroll_y != scroll_y {
+      self.options.scroll_x = scroll_x;
+      self.options.scroll_y = scroll_y;
+      self.paint_dirty = true;
+    }
+  }
+
+  /// Updates the full scroll state (viewport + element scroll offsets), marking paint dirty.
+  pub fn set_scroll_state(&mut self, state: ScrollState) {
+    let ScrollState { viewport, elements } = state;
+    let changed = self.options.scroll_x != viewport.x
+      || self.options.scroll_y != viewport.y
+      || self.options.element_scroll_offsets != elements;
+    if changed {
+      self.options.scroll_x = viewport.x;
+      self.options.scroll_y = viewport.y;
+      self.options.element_scroll_offsets = elements;
+      self.paint_dirty = true;
+    }
+  }
+
+  /// Returns the current scroll state used by this document.
+  pub fn scroll_state(&self) -> ScrollState {
+    ScrollState::from_parts(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+    )
   }
 
   /// Renders a new frame if anything has been invalidated since the last successful frame.
   ///
   /// Returns `Ok(None)` when no dirty flags are set.
   pub fn render_if_needed(&mut self) -> Result<Option<super::Pixmap>> {
+    Ok(self
+      .render_if_needed_with_scroll_state()?
+      .map(|frame| frame.pixmap))
+  }
+
+  /// Renders a new frame if anything has been invalidated since the last successful frame,
+  /// returning the pixmap plus the effective scroll state used during painting.
+  pub fn render_if_needed_with_scroll_state(&mut self) -> Result<Option<super::PaintedFrame>> {
     if !self.is_dirty() {
       return Ok(None);
     }
-    let pixmap = self.render_frame()?;
-    Ok(Some(pixmap))
+    let frame = self.render_frame_with_scroll_state()?;
+    Ok(Some(frame))
   }
 
   /// Renders one frame.
@@ -163,6 +227,14 @@ impl BrowserDocument {
   /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
   /// cached layout artifacts.
   pub fn render_frame(&mut self) -> Result<super::Pixmap> {
+    Ok(self.render_frame_with_scroll_state()?.pixmap)
+  }
+
+  /// Renders one frame, returning the pixmap plus the effective scroll state used during painting.
+  ///
+  /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
+  /// cached layout artifacts.
+  pub fn render_frame_with_scroll_state(&mut self) -> Result<super::PaintedFrame> {
     // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
     if self.prepared.is_none() {
       self.invalidate_all();
@@ -174,28 +246,31 @@ impl BrowserDocument {
       self.prepared = Some(prepared);
     }
 
-    let pixmap = self.paint_from_cache()?;
+    let frame = self.paint_from_cache_frame()?;
+    // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
+    // scroll snap/clamp). This must not mark the document dirty because the frame we just painted
+    // already reflects this state.
+    self.options.scroll_x = frame.scroll_state.viewport.x;
+    self.options.scroll_y = frame.scroll_state.viewport.y;
+    self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
 
     // Clear flags only when a render was requested due to invalidation.
     if self.is_dirty() {
       self.clear_dirty();
     }
 
-    Ok(pixmap)
+    Ok(frame)
   }
 
-  fn paint_from_cache(&self) -> Result<super::Pixmap> {
+  fn paint_from_cache_frame(&self) -> Result<super::PaintedFrame> {
     let Some(prepared) = &self.prepared else {
       return Err(Error::Render(RenderError::InvalidParameters {
         message: "BrowserDocument has no cached layout; call render_frame() first".to_string(),
       }));
     };
 
-    let scroll_state = ScrollState::from_parts(
-      Point::new(self.options.scroll_x, self.options.scroll_y),
-      self.options.element_scroll_offsets.clone(),
-    );
-    prepared.paint_with_options(PreparedPaintOptions {
+    let scroll_state = self.scroll_state();
+    prepared.paint_with_options_frame(PreparedPaintOptions {
       scroll: Some(scroll_state),
       viewport: None,
       background: None,
@@ -206,6 +281,7 @@ impl BrowserDocument {
   fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
     let options = self.options.clone();
     let dom = &self.dom;
+    let document_url = self.document_url.clone();
     let renderer = &mut self.renderer;
 
     let toggles = renderer.resolve_runtime_toggles(&options);
@@ -214,6 +290,14 @@ impl BrowserDocument {
       let trace = super::TraceSession::from_options(Some(&options));
       let trace_handle = trace.handle();
       let _root_span = trace_handle.span("browser_document_prepare", "pipeline");
+
+      // Ensure the resource context sees the stable document URL hint, rather than a potentially
+      // mutable `<base href>` override stored in `renderer.base_url`.
+      if let Some(url) = document_url.as_deref() {
+        renderer.set_document_url(url.to_string());
+      } else {
+        renderer.clear_document_url();
+      }
 
       let shared_diagnostics = renderer.diagnostics.as_ref().map(|diag| super::SharedRenderDiagnostics {
         inner: std::sync::Arc::clone(diag),
