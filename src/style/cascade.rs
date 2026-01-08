@@ -1921,6 +1921,14 @@ fn eval_style_range_value(
         value: styles.shape_image_threshold,
       }),
       "offset-distance" => length_to_numeric(&styles.offset_distance, container, ctx),
+      "widows" => Some(NumericValue {
+        ty: NumericType::Number,
+        value: styles.widows as f32,
+      }),
+      "orphans" => Some(NumericValue {
+        ty: NumericType::Number,
+        value: styles.orphans as f32,
+      }),
       "flex-grow" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.flex_grow,
