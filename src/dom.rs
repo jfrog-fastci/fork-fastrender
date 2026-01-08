@@ -1595,23 +1595,10 @@ fn node_is_hidden(attributes: &[(String, String)]) -> bool {
   })
 }
 
-fn node_is_inert_like(attributes: &[(String, String)]) -> bool {
-  attributes.iter().any(|(name, value)| {
-    if name.eq_ignore_ascii_case("inert") {
-      return true;
-    }
-    if name.eq_ignore_ascii_case("data-fastr-inert") {
-      return value.eq_ignore_ascii_case("true");
-    }
-    false
-  })
-}
-
 /// Collects the set of Unicode codepoints present in text nodes.
 ///
 /// Script and style contents are skipped to avoid counting non-visible text. Nodes marked as
-/// hidden or inert are ignored along with their descendants to avoid fetching unnecessary font
-/// subsets for invisible content.
+/// hidden (`[hidden]` / `data-fastr-hidden=true`) are ignored along with their descendants.
 pub fn collect_text_codepoints(node: &DomNode) -> Result<Vec<u32>> {
   const CODEPOINT_DEADLINE_STRIDE: usize = 1024;
   let mut stack = vec![(node, false)];
@@ -1652,13 +1639,13 @@ pub fn collect_text_codepoints(node: &DomNode) -> Result<Vec<u32>> {
         if skip {
           continue;
         }
-        let suppress_children = node_is_hidden(attributes) || node_is_inert_like(attributes);
+        let suppress_children = node_is_hidden(attributes);
         for child in &current.children {
           stack.push((child, suppress_children));
         }
       }
       DomNodeType::Slot { attributes, .. } => {
-        let suppress_children = node_is_hidden(attributes) || node_is_inert_like(attributes);
+        let suppress_children = node_is_hidden(attributes);
         for child in &current.children {
           stack.push((child, suppress_children));
         }
@@ -9902,6 +9889,19 @@ mod tests {
       ],
     };
 
+    let codepoints = collect_text_codepoints(&dom).unwrap();
+    let expected: Vec<u32> = vec!['a', 'b', 'c'].into_iter().map(|c| c as u32).collect();
+    assert_eq!(codepoints, expected);
+  }
+
+  #[test]
+  fn collect_text_codepoints_includes_inert_contents() {
+    let dom = document(vec![
+      element("div", vec![text("a")]),
+      element_with_attrs("div", vec![("inert", "")], vec![text("b")]),
+      element_with_attrs("div", vec![("data-fastr-inert", "true")], vec![text("c")]),
+      element_with_attrs("div", vec![("hidden", "")], vec![text("d")]),
+    ]);
     let codepoints = collect_text_codepoints(&dom).unwrap();
     let expected: Vec<u32> = vec!['a', 'b', 'c'].into_iter().map(|c| c as u32).collect();
     assert_eq!(codepoints, expected);

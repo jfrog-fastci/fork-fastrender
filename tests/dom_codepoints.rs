@@ -27,23 +27,21 @@ fn element(tag: &str, attrs: Vec<(&str, &str)>, children: Vec<DomNode>) -> DomNo
 }
 
 #[test]
-fn collect_text_codepoints_skips_hidden_and_inert() {
+fn collect_text_codepoints_skips_hidden_but_includes_inert() {
   let visible = element("div", vec![], vec![text_node("A")]);
   let hidden = element("div", vec![("hidden", "")], vec![text_node("B")]);
-  let inert = element(
-    "div",
-    vec![("data-fastr-inert", "true")],
-    vec![text_node("C")],
-  );
+  let inert = element("div", vec![("inert", "")], vec![text_node("C")]);
+  let fastr_inert = element("div", vec![("data-fastr-inert", "true")], vec![text_node("D")]);
   let root = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
     },
-    children: vec![visible, hidden, inert],
+    children: vec![visible, hidden, inert, fastr_inert],
   };
 
   let codepoints = dom::collect_text_codepoints(&root).unwrap();
   assert!(codepoints.contains(&(b'A' as u32)));
   assert!(!codepoints.contains(&(b'B' as u32)));
-  assert!(!codepoints.contains(&(b'C' as u32)));
+  assert!(codepoints.contains(&(b'C' as u32)));
+  assert!(codepoints.contains(&(b'D' as u32)));
 }
