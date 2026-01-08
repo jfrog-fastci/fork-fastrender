@@ -194,6 +194,52 @@ fn abspos_static_position_respects_justify_content_start_in_row_reverse() {
 }
 
 #[test]
+fn abspos_static_position_respects_rtl_row_reverse_flex_start() {
+  // In RTL, `flex-direction: row-reverse` makes the main axis physical direction left-to-right.
+  // `justify-content: flex-start` aligns to the main-start edge (left).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.direction = Direction::Rtl;
+  container_style.flex_direction = FlexDirection::RowReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+}
+
+#[test]
+fn abspos_static_position_respects_rtl_row_reverse_start_keyword() {
+  // `justify-content: start` always resolves against the inline-start edge (right in RTL),
+  // regardless of `row-reverse`.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.direction = Direction::Rtl;
+  container_style.flex_direction = FlexDirection::RowReverse;
+  container_style.justify_content = JustifyContent::Start;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+}
+
+#[test]
 fn abspos_static_position_respects_rtl_main_start() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
