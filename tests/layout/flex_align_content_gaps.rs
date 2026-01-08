@@ -664,6 +664,42 @@ fn wrap_reverse_space_evenly_respects_row_gap_between_lines() {
 }
 
 #[test]
+fn wrap_reverse_space_between_respects_row_gap_between_lines() {
+  let fc = FlexFormattingContext::new();
+
+  let container = build_multiline_container(
+    AlignContent::SpaceBetween,
+    WritingMode::HorizontalTb,
+    FlexDirection::Row,
+    FlexWrap::WrapReverse,
+    60.0,
+    55.0,
+    5.0,
+    0.0,
+    30.0,
+    10.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(60.0, 55.0))
+    .expect("layout succeeds");
+
+  // Container: 55px tall
+  // Two flex lines (each 10px), plus a 5px row-gap => used cross size = 25px, free = 30px.
+  // align-content: space-between => distribute the free space between lines, in addition to the
+  // row-gap. Under wrap-reverse, the first line is placed at cross-start (bottom).
+  //
+  // First line (with items 1 & 2) at y = 55 - 10 = 45.
+  // Second line at y = 45 - (10 + 5 + 30) = 0.
+  let epsilon = 0.6;
+  let bottom_line_y = 55.0 - 10.0;
+  let top_line_y = 0.0;
+
+  assert_approx(find_block_child(&fragment, 1).bounds.y(), bottom_line_y, epsilon, "child1 y");
+  assert_approx(find_block_child(&fragment, 2).bounds.y(), bottom_line_y, epsilon, "child2 y");
+  assert_approx(find_block_child(&fragment, 3).bounds.y(), top_line_y, epsilon, "child3 y");
+}
+
+#[test]
 fn column_direction_space_evenly_respects_column_gap_between_lines() {
   let fc = FlexFormattingContext::new();
 
