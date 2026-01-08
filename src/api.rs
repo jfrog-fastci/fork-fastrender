@@ -14118,6 +14118,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.white_space, &mut h);
   hash_enum_discriminant(&style.line_break, &mut h);
   hash_enum_discriminant(&style.hyphens, &mut h);
+  style.language.hash(&mut h);
   hash_enum_discriminant(&style.word_break, &mut h);
   hash_enum_discriminant(&style.overflow_anchor, &mut h);
   hash_enum_discriminant(&style.overflow_wrap, &mut h);
@@ -16080,6 +16081,20 @@ pub(crate) fn render_html_with_shared_resources(
       super::style_layout_fingerprint(&a),
       super::style_layout_fingerprint(&b),
       "expected text-combine-upright digit count to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_language() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut turkish = base;
+    turkish.language = "tr".into();
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&turkish),
+      "expected language to affect layout fingerprints"
     );
   }
 
