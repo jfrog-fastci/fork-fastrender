@@ -149,6 +149,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 - Run: `cargo run --release --bin fetch_pages -- --help`
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
 - Note: `fetch_pages` only caches HTML; it does not use the disk-backed subresource cache (`--cache-dir` is a flag on `prefetch_assets`/`pageset_progress` and pageset wrappers).
+- Cached metadata sidecars: `fetches/html/<stem>.html.meta` stores response metadata (key/value pairs like `content-type`, `status`, `url`, and `referrer-policy`) that downstream tools use when replaying cached HTML.
 - Supports deterministic sharding with `--shard <index>/<total>` when splitting the page list across workers.
 - Cache filenames and `--pages` filters use the canonical stem from `normalize_page_name` (strip the scheme and a leading `www.`). Colliding stems fail fast unless you opt into `--allow-collisions`, which appends a deterministic suffix.
 - `--allow-http-error-status` treats HTTP 4xx/5xx responses as fetch successes and allows caching them for debugging (e.g. Cloudflare challenges). When used with `--refresh`, `fetch_pages` will avoid clobbering an existing cached snapshot with a transient 4xx/5xx response unless the existing snapshot is also known to be an HTTP error page.
@@ -540,7 +541,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Use `bundle_page cache <stem> --out <bundle>` to convert an already-warmed pageset cache entry (cached HTML + disk-backed assets) into a portable bundle **without network access**.
 - Replay with `bundle_page render <bundle> --out out.png` to render strictly from the bundle with zero network calls.
 - For larger batch workflows, offline captures are also available via the existing on-disk caches:
-  - `fetch_pages` writes HTML under `fetches/html/` and a `*.html.meta` sidecar with the original content-type and final URL.
+  - `fetch_pages` writes HTML under `fetches/html/` and a `*.html.meta` sidecar with response metadata (content-type, final URL, status code, and `Referrer-Policy`).
   - `render_pages` and `fetch_and_render` use the shared disk-backed fetcher (when built with `--features disk_cache`; enabled by default in `scripts/pageset.sh`, `cargo xtask pageset`, and the profiling scripts) for subresources, writing into `fetches/assets/` (override with `--cache-dir <dir>`). After one online render, you can re-run against the same caches without network access (new URLs will still fail). Use `--no-disk-cache`, `DISK_CACHE=0`, or `NO_DISK_CACHE=1` to opt out.
   - Fresh HTTP caching headers are honored by default for disk-backed fetches; add `--no-http-freshness` to `fetch_and_render`, `render_pages`, or `pageset_progress` to force revalidation even when Cache-Control/Expires mark entries as fresh.
   - Disk-backed cache tuning (applies to `prefetch_assets`, `pageset_progress`, `render_pages`, and `fetch_and_render` when built with `disk_cache`):

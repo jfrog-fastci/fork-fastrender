@@ -2648,8 +2648,11 @@ pub fn ensure_stylesheet_mime_sane(resource: &FetchedResource, requested_url: &s
 /// Parses cached HTML metadata sidecars.
 ///
 /// Supports the legacy format where the meta file contains only the content-type
-/// string, and a key/value format where lines are prefixed with `content-type:`,
-/// `status:`, and `url:`.
+/// string, and a key/value format where lines are prefixed with:
+/// - `content-type:`
+/// - `referrer-policy:` (from the `Referrer-Policy` response header)
+/// - `status:`
+/// - `url:`
 pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
   let trimmed = meta.trim();
   if trimmed.is_empty() {
