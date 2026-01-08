@@ -46,6 +46,34 @@ fn find_unique_background_rect(list: &DisplayList, color: Rgba) -> Rect {
   rect.expect("expected background rect not found")
 }
 
+fn find_background_rect_bounds(list: &DisplayList, color: Rgba) -> Rect {
+  let mut min_x = f32::INFINITY;
+  let mut min_y = f32::INFINITY;
+  let mut max_x = f32::NEG_INFINITY;
+  let mut max_y = f32::NEG_INFINITY;
+  let mut found = false;
+
+  for item in list.items() {
+    let rect = match item {
+      DisplayItem::FillRect(fill) if fill.color == color => Some(fill.rect),
+      DisplayItem::FillRoundedRect(fill) if fill.color == color => Some(fill.rect),
+      _ => None,
+    };
+    let Some(rect) = rect else {
+      continue;
+    };
+
+    found = true;
+    min_x = min_x.min(rect.min_x());
+    min_y = min_y.min(rect.min_y());
+    max_x = max_x.max(rect.max_x());
+    max_y = max_y.max(rect.max_y());
+  }
+
+  assert!(found, "expected background rect not found for {color:?}");
+  Rect::from_points(fastrender::geometry::Point::new(min_x, min_y), fastrender::geometry::Point::new(max_x, max_y))
+}
+
 fn underline_covers_inline_pos(item: &TextDecorationItem, inline_pos: f32) -> bool {
   if item.inline_vertical {
     return false;
@@ -310,5 +338,72 @@ fn text_decoration_skip_spaces_clips_leading_and_trailing_spacers() {
   assert!(
     min_start <= 0.5 && max_end >= line_width - 0.5,
     "expected underline to cover the line edges when text-decoration-skip-spaces is none, got min_start={min_start} max_end={max_end} (line_width={line_width})"
+  );
+}
+
+#[test]
+fn text_decoration_skip_box_all_skips_inline_padding_for_ancestor_decorations() {
+  let box_color = Rgba::new(8, 7, 6, 1.0);
+  let base_html = r#"
+    <!doctype html>
+    <html>
+      <head>
+        <style>
+          body { margin: 0; background: white; font-size: 20px; }
+          .container {
+            text-decoration: underline;
+            text-decoration-skip-ink: none;
+            white-space: nowrap;
+          }
+          .boxed {
+            padding: 0 20px;
+            background: rgb(8, 7, 6);
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">hello<span class="boxed">X</span>world</div>
+      </body>
+    </html>
+  "#;
+
+  let list = render_display_list(base_html, 320, 80);
+  let box_rect = find_background_rect_bounds(&list, box_color);
+  let padding_probe = box_rect.x() + 10.0;
+  assert!(
+    any_underline_covers_inline_pos(&list, padding_probe),
+    "expected underline to cover inline padding when text-decoration-skip-box is none (x={padding_probe})"
+  );
+
+  let skip_html = r#"
+    <!doctype html>
+    <html>
+      <head>
+        <style>
+          body { margin: 0; background: white; font-size: 20px; }
+          .container {
+            text-decoration: underline;
+            text-decoration-skip-ink: none;
+            white-space: nowrap;
+          }
+          .boxed {
+            padding: 0 20px;
+            background: rgb(8, 7, 6);
+            text-decoration-skip-box: all;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">hello<span class="boxed">X</span>world</div>
+      </body>
+    </html>
+  "#;
+
+  let list = render_display_list(skip_html, 320, 80);
+  let box_rect = find_background_rect_bounds(&list, box_color);
+  let padding_probe = box_rect.x() + 10.0;
+  assert!(
+    !any_underline_covers_inline_pos(&list, padding_probe),
+    "expected underline to skip inline padding when text-decoration-skip-box is all (x={padding_probe})"
   );
 }

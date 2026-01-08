@@ -143,6 +143,7 @@ use crate::style::types::ObjectFit;
 use crate::style::types::OrientationTransform;
 use crate::style::types::ResolvedTextDecoration;
 use crate::style::types::TextDecorationLine;
+use crate::style::types::TextDecorationSkipBox;
 use crate::style::types::TextDecorationSkipInk;
 use crate::style::types::TextDecorationStyle;
 use crate::style::types::TextDecorationThickness;
@@ -5292,35 +5293,27 @@ impl DisplayListBuilder {
         }
 
         if let (Some(style), Some(ctx)) = (style_for_image, self.line_decoration_ctx) {
-          let (inline_start, inline_len) = if ctx.inline_vertical {
-            (rect.y(), rect.height())
-          } else {
-            (rect.x(), rect.width())
-          };
-          let clip = self.line_decoration_clip_range(inline_start, inline_len);
-          self.emit_text_decorations(
-            style,
-            None,
-            inline_start,
-            inline_len,
-            ctx.block_baseline,
-            ctx.inline_vertical,
-            clip,
-          );
-        }
-      }
+          let mut fallback_decorations: Option<[ResolvedTextDecoration; 1]> = None;
+          let (ancestor_decorations, own_decorations) =
+            Self::split_text_decorations(style, &mut fallback_decorations);
 
-      FragmentContent::Block { .. } | FragmentContent::Inline { .. } => {
-        if let (Some(style), Some(ctx)) = (fragment.style.as_deref(), self.line_decoration_ctx) {
-          if style.display.is_inline_level() && style.display.establishes_formatting_context() {
+          let rects = Self::background_rects(rect, style, self.viewport);
+          let ancestor_rect = if style.text_decoration_skip_box == TextDecorationSkipBox::All {
+            rects.content
+          } else {
+            rect
+          };
+
+          if !ancestor_decorations.is_empty() {
             let (inline_start, inline_len) = if ctx.inline_vertical {
-              (rect.y(), rect.height())
+              (ancestor_rect.y(), ancestor_rect.height())
             } else {
-              (rect.x(), rect.width())
+              (ancestor_rect.x(), ancestor_rect.width())
             };
             let clip = self.line_decoration_clip_range(inline_start, inline_len);
-            self.emit_text_decorations(
+            self.emit_text_decorations_for_decorations(
               style,
+              ancestor_decorations,
               None,
               inline_start,
               inline_len,
@@ -5328,6 +5321,143 @@ impl DisplayListBuilder {
               ctx.inline_vertical,
               clip,
             );
+          }
+
+          // A decorating box never draws over its own margin/border/padding, so always clip the
+          // decoration it originates to its content box.
+          if !own_decorations.is_empty() {
+            let (inline_start, inline_len) = if ctx.inline_vertical {
+              (rects.content.y(), rects.content.height())
+            } else {
+              (rects.content.x(), rects.content.width())
+            };
+            let clip = self.line_decoration_clip_range(inline_start, inline_len);
+            self.emit_text_decorations_for_decorations(
+              style,
+              own_decorations,
+              None,
+              inline_start,
+              inline_len,
+              ctx.block_baseline,
+              ctx.inline_vertical,
+              clip,
+            );
+          }
+        }
+      }
+
+      FragmentContent::Block { .. } | FragmentContent::Inline { .. } => {
+        if let (Some(style), Some(ctx)) = (fragment.style.as_deref(), self.line_decoration_ctx) {
+          if style.display.is_inline_level() {
+            if style.display.establishes_formatting_context() {
+              let mut fallback_decorations: Option<[ResolvedTextDecoration; 1]> = None;
+              let (ancestor_decorations, own_decorations) =
+                Self::split_text_decorations(style, &mut fallback_decorations);
+
+              let rects = Self::background_rects(rect, style, self.viewport);
+              let ancestor_rect = if style.text_decoration_skip_box == TextDecorationSkipBox::All {
+                rects.content
+              } else {
+                rect
+              };
+
+              if !ancestor_decorations.is_empty() {
+                let (inline_start, inline_len) = if ctx.inline_vertical {
+                  (ancestor_rect.y(), ancestor_rect.height())
+                } else {
+                  (ancestor_rect.x(), ancestor_rect.width())
+                };
+                let clip = self.line_decoration_clip_range(inline_start, inline_len);
+                self.emit_text_decorations_for_decorations(
+                  style,
+                  ancestor_decorations,
+                  None,
+                  inline_start,
+                  inline_len,
+                  ctx.block_baseline,
+                  ctx.inline_vertical,
+                  clip,
+                );
+              }
+
+              if !own_decorations.is_empty() {
+                let (inline_start, inline_len) = if ctx.inline_vertical {
+                  (rects.content.y(), rects.content.height())
+                } else {
+                  (rects.content.x(), rects.content.width())
+                };
+                let clip = self.line_decoration_clip_range(inline_start, inline_len);
+                self.emit_text_decorations_for_decorations(
+                  style,
+                  own_decorations,
+                  None,
+                  inline_start,
+                  inline_len,
+                  ctx.block_baseline,
+                  ctx.inline_vertical,
+                  clip,
+                );
+              }
+            } else if matches!(fragment.content, FragmentContent::Inline { .. })
+              && style.text_decoration_skip_box == TextDecorationSkipBox::None
+            {
+              // For non-atomic inline boxes, descendant text paints decorations within the content
+              // box. When `text-decoration-skip-box` is `none`, ancestor decorations should extend
+              // through the inline box's border/padding areas too.
+              let mut fallback_decorations: Option<[ResolvedTextDecoration; 1]> = None;
+              let (ancestor_decorations, _own_decorations) =
+                Self::split_text_decorations(style, &mut fallback_decorations);
+              if ancestor_decorations.is_empty() {
+                return;
+              }
+
+              let rects = Self::background_rects(rect, style, self.viewport);
+              let (border_start, border_end, content_start, content_end) = if ctx.inline_vertical {
+                (
+                  rect.y(),
+                  rect.y() + rect.height(),
+                  rects.content.y(),
+                  rects.content.y() + rects.content.height(),
+                )
+              } else {
+                (
+                  rect.x(),
+                  rect.x() + rect.width(),
+                  rects.content.x(),
+                  rects.content.x() + rects.content.width(),
+                )
+              };
+
+              let start_edge = (content_start - border_start).max(0.0);
+              let end_edge = (border_end - content_end).max(0.0);
+
+              if start_edge > 0.0 {
+                let clip = self.line_decoration_clip_range(border_start, start_edge);
+                self.emit_text_decorations_for_decorations(
+                  style,
+                  ancestor_decorations,
+                  None,
+                  border_start,
+                  start_edge,
+                  ctx.block_baseline,
+                  ctx.inline_vertical,
+                  clip,
+                );
+              }
+              if end_edge > 0.0 {
+                let clip = self.line_decoration_clip_range(content_end, end_edge);
+                self.emit_text_decorations_for_decorations(
+                  style,
+                  ancestor_decorations,
+                  None,
+                  content_end,
+                  end_edge,
+                  ctx.block_baseline,
+                  ctx.inline_vertical,
+                  clip,
+                );
+              }
+            }
           }
         }
       }
@@ -7314,6 +7444,53 @@ impl DisplayListBuilder {
     inline_vertical: bool,
     clip: Option<(f32, f32)>,
   ) {
+    if !style.applied_text_decorations.is_empty() {
+      self.emit_text_decorations_for_decorations(
+        style,
+        style.applied_text_decorations.as_slice(),
+        runs,
+        inline_start,
+        inline_len,
+        block_baseline,
+        inline_vertical,
+        clip,
+      );
+      return;
+    }
+
+    if style.text_decoration.lines.is_empty() {
+      return;
+    }
+
+    let decorations = [ResolvedTextDecoration {
+      decoration: style.text_decoration.clone(),
+      skip_ink: style.text_decoration_skip_ink,
+      underline_offset: style.text_underline_offset,
+      underline_position: style.text_underline_position,
+    }];
+    self.emit_text_decorations_for_decorations(
+      style,
+      &decorations,
+      runs,
+      inline_start,
+      inline_len,
+      block_baseline,
+      inline_vertical,
+      clip,
+    );
+  }
+
+  fn emit_text_decorations_for_decorations(
+    &mut self,
+    style: &ComputedStyle,
+    decorations: &[ResolvedTextDecoration],
+    runs: Option<&[ShapedRun]>,
+    inline_start: f32,
+    inline_len: f32,
+    block_baseline: f32,
+    inline_vertical: bool,
+    clip: Option<(f32, f32)>,
+  ) {
     if inline_len <= 0.0 {
       return;
     }
@@ -7329,18 +7506,6 @@ impl DisplayListBuilder {
       }
     }
 
-    let decorations = if !style.applied_text_decorations.is_empty() {
-      style.applied_text_decorations.clone()
-    } else if !style.text_decoration.lines.is_empty() {
-      vec![ResolvedTextDecoration {
-        decoration: style.text_decoration.clone(),
-        skip_ink: style.text_decoration_skip_ink,
-        underline_offset: style.text_underline_offset,
-        underline_position: style.text_underline_position,
-      }]
-    } else {
-      Vec::new()
-    };
     if decorations.is_empty() {
       return;
     }
@@ -7488,6 +7653,39 @@ impl DisplayListBuilder {
         inline_vertical,
         decorations: paints,
       }));
+  }
+
+  fn split_text_decorations<'a>(
+    style: &'a ComputedStyle,
+    fallback: &'a mut Option<[ResolvedTextDecoration; 1]>,
+  ) -> (&'a [ResolvedTextDecoration], &'a [ResolvedTextDecoration]) {
+    let all = if !style.applied_text_decorations.is_empty() {
+      style.applied_text_decorations.as_slice()
+    } else if !style.text_decoration.lines.is_empty() {
+      *fallback = Some([ResolvedTextDecoration {
+        decoration: style.text_decoration.clone(),
+        skip_ink: style.text_decoration_skip_ink,
+        underline_offset: style.text_underline_offset,
+        underline_position: style.text_underline_position,
+      }]);
+      fallback.as_ref().unwrap().as_slice()
+    } else {
+      &[]
+    };
+
+    if all.is_empty() {
+      return (&[], &[]);
+    }
+
+    if style.text_decoration.lines.is_empty() {
+      return (all, &[]);
+    }
+
+    // When `text-decoration` is specified on this element, cascade propagation appends it to the
+    // end of `applied_text_decorations`. This allows callers to treat the final entry as the
+    // decoration originating from this box (which should always skip the box decoration area).
+    let split = all.len().saturating_sub(1);
+    all.split_at(split)
   }
 
   fn resolve_text_decoration_thickness_override(
