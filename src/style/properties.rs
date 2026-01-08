@@ -5971,6 +5971,7 @@ pub(crate) fn apply_property_from_source(
     "filter" => styles.filter = source.filter.clone(),
     "backdrop-filter" => styles.backdrop_filter = source.backdrop_filter.clone(),
     "clip-path" => styles.clip_path = source.clip_path.clone(),
+    "mask-border" => styles.mask_border = source.mask_border,
     "clip" => styles.clip = source.clip.clone(),
     "transform-origin" => styles.transform_origin = source.transform_origin.clone(),
     "mix-blend-mode" => styles.mix_blend_mode = source.mix_blend_mode,
@@ -12050,6 +12051,19 @@ fn apply_declaration_with_base_internal_with_order(
     }
 
     // Mask
+    "mask-border" => {
+      let tokens: Vec<PropertyValue> = match resolved_value {
+        PropertyValue::Multiple(parts) => parts.clone(),
+        other => vec![other.clone()],
+      };
+
+      styles.mask_border = tokens.iter().any(|token| {
+        matches!(
+          parse_border_image_source(token),
+          Some(BorderImageSource::Image(_))
+        )
+      });
+    }
     "mask-image" => {
       if let Some(mut images) = parse_background_image_list(resolved_value) {
         for image in images.iter_mut().filter_map(|v| v.as_mut()) {

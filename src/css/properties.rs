@@ -338,6 +338,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "list-style-position",
   "list-style-type",
   "mask",
+  "mask-border",
   "mask-image",
   "mask-position",
   "mask-size",

@@ -816,7 +816,7 @@ pub fn creates_stacking_context(
     return true;
   }
 
-  if style.mask_layers.iter().any(|layer| layer.image.is_some()) {
+  if style.mask_border || style.mask_layers.iter().any(|layer| layer.image.is_some()) {
     return true;
   }
 
@@ -885,7 +885,7 @@ pub fn get_stacking_context_reason(
     return Some(StackingContextReason::Opacity);
   }
 
-  if style.mask_layers.iter().any(|layer| layer.image.is_some()) {
+  if style.mask_border || style.mask_layers.iter().any(|layer| layer.image.is_some()) {
     return Some(StackingContextReason::Mask);
   }
 

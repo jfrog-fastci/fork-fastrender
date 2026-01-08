@@ -1152,6 +1152,7 @@ pub struct ComputedStyle {
   pub mask_clips: Arc<[MaskClip]>,
   pub mask_composites: Arc<[MaskComposite]>,
   pub mask_layers: SmallVec<[MaskLayer; 1]>,
+  pub mask_border: bool,
   pub object_fit: ObjectFit,
   pub object_position: ObjectPosition,
   pub image_resolution: ImageResolution,
@@ -1530,6 +1531,7 @@ impl Default for ComputedStyle {
       mask_clips: vec![mask_default.clip].into(),
       mask_composites: vec![mask_default.composite].into(),
       mask_layers: smallvec::smallvec![mask_default],
+      mask_border: false,
       object_fit: ObjectFit::Fill,
       object_position: ObjectPosition {
         x: types::PositionComponent::Keyword(types::PositionKeyword::Center),

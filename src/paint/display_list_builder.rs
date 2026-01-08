@@ -2465,12 +2465,14 @@ impl DisplayListBuilder {
     let style_has_backdrop_filter = root_style.is_some_and(|style| !style.backdrop_filter.is_empty());
     let style_has_mask_image = root_style
       .is_some_and(|style| style.mask_layers.iter().any(|layer| layer.image.is_some()));
+    let style_has_mask_border = root_style.is_some_and(|style| style.mask_border);
 
     is_root
       || style_has_filter
       || !filters.is_empty()
       || has_opacity
       || style_has_mask_image
+      || style_has_mask_border
       || has_mask
       || has_clip_path
       || style_has_backdrop_filter

@@ -356,6 +356,70 @@ fn mask_image_url_triggers_backdrop_root_even_when_unresolved() {
 }
 
 #[test]
+fn mask_border_url_triggers_backdrop_root_even_when_unresolved() {
+  let html_without_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+  let pixmap = render(html_without_backdrop_root, 64, 64);
+  assert_eq!(
+    pixel(&pixmap, 15, 15),
+    (0, 255, 255, 255),
+    "sanity: without a backdrop-root boundary, the overlay should invert the body background"
+  );
+
+  let html_with_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        /* The mask border cannot be resolved, but per filter-effects-2 the property presence still
+           establishes a Backdrop Root boundary. */
+        mask-border: url(#missing);
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html_with_backdrop_root, 64, 64);
+
+  // The overlay extends outside `#parent`. If `mask-border` establishes a Backdrop Root on the
+  // parent, then the overlay's backdrop-filter must not sample the body backdrop outside
+  // `#parent`, so this pixel stays red.
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 15), (255, 0, 0, 255));
+}
+
+#[test]
 fn mask_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
