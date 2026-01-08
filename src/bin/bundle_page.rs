@@ -3034,6 +3034,111 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
   }
 
   #[test]
+  fn crawl_applies_stylesheet_referrer_policy_header_to_nested_import_requests() -> Result<()> {
+    #[derive(Default)]
+    struct PolicyFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+    }
+
+    impl PolicyFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, ReferrerPolicy)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for PolicyFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .unwrap()
+          .push((req.url.to_string(), req.destination, req.referrer_policy));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><link rel="stylesheet" href="/style.css"></head></html>"#.to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/style.css" => {
+            let mut res = FetchedResource::with_final_url(
+              br#"@import url('/import.css'); body { color: rgb(1, 2, 3); }"#.to_vec(),
+              Some("text/css".to_string()),
+              Some(req.url.to_string()),
+            );
+            res.response_referrer_policy = Some(ReferrerPolicy::Origin);
+            Ok(res)
+          }
+          "https://example.com/import.css" => {
+            let mut res = FetchedResource::with_final_url(
+              br#"@import url('nested.css'); body { background: rgb(0, 0, 0); }"#.to_vec(),
+              Some("text/css".to_string()),
+              Some("https://cdn.example.com/import-final.css".to_string()),
+            );
+            res.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+            Ok(res)
+          }
+          "https://cdn.example.com/nested.css" => Ok(FetchedResource::with_final_url(
+            b"body { background: rgb(4, 5, 6); }".to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/nested.css" => Ok(FetchedResource::with_final_url(
+            b"body { background: rgb(255, 0, 0); }".to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          )),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(PolicyFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let calls = inner.calls();
+    assert!(
+      calls.iter().any(|(url, dest, policy)| {
+        url == "https://cdn.example.com/nested.css"
+          && *dest == FetchDestination::Style
+          && *policy == ReferrerPolicy::NoReferrer
+      }),
+      "expected nested @import fetch to inherit imported stylesheet Referrer-Policy header, got: {calls:?}"
+    );
+    assert!(
+      calls.iter().all(|(url, _, _)| url != "https://example.com/nested.css"),
+      "expected nested @import to resolve against imported stylesheet final URL, got: {calls:?}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn crawl_sets_stylesheet_referrer_and_client_origin_for_font_requests() -> Result<()> {
     #[derive(Default)]
     struct FontReferrerFetcher {
