@@ -42,7 +42,12 @@ fn abs_child_position(fragment: &FragmentNode) -> (f32, f32) {
   (abs_fragment.bounds.x(), abs_fragment.bounds.y())
 }
 
-fn layout_abspos_child(container_style: ComputedStyle, child_style: ComputedStyle) -> (f32, f32) {
+fn layout_abspos_child_in_size(
+  container_style: ComputedStyle,
+  child_style: ComputedStyle,
+  width: f32,
+  height: f32,
+) -> (f32, f32) {
   let abs_child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
   let container = BoxNode::new_block(
     Arc::new(container_style),
@@ -53,7 +58,7 @@ fn layout_abspos_child(container_style: ComputedStyle, child_style: ComputedStyl
     matches!(container.children[0].style.position, Position::Absolute),
     "test setup requires a single absolute-positioned child"
   );
-  let constraints = LayoutConstraints::definite(100.0, 100.0);
+  let constraints = LayoutConstraints::definite(width, height);
   let fc = FlexFormattingContext::new();
 
   let first = fc.layout(&container, &constraints).expect("flex layout");
@@ -68,6 +73,10 @@ fn layout_abspos_child(container_style: ComputedStyle, child_style: ComputedStyl
   );
 
   first_pos
+}
+
+fn layout_abspos_child(container_style: ComputedStyle, child_style: ComputedStyle) -> (f32, f32) {
+  layout_abspos_child_in_size(container_style, child_style, 100.0, 100.0)
 }
 
 #[test]
@@ -493,6 +502,32 @@ fn abspos_static_position_treats_cross_axis_auto_margins_as_zero() {
 
   let (_, y) = layout_abspos_child(container_style, child_style);
   assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_resolves_block_axis_percentage_margins_against_container_width() {
+  // CSS 2.1 §8.3: percentage margins resolve against the containing block width on both axes.
+  //
+  // Use asymmetric container sizes to catch implementations that incorrectly resolve vertical
+  // margins against the block size.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::Center;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.margin_top = Some(Length::percent(50.0)); // 50% of CB width = 100px
+
+  let (_, y) = layout_abspos_child_in_size(container_style, child_style, 200.0, 100.0);
+  // Margin box height is 100 + 10 + 0 = 110, so centering in 100 yields a margin-edge y of -5.
+  // Absolute positioning then adds margin-top (100), producing a border box y of 95.
+  assert!((y - 95.0).abs() < 0.1, "expected y≈95, got {}", y);
 }
 
 #[test]
