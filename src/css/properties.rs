@@ -1819,6 +1819,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "background-attachment"
       | "background-origin"
       | "background-clip"
+      | "background-blend-mode"
       | "-webkit-background-clip"
       | "background-position-inline"
       | "background-position-block"
@@ -4187,6 +4188,18 @@ mod tests {
     assert!(matches!(&list[2], PropertyValue::Number(n) if (*n - 2.0).abs() < 1e-6));
     assert!(matches!(&list[3], PropertyValue::Keyword(k) if k == ","));
     assert!(matches!(&list[4], PropertyValue::Keyword(k) if k.eq_ignore_ascii_case("pointer")));
+  }
+
+  #[test]
+  fn background_blend_mode_tokenizes_comma_separated_keyword_list() {
+    let parsed = parse_property_value("background-blend-mode", "color-oklch, normal");
+    let PropertyValue::Multiple(list) = parsed.expect("parsed") else {
+      panic!("expected Multiple");
+    };
+    assert_eq!(list.len(), 3);
+    assert!(matches!(&list[0], PropertyValue::Keyword(k) if k.eq_ignore_ascii_case("color-oklch")));
+    assert!(matches!(&list[1], PropertyValue::Keyword(k) if k == ","));
+    assert!(matches!(&list[2], PropertyValue::Keyword(k) if k.eq_ignore_ascii_case("normal")));
   }
 
   #[test]

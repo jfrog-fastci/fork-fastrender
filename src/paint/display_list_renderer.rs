@@ -10076,7 +10076,7 @@ impl DisplayListRenderer {
           let (t, valid) = self.to_skia_transform_checked(transform_for_canvas);
           if valid {
             local_skia_transform = Some(t);
-            combined_transform = combined_transform.post_concat(t);
+            combined_transform = concat_transforms(combined_transform, t);
             applied_perspective = !self.projective_warp_enabled && warp_candidate_is_projective;
 
             if uses_warp_candidate && !warp_candidate_is_projective && !parent_perspective.is_identity()
@@ -10287,10 +10287,12 @@ impl DisplayListRenderer {
         }
 
         let layer_transform_for_canvas = local_skia_transform.map(|t| {
-          let mut layer_transform = parent_transform.post_concat(t);
+          let mut layer_transform = concat_transforms(parent_transform, t);
           if needs_layer && layer_origin != (0, 0) {
-            layer_transform =
-              layer_transform.post_translate(-(layer_origin.0 as f32), -(layer_origin.1 as f32));
+            layer_transform = concat_transforms(
+              Transform::from_translate(-(layer_origin.0 as f32), -(layer_origin.1 as f32)),
+              layer_transform,
+            );
           }
           layer_transform
         });
