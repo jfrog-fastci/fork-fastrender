@@ -4001,6 +4001,7 @@ fn apply_sticky_offsets_with_context(
   fragment: &mut FragmentNode,
   parent_rect: Rect,
   parent_content_rect: Rect,
+  parent_overflow_rect: Rect,
   parent_screen_offset: Point,
   context: StickyTraversalContext,
   scroll_state: &ScrollState,
@@ -4087,10 +4088,9 @@ fn apply_sticky_offsets_with_context(
           ),
         );
 
-        let containing_rect_screen = parent_content_rect.translate(Point::new(
-          -parent_screen_offset.x,
-          -parent_screen_offset.y,
-        ));
+        let containing_rect_screen = parent_content_rect
+          .union(parent_overflow_rect)
+          .translate(Point::new(-parent_screen_offset.x, -parent_screen_offset.y));
         delta = clamp_delta_to_containing_block(
           delta,
           margin_box_screen,
@@ -4162,12 +4162,20 @@ fn apply_sticky_offsets_with_context(
     }
   }
 
+  let overflow_rect = Rect::from_xywh(
+    abs_rect.x() + fragment.scroll_overflow.x(),
+    abs_rect.y() + fragment.scroll_overflow.y(),
+    fragment.scroll_overflow.width(),
+    fragment.scroll_overflow.height(),
+  );
+
   for child in fragment.children_mut().iter_mut() {
     apply_sticky_offsets_with_context(
       font_context,
       child,
       abs_rect,
       content_rect,
+      overflow_rect,
       context.cumulative_scroll,
       child_context,
       scroll_state,
@@ -4197,6 +4205,7 @@ fn apply_sticky_offsets_to_root(
   apply_sticky_offsets_with_context(
     font_context,
     fragment,
+    viewport_rect,
     viewport_rect,
     viewport_rect,
     Point::ZERO,
