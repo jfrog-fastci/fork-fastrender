@@ -16,6 +16,14 @@ fn main() {
 
 #[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+  apply_address_space_limit_from_env();
+
+  // Test/CI hook: allow integration tests to exercise startup behaviour (including mem-limit
+  // parsing) without opening a window or initialising wgpu.
+  if std::env::var_os("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY").is_some() {
+    return Ok(());
+  }
+
   use winit::event::Event;
   use winit::event::WindowEvent;
   use winit::event_loop::ControlFlow;
@@ -63,6 +71,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       _ => {}
     }
   });
+}
+
+#[cfg(feature = "browser_ui")]
+fn apply_address_space_limit_from_env() {
+  const KEY: &str = "FASTR_BROWSER_MEM_LIMIT_MB";
+  let raw = std::env::var(KEY).ok();
+  let Some(raw) = raw else {
+    eprintln!("{KEY}: Disabled");
+    return;
+  };
+
+  let raw_trimmed = raw.trim();
+  if raw_trimmed.is_empty() {
+    eprintln!("{KEY}: Disabled");
+    return;
+  }
+
+  // Accept underscore separators (e.g. 1_024) for convenience.
+  let limit_mb = match raw_trimmed.replace('_', "").parse::<u64>() {
+    Ok(limit) => limit,
+    Err(_) => {
+      eprintln!("{KEY}: Disabled (invalid value: {raw_trimmed:?}; expected u64 MiB)");
+      return;
+    }
+  };
+
+  if limit_mb == 0 {
+    eprintln!("{KEY}: Disabled");
+    return;
+  }
+
+  match fastrender::process_limits::apply_address_space_limit_mb(limit_mb) {
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Applied) => {
+      eprintln!("{KEY}: Applied ({limit_mb} MiB)");
+    }
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Disabled) => {
+      eprintln!("{KEY}: Disabled");
+    }
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Unsupported) => {
+      eprintln!("{KEY}: Unsupported (requested {limit_mb} MiB)");
+    }
+    // This is a best-effort safety valve. If we fail to apply the limit (e.g. under sandboxing),
+    // keep running rather than preventing the UI from starting.
+    Err(err) => {
+      eprintln!("{KEY}: Disabled (failed to apply {limit_mb} MiB: {err})");
+    }
+  }
 }
 
 #[cfg(feature = "browser_ui")]
