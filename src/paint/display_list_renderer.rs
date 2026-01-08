@@ -1380,8 +1380,14 @@ where
       ..Default::default()
     };
 
-    if let Err(err) = apply_filters(&mut region, filters, scale, local_bbox, svg_inputs, blur_cache)
-    {
+    if let Err(err) = apply_filters(
+      &mut region,
+      filters,
+      scale,
+      local_bbox,
+      svg_inputs,
+      blur_cache,
+    ) {
       scratch.region = Some(region);
       if let Some(backdrop) = svg_backdrop_pixmap {
         scratch.svg_backdrop = Some(backdrop);
@@ -4680,9 +4686,7 @@ impl DisplayListRenderer {
   }
 
   #[inline]
-  fn pop_layer_raw_tracked(
-    &mut self,
-  ) -> Result<(Pixmap, (i32, i32), f32, Option<SkiaBlendMode>)> {
+  fn pop_layer_raw_tracked(&mut self) -> Result<(Pixmap, (i32, i32), f32, Option<SkiaBlendMode>)> {
     let popped = self.canvas.pop_layer_raw()?;
     self.pop_layer_mutation_state();
     Ok(popped)
@@ -7533,7 +7537,8 @@ impl DisplayListRenderer {
       return Ok(None);
     }
     let layer_stack = self.canvas.layer_stack();
-    let Some(target_key) = Self::backdrop_composite_cache_key(layer_stack, root_depth, parent_depth)
+    let Some(target_key) =
+      Self::backdrop_composite_cache_key(layer_stack, root_depth, parent_depth)
     else {
       return Ok(None);
     };
@@ -7632,7 +7637,14 @@ impl DisplayListRenderer {
               None,
             );
           } else {
-            next.draw_pixmap(0, 0, layer_pixmap.as_ref(), &paint, Transform::identity(), None);
+            next.draw_pixmap(
+              0,
+              0,
+              layer_pixmap.as_ref(),
+              &paint,
+              Transform::identity(),
+              None,
+            );
           }
         }
 
@@ -7890,7 +7902,7 @@ impl DisplayListRenderer {
     let mut backdrop_root_pop_stack: Vec<bool> = Vec::new();
     for item in items {
       check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
-        match item {
+      match item {
         DisplayItem::PushStackingContext(sc) => {
           if !self.preserve_3d_disabled && matches!(sc.transform_style, TransformStyle::Preserve3d)
           {
@@ -8176,7 +8188,11 @@ impl DisplayListRenderer {
             }
           }
           if active_opacity_scopes > 0 {
-            if let Some(scope) = opacity_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
+            if let Some(scope) = opacity_stack
+              .iter_mut()
+              .rev()
+              .find(|scope| scope.weight > 0)
+            {
               union_bounds(&mut scope.bounds, bounds);
             }
           }
@@ -8194,7 +8210,10 @@ impl DisplayListRenderer {
           if weight > 0 {
             active_blend_scopes = active_blend_scopes.saturating_add(1);
           }
-          blend_stack.push(BlendScope { weight, bounds: None });
+          blend_stack.push(BlendScope {
+            weight,
+            bounds: None,
+          });
         }
         DisplayItem::PopBlendMode => {
           let Some(scope) = blend_stack.pop() else {
@@ -8223,7 +8242,10 @@ impl DisplayListRenderer {
           if weight > 0 {
             active_opacity_scopes = active_opacity_scopes.saturating_add(1);
           }
-          opacity_stack.push(OpacityScope { weight, bounds: None });
+          opacity_stack.push(OpacityScope {
+            weight,
+            bounds: None,
+          });
         }
         DisplayItem::PopOpacity => {
           let Some(scope) = opacity_stack.pop() else {
@@ -8239,7 +8261,11 @@ impl DisplayListRenderer {
             continue;
           };
           let _ = add_rect(&mut total, self.ds_rect(bounds), scope.weight);
-          if let Some(parent) = opacity_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
+          if let Some(parent) = opacity_stack
+            .iter_mut()
+            .rev()
+            .find(|scope| scope.weight > 0)
+          {
             union_bounds(&mut parent.bounds, bounds);
           }
         }
@@ -10349,9 +10375,9 @@ impl DisplayListRenderer {
         | DisplayItem::ConicGradientPattern(_)
         | DisplayItem::Border(_)
         | DisplayItem::TableCollapsedBorders(_)
-         | DisplayItem::TextDecoration(_)
-     )
-   }
+        | DisplayItem::TextDecoration(_)
+    )
+  }
 
   /// Render a single display list item.
   ///
@@ -10779,27 +10805,67 @@ impl DisplayListRenderer {
         } else {
           (None, (0, 0))
         };
+        // Non-isolated blend groups must initialize their group surface from the already-painted
+        // backdrop *only* when they contain descendant backdrop-sensitive effects (mix-blend-mode
+        // or backdrop-filter). Leaf blend-mode elements can render into a transparent group
+        // surface and blend against the parent at composite time, avoiding ambiguous
+        // out==backdrop uncompositing when the source happens to match the backdrop.
+        let init_from_backdrop = !is_isolated
+          && !matches!(item.mix_blend_mode, BlendMode::Normal)
+          && item.has_backdrop_sensitive_descendants;
         if needs_layer {
           if manual_blend.is_some() {
             if let Some(layer_rect) = bounded_rect {
-              self.push_layer_bounded_tracked(
-                opacity,
-                None,
-                layer_rect,
-                is_backdrop_root,
-              )?;
+              if init_from_backdrop {
+                self
+                  .canvas
+                  .push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
+                    opacity,
+                    None,
+                    layer_rect,
+                    is_backdrop_root,
+                  )?;
+                self.push_layer_mutation_state();
+              } else {
+                self.push_layer_bounded_tracked(opacity, None, layer_rect, is_backdrop_root)?;
+              }
+            } else if init_from_backdrop {
+              self
+                .canvas
+                .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
+                  opacity,
+                  None,
+                  is_backdrop_root,
+                )?;
+              self.push_layer_mutation_state();
             } else {
               self.push_layer_tracked(opacity, is_backdrop_root)?;
             }
           } else {
             let blend = map_blend_mode(item.mix_blend_mode);
             if let Some(layer_rect) = bounded_rect {
-              self.push_layer_bounded_tracked(
-                opacity,
-                Some(blend),
-                layer_rect,
-                is_backdrop_root,
-              )?;
+              if init_from_backdrop {
+                self
+                  .canvas
+                  .push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
+                    opacity,
+                    Some(blend),
+                    layer_rect,
+                    is_backdrop_root,
+                  )?;
+                self.push_layer_mutation_state();
+              } else {
+                self.push_layer_bounded_tracked(opacity, Some(blend), layer_rect, is_backdrop_root)?;
+              }
+            } else if init_from_backdrop {
+              self
+                .canvas
+                .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
+                  opacity,
+                  Some(blend),
+                  is_backdrop_root,
+                )?;
+              self.push_layer_mutation_state();
             } else {
               self.push_layer_with_blend_tracked(opacity, Some(blend), is_backdrop_root)?;
             }
@@ -10832,7 +10898,6 @@ impl DisplayListRenderer {
         });
         // Non-isolated group surfaces may be lazily initialized from backdrop once a descendant
         // `mix-blend-mode` operation needs it (see `maybe_init_non_isolated_group_backdrop`).
-        let init_from_backdrop = false;
         self.stacking_layers.push(StackingRecord {
           establishes_backdrop_root: is_backdrop_root,
           needs_layer,
@@ -11252,7 +11317,9 @@ impl DisplayListRenderer {
       DisplayItem::PushClip(clip) => self.push_clip(clip)?,
       DisplayItem::PopClip => self.pop_clip(),
       DisplayItem::PushOpacity(OpacityItem { opacity }) => {
-        let canvas_layer_depth_before = self.trace_backdrop_stack.then(|| self.canvas.layer_stack_len());
+        let canvas_layer_depth_before = self
+          .trace_backdrop_stack
+          .then(|| self.canvas.layer_stack_len());
         let is_backdrop_root = *opacity < 1.0 - f32::EPSILON;
         let clip_bounds = self.canvas.clip_bounds().filter(|bounds| {
           bounds.x().is_finite()
@@ -11295,7 +11362,11 @@ impl DisplayListRenderer {
         let (canvas_layer_depth_before, backdrop_root) = if self.trace_backdrop_stack {
           (
             self.canvas.layer_stack_len(),
-            self.canvas.layer_stack().last().is_some_and(|record| record.is_backdrop_root),
+            self
+              .canvas
+              .layer_stack()
+              .last()
+              .is_some_and(|record| record.is_backdrop_root),
           )
         } else {
           (0, false)
@@ -11323,7 +11394,9 @@ impl DisplayListRenderer {
         self.canvas.restore();
       }
       DisplayItem::PushBlendMode(mode) => {
-        let canvas_layer_depth_before = self.trace_backdrop_stack.then(|| self.canvas.layer_stack_len());
+        let canvas_layer_depth_before = self
+          .trace_backdrop_stack
+          .then(|| self.canvas.layer_stack_len());
         let is_backdrop_root = !matches!(mode.mode, BlendMode::Normal);
         let clip_bounds = self.canvas.clip_bounds().filter(|bounds| {
           bounds.x().is_finite()
@@ -17020,11 +17093,10 @@ mod tests {
     list.push(DisplayItem::PopStackingContext);
     list.push(DisplayItem::PopStackingContext);
 
-    let pixmap =
-      DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new())
-        .unwrap()
-        .render(&list)
-        .unwrap();
+    let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
 
     // With perspective=100 and translateZ(50), the projected scale factor is 2×. The filled rect
     // should therefore move from (10,10)-(20,20) to (20,20)-(40,40).
@@ -17140,11 +17212,11 @@ mod tests {
     let combined_pixmap = render(&combined);
     let bg = (255, 255, 255, 255);
     let nested_bounds = non_background_bounds(&nested_pixmap, bg).expect("nested draws pixels");
-    let combined_bounds = non_background_bounds(&combined_pixmap, bg).expect("combined draws pixels");
+    let combined_bounds =
+      non_background_bounds(&combined_pixmap, bg).expect("combined draws pixels");
 
     assert_eq!(
-      nested_bounds,
-      combined_bounds,
+      nested_bounds, combined_bounds,
       "expected nested stacking-context composition to match combined transform composition"
     );
   }
@@ -18318,7 +18390,8 @@ mod tests {
   }
 
   #[test]
-  fn display_list_renderer_resolve_length_for_paint_does_not_fallback_to_element_font_size_for_rem() {
+  fn display_list_renderer_resolve_length_for_paint_does_not_fallback_to_element_font_size_for_rem()
+  {
     let len = Length::rem(1.0);
     let resolved = resolve_length_for_paint(&len, 10.0, f32::NAN, 0.0, (100.0, 100.0));
     assert_eq!(resolved, 0.0);
@@ -19699,7 +19772,10 @@ mod tests {
 
     let clip1 = Rect::from_xywh(128.0, 256.0, 64.0, 32.0);
     list.push(DisplayItem::PushClip(ClipItem {
-      shape: ClipShape::Rect { rect: clip1, radii: None },
+      shape: ClipShape::Rect {
+        rect: clip1,
+        radii: None,
+      },
     }));
     list.push(DisplayItem::PushBlendMode(BlendModeItem {
       mode: BlendMode::Multiply,
@@ -19713,9 +19789,14 @@ mod tests {
 
     let clip2 = Rect::from_xywh(64.0, 64.0, 32.0, 16.0);
     list.push(DisplayItem::PushClip(ClipItem {
-      shape: ClipShape::Rect { rect: clip2, radii: None },
+      shape: ClipShape::Rect {
+        rect: clip2,
+        radii: None,
+      },
     }));
-    list.push(DisplayItem::PushBlendMode(BlendModeItem { mode: BlendMode::Hue }));
+    list.push(DisplayItem::PushBlendMode(BlendModeItem {
+      mode: BlendMode::Hue,
+    }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
       color: Rgba::from_rgba8(200, 40, 60, 255),
@@ -19728,8 +19809,9 @@ mod tests {
       report.layer_allocations, 2,
       "expected each clipped PushBlendMode to allocate its own layer"
     );
-    let expected_bytes =
-      (64u64 * 32u64).saturating_add(32u64 * 16u64).saturating_mul(4);
+    let expected_bytes = (64u64 * 32u64)
+      .saturating_add(32u64 * 16u64)
+      .saturating_mul(4);
     assert_eq!(
       report.layer_alloc_bytes, expected_bytes,
       "expected PushBlendMode layers to be allocated at the clip bounds"
@@ -19760,7 +19842,10 @@ mod tests {
 
     let clip1 = Rect::from_xywh(128.0, 256.0, 64.0, 32.0);
     list.push(DisplayItem::PushClip(ClipItem {
-      shape: ClipShape::Rect { rect: clip1, radii: None },
+      shape: ClipShape::Rect {
+        rect: clip1,
+        radii: None,
+      },
     }));
     list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 0.5 }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -19772,7 +19857,10 @@ mod tests {
 
     let clip2 = Rect::from_xywh(64.0, 64.0, 32.0, 16.0);
     list.push(DisplayItem::PushClip(ClipItem {
-      shape: ClipShape::Rect { rect: clip2, radii: None },
+      shape: ClipShape::Rect {
+        rect: clip2,
+        radii: None,
+      },
     }));
     list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 1.0 }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -19787,8 +19875,9 @@ mod tests {
       report.layer_allocations, 2,
       "expected each clipped PushOpacity to allocate its own layer"
     );
-    let expected_bytes =
-      (64u64 * 32u64).saturating_add(32u64 * 16u64).saturating_mul(4);
+    let expected_bytes = (64u64 * 32u64)
+      .saturating_add(32u64 * 16u64)
+      .saturating_mul(4);
     assert_eq!(
       report.layer_alloc_bytes, expected_bytes,
       "expected PushOpacity layers to be allocated at the clip bounds"
@@ -19820,7 +19909,10 @@ mod tests {
     // Clip fully outside the canvas so the subtree paints nothing.
     let clip = Rect::from_xywh(200.0, 200.0, 10.0, 10.0);
     list.push(DisplayItem::PushClip(ClipItem {
-      shape: ClipShape::Rect { rect: clip, radii: None },
+      shape: ClipShape::Rect {
+        rect: clip,
+        radii: None,
+      },
     }));
     list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 0.5 }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -19866,7 +19958,10 @@ mod tests {
     // Clip fully outside the canvas so the stacking context paints nothing.
     let clip = Rect::from_xywh(200.0, 200.0, 10.0, 10.0);
     list.push(DisplayItem::PushClip(ClipItem {
-      shape: ClipShape::Rect { rect: clip, radii: None },
+      shape: ClipShape::Rect {
+        rect: clip,
+        radii: None,
+      },
     }));
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
@@ -21507,8 +21602,7 @@ mod tests {
       "expected mask alpha=1.0 to preserve painted pixels"
     );
 
-    renderer
-      .composite_layer_tracked(&layer, 1.0, Some(SkiaBlendMode::SourceOver), layer_origin);
+    renderer.composite_layer_tracked(&layer, 1.0, Some(SkiaBlendMode::SourceOver), layer_origin);
     let pixmap = renderer.canvas.into_pixmap();
     assert_eq!(
       pixel(&pixmap, 10, 10),
@@ -22354,8 +22448,7 @@ mod tests {
       list.push(DisplayItem::PopStackingContext);
 
       let diag = Arc::new(LayerAllocationDiagnostics::default());
-      let mut renderer =
-        DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
+      let mut renderer = DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
       renderer.set_parallelism(PaintParallelism::disabled());
       renderer.layer_alloc_diagnostics = Some(diag);
 
@@ -22434,8 +22527,7 @@ mod tests {
       list.push(DisplayItem::PopStackingContext);
 
       let diag = Arc::new(LayerAllocationDiagnostics::default());
-      let mut renderer =
-        DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
+      let mut renderer = DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
       renderer.set_parallelism(PaintParallelism::disabled());
       renderer.layer_alloc_diagnostics = Some(diag);
 

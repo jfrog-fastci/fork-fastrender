@@ -79,6 +79,7 @@ use tiny_skia::PathBuilder;
 use tiny_skia::Pixmap;
 use tiny_skia::PixmapPaint;
 use tiny_skia::PixmapRef;
+use tiny_skia::PremultipliedColorU8;
 use tiny_skia::Rect as SkiaRect;
 use tiny_skia::Stroke;
 use tiny_skia::Transform;
@@ -173,7 +174,7 @@ pub(crate) struct LayerRecord {
   composite_blend: Option<SkiaBlendMode>,
   pub(crate) origin: (i32, i32),
   pub(crate) is_backdrop_root: bool,
-  /// Whether the child layer surface was initialized from the already-painted backdrop.
+  /// True when this layer's pixmap was initialized from the already-painted backdrop.
   ///
   /// This is used for non-isolated compositing groups (e.g. non-isolated `mix-blend-mode` groups),
   /// where the group surface starts as a copy of its parent surface.
@@ -182,7 +183,7 @@ pub(crate) struct LayerRecord {
   /// descendant `backdrop-filter` effects must still respect Backdrop Root boundaries. See
   /// [`Canvas::fill_backdrop_root_region`] for how we strip the initialization backdrop when the
   /// layer is acting as the Backdrop Root.
-  init_from_backdrop: bool,
+  pub(crate) init_from_backdrop: bool,
 }
 
 impl LayerRecord {
@@ -195,156 +196,6 @@ impl LayerRecord {
   pub(crate) fn effective_blend_mode(&self) -> SkiaBlendMode {
     self.composite_blend.unwrap_or(self.parent_blend_mode)
   }
-}
-
-#[inline]
-fn mul_div_255_round_u16(a: u16, b: u16) -> u16 {
-  let product = a as u32 * b as u32;
-  ((product + 127) / 255) as u16
-}
-
-/// Convert a non-isolated group surface into an isolated source image.
-///
-/// For a non-isolated compositing group, the group surface is initialized with the group backdrop
-/// (the already-painted pixels behind the group) and group content is rendered on top. This
-/// produces a surface `out` where:
-///
-/// ```text
-/// out = src ⊕ backdrop
-/// ```
-///
-/// where `⊕` is source-over compositing and `src` is the group's "computed element" (its color and
-/// alpha contribution excluding the backdrop).
-///
-/// This helper extracts `src` from `out` and `backdrop` in-place so callers can:
-/// - composite the group's computed element onto the backdrop once (avoiding double-counting the
-///   initialization backdrop), and/or
-/// - sample from the computed element when enforcing Backdrop Root scoping for `backdrop-filter`.
-pub(crate) fn uncomposite_layer_source_over_backdrop(
-  layer: &mut Pixmap,
-  backdrop: &Pixmap,
-  origin: (i32, i32),
-) -> RenderResult<()> {
-  let layer_w = layer.width() as i32;
-  let layer_h = layer.height() as i32;
-  if layer_w <= 0 || layer_h <= 0 {
-    return Ok(());
-  }
-
-  let backdrop_w = backdrop.width() as i32;
-  let backdrop_h = backdrop.height() as i32;
-  if backdrop_w <= 0 || backdrop_h <= 0 {
-    return Ok(());
-  }
-
-  let origin_x = origin.0;
-  let origin_y = origin.1;
-
-  let mut lx0 = 0i32;
-  let mut ly0 = 0i32;
-  let mut lx1 = layer_w;
-  let mut ly1 = layer_h;
-
-  if origin_x < 0 {
-    lx0 = lx0.max(-origin_x);
-  }
-  if origin_y < 0 {
-    ly0 = ly0.max(-origin_y);
-  }
-  if origin_x + layer_w > backdrop_w {
-    lx1 = lx1.min(backdrop_w - origin_x);
-  }
-  if origin_y + layer_h > backdrop_h {
-    ly1 = ly1.min(backdrop_h - origin_y);
-  }
-
-  if lx0 >= lx1 || ly0 >= ly1 {
-    return Ok(());
-  }
-
-  #[inline]
-  fn ceil_div(numer: u32, denom: u32) -> u16 {
-    if denom == 0 {
-      return 0;
-    }
-    ((numer + denom - 1) / denom).min(255) as u16
-  }
-
-  let layer_stride = layer.width() as usize;
-  let backdrop_stride = backdrop.width() as usize;
-  let layer_pixels = layer.pixels_mut();
-  let backdrop_pixels = backdrop.pixels();
-  let width = (lx1 - lx0) as usize;
-
-  let mut deadline_counter = 0usize;
-  for ly in ly0..ly1 {
-    check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
-
-    let layer_row = ly as usize * layer_stride + lx0 as usize;
-    let backdrop_row =
-      (ly + origin_y) as usize * backdrop_stride + (lx0 + origin_x) as usize;
-
-    for offset in 0..width {
-      let out_px = &mut layer_pixels[layer_row + offset];
-      let back_px = backdrop_pixels[backdrop_row + offset];
-
-      let ba = back_px.alpha() as u16;
-      let oa = out_px.alpha() as u16;
-
-      let sa = if ba < 255 {
-        let num = oa.saturating_sub(ba) as u32;
-        if num == 0 {
-          0
-        } else {
-          let denom = (255u32).saturating_sub(ba as u32);
-          (((num * 255 + denom / 2) / denom).min(255)) as u16
-        }
-      } else {
-        // When the backdrop is fully opaque, `oa` is always 255 under source-over compositing, so
-        // alpha alone cannot recover the source alpha. Choose the smallest alpha that yields a
-        // valid premultiplied source color for all channels.
-        let (br, bg, bb) = (
-          back_px.red() as u16,
-          back_px.green() as u16,
-          back_px.blue() as u16,
-        );
-        let (or, og, ob) = (out_px.red() as u16, out_px.green() as u16, out_px.blue() as u16);
-
-        let mut bound = 0u16;
-        for (b, o) in [(br, or), (bg, og), (bb, ob)] {
-          if b > 0 && b > o {
-            bound = bound.max(ceil_div(u32::from(b - o) * 255, u32::from(b)));
-          }
-          if b < 255 && o > b {
-            bound = bound.max(ceil_div(u32::from(o - b) * 255, u32::from(255 - b)));
-          }
-        }
-        bound
-      };
-
-      if sa == 0 {
-        *out_px = tiny_skia::PremultipliedColorU8::TRANSPARENT;
-        continue;
-      }
-
-      let inv_sa = 255u16.saturating_sub(sa);
-      let sr = (out_px.red() as u16)
-        .saturating_sub(mul_div_255_round_u16(back_px.red() as u16, inv_sa));
-      let sg = (out_px.green() as u16)
-        .saturating_sub(mul_div_255_round_u16(back_px.green() as u16, inv_sa));
-      let sb = (out_px.blue() as u16)
-        .saturating_sub(mul_div_255_round_u16(back_px.blue() as u16, inv_sa));
-
-      let sr = sr.min(sa);
-      let sg = sg.min(sa);
-      let sb = sb.min(sa);
-
-      *out_px = tiny_skia::PremultipliedColorU8::from_rgba(sr as u8, sg as u8, sb as u8, sa as u8)
-        .unwrap_or(tiny_skia::PremultipliedColorU8::TRANSPARENT);
-    }
-  }
-
-  Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -733,7 +584,16 @@ impl Canvas {
       Some(b) => b,
       None => (0, 0, self.pixmap.width(), self.pixmap.height()),
     };
-    self.push_layer_internal(opacity, blend, origin_x, origin_y, width, height, is_backdrop_root, true)
+    self.push_layer_internal(
+      opacity,
+      blend,
+      origin_x,
+      origin_y,
+      width,
+      height,
+      is_backdrop_root,
+      true,
+    )
   }
 
   /// Pushes a new offscreen layer initialized from the already-painted backdrop.
@@ -755,7 +615,8 @@ impl Canvas {
     blend: Option<SkiaBlendMode>,
     bounds: Rect,
   ) -> Result<()> {
-    self.push_layer_bounded_initialized_from_backdrop_and_backdrop_root(opacity, blend, bounds, false)
+    self
+      .push_layer_bounded_initialized_from_backdrop_and_backdrop_root(opacity, blend, bounds, false)
   }
 
   fn push_layer_internal(
@@ -989,7 +850,10 @@ impl Canvas {
   }
 
   /// Returns metadata for compositing the given layer depth into its parent.
-  pub(crate) fn layer_composite_metadata(&self, depth: usize) -> Option<LayerCompositeMetadata<'_>> {
+  pub(crate) fn layer_composite_metadata(
+    &self,
+    depth: usize,
+  ) -> Option<LayerCompositeMetadata<'_>> {
     let record = self.layer_stack.get(depth.checked_sub(1)?)?;
     let opacity = (record.opacity * record.parent_opacity).clamp(0.0, 1.0);
     Some(LayerCompositeMetadata {
@@ -1116,8 +980,12 @@ impl Canvas {
 
     let parent_abs = abs_origins[parent_layer];
     let root_abs = abs_origins[root_layer];
-    let start_src_x = origin_in_parent.0.saturating_add(parent_abs.0.saturating_sub(root_abs.0));
-    let start_src_y = origin_in_parent.1.saturating_add(parent_abs.1.saturating_sub(root_abs.1));
+    let start_src_x = origin_in_parent
+      .0
+      .saturating_add(parent_abs.0.saturating_sub(root_abs.0));
+    let start_src_y = origin_in_parent
+      .1
+      .saturating_add(parent_abs.1.saturating_sub(root_abs.1));
 
     // Initialize the region from the root surface. Outside the root surface is transparent.
     let root_surface = &layer_stack[root_layer].pixmap;
@@ -1154,7 +1022,16 @@ impl Canvas {
       paint.blend_mode = blend;
       let src = layer_stack[layer].pixmap.as_ref();
       if paint.blend_mode == SkiaBlendMode::Plus {
-        draw_pixmap_with_plus_blend(region, dest_x, dest_y, src, opacity, paint.quality, transform, None);
+        draw_pixmap_with_plus_blend(
+          region,
+          dest_x,
+          dest_y,
+          src,
+          opacity,
+          paint.quality,
+          transform,
+          None,
+        );
       } else {
         region.draw_pixmap(dest_x, dest_y, src, &paint, transform, None);
       }
@@ -1652,8 +1529,7 @@ impl Canvas {
             return;
           }
 
-          let mut scratch =
-            FILL_RECT_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+          let mut scratch = FILL_RECT_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
           let mut tmp = match scratch.pixmap.take() {
             Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => {
               existing
@@ -1711,7 +1587,13 @@ impl Canvas {
               _ => match Mask::new(scratch_w, scratch_h) {
                 Some(m) => m,
                 None => {
-                  self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, Some(clip_mask));
+                  self.pixmap.fill_path(
+                    &path,
+                    &paint,
+                    FillRule::Winding,
+                    transform,
+                    Some(clip_mask),
+                  );
                   scratch.pixmap = Some(tmp);
                   scratch.mask = None;
                   FILL_RECT_SCRATCH.with(|cell| {
@@ -2777,6 +2659,162 @@ impl Canvas {
     pb.close();
     pb.finish()
   }
+}
+
+/// Convert a non-isolated group surface into an isolated source image.
+///
+/// For a non-isolated compositing group, the group surface is initialized with the group backdrop
+/// (the already-painted pixels behind the group) and group content is rendered on top. This
+/// produces a surface `out` where:
+///
+/// ```text
+/// out = src ⊕ backdrop
+/// ```
+///
+/// where `⊕` is source-over compositing and `src` is the group's "computed element" (its color and
+/// alpha contribution excluding the backdrop).
+///
+/// This helper extracts `src` from `out` and `backdrop` in-place so callers can composite `src`
+/// once (with the group's mix-blend-mode / opacity / filters) without the backdrop contributing
+/// twice (CSS Compositing & Blending group invariance).
+pub(crate) fn uncomposite_layer_source_over_backdrop(
+  layer: &mut Pixmap,
+  backdrop: &Pixmap,
+  origin: (i32, i32),
+) -> RenderResult<()> {
+  #[inline]
+  fn mul_div_255_round_u16(a: u16, b: u16) -> u16 {
+    // Exact rounding division by 255 for u8 products.
+    //
+    // This implements `round((a * b) / 255)` for `a, b ∈ [0, 255]` using only
+    // multiplies/shifts. The intermediate range fits in u32.
+    let prod = (a as u32) * (b as u32);
+    (((prod + 128) * 257) >> 16) as u16
+  }
+
+  let layer_w = layer.width() as i32;
+  let layer_h = layer.height() as i32;
+  if layer_w <= 0 || layer_h <= 0 {
+    return Ok(());
+  }
+
+  let backdrop_w = backdrop.width() as i32;
+  let backdrop_h = backdrop.height() as i32;
+  if backdrop_w <= 0 || backdrop_h <= 0 {
+    return Ok(());
+  }
+
+  let origin_x = origin.0;
+  let origin_y = origin.1;
+
+  let mut lx0 = 0i32;
+  let mut ly0 = 0i32;
+  let mut lx1 = layer_w;
+  let mut ly1 = layer_h;
+
+  if origin_x < 0 {
+    lx0 = lx0.max(-origin_x);
+  }
+  if origin_y < 0 {
+    ly0 = ly0.max(-origin_y);
+  }
+  if origin_x + layer_w > backdrop_w {
+    lx1 = lx1.min(backdrop_w - origin_x);
+  }
+  if origin_y + layer_h > backdrop_h {
+    ly1 = ly1.min(backdrop_h - origin_y);
+  }
+
+  if lx0 >= lx1 || ly0 >= ly1 {
+    return Ok(());
+  }
+
+  #[inline]
+  fn ceil_div(numer: u32, denom: u32) -> u16 {
+    if denom == 0 {
+      return 0;
+    }
+    ((numer + denom - 1) / denom).min(255) as u16
+  }
+
+  let layer_stride = layer.width() as usize;
+  let backdrop_stride = backdrop.width() as usize;
+  let layer_pixels = layer.pixels_mut();
+  let backdrop_pixels = backdrop.pixels();
+  let width = (lx1 - lx0) as usize;
+
+  let mut deadline_counter = 0usize;
+  for ly in ly0..ly1 {
+    check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+
+    let layer_row = ly as usize * layer_stride + lx0 as usize;
+    let backdrop_row = (ly + origin_y) as usize * backdrop_stride + (lx0 + origin_x) as usize;
+
+    for offset in 0..width {
+      let out_px = &mut layer_pixels[layer_row + offset];
+      let back_px = backdrop_pixels[backdrop_row + offset];
+
+      let ba = back_px.alpha() as u16;
+      let oa = out_px.alpha() as u16;
+
+      let sa = if ba < 255 {
+        let num = oa.saturating_sub(ba) as u32;
+        if num == 0 {
+          0
+        } else {
+          let denom = (255u32).saturating_sub(ba as u32);
+          (((num * 255 + denom / 2) / denom).min(255)) as u16
+        }
+      } else {
+        // When the backdrop is fully opaque, `oa` is always 255 under source-over compositing, so
+        // alpha alone cannot recover the source alpha. Choose the smallest alpha that yields a
+        // valid premultiplied source color for all channels.
+        let (br, bg, bb) = (
+          back_px.red() as u16,
+          back_px.green() as u16,
+          back_px.blue() as u16,
+        );
+        let (or, og, ob) = (
+          out_px.red() as u16,
+          out_px.green() as u16,
+          out_px.blue() as u16,
+        );
+
+        let mut bound = 0u16;
+        for (b, o) in [(br, or), (bg, og), (bb, ob)] {
+          if b > 0 && b > o {
+            bound = bound.max(ceil_div(u32::from(b - o) * 255, u32::from(b)));
+          }
+          if b < 255 && o > b {
+            bound = bound.max(ceil_div(u32::from(o - b) * 255, u32::from(255 - b)));
+          }
+        }
+        bound
+      };
+
+      if sa == 0 {
+        *out_px = PremultipliedColorU8::TRANSPARENT;
+        continue;
+      }
+
+      let inv_sa = 255u16.saturating_sub(sa);
+      let sr =
+        (out_px.red() as u16).saturating_sub(mul_div_255_round_u16(back_px.red() as u16, inv_sa));
+      let sg = (out_px.green() as u16)
+        .saturating_sub(mul_div_255_round_u16(back_px.green() as u16, inv_sa));
+      let sb =
+        (out_px.blue() as u16).saturating_sub(mul_div_255_round_u16(back_px.blue() as u16, inv_sa));
+
+      let sr = sr.min(sa);
+      let sg = sg.min(sa);
+      let sb = sb.min(sa);
+
+      *out_px = PremultipliedColorU8::from_rgba(sr as u8, sg as u8, sb as u8, sa as u8)
+        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    }
+  }
+
+  Ok(())
 }
 
 pub(crate) fn composite_layer_into_pixmap(

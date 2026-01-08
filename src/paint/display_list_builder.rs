@@ -102,8 +102,8 @@ use crate::paint::painter::{
   paint_diagnostics_enabled, paint_diagnostics_session_id, with_paint_diagnostics,
   PaintDiagnosticsThreadGuard,
 };
-use crate::paint::stacking::Layer6Item;
 use crate::paint::stacking::ClipChainLink;
+use crate::paint::stacking::Layer6Item;
 use crate::paint::stacking::StackingContext;
 use crate::paint::svg_filter::SvgFilterResolver;
 use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
@@ -115,8 +115,8 @@ use crate::render_control::{
 use crate::scroll::ScrollState;
 use crate::style::block_axis_is_horizontal;
 use crate::style::block_axis_positive;
-use crate::style::inline_axis_positive;
 use crate::style::color::Rgba;
+use crate::style::inline_axis_positive;
 use crate::style::position::Position;
 use crate::style::types::AccentColor;
 use crate::style::types::Appearance;
@@ -960,7 +960,10 @@ impl DisplayListBuilder {
     let mut line_inline_start = f32::INFINITY;
     let mut line_inline_end = f32::NEG_INFINITY;
     for child in line.children.iter() {
-      let rect = Rect::new(child_offset.translate(child.bounds.origin), child.bounds.size);
+      let rect = Rect::new(
+        child_offset.translate(child.bounds.origin),
+        child.bounds.size,
+      );
       let (start, end) = if inline_vertical {
         (rect.y(), rect.y() + rect.height())
       } else {
@@ -971,8 +974,15 @@ impl DisplayListBuilder {
         line_inline_end = line_inline_end.max(end);
       }
     }
-    if !line_inline_start.is_finite() || !line_inline_end.is_finite() || line_inline_end < line_inline_start {
-      line_inline_start = if inline_vertical { child_offset.y } else { child_offset.x };
+    if !line_inline_start.is_finite()
+      || !line_inline_end.is_finite()
+      || line_inline_end < line_inline_start
+    {
+      line_inline_start = if inline_vertical {
+        child_offset.y
+      } else {
+        child_offset.x
+      };
       let fallback_len = if inline_vertical {
         line.bounds.height()
       } else {
@@ -999,7 +1009,10 @@ impl DisplayListBuilder {
         best_min: &mut Option<TextLeaf<'a>>,
         best_max: &mut Option<TextLeaf<'a>>,
       ) {
-        let rect = Rect::new(offset.translate(fragment.bounds.origin), fragment.bounds.size);
+        let rect = Rect::new(
+          offset.translate(fragment.bounds.origin),
+          fragment.bounds.size,
+        );
         let (inline_start, inline_end) = if inline_vertical {
           (rect.y(), rect.y() + rect.height())
         } else {
@@ -1061,7 +1074,13 @@ impl DisplayListBuilder {
       let mut min_text: Option<TextLeaf<'_>> = None;
       let mut max_text: Option<TextLeaf<'_>> = None;
       for child in line.children.iter() {
-        visit(child, child_offset, inline_vertical, &mut min_text, &mut max_text);
+        visit(
+          child,
+          child_offset,
+          inline_vertical,
+          &mut min_text,
+          &mut max_text,
+        );
       }
 
       // If styles vary within the line, match the spec intent by using the skip-spaces value at
@@ -1088,15 +1107,18 @@ impl DisplayListBuilder {
       let skip_end = end_skip_spaces.skips_end();
 
       if (skip_start || skip_end) && line_inline_end > line_inline_start {
-
         let eps = 0.01;
         let leading = min_text
           .filter(|leaf| (leaf.inline_start - line_inline_start).abs() <= eps)
-          .map(|leaf| self.text_fragment_spacer_advance(leaf.fragment, SpacerEdge::Start, inline_vertical))
+          .map(|leaf| {
+            self.text_fragment_spacer_advance(leaf.fragment, SpacerEdge::Start, inline_vertical)
+          })
           .unwrap_or(0.0);
         let trailing = max_text
           .filter(|leaf| (leaf.inline_end - line_inline_end).abs() <= eps)
-          .map(|leaf| self.text_fragment_spacer_advance(leaf.fragment, SpacerEdge::End, inline_vertical))
+          .map(|leaf| {
+            self.text_fragment_spacer_advance(leaf.fragment, SpacerEdge::End, inline_vertical)
+          })
           .unwrap_or(0.0);
 
         if skip_start {
@@ -1171,7 +1193,12 @@ impl DisplayListBuilder {
     let Ok(mut runs) = self.shaper.shape(text, style, &self.font_ctx) else {
       return 0.0;
     };
-    InlineTextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+    InlineTextItem::apply_spacing_to_runs(
+      &mut runs,
+      text,
+      style.letter_spacing,
+      style.word_spacing,
+    );
     Self::spacer_advance_in_runs(&runs, edge, inline_vertical)
   }
 
@@ -1730,7 +1757,8 @@ impl DisplayListBuilder {
       }
       count += 1;
       match &fragment.content {
-        FragmentContent::RunningAnchor { snapshot, .. } | FragmentContent::FootnoteAnchor { snapshot } => {
+        FragmentContent::RunningAnchor { snapshot, .. }
+        | FragmentContent::FootnoteAnchor { snapshot } => {
           stack.push(snapshot);
         }
         _ => {}
@@ -2422,7 +2450,9 @@ impl DisplayListBuilder {
     has_blend_mode_children: bool,
   ) -> bool {
     let style_isolated = root_style
-      .map(|style| matches!(style.isolation, Isolation::Isolate) || !style.backdrop_filter.is_empty())
+      .map(|style| {
+        matches!(style.isolation, Isolation::Isolate) || !style.backdrop_filter.is_empty()
+      })
       .unwrap_or(false);
 
     if mix_blend_mode != BlendMode::Normal {
@@ -2462,9 +2492,10 @@ impl DisplayListBuilder {
     // `clip-path: inset(0)`. Per Filter Effects Level 2 those still establish Backdrop Roots for
     // descendant `backdrop-filter` sampling and `mix-blend-mode` blending.
     let style_has_filter = root_style.is_some_and(|style| !style.filter.is_empty());
-    let style_has_backdrop_filter = root_style.is_some_and(|style| !style.backdrop_filter.is_empty());
-    let style_has_mask_image = root_style
-      .is_some_and(|style| style.mask_layers.iter().any(|layer| layer.image.is_some()));
+    let style_has_backdrop_filter =
+      root_style.is_some_and(|style| !style.backdrop_filter.is_empty());
+    let style_has_mask_image =
+      root_style.is_some_and(|style| style.mask_layers.iter().any(|layer| layer.image.is_some()));
     let style_has_mask_border = root_style.is_some_and(|style| style.mask_border);
 
     is_root
@@ -2679,9 +2710,8 @@ impl DisplayListBuilder {
     }
     context_visibility = context_visibility.intersect(Some(local_bounds), false);
 
-    let style_has_clip_path = root_style.is_some_and(|style| {
-      !matches!(style.clip_path, crate::style::types::ClipPath::None)
-    });
+    let style_has_clip_path = root_style
+      .is_some_and(|style| !matches!(style.clip_path, crate::style::types::ClipPath::None));
 
     let viewport = self
       .viewport
@@ -2813,8 +2843,18 @@ impl DisplayListBuilder {
     );
     let ancestor_clips_pushed = self.push_clip_chain(&context.clip_chain, offset);
 
-    let mut has_backdrop_sensitive_descendants =
+    // Track whether this stacking context has any *descendant* stacking context that requires
+    // backdrop sampling (`backdrop-filter` or non-normal `mix-blend-mode`).
+    //
+    // Note: The return value of `build_stacking_context` includes the current stacking context
+    // itself so ancestors can decide whether they need to preserve Backdrop Root boundaries (e.g.
+    // for `will-change`). The value stored on the display list, however, is strictly for
+    // descendants so render-time decisions (like non-isolated group surface initialization) can
+    // distinguish between leaf blend-mode elements and those that need to provide a seeded
+    // backdrop for their children.
+    let self_is_backdrop_sensitive =
       !backdrop_filters.is_empty() || mix_blend_mode != BlendMode::Normal;
+    let mut has_backdrop_sensitive_descendants = false;
 
     if is_root && !has_effects {
       if let Some(root_background) = root_background.as_ref() {
@@ -2828,7 +2868,7 @@ impl DisplayListBuilder {
           local_child_visibility,
         );
         self.pop_clips(ancestor_clips_pushed);
-        return has_backdrop_sensitive_descendants;
+        return self_is_backdrop_sensitive || has_backdrop_sensitive_descendants;
       }
       let mut deadline_counter = 0usize;
       for child in neg {
@@ -2872,7 +2912,11 @@ impl DisplayListBuilder {
         match item {
           Layer6Item::Positioned(fragment) => {
             let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_offset);
-            self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility);
+            self.build_fragment(
+              &fragment.fragment,
+              descendant_offset,
+              local_child_visibility,
+            );
             self.pop_clips(pushed);
           }
           Layer6Item::ZeroContext(child) => {
@@ -2900,7 +2944,7 @@ impl DisplayListBuilder {
         );
       }
       self.pop_clips(ancestor_clips_pushed);
-      return has_backdrop_sensitive_descendants;
+      return self_is_backdrop_sensitive || has_backdrop_sensitive_descendants;
     }
 
     let needs_layer_bounds = is_isolated
@@ -2973,7 +3017,7 @@ impl DisplayListBuilder {
         item.has_backdrop_sensitive_descendants = has_backdrop_sensitive_descendants;
       }
       self.pop_clips(ancestor_clips_pushed);
-      return has_backdrop_sensitive_descendants;
+      return self_is_backdrop_sensitive || has_backdrop_sensitive_descendants;
     }
 
     let mut paint_containment_clip_pushed = false;
@@ -3023,7 +3067,11 @@ impl DisplayListBuilder {
       match item {
         Layer6Item::Positioned(fragment) => {
           let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_offset);
-          self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility);
+          self.build_fragment(
+            &fragment.fragment,
+            descendant_offset,
+            local_child_visibility,
+          );
           self.pop_clips(pushed);
         }
         Layer6Item::ZeroContext(child) => {
@@ -3070,7 +3118,7 @@ impl DisplayListBuilder {
       item.has_backdrop_sensitive_descendants = has_backdrop_sensitive_descendants;
     }
     self.pop_clips(ancestor_clips_pushed);
-    has_backdrop_sensitive_descendants
+    self_is_backdrop_sensitive || has_backdrop_sensitive_descendants
   }
 
   fn expand_stacking_context_bounds_from_items(&mut self, push_index: usize, base_bounds: Rect) {
@@ -3114,9 +3162,7 @@ impl DisplayListBuilder {
     };
     let expanded = base_bounds.union(paint_bounds);
 
-    if let Some(DisplayItem::PushStackingContext(sc)) =
-      self.list.items_mut().get_mut(push_index)
-    {
+    if let Some(DisplayItem::PushStackingContext(sc)) = self.list.items_mut().get_mut(push_index) {
       sc.bounds = expanded;
     }
   }
@@ -3548,14 +3594,28 @@ impl DisplayListBuilder {
     let trimmed = src.trim();
     if let Some(id) = trimmed.strip_prefix('#') {
       if let Some(svg) = self.inline_svg_for_svg_mask(id, bounds) {
-        return self.decode_image(&svg, Some(style), true, CrossOriginAttribute::None, None, false);
+        return self.decode_image(
+          &svg,
+          Some(style),
+          true,
+          CrossOriginAttribute::None,
+          None,
+          false,
+        );
       }
       // Fragment-only URLs (`url(#id)`) refer to in-document SVG resources. If we cannot resolve
       // the id via `svg_id_defs`, treat the mask image as missing instead of attempting an
       // external fetch.
       return None;
     }
-    self.decode_image(src, Some(style), true, CrossOriginAttribute::None, None, false)
+    self.decode_image(
+      src,
+      Some(style),
+      true,
+      CrossOriginAttribute::None,
+      None,
+      false,
+    )
   }
 
   fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
@@ -4266,16 +4326,14 @@ impl DisplayListBuilder {
         let resolve = |component: BackgroundSizeComponent, area: f32| -> Option<f32> {
           match component {
             BackgroundSizeComponent::Auto => None,
-            BackgroundSizeComponent::Length(len) => {
-              Some(Self::resolve_length_for_paint(
-                &len,
-                font_size,
-                root_font_size,
-                area,
-                viewport,
-              ))
-              .map(|v| v.max(0.0))
-            }
+            BackgroundSizeComponent::Length(len) => Some(Self::resolve_length_for_paint(
+              &len,
+              font_size,
+              root_font_size,
+              area,
+              viewport,
+            ))
+            .map(|v| v.max(0.0)),
           }
         };
 
@@ -5082,8 +5140,12 @@ impl DisplayListBuilder {
             let style_ref = style_for_image.unwrap_or(&fallback_style);
             let (content_rect, clip_radii) =
               self.replaced_content_rect_and_radii(rect, style_for_image);
-            let clip_contents =
-              Self::replaced_content_clip_item(style_for_image, content_rect, content_rect, clip_radii);
+            let clip_contents = Self::replaced_content_clip_item(
+              style_for_image,
+              content_rect,
+              content_rect,
+              clip_radii,
+            );
             if let Some(clip) = clip_contents.as_ref() {
               self.list.push(DisplayItem::PushClip(clip.clone()));
             }
@@ -5230,8 +5292,8 @@ impl DisplayListBuilder {
           });
           let cache_base = self.image_cache.as_ref().and_then(|cache| cache.base_url());
           let (slot_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
-          let sources =
-            replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
+          let sources = replaced_type.image_sources_with_fallback(
+            crate::tree::box_tree::ImageSelectionContext {
               device_pixel_ratio: self.device_pixel_ratio,
               slot_width: Some(slot_rect.width()),
               viewport: self.viewport.map(|(w, h)| crate::geometry::Size::new(w, h)),
@@ -5239,14 +5301,17 @@ impl DisplayListBuilder {
               font_size: fragment.style.as_deref().map(|s| s.font_size),
               root_font_size: fragment.style.as_deref().map(|s| s.root_font_size),
               base_url: cache_base.as_deref(),
-            });
+            },
+          );
 
           let crossorigin = match replaced_type {
             ReplacedType::Image { crossorigin, .. } => *crossorigin,
             _ => CrossOriginAttribute::None,
           };
           let referrer_policy = match replaced_type {
-            ReplacedType::Image { referrer_policy, .. } => *referrer_policy,
+            ReplacedType::Image {
+              referrer_policy, ..
+            } => *referrer_policy,
             _ => None,
           };
           let reject_placeholder = matches!(
@@ -5299,8 +5364,12 @@ impl DisplayListBuilder {
               dest_w,
               dest_h,
             );
-            let clip_contents =
-              Self::replaced_content_clip_item(style_for_image, content_rect, dest_rect, clip_radii);
+            let clip_contents = Self::replaced_content_clip_item(
+              style_for_image,
+              content_rect,
+              dest_rect,
+              clip_radii,
+            );
             if let Some(clip) = clip_contents.as_ref() {
               self.list.push(DisplayItem::PushClip(clip.clone()));
             }
@@ -6712,9 +6781,14 @@ impl DisplayListBuilder {
         }
       }
       BackgroundImage::Url(src) => {
-        if let Some(image) =
-          self.decode_image(src, Some(style), true, CrossOriginAttribute::None, None, false)
-        {
+        if let Some(image) = self.decode_image(
+          src,
+          Some(style),
+          true,
+          CrossOriginAttribute::None,
+          None,
+          false,
+        ) {
           let img_w = image.css_width;
           let img_h = image.css_height;
           if img_w > 0.0 && img_h > 0.0 {
@@ -7061,7 +7135,14 @@ impl DisplayListBuilder {
       BorderImageSource::Image(bg) => {
         let source = match bg.as_ref() {
           BackgroundImage::Url(src) => self
-            .decode_image(src, Some(style), true, CrossOriginAttribute::None, None, false)
+            .decode_image(
+              src,
+              Some(style),
+              true,
+              CrossOriginAttribute::None,
+              None,
+              false,
+            )
             .map(|image| BorderImageSourceItem::Raster((*image).clone())),
           BackgroundImage::LinearGradient { .. }
           | BackgroundImage::RepeatingLinearGradient { .. }
@@ -7204,7 +7285,14 @@ impl DisplayListBuilder {
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
       let emphasis = style.and_then(|s| {
-        self.build_emphasis(run, s, origin_x, baseline_y, inline_vertical, emphasis_offset)
+        self.build_emphasis(
+          run,
+          s,
+          origin_x,
+          baseline_y,
+          inline_vertical,
+          emphasis_offset,
+        )
       });
       let variations: Vec<FontVariation> = run
         .variations
@@ -7312,7 +7400,14 @@ impl DisplayListBuilder {
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
       let emphasis = style.and_then(|s| {
-        self.build_emphasis(run, s, run_origin_inline, block_baseline, true, emphasis_offset)
+        self.build_emphasis(
+          run,
+          s,
+          run_origin_inline,
+          block_baseline,
+          true,
+          emphasis_offset,
+        )
       });
       let variations: Vec<FontVariation> = run
         .variations
@@ -7421,7 +7516,14 @@ impl DisplayListBuilder {
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
       let emphasis = style.and_then(|s| {
-        self.build_emphasis(run, s, origin_x, baseline_y, inline_vertical, emphasis_offset)
+        self.build_emphasis(
+          run,
+          s,
+          origin_x,
+          baseline_y,
+          inline_vertical,
+          emphasis_offset,
+        )
       });
       let variations: Vec<FontVariation> = run
         .variations
@@ -7477,7 +7579,14 @@ impl DisplayListBuilder {
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
       let emphasis = style.and_then(|s| {
-        self.build_emphasis(run, s, run_origin_inline, block_baseline, true, emphasis_offset)
+        self.build_emphasis(
+          run,
+          s,
+          run_origin_inline,
+          block_baseline,
+          true,
+          emphasis_offset,
+        )
       });
       let variations: Vec<FontVariation> = run
         .variations
@@ -7572,12 +7681,8 @@ impl DisplayListBuilder {
     if inline_len <= 0.0 {
       return;
     }
-    let clip = clip.map(|(start, end)| {
-      (
-        start.max(0.0).min(inline_len),
-        end.max(0.0).min(inline_len),
-      )
-    });
+    let clip =
+      clip.map(|(start, end)| (start.max(0.0).min(inline_len), end.max(0.0).min(inline_len)));
     if let Some((start, end)) = clip {
       if end <= start + f32::EPSILON {
         return;
@@ -7811,22 +7916,20 @@ impl DisplayListBuilder {
   ) -> Option<f32> {
     match offset {
       TextUnderlineOffset::Auto => None,
-      TextUnderlineOffset::Length(l) => {
-        Some(if l.unit == LengthUnit::Percent {
-          l.resolve_against(style.font_size).unwrap_or(0.0)
-        } else if l.unit.is_font_relative() {
-          resolve_font_relative_length(l, style, &self.font_ctx)
-        } else if l.unit.is_viewport_relative() {
-          self
-            .viewport
-            .and_then(|(vw, vh)| l.resolve_with_viewport(vw, vh))
-            .unwrap_or_else(|| l.to_px())
-        } else if l.unit.is_absolute() {
-          l.to_px()
-        } else {
-          l.value * style.font_size
-        })
-      }
+      TextUnderlineOffset::Length(l) => Some(if l.unit == LengthUnit::Percent {
+        l.resolve_against(style.font_size).unwrap_or(0.0)
+      } else if l.unit.is_font_relative() {
+        resolve_font_relative_length(l, style, &self.font_ctx)
+      } else if l.unit.is_viewport_relative() {
+        self
+          .viewport
+          .and_then(|(vw, vh)| l.resolve_with_viewport(vw, vh))
+          .unwrap_or_else(|| l.to_px())
+      } else if l.unit.is_absolute() {
+        l.to_px()
+      } else {
+        l.value * style.font_size
+      }),
     }
   }
 
@@ -7846,7 +7949,9 @@ impl DisplayListBuilder {
       TextUnderlinePosition::Under
       | TextUnderlinePosition::UnderLeft
       | TextUnderlinePosition::UnderRight => (-metrics.descent - metrics.underline_pos).max(0.0),
-      TextUnderlinePosition::Left if inline_vertical => (-metrics.descent - metrics.underline_pos).max(0.0),
+      TextUnderlinePosition::Left if inline_vertical => {
+        (-metrics.descent - metrics.underline_pos).max(0.0)
+      }
       TextUnderlinePosition::Right if inline_vertical => 0.0,
       _ => -metrics.underline_pos,
     }
@@ -8314,7 +8419,8 @@ impl DisplayListBuilder {
         };
 
         let mut cluster_advance = 0.0_f32;
-        while glyph_idx < run.glyphs.len() && run.glyphs[glyph_idx].cluster as usize == cluster_start
+        while glyph_idx < run.glyphs.len()
+          && run.glyphs[glyph_idx].cluster as usize == cluster_start
         {
           let glyph = &run.glyphs[glyph_idx];
           let inline_advance = if inline_vertical {
@@ -8624,11 +8730,11 @@ impl DisplayListBuilder {
     };
 
     let emit_text_aligned = |builder: &mut Self,
-      text: &str,
-      style: &ComputedStyle,
-      rect: Rect,
-      center_x: bool,
-      center_y: bool|
+                             text: &str,
+                             style: &ComputedStyle,
+                             rect: Rect,
+                             center_x: bool,
+                             center_y: bool|
      -> bool {
       if text.is_empty() {
         return false;
@@ -9036,9 +9142,7 @@ impl DisplayListBuilder {
             let (caret_y, caret_line) = if value_is_empty {
               (
                 rect.y(),
-                paint_text
-                  .and_then(|t| t.split('\n').next())
-                  .unwrap_or(""),
+                paint_text.and_then(|t| t.split('\n').next()).unwrap_or(""),
               )
             } else {
               let mut y = rect.y();
@@ -9382,11 +9486,19 @@ impl DisplayListBuilder {
 
         let default_knob_diameter = padding_rect.height().min(16.0);
         let knob_width = thumb_style
-          .and_then(|style| style.width.map(|len| resolve_px(style, len, padding_rect.width())))
+          .and_then(|style| {
+            style
+              .width
+              .map(|len| resolve_px(style, len, padding_rect.width()))
+          })
           .filter(|px| px.is_finite() && *px > 0.0)
           .unwrap_or(default_knob_diameter);
         let knob_height = thumb_style
-          .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
+          .and_then(|style| {
+            style
+              .height
+              .map(|len| resolve_px(style, len, padding_rect.height()))
+          })
           .filter(|px| px.is_finite() && *px > 0.0)
           .unwrap_or(default_knob_diameter);
 
@@ -9428,14 +9540,20 @@ impl DisplayListBuilder {
           } else {
             let track_height = track_style
               .and_then(|style| {
-                style.height.map(|len| resolve_px(style, len, padding_rect.height()))
+                style
+                  .height
+                  .map(|len| resolve_px(style, len, padding_rect.height()))
               })
               .filter(|px| px.is_finite() && *px > 0.0)
               .unwrap_or_else(|| 4.0_f32.min(padding_rect.height()));
             if track_height > 0.0 {
               let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
-              let track_rect =
-                Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
+              let track_rect = Rect::from_xywh(
+                padding_rect.x(),
+                track_y,
+                padding_rect.width(),
+                track_height,
+              );
 
               if let Some(track_style) = track_style {
                 self.emit_box_shadows_from_style(track_rect, track_style, false);
@@ -10579,15 +10697,7 @@ mod tests {
     );
 
     let (w, h) = DisplayListBuilder::compute_background_size(
-      &layer,
-      10.0,
-      10.0,
-      None,
-      100.0,
-      100.0,
-      0.0,
-      0.0,
-      false,
+      &layer, 10.0, 10.0, None, 100.0, 100.0, 0.0, 0.0, false,
     );
     assert_eq!(w, 0.0);
     assert_eq!(h, 0.0);
@@ -11070,7 +11180,8 @@ mod tests {
     let child_style = Arc::new(child_style);
 
     let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
-    let root = FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+    let root =
+      FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
 
     let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
 
@@ -11100,7 +11211,8 @@ mod tests {
     let child_style = Arc::new(child_style);
 
     let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
-    let root = FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+    let root =
+      FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
 
     let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
 
@@ -11108,7 +11220,8 @@ mod tests {
       DisplayItem::PushStackingContext(ctx) if ctx.bounds == child_bounds => Some(ctx),
       _ => None,
     });
-    let child_context = child_context.expect("expected a stacking context for backdrop-filter:url()");
+    let child_context =
+      child_context.expect("expected a stacking context for backdrop-filter:url()");
 
     assert!(
       child_context.establishes_backdrop_root,
@@ -13321,7 +13434,14 @@ mod tests {
         // enforcement is enabled; missing ACAO should surface as a load failure.
         assert!(
           builder
-            .decode_image(url, None, false, CrossOriginAttribute::Anonymous, None, false)
+            .decode_image(
+              url,
+              None,
+              false,
+              CrossOriginAttribute::Anonymous,
+              None,
+              false
+            )
             .is_none(),
           "expected crossorigin decode to fail without ACAO"
         );

@@ -168,7 +168,10 @@ fn backdrop_root_matrix_backdrop_filter_sampling() {
   ];
 
   for case in stop_sampling.into_iter().chain(sample_through) {
-    let html = html_with_styles(case.root_style, "backdrop-filter: invert(1); background: transparent;");
+    let html = html_with_styles(
+      case.root_style,
+      "backdrop-filter: invert(1); background: transparent;",
+    );
     let pixmap = render(&html, 64, 64);
 
     let inside = pixel(&pixmap, 20, 20);

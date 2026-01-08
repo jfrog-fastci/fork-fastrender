@@ -2365,12 +2365,13 @@ pub struct StackingContextItem {
   /// Some stacking contexts (e.g. transforms) do **not** establish a backdrop root.
   pub establishes_backdrop_root: bool,
 
-  /// Whether this stacking context subtree contains any stacking context that requires backdrop
+  /// Whether this stacking context has any *descendant* stacking context that requires backdrop
   /// sampling (`backdrop-filter` or non-normal `mix-blend-mode`).
   ///
   /// This is used to avoid forcing extra offscreen layers for backdrop roots (e.g. those created
   /// only by `will-change`) when there are no descendant effects that would observe the backdrop
-  /// root boundary.
+  /// root boundary, and to let the renderer decide when non-isolated blend groups need to seed a
+  /// backdrop surface for their children.
   pub has_backdrop_sensitive_descendants: bool,
 
   /// Bounds of the stacking context

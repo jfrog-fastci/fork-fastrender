@@ -1,4 +1,5 @@
 use fastrender::error::{Error, RenderError, RenderStage};
+use fastrender::image_loader::ImageCache;
 use fastrender::paint::clip_path::ResolvedClipPath;
 use fastrender::paint::display_list::{
   BlendMode, BlendModeItem, BoxShadowItem, ClipItem, ClipShape, DisplayItem, DisplayList,
@@ -8,8 +9,8 @@ use fastrender::paint::display_list::{
 };
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
-use fastrender::scroll::ScrollState;
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
+use fastrender::scroll::ScrollState;
 use fastrender::style::types::{
   BackfaceVisibility, BackgroundPosition, BackgroundPositionComponent, BackgroundRepeat,
   BackgroundSize, BackgroundSizeComponent, MaskClip, MaskComposite, MaskLayer, MaskMode,
@@ -17,7 +18,6 @@ use fastrender::style::types::{
 };
 use fastrender::text::font_loader::FontContext;
 use fastrender::{BorderRadii, FastRender, Length, LengthUnit, Point, Rect, Rgba};
-use fastrender::image_loader::ImageCache;
 use rayon::ThreadPoolBuilder;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -356,7 +356,9 @@ fn manual_blend_mode_push_blend_triggers_parallel_paint_in_auto_mode() {
     rect: viewport,
     color: Rgba::from_rgba8(200, 0, 0, 255),
   }));
-  list.push(DisplayItem::PushBlendMode(BlendModeItem { mode: BlendMode::Hue }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::Hue,
+  }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: viewport,
     color: Rgba::from_rgba8(0, 255, 0, 255),
@@ -2315,7 +2317,9 @@ fn hue_blend_mode_allows_parallel_tiling() {
     rect: Rect::from_xywh(0.0, 0.0, 96.0, 96.0),
     color: Rgba::from_rgba8(200, 200, 40, 255),
   }));
-  list.push(DisplayItem::PushBlendMode(BlendModeItem { mode: BlendMode::Hue }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::Hue,
+  }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
     color: Rgba::from_rgba8(40, 120, 220, 255),
@@ -2751,7 +2755,7 @@ fn mix_blend_mode_hue_with_transform_triggers_serial_fallback() {
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: true,
-    has_backdrop_sensitive_descendants: true,
+    has_backdrop_sensitive_descendants: false,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Hue,
@@ -3034,7 +3038,9 @@ fn html_background_blend_mode_color_oklch_maps_and_allows_parallel_paint() {
     assert!(
       display_list.items().iter().any(|item| matches!(
         item,
-        DisplayItem::PushBlendMode(BlendModeItem { mode: BlendMode::ColorOklch })
+        DisplayItem::PushBlendMode(BlendModeItem {
+          mode: BlendMode::ColorOklch
+        })
       )),
       "expected display list to include background-blend-mode: color-oklch PushBlendMode"
     );
