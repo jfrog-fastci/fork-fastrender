@@ -10,6 +10,8 @@ use fastrender::style::types::{AnchorFunction, AnchorSide, Direction, InsetValue
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
+use fastrender::Point;
+use fastrender::Rect;
 use fastrender::ComputedStyle;
 
 fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
@@ -20,6 +22,31 @@ fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Opt
     FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
     _ => false,
   })
+}
+
+fn find_abs_bounds_by_box_id(fragment: &FragmentNode, box_id: usize) -> Option<Rect> {
+  fn recurse(node: &FragmentNode, box_id: usize, origin: Point) -> Option<Rect> {
+    let abs_bounds = node.bounds.translate(origin);
+    let matches = match &node.content {
+      FragmentContent::Block { box_id: Some(id) } => *id == box_id,
+      FragmentContent::Inline { box_id: Some(id), .. } => *id == box_id,
+      FragmentContent::Text { box_id: Some(id), .. } => *id == box_id,
+      FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      _ => false,
+    };
+    if matches {
+      return Some(abs_bounds);
+    }
+    let child_origin = origin.translate(node.bounds.origin);
+    for child in node.children_ref() {
+      if let Some(found) = recurse(child, box_id, child_origin) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  recurse(fragment, box_id, Point::ZERO)
 }
 
 #[test]
@@ -295,6 +322,94 @@ fn anchor_positioning_uses_transformed_anchor_box() {
   );
   assert!(
     (overlay_fragment.bounds.y() - anchor_fragment.bounds.max_y()).abs() < 0.1,
+    "transform should not affect the block axis in this test"
+  );
+}
+
+#[test]
+fn anchor_positioning_includes_ancestor_transforms() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  container_style.padding_left = Length::px(10.0);
+  container_style.padding_top = Length::px(5.0);
+  container_style.padding_right = Length::px(0.0);
+  container_style.padding_bottom = Length::px(0.0);
+  let container_style = Arc::new(container_style);
+
+  let wrapper_id = 10usize;
+  let anchor_id = 11usize;
+  let overlay_id = 12usize;
+
+  let mut wrapper_style = ComputedStyle::default();
+  wrapper_style.display = Display::Block;
+  wrapper_style.transform = vec![Transform::TranslateX(Length::px(30.0))];
+  wrapper_style.width = Some(Length::px(80.0));
+  wrapper_style.height = Some(Length::px(40.0));
+  wrapper_style.width_keyword = None;
+  wrapper_style.height_keyword = None;
+  let wrapper_style = Arc::new(wrapper_style);
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(50.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut wrapper = BoxNode::new_block(wrapper_style, FormattingContextType::Block, vec![anchor]);
+  wrapper.id = wrapper_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![wrapper, overlay],
+  );
+  container.id = 107;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_bounds = find_abs_bounds_by_box_id(&fragment, anchor_id).expect("anchor bounds");
+  let overlay_bounds = find_abs_bounds_by_box_id(&fragment, overlay_id).expect("overlay bounds");
+
+  assert!(
+    (overlay_bounds.x() - (anchor_bounds.x() + 30.0)).abs() < 0.1,
+    "ancestor transforms should affect the resolved anchor box (got x={}, expected {})",
+    overlay_bounds.x(),
+    anchor_bounds.x() + 30.0
+  );
+  assert!(
+    (overlay_bounds.y() - anchor_bounds.max_y()).abs() < 0.1,
     "transform should not affect the block axis in this test"
   );
 }

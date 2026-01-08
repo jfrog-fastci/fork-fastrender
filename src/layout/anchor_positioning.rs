@@ -6,7 +6,9 @@
 //! Baseline semantics:
 //! - Anchors are collected from the already-laid-out fragment subtree that is available when
 //!   positioning out-of-flow children (absolute/fixed).
-//! - The anchor rectangle is the fragment's border box (`FragmentNode::bounds`).
+//! - The anchor rectangle starts as the fragment's border box (`FragmentNode::bounds`) and then
+//!   applies any CSS transforms/motion paths on the fragment and its ancestors, producing an
+//!   axis-aligned bounding box in the coordinate space of the containing block.
 //! - If multiple fragments expose the same anchor name, the **last fragment visited** wins. This
 //!   matches the spec's "last in tree order wins" rule for multiple anchors with the same name and
 //!   provides a deterministic policy for fragmentation (we currently do not attempt to merge
@@ -17,6 +19,7 @@
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
+use crate::paint::display_list::Transform3D;
 use crate::style::types::Direction;
 use crate::style::types::WritingMode;
 use crate::tree::fragment_tree::FragmentNode;
@@ -44,7 +47,7 @@ impl AnchorIndex {
 
   pub(crate) fn from_fragments(fragments: &[FragmentNode], viewport: Size) -> Self {
     let mut index = Self::new();
-    index.collect_from_fragments(fragments, Point::ZERO, viewport);
+    index.collect_from_fragments(fragments, Point::ZERO, Transform3D::identity(), viewport);
     index
   }
 
@@ -62,30 +65,48 @@ impl AnchorIndex {
     }
   }
 
-  fn collect_from_fragments(&mut self, fragments: &[FragmentNode], parent_origin: Point, viewport: Size) {
+  fn collect_from_fragments(
+    &mut self,
+    fragments: &[FragmentNode],
+    parent_origin: Point,
+    parent_transform: Transform3D,
+    viewport: Size,
+  ) {
     for fragment in fragments {
-      self.collect_from_fragment(fragment, parent_origin, viewport);
+      self.collect_from_fragment(fragment, parent_origin, parent_transform, viewport);
     }
   }
 
-  fn collect_from_fragment(&mut self, fragment: &FragmentNode, parent_origin: Point, viewport: Size) {
+  fn collect_from_fragment(
+    &mut self,
+    fragment: &FragmentNode,
+    parent_origin: Point,
+    parent_transform: Transform3D,
+    viewport: Size,
+  ) {
     let abs_bounds = fragment.bounds.translate(parent_origin);
 
+    let mut current_transform = parent_transform;
     if let Some(style) = fragment.style.as_ref() {
-      let abs_bounds = if style.has_transform() {
+      let self_transform = (style.has_transform() || style.has_motion_path()).then(|| {
         crate::paint::transform_resolver::resolve_transform3d(
           style,
           abs_bounds,
           Some((viewport.width, viewport.height)),
         )
-        .map_or(abs_bounds, |transform| transform.transform_rect(abs_bounds))
-      } else {
+      });
+      if let Some(Some(transform)) = self_transform {
+        current_transform = current_transform.multiply(&transform);
+      }
+      let transformed_bounds = if current_transform.is_identity() {
         abs_bounds
+      } else {
+        current_transform.transform_rect(abs_bounds)
       };
       self.insert_names(
         &style.anchor_names,
         AnchorBox {
-          rect: abs_bounds,
+          rect: transformed_bounds,
           writing_mode: style.writing_mode,
           direction: style.direction,
         },
@@ -93,6 +114,11 @@ impl AnchorIndex {
     }
 
     let child_origin = parent_origin.translate(fragment.bounds.origin);
-    self.collect_from_fragments(fragment.children.as_ref(), child_origin, viewport);
+    self.collect_from_fragments(
+      fragment.children.as_ref(),
+      child_origin,
+      current_transform,
+      viewport,
+    );
   }
 }
