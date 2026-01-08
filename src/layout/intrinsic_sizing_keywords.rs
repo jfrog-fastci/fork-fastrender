@@ -88,18 +88,23 @@ pub(crate) fn with_size_axis_cleared_style_override<R>(
   physical_axis: PhysicalAxis,
   f: impl FnOnce() -> R,
 ) -> R {
-  let mut override_style = (**style).clone();
-  match physical_axis {
-    PhysicalAxis::X => {
-      override_style.width = None;
-      override_style.width_keyword = None;
-    }
-    PhysicalAxis::Y => {
-      override_style.height = None;
-      override_style.height_keyword = None;
+  // `ComputedStyle` is large; keep the modified override behind an `Arc` to avoid large by-value
+  // clones on the stack in intrinsic sizing paths.
+  let mut override_style = style.clone();
+  {
+    let s = std::sync::Arc::make_mut(&mut override_style);
+    match physical_axis {
+      PhysicalAxis::X => {
+        s.width = None;
+        s.width_keyword = None;
+      }
+      PhysicalAxis::Y => {
+        s.height = None;
+        s.height_keyword = None;
+      }
     }
   }
-  crate::layout::style_override::with_style_override(box_id, std::sync::Arc::new(override_style), f)
+  crate::layout::style_override::with_style_override(box_id, override_style, f)
 }
 
 #[cfg(test)]

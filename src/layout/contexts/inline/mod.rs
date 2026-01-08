@@ -2369,14 +2369,18 @@ impl InlineFormattingContext {
     // `compute_intrinsic_inline_sizes` returns border-box sizes (computed against a 0px percentage
     // base). Rebase its returned values to the actual percentage base so shrink-to-fit does not
     // double-count padding/borders and percentage edges are resolved against the correct base.
-    let mut probe_style: ComputedStyle = (*style).clone();
-    probe_style.width = None;
-    probe_style.width_keyword = None;
-    probe_style.min_width = None;
-    probe_style.min_width_keyword = None;
-    probe_style.max_width = None;
-    probe_style.max_width_keyword = None;
-    let probe_style = Arc::new(probe_style);
+    let mut probe_style = style_override
+      .clone()
+      .unwrap_or_else(|| box_node.style.clone());
+    {
+      let s = Arc::make_mut(&mut probe_style);
+      s.width = None;
+      s.width_keyword = None;
+      s.min_width = None;
+      s.min_width_keyword = None;
+      s.max_width = None;
+      s.max_width_keyword = None;
+    }
 
     let compute_intrinsic_sizes =
       |mode: Option<IntrinsicSizingMode>| -> Result<(f32, f32), LayoutError> {
@@ -10694,13 +10698,16 @@ impl InlineFormattingContext {
         let original_style = child.style.clone();
         let mut layout_child = child.clone();
         layout_child.id = box_id;
-        let mut child_style = (*layout_child.style).clone();
-        child_style.position = crate::style::position::Position::Relative;
-        child_style.top = crate::style::types::InsetValue::Auto;
-        child_style.right = crate::style::types::InsetValue::Auto;
-        child_style.bottom = crate::style::types::InsetValue::Auto;
-        child_style.left = crate::style::types::InsetValue::Auto;
-        layout_child.style = Arc::new(child_style);
+        let mut child_style = layout_child.style.clone();
+        {
+          let s = Arc::make_mut(&mut child_style);
+          s.position = crate::style::position::Position::Relative;
+          s.top = crate::style::types::InsetValue::Auto;
+          s.right = crate::style::types::InsetValue::Auto;
+          s.bottom = crate::style::types::InsetValue::Auto;
+          s.left = crate::style::types::InsetValue::Auto;
+        }
+        layout_child.style = child_style;
 
         let factory = if matches!(
           child.style.position,
@@ -10869,12 +10876,15 @@ impl InlineFormattingContext {
           if supports_used_border_box && width_auto && height_auto {
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           } else {
-            let mut relayout_style = (*layout_child.style).clone();
-            relayout_style.width = Some(Length::px(border_size.width));
-            relayout_style.height = Some(Length::px(border_size.height));
-            relayout_style.width_keyword = None;
-            relayout_style.height_keyword = None;
-            layout_child.style = Arc::new(relayout_style);
+            let mut relayout_style = layout_child.style.clone();
+            {
+              let s = Arc::make_mut(&mut relayout_style);
+              s.width = Some(Length::px(border_size.width));
+              s.height = Some(Length::px(border_size.height));
+              s.width_keyword = None;
+              s.height_keyword = None;
+            }
+            layout_child.style = relayout_style;
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           }
         }

@@ -2822,8 +2822,7 @@ impl<'a> LineBuilder<'a> {
   }
 
   /// Adds a breakable item (text or inline box), handling line breaking
-  fn add_breakable_item(&mut self, item: InlineItem) -> Result<(), LayoutError> {
-    let mut item = item;
+  fn add_breakable_item(&mut self, mut item: InlineItem) -> Result<(), LayoutError> {
     loop {
       if self.line_clamp_reached {
         self.truncated = true;
@@ -2938,7 +2937,6 @@ impl<'a> LineBuilder<'a> {
               }
               self.finish_line()?;
 
-              // Process remaining text (may need further breaking) without recursion.
               item = InlineItem::Text(after);
               continue;
             }
@@ -2962,7 +2960,7 @@ impl<'a> LineBuilder<'a> {
             return Ok(());
           }
 
-          // Start new line and try again.
+          // Start new line and try again
           self.finish_line()?;
           item = InlineItem::Text(text_item);
         }
@@ -2981,7 +2979,13 @@ impl<'a> LineBuilder<'a> {
           self.add_fragmented_inline_box(inline_box)?;
           return Ok(());
         }
-        _ => return Ok(()),
+        other => {
+          debug_assert!(
+            !other.is_breakable(),
+            "add_breakable_item called with non-breakable item"
+          );
+          return Ok(());
+        }
       }
     }
   }

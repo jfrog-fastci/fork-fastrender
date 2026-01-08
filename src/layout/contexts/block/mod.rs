@@ -321,9 +321,8 @@ impl BlockFormattingContext {
     factory: &FormattingContextFactory,
   ) -> Result<(f32, f32), LayoutError> {
     let style_override = crate::layout::style_override::style_override_for(node.id);
-    let style: &ComputedStyle = style_override
-      .as_deref()
-      .unwrap_or_else(|| node.style.as_ref());
+    let base_style = style_override.clone().unwrap_or_else(|| node.style.clone());
+    let style: &ComputedStyle = base_style.as_ref();
     let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
     let intrinsic_edges = if inline_is_horizontal {
       horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
@@ -331,14 +330,16 @@ impl BlockFormattingContext {
       vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
     };
     let compute = || {
-      let mut override_style = style.clone();
-      override_style.width = None;
-      override_style.width_keyword = None;
-      override_style.min_width = None;
-      override_style.min_width_keyword = None;
-      override_style.max_width = None;
-      override_style.max_width_keyword = None;
-      let override_style = Arc::new(override_style);
+      let mut override_style = base_style.clone();
+      {
+        let s = Arc::make_mut(&mut override_style);
+        s.width = None;
+        s.width_keyword = None;
+        s.min_width = None;
+        s.min_width_keyword = None;
+        s.max_width = None;
+        s.max_width_keyword = None;
+      }
 
       if node.id != 0 {
         crate::layout::style_override::with_style_override(node.id, override_style, || {
@@ -783,13 +784,16 @@ impl BlockFormattingContext {
         crate::style::types::BoxSizing::ContentBox => keyword_content,
         crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
       };
-      let mut width_style = (*style).as_ref().clone();
-      if inline_is_horizontal {
-        width_style.width = Some(Length::px(specified_width));
-        width_style.width_keyword = None;
-      } else {
-        width_style.height = Some(Length::px(specified_width));
-        width_style.height_keyword = None;
+      let mut width_style = style.clone();
+      {
+        let s = Arc::make_mut(&mut width_style);
+        if inline_is_horizontal {
+          s.width = Some(Length::px(specified_width));
+          s.width_keyword = None;
+        } else {
+          s.height = Some(Length::px(specified_width));
+          s.height_keyword = None;
+        }
       }
       computed_width = compute_block_width(
         &width_style,
@@ -1644,13 +1648,15 @@ impl BlockFormattingContext {
         };
         let factory = factory_for_cb(cb);
         // Layout the child as if it were in normal flow to obtain its intrinsic size.
-        let mut static_style = (*pos_child.style).clone();
-        static_style.position = Position::Relative;
-        static_style.top = crate::style::types::InsetValue::Auto;
-        static_style.right = crate::style::types::InsetValue::Auto;
-        static_style.bottom = crate::style::types::InsetValue::Auto;
-        static_style.left = crate::style::types::InsetValue::Auto;
-        let static_style = Arc::new(static_style);
+        let mut static_style = pos_child.style.clone();
+        {
+          let s = Arc::make_mut(&mut static_style);
+          s.position = Position::Relative;
+          s.top = crate::style::types::InsetValue::Auto;
+          s.right = crate::style::types::InsetValue::Auto;
+          s.bottom = crate::style::types::InsetValue::Auto;
+          s.left = crate::style::types::InsetValue::Auto;
+        }
 
         let fc_type = pos_child
           .formatting_context()
@@ -1888,18 +1894,21 @@ impl BlockFormattingContext {
                 || fc.layout(&pos_child, &relayout_constraints),
               )?;
             } else {
-              let mut relayout_style = (*static_style).clone();
-              relayout_style.width = Some(crate::style::values::Length::px(border_size.width));
-              relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
-              relayout_style.width_keyword = None;
-              relayout_style.height_keyword = None;
-              relayout_style.min_width_keyword = None;
-              relayout_style.max_width_keyword = None;
-              relayout_style.min_height_keyword = None;
-              relayout_style.max_height_keyword = None;
+              let mut relayout_style = static_style.clone();
+              {
+                let s = Arc::make_mut(&mut relayout_style);
+                s.width = Some(crate::style::values::Length::px(border_size.width));
+                s.height = Some(crate::style::values::Length::px(border_size.height));
+                s.width_keyword = None;
+                s.height_keyword = None;
+                s.min_width_keyword = None;
+                s.max_width_keyword = None;
+                s.min_height_keyword = None;
+                s.max_height_keyword = None;
+              }
               child_fragment = crate::layout::style_override::with_style_override(
                 pos_child.id,
-                Arc::new(relayout_style),
+                relayout_style,
                 || fc.layout(&pos_child, &relayout_constraints),
               )?;
             }
@@ -1908,16 +1917,19 @@ impl BlockFormattingContext {
             if supports_used_border_box {
               relayout_child.style = static_style.clone();
             } else {
-              let mut relayout_style = (*static_style).clone();
-              relayout_style.width = Some(crate::style::values::Length::px(border_size.width));
-              relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
-              relayout_style.width_keyword = None;
-              relayout_style.height_keyword = None;
-              relayout_style.min_width_keyword = None;
-              relayout_style.max_width_keyword = None;
-              relayout_style.min_height_keyword = None;
-              relayout_style.max_height_keyword = None;
-              relayout_child.style = Arc::new(relayout_style);
+              let mut relayout_style = static_style.clone();
+              {
+                let s = Arc::make_mut(&mut relayout_style);
+                s.width = Some(crate::style::values::Length::px(border_size.width));
+                s.height = Some(crate::style::values::Length::px(border_size.height));
+                s.width_keyword = None;
+                s.height_keyword = None;
+                s.min_width_keyword = None;
+                s.max_width_keyword = None;
+                s.min_height_keyword = None;
+                s.max_height_keyword = None;
+              }
+              relayout_child.style = relayout_style;
             }
             child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
           }
@@ -2297,10 +2309,13 @@ impl BlockFormattingContext {
     );
 
     // Use the resolved replaced width when computing horizontal metrics
-    let mut width_style = (*style).as_ref().clone();
-    width_style.width = Some(Length::px(used_size.width));
-    width_style.width_keyword = None;
-    width_style.box_sizing = crate::style::types::BoxSizing::ContentBox;
+    let mut width_style = style.clone();
+    {
+      let s = Arc::make_mut(&mut width_style);
+      s.width = Some(Length::px(used_size.width));
+      s.width_keyword = None;
+      s.box_sizing = crate::style::types::BoxSizing::ContentBox;
+    }
     let inline_sides = inline_axis_sides(style);
     let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
     let computed_width = compute_block_width(
@@ -2762,17 +2777,18 @@ impl BlockFormattingContext {
       }
     }
 
-    let inline_fc_owned =
-      if *nearest_positioned_cb == self.nearest_positioned_cb && *nearest_fixed_cb == self.nearest_fixed_cb
-      {
-        None
-      } else {
-        Some(InlineFormattingContext::with_factory(
-          self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb),
-        ))
-      };
+    let inline_fc_owned: Option<Box<InlineFormattingContext>> = if *nearest_positioned_cb
+      == self.nearest_positioned_cb
+      && *nearest_fixed_cb == self.nearest_fixed_cb
+    {
+      None
+    } else {
+      Some(Box::new(InlineFormattingContext::with_factory(
+        self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb),
+      )))
+    };
     let inline_fc = inline_fc_owned
-      .as_ref()
+      .as_deref()
       .unwrap_or_else(|| self.intrinsic_inline_fc.as_ref());
 
     let layout_in_flow_block_child =
@@ -3093,9 +3109,12 @@ impl BlockFormattingContext {
             crate::style::types::BoxSizing::ContentBox => keyword_content,
             crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
           };
-          let mut width_style = child.style.as_ref().clone();
-          width_style.width = Some(Length::px(specified_width));
-          width_style.width_keyword = None;
+          let mut width_style = child.style.clone();
+          {
+            let s = Arc::make_mut(&mut width_style);
+            s.width = Some(Length::px(specified_width));
+            s.width_keyword = None;
+          }
           hypo_width = compute_block_width(
             &width_style,
             containing_width,
@@ -3242,10 +3261,13 @@ impl BlockFormattingContext {
         let static_y = current_y + pending_margin;
 
         let mut snapshot_node = child.clone();
-        let mut snapshot_style = snapshot_node.style.as_ref().clone();
-        snapshot_style.running_position = None;
-        snapshot_style.position = Position::Static;
-        snapshot_node.style = Arc::new(snapshot_style);
+        let mut snapshot_style = snapshot_node.style.clone();
+        {
+          let s = Arc::make_mut(&mut snapshot_style);
+          s.running_position = None;
+          s.position = Position::Static;
+        }
+        snapshot_node.style = snapshot_style;
         crate::layout::running_elements::clear_running_position_in_box_tree(&mut snapshot_node);
 
         let factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
@@ -4802,39 +4824,40 @@ impl FormattingContext for BlockFormattingContext {
       inline_space,
       AvailableSpace::MinContent | AvailableSpace::MaxContent | AvailableSpace::Indefinite
     );
-    let _style_for_width_owned: Option<ComputedStyle>;
-    let style_for_width: &ComputedStyle = if use_percent_as_auto {
-      let mut s: ComputedStyle = (**style).clone();
-      if matches!(s.width, Some(len) if len.unit.is_percentage())
-        || s
-          .width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
+    let style_for_width_owned: Option<Arc<ComputedStyle>> = use_percent_as_auto.then(|| {
+      let mut owned = style.clone();
       {
-        s.width = None;
-        s.width_keyword = None;
+        let s = Arc::make_mut(&mut owned);
+        if matches!(s.width, Some(len) if len.unit.is_percentage())
+          || s
+            .width_keyword
+            .is_some_and(|keyword| keyword.has_percentage())
+        {
+          s.width = None;
+          s.width_keyword = None;
+        }
+        if matches!(s.min_width, Some(len) if len.unit.is_percentage())
+          || s
+            .min_width_keyword
+            .is_some_and(|keyword| keyword.has_percentage())
+        {
+          s.min_width = None;
+          s.min_width_keyword = None;
+        }
+        if matches!(s.max_width, Some(len) if len.unit.is_percentage())
+          || s
+            .max_width_keyword
+            .is_some_and(|keyword| keyword.has_percentage())
+        {
+          s.max_width = None;
+          s.max_width_keyword = None;
+        }
       }
-      if matches!(s.min_width, Some(len) if len.unit.is_percentage())
-        || s
-          .min_width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-      {
-        s.min_width = None;
-        s.min_width_keyword = None;
-      }
-      if matches!(s.max_width, Some(len) if len.unit.is_percentage())
-        || s
-          .max_width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-      {
-        s.max_width = None;
-        s.max_width_keyword = None;
-      }
-      _style_for_width_owned = Some(s);
-      _style_for_width_owned.as_ref().unwrap()
-    } else {
-      _style_for_width_owned = None;
-      style
-    };
+      owned
+    });
+    let style_for_width: &ComputedStyle = style_for_width_owned
+      .as_deref()
+      .unwrap_or_else(|| style.as_ref());
 
     // When available width is indefinite/max-content, try to derive a reasonable containing
     // width from the element's own sizing hints (max-width/width/min-width) before falling
@@ -5081,9 +5104,15 @@ impl FormattingContext for BlockFormattingContext {
           crate::style::types::BoxSizing::ContentBox => keyword_content,
           crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges,
         };
-        let mut width_style = style_for_width.clone();
-        width_style.width = Some(Length::px(specified_width));
-        width_style.width_keyword = None;
+        let mut width_style = style_for_width_owned
+          .as_ref()
+          .cloned()
+          .unwrap_or_else(|| style.clone());
+        {
+          let s = Arc::make_mut(&mut width_style);
+          s.width = Some(Length::px(specified_width));
+          s.width_keyword = None;
+        }
         computed_width = compute_block_width(
           &width_style,
           containing_width,
@@ -6014,13 +6043,15 @@ impl FormattingContext for BlockFormattingContext {
         };
         let factory = factory_for_cb(cb);
         // Layout the child as if it were in normal flow to obtain its intrinsic size.
-        let mut static_style = (*child.style).clone();
-        static_style.position = Position::Relative;
-        static_style.top = crate::style::types::InsetValue::Auto;
-        static_style.right = crate::style::types::InsetValue::Auto;
-        static_style.bottom = crate::style::types::InsetValue::Auto;
-        static_style.left = crate::style::types::InsetValue::Auto;
-        let static_style = Arc::new(static_style);
+        let mut static_style = child.style.clone();
+        {
+          let s = Arc::make_mut(&mut static_style);
+          s.position = Position::Relative;
+          s.top = crate::style::types::InsetValue::Auto;
+          s.right = crate::style::types::InsetValue::Auto;
+          s.bottom = crate::style::types::InsetValue::Auto;
+          s.left = crate::style::types::InsetValue::Auto;
+        }
 
         let fc_type = child
           .formatting_context()
@@ -6258,18 +6289,21 @@ impl FormattingContext for BlockFormattingContext {
                 || fc.layout(&child, &relayout_constraints),
               )?;
             } else {
-              let mut relayout_style = (*static_style).clone();
-              relayout_style.width = Some(crate::style::values::Length::px(border_size.width));
-              relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
-              relayout_style.width_keyword = None;
-              relayout_style.height_keyword = None;
-              relayout_style.min_width_keyword = None;
-              relayout_style.max_width_keyword = None;
-              relayout_style.min_height_keyword = None;
-              relayout_style.max_height_keyword = None;
+              let mut relayout_style = static_style.clone();
+              {
+                let s = Arc::make_mut(&mut relayout_style);
+                s.width = Some(crate::style::values::Length::px(border_size.width));
+                s.height = Some(crate::style::values::Length::px(border_size.height));
+                s.width_keyword = None;
+                s.height_keyword = None;
+                s.min_width_keyword = None;
+                s.max_width_keyword = None;
+                s.min_height_keyword = None;
+                s.max_height_keyword = None;
+              }
               child_fragment = crate::layout::style_override::with_style_override(
                 child.id,
-                Arc::new(relayout_style),
+                relayout_style,
                 || fc.layout(&child, &relayout_constraints),
               )?;
             }
@@ -6278,16 +6312,19 @@ impl FormattingContext for BlockFormattingContext {
             if supports_used_border_box {
               relayout_child.style = static_style.clone();
             } else {
-              let mut relayout_style = (*static_style).clone();
-              relayout_style.width = Some(crate::style::values::Length::px(border_size.width));
-              relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
-              relayout_style.width_keyword = None;
-              relayout_style.height_keyword = None;
-              relayout_style.min_width_keyword = None;
-              relayout_style.max_width_keyword = None;
-              relayout_style.min_height_keyword = None;
-              relayout_style.max_height_keyword = None;
-              relayout_child.style = Arc::new(relayout_style);
+              let mut relayout_style = static_style.clone();
+              {
+                let s = Arc::make_mut(&mut relayout_style);
+                s.width = Some(crate::style::values::Length::px(border_size.width));
+                s.height = Some(crate::style::values::Length::px(border_size.height));
+                s.width_keyword = None;
+                s.height_keyword = None;
+                s.min_width_keyword = None;
+                s.max_width_keyword = None;
+                s.min_height_keyword = None;
+                s.max_height_keyword = None;
+              }
+              relayout_child.style = relayout_style;
             }
             child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
           }
@@ -6945,13 +6982,16 @@ fn compute_intrinsic_block_sizes_without_block_size_constraints(
 ) -> Result<(f32, f32), LayoutError> {
   let style_override = crate::layout::style_override::style_override_for(box_node.id);
   let style = style_override.as_ref().unwrap_or(&box_node.style);
-  let mut probe_style: ComputedStyle = (**style).clone();
-  probe_style.height = None;
-  probe_style.height_keyword = None;
-  probe_style.min_height = None;
-  probe_style.min_height_keyword = None;
-  probe_style.max_height = None;
-  probe_style.max_height_keyword = None;
+  let mut probe_style = style.clone();
+  {
+    let s = Arc::make_mut(&mut probe_style);
+    s.height = None;
+    s.height_keyword = None;
+    s.min_height = None;
+    s.min_height_keyword = None;
+    s.max_height = None;
+    s.max_height_keyword = None;
+  }
 
   let compute = |node: &BoxNode| -> Result<(f32, f32), LayoutError> {
     let min = match fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent) {
@@ -6968,12 +7008,10 @@ fn compute_intrinsic_block_sizes_without_block_size_constraints(
   };
 
   if box_node.id != 0 {
-    crate::layout::style_override::with_style_override(box_node.id, Arc::new(probe_style), || {
-      compute(box_node)
-    })
+    crate::layout::style_override::with_style_override(box_node.id, probe_style, || compute(box_node))
   } else {
     let mut cloned = box_node.clone();
-    cloned.style = Arc::new(probe_style);
+    cloned.style = probe_style;
     compute(&cloned)
   }
 }
