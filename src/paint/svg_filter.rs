@@ -1690,7 +1690,7 @@ pub fn load_svg_filter(url: &str, image_cache: &ImageCache) -> Option<Arc<SvgFil
   let referrer_url = context
     .as_ref()
     .and_then(|ctx| ctx.document_url.as_deref())
-    .filter(|url| !url.trim().is_empty());
+    .filter(|url| !trim_ascii_whitespace(url).is_empty());
   let referrer_policy = context
     .as_ref()
     .map(|ctx| ctx.referrer_policy)
@@ -2087,7 +2087,7 @@ pub(crate) fn collect_svg_filters(
     let Some(id) = filter.attribute("id") else {
       continue;
     };
-    if id.trim().is_empty() {
+    if trim_ascii_whitespace(id).is_empty() {
       continue;
     }
     if let Some(parsed) = parse_filter_node(&filter, image_cache) {
@@ -2169,7 +2169,7 @@ impl<'a> SvgFilterResolver<'a> {
 
   fn resolve_uncached(&self, url: &str) -> Option<Arc<SvgFilter>> {
     let cache = self.image_cache?;
-    let trimmed = url.trim();
+    let trimmed = trim_ascii_whitespace(url);
     if trimmed.is_empty() {
       return None;
     }
@@ -2202,15 +2202,19 @@ impl<'a> SvgFilterResolver<'a> {
   }
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn normalize_filter_url(raw: &str) -> Option<String> {
-  let mut value = raw.trim();
+  let mut value = trim_ascii_whitespace(raw);
   if value.is_empty() {
     return None;
   }
 
   // Defensively strip nested url(...) wrappers that may have been serialized into the value.
   loop {
-    value = value.trim();
+    value = trim_ascii_whitespace(value);
     if value.is_empty() {
       return None;
     }
@@ -2224,13 +2228,13 @@ fn normalize_filter_url(raw: &str) -> Option<String> {
     let Some(open_paren) = value.find('(') else {
       break;
     };
-    if !value[..open_paren].trim().eq_ignore_ascii_case("url") {
+    if !trim_ascii_whitespace(&value[..open_paren]).eq_ignore_ascii_case("url") {
       break;
     }
     value = unwrap_url_function(value, open_paren)?;
   }
 
-  let normalized = value.trim();
+  let normalized = trim_ascii_whitespace(value);
   if normalized.is_empty() {
     None
   } else {
@@ -2241,10 +2245,10 @@ fn normalize_filter_url(raw: &str) -> Option<String> {
 fn unwrap_url_function(value: &str, open_paren_idx: usize) -> Option<&str> {
   let after_paren = value.get(open_paren_idx + 1..)?;
   let close_paren_idx = after_paren.rfind(')')?;
-  if !after_paren[close_paren_idx + 1..].trim().is_empty() {
+  if !trim_ascii_whitespace(&after_paren[close_paren_idx + 1..]).is_empty() {
     return None;
   }
-  Some(after_paren[..close_paren_idx].trim())
+  Some(trim_ascii_whitespace(&after_paren[..close_paren_idx]))
 }
 
 fn strip_matching_quotes(value: &str) -> &str {
@@ -6747,6 +6751,19 @@ mod tests {
     assert!(
       resolver.resolve("url(#recolor) extra").is_none(),
       "expected resolver to reject url(...) wrappers with trailing tokens"
+    );
+  }
+
+  #[test]
+  fn svg_filter_url_normalization_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(
+      normalize_filter_url(&format!(" {nbsp} ")),
+      Some(nbsp.to_string())
+    );
+    assert_eq!(
+      normalize_filter_url(&format!(" url({nbsp}) ")),
+      Some(nbsp.to_string())
     );
   }
 

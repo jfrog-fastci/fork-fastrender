@@ -3492,7 +3492,7 @@ fn create_pseudo_element_box(
         // Running elements are not yet resolved into generated content.
       }
       ContentItem::Url(url) => {
-        if url.trim().is_empty() {
+        if trim_ascii_whitespace(url).is_empty() {
           continue;
         }
         flush_text(
@@ -3725,7 +3725,7 @@ pub(crate) fn marker_content_from_style(
             // Running elements are not supported for list markers yet.
           }
           ContentItem::Url(url) => {
-            if url.trim().is_empty() {
+            if trim_ascii_whitespace(url).is_empty() {
               continue;
             }
             // If the author supplies multiple URLs we take the last; mixed text+image returns text.
@@ -7582,6 +7582,116 @@ mod tests {
       }
     } else {
       panic!("expected replaced child");
+    }
+  }
+
+  #[test]
+  fn pseudo_content_url_does_not_treat_nbsp_as_empty() {
+    use crate::dom::DomNodeType;
+    use crate::style::content::ContentItem;
+    use crate::style::content::ContentValue;
+
+    let mut before_style = ComputedStyle::default();
+    before_style.content_value = ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
+
+    let base_style = ComputedStyle::default();
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(base_style),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: Some(Arc::new(before_style)),
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut counters = CounterManager::new();
+    counters.enter_scope();
+    let before_box = create_pseudo_element_box(
+      &styled,
+      styled.before_styles.as_ref().unwrap(),
+      clone_starting_style(&styled.starting_styles.before),
+      "before",
+      &mut counters,
+    )
+    .expect("before box");
+    counters.leave_scope();
+
+    assert_eq!(before_box.children.len(), 1);
+    if let BoxType::Replaced(replaced) = &before_box.children[0].box_type {
+      match &replaced.replaced_type {
+        ReplacedType::Image { src, .. } => assert_eq!(src, "\u{00A0}"),
+        _ => panic!("expected image replaced content"),
+      }
+    } else {
+      panic!("expected replaced child");
+    }
+  }
+
+  #[test]
+  fn marker_content_url_does_not_treat_nbsp_as_empty() {
+    let mut li_style = ComputedStyle::default();
+    li_style.display = Display::ListItem;
+
+    let mut marker_style = ComputedStyle::default();
+    marker_style.content_value = ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
+
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(li_style),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: Some(Arc::new(marker_style)),
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let marker_box = create_marker_box(&styled, &mut CounterManager::default()).expect("marker box");
+    let BoxType::Marker(marker) = &marker_box.box_type else {
+      panic!("expected marker box");
+    };
+    match &marker.content {
+      MarkerContent::Image(replaced) => match &replaced.replaced_type {
+        ReplacedType::Image { src, .. } => assert_eq!(src, "\u{00A0}"),
+        other => panic!("expected image marker content, got {other:?}"),
+      },
+      other => panic!("expected image marker content, got {other:?}"),
     }
   }
 

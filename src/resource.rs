@@ -1979,7 +1979,10 @@ impl ResourcePolicy {
   }
 
   fn ensure_url_allowed(&self, url: &str) -> Result<ResourceScheme> {
-    if url.trim().is_empty() {
+    if url
+      .trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+      .is_empty()
+    {
       return Err(policy_error("empty URL"));
     }
     let scheme = classify_scheme(url);
@@ -9835,6 +9838,15 @@ mod tests {
       }
       Err(err) => panic!("bind {context}: {err}"),
     }
+  }
+
+  #[test]
+  fn resource_policy_does_not_treat_nbsp_as_empty_url() {
+    let policy = ResourcePolicy::new();
+    assert!(
+      policy.ensure_url_allowed("\u{00A0}").is_ok(),
+      "NBSP-only URLs should not be rejected as empty"
+    );
   }
 
   #[test]

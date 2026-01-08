@@ -75,6 +75,10 @@ fn page_side_for_index(page_index: usize, first_page_side: PageSide) -> PageSide
   }
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn required_page_side(boundaries: &[ForcedBoundary], pos: f32) -> Option<PageSide> {
   boundaries
     .iter()
@@ -1719,7 +1723,7 @@ fn build_margin_box_children(
           ContentItem::NoOpenQuote => context.push_quote(),
           ContentItem::NoCloseQuote => context.pop_quote(),
           ContentItem::Url(url) => {
-            if url.trim().is_empty() {
+            if trim_ascii_whitespace(url).is_empty() {
               continue;
             }
             flush_text(&mut text_buf, &mut children, style);
@@ -2068,6 +2072,25 @@ mod tests {
         .collect();
 
       assert_eq!(actual_text, expected_text);
+    }
+  }
+
+  #[test]
+  fn margin_box_content_url_does_not_treat_nbsp_as_empty() {
+    let mut box_style = ComputedStyle::default();
+    box_style.display = Display::Block;
+    box_style.content_value = ContentValue::Items(vec![ContentItem::Url("\u{00A0}".to_string())]);
+    let style = Arc::new(box_style.clone());
+    let running_strings: HashMap<String, RunningStringValues> = HashMap::new();
+
+    let children = build_margin_box_children(&box_style, 0, 1, &running_strings, &style);
+    assert_eq!(children.len(), 1);
+    let crate::tree::box_tree::BoxType::Replaced(replaced) = &children[0].box_type else {
+      panic!("expected replaced child");
+    };
+    match &replaced.replaced_type {
+      ReplacedType::Image { src, .. } => assert_eq!(src, "\u{00A0}"),
+      other => panic!("expected image replaced content, got {other:?}"),
     }
   }
 

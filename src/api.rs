@@ -310,7 +310,11 @@ fn authored_intrinsic_axis_hints(intrinsic_size: Option<Size>) -> (Option<f32>, 
 }
 
 fn url_looks_like_svg_resource(url: &str) -> bool {
-  let trimmed = url.trim();
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  }
+
+  let trimmed = trim_ascii_whitespace(url);
   if trimmed.is_empty() {
     return false;
   }
@@ -22620,6 +22624,16 @@ pub(crate) fn render_html_with_shared_resources(
       seen.iter().all(|url| url == &expected_url),
       "expected intrinsic sizing to preserve NBSP in URLs; got {seen:?}"
     );
+  }
+
+  #[test]
+  fn url_looks_like_svg_resource_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(!url_looks_like_svg_resource(&format!("{nbsp}<svg></svg>")));
+    assert!(!url_looks_like_svg_resource(&format!("{nbsp}%3csvg")));
+    assert!(!url_looks_like_svg_resource(&format!(
+      "{nbsp}data:image/svg+xml,<svg></svg>"
+    )));
   }
 
   #[test]
