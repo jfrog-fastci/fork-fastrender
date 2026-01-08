@@ -2006,6 +2006,26 @@ fn eval_style_range_value(
     };
     length_to_numeric(len, container, ctx)
   };
+
+  let scroll_padding_for_side = |side: crate::style::PhysicalSide| -> Option<NumericValue> {
+    let len = match side {
+      crate::style::PhysicalSide::Top => &styles.scroll_padding_top,
+      crate::style::PhysicalSide::Right => &styles.scroll_padding_right,
+      crate::style::PhysicalSide::Bottom => &styles.scroll_padding_bottom,
+      crate::style::PhysicalSide::Left => &styles.scroll_padding_left,
+    };
+    length_to_numeric(len, container, ctx)
+  };
+
+  let scroll_margin_for_side = |side: crate::style::PhysicalSide| -> Option<NumericValue> {
+    let len = match side {
+      crate::style::PhysicalSide::Top => &styles.scroll_margin_top,
+      crate::style::PhysicalSide::Right => &styles.scroll_margin_right,
+      crate::style::PhysicalSide::Bottom => &styles.scroll_margin_bottom,
+      crate::style::PhysicalSide::Left => &styles.scroll_margin_left,
+    };
+    length_to_numeric(len, container, ctx)
+  };
   match value {
     StyleRangeValue::Property(name) => match name.as_str() {
       "font-size" => Some(NumericValue {
@@ -2325,10 +2345,18 @@ fn eval_style_range_value(
       "scroll-padding-right" => length_to_numeric(&styles.scroll_padding_right, container, ctx),
       "scroll-padding-bottom" => length_to_numeric(&styles.scroll_padding_bottom, container, ctx),
       "scroll-padding-left" => length_to_numeric(&styles.scroll_padding_left, container, ctx),
+      "scroll-padding-inline-start" => scroll_padding_for_side(inline_sides.0),
+      "scroll-padding-inline-end" => scroll_padding_for_side(inline_sides.1),
+      "scroll-padding-block-start" => scroll_padding_for_side(block_sides.0),
+      "scroll-padding-block-end" => scroll_padding_for_side(block_sides.1),
       "scroll-margin-top" => length_to_numeric(&styles.scroll_margin_top, container, ctx),
       "scroll-margin-right" => length_to_numeric(&styles.scroll_margin_right, container, ctx),
       "scroll-margin-bottom" => length_to_numeric(&styles.scroll_margin_bottom, container, ctx),
       "scroll-margin-left" => length_to_numeric(&styles.scroll_margin_left, container, ctx),
+      "scroll-margin-inline-start" => scroll_margin_for_side(inline_sides.0),
+      "scroll-margin-inline-end" => scroll_margin_for_side(inline_sides.1),
+      "scroll-margin-block-start" => scroll_margin_for_side(block_sides.0),
+      "scroll-margin-block-end" => scroll_margin_for_side(block_sides.1),
       "border-top-width" => length_to_numeric(&styles.border_top_width, container, ctx),
       "border-right-width" => length_to_numeric(&styles.border_right_width, container, ctx),
       "border-bottom-width" => length_to_numeric(&styles.border_bottom_width, container, ctx),
