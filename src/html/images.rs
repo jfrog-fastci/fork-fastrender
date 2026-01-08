@@ -15,6 +15,11 @@ use crate::tree::box_tree::SrcsetDescriptor;
 use std::collections::HashSet;
 use url::Url;
 
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 /// Selection inputs describing the rendering environment.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageSelectionContext<'a> {
@@ -283,7 +288,7 @@ pub fn select_image_source<'a>(
 }
 
 fn dedup_key(url: &str, base_url: Option<&str>) -> String {
-  let trimmed = url.trim();
+  let trimmed = trim_ascii_whitespace(url);
   if trimmed.is_empty() {
     return String::new();
   }
@@ -314,7 +319,7 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 /// This matches the filtering performed by [`push_unique`] so callers outside of this module can
 /// apply the same rules (e.g. intrinsic sizing probes).
 pub(crate) fn is_valid_image_source_url(url: &str) -> bool {
-  let trimmed = url.trim();
+  let trimmed = trim_ascii_whitespace(url);
   !(trimmed.is_empty()
     || trimmed.starts_with('#')
     || starts_with_ignore_ascii_case(trimmed, "javascript:")
@@ -328,7 +333,7 @@ fn push_unique<'a>(
   candidate: SelectedImageSource<'a>,
   base_url: Option<&str>,
 ) {
-  let trimmed = candidate.url.trim();
+  let trimmed = trim_ascii_whitespace(candidate.url);
   if !is_valid_image_source_url(trimmed) {
     return;
   }
@@ -471,5 +476,36 @@ impl ReplacedType {
       }
       _ => Vec::new(),
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{image_sources_with_fallback, ImageSelectionContext};
+  use crate::tree::box_tree::{PictureSource, SrcsetCandidate, SrcsetDescriptor};
+
+  #[test]
+  fn image_sources_with_fallback_trims_ascii_whitespace_only() {
+    let nbsp = "\u{00A0}";
+    let srcset_url = format!("  a.png{nbsp}  ");
+    let srcset = vec![SrcsetCandidate {
+      url: srcset_url,
+      descriptor: SrcsetDescriptor::Density(1.0),
+    }];
+
+    let ctx = ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: None,
+      media_context: None,
+      font_size: None,
+      root_font_size: None,
+      base_url: Some("https://example.com/base/"),
+    };
+
+    let sources = image_sources_with_fallback("a.png", &srcset, None, &[] as &[PictureSource], ctx);
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0].url, format!("a.png{nbsp}"));
+    assert_eq!(sources[1].url, "a.png");
   }
 }
