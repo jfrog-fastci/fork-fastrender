@@ -36,7 +36,7 @@ use fastrender::image_compare::{self, CompareConfig};
 use fastrender::pageset::{
   pageset_entries, pageset_stem, PagesetEntry, PagesetFilter, CACHE_HTML_DIR,
 };
-use fastrender::render_control::{record_stage, set_stage_listener, StageHeartbeat};
+use fastrender::render_control::{push_stage_listener, record_stage, StageHeartbeat};
 use fastrender::resource::normalize_user_agent_for_log;
 use fastrender::resource::parse_cached_html_meta;
 use fastrender::resource::CacheStalePolicy;
@@ -2907,7 +2907,7 @@ fn maybe_abort_worker_for_test(stem: &str) {
 fn render_worker(args: WorkerArgs) -> io::Result<()> {
   let _cleanup_delay_guard = WorkerCleanupDelayGuard::from_env();
   let heartbeat = StageHeartbeatWriter::new(args.stage_path.clone());
-  let _heartbeat_guard = StageListenerGuard::new(heartbeat.listener());
+  let _heartbeat_guard = push_stage_listener(Some(heartbeat.listener()));
   record_stage(StageHeartbeat::ReadCache);
   maybe_abort_worker_for_test(&args.stem);
   common::render_pipeline::apply_test_render_delay(Some(&args.stem));
@@ -4039,21 +4039,6 @@ impl StageHeartbeatWriter {
         std::thread::sleep(Duration::from_millis(delay));
       }
     }
-  }
-}
-
-struct StageListenerGuard;
-
-impl StageListenerGuard {
-  fn new(listener: Arc<dyn Fn(StageHeartbeat) + Send + Sync>) -> Self {
-    set_stage_listener(Some(listener));
-    Self
-  }
-}
-
-impl Drop for StageListenerGuard {
-  fn drop(&mut self) {
-    set_stage_listener(None);
   }
 }
 

@@ -19094,27 +19094,13 @@ pub(crate) fn render_html_with_shared_resources(
 
   #[test]
   fn stage_heartbeats_record_css_loading_between_dom_parse_and_cascade() {
-    use crate::render_control::set_stage_listener;
-
-    struct StageListenerGuard;
-
-    impl Drop for StageListenerGuard {
-      fn drop(&mut self) {
-        set_stage_listener(None);
-      }
-    }
+    use crate::render_control::with_stage_listener;
 
     let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
-    let thread_id = std::thread::current().id();
     let stages_for_listener = Arc::clone(&stages);
     let listener = Arc::new(move |stage: StageHeartbeat| {
-      if std::thread::current().id() != thread_id {
-        return;
-      }
       stages_for_listener.lock().unwrap().push(stage);
     });
-    set_stage_listener(Some(listener));
-    let _guard = StageListenerGuard;
 
     let fetcher = MapFetcher::default().with_entry(
       "https://example.com/style.css",
@@ -19135,8 +19121,7 @@ pub(crate) fn render_html_with_shared_resources(
         <body>Hello</body>
       </html>
     "#;
-    renderer.render_html(html, 10, 10).unwrap();
-    set_stage_listener(None);
+    let _ = with_stage_listener(Some(listener), || renderer.render_html(html, 10, 10).unwrap());
 
     let stages = stages.lock().unwrap().clone();
     let dom_idx = stages

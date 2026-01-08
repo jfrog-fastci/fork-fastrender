@@ -41,6 +41,11 @@ pub struct StageGuard {
   previous: Option<RenderStage>,
 }
 
+/// Guard that installs an active stage listener for the current thread.
+pub struct StageListenerGuard {
+  previous_len: usize,
+}
+
 /// Stages surfaced via heartbeat callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageHeartbeat {
@@ -124,7 +129,11 @@ impl StageHeartbeat {
   }
 }
 
-type StageListener = Arc<dyn Fn(StageHeartbeat) + Send + Sync>;
+pub type StageListener = Arc<dyn Fn(StageHeartbeat) + Send + Sync>;
+
+thread_local! {
+  static STAGE_LISTENER_STACK: RefCell<Vec<Option<StageListener>>> = RefCell::new(Vec::new());
+}
 
 fn stage_listener() -> &'static Mutex<Option<StageListener>> {
   static LISTENER: OnceLock<Mutex<Option<StageListener>>> = OnceLock::new();
@@ -137,13 +146,33 @@ pub fn set_stage_listener(listener: Option<StageListener>) {
   }
 }
 
+pub fn push_stage_listener(listener: Option<StageListener>) -> StageListenerGuard {
+  let previous_len = STAGE_LISTENER_STACK.with(|stack| {
+    let mut stack = stack.borrow_mut();
+    let previous_len = stack.len();
+    stack.push(listener);
+    previous_len
+  });
+  StageListenerGuard { previous_len }
+}
+
+pub fn with_stage_listener<T>(listener: Option<StageListener>, f: impl FnOnce() -> T) -> T {
+  let _guard = push_stage_listener(listener);
+  f()
+}
+
 pub fn record_stage(stage: StageHeartbeat) {
   ACTIVE_STAGE.with(|active| active.set(stage.render_stage()));
-  let maybe_listener = stage_listener()
+  let maybe_thread_listener =
+    STAGE_LISTENER_STACK.with(|stack| stack.borrow().last().cloned().flatten());
+  if let Some(listener) = maybe_thread_listener {
+    listener(stage);
+  }
+  let maybe_global_listener = stage_listener()
     .lock()
     .ok()
     .and_then(|guard| guard.as_ref().cloned());
-  if let Some(listener) = maybe_listener {
+  if let Some(listener) = maybe_global_listener {
     listener(stage);
   }
 }
@@ -302,6 +331,15 @@ impl Drop for DeadlineGuard {
   }
 }
 
+impl Drop for StageListenerGuard {
+  fn drop(&mut self) {
+    let previous_len = self.previous_len;
+    STAGE_LISTENER_STACK.with(|stack| {
+      stack.borrow_mut().truncate(previous_len);
+    });
+  }
+}
+
 impl Drop for DeadlineStackGuard {
   fn drop(&mut self) {
     let previous = std::mem::take(&mut self.previous);
@@ -418,4 +456,95 @@ pub fn root_deadline() -> Option<RenderDeadline> {
 pub fn with_deadline<T>(deadline: Option<&RenderDeadline>, f: impl FnOnce() -> T) -> T {
   let _guard = DeadlineGuard::install(deadline);
   f()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn scoped_stage_listener_receives_events_and_is_removed_on_drop() {
+    let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+    let stages_for_listener = Arc::clone(&stages);
+    {
+      let _guard = push_stage_listener(Some(Arc::new(move |stage| {
+        stages_for_listener.lock().unwrap().push(stage);
+      })));
+      record_stage(StageHeartbeat::DomParse);
+      record_stage(StageHeartbeat::CssParse);
+    }
+    record_stage(StageHeartbeat::Cascade);
+    record_stage(StageHeartbeat::Done);
+
+    let stages = stages.lock().unwrap().clone();
+    assert_eq!(
+      stages,
+      vec![StageHeartbeat::DomParse, StageHeartbeat::CssParse]
+    );
+  }
+
+  #[test]
+  fn nested_stage_listeners_restore_previous() {
+    let stages_a: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+    let stages_b: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let stages_a_for_listener = Arc::clone(&stages_a);
+    let _outer_guard = push_stage_listener(Some(Arc::new(move |stage| {
+      stages_a_for_listener.lock().unwrap().push(stage);
+    })));
+    record_stage(StageHeartbeat::DomParse);
+
+    {
+      let stages_b_for_listener = Arc::clone(&stages_b);
+      let _inner_guard = push_stage_listener(Some(Arc::new(move |stage| {
+        stages_b_for_listener.lock().unwrap().push(stage);
+      })));
+      record_stage(StageHeartbeat::CssParse);
+    }
+
+    record_stage(StageHeartbeat::Cascade);
+    drop(_outer_guard);
+    record_stage(StageHeartbeat::Done);
+
+    let stages_a = stages_a.lock().unwrap().clone();
+    let stages_b = stages_b.lock().unwrap().clone();
+    assert_eq!(stages_a, vec![StageHeartbeat::DomParse, StageHeartbeat::Cascade]);
+    assert_eq!(stages_b, vec![StageHeartbeat::CssParse]);
+  }
+
+  #[test]
+  fn thread_local_listener_does_not_affect_other_threads() {
+    let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+    let stages_for_listener = Arc::clone(&stages);
+    let _guard = push_stage_listener(Some(Arc::new(move |stage| {
+      stages_for_listener.lock().unwrap().push(stage);
+    })));
+
+    std::thread::spawn(|| record_stage(StageHeartbeat::DomParse))
+      .join()
+      .unwrap();
+
+    assert!(stages.lock().unwrap().is_empty());
+
+    let stages_thread: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+    let stages_thread_for_listener = Arc::clone(&stages_thread);
+    std::thread::spawn(move || {
+      {
+        let _guard = push_stage_listener(Some(Arc::new(move |stage| {
+          stages_thread_for_listener.lock().unwrap().push(stage);
+        })));
+        record_stage(StageHeartbeat::CssParse);
+      }
+      record_stage(StageHeartbeat::Done);
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(
+      stages_thread.lock().unwrap().clone(),
+      vec![StageHeartbeat::CssParse]
+    );
+    drop(_guard);
+    record_stage(StageHeartbeat::Done);
+  }
 }
