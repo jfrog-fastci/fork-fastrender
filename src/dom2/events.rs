@@ -276,7 +276,10 @@ impl Document {
     event.current_target = Some(target_id);
     self.invoke_listeners(target_id, event, invoker, /* capture */ true)?;
 
-    if !event.stop_immediate_propagation {
+    // If stopPropagation is set by a capturing listener on the target, we must not invoke the
+    // target's bubbling listeners: the bubble-phase invocation is a separate "invoke" step, which
+    // is skipped when the stop propagation flag is already set.
+    if !event.stop_propagation && !event.stop_immediate_propagation {
       self.invoke_listeners(target_id, event, invoker, /* capture */ false)?;
     }
 
@@ -623,6 +626,70 @@ mod tests {
       .unwrap();
 
     assert_eq!(invoker.calls, vec!["target-stop"]);
+  }
+
+  #[test]
+  fn stop_propagation_in_target_capture_skips_target_bubble_listeners() {
+    let (mut doc, _doc_id, _parent_id, target_id) = make_three_level_doc();
+
+    let mut invoker = RecordingInvoker::new([
+      (
+        ListenerId(1),
+        Behavior {
+          label: "target-capture-stop",
+          action: Action::StopPropagation,
+        },
+      ),
+      (
+        ListenerId(2),
+        Behavior {
+          label: "target-capture-2",
+          action: Action::None,
+        },
+      ),
+      (
+        ListenerId(3),
+        Behavior {
+          label: "target-bubble",
+          action: Action::None,
+        },
+      ),
+    ]);
+
+    let type_ = "test";
+    doc.add_event_listener(
+      target_id,
+      type_,
+      ListenerId(1),
+      EventListenerOptions {
+        capture: true,
+        ..Default::default()
+      },
+    );
+    doc.add_event_listener(
+      target_id,
+      type_,
+      ListenerId(2),
+      EventListenerOptions {
+        capture: true,
+        ..Default::default()
+      },
+    );
+    doc.add_event_listener(
+      target_id,
+      type_,
+      ListenerId(3),
+      EventListenerOptions::default(),
+    );
+
+    let mut event = Event::new(type_);
+    event.bubbles = true;
+
+    doc
+      .dispatch_event(target_id, &mut event, &mut invoker)
+      .unwrap();
+
+    assert_eq!(invoker.calls, vec!["target-capture-stop", "target-capture-2"]);
   }
 
   #[test]
