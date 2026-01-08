@@ -262,3 +262,37 @@ fn css_imports_from_inline_style_use_imported_final_url_for_nested_referrer_and_
     "expected b.css to resolve against final_url, got requests: {requests:?}"
   );
 }
+
+#[test]
+fn link_stylesheet_uses_document_referrer_even_with_base_href() {
+  let document_url = "https://example.test/page.html";
+  let base_href = "https://cdn.example.test/assets/";
+  let stylesheet_url = "https://cdn.example.test/assets/style.css";
+
+  let fetcher = Arc::new(RecordingFetcher::default().with_css(
+    stylesheet_url,
+    "body { color: rgb(10, 20, 30); }",
+    None,
+  ));
+
+  let mut renderer = renderer_for(fetcher.clone());
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+        <base href="{base_href}">
+        <link rel="stylesheet" href="style.css">
+      </head><body>Hi</body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(16, 16),
+    )
+    .expect("render");
+
+  let requests = fetcher.requests();
+  let sheet_request = requests
+    .iter()
+    .find(|r| r.url == stylesheet_url && r.destination == FetchDestination::Style)
+    .expect("request for stylesheet");
+  assert_eq!(sheet_request.referrer_url.as_deref(), Some(document_url));
+}
