@@ -315,6 +315,44 @@ pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> 
   })
 }
 
+fn contains_grid_auto_flow_keyword(input: &str) -> bool {
+  let bytes = input.as_bytes();
+  let mut bracket_depth: usize = 0;
+  let mut paren_depth: usize = 0;
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let byte = bytes[i];
+    match byte {
+      b'(' => paren_depth += 1,
+      b')' => paren_depth = paren_depth.saturating_sub(1),
+      b'[' if paren_depth == 0 => bracket_depth += 1,
+      b']' if paren_depth == 0 => bracket_depth = bracket_depth.saturating_sub(1),
+      b if bracket_depth == 0
+        && paren_depth == 0
+        && (b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) =>
+      {
+        let start = i;
+        i += 1;
+        while i < bytes.len() {
+          let next = bytes[i];
+          if next.is_ascii_alphanumeric() || matches!(next, b'-' | b'_') {
+            i += 1;
+          } else {
+            break;
+          }
+        }
+        if input[start..i].eq_ignore_ascii_case("auto-flow") {
+          return true;
+        }
+        continue;
+      }
+      _ => {}
+    }
+    i += 1;
+  }
+  false
+}
+
 /// Parse the `grid` shorthand (template or auto-flow forms).
 pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
   let value = value.trim();
@@ -322,7 +360,15 @@ pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
     return Some(reset_grid_shorthand());
   }
 
-  if !value.contains("auto-flow") {
+  // Auto-flow form: either left or right of the slash contains auto-flow.
+  let (left, right_opt) = split_once_unquoted(value, '/');
+  let left = left.trim();
+  let right = right_opt.map(str::trim);
+
+  let left_has_flow = contains_grid_auto_flow_keyword(left);
+  let right_has_flow = right.as_ref().is_some_and(|r| contains_grid_auto_flow_keyword(r));
+
+  if !left_has_flow && !right_has_flow {
     return parse_grid_template_shorthand(value).map(|template| ParsedGridShorthand {
       template: Some(template),
       auto_rows: Some(vec![GridTrack::Auto]),
@@ -331,27 +377,38 @@ pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
     });
   }
 
-  // Auto-flow form: either left or right of the slash contains auto-flow
-  let (left, right_opt) = split_once_unquoted(value, '/');
-  let left = left.trim();
-  let right = right_opt.map(str::trim);
-
   let mut auto_rows: Option<Vec<GridTrack>> = None;
   let mut auto_cols: Option<Vec<GridTrack>> = None;
   let mut auto_flow: Option<crate::style::types::GridAutoFlow> = None;
 
   let parse_auto_flow_tokens =
     |tokens: &str| -> (Option<crate::style::types::GridAutoFlow>, Option<String>) {
-      let lower = tokens.to_ascii_lowercase();
-      if !lower.contains("auto-flow") {
+      let mut saw_auto_flow = false;
+      let mut dense = false;
+      let mut has_column = false;
+      let mut remainder: Vec<&str> = Vec::new();
+      for token in tokens.split_whitespace() {
+        if token.eq_ignore_ascii_case("auto-flow") {
+          saw_auto_flow = true;
+          continue;
+        }
+        if token.eq_ignore_ascii_case("dense") {
+          dense = true;
+          continue;
+        }
+        if token.eq_ignore_ascii_case("column") {
+          has_column = true;
+          continue;
+        }
+        if token.eq_ignore_ascii_case("row") {
+          continue;
+        }
+        remainder.push(token);
+      }
+      if !saw_auto_flow {
         return (None, None);
       }
-      let dense = lower.contains("dense");
-      let primary = if lower.contains("column") {
-        "column"
-      } else {
-        "row"
-      };
+      let primary = if has_column { "column" } else { "row" };
       let flow = match (primary, dense) {
         ("row", false) => crate::style::types::GridAutoFlow::Row,
         ("row", true) => crate::style::types::GridAutoFlow::RowDense,
@@ -359,27 +416,10 @@ pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
         ("column", true) => crate::style::types::GridAutoFlow::ColumnDense,
         _ => crate::style::types::GridAutoFlow::Row,
       };
-      // Strip the auto-flow keywords to leave a potential track list
-      let remainder = tokens
-        .replace("auto-flow", "")
-        .replace("Auto-Flow", "")
-        .replace("AUTO-FLOW", "")
-        .replace("dense", "")
-        .replace("DENSE", "")
-        .trim()
-        .to_string();
-      let remainder = if remainder.is_empty() {
-        None
-      } else {
-        Some(remainder)
-      };
+      let remainder = remainder.join(" ");
+      let remainder = (!remainder.is_empty()).then_some(remainder);
       (Some(flow), remainder)
     };
-
-  let left_has_flow = left.to_ascii_lowercase().contains("auto-flow");
-  let right_has_flow = right
-    .as_ref()
-    .is_some_and(|r| r.to_ascii_lowercase().contains("auto-flow"));
 
   if left_has_flow {
     let (flow_parsed, remainder) = parse_auto_flow_tokens(left);
