@@ -7194,8 +7194,8 @@ fn convert_fragment_axes(
   let phys_h = fragment.bounds.height();
   let child_inline = if block_axis_is_horizontal(style_wm) { phys_h } else { phys_w };
   let child_block = if block_axis_is_horizontal(style_wm) { phys_w } else { phys_h };
-  let mapped_children: Vec<_> = fragment
-    .children
+  let children = std::mem::take(&mut fragment.children);
+  let mapped_children: Vec<_> = children
     .into_iter()
     .map(|c| convert_fragment_axes(c, child_inline, child_block, style_wm, dir))
     .collect();
@@ -7308,8 +7308,8 @@ fn unconvert_fragment_axes(
     .unwrap_or(parent_direction);
   let child_inline = if block_axis_is_horizontal(style_wm) { phys_h } else { phys_w };
   let child_block = if block_axis_is_horizontal(style_wm) { phys_w } else { phys_h };
-  let mapped_children: Vec<_> = fragment
-    .children
+  let children = std::mem::take(&mut fragment.children);
+  let mapped_children: Vec<_> = children
     .into_iter()
     .map(|c| unconvert_fragment_axes(c, child_inline, child_block, style_wm, dir))
     .collect();
