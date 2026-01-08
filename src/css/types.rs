@@ -31,6 +31,18 @@ use std::cell::RefCell;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
+// CSS uses the CSS Syntax "whitespace" production (TAB/LF/FF/CR/SPACE). Avoid Rust's Unicode
+// whitespace helpers (`str::trim`, `char::is_whitespace`, etc.) so non-ASCII whitespace like NBSP
+// (U+00A0) is preserved.
+#[inline]
+fn is_ascii_whitespace_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
+
 // ============================================================================
 // CSS Parse Errors
 // ============================================================================
@@ -2218,7 +2230,7 @@ fn split_selector_list(selector_list: &str) -> Vec<String> {
       Token::Comma => {
         let raw = parser.slice_from(segment_start);
         if let Some(stripped) = raw.strip_suffix(',') {
-          let trimmed = stripped.trim();
+          let trimmed = trim_ascii_whitespace_css(stripped);
           if !trimmed.is_empty() {
             parts.push(trimmed.to_string());
           }
@@ -2240,7 +2252,7 @@ fn split_selector_list(selector_list: &str) -> Vec<String> {
     }
   }
 
-  let tail = parser.slice_from(segment_start).trim();
+  let tail = trim_ascii_whitespace_css(parser.slice_from(segment_start));
   if !tail.is_empty() {
     parts.push(tail.to_string());
   }
@@ -2319,6 +2331,22 @@ mod tests {
           .unwrap_or_else(|| panic!("unexpected import url: {url}"))
           .clone(),
       )
+    }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_split_selector_list_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let parts = split_selector_list(&format!("{nbsp}div,span"));
+    assert_eq!(parts, vec![format!("{nbsp}div"), "span".to_string()]);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_font_source_format_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    match FontSourceFormat::from_hint(&format!("{nbsp}woff2")) {
+      FontSourceFormat::Unknown(name) => assert_eq!(name, format!("{nbsp}woff2")),
+      other => panic!("expected Unknown format hint, got {other:?}"),
     }
   }
 
@@ -3549,7 +3577,7 @@ pub enum FontSourceFormat {
 impl FontSourceFormat {
   /// Construct from a raw format() hint string.
   pub fn from_hint(hint: &str) -> Self {
-    match hint.trim().to_ascii_lowercase().as_str() {
+    match trim_ascii_whitespace_css(hint).to_ascii_lowercase().as_str() {
       "woff2" => FontSourceFormat::Woff2,
       "woff" => FontSourceFormat::Woff,
       "opentype" | "otf" => FontSourceFormat::Opentype,
