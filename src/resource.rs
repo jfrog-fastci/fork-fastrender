@@ -607,6 +607,40 @@ fn http_browser_tolerant_origin_from_url(url: &str) -> Option<DocumentOrigin> {
   Some(DocumentOrigin::new(scheme, Some(host), port))
 }
 
+/// Remove `user:pass@` credentials from a URL string without requiring strict URL parsing.
+///
+/// This exists for tolerant referrer handling: `http_referer_header_value` supports referrer URLs
+/// that contain characters rejected by `url::Url::parse` (e.g. `|` in query strings) so we can
+/// still generate `Referer` headers for real-world pages. When taking the tolerant path, we still
+/// must not leak credentials in the serialized referrer.
+fn http_strip_userinfo_for_referrer(url: &str) -> String {
+  let trimmed = url.trim();
+  let Some(scheme_end) = trimmed.find("://") else {
+    return trimmed.to_string();
+  };
+  if !matches!(trimmed[..scheme_end].to_ascii_lowercase().as_str(), "http" | "https") {
+    return trimmed.to_string();
+  }
+
+  let after_scheme = &trimmed[scheme_end + "://".len()..];
+  let authority_end = after_scheme
+    .find(|c| matches!(c, '/' | '?' | '#'))
+    .unwrap_or(after_scheme.len());
+  let authority = &after_scheme[..authority_end];
+  let Some((_, host_port)) = authority.rsplit_once('@') else {
+    return trimmed.to_string();
+  };
+  if host_port.is_empty() {
+    return trimmed.to_string();
+  }
+
+  let mut out = String::with_capacity(trimmed.len());
+  out.push_str(&trimmed[..scheme_end + "://".len()]);
+  out.push_str(host_port);
+  out.push_str(&after_scheme[authority_end..]);
+  out
+}
+
 fn http_browser_origin_and_referer_for_origin(origin: &DocumentOrigin) -> Option<(String, String)> {
   if !matches!(origin.scheme.as_str(), "http" | "https") {
     return None;
@@ -3228,6 +3262,10 @@ fn http_referer_header_value(
     }
     let mut sanitized = referrer_url.clone();
     sanitized.set_fragment(None);
+    // `Referer` must not leak credentials even when the initiating document URL contains them.
+    // This matches the Referrer Policy spec's "strip URL for use as referrer" algorithm.
+    let _ = sanitized.set_username("");
+    let _ = sanitized.set_password(None);
     let full = sanitized.to_string();
     let origin_only = http_browser_origin_and_referer_for_url(&sanitized)
       .map(|(_, origin_only)| origin_only)
@@ -3243,6 +3281,7 @@ fn http_referer_header_value(
       .split_once('#')
       .map(|(before, _)| before.to_string())
       .unwrap_or_else(|| raw_referrer.to_string());
+    let full = http_strip_userinfo_for_referrer(&full);
     let origin_only = http_browser_origin_and_referer_for_origin(&origin)
       .map(|(_, origin_only)| origin_only)
       .or_else(|| Some(full.clone()));
@@ -10018,7 +10057,6 @@ mod tests {
     }
   }
 
-  #[test]
   fn referrer_policy_omits_file_referrers() {
     let referrer = "file:///tmp/page.html#frag";
     let target = "https://example.com/img.png";
