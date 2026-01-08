@@ -8007,10 +8007,17 @@ mod tests {
 
   #[test]
   fn small_caps_shapes_lowercase_with_scaled_size() {
+    let mut db = FontDatabase::empty();
+    db
+      .load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
+      .expect("fixture font should load");
+    db.refresh_generic_fallbacks();
+    let ctx = FontContext::with_database(Arc::new(db));
+
     let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
     style.font_variant = FontVariant::SmallCaps;
     style.font_size = 20.0;
-    let ctx = FontContext::new();
     let shaped = ShapingPipeline::new().shape("Abc", &style, &ctx).unwrap();
     assert!(shaped.iter().any(|r| (r.font_size - 16.0).abs() < 0.1));
     assert!(shaped.iter().any(|r| (r.font_size - 20.0).abs() < 0.1));
