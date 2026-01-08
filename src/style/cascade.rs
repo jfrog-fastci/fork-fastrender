@@ -1968,6 +1968,8 @@ fn eval_style_range_value(
         .as_ref()
         .and_then(|len| length_to_numeric(len, container, ctx)),
       "column-gap" => length_to_numeric(&styles.column_gap, container, ctx),
+      "row-gap" | "grid-row-gap" => length_to_numeric(&styles.grid_row_gap, container, ctx),
+      "grid-column-gap" => length_to_numeric(&styles.grid_column_gap, container, ctx),
       "column-rule-width" => length_to_numeric(&styles.column_rule_width, container, ctx),
       "line-height" => match &styles.line_height {
         crate::style::types::LineHeight::Normal => {

@@ -1278,6 +1278,32 @@ fn container_style_query_range_feature_matches_column_gap() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_row_gap() {
+  let html = r#"
+    <style>
+      .container-tight { container-type: inline-size; row-gap: 10px; }
+      .container-wide { container-type: inline-size; row-gap: 20px; }
+      .child { color: rgb(0 0 255); }
+      @container style(row-gap > 15px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-tight">
+      <div id="tight" class="child">hello</div>
+    </div>
+    <div class="container-wide">
+      <div id="wide" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let tight = find_by_id(&styled, "tight").expect("tight element");
+  let wide = find_by_id(&styled, "wide").expect("wide element");
+  assert_eq!(tight.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(wide.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_coerces_unitless_zero_to_time() {
   let html = r#"
     <style>
