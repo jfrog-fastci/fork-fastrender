@@ -61,6 +61,7 @@ mod curl_backend;
 pub(crate) mod data_url;
 #[cfg(feature = "disk_cache")]
 pub mod disk_cache;
+pub mod web_fetch;
 pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
 #[cfg(feature = "disk_cache")]
 pub use disk_cache::{DiskCacheConfig, DiskCachingFetcher};
