@@ -206,6 +206,46 @@ fn img_referrerpolicy_no_referrer_omits_referer_header() {
 }
 
 #[test]
+fn img_referrerpolicy_overrides_document_referrer_policy() {
+  let Some(server) = TestServer::start(
+    "img_referrerpolicy_overrides_document_referrer_policy",
+    |path| match path {
+      "/img.png" => Some((tiny_png(), "image/png")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html><head>
+      <meta name="referrer" content="no-referrer">
+    </head><body>
+      <img src="/img.png" referrerpolicy="origin" width="1" height="1">
+    </body></html>"#;
+  let document_url = server.url("index.html");
+
+  let fetcher: Arc<dyn ResourceFetcher> =
+    Arc::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+  let mut renderer =
+    FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher)).unwrap();
+  renderer
+    .render_html_with_stylesheets(html, &document_url, RenderOptions::new().with_viewport(16, 16))
+    .unwrap();
+
+  let expected_origin = server.origin();
+  let captured = server.shutdown_and_join();
+  let img_requests: Vec<_> = captured.iter().filter(|r| r.path == "/img.png").collect();
+  assert!(
+    !img_requests.is_empty(),
+    "expected at least one request for /img.png, got: {captured:?}"
+  );
+  for req in img_requests {
+    assert_eq!(req.referer.as_deref(), Some(expected_origin.as_str()));
+  }
+}
+
+#[test]
 fn iframe_referrerpolicy_overrides_document_referrer_policy() {
   let Some(server) = TestServer::start(
     "iframe_referrerpolicy_overrides_document_referrer_policy",
