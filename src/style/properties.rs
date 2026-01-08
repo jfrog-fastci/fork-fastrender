@@ -10544,6 +10544,9 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => TextSizeAdjust::None,
         PropertyValue::Keyword(_) => styles.text_size_adjust,
         PropertyValue::Percentage(p) if *p >= 0.0 => TextSizeAdjust::Percentage(*p),
+        PropertyValue::Length(len) if len.unit == LengthUnit::Percent && len.value >= 0.0 => {
+          TextSizeAdjust::Percentage(len.value)
+        }
         _ => styles.text_size_adjust,
       };
     }

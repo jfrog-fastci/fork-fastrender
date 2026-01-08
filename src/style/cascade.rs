@@ -1840,6 +1840,18 @@ fn eval_style_range_value(
         ty: NumericType::LengthPx,
         value: styles.word_spacing,
       }),
+      "flex-grow" => Some(NumericValue {
+        ty: NumericType::Number,
+        value: styles.flex_grow,
+      }),
+      "flex-shrink" => Some(NumericValue {
+        ty: NumericType::Number,
+        value: styles.flex_shrink,
+      }),
+      "order" => Some(NumericValue {
+        ty: NumericType::Number,
+        value: styles.order as f32,
+      }),
       "z-index" => styles.z_index.map(|z| NumericValue {
         ty: NumericType::Number,
         value: z as f32,

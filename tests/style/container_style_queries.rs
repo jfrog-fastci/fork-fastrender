@@ -888,6 +888,84 @@ fn container_style_query_range_feature_matches_word_spacing() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_flex_grow() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; flex-grow: 1; }
+      .container-large { container-type: inline-size; flex-grow: 2; }
+      .child { color: rgb(0 0 255); }
+      @container style(flex-grow > 1) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_flex_shrink() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; flex-shrink: 1; }
+      .container-large { container-type: inline-size; flex-shrink: 2; }
+      .child { color: rgb(0 0 255); }
+      @container style(flex-shrink > 1) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_order() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; order: 1; }
+      .container-large { container-type: inline-size; order: 2; }
+      .child { color: rgb(0 0 255); }
+      @container style(order > 1) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_coerces_unitless_zero_to_time() {
   let html = r#"
     <style>
