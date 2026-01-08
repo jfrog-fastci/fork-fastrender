@@ -319,6 +319,16 @@ fn collapsed_border_model_ignores_border_spacing() {
     "expected border-spacing to be ignored at the leading edge in collapsed model (A.x={})",
     a.x()
   );
+  assert!(
+    (a.y() - 0.0).abs() < 0.1,
+    "expected border-spacing to be ignored at the top edge in collapsed model (A.y={})",
+    a.y()
+  );
+  assert!(
+    (b.y() - 0.0).abs() < 0.1,
+    "expected border-spacing to be ignored at the top edge in collapsed model (B.y={})",
+    b.y()
+  );
   let spacing_x = b.x() - (a.x() + a.width());
   assert!(
     spacing_x.abs() < 0.1,
@@ -380,6 +390,16 @@ fn collapsed_border_model_ignores_border_spacing_rtl() {
     (b.x() - 0.0).abs() < 0.1,
     "expected border-spacing to be ignored at the leading edge in RTL collapsed model (B.x={})",
     b.x()
+  );
+  assert!(
+    (a.y() - 0.0).abs() < 0.1,
+    "expected border-spacing to be ignored at the top edge in RTL collapsed model (A.y={})",
+    a.y()
+  );
+  assert!(
+    (b.y() - 0.0).abs() < 0.1,
+    "expected border-spacing to be ignored at the top edge in RTL collapsed model (B.y={})",
+    b.y()
   );
 
   let spacing_x = a.x() - (b.x() + b.width());
