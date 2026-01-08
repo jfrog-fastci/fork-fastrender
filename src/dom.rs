@@ -6297,6 +6297,21 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::FocusWithin => self.subtree_contains_focus(_context.extra_data.slot_map),
       PseudoClass::FocusVisible => self.focus_visible_flag(),
       PseudoClass::Fullscreen => false,
+      PseudoClass::Open => {
+        if self
+          .node
+          .tag_name()
+          .is_some_and(|t| t.eq_ignore_ascii_case("dialog"))
+        {
+          dialog_state(self.node).is_some()
+        } else if self.node.get_attribute_ref("popover").is_some() {
+          popover_open_assuming_popover(self.node)
+        } else {
+          self.node.get_attribute_ref("open").is_some()
+        }
+      }
+      PseudoClass::Modal => dialog_state(self.node).is_some_and(|(_, modal)| modal),
+      PseudoClass::PopoverOpen => popover_open(self.node),
       PseudoClass::Active => self.active_flag(),
       PseudoClass::Checked => self.is_checked(),
       PseudoClass::Link => self.is_link() && !self.visited_flag(),
@@ -9595,6 +9610,38 @@ mod tests {
     );
     context.extra_data = ShadowMatchData::for_document().with_sibling_cache(&sibling_cache);
     matches_selector(selector, 0, None, element, &mut context)
+  }
+
+  #[test]
+  fn popover_open_pseudo_class_matches_open_popovers() {
+    let popover = element_with_attrs(
+      "div",
+      vec![("popover", ""), ("data-fastr-open", "open")],
+      vec![],
+    );
+    let closed = element_with_attrs(
+      "div",
+      vec![("popover", ""), ("data-fastr-open", "false")],
+      vec![],
+    );
+
+    let selector = parse_selector("div:popover-open");
+    let popover_ref = ElementRef::with_ancestors(&popover, &[]);
+    let closed_ref = ElementRef::with_ancestors(&closed, &[]);
+    assert!(selector_matches(&popover_ref, &selector));
+    assert!(!selector_matches(&closed_ref, &selector));
+  }
+
+  #[test]
+  fn modal_pseudo_class_matches_modal_dialogs() {
+    let modal = element_with_attrs("dialog", vec![("data-fastr-open", "modal")], vec![]);
+    let non_modal = element_with_attrs("dialog", vec![("open", "")], vec![]);
+
+    let selector = parse_selector("dialog:modal");
+    let modal_ref = ElementRef::with_ancestors(&modal, &[]);
+    let non_modal_ref = ElementRef::with_ancestors(&non_modal, &[]);
+    assert!(selector_matches(&modal_ref, &selector));
+    assert!(!selector_matches(&non_modal_ref, &selector));
   }
 
   #[test]

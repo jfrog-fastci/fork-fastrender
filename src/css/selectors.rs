@@ -289,6 +289,9 @@ pub enum PseudoClass {
   FocusWithin,
   FocusVisible,
   Fullscreen,
+  Open,
+  Modal,
+  PopoverOpen,
   Disabled,
   Enabled,
   Required,
@@ -499,6 +502,9 @@ impl ToCss for PseudoClass {
       PseudoClass::FocusWithin => dest.write_str(":focus-within"),
       PseudoClass::FocusVisible => dest.write_str(":focus-visible"),
       PseudoClass::Fullscreen => dest.write_str(":fullscreen"),
+      PseudoClass::Open => dest.write_str(":open"),
+      PseudoClass::Modal => dest.write_str(":modal"),
+      PseudoClass::PopoverOpen => dest.write_str(":popover-open"),
       PseudoClass::Disabled => dest.write_str(":disabled"),
       PseudoClass::Enabled => dest.write_str(":enabled"),
       PseudoClass::Required => dest.write_str(":required"),
@@ -758,6 +764,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "focus-within" => Ok(PseudoClass::FocusWithin),
       "focus-visible" => Ok(PseudoClass::FocusVisible),
       "fullscreen" => Ok(PseudoClass::Fullscreen),
+      "open" => Ok(PseudoClass::Open),
+      "modal" => Ok(PseudoClass::Modal),
+      "popover-open" => Ok(PseudoClass::PopoverOpen),
       "-webkit-full-screen" => Ok(PseudoClass::Fullscreen),
       "-moz-full-screen" => Ok(PseudoClass::Fullscreen),
       "-ms-fullscreen" => Ok(PseudoClass::Fullscreen),
@@ -1791,6 +1800,9 @@ mod tests {
     assert_eq!(PseudoClass::FocusWithin.to_css_string(), ":focus-within");
     assert_eq!(PseudoClass::FocusVisible.to_css_string(), ":focus-visible");
     assert_eq!(PseudoClass::Fullscreen.to_css_string(), ":fullscreen");
+    assert_eq!(PseudoClass::Open.to_css_string(), ":open");
+    assert_eq!(PseudoClass::Modal.to_css_string(), ":modal");
+    assert_eq!(PseudoClass::PopoverOpen.to_css_string(), ":popover-open");
     assert_eq!(PseudoClass::ReadOnly.to_css_string(), ":read-only");
     assert_eq!(PseudoClass::ReadWrite.to_css_string(), ":read-write");
     assert_eq!(
@@ -1872,6 +1884,34 @@ mod tests {
     assert_eq!(
       selectors,
       vec!["video:fullscreen".to_string(), "video:fullscreen".to_string()]
+    );
+  }
+
+  #[test]
+  fn parses_top_layer_state_pseudo_classes() {
+    for selector_text in [
+      ".tooltip[popover]:popover-open",
+      ".tooltip[popover]:popover-open, .tooltip[popover].fallback",
+      "dialog:modal",
+      "body:has(>dialog:modal[open])",
+      "details:open > summary",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+
+    let list = parse_selector_list(".tooltip[popover]:popover-open, .tooltip[popover].fallback");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec![
+        ".tooltip[popover]:popover-open".to_string(),
+        ".tooltip[popover].fallback".to_string()
+      ]
     );
   }
 
