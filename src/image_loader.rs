@@ -7,7 +7,7 @@ use crate::api::{RenderDiagnostics, ResourceContext, ResourceKind};
 use crate::debug::runtime;
 use crate::error::{Error, ImageError, RenderError, RenderStage, Result};
 use crate::paint::painter::with_paint_diagnostics;
-use crate::paint::pixmap::{new_pixmap, MAX_PIXMAP_BYTES};
+use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context, MAX_PIXMAP_BYTES};
 use crate::render_control::{self, check_active, check_active_periodic, check_root, check_root_periodic};
 use crate::resource::CacheArtifactKind;
 use crate::resource::CachingFetcher;
@@ -1400,13 +1400,17 @@ fn about_url_placeholder_metadata() -> Arc<CachedImageMetadata> {
   )
 }
 
-fn about_url_placeholder_pixmap() -> Arc<tiny_skia::Pixmap> {
-  static PLACEHOLDER_PIXMAP: OnceLock<Arc<tiny_skia::Pixmap>> = OnceLock::new();
-  Arc::clone(PLACEHOLDER_PIXMAP.get_or_init(|| {
-    // new_pixmap returns a zeroed RGBA buffer, which is already a premultiplied fully-transparent
-    // pixel for tiny-skia.
-    Arc::new(new_pixmap(1, 1).expect("1x1 pixmap allocation must succeed"))
-  }))
+fn about_url_placeholder_pixmap() -> Result<Arc<tiny_skia::Pixmap>> {
+  static PLACEHOLDER_PIXMAP: OnceLock<std::result::Result<Arc<tiny_skia::Pixmap>, RenderError>> =
+    OnceLock::new();
+  match PLACEHOLDER_PIXMAP.get_or_init(|| {
+    // `new_pixmap_with_context` returns a zeroed RGBA buffer, which is already a premultiplied
+    // fully-transparent pixel for tiny-skia.
+    new_pixmap_with_context(1, 1, "about URL placeholder pixmap").map(Arc::new)
+  }) {
+    Ok(pixmap) => Ok(Arc::clone(pixmap)),
+    Err(err) => Err(Error::Render(err.clone())),
+  }
 }
 
 fn status_is_http_success(status: Option<u16>) -> bool {
@@ -2239,7 +2243,7 @@ impl ImageCache {
   ) -> Result<Option<Arc<tiny_skia::Pixmap>>> {
     let resolved_url = self.resolve_url(url);
     if is_about_url(&resolved_url) {
-      return Ok(Some(about_url_placeholder_pixmap()));
+      return Ok(Some(about_url_placeholder_pixmap()?));
     }
     self.enforce_image_policy(&resolved_url)?;
 
@@ -2332,7 +2336,7 @@ impl ImageCache {
 
     let resolved_url = self.resolve_url(url);
     if is_about_url(&resolved_url) {
-      return Ok(Some(about_url_placeholder_pixmap()));
+      return Ok(Some(about_url_placeholder_pixmap()?));
     }
     self.enforce_image_policy(&resolved_url)?;
     let cache_key = self.cache_key_for_crossorigin(&resolved_url, crossorigin, None);
@@ -2436,7 +2440,7 @@ impl ImageCache {
     }
     let resolved_url = self.resolve_url(url);
     if is_about_url(&resolved_url) {
-      return Ok(Some(about_url_placeholder_pixmap()));
+      return Ok(Some(about_url_placeholder_pixmap()?));
     }
     self.enforce_image_policy(&resolved_url)?;
 
@@ -2581,7 +2585,7 @@ impl ImageCache {
     }
     let resolved_url = self.resolve_url(url);
     if is_about_url(&resolved_url) {
-      return Ok(Some(about_url_placeholder_pixmap()));
+      return Ok(Some(about_url_placeholder_pixmap()?));
     }
     self.enforce_image_policy(&resolved_url)?;
 
