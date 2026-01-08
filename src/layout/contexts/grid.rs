@@ -3859,7 +3859,7 @@ impl GridFormattingContext {
       )?);
     }
 
-    // Create fragment bounds from Taffy layout
+    // Create fragment bounds from Taffy layout.
     let bounds = Rect::from_xywh(
       layout.location.x,
       layout.location.y,

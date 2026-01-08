@@ -1,4 +1,5 @@
 use fastrender::api::FastRender;
+use fastrender::style::media::MediaType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
 fn fragment_roots(tree: &FragmentTree) -> Vec<&FragmentNode> {
@@ -66,7 +67,9 @@ fn page_rules_override_manual_fragmentation() {
   "#;
 
   let dom = renderer.parse_html(html).unwrap();
-  let fragments = renderer.layout_document(&dom, 400, 400).unwrap();
+  let fragments = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
 
   assert!(
     fragments.additional_fragments.is_empty(),

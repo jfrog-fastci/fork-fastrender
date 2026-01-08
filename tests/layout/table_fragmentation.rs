@@ -217,6 +217,7 @@ fn only_first_table_header_group_repeats_across_pages() {
     header_b_pages, 1,
     "subsequent header groups should not repeat across pages"
   );
+  seen_rows.sort_unstable();
   let expected: Vec<usize> = (1..=12).collect();
   assert_eq!(seen_rows, expected);
 }

@@ -201,7 +201,15 @@ pub struct DisplayListBuilder {
   svg_filter_defs: Option<Arc<HashMap<String, String>>>,
   /// Serialized SVG defs (by id) collected from the document DOM.
   svg_id_defs: Option<Arc<HashMap<String, String>>>,
+  /// Viewport size used for resolving viewport-relative units (e.g. vw/vh) during paint.
   viewport: Option<(f32, f32)>,
+  /// Optional viewport size used for visibility/culling decisions while building the display list.
+  ///
+  /// This is separate from `viewport` because callers may paint into a surface that is larger than
+  /// the layout viewport (e.g. paged media stacked into one pixmap, or "fit canvas to content").
+  /// In those cases, viewport-relative units must continue to resolve against the layout viewport
+  /// while culling should be bounded by the actual paint surface.
+  culling_viewport: Option<(f32, f32)>,
   font_ctx: FontContext,
   shaper: ShapingPipeline,
   device_pixel_ratio: f32,
@@ -664,7 +672,8 @@ fn trim_ascii_whitespace_start(value: &str) -> &str {
 impl DisplayListBuilder {
   fn viewport_rect(&self) -> Option<Rect> {
     self
-      .viewport
+      .culling_viewport
+      .or(self.viewport)
       .map(|(w, h)| {
         // Viewport culling happens in the same coordinate space as the display list being built.
         // The paint pipeline passes an explicit translation offset (e.g. `-scroll`) when building
@@ -1290,6 +1299,7 @@ impl DisplayListBuilder {
       svg_filter_defs: None,
       svg_id_defs: None,
       viewport: None,
+      culling_viewport: None,
       font_ctx: FontContext::new(),
       shaper: ShapingPipeline::new(),
       device_pixel_ratio: 1.0,
@@ -1332,6 +1342,7 @@ impl DisplayListBuilder {
       svg_filter_defs: None,
       svg_id_defs: None,
       viewport: None,
+      culling_viewport: None,
       font_ctx: FontContext::new(),
       shaper: ShapingPipeline::new(),
       device_pixel_ratio: 1.0,
@@ -1423,6 +1434,15 @@ impl DisplayListBuilder {
   /// Sets the viewport size for resolving viewport-relative units (vw/vh) in object-position.
   pub fn with_viewport_size(mut self, width: f32, height: f32) -> Self {
     self.viewport = Some((width, height));
+    self
+  }
+
+  /// Sets the viewport size used for visibility/culling while building the display list.
+  ///
+  /// This should typically match the paint surface size in CSS pixels (e.g. the pixmap dimensions
+  /// passed to the painter). When unset, culling falls back to the layout viewport (`viewport`).
+  pub fn with_culling_viewport_size(mut self, width: f32, height: f32) -> Self {
+    self.culling_viewport = Some((width, height));
     self
   }
 
@@ -4922,6 +4942,7 @@ impl DisplayListBuilder {
       svg_filter_defs: self.svg_filter_defs.clone(),
       svg_id_defs: self.svg_id_defs.clone(),
       viewport: self.viewport,
+      culling_viewport: self.culling_viewport,
       font_ctx: self.font_ctx.clone(),
       shaper: self.shaper.clone(),
       device_pixel_ratio: self.device_pixel_ratio,

@@ -417,6 +417,20 @@ fn build_box_tree_root(
   options: &BoxGenerationOptions,
   deadline_counter: &mut usize,
 ) -> Result<BoxNode> {
+  // The styled tree's root is the document node, but the document element (<html>) establishes the
+  // writing-mode and direction used for layout and fragmentation.
+  let document_axes = if matches!(styled.node.node_type, DomNodeType::Document { .. }) {
+    styled.children.iter().find_map(|child| match child.node.node_type {
+      DomNodeType::Element { .. } | DomNodeType::Slot { .. } => Some((
+        child.styles.writing_mode,
+        child.styles.direction,
+      )),
+      _ => None,
+    })
+  } else {
+    None
+  };
+
   let BoxGenerationPrepass {
     document_css,
     svg_document_css,
@@ -462,18 +476,27 @@ fn build_box_tree_root(
     }
   }
   result?;
-  match roots.len() {
-    0 => Ok(BoxNode::new_block(
+
+  let mut root = match roots.len() {
+    0 => BoxNode::new_block(
       Arc::new(ComputedStyle::default()),
       FormattingContextType::Block,
       Vec::new(),
-    )),
-    1 => Ok(roots.remove(0)),
-    _ => Ok(BoxNode::new_anonymous_block(
-      Arc::new(ComputedStyle::default()),
-      roots,
-    )),
+    ),
+    1 => roots.remove(0),
+    _ => BoxNode::new_anonymous_block(Arc::new(ComputedStyle::default()), roots),
+  };
+
+  if let Some((writing_mode, direction)) = document_axes {
+    if root.style.writing_mode != writing_mode || root.style.direction != direction {
+      let mut style = (*root.style).clone();
+      style.writing_mode = writing_mode;
+      style.direction = direction;
+      root.style = Arc::new(style);
+    }
   }
+
+  Ok(root)
 }
 
 /// Generates a BoxTree from a StyledNode tree

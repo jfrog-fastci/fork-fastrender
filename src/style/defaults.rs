@@ -74,7 +74,9 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
       "col" => Display::TableColumn,
       "tr" => Display::TableRow,
       "td" | "th" => Display::TableCell,
-      "thead" | "tbody" | "tfoot" => Display::TableRowGroup,
+      "thead" => Display::TableHeaderGroup,
+      "tbody" => Display::TableRowGroup,
+      "tfoot" => Display::TableFooterGroup,
 
       // Inline elements (explicit for clarity, though it's the default)
       "a" | "span" | "em" | "strong" | "code" | "b" | "i" | "u" | "small" | "sub" | "sup"

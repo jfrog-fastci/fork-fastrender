@@ -1,4 +1,5 @@
-use fastrender::FastRender;
+use fastrender::api::{FastRender, RenderOptions};
+use fastrender::style::media::MediaType;
 
 fn pixel_rgba(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).expect("pixel in bounds");
@@ -25,7 +26,12 @@ fn margin_boxes_are_painted() {
   "#;
 
   let pixmap = renderer
-    .render_html(html, 200, 200)
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
     .expect("render paged document");
 
   let (r, g, b, a) = pixel_rgba(&pixmap, 5, 5);

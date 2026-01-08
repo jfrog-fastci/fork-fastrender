@@ -15025,11 +15025,11 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
   check_active(RenderStage::Paint).map_err(Error::Render)?;
   let diagnostics_enabled = paint_diagnostics_enabled();
   let build_start = diagnostics_enabled.then(Instant::now);
-  let viewport = if tree.has_explicit_viewport() {
-    tree.viewport_size()
-  } else {
-    Size::new(width as f32, height as f32)
-  };
+  // Use the layout viewport for resolving viewport-relative paint units (vw/vh, etc), but cull
+  // against the actual paint surface size so paged media stacked into a single pixmap (or
+  // fit-to-content renders) don't drop fragments outside the first viewport.
+  let viewport = tree.viewport_size();
+  let culling_viewport = Size::new(width as f32, height as f32);
   let build_budget = active_deadline()
     .and_then(|deadline| deadline.remaining_timeout())
     .map(|remaining| (remaining / 2).min(std::time::Duration::from_millis(1000)));
@@ -15044,6 +15044,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
         .with_parallelism(&paint_parallelism)
         .with_max_iframe_depth(max_iframe_depth)
         .with_viewport_size(viewport.width, viewport.height)
+        .with_culling_viewport_size(culling_viewport.width, culling_viewport.height)
         .build_with_stacking_tree_offset_checked(root, offset)
     };
   let display_list_result = match build_budget {
@@ -15108,7 +15109,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
   drop(_display_list_span);
   let _optimize_span = trace.span("display_list_optimize", "paint");
   let optimizer = DisplayListOptimizer::new();
-  let viewport_rect = Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height);
+  let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
   let optimize_start = diagnostics_enabled.then(Instant::now);
   let optimize_budget = active_deadline()
     .and_then(|deadline| deadline.remaining_timeout())

@@ -2,6 +2,7 @@ use fastrender::api::FastRender;
 use fastrender::geometry::{Point, Rect};
 use fastrender::paint::painter::paint_tree;
 use fastrender::style::color::Rgba;
+use fastrender::style::media::MediaType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use tiny_skia::Pixmap;
 
@@ -24,14 +25,16 @@ fn paints_additional_fragment_roots() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   assert!(
     !tree.additional_fragments.is_empty(),
     "expected layout to create multiple fragment roots"
   );
 
-  let text_bounds =
-    find_text_bounds(&tree, "Second page text").expect("second page text fragment not found");
+  // Text shaping can split the paragraph into multiple fragments; match a stable substring.
+  let text_bounds = find_text_bounds(&tree, "Second").expect("second page text fragment not found");
   assert!(
     text_bounds.min_y() >= tree.root.bounds.max_y(),
     "text should be placed after the first fragment root"

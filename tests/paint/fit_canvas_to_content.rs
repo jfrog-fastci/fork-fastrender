@@ -1,4 +1,5 @@
-use fastrender::api::FastRender;
+use fastrender::api::{FastRender, RenderOptions};
+use fastrender::style::media::MediaType;
 
 #[test]
 fn fit_canvas_to_content_renders_all_pages() {
@@ -23,7 +24,14 @@ fn fit_canvas_to_content_renders_all_pages() {
     .build()
     .unwrap();
 
-  let pixmap = renderer.render_html(html, 200, 200).unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
+    .unwrap();
 
   assert!(
     pixmap.height() >= 400,
