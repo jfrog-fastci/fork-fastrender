@@ -12219,6 +12219,13 @@ fn apply_declaration_with_base_internal_with_order(
         matches!(token, PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("fill"))
       };
 
+      let is_mask_border_mode_keyword = |token: &PropertyValue| -> bool {
+        matches!(
+          token,
+          PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("alpha") || kw.eq_ignore_ascii_case("luminance")
+        )
+      };
+
       let is_slice_value = |token: &PropertyValue| -> bool {
         match token {
           PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
@@ -12432,7 +12439,7 @@ fn apply_declaration_with_base_internal_with_order(
           continue;
         }
 
-        if parse_mask_mode(token).is_some() {
+        if is_mask_border_mode_keyword(token) {
           if mode_seen {
             return;
           }
