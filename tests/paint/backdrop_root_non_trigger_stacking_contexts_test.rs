@@ -445,3 +445,45 @@ fn backdrop_filter_crosses_will_change_transform_stacking_context() {
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn backdrop_filter_crosses_top_layer_stacking_context() {
+  // Top-layer elements (e.g. popovers) create their own stacking contexts, but Filter Effects 2
+  // does not list them as Backdrop Root triggers.
+  let html = r#"<!doctype html>
+    <style>
+      body { margin: 0; background: rgb(255 0 0); }
+      #sc {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 60px;
+        height: 60px;
+        padding: 0;
+        border: none;
+        background: transparent;
+      }
+      #overlay { position: absolute; left: 0; top: 0; width: 40px; height: 40px; backdrop-filter: invert(1); }
+    </style>
+    <div id="sc" popover open><div id="overlay"></div></div>
+  "#;
+
+  let (pixmap, stacking_reasons, display_list_stacking_contexts) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::TopLayer),
+    "expected a top-layer stacking context; got {stacking_reasons:?}"
+  );
+  let sc_context = find_context_by_bounds_and_z_index(
+    &display_list_stacking_contexts,
+    60.0,
+    60.0,
+    i32::MAX,
+  )
+  .expect("expected display list stacking context for #sc");
+  assert!(
+    !sc_context.establishes_backdrop_root,
+    "top-layer stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
+  );
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
