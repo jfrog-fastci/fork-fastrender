@@ -1921,6 +1921,27 @@ fn eval_style_range_value(
         value: styles.shape_image_threshold,
       }),
       "offset-distance" => length_to_numeric(&styles.offset_distance, container, ctx),
+      "rotate" => match styles.rotate {
+        crate::css::types::RotateValue::None => Some(NumericValue {
+          ty: NumericType::AngleDeg,
+          value: 0.0,
+        }),
+        crate::css::types::RotateValue::Angle(deg) => Some(NumericValue {
+          ty: NumericType::AngleDeg,
+          value: deg,
+        }),
+        crate::css::types::RotateValue::AxisAngle { angle, .. } => Some(NumericValue {
+          ty: NumericType::AngleDeg,
+          value: angle,
+        }),
+      },
+      "offset-rotate" => match styles.offset_rotate {
+        crate::style::types::OffsetRotate::Angle(deg) => Some(NumericValue {
+          ty: NumericType::AngleDeg,
+          value: deg,
+        }),
+        crate::style::types::OffsetRotate::Auto { .. } => None,
+      },
       "widows" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.widows as f32,

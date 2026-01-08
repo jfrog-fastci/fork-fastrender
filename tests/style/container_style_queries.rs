@@ -1018,6 +1018,58 @@ fn container_style_query_range_feature_matches_offset_distance_percentage() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_rotate() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; rotate: 10deg; }
+      .container-large { container-type: inline-size; rotate: 30deg; }
+      .child { color: rgb(0 0 255); }
+      @container style(rotate > 20deg) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_offset_rotate() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; offset-rotate: 10deg; }
+      .container-large { container-type: inline-size; offset-rotate: 30deg; }
+      .child { color: rgb(0 0 255); }
+      @container style(offset-rotate > 20deg) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_widows() {
   let html = r#"
     <style>
