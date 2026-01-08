@@ -1992,7 +1992,7 @@ impl BlockFormattingContext {
     !parent.children.is_empty()
       && parent.children.iter().all(|child| {
         child.is_block_level()
-          && child.style.float == Float::None
+          && !child.style.float.is_floating()
           && child.style.clear == Clear::None
           && child.style.running_position.is_none()
           && matches!(

@@ -39,7 +39,6 @@ use crate::layout::constraints::LayoutConstraints;
 use crate::layout::fragment_clone_profile::{self, CloneSite};
 use crate::layout::fragmentation::FragmentationOptions;
 use crate::style::display::FormattingContextType;
-use crate::style::float::Float;
 use crate::style::position::Position;
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;

@@ -346,7 +346,6 @@ pub fn should_collapse_with_first_child(parent_style: &ComputedStyle) -> bool {
 /// Determines if a box establishes a new block formatting context
 pub fn establishes_bfc(style: &ComputedStyle) -> bool {
   use crate::style::display::Display;
-  use crate::style::float::Float;
   use crate::style::types::Overflow;
 
   if style.containment.size || style.containment.inline_size || style.containment.layout {

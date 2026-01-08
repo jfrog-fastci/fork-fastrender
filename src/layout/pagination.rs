@@ -1140,18 +1140,18 @@ fn adjust_end_for_footnotes(
     break;
   }
 
-  let mut end = end_candidate;
-  if included == 0 {
+  let end = if included == 0 {
     // No footnote calls fit alongside their bodies; defer the first call to the next page.
-    end = start + footnotes[0].pos;
+    start + footnotes[0].pos
   } else {
     let footnote_block = separator_block + total_footnote_block;
     let main_block = (page_block - footnote_block).max(0.0);
-    end = start + main_block;
+    let mut end = start + main_block;
     if included < footnotes.len() {
       end = end.min(start + footnotes[included].pos);
     }
-  }
+    end
+  };
 
   end.min(end_candidate)
 }
