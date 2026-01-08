@@ -703,9 +703,30 @@ fn will_change_filter_with_comment_establishes_backdrop_root() {
 }
 
 #[test]
+fn will_change_filter_with_escape_establishes_backdrop_root() {
+  let _guard = lock_tests();
+  // CSS escapes should be honored when parsing will-change hints.
+  //
+  // `f\69lter` == `filter`.
+  let pixmap = render_backdrop_invert_with_parent_will_change("f\\69lter");
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_auto_with_comment_does_not_establish_backdrop_root() {
   let _guard = lock_tests();
   let pixmap = render_backdrop_invert_with_parent_will_change("auto/*comment*/");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_auto_with_escape_does_not_establish_backdrop_root() {
+  let _guard = lock_tests();
+  // `a\75to` == `auto`.
+  let pixmap = render_backdrop_invert_with_parent_will_change("a\\75to");
   // Red backdrop inverted to cyan.
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
@@ -880,6 +901,41 @@ fn will_change_none_is_invalid_and_does_not_override() {
       html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
       #parent { position: absolute; inset: 0; will-change: filter; }
       #parent { will-change: none; }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        background: transparent;
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_none_with_escape_is_invalid_and_does_not_override() {
+  let _guard = lock_tests();
+  // Escapes should not bypass the `none` exclusion.
+  //
+  // `n\6fne` == `none`.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent { position: absolute; inset: 0; will-change: filter; }
+      #parent { will-change: n\6fne; }
       #child {
         position: absolute;
         left: 0;
