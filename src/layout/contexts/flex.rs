@@ -6546,6 +6546,13 @@ impl FlexFormattingContext {
     } else {
       block_is_horizontal
     };
+    let inline_positive = self.inline_axis_positive(&box_node.style);
+    let block_positive = self.block_axis_positive(&box_node.style);
+    let taffy_dir = self.flex_direction_to_taffy(&box_node.style, inline_positive, block_positive);
+    let main_grows_positive = matches!(
+      taffy_dir,
+      taffy::style::FlexDirection::Row | taffy::style::FlexDirection::Column
+    );
     let allow_overflow_fallback = !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
       && if main_axis_is_horizontal {
         matches!(box_node.style.overflow_x, CssOverflow::Visible)
@@ -7259,7 +7266,12 @@ impl FlexFormattingContext {
                   fallback_cursor_x = rect.origin.x;
                 }
                 if let Some(prev) = last_layout_x {
-                  if child_loc_x <= prev + 0.1 {
+                  let non_monotonic = if main_grows_positive {
+                    child_loc_x <= prev + 0.1
+                  } else {
+                    child_loc_x >= prev - 0.1
+                  };
+                  if non_monotonic {
                     manual_row_positions = true;
                   }
                 }
@@ -7294,7 +7306,12 @@ impl FlexFormattingContext {
             }
           } else {
             if let Some(prev) = last_layout_y {
-              if child_loc_y <= prev + 0.1 {
+              let non_monotonic = if main_grows_positive {
+                child_loc_y <= prev + 0.1
+              } else {
+                child_loc_y >= prev - 0.1
+              };
+              if non_monotonic {
                 manual_col_positions = true;
               }
             } else {
@@ -7466,7 +7483,12 @@ impl FlexFormattingContext {
                     fallback_cursor_x = rect.origin.x;
                   }
                   if let Some(prev) = last_layout_x {
-                    if child_loc_x <= prev + 0.1 {
+                    let non_monotonic = if main_grows_positive {
+                      child_loc_x <= prev + 0.1
+                    } else {
+                      child_loc_x >= prev - 0.1
+                    };
+                    if non_monotonic {
                       manual_row_positions = true;
                     }
                   }
@@ -7501,7 +7523,12 @@ impl FlexFormattingContext {
               }
             } else {
               if let Some(prev) = last_layout_y {
-                if child_loc_y <= prev + 0.1 {
+                let non_monotonic = if main_grows_positive {
+                  child_loc_y <= prev + 0.1
+                } else {
+                  child_loc_y >= prev - 0.1
+                };
+                if non_monotonic {
                   manual_col_positions = true;
                 }
               } else {
