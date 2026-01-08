@@ -105,6 +105,10 @@ pub struct AccessibilityRelations {
   pub owns: Vec<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub active_descendant: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub details: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub error_message: Option<String>,
 }
 
 /// A node in the exported accessibility tree.
@@ -650,7 +654,7 @@ fn build_nodes<'a>(
         .get_attribute_ref("id")
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-      let relations = compute_relations(node, ctx);
+      let relations = compute_relations(node, ctx, invalid);
 
       vec![AccessibilityNode {
         role,
@@ -2173,7 +2177,7 @@ fn resolve_idref(ctx: &BuildContext, origin: &StyledNode, attr_value: &str) -> O
     return None;
   }
 
-  // `aria-activedescendant` is an IDREF, not a list; ignore whitespace-separated lists.
+  // IDREF attributes are not lists; ignore whitespace-separated lists.
   let mut tokens = trimmed.split_whitespace();
   let token = tokens.next()?;
   if tokens.next().is_some() {
@@ -2208,7 +2212,11 @@ fn resolve_idref_target<'a>(
   ctx.node_for_id_scoped(origin.node_id, token)
 }
 
-fn compute_relations(node: &StyledNode, ctx: &BuildContext) -> Option<AccessibilityRelations> {
+fn compute_relations(
+  node: &StyledNode,
+  ctx: &BuildContext,
+  invalid: bool,
+) -> Option<AccessibilityRelations> {
   let controls = node
     .node
     .get_attribute_ref("aria-controls")
@@ -2226,13 +2234,34 @@ fn compute_relations(node: &StyledNode, ctx: &BuildContext) -> Option<Accessibil
     .get_attribute_ref("aria-activedescendant")
     .and_then(|value| resolve_idref(ctx, node, value));
 
-  if controls.is_empty() && owns.is_empty() && active_descendant.is_none() {
+  let details = node
+    .node
+    .get_attribute_ref("aria-details")
+    .and_then(|value| resolve_idref(ctx, node, value));
+
+  let error_message = invalid
+    .then(|| {
+      node
+        .node
+        .get_attribute_ref("aria-errormessage")
+        .and_then(|value| resolve_idref(ctx, node, value))
+    })
+    .flatten();
+
+  if controls.is_empty()
+    && owns.is_empty()
+    && active_descendant.is_none()
+    && details.is_none()
+    && error_message.is_none()
+  {
     None
   } else {
     Some(AccessibilityRelations {
       controls,
       owns,
       active_descendant,
+      details,
+      error_message,
     })
   }
 }
