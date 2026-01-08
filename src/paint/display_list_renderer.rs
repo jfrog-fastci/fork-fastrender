@@ -7789,6 +7789,7 @@ impl DisplayListRenderer {
   ) -> Result<(u64, u64, usize)> {
     const GRADIENT_WEIGHT: u64 = 4;
     const IMAGE_LINEAR_WEIGHT: u64 = 2;
+    const OPACITY_WEIGHT: u64 = 1;
     const BLEND_WEIGHT: u64 = 1;
     const MANUAL_BLEND_WEIGHT: u64 = 4;
 
@@ -7811,12 +7812,19 @@ impl DisplayListRenderer {
       bounds: Option<Rect>,
     }
 
+    struct OpacityScope {
+      weight: u64,
+      bounds: Option<Rect>,
+    }
+
     let mut image_tiles: Vec<u64> = Vec::with_capacity(tile_cap.min(8));
     let mut deadline_counter = 0usize;
     // Track blend-mode groups introduced by `PushBlendMode`. In auto parallel mode we use these
     // to estimate per-pixel compositor cost so large blend-mode layers don't stay serial.
     let mut blend_stack: Vec<BlendScope> = Vec::new();
     let mut active_blend_scopes = 0usize;
+    let mut opacity_stack: Vec<OpacityScope> = Vec::new();
+    let mut active_opacity_scopes = 0usize;
     let union_bounds = |dst: &mut Option<Rect>, rect: Rect| {
       *dst = Some(match *dst {
         Some(prev) => prev.union(rect),
@@ -7844,10 +7852,17 @@ impl DisplayListRenderer {
     for item in items {
       check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
         .map_err(Error::Render)?;
-      if active_blend_scopes > 0 && !item.is_stack_operation() {
+      if (active_blend_scopes > 0 || active_opacity_scopes > 0) && !item.is_stack_operation() {
         if let Some(bounds) = item.bounds() {
-          if let Some(scope) = blend_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
-            union_bounds(&mut scope.bounds, bounds);
+          if active_blend_scopes > 0 {
+            if let Some(scope) = blend_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
+              union_bounds(&mut scope.bounds, bounds);
+            }
+          }
+          if active_opacity_scopes > 0 {
+            if let Some(scope) = opacity_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
+              union_bounds(&mut scope.bounds, bounds);
+            }
           }
         }
       }
@@ -7880,6 +7895,35 @@ impl DisplayListRenderer {
           };
           let _ = add_rect(&mut total, self.ds_rect(bounds), scope.weight);
           if let Some(parent) = blend_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
+            union_bounds(&mut parent.bounds, bounds);
+          }
+        }
+        DisplayItem::PushOpacity(item) => {
+          let weight = if item.opacity < 1.0 - f32::EPSILON {
+            OPACITY_WEIGHT
+          } else {
+            0
+          };
+          if weight > 0 {
+            active_opacity_scopes = active_opacity_scopes.saturating_add(1);
+          }
+          opacity_stack.push(OpacityScope { weight, bounds: None });
+        }
+        DisplayItem::PopOpacity => {
+          let Some(scope) = opacity_stack.pop() else {
+            continue;
+          };
+          if scope.weight > 0 {
+            active_opacity_scopes = active_opacity_scopes.saturating_sub(1);
+          }
+          if scope.weight == 0 {
+            continue;
+          }
+          let Some(bounds) = scope.bounds else {
+            continue;
+          };
+          let _ = add_rect(&mut total, self.ds_rect(bounds), scope.weight);
+          if let Some(parent) = opacity_stack.iter_mut().rev().find(|scope| scope.weight > 0) {
             union_bounds(&mut parent.bounds, bounds);
           }
         }
@@ -7980,6 +8024,12 @@ impl DisplayListRenderer {
           total = total.saturating_add(tmp_pixels.saturating_mul(blur_weight));
         }
         DisplayItem::PushStackingContext(sc) => {
+          let bounds = self.ds_rect(sc.bounds);
+
+          if sc.opacity < 1.0 - f32::EPSILON {
+            let _ = add_rect(&mut total, bounds, OPACITY_WEIGHT);
+          }
+
           if !matches!(sc.mix_blend_mode, BlendMode::Normal) {
             // Blend modes composite an intermediate surface back into the destination. Manual blend
             // modes (HSL/HSV/OKLCH conversions + plus-darker) are more expensive than tiny-skia
@@ -7990,15 +8040,12 @@ impl DisplayListRenderer {
             } else {
               BLEND_WEIGHT
             };
-            let bounds = self.ds_rect(sc.bounds);
             let _ = add_rect(&mut total, bounds, weight);
           }
 
           if sc.filters.is_empty() && sc.backdrop_filters.is_empty() {
             continue;
           }
-
-          let bounds = self.ds_rect(sc.bounds);
 
           // `filter` and `backdrop-filter` both allocate and rasterize intermediate surfaces.
           // Treat them similarly in the heuristics that decide whether parallel tiling is worth
@@ -14278,6 +14325,67 @@ mod tests {
     let idx = ((y * pixmap.width() + x) * 4) as usize;
     let data = pixmap.data();
     (data[idx], data[idx + 1], data[idx + 2], data[idx + 3])
+  }
+
+  #[test]
+  fn estimate_expensive_raster_pixels_counts_opacity_groups() {
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 0.5 }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      color: Rgba::RED,
+    }));
+    list.push(DisplayItem::PopOpacity);
+
+    let renderer = DisplayListRenderer::new(100, 100, Rgba::WHITE, FontContext::new()).unwrap();
+    let (expensive_pixels, image_source_pixels, image_tiles) = renderer
+      .estimate_expensive_raster_pixels(list.items(), 4)
+      .unwrap();
+
+    assert_eq!(expensive_pixels, 2500);
+    assert_eq!(image_source_pixels, 0);
+    assert_eq!(image_tiles, 0);
+  }
+
+  #[test]
+  fn estimate_expensive_raster_pixels_counts_stacking_context_opacity() {
+    let mut list = DisplayList::new();
+    let rect = Rect::from_xywh(0.0, 0.0, 50.0, 50.0);
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      is_root: false,
+      establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
+      bounds: rect,
+      plane_rect: rect,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 0.5,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect,
+      color: Rgba::RED,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    let renderer = DisplayListRenderer::new(100, 100, Rgba::WHITE, FontContext::new()).unwrap();
+    let (expensive_pixels, image_source_pixels, image_tiles) = renderer
+      .estimate_expensive_raster_pixels(list.items(), 4)
+      .unwrap();
+
+    assert_eq!(expensive_pixels, 2500);
+    assert_eq!(image_source_pixels, 0);
+    assert_eq!(image_tiles, 0);
   }
 
   #[test]
