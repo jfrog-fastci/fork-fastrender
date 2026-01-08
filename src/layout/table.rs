@@ -1809,6 +1809,8 @@ impl TableStructure {
     let mut header_rows: Vec<usize> = Vec::new();
     let mut body_rows: Vec<usize> = Vec::new();
     let mut footer_rows: Vec<usize> = Vec::new();
+    let mut seen_header_group = false;
+    let mut seen_footer_group = false;
 
     // Collect all cells first
     let mut cell_data: Vec<(usize, usize, usize, usize, usize, bool)> = Vec::new(); // (source_row, col, rowspan, colspan, box_idx, percent_sensitive)
@@ -1851,13 +1853,28 @@ impl TableStructure {
       .filter(|child| child.style.running_position.is_none())
       .enumerate()
     {
-      match Self::get_table_element_type(child) {
+      let element_type = Self::get_table_element_type(child);
+      match element_type {
         TableElementType::RowGroup
         | TableElementType::HeaderGroup
         | TableElementType::FooterGroup => {
-          let kind = match Self::get_table_element_type(child) {
-            TableElementType::HeaderGroup => RowGroupKind::Head,
-            TableElementType::FooterGroup => RowGroupKind::Foot,
+          let kind = match element_type {
+            TableElementType::HeaderGroup => {
+              if !seen_header_group {
+                seen_header_group = true;
+                RowGroupKind::Head
+              } else {
+                RowGroupKind::Body
+              }
+            }
+            TableElementType::FooterGroup => {
+              if !seen_footer_group {
+                seen_footer_group = true;
+                RowGroupKind::Foot
+              } else {
+                RowGroupKind::Body
+              }
+            }
             _ => RowGroupKind::Body,
           };
           let group_visibility = child.style.visibility;
@@ -7561,17 +7578,38 @@ impl FormattingContext for TableFormattingContext {
     // Paint order backgrounds before cells.
     // Row groups
     let mut row_styles: Vec<Option<Arc<ComputedStyle>>> = vec![None; structure.row_count];
-    let mut row_groups: Vec<(usize, usize, Arc<ComputedStyle>)> = Vec::new();
+    let mut row_groups: Vec<(usize, usize, Arc<ComputedStyle>, Display)> = Vec::new();
     let mut row_cursor = 0usize;
+    let mut seen_header_group = false;
+    let mut seen_footer_group = false;
     for child in table_box
       .children
       .iter()
       .filter(|child| child.style.running_position.is_none())
     {
-      match TableStructure::get_table_element_type(child) {
+      let element_type = TableStructure::get_table_element_type(child);
+      match element_type {
         TableElementType::RowGroup
         | TableElementType::HeaderGroup
         | TableElementType::FooterGroup => {
+          let mut effective_display = child.style.display;
+          match element_type {
+            TableElementType::HeaderGroup => {
+              if !seen_header_group {
+                seen_header_group = true;
+              } else {
+                effective_display = Display::TableRowGroup;
+              }
+            }
+            TableElementType::FooterGroup => {
+              if !seen_footer_group {
+                seen_footer_group = true;
+              } else {
+                effective_display = Display::TableRowGroup;
+              }
+            }
+            _ => {}
+          }
           let mut first_visible = None;
           let mut last_visible = None;
           for row_child in &child.children {
@@ -7585,7 +7623,7 @@ impl FormattingContext for TableFormattingContext {
             }
           }
           if let (Some(start), Some(end)) = (first_visible, last_visible) {
-            row_groups.push((start, end + 1, child.style.clone()));
+            row_groups.push((start, end + 1, child.style.clone(), effective_display));
           }
         }
         TableElementType::Row => {
@@ -7598,18 +7636,18 @@ impl FormattingContext for TableFormattingContext {
       }
     }
 
-    for (start, end, style) in row_groups {
+    for (start, end, style, effective_display) in row_groups {
       // Table fragmentation repeats `thead`/`tfoot` by scanning for table header/footer group
       // fragments (see `fragmentation::inject_table_headers_and_footers`). Emit marker fragments for
       // these row groups even when they don't paint a background/border so the fragmentation pass can
       // identify the regions to repeat.
       let paints = style_paints_background_or_border(&style, false);
       let is_header_or_footer =
-        matches!(style.display, Display::TableHeaderGroup | Display::TableFooterGroup);
+        matches!(effective_display, Display::TableHeaderGroup | Display::TableFooterGroup);
       if !paints && !is_header_or_footer {
         continue;
       }
-      let style = if paints {
+      let mut style = if paints {
         strip_borders_cached(&style, &mut stripped_border_cache)
       } else {
         // Fragmentation repeats `<thead>`/`<tfoot>` groups by cloning fragments tagged with
@@ -7617,11 +7655,16 @@ impl FormattingContext for TableFormattingContext {
         // The table layout engine only emits row-group fragments when they paint a background/border,
         // so create a zero-paint marker fragment for header/footer groups to keep fragmentation working.
         let mut marker_style = crate::style::ComputedStyle::default();
-        marker_style.display = style.display;
+        marker_style.display = effective_display;
         marker_style.writing_mode = style.writing_mode;
         marker_style.direction = style.direction;
         Arc::new(marker_style)
       };
+      if style.display != effective_display {
+        let mut overridden = (*style).clone();
+        overridden.display = effective_display;
+        style = Arc::new(overridden);
+      }
       if start >= row_offsets.len() {
         break;
       }
@@ -14764,7 +14807,8 @@ mod tests {
     );
 
     // DOM order: footer, header, body, loose row, header, footer.
-    // Layout order should be: header rows (DOM order), body/loose rows, footer rows (DOM order).
+    // Layout order should be: first header group rows, then body/loose rows (including subsequent
+    // header/footer groups), then first footer group rows.
     let table = BoxNode::new_block(
       Arc::new(table_style),
       FormattingContextType::Table,
@@ -14779,7 +14823,7 @@ mod tests {
       .map(|row| structure.get_cell_at(row, 0).unwrap().source_row)
       .collect();
 
-    let expected = vec![1, 4, 2, 3, 0, 5];
+    let expected = vec![1, 2, 3, 4, 5, 0];
     assert_eq!(
             row_sources, expected,
             "row ordering should pull headers first, then bodies/loose rows, then footers while preserving DOM order"

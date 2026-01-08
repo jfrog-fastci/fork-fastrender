@@ -164,6 +164,64 @@ fn table_headers_repeat_across_pages() {
 }
 
 #[test]
+fn only_first_table_header_group_repeats_across_pages() {
+  let body_rows: String = (1..=12)
+    .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 120px; margin: 0; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          td, th {{ padding: 2px; height: 30px; }}
+        </style>
+      </head>
+      <body>
+        <table>
+          <thead><tr><th>HeaderA</th></tr></thead>
+          <tbody style="display: table-header-group"><tr><th>HeaderB</th></tr></tbody>
+          <tbody>{body_rows}</tbody>
+        </table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() > 1, "table should span multiple pages");
+
+  let mut seen_rows = Vec::new();
+  let mut header_b_pages = 0usize;
+  for page in page_roots {
+    let mut texts = Vec::new();
+    collect_text_fragments(page, &mut texts);
+    assert!(
+      texts.iter().any(|t| t.text.contains("HeaderA")),
+      "first header group should appear on every page"
+    );
+    if texts.iter().any(|t| t.text.contains("HeaderB")) {
+      header_b_pages += 1;
+    }
+    seen_rows.extend(collect_numbers(&texts));
+  }
+
+  assert_eq!(
+    header_b_pages, 1,
+    "subsequent header groups should not repeat across pages"
+  );
+  let expected: Vec<usize> = (1..=12).collect();
+  assert_eq!(seen_rows, expected);
+}
+
+#[test]
 fn table_headers_repeat_in_multicol() {
   let body_rows: String = (1..=8)
     .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))
