@@ -1070,6 +1070,32 @@ fn container_style_query_range_feature_matches_offset_rotate() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_image_resolution() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; image-resolution: 1dppx; }
+      .container-high { container-type: inline-size; image-resolution: 2dppx; }
+      .child { color: rgb(0 0 255); }
+      @container style(image-resolution > 96dpi) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_widows() {
   let html = r#"
     <style>

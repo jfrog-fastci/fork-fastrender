@@ -1942,6 +1942,22 @@ fn eval_style_range_value(
         }),
         crate::style::types::OffsetRotate::Auto { .. } => None,
       },
+      "image-resolution" => {
+        // `image-resolution: from-image` depends on the referenced image's metadata, which isn't
+        // available during style query evaluation.
+        if styles.image_resolution.from_image && styles.image_resolution.specified.is_none() {
+          None
+        } else {
+          let dppx =
+            styles
+              .image_resolution
+              .used_resolution(None, None, ctx.base_media.device_pixel_ratio);
+          (dppx.is_finite() && dppx > 0.0).then_some(NumericValue {
+            ty: NumericType::ResolutionDppx,
+            value: dppx,
+          })
+        }
+      }
       "widows" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.widows as f32,
