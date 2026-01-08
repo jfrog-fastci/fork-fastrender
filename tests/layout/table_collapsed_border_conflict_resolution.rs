@@ -144,6 +144,62 @@ fn collapsed_border_conflict_color_tie_break_respects_direction() {
 }
 
 #[test]
+fn collapsed_border_cell_outer_edges_respect_direction_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; direction: rtl; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+          td.a { border-right: 3px solid red; }
+          td.b { border-left: 5px solid blue; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td class="a"></td><td class="b"></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  // In RTL, the first source column (cell `.a`) is laid out on the right, so its *physical*
+  // `border-right` should land on the table's right outer edge (line 2 in a 2-column table).
+  // Similarly, the second source column (cell `.b`) is laid out on the left, so its `border-left`
+  // should land on the table's left outer edge (line 0).
+  let borders = table_borders_from_html(html);
+  let left = borders
+    .vertical_segment(0, 0)
+    .expect("expected left outer vertical border segment");
+  let inner = borders
+    .vertical_segment(1, 0)
+    .expect("expected internal vertical border segment");
+  let right = borders
+    .vertical_segment(2, 0)
+    .expect("expected right outer vertical border segment");
+
+  assert!(
+    (left.width - 5.0).abs() < 0.01,
+    "expected the left outer edge to use the 5px border from the leftmost (second source) cell, got {left:?}"
+  );
+  assert_eq!(left.color, Rgba::BLUE);
+  assert_eq!(left.style, BorderStyle::Solid);
+
+  assert!(
+    inner.width < 0.01,
+    "expected no internal border between the two columns, got {inner:?}"
+  );
+  assert_eq!(inner.style, BorderStyle::None);
+
+  assert!(
+    (right.width - 3.0).abs() < 0.01,
+    "expected the right outer edge to use the 3px border from the rightmost (first source) cell, got {right:?}"
+  );
+  assert_eq!(right.color, Rgba::RED);
+  assert_eq!(right.style, BorderStyle::Solid);
+}
+
+#[test]
 fn collapsed_border_resolution_honors_colgroup_span() {
   let html = r#"
     <html>
