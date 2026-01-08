@@ -49,7 +49,18 @@ fn request_path(headers: &str) -> Option<String> {
   let first_line = headers.lines().next()?;
   let mut parts = first_line.split_whitespace();
   parts.next()?; // method
-  Some(parts.next()?.to_string())
+  let raw_target = parts.next()?;
+  // Requests can be either origin-form (`GET /path HTTP/1.1`) or absolute-form
+  // (`GET http://host/path HTTP/1.1`). Normalize both into just the path so the
+  // assertions can stay stable across HTTP backends.
+  Some(match url::Url::parse(raw_target).ok() {
+    Some(url) => url.path().to_string(),
+    None => raw_target
+      .split_once('?')
+      .map(|(before, _)| before)
+      .unwrap_or(raw_target)
+      .to_string(),
+  })
 }
 
 fn header_value(headers: &str, header_name: &str) -> Option<String> {
@@ -417,6 +428,55 @@ fn stylesheet_referrerpolicy_no_referrer_suppresses_referer_for_imports_and_font
     assert!(
       header_value(&req.headers, "referer").is_none(),
       "expected Referer header to be omitted for {path}; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
+fn stylesheet_referrerpolicy_origin_applies_to_imports_and_fonts() {
+  let Some(server) =
+    HeaderCaptureServer::start("stylesheet_referrerpolicy_origin_applies_to_imports_and_fonts")
+  else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_import.css" referrerpolicy="origin">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(expected_referer.as_str()),
+      "expected Referer header to be origin-only for {path}; got:\n{}",
       req.headers
     );
   }
