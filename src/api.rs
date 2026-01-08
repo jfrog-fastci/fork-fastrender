@@ -15552,7 +15552,7 @@ fn styled_summary_map(root: &StyledNode) -> HashMap<usize, String> {
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("class"))
       {
-        let classes: Vec<&str> = class_val.split_whitespace().collect();
+        let classes: Vec<&str> = class_val.split_ascii_whitespace().collect();
         if !classes.is_empty() {
           out.push('.');
           out.push_str(&classes.join("."));
@@ -20838,7 +20838,7 @@ pub(crate) fn render_html_with_shared_resources(
       DomNodeType::Element { attributes, .. } => attributes
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("class"))
-        .map(|(_, v)| v.split_whitespace().collect::<Vec<_>>())
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
         .unwrap_or_default(),
       _ => vec![],
     };
@@ -20866,7 +20866,7 @@ pub(crate) fn render_html_with_shared_resources(
       DomNodeType::Element { attributes, .. } => attributes
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("class"))
-        .map(|(_, v)| v.split_whitespace().collect::<Vec<_>>())
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
         .unwrap_or_default(),
       _ => vec![],
     };

@@ -13482,7 +13482,7 @@ mod tests {
       DomNodeType::Element { attributes, .. } => attributes
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("class"))
-        .map(|(_, v)| v.split_whitespace().collect::<Vec<_>>())
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
         .unwrap_or_default(),
       _ => panic!("expected html element"),
     };
@@ -13505,11 +13505,32 @@ mod tests {
       DomNodeType::Element { attributes, .. } => attributes
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("class"))
-        .map(|(_, v)| v.split_whitespace().collect::<Vec<_>>())
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
         .unwrap_or_default(),
       _ => panic!("expected body element"),
     };
     assert!(!body_classes.contains(&"jsl10n-visible"));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_class_attribute_does_not_split_nbsp() {
+    fn find_div<'a>(node: &'a DomNode) -> Option<&'a DomNode> {
+      if node
+        .tag_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("div"))
+      {
+        return Some(node);
+      }
+      node.children.iter().find_map(find_div)
+    }
+
+    let nbsp = "\u{00A0}";
+    let markup = format!("<html><body><div class='foo{nbsp}bar'></div></body></html>");
+    let dom = parse_html(&markup).expect("parse");
+    let div = find_div(&dom).expect("div node");
+    assert!(!div.has_class("foo"));
+    assert!(!div.has_class("bar"));
+    assert!(div.has_class(&format!("foo{nbsp}bar")));
   }
 
   #[test]
@@ -13528,7 +13549,7 @@ mod tests {
       DomNodeType::Element { attributes, .. } => attributes
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("class"))
-        .map(|(_, v)| v.split_whitespace().collect::<Vec<_>>())
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
         .unwrap_or_default(),
       _ => panic!("expected html element"),
     };
@@ -13554,7 +13575,7 @@ mod tests {
       DomNodeType::Element { attributes, .. } => attributes
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("class"))
-        .map(|(_, v)| v.split_whitespace().collect::<Vec<_>>())
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
         .unwrap_or_default(),
       _ => panic!("expected html element"),
     };
@@ -13589,7 +13610,7 @@ mod tests {
       DomNodeType::Element { attributes, .. } => attributes
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("class"))
-        .map(|(_, v)| v.split_whitespace().collect::<Vec<_>>())
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
         .unwrap_or_default(),
       _ => panic!("expected body element"),
     };
