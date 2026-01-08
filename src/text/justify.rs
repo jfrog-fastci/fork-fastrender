@@ -43,6 +43,15 @@
 use crate::style::types::TextJustify;
 use unicode_general_category::get_general_category;
 
+#[inline]
+fn is_ascii_whitespace_html_css(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
 /// Position and metrics for a single glyph in a line
 ///
 /// This type represents a glyph with its position and advance width,
@@ -1072,7 +1081,10 @@ impl TextAlignment {
   /// Create from a CSS text-align value string
   #[must_use]
   pub fn from_css(value: &str) -> Option<Self> {
-    match value.trim().to_ascii_lowercase().as_str() {
+    match trim_ascii_whitespace_html_css(value)
+      .to_ascii_lowercase()
+      .as_str()
+    {
       "left" | "start" => Some(Self::Left),
       "right" | "end" => Some(Self::Right),
       "center" => Some(Self::Center),
@@ -1298,6 +1310,12 @@ mod tests {
       Some(TextAlignment::Justify)
     );
     assert_eq!(TextAlignment::from_css("invalid"), None);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_text_alignment_from_css_does_not_trim_nbsp() {
+    assert_eq!(TextAlignment::from_css("\u{00A0}left"), None);
+    assert_eq!(TextAlignment::from_css("left\u{00A0}"), None);
   }
 
   #[test]

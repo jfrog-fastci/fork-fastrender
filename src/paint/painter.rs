@@ -186,6 +186,15 @@ use url::Url;
 
 type RenderResult<T> = std::result::Result<T, RenderError>;
 
+#[inline]
+fn is_ascii_whitespace_html_css(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
 /// Main painter that rasterizes a FragmentTree to pixels
 pub struct Painter {
   /// The pixmap being painted to
@@ -7643,7 +7652,7 @@ impl Painter {
           };
           if !caret_color.is_transparent() {
             let mut sample_text = paint_text.unwrap_or("M");
-            if sample_text.trim().is_empty() {
+            if trim_ascii_whitespace_html_css(sample_text).is_empty() {
               sample_text = "M";
             }
             let runs = self
@@ -9683,7 +9692,11 @@ impl Painter {
     clip_mask: Option<&Mask>,
     trim: bool,
   ) -> bool {
-    let text = if trim { alt.trim() } else { alt };
+    let text = if trim {
+      trim_ascii_whitespace_html_css(alt)
+    } else {
+      alt
+    };
     if text.is_empty() {
       return false;
     }
@@ -9730,7 +9743,11 @@ impl Painter {
   }
 
   fn measure_alt_text_impl(&self, alt: &str, style: &ComputedStyle, trim: bool) -> Option<Size> {
-    let text = if trim { alt.trim() } else { alt };
+    let text = if trim {
+      trim_ascii_whitespace_html_css(alt)
+    } else {
+      alt
+    };
     if text.is_empty() {
       return None;
     }
@@ -15629,6 +15646,23 @@ mod tests {
     let key = TextCacheKey::new(1, 0.0, "hello");
     let key_neg = TextCacheKey::new(1, -0.0, "hello");
     assert_eq!(key, key_neg);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_measure_alt_text_does_not_trim_nbsp() {
+    let font_ctx = FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
+    let painter = Painter::with_resources_scaled(
+      10,
+      10,
+      Rgba::TRANSPARENT,
+      font_ctx,
+      ImageCache::new(),
+      1.0,
+    )
+    .expect("painter");
+    let style = ComputedStyle::default();
+    assert!(painter.measure_alt_text(" ", &style).is_none());
+    assert!(painter.measure_alt_text("\u{00A0}", &style).is_some());
   }
 
   #[test]

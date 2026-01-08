@@ -27,6 +27,28 @@ use std::io::Write as _;
 use std::sync::Arc;
 use tiny_skia::{Pixmap, Transform};
 
+#[inline]
+fn is_xml_whitespace(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000D}' | ' ')
+}
+
+fn trim_xml_whitespace(value: &str) -> &str {
+  value.trim_matches(is_xml_whitespace)
+}
+
+fn trim_xml_whitespace_end(value: &str) -> &str {
+  value.trim_end_matches(is_xml_whitespace)
+}
+
+#[inline]
+fn is_ascii_whitespace_html_css(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
 // ForeignObject rendering constructs a synthetic HTML document containing the serialized subtree
 // HTML plus a copy of the document-level CSS. Cap the total size so pathological SVGs cannot force
 // multi-megabyte allocations (and potentially OOM aborts) during this nested render path.
@@ -158,17 +180,17 @@ fn foreign_object_transform_scale(
   let mut combined = Transform::identity();
 
   if let Some(doc) = svg_doc {
-    let needle = placeholder
-      .trim()
+    let placeholder_trimmed = trim_xml_whitespace(placeholder);
+    let needle = placeholder_trimmed
       .strip_prefix("<!--")
       .and_then(|s| s.strip_suffix("-->"))
-      .unwrap_or_else(|| placeholder.trim())
-      .trim();
+      .unwrap_or(placeholder_trimmed);
+    let needle = trim_xml_whitespace(needle);
 
     if !needle.is_empty() {
       let comment = doc
         .descendants()
-        .find(|node| node.is_comment() && node.text().is_some_and(|t| t.trim() == needle));
+        .find(|node| node.is_comment() && node.text().is_some_and(|t| trim_xml_whitespace(t) == needle));
       if let Some(comment) = comment {
         let mut current = comment.parent();
         while let Some(node) = current {
@@ -231,7 +253,7 @@ fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacemen
 }
 
 fn find_self_closing_root_svg_end(svg: &str) -> Option<usize> {
-  let trimmed = svg.trim_end();
+  let trimmed = trim_xml_whitespace_end(svg);
   if !trimmed.ends_with("/>") {
     return None;
   }
@@ -676,7 +698,7 @@ fn build_foreign_object_document(
     "<!DOCTYPE html><html style=\"margin:0;padding:0;width:{width}px;height:{height}px;background:transparent !important;\"><head><meta charset=\"utf-8\">",
   )
   .ok()?;
-  if !shared_css.trim().is_empty() {
+  if !trim_ascii_whitespace_html_css(shared_css).is_empty() {
     html.write_all(b"<style>").ok()?;
     escape_style_end_tags(shared_css, &mut html).ok()?;
     html.write_all(b"</style>").ok()?;
@@ -825,6 +847,14 @@ mod tests {
     let mut svg = "<svg/>".to_string();
     replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>").expect("replace");
     assert_eq!(svg, "<svg><image/></svg>");
+  }
+
+  #[test]
+  fn non_ascii_whitespace_expands_self_closing_root_svg_does_not_trim_nbsp_suffix() {
+    let nbsp = '\u{00A0}';
+    let mut svg = format!("<svg/>{nbsp}");
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>").expect("replace");
+    assert_eq!(svg, format!("<svg/>{nbsp}<image/>"));
   }
 
   #[test]

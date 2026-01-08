@@ -686,10 +686,22 @@ pub enum HyphensMode {
   Auto,
 }
 
+#[inline]
+fn is_ascii_whitespace_html_css(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
 impl HyphensMode {
   /// Parse from CSS value
   pub fn parse(value: &str) -> Option<Self> {
-    match value.trim().to_ascii_lowercase().as_str() {
+    match trim_ascii_whitespace_html_css(value)
+      .to_ascii_lowercase()
+      .as_str()
+    {
       "none" => Some(Self::None),
       "manual" => Some(Self::Manual),
       "auto" => Some(Self::Auto),
@@ -885,6 +897,12 @@ mod tests {
     assert_eq!(HyphensMode::parse("manual"), Some(HyphensMode::Manual));
     assert_eq!(HyphensMode::parse("auto"), Some(HyphensMode::Auto));
     assert_eq!(HyphensMode::parse("invalid"), None);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_hyphens_mode_parse_does_not_trim_nbsp() {
+    assert_eq!(HyphensMode::parse("\u{00A0}none"), None);
+    assert_eq!(HyphensMode::parse("none\u{00A0}"), None);
   }
 
   #[test]
