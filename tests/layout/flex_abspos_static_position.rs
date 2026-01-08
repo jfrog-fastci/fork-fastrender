@@ -644,6 +644,31 @@ fn abspos_static_position_respects_align_self_on_cross_axis() {
 }
 
 #[test]
+fn abspos_static_position_respects_align_self_self_start_with_different_direction() {
+  // `self-start` resolves against the item's own writing-mode/direction rather than the flex
+  // container's. Use a column flex container (horizontal cross axis) and give the abspos child an
+  // RTL direction, making `self-start` the right edge.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.direction = Direction::Rtl;
+  child_style.align_self = Some(AlignItems::SelfStart);
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+}
+
+#[test]
 fn abspos_static_position_ignores_justify_self_on_main_axis() {
   // Flexbox § abspos-items defines the main-axis edges of the static-position rectangle as where
   // the child's margin edges would be if it were the sole flex item. That makes `justify-self`
