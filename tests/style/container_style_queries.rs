@@ -702,6 +702,52 @@ fn container_style_query_range_feature_matches_z_index() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_font_weight() {
+  let html = r#"
+    <style>
+      .container-normal { container-type: inline-size; font-weight: 400; }
+      .container-bold { container-type: inline-size; font-weight: 700; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-weight > 400) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-normal">
+      <div id="normal" class="child">hello</div>
+    </div>
+    <div class="container-bold">
+      <div id="bold" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let normal = find_by_id(&styled, "normal").expect("normal element");
+  let bold = find_by_id(&styled, "bold").expect("bold element");
+  assert_eq!(normal.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(bold.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_resolves_var_in_font_weight_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; font-weight: 700; --min: 600; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-weight > var(--min)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_resolves_var_value() {
   let html = r#"
     <style>
@@ -825,8 +871,8 @@ fn container_style_query_supports_logical_operators() {
 fn container_style_query_tracks_non_color_properties_across_container_pass_iterations() {
   let html = r#"
      <style>
-       .outer { container-type: inline-size; width: 300px; }
-       .inner { container-type: inline-size; width: 200px; }
+        .outer { container-type: inline-size; width: 300px; }
+        .inner { container-type: inline-size; width: 200px; }
        .child { color: rgb(0 0 255); }
 
        /* Set a layout-affecting property on the inner container based on the outer container. */
@@ -843,6 +889,37 @@ fn container_style_query_tracks_non_color_properties_across_container_pass_itera
     <div class="outer">
       <div class="inner">
         <div id="target" class="child">hello</div>
+      </div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_tracks_font_weight_across_container_pass_iterations() {
+  let html = r#"
+     <style>
+       .outer { container-type: inline-size; width: 300px; height: 100px; }
+       .inner { container-type: inline-size; width: 200px; height: 50px; }
+       .child { color: rgb(0 0 255); }
+
+       /* Set a non-size property on the inner container based on the outer container. */
+       @container (min-width: 0px) {
+         .inner { font-weight: 700; }
+      }
+
+      /* Range style queries depend on the inner container's computed font-weight, which must be
+         fed back into a second container pass. */
+      @container style(font-weight > 600) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="outer">
+      <div class="inner">
+        <div id="target" class="child"></div>
       </div>
     </div>
   "#;

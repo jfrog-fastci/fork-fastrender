@@ -1706,6 +1706,10 @@ fn eval_style_range_value(
         ty: NumericType::LengthPx,
         value: styles.font_size,
       }),
+      "font-weight" => Some(NumericValue {
+        ty: NumericType::Number,
+        value: styles.font_weight.to_u16() as f32,
+      }),
       "z-index" => styles.z_index.map(|z| NumericValue {
         ty: NumericType::Number,
         value: z as f32,
