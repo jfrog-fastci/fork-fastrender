@@ -699,18 +699,19 @@ fn adjust_for_atomic_ranges(start: f32, mut end: f32, ranges: &[AtomicRange]) ->
     }
   }
 
-  if let Some(overlap) = ranges
+  // Only adjust when the chosen fragmentainer boundary would *split* an atomic range. Atomic
+  // ranges that are fully contained within `[start, end]` are already safe to paginate over, and
+  // shrinking `end` to their start would create empty pages when the first atomic content begins
+  // after `start` (e.g. a table preceded by default body margins).
+  if let Some(containing_end) = ranges
     .iter()
     .copied()
-    .filter(|range| range.start < end - EPSILON && range.end > start + EPSILON)
-    .min_by(|a, b| {
-      a.start
-        .partial_cmp(&b.start)
-        .unwrap_or(std::cmp::Ordering::Equal)
-    })
+    .find(|range| end > range.start + EPSILON && end < range.end - EPSILON && range.end > range.start)
   {
-    if overlap.start > start + EPSILON {
-      end = end.min(overlap.start);
+    if containing_end.start <= start + EPSILON {
+      end = end.max(containing_end.end);
+    } else {
+      end = end.min(containing_end.start);
     }
   }
 

@@ -7536,7 +7536,15 @@ impl FormattingContext for TableFormattingContext {
     }
 
     for (start, end, style) in row_groups {
-      if !style_paints_background_or_border(&style, false) {
+      // Table fragmentation repeats `thead`/`tfoot` by scanning for table header/footer group
+      // fragments (see `fragmentation::inject_table_headers_and_footers`). Emit marker fragments for
+      // these row groups even when they don't paint a background so the fragmentation pass can
+      // identify the regions to repeat.
+      let is_header_or_footer = matches!(
+        style.display,
+        Display::TableHeaderGroup | Display::TableFooterGroup
+      );
+      if !is_header_or_footer && !style_paints_background_or_border(&style, false) {
         continue;
       }
       let style = strip_borders_cached(&style, &mut stripped_border_cache);
