@@ -602,3 +602,67 @@ fn stylesheet_referrerpolicy_same_origin_omits_cross_origin_document_referrer_bu
     );
   }
 }
+
+#[test]
+fn stylesheet_referrerpolicy_strict_origin_when_cross_origin_downgrade_omits_referer_for_sheet_but_not_nested(
+) {
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_referrerpolicy_strict_origin_when_cross_origin_downgrade_omits_referer_for_sheet_but_not_nested",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_import.css" referrerpolicy="strict-origin-when-cross-origin">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+  // HTTPS document -> HTTP stylesheet is a downgrade, so strict policies must omit `Referer` for
+  // the stylesheet request even though the document URL is known.
+  let document_url = "https://doc.test/page.html";
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let sheet_req = requests
+    .iter()
+    .find(|req| req.path == "/style_import.css")
+    .expect("expected /style_import.css request");
+  assert!(
+    header_value(&sheet_req.headers, "referer").is_none(),
+    "expected downgraded strict policy to omit Referer for /style_import.css; got:\n{}",
+    sheet_req.headers
+  );
+
+  // Nested requests should use the importing stylesheet URL as the referrer, and because those
+  // requests are not a downgrade (HTTP -> HTTP), the strict policy allows the full URL through.
+  let stylesheet_url = format!("{}/style_import.css", server.base_url);
+  for path in ["/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(stylesheet_url.as_str()),
+      "expected nested request Referer to be the importing stylesheet URL for {path}; got:\n{}",
+      req.headers
+    );
+  }
+}
