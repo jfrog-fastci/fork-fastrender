@@ -1953,6 +1953,12 @@ fn eval_style_range_value(
       "scroll-margin-right" => length_to_numeric(&styles.scroll_margin_right, container, ctx),
       "scroll-margin-bottom" => length_to_numeric(&styles.scroll_margin_bottom, container, ctx),
       "scroll-margin-left" => length_to_numeric(&styles.scroll_margin_left, container, ctx),
+      "border-top-width" => length_to_numeric(&styles.border_top_width, container, ctx),
+      "border-right-width" => length_to_numeric(&styles.border_right_width, container, ctx),
+      "border-bottom-width" => length_to_numeric(&styles.border_bottom_width, container, ctx),
+      "border-left-width" => length_to_numeric(&styles.border_left_width, container, ctx),
+      "outline-width" => length_to_numeric(&styles.outline_width, container, ctx),
+      "outline-offset" => length_to_numeric(&styles.outline_offset, container, ctx),
       "line-height" => match &styles.line_height {
         crate::style::types::LineHeight::Normal => {
           let font_size = styles

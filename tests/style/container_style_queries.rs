@@ -1174,6 +1174,58 @@ fn container_style_query_range_feature_matches_scroll_padding_left_percentage() 
 }
 
 #[test]
+fn container_style_query_range_feature_matches_border_left_width() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; border-left: 1px solid black; }
+      .container-thick { container-type: inline-size; border-left: 3px solid black; }
+      .child { color: rgb(0 0 255); }
+      @container style(border-left-width > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_outline_offset() {
+  let html = r#"
+    <style>
+      .container-near { container-type: inline-size; outline: 1px solid black; outline-offset: 1px; }
+      .container-far { container-type: inline-size; outline: 1px solid black; outline-offset: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(outline-offset > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-near">
+      <div id="near" class="child">hello</div>
+    </div>
+    <div class="container-far">
+      <div id="far" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let near = find_by_id(&styled, "near").expect("near element");
+  let far = find_by_id(&styled, "far").expect("far element");
+  assert_eq!(near.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(far.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_coerces_unitless_zero_to_time() {
   let html = r#"
     <style>
