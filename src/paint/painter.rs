@@ -7033,22 +7033,77 @@ impl Painter {
     }
   }
 
-  fn paint_with_opacity_layer<F>(&mut self, opacity: f32, bounds: Rect, clip_mask: Option<&Mask>, paint: F)
-  where
-    F: FnOnce(&mut Painter),
+  fn paint_with_opacity_layer<F>(
+    &mut self,
+    opacity: f32,
+    bounds: Rect,
+    clip_mask: Option<&Mask>,
+    paint: F,
+  ) where
+    F: FnOnce(&mut Painter, Option<&Mask>),
   {
+    fn crop_clip_mask(mask: &Mask, origin_x: i32, origin_y: i32, width: u32, height: u32) -> Option<Mask> {
+      if width == 0 || height == 0 {
+        return None;
+      }
+      let mask_w = mask.width() as i32;
+      let mask_h = mask.height() as i32;
+      if mask_w <= 0 || mask_h <= 0 {
+        return None;
+      }
+
+      let layer_w = width as i32;
+      let layer_h = height as i32;
+      let x0 = origin_x.max(0);
+      let y0 = origin_y.max(0);
+      let x1 = origin_x.saturating_add(layer_w).min(mask_w);
+      let y1 = origin_y.saturating_add(layer_h).min(mask_h);
+      if x1 <= x0 || y1 <= y0 {
+        return None;
+      }
+
+      let mut out = Mask::new(width, height)?;
+      out.data_mut().fill(0);
+
+      let src = mask.data();
+      let dst = out.data_mut();
+      let src_stride = mask.width() as usize;
+      let dst_stride = width as usize;
+      let copy_w = (x1 - x0) as usize;
+      let dst_x0 = (x0 - origin_x) as usize;
+      let dst_y0 = (y0 - origin_y) as usize;
+      let src_x0 = x0 as usize;
+      let src_y0 = y0 as usize;
+      let copy_h = (y1 - y0) as usize;
+      for row in 0..copy_h {
+        let src_idx = (src_y0 + row) * src_stride + src_x0;
+        let dst_idx = (dst_y0 + row) * dst_stride + dst_x0;
+        dst[dst_idx..dst_idx + copy_w].copy_from_slice(&src[src_idx..src_idx + copy_w]);
+      }
+      Some(out)
+    }
+
     let opacity = opacity.clamp(0.0, 1.0);
     if opacity <= 0.0 {
       return;
     }
     if opacity >= 1.0 - 1e-6 {
-      paint(self);
+      paint(self, clip_mask);
       return;
     }
 
     let device_bounds = self.device_rect(bounds);
-    let width = device_bounds.width().ceil().max(0.0) as u32;
-    let height = device_bounds.height().ceil().max(0.0) as u32;
+    let x0 = device_bounds.min_x().floor() as i32;
+    let y0 = device_bounds.min_y().floor() as i32;
+    let x1 = device_bounds.max_x().ceil() as i32;
+    let y1 = device_bounds.max_y().ceil() as i32;
+    let width_i32 = x1 - x0;
+    let height_i32 = y1 - y0;
+    if width_i32 <= 0 || height_i32 <= 0 {
+      return;
+    }
+    let width = width_i32 as u32;
+    let height = height_i32 as u32;
     if width == 0 || height == 0 {
       return;
     }
@@ -7063,7 +7118,11 @@ impl Painter {
       None => return,
     };
 
-    let offset = Point::new(bounds.min_x(), bounds.min_y());
+    let scale = self.scale;
+    let offset = Point::new(
+      self.origin_offset_css.x + x0 as f32 / scale,
+      self.origin_offset_css.y + y0 as f32 / scale,
+    );
     let mut layer_painter = Painter {
       pixmap: layer,
       scale: self.scale,
@@ -7084,16 +7143,44 @@ impl Painter {
       diagnostics_enabled: self.diagnostics_enabled,
     };
 
-    paint(&mut layer_painter);
+    let cropped_clip_mask = if let Some(mask) = clip_mask {
+      let mask_w = mask.width() as i32;
+      let mask_h = mask.height() as i32;
+      if mask_w <= 0 || mask_h <= 0 {
+        None
+      } else {
+        let layer_w = width as i32;
+        let layer_h = height as i32;
+        let inter_x0 = x0.max(0);
+        let inter_y0 = y0.max(0);
+        let inter_x1 = x0.saturating_add(layer_w).min(mask_w);
+        let inter_y1 = y0.saturating_add(layer_h).min(mask_h);
+        if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
+          // Clip mask does not overlap the opacity layer at all.
+          return;
+        }
+        crop_clip_mask(mask, x0, y0, width, height)
+      }
+    } else {
+      None
+    };
+    let paint_clip_mask = cropped_clip_mask.as_ref();
+
+    paint(&mut layer_painter, paint_clip_mask);
     self.gradient_stats.merge(&layer_painter.gradient_stats);
     let layer_pixmap = layer_painter.pixmap;
 
     let mut paint = PixmapPaint::default();
     paint.opacity = opacity;
-    let transform = Transform::from_translate(self.device_x(offset.x), self.device_y(offset.y));
+    let composite_clip_mask = if paint_clip_mask.is_some() {
+      None
+    } else {
+      clip_mask
+    };
+    let transform = Transform::from_translate(x0 as f32, y0 as f32);
     self
       .pixmap
-      .draw_pixmap(0, 0, layer_pixmap.as_ref(), &paint, transform, clip_mask);
+      .draw_pixmap(0, 0, layer_pixmap.as_ref(), &paint, transform, composite_clip_mask);
   }
 
   fn paint_form_control(
@@ -8230,8 +8317,8 @@ impl Painter {
                 // Fully transparent track pseudo-element.
               } else if track_opacity < 1.0 - 1e-6 {
                 let bounds = opacity_layer_bounds(track_rect, track_style);
-                self.paint_with_opacity_layer(track_opacity, bounds, clip_mask, |painter| {
-                  paint_track(painter, None, track_rect, track_height);
+                self.paint_with_opacity_layer(track_opacity, bounds, clip_mask, |painter, layer_clip_mask| {
+                  paint_track(painter, layer_clip_mask, track_rect, track_height);
                 });
               } else {
                 paint_track(self, clip_mask, track_rect, track_height);
@@ -8290,8 +8377,8 @@ impl Painter {
             // Fully transparent thumb pseudo-element.
           } else if thumb_opacity < 1.0 - 1e-6 {
             let bounds = opacity_layer_bounds(knob_rect, style_for_thumb);
-            self.paint_with_opacity_layer(thumb_opacity, bounds, clip_mask, |painter| {
-              paint_thumb(painter, None);
+            self.paint_with_opacity_layer(thumb_opacity, bounds, clip_mask, |painter, layer_clip_mask| {
+              paint_thumb(painter, layer_clip_mask);
             });
           } else {
             paint_thumb(self, clip_mask);
@@ -15220,6 +15307,71 @@ mod tests {
     let len = Length::rem(1.0);
     let resolved = resolve_length_for_paint(&len, 10.0, f32::NAN, 0.0, (100.0, 100.0));
     assert_eq!(resolved, 0.0);
+  }
+
+  #[test]
+  fn opacity_layer_applies_clip_mask_inside_layer() {
+    let mut painter = Painter::new(4, 4, Rgba::TRANSPARENT).expect("painter");
+    painter
+      .pixmap
+      .fill(tiny_skia::Color::from_rgba8(0, 0, 0, 0));
+
+    let mut mask = Mask::new(4, 4).expect("mask");
+    mask.data_mut().fill(0);
+    for y in 1..=2u32 {
+      for x in 1..=2u32 {
+        mask.data_mut()[(y * 4 + x) as usize] = 128;
+      }
+    }
+
+    let bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
+    painter.paint_with_opacity_layer(0.5, bounds, Some(&mask), |layer, clip| {
+      let rect = layer.device_rect(bounds);
+      let sk_rect = SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height())
+        .expect("rect");
+      let path = PathBuilder::from_rect(sk_rect);
+
+      let mut blue = Paint::default();
+      blue.set_color_rgba8(0, 0, 255, 255);
+      blue.anti_alias = false;
+      layer.pixmap.fill_path(
+        &path,
+        &blue,
+        tiny_skia::FillRule::Winding,
+        Transform::identity(),
+        clip,
+      );
+
+      let mut red = Paint::default();
+      red.set_color_rgba8(255, 0, 0, 255);
+      red.anti_alias = false;
+      layer.pixmap.fill_path(
+        &path,
+        &red,
+        tiny_skia::FillRule::Winding,
+        Transform::identity(),
+        clip,
+      );
+    });
+
+    let px = painter.pixmap.pixel(1, 1).expect("pixel");
+    assert_eq!(px.green(), 0);
+    assert!(
+      px.blue() > 0,
+      "expected blue channel to remain visible when clipping occurs within the opacity layer; got rgba=({},{},{},{})",
+      px.red(),
+      px.green(),
+      px.blue(),
+      px.alpha()
+    );
+    assert!(
+      px.alpha() > 80,
+      "expected alpha to reflect single clip application (not squared); got rgba=({},{},{},{})",
+      px.red(),
+      px.green(),
+      px.blue(),
+      px.alpha()
+    );
   }
 
   #[test]
