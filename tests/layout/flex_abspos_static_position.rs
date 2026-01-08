@@ -1007,6 +1007,35 @@ fn abspos_static_position_respects_wrap_reverse_in_negative_cross_axis_writing_m
 }
 
 #[test]
+fn abspos_static_position_respects_wrap_reverse_in_negative_cross_axis_writing_mode_on_align_self() {
+  // Same as above, but with `align-self` overriding the container's `align-items`.
+  for (align_self, expected_x) in [(AlignItems::FlexStart, 0.0), (AlignItems::FlexEnd, 90.0)] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.writing_mode = WritingMode::VerticalRl;
+    container_style.flex_wrap = FlexWrap::WrapReverse;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.align_items = AlignItems::Center;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.align_self = Some(align_self);
+
+    let (x, y) = layout_abspos_child(container_style, child_style);
+    assert!(
+      (x - expected_x).abs() < 0.1,
+      "expected x≈{expected_x} for align-self={align_self:?}, got {x}"
+    );
+    assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {y}");
+  }
+}
+
+#[test]
 fn abspos_static_position_respects_wrap_reverse_cross_axis_direction() {
   // Flexbox §flex-wrap: `wrap-reverse` swaps cross-start/cross-end, which affects `align-items` and
   // therefore the cross-axis static position for abspos flex children (Flexbox §abspos-items).
