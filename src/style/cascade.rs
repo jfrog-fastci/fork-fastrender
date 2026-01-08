@@ -371,86 +371,66 @@ fn container_query_matches(
   query: &ContainerQuery,
   container: &ContainerQueryInfo,
   ctx: &ContainerQueryContext,
-  ctx_ptr: usize,
   guard: &mut Vec<usize>,
   memo: &mut ContainerQueryMemo,
 ) -> QueryResult {
-  let key = QueryEvalCacheKey {
-    ctx_ptr,
-    container_id,
-    query_ptr: query as *const _ as usize,
-  };
-  if let Some(hit) = memo.query_eval.get(&key).copied() {
+  let query_fingerprint = container_query_fingerprint(query);
+  let container_revision = container_query_cache_revision(container, ctx);
+  if let Some(hit) = memo.query_eval_get(container_id, container_revision, query_fingerprint) {
     return hit;
   }
 
-  match query {
+  let result = match query {
     ContainerQuery::Size(size_query) => {
       if !matches!(
         container.container_type,
         ContainerType::Size | ContainerType::InlineSize
       ) {
-        memo.query_eval.insert(key, QueryResult::False);
-        return QueryResult::False;
-      }
-      let result = match size_query {
-        ContainerSizeQuery::Parsed(mq) => evaluate_container_size_query(
-          mq,
-          container,
-          ctx.base_media.viewport_width,
-          ctx.base_media.viewport_height,
-        ),
-        ContainerSizeQuery::UnresolvedVars { text, .. } => {
-          let value = PropertyValue::Custom(text.clone());
-          match crate::style::var_resolution::resolve_var_for_property(
-            &value,
-            &container.styles.custom_properties,
-            "",
-          ) {
-            crate::style::var_resolution::VarResolutionResult::Resolved { css_text, .. } => {
-              let resolved = if css_text.is_empty() {
-                text.as_str()
-              } else {
-                css_text.as_ref()
-              };
-              match crate::style::media::MediaQuery::parse(resolved) {
-                Ok(parsed) if parsed.is_size_query() => {
-                  evaluate_container_size_query(
+        QueryResult::False
+      } else {
+        match size_query {
+          ContainerSizeQuery::Parsed(mq) => evaluate_container_size_query(
+            mq,
+            container,
+            ctx.base_media.viewport_width,
+            ctx.base_media.viewport_height,
+          ),
+          ContainerSizeQuery::UnresolvedVars { text, .. } => {
+            let value = PropertyValue::Custom(text.clone());
+            match crate::style::var_resolution::resolve_var_for_property(
+              &value,
+              &container.styles.custom_properties,
+              "",
+            ) {
+              crate::style::var_resolution::VarResolutionResult::Resolved { css_text, .. } => {
+                let resolved = if css_text.is_empty() {
+                  text.as_str()
+                } else {
+                  css_text.as_ref()
+                };
+                match crate::style::media::MediaQuery::parse(resolved) {
+                  Ok(parsed) if parsed.is_size_query() => evaluate_container_size_query(
                     &parsed,
                     container,
                     ctx.base_media.viewport_width,
                     ctx.base_media.viewport_height,
-                  )
+                  ),
+                  _ => QueryResult::Unknown,
                 }
-                _ => QueryResult::Unknown,
               }
+              _ => QueryResult::Unknown,
             }
-            _ => QueryResult::Unknown,
           }
         }
-      };
-      memo.query_eval.insert(key, result);
-      result
+      }
     }
-    ContainerQuery::Style(style_query) => {
-      let result = eval_style_query(style_query, container, ctx);
-      memo.query_eval.insert(key, result);
-      result
-    }
-    ContainerQuery::Unknown(_) => {
-      memo.query_eval.insert(key, QueryResult::Unknown);
-      QueryResult::Unknown
-    }
-    ContainerQuery::Not(inner) => {
-      let result = container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo)
-        .not();
-      memo.query_eval.insert(key, result);
-      result
-    }
+    ContainerQuery::Style(style_query) => eval_style_query(style_query, container, ctx),
+    ContainerQuery::Unknown(_) => QueryResult::Unknown,
+    ContainerQuery::Not(inner) => container_query_matches(container_id, inner, container, ctx, guard, memo).not(),
     ContainerQuery::And(list) => {
       let mut result = QueryResult::True;
       for inner in list {
-        match container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo) {
+        match container_query_matches(container_id, inner, container, ctx, guard, memo) {
           QueryResult::False => {
             result = QueryResult::False;
             break;
@@ -459,13 +439,12 @@ fn container_query_matches(
           QueryResult::True => {}
         }
       }
-      memo.query_eval.insert(key, result);
       result
     }
     ContainerQuery::Or(list) => {
       let mut result = QueryResult::False;
       for inner in list {
-        match container_query_matches(container_id, inner, container, ctx, ctx_ptr, guard, memo) {
+        match container_query_matches(container_id, inner, container, ctx, guard, memo) {
           QueryResult::True => {
             result = QueryResult::True;
             break;
@@ -474,10 +453,12 @@ fn container_query_matches(
           QueryResult::False => {}
         }
       }
-      memo.query_eval.insert(key, result);
       result
     }
-  }
+  };
+
+  memo.query_eval_insert(container_id, container_revision, query_fingerprint, result);
+  result
 }
 
 fn compare_with_op(op: ComparisonOp, actual: f32, target: f32) -> bool {
@@ -3267,6 +3248,244 @@ fn cq_condition_support_mask(condition: &ContainerCondition) -> u8 {
   }
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
+fn container_query_fingerprint(query: &ContainerQuery) -> u64 {
+  let mut hasher = FxHasher::default();
+  hash_container_query_fingerprint(&mut hasher, query);
+  hasher.finish()
+}
+
+fn hash_container_query_fingerprint(state: &mut impl Hasher, query: &ContainerQuery) {
+  std::mem::discriminant(query).hash(state);
+  match query {
+    ContainerQuery::Size(size_query) => hash_container_size_query_fingerprint(state, size_query),
+    ContainerQuery::Style(style_query) => hash_style_query_expr_fingerprint(state, style_query),
+    ContainerQuery::Unknown(raw) => raw.hash(state),
+    ContainerQuery::Not(inner) => hash_container_query_fingerprint(state, inner),
+    ContainerQuery::And(list) | ContainerQuery::Or(list) => {
+      list.len().hash(state);
+      for inner in list {
+        hash_container_query_fingerprint(state, inner);
+      }
+    }
+  }
+}
+
+fn hash_container_size_query_fingerprint(state: &mut impl Hasher, query: &ContainerSizeQuery) {
+  std::mem::discriminant(query).hash(state);
+  match query {
+    ContainerSizeQuery::Parsed(mq) => hash_media_query_fingerprint(state, mq),
+    ContainerSizeQuery::UnresolvedVars { text, template } => {
+      text.hash(state);
+      // Include the parsed template so equivalent var() usage across whitespace serializations
+      // shares cache entries.
+      hash_media_query_fingerprint(state, template);
+    }
+  }
+}
+
+fn hash_media_query_fingerprint(state: &mut impl Hasher, mq: &MediaQuery) {
+  mq.media_type.hash(state);
+  mq.modifier.hash(state);
+  mq.features.len().hash(state);
+  for feature in &mq.features {
+    hash_media_feature_fingerprint(state, feature);
+  }
+}
+
+fn hash_media_feature_fingerprint(state: &mut impl Hasher, feature: &MediaFeature) {
+  std::mem::discriminant(feature).hash(state);
+  match feature {
+    MediaFeature::Width(len)
+    | MediaFeature::MinWidth(len)
+    | MediaFeature::MaxWidth(len)
+    | MediaFeature::InlineSize(len)
+    | MediaFeature::MinInlineSize(len)
+    | MediaFeature::MaxInlineSize(len)
+    | MediaFeature::Height(len)
+    | MediaFeature::MinHeight(len)
+    | MediaFeature::MaxHeight(len)
+    | MediaFeature::BlockSize(len)
+    | MediaFeature::MinBlockSize(len)
+    | MediaFeature::MaxBlockSize(len)
+    | MediaFeature::DeviceWidth(len)
+    | MediaFeature::MinDeviceWidth(len)
+    | MediaFeature::MaxDeviceWidth(len)
+    | MediaFeature::DeviceHeight(len)
+    | MediaFeature::MinDeviceHeight(len)
+    | MediaFeature::MaxDeviceHeight(len) => hash_length_fingerprint(state, len),
+    MediaFeature::Orientation(value) => value.hash(state),
+    MediaFeature::AspectRatio { width, height }
+    | MediaFeature::MinAspectRatio { width, height }
+    | MediaFeature::MaxAspectRatio { width, height }
+    | MediaFeature::DeviceAspectRatio { width, height }
+    | MediaFeature::MinDeviceAspectRatio { width, height }
+    | MediaFeature::MaxDeviceAspectRatio { width, height } => {
+      width.hash(state);
+      height.hash(state);
+    }
+    MediaFeature::Resolution(res)
+    | MediaFeature::MinResolution(res)
+    | MediaFeature::MaxResolution(res) => hash_resolution_fingerprint(state, res),
+    MediaFeature::Color | MediaFeature::ColorIndex | MediaFeature::Monochrome => {}
+    MediaFeature::MinColor(value)
+    | MediaFeature::MaxColor(value)
+    | MediaFeature::MinColorIndex(value)
+    | MediaFeature::MaxColorIndex(value)
+    | MediaFeature::MinMonochrome(value)
+    | MediaFeature::MaxMonochrome(value) => value.hash(state),
+    MediaFeature::Hover(value) | MediaFeature::AnyHover(value) => value.hash(state),
+    MediaFeature::Pointer(value) | MediaFeature::AnyPointer(value) => value.hash(state),
+    MediaFeature::Scripting(value) => value.hash(state),
+    MediaFeature::Update(value) => value.hash(state),
+    MediaFeature::LightLevel(value) => value.hash(state),
+    MediaFeature::DisplayMode(value) => value.hash(state),
+    MediaFeature::PrefersColorScheme(value) => value.hash(state),
+    MediaFeature::PrefersReducedMotion(value) => value.hash(state),
+    MediaFeature::PrefersContrast(value) => value.hash(state),
+    MediaFeature::PrefersReducedTransparency(value) => value.hash(state),
+    MediaFeature::PrefersReducedData(value) => value.hash(state),
+    MediaFeature::ColorGamut(value) => value.hash(state),
+    MediaFeature::ForcedColors(value) => value.hash(state),
+    MediaFeature::InvertedColors(value) => value.hash(state),
+    MediaFeature::Range { feature, op, value } => {
+      feature.hash(state);
+      op.hash(state);
+      hash_range_value_fingerprint(state, value);
+    }
+    MediaFeature::Not(inner) => hash_media_feature_fingerprint(state, inner),
+    MediaFeature::And(list) | MediaFeature::Or(list) => {
+      list.len().hash(state);
+      for inner in list {
+        hash_media_feature_fingerprint(state, inner);
+      }
+    }
+    MediaFeature::Unknown { name, value } => {
+      name.hash(state);
+      value.hash(state);
+    }
+  }
+}
+
+fn hash_range_value_fingerprint(state: &mut impl Hasher, value: &RangeValue) {
+  std::mem::discriminant(value).hash(state);
+  match value {
+    RangeValue::Length(len) => hash_length_fingerprint(state, len),
+    RangeValue::AspectRatio(w, h) => {
+      w.hash(state);
+      h.hash(state);
+    }
+    RangeValue::Resolution(res) => hash_resolution_fingerprint(state, res),
+  }
+}
+
+fn hash_length_fingerprint(state: &mut impl Hasher, length: &Length) {
+  length.unit.hash(state);
+  f32_to_canonical_bits(length.value).hash(state);
+  if let Some(calc) = length.calc {
+    1u8.hash(state);
+    hash_calc_length_fingerprint(state, &calc);
+  } else {
+    0u8.hash(state);
+  }
+}
+
+fn hash_calc_length_fingerprint(state: &mut impl Hasher, calc: &crate::style::values::CalcLength) {
+  let terms = calc.terms();
+  terms.len().hash(state);
+  for term in terms {
+    term.unit.hash(state);
+    f32_to_canonical_bits(term.value).hash(state);
+  }
+}
+
+fn hash_resolution_fingerprint(state: &mut impl Hasher, res: &crate::style::media::Resolution) {
+  res.unit.hash(state);
+  f32_to_canonical_bits(res.value).hash(state);
+}
+
+fn hash_style_query_expr_fingerprint(state: &mut impl Hasher, expr: &StyleQueryExpr) {
+  std::mem::discriminant(expr).hash(state);
+  match expr {
+    StyleQueryExpr::Unknown => {}
+    StyleQueryExpr::Feature(feature) => hash_style_query_feature_fingerprint(state, feature),
+    StyleQueryExpr::Not(inner) => hash_style_query_expr_fingerprint(state, inner),
+    StyleQueryExpr::And(list) | StyleQueryExpr::Or(list) => {
+      list.len().hash(state);
+      for inner in list {
+        hash_style_query_expr_fingerprint(state, inner);
+      }
+    }
+  }
+}
+
+fn hash_style_query_feature_fingerprint(state: &mut impl Hasher, feature: &StyleQueryFeature) {
+  std::mem::discriminant(feature).hash(state);
+  match feature {
+    StyleQueryFeature::Plain { name, value } => {
+      name.hash(state);
+      value.hash(state);
+    }
+    StyleQueryFeature::Boolean { name } => name.hash(state),
+    StyleQueryFeature::Range(range) => hash_style_range_fingerprint(state, range),
+  }
+}
+
+fn hash_style_range_fingerprint(state: &mut impl Hasher, range: &StyleRange) {
+  std::mem::discriminant(range).hash(state);
+  match range {
+    StyleRange::Single { left, op, right } => {
+      hash_style_range_value_fingerprint(state, left);
+      std::mem::discriminant(op).hash(state);
+      hash_style_range_value_fingerprint(state, right);
+    }
+    StyleRange::Double {
+      left,
+      op,
+      middle,
+      right,
+    } => {
+      hash_style_range_value_fingerprint(state, left);
+      std::mem::discriminant(op).hash(state);
+      hash_style_range_value_fingerprint(state, middle);
+      hash_style_range_value_fingerprint(state, right);
+    }
+  }
+}
+
+fn hash_style_range_value_fingerprint(state: &mut impl Hasher, value: &StyleRangeValue) {
+  std::mem::discriminant(value).hash(state);
+  match value {
+    StyleRangeValue::Property(name)
+    | StyleRangeValue::CustomProperty(name)
+    | StyleRangeValue::Value(name) => name.hash(state),
+  }
+}
+
+fn container_query_cache_revision(container: &ContainerQueryInfo, ctx: &ContainerQueryContext) -> u64 {
+  let mut hasher = FxHasher::default();
+  f32_to_canonical_bits(ctx.base_media.viewport_width).hash(&mut hasher);
+  f32_to_canonical_bits(ctx.base_media.viewport_height).hash(&mut hasher);
+
+  f32_to_canonical_bits(container.width).hash(&mut hasher);
+  f32_to_canonical_bits(container.height).hash(&mut hasher);
+  f32_to_canonical_bits(container.inline_size).hash(&mut hasher);
+  f32_to_canonical_bits(container.block_size).hash(&mut hasher);
+  f32_to_canonical_bits(container.font_size).hash(&mut hasher);
+  std::mem::discriminant(&container.container_type).hash(&mut hasher);
+  std::mem::discriminant(&container.styles.writing_mode).hash(&mut hasher);
+  (Arc::as_ptr(&container.styles) as usize).hash(&mut hasher);
+  hasher.finish()
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ConditionSignature {
   name_id: u32,
@@ -3283,18 +3502,18 @@ struct FindContainerCacheKey {
   include_self: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct QueryEvalCacheKey {
-  ctx_ptr: usize,
-  container_id: usize,
-  query_ptr: usize,
+#[derive(Debug)]
+struct QueryEvalContainerCache {
+  revision: u64,
+  results: FxHashMap<u64, QueryResult>,
 }
 
 #[derive(Debug)]
 struct ContainerQueryMemo {
   // Map from (query-container lookup key) -> selected container id (or None).
   find_container: HashMap<FindContainerCacheKey, Option<usize>>,
-  query_eval: HashMap<QueryEvalCacheKey, QueryResult>,
+  // Map from (query container id) -> cached evaluations for container queries against that container.
+  query_eval: FxHashMap<usize, QueryEvalContainerCache>,
   condition_sigs: HashMap<usize, ConditionSignature>,
   // Intern container names to avoid storing strings in every cache key.
   name_ids: HashMap<String, u32>,
@@ -3306,7 +3525,7 @@ impl Default for ContainerQueryMemo {
   fn default() -> Self {
     Self {
       find_container: HashMap::new(),
-      query_eval: HashMap::new(),
+      query_eval: FxHashMap::default(),
       condition_sigs: HashMap::new(),
       name_ids: HashMap::new(),
       next_name_id: 1,
@@ -3334,6 +3553,42 @@ impl ContainerQueryMemo {
       self.name_ids.insert(name.to_string(), id);
       id
     }
+  }
+
+  fn query_eval_get(
+    &mut self,
+    container_id: usize,
+    revision: u64,
+    query_fingerprint: u64,
+  ) -> Option<QueryResult> {
+    let entry = self.query_eval.get_mut(&container_id)?;
+    if entry.revision != revision {
+      entry.revision = revision;
+      entry.results.clear();
+      return None;
+    }
+    entry.results.get(&query_fingerprint).copied()
+  }
+
+  fn query_eval_insert(
+    &mut self,
+    container_id: usize,
+    revision: u64,
+    query_fingerprint: u64,
+    value: QueryResult,
+  ) {
+    let entry = self
+      .query_eval
+      .entry(container_id)
+      .or_insert_with(|| QueryEvalContainerCache {
+        revision,
+        results: FxHashMap::default(),
+      });
+    if entry.revision != revision {
+      entry.revision = revision;
+      entry.results.clear();
+    }
+    entry.results.insert(query_fingerprint, value);
   }
 }
 
@@ -9580,7 +9835,6 @@ impl ContainerQueryContext {
                   query,
                   container,
                   self,
-                  ctx_ptr,
                   guard,
                   &mut memo,
                 );
