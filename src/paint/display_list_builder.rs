@@ -1524,7 +1524,10 @@ impl DisplayListBuilder {
       .or_else(|| self.svg_id_defs.clone());
 
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let contexts = crate::paint::stacking::build_stacking_tree_from_tree_checked(tree)?;
+    let contexts = crate::paint::stacking::build_stacking_tree_from_tree_checked_with_scroll(
+      tree,
+      &self.scroll_state,
+    )?;
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), stacking_tree_timer) {
       breakdown.record_stacking_tree(start.elapsed());
     }
@@ -1581,7 +1584,10 @@ impl DisplayListBuilder {
     }
     self.estimate_from_roots(std::iter::once(root));
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked(root)?;
+    let stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
+      root,
+      &self.scroll_state,
+    )?;
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), stacking_tree_timer) {
       breakdown.record_stacking_tree(start.elapsed());
     }
@@ -1626,7 +1632,10 @@ impl DisplayListBuilder {
     }
     self.estimate_from_roots(std::iter::once(root));
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked(root)?;
+    let stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
+      root,
+      &self.scroll_state,
+    )?;
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), stacking_tree_timer) {
       breakdown.record_stacking_tree(start.elapsed());
     }
@@ -1699,7 +1708,10 @@ impl DisplayListBuilder {
       .svg_id_defs
       .clone()
       .or_else(|| self.svg_id_defs.clone());
-    let stackings = crate::paint::stacking::build_stacking_tree_from_tree_checked(tree)
+    let stackings = crate::paint::stacking::build_stacking_tree_from_tree_checked_with_scroll(
+      tree,
+      &self.scroll_state,
+    )
       .unwrap_or_else(|_| Vec::new());
     self.estimate_from_tree(tree);
     self.build_from_stacking_contexts(&stackings)
@@ -2539,6 +2551,13 @@ impl DisplayListBuilder {
     );
 
     let root_fragment = context.fragments.first();
+    let element_scroll = root_fragment
+      .map(|fragment| self.element_scroll_offset(fragment))
+      .unwrap_or(Point::ZERO);
+    let descendant_content_offset = Point::new(
+      descendant_offset.x - element_scroll.x,
+      descendant_offset.y - element_scroll.y,
+    );
     let root_style = root_fragment.and_then(|f| f.style.as_deref());
     let root_opacity = root_style.map(|s| s.opacity).unwrap_or(1.0);
     if root_opacity <= f32::EPSILON {
@@ -2877,7 +2896,7 @@ impl DisplayListBuilder {
         }
         has_backdrop_sensitive_descendants |= self.build_stacking_context(
           child,
-          descendant_offset,
+          descendant_content_offset,
           false,
           svg_filters,
           local_child_visibility,
@@ -2892,17 +2911,17 @@ impl DisplayListBuilder {
       );
       self.emit_fragment_list(
         &context.layer3_blocks,
-        descendant_offset,
+        descendant_content_offset,
         local_child_visibility,
       );
       self.emit_fragment_list(
         &context.layer4_floats,
-        descendant_offset,
+        descendant_content_offset,
         local_child_visibility,
       );
       self.emit_fragment_list(
         &context.layer5_inlines,
-        descendant_offset,
+        descendant_content_offset,
         local_child_visibility,
       );
       for item in context.layer6_iter() {
@@ -2911,10 +2930,10 @@ impl DisplayListBuilder {
         }
         match item {
           Layer6Item::Positioned(fragment) => {
-            let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_offset);
+            let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_content_offset);
             self.build_fragment(
               &fragment.fragment,
-              descendant_offset,
+              descendant_content_offset,
               local_child_visibility,
             );
             self.pop_clips(pushed);
@@ -2922,7 +2941,7 @@ impl DisplayListBuilder {
           Layer6Item::ZeroContext(child) => {
             has_backdrop_sensitive_descendants |= self.build_stacking_context(
               child,
-              descendant_offset,
+              descendant_content_offset,
               false,
               svg_filters,
               local_child_visibility,
@@ -2937,7 +2956,7 @@ impl DisplayListBuilder {
         }
         has_backdrop_sensitive_descendants |= self.build_stacking_context(
           child,
-          descendant_offset,
+          descendant_content_offset,
           false,
           svg_filters,
           local_child_visibility,
@@ -3039,7 +3058,7 @@ impl DisplayListBuilder {
       }
       has_backdrop_sensitive_descendants |= self.build_stacking_context(
         child,
-        descendant_offset,
+        descendant_content_offset,
         false,
         svg_filters,
         local_child_visibility,
@@ -3047,17 +3066,17 @@ impl DisplayListBuilder {
     }
     self.emit_fragment_list(
       &context.layer3_blocks,
-      descendant_offset,
+      descendant_content_offset,
       local_child_visibility,
     );
     self.emit_fragment_list(
       &context.layer4_floats,
-      descendant_offset,
+      descendant_content_offset,
       local_child_visibility,
     );
     self.emit_fragment_list(
       &context.layer5_inlines,
-      descendant_offset,
+      descendant_content_offset,
       local_child_visibility,
     );
     for item in context.layer6_iter() {
@@ -3066,10 +3085,10 @@ impl DisplayListBuilder {
       }
       match item {
         Layer6Item::Positioned(fragment) => {
-          let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_offset);
+          let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_content_offset);
           self.build_fragment(
             &fragment.fragment,
-            descendant_offset,
+            descendant_content_offset,
             local_child_visibility,
           );
           self.pop_clips(pushed);
@@ -3077,7 +3096,7 @@ impl DisplayListBuilder {
         Layer6Item::ZeroContext(child) => {
           has_backdrop_sensitive_descendants |= self.build_stacking_context(
             child,
-            descendant_offset,
+            descendant_content_offset,
             false,
             svg_filters,
             local_child_visibility,
@@ -3092,7 +3111,7 @@ impl DisplayListBuilder {
       }
       has_backdrop_sensitive_descendants |= self.build_stacking_context(
         child,
-        descendant_offset,
+        descendant_content_offset,
         false,
         svg_filters,
         local_child_visibility,

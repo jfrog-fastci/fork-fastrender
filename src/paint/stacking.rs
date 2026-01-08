@@ -65,6 +65,7 @@ use crate::paint::display_list::Transform3D;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::paint_bounds;
 use crate::render_control::check_active_periodic;
+use crate::scroll::ScrollState;
 use crate::style::display::Display;
 use crate::style::position::Position;
 use crate::style::types::{FilterColor, FilterFunction};
@@ -1026,6 +1027,13 @@ fn clip_chain_link_for_fragment(
   })
 }
 
+#[inline]
+fn element_scroll_offset(fragment: &FragmentNode, scroll_state: Option<&ScrollState>) -> Point {
+  scroll_state
+    .and_then(|state| fragment.box_id().map(|id| state.element_offset(id)))
+    .unwrap_or(Point::ZERO)
+}
+
 /// Builds a stacking context tree from a fragment tree
 ///
 /// This function traverses the fragment tree and builds a corresponding
@@ -1219,6 +1227,7 @@ where
     &get_style,
     &mut tree_order_counter,
     Some((root.bounds.width(), root.bounds.height())),
+    None,
   )
 }
 
@@ -1242,6 +1251,7 @@ where
     &mut tree_order_counter,
     &mut deadline_counter,
     Some((root.bounds.width(), root.bounds.height())),
+    None,
   )
 }
 
@@ -1250,6 +1260,7 @@ fn build_stacking_tree_with_styles_and_counter<F>(
   get_style: &F,
   tree_order_counter: &mut usize,
   viewport: Option<(f32, f32)>,
+  scroll_state: Option<&ScrollState>,
 ) -> StackingContext
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>> + Clone,
@@ -1265,6 +1276,7 @@ where
     root.bounds.origin,
     &mut clip_stack,
     get_style,
+    scroll_state,
   );
 
   context.sort_children();
@@ -1278,6 +1290,7 @@ fn build_stacking_tree_with_styles_and_counter_checked<F>(
   tree_order_counter: &mut usize,
   deadline_counter: &mut usize,
   viewport: Option<(f32, f32)>,
+  scroll_state: Option<&ScrollState>,
 ) -> Result<StackingContext>
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>> + Clone,
@@ -1294,6 +1307,7 @@ where
     &mut clip_stack,
     get_style,
     deadline_counter,
+    scroll_state,
   )?;
 
   context.sort_children();
@@ -1314,6 +1328,22 @@ pub fn build_stacking_tree_from_fragment_tree_checked(
   build_stacking_tree_with_styles_checked(root, |fragment| fragment.style.clone())
 }
 
+pub fn build_stacking_tree_from_fragment_tree_checked_with_scroll(
+  root: &FragmentNode,
+  scroll_state: &ScrollState,
+) -> Result<StackingContext> {
+  let mut tree_order_counter = 0;
+  let mut deadline_counter = 0usize;
+  build_stacking_tree_with_styles_and_counter_checked(
+    root,
+    &|fragment| fragment.style.clone(),
+    &mut tree_order_counter,
+    &mut deadline_counter,
+    Some((root.bounds.width(), root.bounds.height())),
+    Some(scroll_state),
+  )
+}
+
 /// Builds stacking context trees for every root in a FragmentTree.
 ///
 /// Returns contexts in fragmentainer/page order: the primary root first followed by
@@ -1328,6 +1358,7 @@ pub fn build_stacking_tree_from_tree(tree: &FragmentTree) -> Vec<StackingContext
     &|fragment| fragment.style.clone(),
     &mut tree_order_counter,
     viewport,
+    None,
   ));
   for fragment in &tree.additional_fragments {
     contexts.push(build_stacking_tree_with_styles_and_counter(
@@ -1335,6 +1366,7 @@ pub fn build_stacking_tree_from_tree(tree: &FragmentTree) -> Vec<StackingContext
       &|node| node.style.clone(),
       &mut tree_order_counter,
       viewport,
+      None,
     ));
   }
   contexts
@@ -1353,6 +1385,7 @@ pub fn build_stacking_tree_from_tree_checked(tree: &FragmentTree) -> Result<Vec<
     &mut tree_order_counter,
     &mut deadline_counter,
     viewport,
+    None,
   )?);
   for fragment in &tree.additional_fragments {
     contexts.push(build_stacking_tree_with_styles_and_counter_checked(
@@ -1361,6 +1394,37 @@ pub fn build_stacking_tree_from_tree_checked(tree: &FragmentTree) -> Result<Vec<
       &mut tree_order_counter,
       &mut deadline_counter,
       viewport,
+      None,
+    )?);
+  }
+  Ok(contexts)
+}
+
+pub fn build_stacking_tree_from_tree_checked_with_scroll(
+  tree: &FragmentTree,
+  scroll_state: &ScrollState,
+) -> Result<Vec<StackingContext>> {
+  let viewport = tree.viewport_size();
+  let viewport = Some((viewport.width, viewport.height));
+  let mut tree_order_counter = 0;
+  let mut deadline_counter = 0usize;
+  let mut contexts = Vec::with_capacity(1 + tree.additional_fragments.len());
+  contexts.push(build_stacking_tree_with_styles_and_counter_checked(
+    &tree.root,
+    &|fragment| fragment.style.clone(),
+    &mut tree_order_counter,
+    &mut deadline_counter,
+    viewport,
+    Some(scroll_state),
+  )?);
+  for fragment in &tree.additional_fragments {
+    contexts.push(build_stacking_tree_with_styles_and_counter_checked(
+      fragment,
+      &|node| node.style.clone(),
+      &mut tree_order_counter,
+      &mut deadline_counter,
+      viewport,
+      Some(scroll_state),
     )?);
   }
   Ok(contexts)
@@ -1376,6 +1440,7 @@ fn build_stacking_tree_with_styles_internal_checked<F>(
   clip_stack: &mut Vec<ClipChainLink>,
   get_style: &F,
   deadline_counter: &mut usize,
+  scroll_state: Option<&ScrollState>,
 ) -> Result<StackingContext>
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>>,
@@ -1431,6 +1496,7 @@ where
         &mut child_clip_stack,
         get_style,
         deadline_counter,
+        scroll_state,
       )?;
 
       let child_creates_context =
@@ -1501,7 +1567,11 @@ where
       })
       .is_some();
 
-    let base_offset = offset_from_parent_context;
+    let element_scroll = element_scroll_offset(fragment, scroll_state);
+    let base_offset = Point::new(
+      offset_from_parent_context.x - element_scroll.x,
+      offset_from_parent_context.y - element_scroll.y,
+    );
     for child in fragment.children.iter() {
       let child_style = get_style(child);
       let child_offset = Point::new(
@@ -1518,6 +1588,7 @@ where
         clip_stack,
         get_style,
         deadline_counter,
+        scroll_state,
       )?;
 
       let child_creates_context =
@@ -1562,6 +1633,7 @@ fn build_stacking_tree_with_styles_internal<F>(
   offset_from_parent_context: Point,
   clip_stack: &mut Vec<ClipChainLink>,
   get_style: &F,
+  scroll_state: Option<&ScrollState>,
 ) -> StackingContext
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>>,
@@ -1613,6 +1685,7 @@ where
         child_offset,
         &mut child_clip_stack,
         get_style,
+        scroll_state,
       );
 
       let child_creates_context =
@@ -1683,7 +1756,11 @@ where
       })
       .is_some();
 
-    let base_offset = offset_from_parent_context;
+    let element_scroll = element_scroll_offset(fragment, scroll_state);
+    let base_offset = Point::new(
+      offset_from_parent_context.x - element_scroll.x,
+      offset_from_parent_context.y - element_scroll.y,
+    );
     for child in fragment.children.iter() {
       let child_style = get_style(child);
       let child_offset = Point::new(
@@ -1699,6 +1776,7 @@ where
         child_offset,
         clip_stack,
         get_style,
+        scroll_state,
       );
 
       let child_creates_context =
