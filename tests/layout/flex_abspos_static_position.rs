@@ -121,6 +121,25 @@ fn abspos_static_position_allows_negative_main_axis_offset_when_item_overflows()
 }
 
 #[test]
+fn abspos_static_position_allows_negative_cross_axis_offset_when_item_overflows() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::Center;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(120.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - (-10.0)).abs() < 0.1, "expected y≈-10, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_flex_end_alignment() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
