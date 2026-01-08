@@ -9,6 +9,7 @@ use super::supports;
 use crate::css::loader::{resolve_href_with_base, FetchedStylesheet};
 use crate::error::{Error, RenderError, RenderStage};
 use crate::render_control::{check_active, check_active_periodic};
+use crate::resource::ReferrerPolicy;
 use crate::style::color::Color;
 use crate::style::color::Rgba;
 use crate::style::counter_styles::CounterStyleRule;
@@ -441,6 +442,19 @@ pub trait CssImportLoader {
     let _ = importer_url;
     Ok(FetchedStylesheet::new(self.load(url)?, None))
   }
+
+  /// Returns the effective referrer policy for a loaded stylesheet URL, if known.
+  ///
+  /// Loaders that honor `Referrer-Policy` response headers (and other referrer policy
+  /// sources) can override this so subresource fetches initiated by that stylesheet
+  /// (e.g. web fonts) inherit the correct policy.
+  ///
+  /// The default implementation returns `None`, signaling that callers should fall back
+  /// to the document's referrer policy.
+  fn referrer_policy_for_stylesheet(&self, url: &str) -> Option<ReferrerPolicy> {
+    let _ = url;
+    None
+  }
 }
 
 impl StyleSheet {
@@ -456,6 +470,15 @@ impl StyleSheet {
   /// remains the document origin.
   pub(crate) fn set_font_face_source_stylesheet_url(&mut self, stylesheet_url: &str) {
     set_font_face_source_stylesheet_url_in_rules(&mut self.rules, stylesheet_url);
+  }
+
+  /// Annotate `@font-face` rules in this stylesheet with the stylesheet's effective referrer
+  /// policy.
+  ///
+  /// This is used when fetching web fonts so `Referrer-Policy` response headers on stylesheets can
+  /// affect the `Referer` header emitted for any nested subresource requests.
+  pub(crate) fn set_font_face_source_referrer_policy(&mut self, policy: ReferrerPolicy) {
+    set_font_face_source_referrer_policy_in_rules(&mut self.rules, policy);
   }
 
   /// Returns true when this stylesheet (including nested conditional blocks) contains at least one
@@ -1278,6 +1301,35 @@ fn set_font_face_source_stylesheet_url_in_rules(rules: &mut [CssRule], styleshee
   }
 
   visit_rules(rules, &stylesheet_url);
+}
+
+fn set_font_face_source_referrer_policy_in_rules(rules: &mut [CssRule], policy: ReferrerPolicy) {
+  fn visit_rules(rules: &mut [CssRule], policy: ReferrerPolicy) {
+    for rule in rules {
+      match rule {
+        CssRule::FontFace(face) => {
+          if face.source_referrer_policy.is_none() {
+            face.source_referrer_policy = Some(policy);
+          }
+        }
+        CssRule::Style(rule) => visit_rules(&mut rule.nested_rules, policy),
+        CssRule::Media(rule) => visit_rules(&mut rule.rules, policy),
+        CssRule::Container(rule) => visit_rules(&mut rule.rules, policy),
+        CssRule::Supports(rule) => visit_rules(&mut rule.rules, policy),
+        CssRule::Layer(rule) => visit_rules(&mut rule.rules, policy),
+        CssRule::StartingStyle(rule) => visit_rules(&mut rule.rules, policy),
+        CssRule::Scope(rule) => visit_rules(&mut rule.rules, policy),
+        CssRule::Page(_)
+        | CssRule::CounterStyle(_)
+        | CssRule::FontPaletteValues(_)
+        | CssRule::Property(_)
+        | CssRule::Import(_)
+        | CssRule::Keyframes(_) => {}
+      }
+    }
+  }
+
+  visit_rules(rules, policy);
 }
 
 fn collect_css_metadata_recursive(
@@ -3323,6 +3375,11 @@ pub struct FontFaceRule {
   /// web fonts). The initiator origin for CORS remains the document origin; this field only tracks
   /// the stylesheet provenance.
   pub source_stylesheet_url: Option<String>,
+  /// Referrer policy that applies to subresource fetches initiated by this stylesheet.
+  ///
+  /// When present, this should reflect the stylesheet's effective referrer policy after applying
+  /// any `Referrer-Policy` response header overrides.
+  pub source_referrer_policy: Option<ReferrerPolicy>,
   /// The family name exposed to CSS.
   pub family: Option<String>,
   /// Ordered font sources from the `src` descriptor.
@@ -3382,6 +3439,7 @@ impl Default for FontFaceRule {
   fn default() -> Self {
     Self {
       source_stylesheet_url: None,
+      source_referrer_policy: None,
       family: None,
       sources: Vec::new(),
       style: FontFaceStyle::Normal,
@@ -3987,6 +4045,9 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
 
                     let mut rules = sheet.rules.clone();
                     set_font_face_source_stylesheet_url_in_rules(&mut rules, &canonical_sheet_url);
+                    if let Some(policy) = loader.referrer_policy_for_stylesheet(&canonical_sheet_url) {
+                      set_font_face_source_referrer_policy_in_rules(&mut rules, policy);
+                    }
 
                     let resolved_children = if sheet.contains_imports() {
                       let mut resolved_children = Vec::new();

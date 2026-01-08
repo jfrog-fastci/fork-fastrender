@@ -6918,14 +6918,15 @@ impl FastRender {
               .as_ref()
               .and_then(|ctx| ctx.document_url.as_deref())
               .or_else(|| document_base_url.as_deref());
+            let referrer_policy = resource_context
+              .as_ref()
+              .map(|ctx| ctx.referrer_policy)
+              .unwrap_or_default();
             if let Some(url) = stylesheet_referrer_url {
               sheet.set_font_face_source_stylesheet_url(url);
             }
+            sheet.set_font_face_source_referrer_policy(referrer_policy);
             let resolved = if sheet.contains_imports() {
-              let referrer_policy = resource_context
-                .as_ref()
-                .map(|ctx| ctx.referrer_policy)
-                .unwrap_or_default();
               let loader = CssImportFetcher::new(
                 document_base_url.clone(),
                 None,
@@ -7055,16 +7056,17 @@ impl FastRender {
             )?;
             let mut sheet = sheet;
             sheet.set_font_face_source_stylesheet_url(&sheet_base);
+            let effective_referrer_policy =
+              resource.response_referrer_policy.unwrap_or(request_referrer_policy);
+            sheet.set_font_face_source_referrer_policy(effective_referrer_policy);
             let resolved = if sheet.contains_imports() {
-              let import_referrer_policy =
-                resource.response_referrer_policy.unwrap_or(request_referrer_policy);
               let loader = CssImportFetcher::new(
                 Some(sheet_base.clone()),
                 cors_mode,
                 Arc::clone(fetcher),
                 resource_context.clone(),
                 stylesheet_fetch_counter.clone(),
-                import_referrer_policy,
+                effective_referrer_policy,
               );
               sheet.resolve_imports_owned_with_cache(
                 &loader,
@@ -7283,6 +7285,7 @@ impl FastRender {
           if let Some(url) = stylesheet_referrer_url {
             sheet.set_font_face_source_stylesheet_url(url);
           }
+          sheet.set_font_face_source_referrer_policy(document_referrer_policy);
           if sheet.contains_imports() {
             let resolved = sheet.resolve_imports_owned_with_cache_with_importer_url(
               &inline_loader,
@@ -7417,16 +7420,17 @@ impl FastRender {
               let mut sheet =
                 parse_stylesheet_with_media(css_text.as_ref(), media_ctx, Some(media_query_cache))?;
               sheet.set_font_face_source_stylesheet_url(&sheet_base);
+              let effective_referrer_policy =
+                resource.response_referrer_policy.unwrap_or(request_referrer_policy);
+              sheet.set_font_face_source_referrer_policy(effective_referrer_policy);
               if sheet.contains_imports() {
-                let import_referrer_policy =
-                  resource.response_referrer_policy.unwrap_or(request_referrer_policy);
                 let loader = CssImportFetcher::new(
                   Some(sheet_base.clone()),
                   cors_mode,
                   Arc::clone(&fetcher),
                   resource_context.cloned(),
                   stylesheet_fetch_counter.clone(),
-                  import_referrer_policy,
+                  effective_referrer_policy,
                 );
                 let resolved = sheet.resolve_imports_owned_with_cache(
                   &loader,
@@ -12049,6 +12053,14 @@ impl CssImportLoader for CssImportFetcher {
         .load_with_importer(url, self.base_url.as_deref())?
         .css,
     )
+  }
+
+  fn referrer_policy_for_stylesheet(&self, url: &str) -> Option<ReferrerPolicy> {
+    self
+      .imported_stylesheet_policies
+      .borrow()
+      .get(url)
+      .copied()
   }
 
   fn load_with_importer(

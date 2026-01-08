@@ -5,7 +5,9 @@ use fastrender::resource::{
   FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher,
 };
 use std::collections::HashMap;
+use std::fs;
 use std::io;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +37,11 @@ impl RecordingFetcher {
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .clone()
   }
+}
+
+fn fixture_font_bytes() -> Option<Vec<u8>> {
+  let path = Path::new("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+  fs::read(path).ok()
 }
 
 impl ResourceFetcher for RecordingFetcher {
@@ -217,4 +224,153 @@ fn nested_stylesheet_referrer_policy_headers_override_for_grandchild_imports() {
     requests.iter().all(|req| req.url != second_wrong_url),
     "expected nested import to resolve against first stylesheet final URL; got requests: {requests:?}"
   );
+}
+
+#[test]
+fn stylesheet_referrer_policy_header_applies_to_font_requests() {
+  let font_bytes = match fixture_font_bytes() {
+    Some(bytes) => bytes,
+    None => return,
+  };
+
+  let document_url = "https://doc.test/page.html";
+  let stylesheet_url = "https://assets.test/style.css";
+  let font_url = "https://fonts.test/font.ttf";
+
+  let mut stylesheet = FetchedResource::with_final_url(
+    format!(
+      r#"@font-face {{ font-family: "PolicyFont"; src: url("{font_url}"); }}
+      body {{ color: rgb(1, 2, 3); }}"#
+    )
+    .into_bytes(),
+    Some("text/css".to_string()),
+    Some(stylesheet_url.to_string()),
+  );
+  stylesheet.status = Some(200);
+  stylesheet.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+
+  let mut font = FetchedResource::with_final_url(
+    font_bytes,
+    Some("font/ttf".to_string()),
+    Some(font_url.to_string()),
+  );
+  font.status = Some(200);
+
+  let fetcher = Arc::new(
+    RecordingFetcher::default()
+      .with_response(stylesheet_url, stylesheet)
+      .with_response(font_url, font),
+  );
+
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FETCH_LINK_CSS".to_string(),
+    "1".to_string(),
+  )]));
+  let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config_and_fetcher(
+    config,
+    Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+  )
+  .unwrap();
+
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+          <link rel="stylesheet" href="{stylesheet_url}">
+        </head><body>ok</body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(64, 64),
+    )
+    .unwrap();
+
+  let requests = fetcher.requests();
+  let font_request = requests
+    .iter()
+    .find(|request| request.url == font_url && request.destination == FetchDestination::Font)
+    .expect("expected font fetch from @font-face stylesheet");
+
+  assert_eq!(font_request.referrer_url.as_deref(), Some(stylesheet_url));
+  assert_eq!(font_request.referrer_policy, ReferrerPolicy::NoReferrer);
+}
+
+#[test]
+fn nested_stylesheet_referrer_policy_headers_override_for_font_requests() {
+  let font_bytes = match fixture_font_bytes() {
+    Some(bytes) => bytes,
+    None => return,
+  };
+
+  let document_url = "https://doc.test/page.html";
+  let root_stylesheet_url = "https://assets.test/style.css";
+  let import_url = "https://assets.test/import.css";
+  let import_final_url = "https://cdn.test/import-final.css";
+  let font_url = "https://fonts.test/nested.ttf";
+
+  let mut root = FetchedResource::with_final_url(
+    b"@import url('import.css'); body { color: rgb(1, 2, 3); }".to_vec(),
+    Some("text/css".to_string()),
+    Some(root_stylesheet_url.to_string()),
+  );
+  root.status = Some(200);
+  root.response_referrer_policy = Some(ReferrerPolicy::Origin);
+
+  let mut imported = FetchedResource::with_final_url(
+    format!(
+      r#"@font-face {{ font-family: "NestedFont"; src: url("{font_url}"); }}
+      body {{ background: rgb(0, 0, 0); }}"#
+    )
+    .into_bytes(),
+    Some("text/css".to_string()),
+    Some(import_final_url.to_string()),
+  );
+  imported.status = Some(200);
+  imported.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+
+  let mut font = FetchedResource::with_final_url(
+    font_bytes,
+    Some("font/ttf".to_string()),
+    Some(font_url.to_string()),
+  );
+  font.status = Some(200);
+
+  let fetcher = Arc::new(
+    RecordingFetcher::default()
+      .with_response(root_stylesheet_url, root)
+      .with_response(import_url, imported)
+      .with_response(font_url, font),
+  );
+
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FETCH_LINK_CSS".to_string(),
+    "1".to_string(),
+  )]));
+  let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config_and_fetcher(
+    config,
+    Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+  )
+  .unwrap();
+
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+          <link rel="stylesheet" href="{root_stylesheet_url}">
+        </head><body>ok</body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(64, 64),
+    )
+    .unwrap();
+
+  let requests = fetcher.requests();
+  let font_request = requests
+    .iter()
+    .find(|request| request.url == font_url && request.destination == FetchDestination::Font)
+    .expect("expected nested @font-face font fetch");
+
+  assert_eq!(font_request.referrer_url.as_deref(), Some(import_final_url));
+  assert_eq!(font_request.referrer_policy, ReferrerPolicy::NoReferrer);
 }

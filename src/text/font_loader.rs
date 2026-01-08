@@ -40,7 +40,7 @@ use crate::render_control;
 use crate::resource::{
   cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, origin_from_url,
   validate_cors_allow_origin, CorsMode, FetchCredentialsMode, FetchDestination, FetchRequest,
-  FetchedResource, HttpFetcher, HttpRetryPolicy, ResourceFetcher,
+  FetchedResource, HttpFetcher, HttpRetryPolicy, ReferrerPolicy, ResourceFetcher,
 };
 use crate::text::face_cache;
 use crate::text::font_db::FontCacheConfig;
@@ -238,6 +238,16 @@ pub struct WebFontLoadReport {
 /// Abstraction over font byte fetching so tests can simulate slow/failed loads.
 pub trait FontFetcher: Send + Sync {
   fn fetch(&self, url: &str, referrer_url: Option<&str>) -> Result<FetchedResource>;
+
+  fn fetch_with_referrer_policy(
+    &self,
+    url: &str,
+    referrer_url: Option<&str>,
+    referrer_policy: Option<ReferrerPolicy>,
+  ) -> Result<FetchedResource> {
+    let _ = referrer_policy;
+    self.fetch(url, referrer_url)
+  }
 }
 
 struct DefaultFontFetcher;
@@ -257,7 +267,16 @@ struct ResourceFontFetcher {
 
 impl FontFetcher for ResourceFontFetcher {
   fn fetch(&self, url: &str, referrer_url: Option<&str>) -> Result<FetchedResource> {
-    let (document_url, document_origin, referrer_policy) = self
+    self.fetch_with_referrer_policy(url, referrer_url, None)
+  }
+
+  fn fetch_with_referrer_policy(
+    &self,
+    url: &str,
+    referrer_url: Option<&str>,
+    referrer_policy_override: Option<ReferrerPolicy>,
+  ) -> Result<FetchedResource> {
+    let (document_url, document_origin, document_referrer_policy) = self
       .resource_context
       .read()
       .ok()
@@ -273,6 +292,7 @@ impl FontFetcher for ResourceFontFetcher {
       .unwrap_or((None, None, None));
     let document_origin =
       document_origin.or_else(|| document_url.as_deref().and_then(origin_from_url));
+    let referrer_policy = referrer_policy_override.or(document_referrer_policy);
 
     let mut request =
       FetchRequest::new(url, FetchDestination::Font).with_credentials_mode(FetchCredentialsMode::Omit);
@@ -1675,7 +1695,11 @@ impl FontContext {
       }
     }
     let referrer_url = face.source_stylesheet_url.as_deref().or(base_url);
-    let resource = match self.fetcher.fetch(resolved_url, referrer_url) {
+    let resource = match self.fetcher.fetch_with_referrer_policy(
+      resolved_url,
+      referrer_url,
+      face.source_referrer_policy,
+    ) {
       Ok(result) => result,
       Err(err) => {
         self.record_font_error(resolved_url, &err);
