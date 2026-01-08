@@ -268,14 +268,22 @@ impl Document {
   }
 
   pub fn text_data(&self, node: NodeId) -> Result<&str> {
-    match &self.node(node).kind {
+    let node = self
+      .nodes
+      .get(node.index())
+      .ok_or(DomError::NotFoundError)?;
+    match &node.kind {
       NodeKind::Text { content } => Ok(content.as_str()),
       _ => Err(DomError::InvalidNodeType),
     }
   }
 
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool> {
-    match &mut self.node_mut(node).kind {
+    let node = self
+      .nodes
+      .get_mut(node.index())
+      .ok_or(DomError::NotFoundError)?;
+    match &mut node.kind {
       NodeKind::Text { content } => {
         if content == data {
           return Ok(false);
@@ -308,5 +316,7 @@ pub fn set_attribute(doc: &mut Document, node_id: NodeId, name: &str, value: &st
 
 #[cfg(test)]
 mod attrs_tests;
+#[cfg(test)]
+mod mutation_tests;
 #[cfg(test)]
 mod snapshot_tests;

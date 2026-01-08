@@ -108,7 +108,15 @@ impl Document {
 /// of the document root.
 pub fn import_domnode(doc: &mut Document, root: &DomNode) -> NodeId {
   let doc_root = doc.root();
-  import_subtree(doc, doc_root, root)
+  match &root.node_type {
+    DomNodeType::Document { .. } => {
+      for child in &root.children {
+        import_subtree(doc, doc_root, child);
+      }
+      doc_root
+    }
+    _ => import_subtree(doc, doc_root, root),
+  }
 }
 
 #[cfg(test)]

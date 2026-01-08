@@ -1,35 +1,159 @@
-use super::error::{DomError, Result};
+use crate::dom::HTML_NAMESPACE;
+
+use super::DomError;
 use super::{Document, NodeId, NodeKind};
 
-fn node_allows_children(kind: &NodeKind) -> bool {
-  !matches!(kind, NodeKind::Text { .. })
-}
-
 impl Document {
+  fn node_checked(&self, id: NodeId) -> Result<&super::Node, DomError> {
+    self
+      .nodes
+      .get(id.index())
+      .ok_or(DomError::NotFoundError)
+  }
+
+  fn validate_insert_hierarchy(&self, parent: NodeId, child: NodeId) -> Result<(), DomError> {
+    // NodeId validation is performed by callers, but keep this self-contained for internal use.
+    let parent_kind = &self.node_checked(parent)?.kind;
+    let child_kind = &self.node_checked(child)?.kind;
+
+    // The document root cannot be inserted anywhere.
+    if child == self.root() {
+      return Err(DomError::HierarchyRequestError);
+    }
+
+    // Non-root `Document` nodes should never exist.
+    if matches!(child_kind, NodeKind::Document { .. }) {
+      return Err(DomError::InvalidNodeType);
+    }
+
+    // Leaf nodes cannot accept children.
+    if matches!(parent_kind, NodeKind::Text { .. }) {
+      return Err(DomError::HierarchyRequestError);
+    }
+
+    match child_kind {
+      NodeKind::ShadowRoot { .. } => match parent_kind {
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+        _ => return Err(DomError::HierarchyRequestError),
+      },
+      NodeKind::Slot { .. } => match parent_kind {
+        NodeKind::Element { .. } => {}
+        _ => return Err(DomError::HierarchyRequestError),
+      },
+      _ => {}
+    }
+
+    Ok(())
+  }
+
+  fn validate_no_cycles(&self, parent: NodeId, child: NodeId) -> Result<(), DomError> {
+    if parent == child {
+      return Err(DomError::HierarchyRequestError);
+    }
+
+    // A leaf node (no children) cannot be an ancestor of `parent` unless `parent == child` which is
+    // handled above. This fast path keeps common insertions O(1) on deep trees.
+    if self.node_checked(child)?.children.is_empty() {
+      return Ok(());
+    }
+
+    let mut current = Some(parent);
+    while let Some(id) = current {
+      if id == child {
+        return Err(DomError::HierarchyRequestError);
+      }
+      current = self.node_checked(id)?.parent;
+    }
+
+    Ok(())
+  }
+
+  fn index_of_child_internal(
+    &self,
+    parent: NodeId,
+    child: NodeId,
+  ) -> Result<Option<usize>, DomError> {
+    self.node_checked(parent)?;
+    self.node_checked(child)?;
+    Ok(
+      self.nodes[parent.index()]
+        .children
+        .iter()
+        .position(|&c| c == child),
+    )
+  }
+
+  fn detach_from_parent(&mut self, child: NodeId) -> Result<Option<NodeId>, DomError> {
+    self.node_checked(child)?;
+    let Some(old_parent) = self.nodes[child.index()].parent else {
+      return Ok(None);
+    };
+
+    self.node_checked(old_parent)?;
+    let pos = self.nodes[old_parent.index()]
+      .children
+      .iter()
+      .position(|&c| c == child)
+      .ok_or(DomError::NotFoundError)?;
+    self.nodes[old_parent.index()].children.remove(pos);
+    self.nodes[child.index()].parent = None;
+    Ok(Some(old_parent))
+  }
+
   pub fn create_element(&mut self, tag_name: &str, namespace: &str) -> NodeId {
+    let is_html_ns = namespace.is_empty() || namespace == HTML_NAMESPACE;
+    // Normalise HTML namespace to the empty string, matching the renderer DOM representation.
+    let namespace = if namespace == HTML_NAMESPACE {
+      ""
+    } else {
+      namespace
+    };
+
     let inert_subtree = tag_name.eq_ignore_ascii_case("template");
-    self.push_node(
+    let kind = if is_html_ns && tag_name.eq_ignore_ascii_case("slot") {
+      NodeKind::Slot {
+        namespace: namespace.to_string(),
+        attributes: Vec::new(),
+        assigned: false,
+      }
+    } else {
       NodeKind::Element {
         tag_name: tag_name.to_string(),
         namespace: namespace.to_string(),
         attributes: Vec::new(),
-      },
-      None,
-      inert_subtree,
-    )
+      }
+    };
+
+    self.push_node(kind, None, inert_subtree)
   }
 
-  pub fn create_text_node(&mut self, text: &str) -> NodeId {
+  pub fn create_text(&mut self, data: &str) -> NodeId {
     self.push_node(
       NodeKind::Text {
-        content: text.to_string(),
+        content: data.to_string(),
       },
       None,
       /* inert_subtree */ false,
     )
   }
 
-  pub fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<bool> {
+  pub fn parent(&self, node: NodeId) -> Result<Option<NodeId>, DomError> {
+    Ok(self.node_checked(node)?.parent)
+  }
+
+  pub fn children(&self, node: NodeId) -> Result<&[NodeId], DomError> {
+    Ok(self.node_checked(node)?.children.as_slice())
+  }
+
+  pub fn index_of_child(
+    &self,
+    parent: NodeId,
+    child: NodeId,
+  ) -> Result<Option<usize>, DomError> {
+    self.index_of_child_internal(parent, child)
+  }
+
+  pub fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<bool, DomError> {
     self.insert_before(parent, child, None)
   }
 
@@ -38,258 +162,119 @@ impl Document {
     parent: NodeId,
     new_child: NodeId,
     reference: Option<NodeId>,
-  ) -> Result<bool> {
-    if new_child == self.root {
-      return Err(DomError::HierarchyRequest);
+  ) -> Result<bool, DomError> {
+    self.node_checked(parent)?;
+    self.node_checked(new_child)?;
+    if let Some(reference) = reference {
+      self.node_checked(reference)?;
     }
 
-    if !node_allows_children(&self.node(parent).kind) {
-      return Err(DomError::HierarchyRequest);
-    }
+    self.validate_insert_hierarchy(parent, new_child)?;
+    self.validate_no_cycles(parent, new_child)?;
 
-    if let Some(reference_id) = reference {
-      if self.node(reference_id).parent != Some(parent) {
-        return Err(DomError::HierarchyRequest);
-      }
-    }
-
-    if parent == new_child {
-      return Err(DomError::HierarchyRequest);
-    }
-
-    // Cycle check: inserting an ancestor into its descendant would create a loop. We only need to
-    // do this walk if `new_child` can be an ancestor at all (i.e. it has children already).
-    if !self.node(new_child).children.is_empty() {
-      let mut current = Some(parent);
-      while let Some(id) = current {
-        if id == new_child {
-          return Err(DomError::HierarchyRequest);
-        }
-        current = self.node(id).parent;
-      }
-    }
-
-    let old_parent = self.node(new_child).parent;
-
-    let parent_children = &self.node(parent).children;
-    let mut reference = reference;
-
-    let current_index = if old_parent == Some(parent) {
-      let idx = parent_children
-        .iter()
-        .position(|&id| id == new_child)
-        .ok_or(DomError::NotFound)?;
-
-      // DOM spec: if the reference child is the node we're moving, use its next sibling instead.
-      if reference == Some(new_child) {
-        reference = parent_children.get(idx + 1).copied();
-      }
-
-      Some(idx)
-    } else {
-      None
+    let mut insertion_idx = match reference {
+      Some(reference) => self
+        .index_of_child_internal(parent, reference)?
+        .ok_or(DomError::NotFoundError)?,
+      None => self.nodes[parent.index()].children.len(),
     };
 
-    let reference_index = match reference {
-      Some(reference_id) => parent_children
-        .iter()
-        .position(|&id| id == reference_id)
-        .ok_or(DomError::HierarchyRequest)?,
-      None => parent_children.len(),
-    };
+    let current_parent = self.nodes[new_child.index()].parent;
 
-    let target_index = if let Some(current_index) = current_index {
-      if reference_index > current_index {
-        reference_index - 1
-      } else {
-        reference_index
+    if current_parent == Some(parent) {
+      // Move within the same parent.
+      let current_idx = self
+        .index_of_child_internal(parent, new_child)?
+        .ok_or(DomError::NotFoundError)?;
+
+      // If the node is being removed from a position before the insertion point, the insertion
+      // index shifts left by one.
+      if current_idx < insertion_idx {
+        insertion_idx -= 1;
       }
-    } else {
-      reference_index
-    };
 
-    let changed = if let Some(current_index) = current_index {
-      target_index != current_index
-    } else {
-      true
-    };
+      if current_idx == insertion_idx {
+        return Ok(false);
+      }
 
-    if !changed {
+      self.nodes[parent.index()].children.remove(current_idx);
+      self.nodes[parent.index()].children.insert(insertion_idx, new_child);
+      return Ok(true);
+    }
+
+    if current_parent.is_some() {
+      self.detach_from_parent(new_child)?;
+    }
+
+    self.nodes[parent.index()]
+      .children
+      .insert(insertion_idx, new_child);
+    self.nodes[new_child.index()].parent = Some(parent);
+    Ok(true)
+  }
+
+  pub fn remove_child(&mut self, parent: NodeId, child: NodeId) -> Result<bool, DomError> {
+    self.node_checked(parent)?;
+    self.node_checked(child)?;
+
+    if self.nodes[child.index()].parent != Some(parent) {
+      return Err(DomError::NotFoundError);
+    }
+    let idx = self
+      .index_of_child_internal(parent, child)?
+      .ok_or(DomError::NotFoundError)?;
+    self.nodes[parent.index()].children.remove(idx);
+    self.nodes[child.index()].parent = None;
+    Ok(true)
+  }
+
+  pub fn replace_child(
+    &mut self,
+    parent: NodeId,
+    new_child: NodeId,
+    old_child: NodeId,
+  ) -> Result<bool, DomError> {
+    self.node_checked(parent)?;
+    self.node_checked(new_child)?;
+    self.node_checked(old_child)?;
+
+    if new_child == old_child {
       return Ok(false);
     }
 
-    if let Some(old_parent_id) = old_parent {
-      if old_parent_id == parent {
-        let current_index = current_index.expect("missing current_index for parent move");
-        self.nodes[parent.0].children.remove(current_index);
-      } else {
-        let old_idx = self.nodes[old_parent_id.0]
-          .children
-          .iter()
-          .position(|&id| id == new_child)
-          .ok_or(DomError::NotFound)?;
-        self.nodes[old_parent_id.0].children.remove(old_idx);
-      }
-      self.nodes[new_child.0].parent = None;
+    self.validate_insert_hierarchy(parent, new_child)?;
+    self.validate_no_cycles(parent, new_child)?;
+
+    // Ensure `old_child` is actually a child of `parent`.
+    if self.nodes[old_child.index()].parent != Some(parent) {
+      return Err(DomError::NotFoundError);
+    }
+    self
+      .index_of_child_internal(parent, old_child)?
+      .ok_or(DomError::NotFoundError)?;
+
+    let current_parent = self.nodes[new_child.index()].parent;
+    if current_parent == Some(parent) {
+      // Remove the existing instance so we can insert at the replacement index.
+      let idx = self
+        .index_of_child_internal(parent, new_child)?
+        .ok_or(DomError::NotFoundError)?;
+      self.nodes[parent.index()].children.remove(idx);
+    } else if current_parent.is_some() {
+      self.detach_from_parent(new_child)?;
     }
 
-    self.nodes[parent.0].children.insert(target_index, new_child);
-    self.nodes[new_child.0].parent = Some(parent);
+    let replacement_idx = self
+      .index_of_child_internal(parent, old_child)?
+      .ok_or(DomError::NotFoundError)?;
+    self.nodes[parent.index()].children.remove(replacement_idx);
+    self.nodes[old_child.index()].parent = None;
 
-    Ok(true)
-  }
-
-  pub fn remove_child(&mut self, parent: NodeId, child: NodeId) -> Result<bool> {
-    if self.node(child).parent != Some(parent) {
-      return Err(DomError::NotFound);
-    }
-
-    let idx = self.nodes[parent.0]
+    self.nodes[parent.index()]
       .children
-      .iter()
-      .position(|&id| id == child)
-      .ok_or(DomError::NotFound)?;
-
-    self.nodes[parent.0].children.remove(idx);
-    self.nodes[child.0].parent = None;
+      .insert(replacement_idx, new_child);
+    self.nodes[new_child.index()].parent = Some(parent);
     Ok(true)
   }
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::dom::SVG_NAMESPACE;
-  use selectors::context::QuirksMode;
-
-  fn assert_parent_child_invariants(doc: &Document) {
-    assert!(doc.node(doc.root()).parent.is_none(), "root must be detached");
-
-    for (idx, node) in doc.nodes().iter().enumerate() {
-      let id = NodeId(idx);
-
-      if let Some(parent) = node.parent {
-        let parent_node = doc.node(parent);
-        assert!(
-          parent_node.children.contains(&id),
-          "node's parent must contain node in child list"
-        );
-      }
-
-      for &child in &node.children {
-        let child_node = doc.node(child);
-        assert_eq!(
-          child_node.parent,
-          Some(id),
-          "child must point back to parent"
-        );
-      }
-    }
-  }
-
-  #[test]
-  fn tree_mutation_maintains_parent_child_invariants() {
-    let mut doc = Document::new(QuirksMode::NoQuirks);
-    let root = doc.root();
-
-    let a = doc.create_element("a", "");
-    let b = doc.create_element("b", "");
-    let c = doc.create_element("c", "");
-    let d = doc.create_element("d", "");
-
-    assert!(doc.append_child(root, a).unwrap());
-    assert!(doc.append_child(root, b).unwrap());
-    assert!(doc.append_child(root, c).unwrap());
-    assert_eq!(doc.node(root).children, vec![a, b, c]);
-
-    assert!(doc.insert_before(root, d, Some(b)).unwrap());
-    assert_eq!(doc.node(root).children, vec![a, d, b, c]);
-
-    assert!(doc.append_child(root, a).unwrap());
-    assert_eq!(doc.node(root).children, vec![d, b, c, a]);
-
-    // No-op insert: `c` is already immediately before `a`.
-    assert!(!doc.insert_before(root, c, Some(a)).unwrap());
-    // No-op append: `a` is already the last child.
-    assert!(!doc.append_child(root, a).unwrap());
-
-    assert!(doc.remove_child(root, b).unwrap());
-    assert_eq!(doc.node(root).children, vec![d, c, a]);
-    assert!(doc.node(b).parent.is_none(), "removed node must be detached");
-
-    assert!(doc.append_child(a, b).unwrap());
-    assert_eq!(doc.node(a).children, vec![b]);
-
-    assert!(doc.append_child(b, d).unwrap());
-    assert_eq!(doc.node(root).children, vec![c, a]);
-    assert_eq!(doc.node(b).children, vec![d]);
-
-    assert_parent_child_invariants(&doc);
-  }
-
-  #[test]
-  fn attribute_names_are_case_insensitive_for_html_elements() {
-    let mut doc = Document::new(QuirksMode::NoQuirks);
-    let node = doc.create_element("div", "");
-
-    assert!(doc.set_attribute(node, "CLASS", "a").unwrap());
-    assert_eq!(doc.get_attribute(node, "class"), Some("a"));
-
-    assert!(!doc.set_attribute(node, "class", "a").unwrap());
-    assert!(doc.set_attribute(node, "class", "b").unwrap());
-    assert_eq!(doc.get_attribute(node, "CLASS"), Some("b"));
-
-    assert!(doc.remove_attribute(node, "ClAsS").unwrap());
-    assert_eq!(doc.get_attribute(node, "class"), None);
-
-    // Non-HTML namespaces should preserve case sensitivity.
-    let svg = doc.create_element("svg", SVG_NAMESPACE);
-    assert!(doc.set_attribute(svg, "viewBox", "0 0 10 10").unwrap());
-    assert_eq!(doc.get_attribute(svg, "viewbox"), None);
-  }
-
-  #[test]
-  fn deep_tree_mutations_do_not_overflow() {
-    // A depth that would almost certainly overflow recursive mutation on typical test stacks.
-    const DEPTH: usize = 50_000;
-
-    let mut doc = Document::new(QuirksMode::NoQuirks);
-    let root = doc.root();
-
-    let first = doc.create_element("div", "");
-    assert!(doc.append_child(root, first).unwrap());
-
-    let mut current = first;
-    for _ in 0..DEPTH {
-      let next = doc.create_element("div", "");
-      assert!(doc.append_child(current, next).unwrap());
-      current = next;
-    }
-
-    let leaf = doc.create_text_node("leaf");
-    assert!(doc.append_child(current, leaf).unwrap());
-
-    // Move the leaf back to the root and then remove it.
-    assert!(doc.append_child(root, leaf).unwrap());
-    assert!(doc.remove_child(root, leaf).unwrap());
-
-    assert_parent_child_invariants(&doc);
-  }
-
-  #[test]
-  fn inserting_ancestor_into_descendant_is_hierarchy_error() {
-    let mut doc = Document::new(QuirksMode::NoQuirks);
-    let root = doc.root();
-
-    let a = doc.create_element("div", "");
-    let b = doc.create_element("div", "");
-    let c = doc.create_element("div", "");
-
-    assert!(doc.append_child(root, a).unwrap());
-    assert!(doc.append_child(a, b).unwrap());
-    assert!(doc.append_child(b, c).unwrap());
-
-    let err = doc.append_child(c, a).unwrap_err();
-    assert_eq!(err, DomError::HierarchyRequest);
-  }
-}
