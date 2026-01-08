@@ -1251,6 +1251,7 @@ fn apply_backdrop_filters_with_region_filler<F>(
   blur_cache: Option<&mut (dyn BlurCacheOps + 'static)>,
   backdrop_cache: Option<&mut (dyn BackdropFilterCacheOps + 'static)>,
   fill_region: F,
+  projective_backdrop: Option<ProjectiveBackdropFilterContext>,
 ) -> RenderResult<()>
 where
   F: FnOnce(&mut Pixmap, u32, u32) -> RenderResult<()>,
@@ -1403,6 +1404,246 @@ where
   } else {
     (region.data(), region.width() as usize)
   };
+
+  // For projective stacking contexts we render the subtree into an untransformed layer and warp it
+  // at PopStackingContext time. In that mode we must apply the Filter Effects Level 2 step that
+  // cancels transforms between the element and the Backdrop Root: unwarp the filtered backdrop
+  // into the local (pre-projective) layer so that the subsequent projective warp does not distort
+  // the sampled backdrop image.
+  //
+  // This matches the spec's:
+  //  1) filter backdrop root image in screen space
+  //  2) apply inverse of transforms between B and the Backdrop Root to the filtered result
+  //  3) later apply B's transform again when compositing the stacking context
+  if let Some(projective) = projective_backdrop {
+    let filtered_pixmap = cached_filtered
+      .as_ref()
+      .map(|p| p.as_ref())
+      .unwrap_or(&region);
+    let corners = [
+      (filter_bounds.min_x(), filter_bounds.min_y()),
+      (filter_bounds.max_x(), filter_bounds.min_y()),
+      (filter_bounds.max_x(), filter_bounds.max_y()),
+      (filter_bounds.min_x(), filter_bounds.max_y()),
+    ];
+
+    let mut dst_quad_points = [Point::ZERO; 4];
+    let mut dst_quad = [(0.0f32, 0.0f32); 4];
+    let mut src_quad = [Point::ZERO; 4];
+    let mut valid = true;
+
+    for (i, (x, y)) in corners.iter().enumerate() {
+      let sx = *x * scale;
+      let sy = *y * scale;
+      let local_x = sx * projective.parent_transform.sx
+        + sy * projective.parent_transform.kx
+        + projective.parent_transform.tx
+        - dest_origin_in_src.0 as f32;
+      let local_y = sx * projective.parent_transform.ky
+        + sy * projective.parent_transform.sy
+        + projective.parent_transform.ty
+        - dest_origin_in_src.1 as f32;
+      dst_quad_points[i] = Point::new(local_x, local_y);
+      dst_quad[i] = (local_x, local_y);
+
+      let (tx, ty, _tz, tw) = projective.transform.transform_point(*x, *y, 0.0);
+      if !tw.is_finite() || tw.abs() < 1e-6 {
+        valid = false;
+        break;
+      }
+      let px = (tx / tw) * scale;
+      let py = (ty / tw) * scale;
+      let screen_x = px * projective.parent_transform.sx
+        + py * projective.parent_transform.kx
+        + projective.parent_transform.tx;
+      let screen_y = px * projective.parent_transform.ky
+        + py * projective.parent_transform.sy
+        + projective.parent_transform.ty;
+      src_quad[i] = Point::new(screen_x - clamped_x as f32, screen_y - clamped_y as f32);
+    }
+
+    if valid {
+      if let Some(homography) = Homography::from_quad_to_quad(src_quad, dst_quad_points) {
+        // Warp the filtered backdrop (in source-region coordinates) into the local stacking-context
+        // layer so that the later projective warp cancels out, keeping backdrop sampling screen-
+        // aligned.
+        //
+        // Clipping (border radii, clips) is applied *after* the warp so we can avoid allocating a
+        // full-destination-sized mask for the warp operation.
+        match crate::paint::projective_warp::warp_pixmap(
+          filtered_pixmap,
+          &homography,
+          &dst_quad,
+          (dest.width(), dest.height()),
+          None,
+        ) {
+          Ok(Some(mut warped)) => {
+            if let Some(clip) = clip_bounds {
+              let clip = if clip_origin.0 != 0 || clip_origin.1 != 0 {
+                Rect::from_xywh(
+                  clip.x() + clip_origin.0 as f32,
+                  clip.y() + clip_origin.1 as f32,
+                  clip.width(),
+                  clip.height(),
+                )
+              } else {
+                clip
+              };
+              if let Err(err) = hard_clip_pixmap_outside_rect_rgba(
+                &mut warped.pixmap,
+                Rect::from_xywh(
+                  clip.x() - warped.offset.0 as f32,
+                  clip.y() - warped.offset.1 as f32,
+                  clip.width(),
+                  clip.height(),
+                ),
+              ) {
+                scratch.region = Some(region);
+                BACKDROP_FILTER_SCRATCH.with(|cell| {
+                  *cell.borrow_mut() = scratch;
+                });
+                return Err(err);
+              }
+            }
+
+            if let Some(mask) = clip_mask {
+              match apply_mask_with_offset(&mut warped.pixmap, warped.offset, mask, clip_origin) {
+                Ok(applied) => {
+                  if !applied {
+                    scratch.region = Some(region);
+                    BACKDROP_FILTER_SCRATCH.with(|cell| {
+                      *cell.borrow_mut() = scratch;
+                    });
+                    return Ok(());
+                  }
+                }
+                Err(err) => {
+                  scratch.region = Some(region);
+                  BACKDROP_FILTER_SCRATCH.with(|cell| {
+                    *cell.borrow_mut() = scratch;
+                  });
+                  return Err(err);
+                }
+              }
+            }
+
+            let needs_shape_mask = !radii.is_zero()
+              || world_to_dest.kx != 0.0
+              || world_to_dest.ky != 0.0
+              || world_to_dest.tx.fract().abs() > 1e-6
+              || world_to_dest.ty.fract().abs() > 1e-6
+              || shape_bounds.x().fract().abs() > 1e-6
+              || shape_bounds.y().fract().abs() > 1e-6
+              || shape_bounds.width().fract().abs() > 1e-6
+              || shape_bounds.height().fract().abs() > 1e-6;
+
+            if needs_shape_mask {
+              let mut mask = match scratch.radii_mask.take() {
+                Some(existing)
+                  if existing.width() == warped.pixmap.width()
+                    && existing.height() == warped.pixmap.height() =>
+                {
+                  existing
+                }
+                _ => match Mask::new(warped.pixmap.width(), warped.pixmap.height()) {
+                  Some(m) => m,
+                  None => {
+                    scratch.region = Some(region);
+                    BACKDROP_FILTER_SCRATCH.with(|cell| {
+                      *cell.borrow_mut() = scratch;
+                    });
+                    return Ok(());
+                  }
+                },
+              };
+              if let Err(err) = check_active(RenderStage::Paint) {
+                scratch.region = Some(region);
+                scratch.radii_mask = Some(mask);
+                BACKDROP_FILTER_SCRATCH.with(|cell| {
+                  *cell.borrow_mut() = scratch;
+                });
+                return Err(err);
+              }
+              mask.data_mut().fill(0);
+
+              let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+                shape_bounds.x(),
+                shape_bounds.y(),
+                shape_bounds.width(),
+                shape_bounds.height(),
+                &radii,
+              ) else {
+                scratch.region = Some(region);
+                scratch.radii_mask = Some(mask);
+                BACKDROP_FILTER_SCRATCH.with(|cell| {
+                  *cell.borrow_mut() = scratch;
+                });
+                return Ok(());
+              };
+
+              let world_to_warped = concat_transforms(
+                Transform::from_translate(-(warped.offset.0 as f32), -(warped.offset.1 as f32)),
+                world_to_dest,
+              );
+              mask.fill_path(&path, tiny_skia::FillRule::Winding, true, world_to_warped);
+
+              if active_deadline().as_ref().map_or(false, |d| d.is_enabled()) {
+                let pix_w = warped.pixmap.width();
+                let pix_h = warped.pixmap.height();
+                if let Err(err) = apply_mask_rect_rgba(
+                  &mut warped.pixmap,
+                  &mask,
+                  ClipMaskDirtyRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: pix_w,
+                    y1: pix_h,
+                  },
+                ) {
+                  scratch.region = Some(region);
+                  scratch.radii_mask = Some(mask);
+                  BACKDROP_FILTER_SCRATCH.with(|cell| {
+                    *cell.borrow_mut() = scratch;
+                  });
+                  return Err(err);
+                }
+              } else {
+                warped.pixmap.apply_mask(&mask);
+              }
+              scratch.radii_mask = Some(mask);
+            }
+
+            let mut paint = PixmapPaint::default();
+            paint.opacity = 1.0;
+            paint.quality = tiny_skia::FilterQuality::Nearest;
+            paint.blend_mode = SkiaBlendMode::SourceOver;
+            dest.draw_pixmap(
+              warped.offset.0,
+              warped.offset.1,
+              warped.pixmap.as_ref(),
+              &paint,
+              Transform::identity(),
+              None,
+            );
+
+            scratch.region = Some(region);
+            BACKDROP_FILTER_SCRATCH.with(|cell| {
+              *cell.borrow_mut() = scratch;
+            });
+            return Ok(());
+          }
+          Ok(None) => {}
+          Err(err) => {
+            scratch.region = Some(region);
+            BACKDROP_FILTER_SCRATCH.with(|cell| {
+              *cell.borrow_mut() = scratch;
+            });
+            return Err(err);
+          }
+        }
+      }
+    }
+  }
 
   let needs_shape_mask = !radii.is_zero()
     || world_to_dest.kx != 0.0
@@ -1691,7 +1932,14 @@ fn apply_backdrop_filters(
       }
       Ok(())
     },
+    None,
   )
+}
+
+#[derive(Clone, Copy)]
+struct ProjectiveBackdropFilterContext {
+  transform: Transform3D,
+  parent_transform: Transform,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7327,7 +7575,7 @@ impl DisplayListRenderer {
   }
 
   fn apply_pending_backdrop(&mut self, next_item: &DisplayItem) -> RenderResult<()> {
-    let (pending, layer_origin) = {
+    let (pending, layer_origin, projective_backdrop) = {
       let Some(record) = self.stacking_layers.last_mut() else {
         return Ok(());
       };
@@ -7337,7 +7585,77 @@ impl DisplayListRenderer {
       if matches!(next_item, DisplayItem::PushClip(_)) {
         return Ok(());
       }
-      (record.pending_backdrop.take().unwrap(), record.layer_origin)
+      let pending = record.pending_backdrop.take().unwrap();
+      let layer_origin = record.layer_origin;
+
+      let projective_backdrop = record.projective_transform.and_then(|projective_transform| {
+        // Only apply projective backdrop compensation when the stacking context will be warped at
+        // `PopStackingContext` time. Otherwise we'd pre-unwarp the filtered backdrop but never
+        // re-apply the element's projective transform.
+        let warp_bounds = if record.filters.is_empty() {
+          record.css_bounds
+        } else {
+          let (out_l, out_t, out_r, out_b) =
+            filter_outset_with_bounds(&record.filters, 1.0, Some(record.css_bounds)).as_tuple();
+          let expanded = Rect::from_xywh(
+            record.css_bounds.x() - out_l,
+            record.css_bounds.y() - out_t,
+            record.css_bounds.width() + out_l + out_r,
+            record.css_bounds.height() + out_t + out_b,
+          );
+          if expanded.width() > 0.0 && expanded.height() > 0.0 {
+            expanded
+          } else {
+            record.css_bounds
+          }
+        };
+
+        let corners = [
+          (warp_bounds.min_x(), warp_bounds.min_y()),
+          (warp_bounds.max_x(), warp_bounds.min_y()),
+          (warp_bounds.max_x(), warp_bounds.max_y()),
+          (warp_bounds.min_x(), warp_bounds.max_y()),
+        ];
+
+        let mut src_quad = [Point::ZERO; 4];
+        let mut dst_quad_points = [Point::ZERO; 4];
+        let mut valid = true;
+
+        for (i, (x, y)) in corners.iter().enumerate() {
+          let sx = *x * self.scale;
+          let sy = *y * self.scale;
+          let src_x = sx * record.parent_transform.sx
+            + sy * record.parent_transform.kx
+            + record.parent_transform.tx;
+          let src_y = sx * record.parent_transform.ky
+            + sy * record.parent_transform.sy
+            + record.parent_transform.ty;
+          src_quad[i] = Point::new(src_x - layer_origin.0 as f32, src_y - layer_origin.1 as f32);
+
+          let (tx, ty, _tz, tw) = projective_transform.transform_point(*x, *y, 0.0);
+          if !tw.is_finite() || tw.abs() < 1e-6 {
+            valid = false;
+            break;
+          }
+          let px = (tx / tw) * self.scale;
+          let py = (ty / tw) * self.scale;
+          let dst_x = px * record.parent_transform.sx
+            + py * record.parent_transform.kx
+            + record.parent_transform.tx;
+          let dst_y = px * record.parent_transform.ky
+            + py * record.parent_transform.sy
+            + record.parent_transform.ty;
+          dst_quad_points[i] = Point::new(dst_x, dst_y);
+        }
+
+        let warp_valid = valid && Homography::from_quad_to_quad(src_quad, dst_quad_points).is_some();
+        warp_valid.then_some(ProjectiveBackdropFilterContext {
+          transform: projective_transform,
+          parent_transform: record.parent_transform,
+        })
+      });
+
+      (pending, layer_origin, projective_backdrop)
     };
 
     let clip_mask = self.canvas.clip_mask_rc();
@@ -7434,6 +7752,7 @@ impl DisplayListRenderer {
           )
         }
       },
+      projective_backdrop,
     )?;
     self.mark_current_pixmap_mutated();
     Ok(())
@@ -8827,6 +9146,7 @@ impl DisplayListRenderer {
                       )
                     }
                   },
+                  None,
                 )?;
               }
 
@@ -16351,6 +16671,150 @@ mod tests {
     assert!(
       changed,
       "expected backdrop-filter to change at least one pixel"
+    );
+  }
+
+  #[test]
+  fn backdrop_filter_projective_transform_sampling_is_screen_aligned() {
+    let viewport = 64u32;
+    let bounds = Rect::from_xywh(0.0, 0.0, viewport as f32, viewport as f32);
+    let center = bounds.center();
+    let rotate = Transform3D::translate(center.x, center.y, 0.0)
+      .multiply(&Transform3D::rotate_y(70_f32.to_radians()))
+      .multiply(&Transform3D::translate(-center.x, -center.y, 0.0));
+    let transform = Transform3D::perspective(200.0).multiply(&rotate);
+
+    // Pick a backdrop boundary that is not aligned with the projective transform's rotation axis so
+    // we can find pixels whose inverse-mapped backdrop sample crosses the boundary.
+    let boundary = viewport as f32 * 0.5 - 8.0;
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, boundary, viewport as f32),
+      color: Rgba::rgb(255, 0, 0),
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(boundary, 0.0, viewport as f32 - boundary, viewport as f32),
+      color: Rgba::rgb(0, 255, 0),
+    }));
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      is_root: false,
+      establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: Some(transform),
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    let pixmap = DisplayListRenderer::new(viewport, viewport, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    let homography = Homography::from_transform3d_z0(&transform);
+    let inv = homography
+      .inverse()
+      .expect("expected projective transform homography to be invertible");
+    let corners = [
+      Point::new(bounds.min_x(), bounds.min_y()),
+      Point::new(bounds.max_x(), bounds.min_y()),
+      Point::new(bounds.max_x(), bounds.max_y()),
+      Point::new(bounds.min_x(), bounds.max_y()),
+    ];
+    let projected = corners.map(|corner| {
+      homography
+        .map_point(corner)
+        .expect("expected projected quad corner to be finite")
+    });
+
+    let point_in_quad = |p: Point, quad: &[Point; 4]| -> bool {
+      let mut sign = 0.0f32;
+      for i in 0..4 {
+        let p1 = quad[i];
+        let p2 = quad[(i + 1) % 4];
+        let cross = (p2.x - p1.x) * (p.y - p1.y) - (p2.y - p1.y) * (p.x - p1.x);
+        if !cross.is_finite() {
+          return false;
+        }
+        if cross.abs() < 1e-6 {
+          continue;
+        }
+        if sign.abs() < 1e-6 {
+          sign = cross;
+          continue;
+        }
+        if cross * sign < 0.0 {
+          return false;
+        }
+      }
+      true
+    };
+
+    let edge_margin = 4.0f32;
+    let boundary_margin = 2.0f32;
+    let mut candidate: Option<(u32, u32, bool)> = None;
+    for y in 0..viewport {
+      for x in 0..viewport {
+        let p = Point::new(x as f32 + 0.5, y as f32 + 0.5);
+        if !point_in_quad(p, &projected) {
+          continue;
+        }
+        let Some((qx, qy)) = inv.transform_point(p.x, p.y) else {
+          continue;
+        };
+        if qx < 0.0
+          || qy < 0.0
+          || qx >= viewport as f32
+          || qy >= viewport as f32
+          || qx < edge_margin
+          || qy < edge_margin
+          || qx > viewport as f32 - edge_margin
+          || qy > viewport as f32 - edge_margin
+        {
+          continue;
+        }
+
+        let p_left = p.x < boundary;
+        let q_left = qx < boundary;
+        if p_left == q_left {
+          continue;
+        }
+        if (p.x - boundary).abs() < boundary_margin || (qx - boundary).abs() < boundary_margin {
+          continue;
+        }
+        candidate = Some((x, y, p_left));
+        break;
+      }
+      if candidate.is_some() {
+        break;
+      }
+    }
+
+    let (x, y, p_left) = candidate.expect("expected to find a pixel whose inverse-mapped sample crosses the backdrop boundary");
+    let expected = if p_left {
+      // Invert(red) -> cyan.
+      (0, 255, 255, 255)
+    } else {
+      // Invert(green) -> magenta.
+      (255, 0, 255, 255)
+    };
+    assert_eq!(
+      pixel(&pixmap, x, y),
+      expected,
+      "expected projective backdrop-filter sampling to remain screen-aligned"
     );
   }
 
