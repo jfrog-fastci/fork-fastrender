@@ -2187,6 +2187,34 @@ fn eval_style_range_value(
       "border-right-width" => length_to_numeric(&styles.border_right_width, container, ctx),
       "border-bottom-width" => length_to_numeric(&styles.border_bottom_width, container, ctx),
       "border-left-width" => length_to_numeric(&styles.border_left_width, container, ctx),
+      "border-top-left-radius" => {
+        if styles.border_top_left_radius.x == styles.border_top_left_radius.y {
+          length_to_numeric(&styles.border_top_left_radius.x, container, ctx)
+        } else {
+          None
+        }
+      }
+      "border-top-right-radius" => {
+        if styles.border_top_right_radius.x == styles.border_top_right_radius.y {
+          length_to_numeric(&styles.border_top_right_radius.x, container, ctx)
+        } else {
+          None
+        }
+      }
+      "border-bottom-right-radius" => {
+        if styles.border_bottom_right_radius.x == styles.border_bottom_right_radius.y {
+          length_to_numeric(&styles.border_bottom_right_radius.x, container, ctx)
+        } else {
+          None
+        }
+      }
+      "border-bottom-left-radius" => {
+        if styles.border_bottom_left_radius.x == styles.border_bottom_left_radius.y {
+          length_to_numeric(&styles.border_bottom_left_radius.x, container, ctx)
+        } else {
+          None
+        }
+      }
       "border-spacing" => {
         if styles.border_spacing_horizontal == styles.border_spacing_vertical {
           length_to_numeric(&styles.border_spacing_horizontal, container, ctx)

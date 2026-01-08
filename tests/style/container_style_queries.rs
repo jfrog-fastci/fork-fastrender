@@ -1850,6 +1850,116 @@ fn container_style_query_range_feature_matches_border_left_width() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_border_top_left_radius() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; border-top-left-radius: 1px; }
+      .container-large { container-type: inline-size; border-top-left-radius: 3px; }
+      .container-mixed { container-type: inline-size; border-top-left-radius: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(border-top-left-radius > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+    <div class="container-mixed">
+      <div id="mixed" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  let mixed = find_by_id(&styled, "mixed").expect("mixed element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_border_top_right_radius() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; border-top-right-radius: 1px; }
+      .container-large { container-type: inline-size; border-top-right-radius: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(border-top-right-radius > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_border_bottom_right_radius() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; border-bottom-right-radius: 1px; }
+      .container-large { container-type: inline-size; border-bottom-right-radius: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(border-bottom-right-radius > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_border_bottom_left_radius() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; border-bottom-left-radius: 1px; }
+      .container-large { container-type: inline-size; border-bottom-left-radius: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(border-bottom-left-radius > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_border_spacing() {
   let html = r#"
     <style>
