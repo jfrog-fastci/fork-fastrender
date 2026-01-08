@@ -12,6 +12,32 @@ pub mod traversal;
 #[cfg(test)]
 mod query_tests;
 
+#[derive(Debug, Clone)]
+pub struct RendererDomSnapshot {
+  pub dom: DomNode,
+  /// Mapping from `dom2::NodeId.index()` to the renderer's stable pre-order ids
+  /// (`crate::dom::enumerate_dom_ids`).
+  ///
+  /// Entry `0` means the `NodeId` is not represented in the snapshot (e.g. detached nodes that are
+  /// not reachable from the document root).
+  pub nodeid_to_preorder: Vec<usize>,
+  /// Mapping from renderer pre-order id (1-based) to the corresponding `dom2::NodeId`.
+  ///
+  /// Index 0 is unused to match the renderer's id scheme.
+  pub preorder_to_nodeid: Vec<Option<NodeId>>,
+}
+
+impl RendererDomSnapshot {
+  pub fn node_id_from_preorder(&self, id: usize) -> Option<NodeId> {
+    self.preorder_to_nodeid.get(id).copied().flatten()
+  }
+
+  pub fn preorder_id_from_node_id(&self, id: NodeId) -> Option<usize> {
+    let preorder = *self.nodeid_to_preorder.get(id.index())?;
+    (preorder != 0).then_some(preorder)
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
 
@@ -62,30 +88,6 @@ pub struct Node {
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
-}
-
-/// Mapping from renderer DOM pre-order IDs (1-based) to `dom2` [`NodeId`]s.
-///
-/// Renderer pre-order IDs follow the scheme in [`crate::dom::enumerate_dom_ids`]:
-/// - ID 0 is unused (synthetic slot)
-/// - The document root is ID 1
-/// - Children are visited in a depth-first pre-order traversal
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Dom2ToRendererMap {
-  /// Map from renderer pre-order DOM id to `dom2` `NodeId`.
-  ///
-  /// Index 0 is always `None`.
-  pub preorder_to_node_id: Vec<Option<NodeId>>,
-  /// Optional reverse map from `dom2` `NodeId` index to renderer pre-order id.
-  pub node_id_to_preorder: Vec<Option<usize>>,
-}
-
-/// Snapshot of a `dom2` document into the renderer's [`DomNode`] tree, along with a stable mapping
-/// from renderer DOM pre-order ids back to `dom2` node ids.
-#[derive(Debug, Clone)]
-pub struct RendererDomSnapshotWithMapping {
-  pub dom: DomNode,
-  pub mapping: Dom2ToRendererMap,
 }
 
 fn node_kind_to_dom_node_type(kind: &NodeKind) -> DomNodeType {
@@ -238,23 +240,21 @@ impl Document {
 
   /// Snapshot this `dom2` document back into the renderer's immutable [`DomNode`] representation,
   /// and produce a stable mapping from renderer pre-order node ids back to `dom2` node ids.
-  pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshotWithMapping {
-    let mut preorder_to_node_id = Vec::with_capacity(self.nodes_len() + 1);
-    preorder_to_node_id.push(None); // index 0 is unused
-    let mut node_id_to_preorder: Vec<Option<usize>> = vec![None; self.nodes_len()];
+  pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshot {
+    let mut preorder_to_nodeid = Vec::with_capacity(self.nodes_len() + 1);
+    preorder_to_nodeid.push(None); // index 0 is unused
+    let mut nodeid_to_preorder: Vec<usize> = vec![0; self.nodes_len()];
 
     let dom = self.to_renderer_dom_internal(|node_id| {
-      let preorder_id = preorder_to_node_id.len();
-      preorder_to_node_id.push(Some(node_id));
-      node_id_to_preorder[node_id.index()] = Some(preorder_id);
+      let preorder_id = preorder_to_nodeid.len();
+      preorder_to_nodeid.push(Some(node_id));
+      nodeid_to_preorder[node_id.index()] = preorder_id;
     });
 
-    RendererDomSnapshotWithMapping {
+    RendererDomSnapshot {
       dom,
-      mapping: Dom2ToRendererMap {
-        preorder_to_node_id,
-        node_id_to_preorder,
-      },
+      nodeid_to_preorder,
+      preorder_to_nodeid,
     }
   }
 

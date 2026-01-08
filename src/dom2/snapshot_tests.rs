@@ -1,5 +1,6 @@
 use crate::debug::snapshot::snapshot_dom;
 use crate::dom::{DomNode, DomNodeType};
+use selectors::context::QuirksMode;
 
 use super::{Document, NodeId, NodeKind};
 
@@ -40,6 +41,43 @@ fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
 }
 
 #[test]
+fn snapshot_with_mapping_uses_0_for_detached_nodes() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  doc.push_node(
+    NodeKind::Element {
+      tag_name: "div".to_string(),
+      namespace: "".to_string(),
+      attributes: Vec::new(),
+    },
+    Some(root),
+    /* inert_subtree */ false,
+  );
+  let detached = doc.push_node(
+    NodeKind::Text {
+      content: "detached".to_string(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  assert_eq!(
+    snapshot.nodeid_to_preorder[detached.index()],
+    0,
+    "detached nodes should not be represented in the snapshot mapping"
+  );
+  assert!(
+    !snapshot
+      .preorder_to_nodeid
+      .iter()
+      .any(|&v| v == Some(detached)),
+    "detached nodes should not appear in preorder_to_nodeid"
+  );
+}
+
+#[test]
 fn snapshot_with_mapping_matches_renderer_preorder_ids() {
   let html = concat!(
     "<!DOCTYPE html>",
@@ -63,29 +101,29 @@ fn snapshot_with_mapping_matches_renderer_preorder_ids() {
   assert_eq!(snapshot_dom(&root), snapshot_dom(&snapshot.dom));
 
   // Basic invariants.
-  assert_eq!(snapshot.mapping.preorder_to_node_id[0], None);
-  assert_eq!(snapshot.mapping.preorder_to_node_id[1], Some(doc.root()));
+  assert_eq!(snapshot.preorder_to_nodeid[0], None);
+  assert_eq!(snapshot.preorder_to_nodeid[1], Some(doc.root()));
 
   // Mapping length should be node_count + 1 (synthetic 0 slot).
-  let renderer_node_count = crate::dom::enumerate_dom_ids(&snapshot.dom).len();
-  assert_eq!(
-    snapshot.mapping.preorder_to_node_id.len(),
-    renderer_node_count + 1
-  );
-  assert_eq!(snapshot.mapping.node_id_to_preorder.len(), doc.nodes_len());
+  let renderer_ids = crate::dom::enumerate_dom_ids(&snapshot.dom);
+  let renderer_node_count = renderer_ids.len();
+  assert_eq!(snapshot.preorder_to_nodeid.len(), renderer_node_count + 1);
+  assert_eq!(snapshot.nodeid_to_preorder.len(), doc.nodes_len());
 
-  // Walk snapshot DOM in pre-order and verify mapping points back to the corresponding dom2 node.
-  let mut next_preorder = 1usize;
+  // Walk snapshot DOM and verify mapping points back to the corresponding dom2 node. We resolve the
+  // renderer id for each `DomNode` via `enumerate_dom_ids` to ensure the mapping stays aligned with
+  // the renderer's authoritative pre-order ids.
   let mut stack: Vec<&DomNode> = vec![&snapshot.dom];
   while let Some(node) = stack.pop() {
-    let preorder_id = next_preorder;
-    next_preorder += 1;
+    let preorder_id = *renderer_ids
+      .get(&(node as *const DomNode))
+      .expect("missing renderer preorder id");
 
-    let mapped = snapshot.mapping.preorder_to_node_id[preorder_id]
+    let mapped = snapshot.preorder_to_nodeid[preorder_id]
       .expect("missing dom2 node mapping for renderer preorder id");
     assert_eq!(
-      snapshot.mapping.node_id_to_preorder[mapped.index()],
-      Some(preorder_id),
+      snapshot.nodeid_to_preorder[mapped.index()],
+      preorder_id,
       "reverse mapping mismatch for dom2 node {mapped:?}"
     );
 
@@ -99,19 +137,14 @@ fn snapshot_with_mapping_matches_renderer_preorder_ids() {
       stack.push(child);
     }
   }
-  assert_eq!(
-    next_preorder - 1,
-    renderer_node_count,
-    "preorder traversal count mismatch"
-  );
 
   // Verify that the reverse map (when present) is consistent with the forward map.
-  for (idx, preorder) in snapshot.mapping.node_id_to_preorder.iter().enumerate() {
-    let Some(preorder) = preorder else {
+  for (idx, &preorder) in snapshot.nodeid_to_preorder.iter().enumerate() {
+    if preorder == 0 {
       continue;
-    };
+    }
     assert_eq!(
-      snapshot.mapping.preorder_to_node_id[*preorder],
+      snapshot.preorder_to_nodeid[preorder],
       Some(NodeId(idx)),
       "reverse/forward mapping disagreement for dom2 node index {idx}"
     );
@@ -152,13 +185,13 @@ fn snapshot_with_mapping_handles_deep_trees_without_recursion_overflow() {
   let snapshot = doc.to_renderer_dom_with_mapping();
 
   // Document root + DEPTH elements + leaf text, plus synthetic 0 mapping slot.
-  assert_eq!(snapshot.mapping.preorder_to_node_id.len(), doc.nodes_len() + 1);
-  assert_eq!(snapshot.mapping.preorder_to_node_id[0], None);
-  assert_eq!(snapshot.mapping.preorder_to_node_id[1], Some(doc.root()));
+  assert_eq!(snapshot.preorder_to_nodeid.len(), doc.nodes_len() + 1);
+  assert_eq!(snapshot.preorder_to_nodeid[0], None);
+  assert_eq!(snapshot.preorder_to_nodeid[1], Some(doc.root()));
 
   // Sanity check a few positions, including the deepest leaf.
-  let last_preorder = snapshot.mapping.preorder_to_node_id.len() - 1;
-  let leaf_id = snapshot.mapping.preorder_to_node_id[last_preorder]
+  let last_preorder = snapshot.preorder_to_nodeid.len() - 1;
+  let leaf_id = snapshot.preorder_to_nodeid[last_preorder]
     .expect("missing mapping for last preorder id");
   assert_eq!(
     doc.node(leaf_id).kind,
@@ -166,9 +199,5 @@ fn snapshot_with_mapping_handles_deep_trees_without_recursion_overflow() {
       content: "leaf".to_string()
     }
   );
-  assert_eq!(
-    snapshot.mapping.node_id_to_preorder[leaf_id.index()],
-    Some(last_preorder)
-  );
+  assert_eq!(snapshot.nodeid_to_preorder[leaf_id.index()], last_preorder);
 }
-
