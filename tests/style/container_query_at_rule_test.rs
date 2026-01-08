@@ -6,6 +6,7 @@ use fastrender::style::cascade::{
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{ContainerType, LineHeight, WritingMode};
 use fastrender::style::values::CustomPropertyValue;
+use fastrender::style::values::LengthUnit;
 use fastrender::style::ComputedStyle;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -762,6 +763,34 @@ fn container_query_inline_size_vertical_writing_mode_resolves_cqw_to_zero() {
   );
 
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn line_height_container_query_units_resolve_against_container_context() {
+  let css = r#"
+    #t { line-height: 10cqw; }
+  "#;
+
+  let styled = cascade_with_custom_container(
+    css,
+    200.0,
+    100.0,
+    WritingMode::HorizontalTb,
+    ContainerType::Size,
+    vec![],
+  );
+
+  let target = find_by_id(&styled, "t").expect("target");
+  match &target.styles.line_height {
+    fastrender::style::types::LineHeight::Length(len) => {
+      assert_eq!(len.unit, LengthUnit::Px);
+      assert!(
+        (len.value - 20.0).abs() < 0.01,
+        "expected 20px (10cqw with container width 200px), got {len:?}"
+      );
+    }
+    other => panic!("expected LineHeight::Length after resolution, got {other:?}"),
+  }
 }
 
 #[test]

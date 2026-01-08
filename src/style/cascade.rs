@@ -12280,6 +12280,16 @@ pub(crate) fn resolve_line_height_length(style: &mut ComputedStyle, viewport: Si
   use crate::style::types::LineHeight;
 
   if let LineHeight::Length(len) = style.line_height {
+    // Container query units depend on the resolved query container size and are handled later in
+    // `resolve_container_query_lengths`. Avoid prematurely converting them into raw pixel values.
+    if len.unit.is_container_query_relative()
+      || len
+        .calc
+        .is_some_and(|calc| calc.has_container_query_relative())
+    {
+      return;
+    }
+
     let px = len.resolve_with_context(
       Some(style.font_size),
       viewport.width,
@@ -30114,6 +30124,10 @@ fn resolve_container_query_lengths(
   if let Some(len) = styles.contain_intrinsic_height.length.as_mut() {
     resolve_len(len);
   }
+
+  // Container query units inside `line-height` values are resolved above, but line-height lengths
+  // still need to be reduced to absolute pixels (e.g. `calc(10cqw + 1em)`).
+  resolve_line_height_length(styles, viewport);
 }
 
 fn table_border_value(node: &DomNode) -> Option<Length> {
