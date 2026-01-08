@@ -151,12 +151,40 @@ impl HeaderCaptureServer {
 </html>"#
                   .to_vec(),
               ),
+              "/doc_response_policy_img_meta_override.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head>
+    <meta name="referrer" content="origin">
+  </head>
+  <body>
+    <img src="/img.png" style="width: 10px; height: 10px">
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
               "/doc_response_policy_iframe.html" => (
                 "200 OK",
                 "text/html; charset=utf-8",
                 br#"<!doctype html>
 <html>
   <head></head>
+  <body>
+    <iframe src="/frame.html" style="width: 10px; height: 10px"></iframe>
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
+              "/doc_response_policy_iframe_meta_override.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head>
+    <meta name="referrer" content="origin">
+  </head>
   <body>
     <iframe src="/frame.html" style="width: 10px; height: 10px"></iframe>
   </body>
@@ -334,7 +362,9 @@ body { font-family: "TestFont"; }"#
                 | "/doc_response_policy_link_override.html"
                 | "/doc_response_policy_meta_override.html"
                 | "/doc_response_policy_img.html"
+                | "/doc_response_policy_img_meta_override.html"
                 | "/doc_response_policy_iframe.html"
+                | "/doc_response_policy_iframe_meta_override.html"
             ) {
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
@@ -1587,6 +1617,81 @@ fn document_response_referrer_policy_no_referrer_allows_meta_override_for_nested
       req.headers
     );
   }
+}
+
+#[test]
+fn document_response_referrer_policy_no_referrer_allows_meta_override_for_images() {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_response_referrer_policy_no_referrer_allows_meta_override_for_images",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_response_policy_img_meta_override.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in ["/doc_response_policy_img_meta_override.html", "/img.png"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert_eq!(
+    header_value(&img_req.headers, "referer").as_deref(),
+    Some(expected_referer.as_str()),
+    "expected meta Referrer-Policy override to win over document response Referrer-Policy for /img.png; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
+fn document_response_referrer_policy_no_referrer_allows_meta_override_for_iframes() {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_response_referrer_policy_no_referrer_allows_meta_override_for_iframes",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!(
+    "{}/doc_response_policy_iframe_meta_override.html",
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in ["/doc_response_policy_iframe_meta_override.html", "/frame.html"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  let frame_req = requests
+    .iter()
+    .find(|req| req.path == "/frame.html")
+    .expect("expected /frame.html request");
+  assert_eq!(
+    header_value(&frame_req.headers, "referer").as_deref(),
+    Some(expected_referer.as_str()),
+    "expected meta Referrer-Policy override to win over document response Referrer-Policy for /frame.html; got:\n{}",
+    frame_req.headers
+  );
 }
 
 #[test]
