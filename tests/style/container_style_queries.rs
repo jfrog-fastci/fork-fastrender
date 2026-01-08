@@ -1096,6 +1096,32 @@ fn container_style_query_range_feature_matches_image_resolution() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_perspective() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; perspective: 100px; }
+      .container-large { container-type: inline-size; perspective: 300px; }
+      .child { color: rgb(0 0 255); }
+      @container style(perspective > 200px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_widows() {
   let html = r#"
     <style>

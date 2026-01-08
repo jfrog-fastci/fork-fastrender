@@ -2009,6 +2009,10 @@ fn eval_style_range_value(
         }),
         crate::style::types::OffsetRotate::Auto { .. } => None,
       },
+      "perspective" => styles
+        .perspective
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
       "image-resolution" => {
         // `image-resolution: from-image` depends on the referenced image's metadata, which isn't
         // available during style query evaluation.
