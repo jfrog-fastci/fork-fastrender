@@ -7809,14 +7809,25 @@ impl FormattingContext for TableFormattingContext {
       };
 
       let base_y = row_offsets.get(row_start).copied().unwrap_or(0.0);
-      let mut fragment = laid.fragment;
-      // Position the cell box at the start of its row span and give it the full spanned height so
-      // backgrounds and borders cover the row. Vertical-align is applied to the cell contents by
-      // shifting children inside the cell.
-      fragment.bounds =
-        crate::geometry::Rect::from_xywh(x, base_y, fragment.bounds.width(), spanned_height);
+      let cell_span_end = (cell.col + cell.colspan).min(col_widths.len());
+      let mut spanned_width = 0.0;
+      for col_idx in cell.col..cell_span_end {
+        spanned_width += col_widths.get(col_idx).copied().unwrap_or(0.0);
+      }
+      if cell_span_end > cell.col {
+        spanned_width += h_spacing * (cell_span_end - cell.col).saturating_sub(1) as f32;
+      }
+
+      let mut fragment = crate::layout::contexts::block::unconvert_fragment_axes_root(laid.fragment);
+
+      // Position the cell box at the start of its row/column span and give it the full spanned size
+      // so backgrounds and borders cover the allocated grid slot. Table slot geometry is expressed
+      // in the table's logical axes (inline = x, block = y). Each fragment stores its own logical
+      // coordinates, so the cell's writing-mode does not affect its placement in the table grid.
+      fragment.bounds = crate::geometry::Rect::from_xywh(x, base_y, spanned_width, spanned_height);
 
       if y_offset.abs() > 0.0 {
+        // `vertical-align` shifts content along the table's block axis.
         let delta = Point::new(0.0, y_offset);
         for child in fragment.children_mut() {
           // Shift each direct child; their descendants stay relative to the shifted

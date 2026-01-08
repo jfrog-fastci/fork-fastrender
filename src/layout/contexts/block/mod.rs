@@ -6747,15 +6747,32 @@ fn convert_fragment_axes(
 
   if block_is_horizontal {
     // Swap axes: logical block → physical x, logical inline → physical y.
+    //
+    // Note: `parent_inline_size`/`parent_block_size` are expressed in the parent's logical axes.
+    // When the parent is horizontal-tb, `parent_inline_size` is its physical width and
+    // `parent_block_size` is its physical height. When the parent is vertical, those swap.
+    //
+    // We need the parent's *physical* width/height here because we're mapping onto physical X/Y.
+    let parent_block_is_horizontal = block_axis_is_horizontal(parent_writing_mode);
+    let parent_physical_width = if parent_block_is_horizontal {
+      parent_block_size
+    } else {
+      parent_inline_size
+    };
+    let parent_physical_height = if parent_block_is_horizontal {
+      parent_inline_size
+    } else {
+      parent_block_size
+    };
     let phys_x = if block_positive {
       logical_block_start
     } else {
-      parent_block_size - logical_block_start - block_size
+      parent_physical_width - logical_block_start - block_size
     };
     let phys_y = if inline_positive {
       logical_inline_start
     } else {
-      parent_inline_size - logical_inline_start - inline_size
+      parent_physical_height - logical_inline_start - inline_size
     };
     fragment.bounds = Rect::from_xywh(phys_x, phys_y, block_size, inline_size);
     let child_inline = inline_size;
@@ -6779,6 +6796,110 @@ fn convert_fragment_axes(
     fragment.children = mapped_children.into();
     fragment
   }
+}
+
+fn unconvert_fragment_axes(
+  mut fragment: FragmentNode,
+  parent_inline_size: f32,
+  parent_block_size: f32,
+  parent_writing_mode: WritingMode,
+  parent_direction: crate::style::types::Direction,
+) -> FragmentNode {
+  let style_wm = fragment
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(parent_writing_mode);
+  let dir = fragment
+    .style
+    .as_ref()
+    .map(|s| s.direction)
+    .unwrap_or(parent_direction);
+  let _inline_is_horizontal = inline_axis_is_horizontal(style_wm);
+  let block_is_horizontal = block_axis_is_horizontal(style_wm);
+  let inline_positive = inline_axis_positive(style_wm, dir);
+  let block_positive = block_axis_positive(style_wm);
+
+  let parent_block_is_horizontal = block_axis_is_horizontal(parent_writing_mode);
+  let parent_physical_width = if parent_block_is_horizontal {
+    parent_block_size
+  } else {
+    parent_inline_size
+  };
+  let parent_physical_height = if parent_block_is_horizontal {
+    parent_inline_size
+  } else {
+    parent_block_size
+  };
+
+  if block_is_horizontal {
+    // Inverse of `convert_fragment_axes` for vertical writing modes:
+    // physical x/y → logical inline/block coordinates.
+    let phys_x = fragment.bounds.x();
+    let phys_y = fragment.bounds.y();
+    let block_size = fragment.bounds.width();
+    let inline_size = fragment.bounds.height();
+
+    let logical_block_start = if block_positive {
+      phys_x
+    } else {
+      parent_physical_width - phys_x - block_size
+    };
+    let logical_inline_start = if inline_positive {
+      phys_y
+    } else {
+      parent_physical_height - phys_y - inline_size
+    };
+
+    fragment.bounds =
+      Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size);
+    let child_inline = inline_size;
+    let child_block = block_size;
+    let mapped_children: Vec<_> = fragment
+      .children
+      .into_iter()
+      .map(|c| unconvert_fragment_axes(c, child_inline, child_block, style_wm, dir))
+      .collect();
+    fragment.children = mapped_children.into();
+    fragment
+  } else {
+    // Keep axes; only recurse.
+    let inline_size = fragment.bounds.width();
+    let block_size = fragment.bounds.height();
+    let mapped_children: Vec<_> = fragment
+      .children
+      .into_iter()
+      .map(|c| unconvert_fragment_axes(c, inline_size, block_size, style_wm, dir))
+      .collect();
+    fragment.children = mapped_children.into();
+    fragment
+  }
+}
+
+/// Converts a fragment subtree produced in physical coordinates back into logical coordinates.
+///
+/// Block layout produces fragments in a logical coordinate system (inline axis = X, block axis = Y)
+/// and then converts them to physical coordinates based on `writing-mode`. Some layout algorithms
+/// (notably tables) need to embed the result back into an unconverted parent flow. This helper
+/// inverts the axis conversion for such call sites.
+pub(crate) fn unconvert_fragment_axes_root(fragment: FragmentNode) -> FragmentNode {
+  let style_wm = fragment
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(WritingMode::HorizontalTb);
+  let dir = fragment
+    .style
+    .as_ref()
+    .map(|s| s.direction)
+    .unwrap_or(crate::style::types::Direction::Ltr);
+  let (inline_size, block_size) = if block_axis_is_horizontal(style_wm) {
+    // Physical width/height correspond to block/inline sizes respectively.
+    (fragment.bounds.height(), fragment.bounds.width())
+  } else {
+    (fragment.bounds.width(), fragment.bounds.height())
+  };
+  unconvert_fragment_axes(fragment, inline_size, block_size, style_wm, dir)
 }
 
 /// Checks if a box is out of normal flow (absolute/fixed positioned or float)
