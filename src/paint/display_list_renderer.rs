@@ -21361,4 +21361,83 @@ mod tests {
       "expected Backdrop Root boundaries with backdrop-sensitive descendants to allocate one extra offscreen layer"
     );
   }
+
+  #[test]
+  fn root_stacking_context_does_not_force_backdrop_root_boundary_layer() {
+    let render_allocations = |establishes_backdrop_root: bool| -> u64 {
+      let bounds = Rect::from_xywh(0.0, 0.0, 64.0, 64.0);
+      let plane = Rect::from_xywh(16.0, 16.0, 32.0, 32.0);
+      let mut list = DisplayList::new();
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: bounds,
+        color: Rgba::RED,
+      }));
+
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        is_root: true,
+        establishes_backdrop_root,
+        has_backdrop_sensitive_descendants: true,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: false,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: Vec::new(),
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        is_root: false,
+        establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
+        bounds: plane,
+        plane_rect: plane,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: true,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+      list.push(DisplayItem::PopStackingContext);
+      list.push(DisplayItem::PopStackingContext);
+
+      let diag = Arc::new(LayerAllocationDiagnostics::default());
+      let mut renderer =
+        DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
+      renderer.set_parallelism(PaintParallelism::disabled());
+      renderer.layer_alloc_diagnostics = Some(diag);
+
+      let report = renderer.render_with_report(&list).expect("render");
+      report.layer_allocations
+    };
+
+    let baseline = render_allocations(false);
+    let with_root_backdrop = render_allocations(true);
+    assert!(
+      baseline > 0,
+      "expected backdrop-filter descendant to allocate at least one offscreen layer"
+    );
+    assert_eq!(
+      with_root_backdrop, baseline,
+      "expected document root stacking contexts to avoid forcing an additional backdrop-root layer"
+    );
+  }
 }
