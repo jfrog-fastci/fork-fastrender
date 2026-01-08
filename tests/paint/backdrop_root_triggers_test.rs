@@ -123,6 +123,70 @@ fn filter_url_triggers_backdrop_root_even_when_unresolved() {
 }
 
 #[test]
+fn filter_url_triggers_backdrop_root_for_mix_blend_mode_even_when_unresolved() {
+  let html_without_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(0 255 0); }
+      #parent {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        background: rgb(255 0 0);
+        mix-blend-mode: difference;
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html_without_backdrop_root, 64, 64);
+  assert_eq!(
+    pixel(&pixmap, 20, 20),
+    (255, 255, 0, 255),
+    "sanity: without a backdrop-root boundary, mix-blend-mode should blend with the page backdrop"
+  );
+
+  let html_with_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(0 255 0); }
+      #parent {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        /* The filter cannot be resolved, but per filter-effects-2 the property presence still
+           establishes a Backdrop Root boundary. */
+        filter: url(#missing);
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        background: rgb(255 0 0);
+        mix-blend-mode: difference;
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html_with_backdrop_root, 64, 64);
+
+  // The unresolved filter itself does not affect output, but the Backdrop Root boundary must
+  // confine mix-blend-mode blending to `#parent` (which has no backdrop of its own).
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (0, 255, 0, 255));
+}
+
+#[test]
 fn backdrop_filter_url_triggers_backdrop_root_even_when_unresolved() {
   let html_without_backdrop_root = r#"<!doctype html>
     <style>
