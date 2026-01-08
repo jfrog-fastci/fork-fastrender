@@ -646,20 +646,22 @@ fn anchor_positioning_inline_sides_respect_rtl_when_inline_axis_is_vertical() {
       let overlay_fragment =
         find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
 
-      let expected_y = if matches!(direction, Direction::Rtl) {
-        anchor_fragment.bounds.max_y()
-      } else {
+      // Mirror the `inline_axis_positive` logic used by layout: in `sideways-lr` the inline axis
+      // direction is flipped relative to vertical writing modes.
+      let inline_positive = match writing_mode {
+        WritingMode::SidewaysLr => matches!(direction, Direction::Rtl),
+        _ => !matches!(direction, Direction::Rtl),
+      };
+      let expected_y = if inline_positive {
         anchor_fragment.bounds.y()
+      } else {
+        anchor_fragment.bounds.max_y()
       };
 
       assert!(
         (overlay_fragment.bounds.y() - expected_y).abs() < 0.1,
         "inline-start should map to the {:?} edge under {writing_mode:?} + {direction:?} (got y={}, expected {})",
-        if matches!(direction, Direction::Rtl) {
-          "bottom"
-        } else {
-          "top"
-        },
+        if inline_positive { "top" } else { "bottom" },
         overlay_fragment.bounds.y(),
         expected_y,
       );
