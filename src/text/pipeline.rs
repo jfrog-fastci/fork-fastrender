@@ -6528,14 +6528,45 @@ impl ClusterMap {
     let mut char_offsets = Vec::new();
     for (byte_idx, _) in run.text.char_indices() {
       record_cluster_map_char_iteration();
+      if char_offsets.len() == char_offsets.capacity() {
+        let additional = char_offsets.len().max(1);
+        if char_offsets.try_reserve(additional).is_err() {
+          return Self {
+            char_to_glyph: Vec::new(),
+            glyph_to_char: Vec::new(),
+          };
+        }
+      }
       char_offsets.push(byte_idx);
     }
 
     let char_count = char_offsets.len();
     let glyph_count = run.glyphs.len();
 
-    let mut char_to_glyph = vec![0; char_count];
-    let mut glyph_to_char = vec![0; glyph_count];
+    if char_count == 0 || glyph_count == 0 {
+      return Self {
+        char_to_glyph: Vec::new(),
+        glyph_to_char: Vec::new(),
+      };
+    }
+
+    let mut char_to_glyph = Vec::new();
+    if char_to_glyph.try_reserve_exact(char_count).is_err() {
+      return Self {
+        char_to_glyph: Vec::new(),
+        glyph_to_char: Vec::new(),
+      };
+    }
+    char_to_glyph.resize(char_count, 0);
+
+    let mut glyph_to_char = Vec::new();
+    if glyph_to_char.try_reserve_exact(glyph_count).is_err() {
+      return Self {
+        char_to_glyph: Vec::new(),
+        glyph_to_char: Vec::new(),
+      };
+    }
+    glyph_to_char.resize(glyph_count, 0);
 
     // Build glyph to char mapping from cluster info
     for (glyph_idx, glyph) in run.glyphs.iter().enumerate() {
