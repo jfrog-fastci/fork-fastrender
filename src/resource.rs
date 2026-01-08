@@ -56,7 +56,7 @@ use url::Url;
 pub mod bundle;
 mod cors;
 mod curl_backend;
-mod data_url;
+pub(crate) mod data_url;
 #[cfg(feature = "disk_cache")]
 pub mod disk_cache;
 pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
@@ -15083,7 +15083,8 @@ mod tests {
   #[test]
   fn fetch_partial_allows_oversized_data_url_prefixes() {
     let bytes = vec![42u8; 1024];
-    let url = data_url::encode_base64_data_url("application/octet-stream", &bytes);
+    let url =
+      data_url::encode_base64_data_url("application/octet-stream", &bytes).expect("data url");
     let fetcher = HttpFetcher::new().with_max_size(64);
     assert!(
       fetcher.fetch(&url).is_err(),

@@ -314,12 +314,49 @@ fn percent_decode_prefix(input: &str, max_bytes: usize) -> Result<Vec<u8>> {
   Ok(out)
 }
 
-pub(crate) fn encode_base64_data_url(media_type: &str, data: &[u8]) -> String {
-  let mut url = String::from("data:");
+pub(crate) fn encode_base64_data_url(media_type: &str, data: &[u8]) -> Option<String> {
+  // Base64 expands input bytes by ~4/3; build the final URL in a single `String` allocation so we
+  // can fail gracefully on OOM instead of aborting.
+  let input_len = u64::try_from(data.len()).ok()?;
+  let base64_len = input_len
+    .checked_add(2)?
+    .checked_div(3)?
+    .checked_mul(4)?;
+  let base64_len = usize::try_from(base64_len).ok()?;
+
+  let total_len = "data:"
+    .len()
+    .checked_add(media_type.len())?
+    .checked_add(";base64,".len())?
+    .checked_add(base64_len)?;
+
+  let mut url = String::new();
+  url.try_reserve_exact(total_len).ok()?;
+  url.push_str("data:");
   url.push_str(media_type);
   url.push_str(";base64,");
-  url.push_str(&base64::engine::general_purpose::STANDARD.encode(data));
-  url
+
+  let start = url.len();
+  debug_assert_eq!(start, total_len - base64_len);
+  unsafe {
+    // SAFETY: We pre-reserved the final capacity and then extend the backing buffer to make room
+    // for the base64 payload. `encode_slice` writes ASCII, so the final buffer is valid UTF-8.
+    let buf = url.as_mut_vec();
+    buf.set_len(start + base64_len);
+    let written = match base64::engine::general_purpose::STANDARD
+      .encode_slice(data, &mut buf[start..])
+    {
+      Ok(written) => written,
+      Err(_) => {
+        buf.set_len(start);
+        return None;
+      }
+    };
+    buf.truncate(start + written);
+  }
+
+  debug_assert_eq!(url.len(), total_len);
+  Some(url)
 }
 
 #[cfg(test)]
@@ -379,7 +416,7 @@ mod tests {
   #[test]
   fn data_url_prefix_decodes_base64_prefix() {
     let bytes: Vec<u8> = (0..128u8).collect();
-    let url = encode_base64_data_url("application/octet-stream", &bytes);
+    let url = encode_base64_data_url("application/octet-stream", &bytes).expect("encode data url");
 
     let decoded = decode_data_url_prefix(&url, 13).expect("decode prefix");
     assert_eq!(
@@ -392,7 +429,7 @@ mod tests {
   #[test]
   fn data_url_prefix_decodes_base64_with_whitespace() {
     let bytes: Vec<u8> = (0..64u8).collect();
-    let mut url = encode_base64_data_url("application/octet-stream", &bytes);
+    let mut url = encode_base64_data_url("application/octet-stream", &bytes).expect("encode data url");
     let (_, payload) = url.split_once(',').expect("comma");
     let injected = payload
       .as_bytes()

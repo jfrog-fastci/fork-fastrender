@@ -8,11 +8,11 @@
 use crate::api::render_html_with_shared_resources;
 use crate::image_output::{encode_image, OutputFormat};
 use crate::image_loader::ImageCache;
+use crate::resource::data_url;
 use crate::style::color::Rgba;
 use crate::style::types::{Direction, FontStyle as CssFontStyle, Overflow, WritingMode};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::ForeignObjectInfo;
-use base64::Engine;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use tiny_skia::Pixmap;
@@ -397,11 +397,7 @@ fn escape_attr_value(value: &str) -> String {
 
 fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {
   let buf = encode_image(&pixmap, OutputFormat::Png).ok()?;
-
-  Some(format!(
-    "data:image/png;base64,{}",
-    base64::engine::general_purpose::STANDARD.encode(buf)
-  ))
+  data_url::encode_base64_data_url("image/png", &buf)
 }
 
 #[cfg(test)]
