@@ -502,7 +502,7 @@ pub(crate) fn render_iframe_srcdoc(
   }
   let mut owner_guard = IframeInFlightOwnerGuard::new(key, flight);
 
-  let pixmap = render_html_with_shared_resources(
+  let pixmap = match render_html_with_shared_resources(
     html,
     width,
     height,
@@ -515,8 +515,18 @@ pub(crate) fn render_iframe_srcdoc(
     policy,
     nested_context,
     nested_depth,
-  )
-  .ok()?;
+  ) {
+    Ok(pixmap) => pixmap,
+    Err(err) => {
+      if let Some(ctx) = context.as_ref() {
+        record_resource_error(ctx, ResourceKind::Document, &iframe_url, &err);
+      }
+      owner_guard.finish(None);
+      #[cfg(test)]
+      record_iframe_cache_hit(false);
+      return None;
+    }
+  };
   let image = image_data_from_pixmap(&pixmap, width, height);
   owner_guard.finish(Some(Arc::clone(&image)));
   #[cfg(test)]

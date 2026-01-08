@@ -2081,6 +2081,128 @@ fn meta_referrer_policy_outside_head_is_ignored() {
 }
 
 #[test]
+fn iframe_srcdoc_inherits_parent_meta_referrer_policy_no_referrer() {
+  let Some(server) =
+    HeaderCaptureServer::start("iframe_srcdoc_inherits_parent_meta_referrer_policy_no_referrer")
+  else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta name="referrer" content="no-referrer">
+      </head>
+      <body>
+        <iframe srcdoc="<!doctype html><html><head><style>html, body { margin: 0; padding: 0; }</style></head><body><img src='/img.png' style='width: 10px; height: 10px'></body></html>" style="width: 10px; height: 10px"></iframe>
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected iframe srcdoc image request to be issued for the test fixture",
+  );
+
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert!(
+    header_value(&img_req.headers, "referer").is_none(),
+    "expected parent meta Referrer-Policy to suppress Referer for iframe srcdoc image request; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
+fn iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin() {
+  let Some(server) =
+    HeaderCaptureServer::start("iframe_srcdoc_referrerpolicy_no_referrer_overrides_parent_meta_origin")
+  else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta name="referrer" content="origin">
+      </head>
+      <body>
+        <iframe srcdoc="<!doctype html><html><head><style>html, body { margin: 0; padding: 0; }</style></head><body><img src='/img.png' style='width: 10px; height: 10px'></body></html>" referrerpolicy="no-referrer" style="width: 10px; height: 10px"></iframe>
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected iframe srcdoc image request to be issued for the test fixture",
+  );
+
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert!(
+    header_value(&img_req.headers, "referer").is_none(),
+    "expected iframe referrerpolicy override to suppress Referer for iframe srcdoc image request; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
+fn iframe_srcdoc_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy() {
+  let Some(server) = HeaderCaptureServer::start(
+    "iframe_srcdoc_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy",
+  ) else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta name="referrer" content="origin">
+      </head>
+      <body>
+        <iframe referrerpolicy="origin" srcdoc="<!doctype html><html><head><meta name='referrer' content='no-referrer'><style>html, body { margin: 0; padding: 0; }</style></head><body><img src='/img.png' style='width: 10px; height: 10px'></body></html>" style="width: 10px; height: 10px"></iframe>
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected iframe srcdoc image request to be issued for the test fixture",
+  );
+
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert!(
+    header_value(&img_req.headers, "referer").is_none(),
+    "expected iframe srcdoc meta Referrer-Policy to suppress Referer for iframe srcdoc image request; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
 fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() {
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",
