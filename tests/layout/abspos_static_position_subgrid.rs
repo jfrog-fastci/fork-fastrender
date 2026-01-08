@@ -143,6 +143,9 @@ fn absolute_child_in_subgrid_uses_grid_track_static_position_with_vertical_writi
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
+  // writing-mode is inherited in real CSS. The test harness constructs computed styles manually,
+  // so set it explicitly to avoid accidentally testing a mismatched writing mode.
+  subgrid_style.writing_mode = WritingMode::VerticalRl;
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_row_subgrid = true;
   subgrid_style.grid_column_start = 1;
@@ -152,6 +155,7 @@ fn absolute_child_in_subgrid_uses_grid_track_static_position_with_vertical_writi
 
   let mut abs_style = ComputedStyle::default();
   abs_style.position = Position::Absolute;
+  abs_style.writing_mode = WritingMode::VerticalRl;
   abs_style.width = Some(Length::px(10.0));
   abs_style.height = Some(Length::px(10.0));
   abs_style.grid_column_start = 2;
@@ -216,6 +220,7 @@ fn absolute_child_in_nested_subgrid_uses_grid_track_static_position_with_vertica
 
   let mut outer_subgrid_style = ComputedStyle::default();
   outer_subgrid_style.display = Display::Grid;
+  outer_subgrid_style.writing_mode = WritingMode::VerticalRl;
   outer_subgrid_style.grid_column_subgrid = true;
   outer_subgrid_style.grid_row_subgrid = true;
   outer_subgrid_style.grid_column_start = 1;
@@ -225,6 +230,7 @@ fn absolute_child_in_nested_subgrid_uses_grid_track_static_position_with_vertica
 
   let mut inner_subgrid_style = ComputedStyle::default();
   inner_subgrid_style.display = Display::Grid;
+  inner_subgrid_style.writing_mode = WritingMode::VerticalRl;
   inner_subgrid_style.grid_column_subgrid = true;
   inner_subgrid_style.grid_row_subgrid = true;
   inner_subgrid_style.grid_column_start = 1;
@@ -234,6 +240,7 @@ fn absolute_child_in_nested_subgrid_uses_grid_track_static_position_with_vertica
 
   let mut abs_style = ComputedStyle::default();
   abs_style.position = Position::Absolute;
+  abs_style.writing_mode = WritingMode::VerticalRl;
   abs_style.width = Some(Length::px(10.0));
   abs_style.height = Some(Length::px(10.0));
   abs_style.grid_column_start = 2;

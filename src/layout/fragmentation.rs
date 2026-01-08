@@ -2624,10 +2624,10 @@ fn collect_forced_boundaries_with_axes_internal(
 
           if boundary_reqs.iter().any(|req| req.forced) {
             // Grid line boundaries should align to row/column band atomic ranges. Our atomic range
-            // collection treats the gutter *following* a track as belonging to the next band, so
-            // the boundary before line `i + 1` is the end edge of track `i` (rather than the start
-            // edge of track `i + 1`, which would land after the gutter and can create gap-only
-            // pages when page sizes line up exactly with track ends).
+            // collection treats the gutter *following* a track as belonging to the next band, so the
+            // boundary before line `i + 1` is the end edge of track `i` (rather than the start edge
+            // of track `i + 1`, which would land after the gutter and can create gap-only pages when
+            // page sizes line up exactly with track ends).
             let mut track_flow_ends = Vec::with_capacity(tracks.len());
             for (track_start, track_end) in tracks.iter().copied() {
               let track_size = (track_end - track_start).max(0.0);

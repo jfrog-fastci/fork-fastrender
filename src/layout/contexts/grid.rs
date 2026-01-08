@@ -4365,9 +4365,12 @@ impl GridFormattingContext {
               &ancestor_box_node.style,
             );
 
+            // Taffy stores tracks in physical axes (columns=x, rows=y). Pick the appropriate track
+            // vector for the physical axis that this CSS grid axis maps onto.
+            let axis_tracks = if axis_is_physical_x { &info.columns } else { &info.rows };
             let offsets = if axis_is_physical_x {
               compute_track_offsets(
-                &info.columns,
+                axis_tracks,
                 ancestor_bounds.width(),
                 ancestor_padding_left,
                 ancestor_padding_right,
@@ -4379,7 +4382,7 @@ impl GridFormattingContext {
               )
             } else {
               compute_track_offsets(
-                &info.rows,
+                axis_tracks,
                 ancestor_bounds.height(),
                 ancestor_padding_top,
                 ancestor_padding_bottom,
@@ -8553,7 +8556,27 @@ impl FormattingContext for GridFormattingContext {
         positioned_factory.with_positioned_cb(cb_for_absolute)
       };
 
-      let axes_swapped = !crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
+      // Subgrid axes follow the nearest ancestor grid's writing mode, not the subgrid node's own.
+      let axes_swapped = {
+        let mut effective_writing_mode = box_node.style.writing_mode;
+        let mut current_id = root_id;
+        let mut current_is_subgrid =
+          box_node.style.grid_row_subgrid || box_node.style.grid_column_subgrid;
+        while current_is_subgrid {
+          let Some(parent_id) = taffy.parent(current_id) else {
+            break;
+          };
+          let Some(parent_ptr) = taffy.get_node_context(parent_id).copied() else {
+            break;
+          };
+          let parent_box_node = unsafe { &*parent_ptr };
+          effective_writing_mode = parent_box_node.style.writing_mode;
+          current_is_subgrid =
+            parent_box_node.style.grid_row_subgrid || parent_box_node.style.grid_column_subgrid;
+          current_id = parent_id;
+        }
+        !crate::style::inline_axis_is_horizontal(effective_writing_mode)
+      };
 
       let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
@@ -12033,7 +12056,7 @@ mod tests {
   }
 
   #[test]
-  fn convert_style_subgrids_use_own_writing_mode_for_axes_swapped() {
+  fn convert_style_subgrids_inherit_axes_from_parent_grid() {
     let gc = GridFormattingContext::new();
 
     let mut parent_style = ComputedStyle::default();
@@ -12054,8 +12077,8 @@ mod tests {
       true,
     );
     assert!(
-      taffy_style.axes_swapped,
-      "subgrids should transpose axes based on their own writing-mode"
+      !taffy_style.axes_swapped,
+      "subgrids should map grid axes using the parent grid's writing-mode"
     );
 
     parent_style.writing_mode = WritingMode::VerticalRl;
@@ -12069,8 +12092,8 @@ mod tests {
       true,
     );
     assert!(
-      !taffy_style.axes_swapped,
-      "horizontal-tb subgrids should not transpose axes even when the parent is vertical"
+      taffy_style.axes_swapped,
+      "subgrids should transpose axes when the parent grid uses a vertical writing-mode"
     );
   }
 

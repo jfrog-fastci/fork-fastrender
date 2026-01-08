@@ -5753,6 +5753,7 @@ impl FormattingContext for BlockFormattingContext {
     }
     let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
+    // Block-axis sizing uses physical `width`/`height` depending on writing mode.
     let block_length = if inline_is_horizontal { style.height } else { style.width };
     let block_keyword = if inline_is_horizontal {
       style.height_keyword
@@ -6767,14 +6768,25 @@ impl FormattingContext for BlockFormattingContext {
 
     // Apply relative positioning after normal flow layout (CSS 2.1 §9.4.3).
     if style.position.is_relative() {
-      let block_base = containing_height;
+      let (cb_width, cb_height, inline_base, block_base) = if inline_is_horizontal {
+        (
+          constraints.width().unwrap_or(0.0),
+          constraints.height().unwrap_or(0.0),
+          constraints.width(),
+          constraints.height(),
+        )
+      } else {
+        (
+          constraints.height().unwrap_or(0.0),
+          constraints.width().unwrap_or(0.0),
+          constraints.height(),
+          constraints.width(),
+        )
+      };
       let containing_block = ContainingBlock::with_viewport_and_bases(
-        Rect::new(
-          Point::ZERO,
-          Size::new(containing_width, containing_height.unwrap_or(0.0)),
-        ),
+        Rect::new(Point::ZERO, Size::new(cb_width, cb_height)),
         self.viewport_size,
-        Some(containing_width),
+        inline_base,
         block_base,
       );
       let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
@@ -7206,12 +7218,24 @@ fn convert_fragment_axes(
     .as_ref()
     .map(|s| s.direction)
     .unwrap_or(parent_direction);
-  // Compute the parent's inline/block sizes in the fragment's coordinate system so children
-  // convert with the correct mirrored axes.
+
+  // Convert `scroll_overflow` from this fragment's local logical coordinate system to physical.
+  // Unlike `bounds`, `scroll_overflow` is local to the fragment, so it must be converted using the
+  // fragment's own writing mode.
   let phys_w = fragment.bounds.width();
   let phys_h = fragment.bounds.height();
   let child_inline = if block_axis_is_horizontal(style_wm) { phys_h } else { phys_w };
   let child_block = if block_axis_is_horizontal(style_wm) { phys_w } else { phys_h };
+  fragment.scroll_overflow = logical_rect_to_physical(
+    fragment.scroll_overflow,
+    child_inline,
+    child_block,
+    style_wm,
+    dir,
+  );
+
+  // Recurse into children using this fragment's writing mode (children are laid out in the
+  // fragment's logical coordinate system).
   let children = std::mem::take(&mut fragment.children);
   let mapped_children: Vec<_> = children
     .into_iter()
@@ -7326,6 +7350,13 @@ fn unconvert_fragment_axes(
     .unwrap_or(parent_direction);
   let child_inline = if block_axis_is_horizontal(style_wm) { phys_h } else { phys_w };
   let child_block = if block_axis_is_horizontal(style_wm) { phys_w } else { phys_h };
+  fragment.scroll_overflow = physical_rect_to_logical(
+    fragment.scroll_overflow,
+    child_inline,
+    child_block,
+    style_wm,
+    dir,
+  );
   let children = std::mem::take(&mut fragment.children);
   let mapped_children: Vec<_> = children
     .into_iter()

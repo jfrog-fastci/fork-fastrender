@@ -33,7 +33,6 @@
 use crate::layout::utils::content_size_from_box_sizing;
 use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
-use crate::style::inline_axis_is_horizontal;
 use crate::style::types::Overflow;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
@@ -167,14 +166,19 @@ pub fn compute_block_width(
   let margin_left = margin_value_for_side(style, start_side, containing_width, viewport);
   let margin_right = margin_value_for_side(style, end_side, containing_width, viewport);
 
-  // Resolve width (may be auto - represented by None)
-  let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
-  let inline_length = if inline_is_horizontal {
-    style.width.as_ref()
+  // Resolve the authored size on the *inline axis*.
+  //
+  // Physical `width`/`height` always refer to the physical X/Y axes, while this module computes
+  // the logical inline size. In vertical writing modes the inline axis maps to the physical Y
+  // axis, so `height` participates in the inline-size constraint equation.
+  let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+  let inline_size_value = if inline_is_horizontal {
+    style.width
   } else {
-    style.height.as_ref()
+    style.height
   };
-  let width_value = inline_length
+  let width_value = inline_size_value
+    .as_ref()
     .map(|len| resolve_length(*len, containing_width, style, viewport))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
 
@@ -241,14 +245,15 @@ pub fn compute_block_width_with_auto_margins(
     )
   };
 
-  // Resolve width
-  let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
-  let inline_length = if inline_is_horizontal {
-    style.width.as_ref()
+  // Resolve inline-axis size. See `compute_block_width`.
+  let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+  let inline_size_value = if inline_is_horizontal {
+    style.width
   } else {
-    style.height.as_ref()
+    style.height
   };
-  let width_value = inline_length
+  let width_value = inline_size_value
+    .as_ref()
     .map(|len| resolve_length(*len, containing_width, style, viewport))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
 
