@@ -1312,7 +1312,7 @@ fn clip_grid_item_parallel_for_page(
     axes,
     Some(fragmentainer_size),
   );
-  let total_extent = analyzer.content_extent().max(fragmentainer_size);
+  let total_extent = analyzer.content_extent();
   let boundaries = analyzer.boundaries(fragmentainer_size, total_extent)?;
   let fragment_count = boundaries.len().saturating_sub(1);
   if fragment_count == 0 || page_index >= fragment_count {

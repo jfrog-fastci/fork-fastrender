@@ -1315,13 +1315,37 @@ impl BlockFormattingContext {
           let used_border_box_width = computed_width.border_box_width();
           let used_border_box_height =
             specified_height.map(|h| (h.max(0.0) + vertical_edges).max(0.0));
-          let fc_constraints = LayoutConstraints::new(
-            AvailableSpace::Definite(containing_width),
-            constraints.available_height,
-          )
-          .with_used_border_box_size(Some(used_border_box_width), used_border_box_height);
+          // Block layout performs sizing/margin resolution in logical inline/block coordinates, but
+          // flex/grid/table formatting contexts operate in the physical width/height axes. Map the
+          // containing block dimensions into physical constraints and then convert the resulting
+          // fragment tree back into the block formatting context’s logical space so the parent’s
+          // axis-conversion step applies exactly once.
+          let (used_width_physical, used_height_physical) = if inline_is_horizontal {
+            (Some(used_border_box_width), used_border_box_height)
+          } else {
+            (used_border_box_height, Some(used_border_box_width))
+          };
+          let fc_constraints = if inline_is_horizontal {
+            LayoutConstraints::new(AvailableSpace::Definite(containing_width), constraints.available_height)
+          } else {
+            LayoutConstraints::new(constraints.available_width, AvailableSpace::Definite(containing_width))
+          }
+          .with_used_border_box_size(used_width_physical, used_height_physical);
 
           let mut fragment = fc.layout(child, &fc_constraints)?;
+          let parent_inline_is_horizontal = inline_axis_is_horizontal(parent.style.writing_mode);
+          let parent_block_size = if parent_inline_is_horizontal {
+            constraints.height().unwrap_or(0.0)
+          } else {
+            constraints.width().unwrap_or(0.0)
+          };
+          fragment = unconvert_fragment_axes(
+            fragment,
+            containing_width,
+            parent_block_size,
+            parent.style.writing_mode,
+            parent.style.direction,
+          );
           let desired_origin = child_border_origin;
           let offset = Point::new(
             desired_origin.x - fragment.bounds.x(),
@@ -2700,11 +2724,17 @@ impl BlockFormattingContext {
         .unwrap_or(&mut local_float_ctx)
     };
     let available_height = block_space;
+    // The positioned-layout code resolves `top/left` percentages against the containing block's
+    // physical width/height. Block layout tracks sizes in logical inline/block coordinates, so map
+    // them back to physical axes before constructing the containing block.
+    let block_space_px = block_space.to_option().unwrap_or(0.0);
+    let (relative_width, relative_height) = if inline_is_horizontal {
+      (containing_width, block_space_px)
+    } else {
+      (block_space_px, containing_width)
+    };
     let relative_cb = ContainingBlock::with_viewport(
-      Rect::new(
-        Point::ZERO,
-        Size::new(containing_width, block_space.to_option().unwrap_or(0.0)),
-      ),
+      Rect::new(Point::ZERO, Size::new(relative_width, relative_height)),
       self.viewport_size,
     );
     // Check for border/padding that prevents margin collapse with first child
@@ -6691,19 +6721,6 @@ fn convert_fragment_axes(
   parent_writing_mode: WritingMode,
   parent_direction: crate::style::types::Direction,
 ) -> FragmentNode {
-  if let Some(style) = fragment.style.as_deref() {
-    // Some layout modes (table, flex, grid) already emit fragments in physical coordinates
-    // (including vertical writing-mode axis handling). The block formatting context's axis
-    // conversion is intended for its own logical coordinate space; applying it again would swap
-    // axes twice.
-    if matches!(
-      style.display,
-      Display::TableCell | Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
-    ) {
-      return fragment;
-    }
-  }
-
   let style_wm = fragment
     .style
     .as_ref()
@@ -6880,7 +6897,6 @@ pub(crate) fn unconvert_fragment_axes_root(fragment: FragmentNode) -> FragmentNo
   };
   unconvert_fragment_axes(fragment, inline_size, block_size, style_wm, dir)
 }
-
 /// Checks if a box is out of normal flow (absolute/fixed positioned or float)
 fn is_out_of_flow(box_node: &BoxNode) -> bool {
   let position = box_node.style.position;

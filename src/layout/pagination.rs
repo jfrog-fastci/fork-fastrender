@@ -530,6 +530,12 @@ pub fn paginate_fragment_tree(
         }
         let footnote_area = build_footnote_area_fragment(&page_style, &axis, &page_footnotes);
 
+        let clipped_block_size = axis.block_size(&content.bounds);
+        let page_block_size = if axis.block_is_horizontal {
+          page_style.content_size.width
+        } else {
+          page_style.content_size.height
+        };
         content.bounds = if axis.block_is_horizontal {
           Rect::from_xywh(
             content.bounds.x(),
@@ -545,6 +551,22 @@ pub fn paginate_fragment_tree(
             page_style.content_size.height,
           )
         };
+        if !axis.block_positive {
+          // `clip_node` rebases fragments to the minimum physical coordinate of the clipped slice.
+          // When the block axis runs in the negative direction (e.g. `writing-mode: vertical-rl`),
+          // paginated slices should instead align their block-start edge to the page's block-start
+          // edge (right/bottom) after the page content box is expanded to its full size.
+          let delta = (page_block_size - clipped_block_size).max(0.0);
+          if delta > EPSILON {
+            for child in content.children_mut().iter_mut() {
+              if axis.block_is_horizontal {
+                translate_fragment(child, delta, 0.0);
+              } else {
+                translate_fragment(child, 0.0, delta);
+              }
+            }
+          }
+        }
         translate_fragment(
           &mut content,
           page_style.content_origin.x,

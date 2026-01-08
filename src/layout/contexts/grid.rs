@@ -5359,6 +5359,123 @@ impl GridFormattingContext {
       }
     }
 
+    let mut block_mirrored_x = false;
+    if mirror_x && !inline_is_horizontal && !axis_style.block_positive() {
+      // For vertical writing modes with a negative block axis (e.g. `writing-mode: vertical-rl`),
+      // we mirror the horizontal axis. The style conversion already maps `start`/`end` alignment
+      // values into Taffy's coordinate system, so the mirroring step must preserve an item's
+      // alignment within its grid area (rather than blindly mirroring the child bounding box).
+      //
+      // This mirrors the RTL-specific handling above, but applies when the block axis is the one
+      // running right-to-left.
+      let child_ids = match taffy.children(node_id) {
+        Ok(children) => children,
+        Err(_) => Vec::new(),
+      };
+
+      let apply_translation = |area_start: f32,
+                               area_end: f32,
+                               span_start: f32,
+                               span_end: f32,
+                               child_id: TaffyNodeId,
+                               child_fragment: &mut FragmentNode,
+                               deadline_counter: &mut usize|
+       -> Result<(), LayoutError> {
+        let child_style = match taffy.style(child_id) {
+          Ok(style) => style,
+          Err(_) => return Ok(()),
+        };
+        let width = child_fragment.bounds.width();
+        if !width.is_finite() || width <= 0.0 {
+          return Ok(());
+        }
+
+        let (area_start, area_end) = if area_start <= area_end {
+          (area_start, area_end)
+        } else {
+          (area_end, area_start)
+        };
+        let (span_start, span_end) = if span_start <= span_end {
+          (span_start, span_end)
+        } else {
+          (span_end, span_start)
+        };
+        let span_size = span_end - span_start;
+        if !span_size.is_finite() || span_size <= 0.0 {
+          return Ok(());
+        }
+
+        let mirrored_area_start = span_start + (span_end - area_end);
+        let mirrored_area_end = span_start + (span_end - area_start);
+
+        let old_start = child_fragment.bounds.x();
+        let offset_from_start = old_start - area_start;
+        let offset_from_end = area_end - (old_start + width);
+
+        let alignment = self.alignment_for_axis(Axis::Horizontal, child_style, container_style);
+        let unclamped_new_start = match alignment {
+          taffy::style::AlignItems::End | taffy::style::AlignItems::FlexEnd => {
+            mirrored_area_end - width - offset_from_end
+          }
+          _ => mirrored_area_start + offset_from_start,
+        };
+
+        let upper = (mirrored_area_end - width).max(mirrored_area_start);
+        let new_start = unclamped_new_start.clamp(mirrored_area_start, upper);
+        let delta = new_start - old_start;
+        translate_along_axis(child_fragment, Axis::Horizontal, delta, deadline_counter)
+      };
+
+      if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
+        if info.items.len() == fragment.children.len()
+          && child_ids.len() == fragment.children.len()
+          && !info.columns.sizes.is_empty()
+        {
+          let col_offsets = compute_track_offsets(
+            &info.columns,
+            layout.size.width,
+            layout.padding.left,
+            layout.padding.right,
+            layout.border.left,
+            layout.border.right,
+            container_style
+              .justify_content
+              .unwrap_or(TaffyAlignContent::Stretch),
+          );
+          let track_count = info.columns.sizes.len() as u16;
+          if let Some((span_start, span_end)) =
+            grid_area_for_item(&col_offsets, 1, track_count.saturating_add(1))
+          {
+            let children = fragment.children_mut();
+            for idx in 0..children.len() {
+              check_layout_deadline(deadline_counter)?;
+              let item = &info.items[idx];
+              if let Some((area_start, area_end)) =
+                grid_area_for_item(&col_offsets, item.column_start, item.column_end)
+              {
+                apply_translation(
+                  area_start,
+                  area_end,
+                  span_start,
+                  span_end,
+                  child_ids[idx],
+                  &mut children[idx],
+                  deadline_counter,
+                )?;
+              } else {
+                let child = &mut children[idx];
+                let width = child.bounds.width();
+                let old_start = child.bounds.x();
+                let new_start = span_start + (span_end - (old_start + width));
+                translate_along_axis(child, Axis::Horizontal, new_start - old_start, deadline_counter)?;
+              }
+            }
+            block_mirrored_x = true;
+          }
+        }
+      }
+    }
+
     let mut rtl_mirrored_y = false;
     if mirror_y && !inline_is_horizontal && !axis_style.inline_positive() {
       let child_ids = match taffy.children(node_id) {
@@ -5609,7 +5726,7 @@ impl GridFormattingContext {
       }
     }
 
-    if mirror_x && !rtl_mirrored_x {
+    if mirror_x && !rtl_mirrored_x && !block_mirrored_x {
       if let Some((region_start, region_end)) = x_region {
         if region_end > region_start {
           for child in fragment.children_mut().iter_mut() {

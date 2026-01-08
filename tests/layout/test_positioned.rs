@@ -627,9 +627,9 @@ fn relative_position_vertical_rl_offsets_apply_to_physical_axes() {
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;
   root_style.writing_mode = WritingMode::VerticalRl;
-  // In vertical writing modes, the inline axis is vertical (physical Y). `height` controls the
-  // inline size and `width` controls the block size (physical X), so the containing block is
-  // 200px wide by 100px tall.
+  // In vertical writing modes, the inline axis is vertical (physical Y) and the block axis is
+  // horizontal (physical X). `width`/`height` remain physical, so size the containing block
+  // explicitly to keep percentage offsets deterministic (200px wide by 100px tall).
   root_style.width = Some(Length::px(200.0));
   root_style.height = Some(Length::px(100.0));
   let root_style = Arc::new(root_style);
