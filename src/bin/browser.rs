@@ -80,7 +80,7 @@ struct App {
 
   address_bar: String,
 
-  page_texture: Option<fastrender::ui::pixmap_texture::PageTexture>,
+  page_texture: Option<fastrender::ui::WgpuPixmapTexture>,
   page_pixmap: Option<tiny_skia::Pixmap>,
   page_size_px: [u32; 2],
 }
@@ -196,7 +196,10 @@ impl App {
     let Some(mut pixmap) = tiny_skia::Pixmap::new(width_px, height_px) else {
       eprintln!("failed to allocate pixmap of size {width_px}x{height_px}");
       self.page_pixmap = None;
-      self.page_texture = None;
+      if let Some(tex) = self.page_texture.take() {
+        let id = tex.id();
+        self.egui_renderer.free_texture(&id);
+      }
       self.page_size_px = [0, 0];
       return;
     };
@@ -229,14 +232,16 @@ impl App {
 
     match self.page_texture.as_mut() {
       Some(tex) => {
-        tex.update(&self.egui_ctx, pixmap);
+        tex.update(&self.device, &self.queue, &mut self.egui_renderer, pixmap);
       }
       None => {
-        self.page_texture = Some(fastrender::ui::pixmap_texture::PageTexture::new(
-          &self.egui_ctx,
+        let mut tex = fastrender::ui::WgpuPixmapTexture::new(
+          &self.device,
+          &mut self.egui_renderer,
           pixmap,
-          egui::TextureOptions::NEAREST,
-        ));
+        );
+        tex.update(&self.device, &self.queue, &mut self.egui_renderer, pixmap);
+        self.page_texture = Some(tex);
       }
     }
   }
@@ -274,10 +279,9 @@ impl App {
         return;
       };
 
-      let size_points = page_texture.logical_size_points(self.pixels_per_point);
-      let response = ui.add(
-        egui::Image::new((page_texture.texture_id(), size_points)).sense(egui::Sense::click()),
-      );
+      let size_points = page_texture.size_points(self.pixels_per_point);
+      let response =
+        ui.add(egui::Image::new((page_texture.id(), size_points)).sense(egui::Sense::click()));
 
       if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
@@ -372,3 +376,4 @@ impl App {
     }
   }
 }
+
