@@ -91,7 +91,10 @@ fn parse_layer_records(
     return None;
   }
 
-  let mut layers = Vec::with_capacity(base.layer_count);
+  let mut layers = Vec::new();
+  if layers.try_reserve_exact(base.layer_count).is_err() {
+    return None;
+  }
   for i in 0..base.layer_count {
     let offset = header
       .layer_offset
@@ -167,12 +170,21 @@ pub fn render_colr_glyph(
       .palette(font_key, face, palette_index)
       .unwrap_or_else(|| Arc::new(cpal::ParsedPalette::default()))
   };
-  let mut colors = palette.colors.clone();
-  for (idx, color) in overrides {
-    if let Some(slot) = colors.get_mut(*idx as usize) {
-      *slot = *color;
+  let mut colors_buf = Vec::new();
+  let colors = if overrides.is_empty() {
+    palette.colors.as_slice()
+  } else {
+    if colors_buf.try_reserve_exact(palette.colors.len()).is_err() {
+      return None;
     }
-  }
+    colors_buf.extend_from_slice(&palette.colors);
+    for (idx, color) in overrides {
+      if let Some(slot) = colors_buf.get_mut(*idx as usize) {
+        *slot = *color;
+      }
+    }
+    colors_buf.as_slice()
+  };
 
   let layer_records = parse_layer_records(colr_data, header, base_record)?;
   let units_per_em = instance.units_per_em();
@@ -188,6 +200,9 @@ pub fn render_colr_glyph(
   let transform = glyph_transform(scale, 0.0, 0.0, 0.0);
 
   let mut paths: Vec<(Path, Rgba)> = Vec::new();
+  if paths.try_reserve_exact(layer_records.len()).is_err() {
+    return None;
+  }
   for layer in layer_records {
     let color = resolve_layer_color(layer.palette_index, &colors, text_color);
     if let Some(outline) = instance.glyph_outline(layer.glyph_id as u32) {
