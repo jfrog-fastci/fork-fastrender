@@ -1614,7 +1614,7 @@ fn placeholder_resource(
       Some("text/html; charset=utf-8".to_string()),
       Some(url.to_string()),
     ),
-    FetchDestination::Other | FetchDestination::Fetch => FetchedResource::with_final_url(
+    FetchDestination::Other => FetchedResource::with_final_url(
       Vec::new(),
       Some("application/octet-stream".to_string()),
       Some(url.to_string()),

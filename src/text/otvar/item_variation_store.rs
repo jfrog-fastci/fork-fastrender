@@ -242,7 +242,29 @@ pub fn parse_item_variation_store(data: &[u8]) -> Result<ItemVariationStoreParse
   let variation_region_list_offset = read_u32(data, 2)?;
   let item_variation_data_count = read_u16(data, 6)? as usize;
 
-  let mut item_variation_data_offsets = Vec::with_capacity(item_variation_data_count);
+  let offsets_bytes = item_variation_data_count
+    .checked_mul(4)
+    .ok_or(ParseError::InvalidValue(
+      "item variation data count overflows offsets byte length",
+    ))?;
+  let offset_table_end = 8usize
+    .checked_add(offsets_bytes)
+    .ok_or(ParseError::InvalidValue(
+      "item variation data offsets exceed addressable range",
+    ))?;
+  if data.len() < offset_table_end {
+    return Err(ParseError::UnexpectedEof);
+  }
+
+  let mut item_variation_data_offsets = Vec::new();
+  if item_variation_data_offsets
+    .try_reserve_exact(item_variation_data_count)
+    .is_err()
+  {
+    return Err(ParseError::InvalidValue(
+      "item variation store offsets allocation failed",
+    ));
+  }
   let mut offset = 8;
   for _ in 0..item_variation_data_count {
     item_variation_data_offsets.push(read_u32(data, offset)?);
@@ -252,7 +274,15 @@ pub fn parse_item_variation_store(data: &[u8]) -> Result<ItemVariationStoreParse
   let region_list =
     parse_variation_region_list(data, variation_region_list_offset as usize)?.unwrap_or_default();
 
-  let mut item_variation_data = Vec::with_capacity(item_variation_data_count);
+  let mut item_variation_data = Vec::new();
+  if item_variation_data
+    .try_reserve_exact(item_variation_data_count)
+    .is_err()
+  {
+    return Err(ParseError::InvalidValue(
+      "item variation store data allocation failed",
+    ));
+  }
   for item_offset in &item_variation_data_offsets {
     let Some(start) = data.get(*item_offset as usize..) else {
       return Err(ParseError::UnexpectedEof);
@@ -355,11 +385,50 @@ fn parse_variation_region_list(
     return Err(ParseError::UnexpectedEof);
   }
   let axis_count = read_u16(head, 0)?;
-  let region_count = read_u16(head, 2)? as usize;
-  let mut regions = Vec::with_capacity(region_count);
+  let region_count_u16 = read_u16(head, 2)?;
+  if axis_count == 0 {
+    if region_count_u16 != 0 {
+      return Err(ParseError::InvalidValue(
+        "variation region list axis count is zero",
+      ));
+    }
+    return Ok(Some(VariationRegionList {
+      axis_count,
+      regions: Vec::new(),
+    }));
+  }
+
+  let region_count = region_count_u16 as usize;
+  let axis_count_usize = axis_count as usize;
+  let axis_bytes_per_region = axis_count_usize.checked_mul(6).ok_or(ParseError::InvalidValue(
+    "variation region list axis count overflows record byte length",
+  ))?;
+  let axis_bytes = region_count.checked_mul(axis_bytes_per_region).ok_or(ParseError::InvalidValue(
+    "variation region list region count overflows record byte length",
+  ))?;
+  let required_bytes = 4usize
+    .checked_add(axis_bytes)
+    .ok_or(ParseError::InvalidValue(
+      "variation region list byte length overflows addressable range",
+    ))?;
+  if head.len() < required_bytes {
+    return Err(ParseError::UnexpectedEof);
+  }
+
+  let mut regions = Vec::new();
+  if regions.try_reserve_exact(region_count).is_err() {
+    return Err(ParseError::InvalidValue(
+      "variation region list allocation failed",
+    ));
+  }
   let mut pos = 4;
   for _ in 0..region_count {
-    let mut axes = Vec::with_capacity(axis_count as usize);
+    let mut axes = Vec::new();
+    if axes.try_reserve_exact(axis_count_usize).is_err() {
+      return Err(ParseError::InvalidValue(
+        "variation region axis allocation failed",
+      ));
+    }
     for _ in 0..axis_count {
       let start = read_i16(head, pos)?;
       let peak = read_i16(head, pos + 2)?;
@@ -389,16 +458,62 @@ fn parse_item_variation_data(data: &[u8]) -> Result<ItemVariationData, ParseErro
     ));
   }
 
-  let mut region_indices = Vec::with_capacity(region_index_count as usize);
+  let item_count_usize = item_count as usize;
+  let short_delta_count_usize = short_delta_count as usize;
+  let region_index_count_usize = region_index_count as usize;
+  let indices_bytes = region_index_count_usize.checked_mul(2).ok_or(ParseError::InvalidValue(
+    "region index count overflows region index byte length",
+  ))?;
+  let short_bytes = short_delta_count_usize.checked_mul(2).ok_or(ParseError::InvalidValue(
+    "short delta count overflows delta byte length",
+  ))?;
+  let long_count = region_index_count_usize.saturating_sub(short_delta_count_usize);
+  let per_item_bytes = short_bytes
+    .checked_add(long_count)
+    .ok_or(ParseError::InvalidValue(
+      "delta byte length overflows addressable range",
+    ))?;
+  let delta_bytes = item_count_usize.checked_mul(per_item_bytes).ok_or(ParseError::InvalidValue(
+    "item count overflows delta byte length",
+  ))?;
+  let required_bytes = 6usize
+    .checked_add(indices_bytes)
+    .and_then(|v| v.checked_add(delta_bytes))
+    .ok_or(ParseError::InvalidValue(
+      "item variation data byte length overflows addressable range",
+    ))?;
+  if data.len() < required_bytes {
+    return Err(ParseError::UnexpectedEof);
+  }
+
+  let mut region_indices = Vec::new();
+  if region_indices
+    .try_reserve_exact(region_index_count_usize)
+    .is_err()
+  {
+    return Err(ParseError::InvalidValue(
+      "item variation region indices allocation failed",
+    ));
+  }
   let mut offset = 6;
   for _ in 0..region_index_count {
     region_indices.push(read_u16(data, offset)?);
     offset += 2;
   }
 
-  let mut delta_sets = Vec::with_capacity(item_count as usize);
-  for _ in 0..item_count {
-    let mut deltas = Vec::with_capacity(region_index_count as usize);
+  let mut delta_sets = Vec::new();
+  if delta_sets.try_reserve_exact(item_count_usize).is_err() {
+    return Err(ParseError::InvalidValue(
+      "item variation delta sets allocation failed",
+    ));
+  }
+  for _ in 0..item_count_usize {
+    let mut deltas = Vec::new();
+    if deltas.try_reserve_exact(region_index_count_usize).is_err() {
+      return Err(ParseError::InvalidValue(
+        "item variation deltas allocation failed",
+      ));
+    }
     for _ in 0..short_delta_count {
       deltas.push(read_i16(data, offset)?);
       offset += 2;
