@@ -580,6 +580,24 @@ fn will_change_with_auto_mixed_in_is_invalid_and_ignored() {
 }
 
 #[test]
+fn will_change_with_inherit_mixed_in_is_invalid_and_ignored() {
+  // CSS-wide keywords are not valid <<custom-ident>>s, so this value is invalid.
+  let pixmap = render_backdrop_invert_with_parent_will_change("filter, inherit");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_with_default_mixed_in_is_invalid_and_ignored() {
+  // css-values-4 reserves `default` so it is not a valid <<custom-ident>>.
+  let pixmap = render_backdrop_invert_with_parent_will_change("filter, default");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_trailing_comma_is_invalid_and_ignored() {
   // Trailing commas are not allowed in comma-separated lists.
   let pixmap = render_backdrop_invert_with_parent_will_change("filter,");

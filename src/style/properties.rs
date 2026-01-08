@@ -15155,6 +15155,9 @@ fn parse_will_change_from_str(text: &str) -> Option<WillChange> {
       // These keywords are excluded from <<custom-ident>> in css-will-change-1 and are not valid
       // <<animateable-feature>> keywords either, so treat the whole declaration as invalid.
       "all" | "none" | "will-change" => return None,
+      // <<custom-ident>> (css-values-4) excludes CSS-wide keywords and the reserved `default`
+      // keyword. When they appear in a `will-change` hint list, the declaration is invalid.
+      "inherit" | "initial" | "unset" | "revert" | "revert-layer" | "default" => return None,
       "scroll-position" => hints.push(WillChangeHint::ScrollPosition),
       "contents" => hints.push(WillChangeHint::Contents),
       other => {
