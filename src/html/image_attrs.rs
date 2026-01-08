@@ -9,6 +9,11 @@ use cssparser::{Parser, ParserInput, Token};
 
 const MAX_SRCSET_COMMA_CONTEXT_BYTES: usize = 256;
 
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 /// Parse an HTML `srcset` attribute into candidate URLs with descriptors.
 ///
 /// This is a small, allocation-minimal parser intended to match the renderer's
@@ -23,13 +28,6 @@ pub fn parse_srcset(attr: &str) -> Vec<SrcsetCandidate> {
 /// This is primarily used by developer tooling (e.g. regex-based HTML asset
 /// discovery) to keep memory bounded when encountering pathological attributes.
 pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetCandidate> {
-  // HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
-  fn trim_ascii_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| {
-      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
-    })
-  }
-
   fn strip_suffix_ignore_ascii_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
     if value.len() < suffix.len() {
       return None;
@@ -612,12 +610,12 @@ pub fn parse_sizes(attr: &str) -> Option<SizesList> {
     }
 
     let Some(ws_idx) = last_ws else {
-      return (None, entry.trim());
+      return (None, trim_ascii_whitespace(entry));
     };
 
     let (head, tail) = entry.split_at(ws_idx);
-    let media = head.trim();
-    let length = tail.trim();
+    let media = trim_ascii_whitespace(head);
+    let length = trim_ascii_whitespace(tail);
 
     if media.is_empty() {
       (None, length)
@@ -628,7 +626,7 @@ pub fn parse_sizes(attr: &str) -> Option<SizesList> {
 
   let mut entries = Vec::new();
   for item in split_top_level_commas(attr) {
-    let item = item.trim();
+    let item = trim_ascii_whitespace(item);
     if item.is_empty() {
       continue;
     }
@@ -678,7 +676,7 @@ fn parse_sizes_calc_sum(value: &str) -> Option<SizesLength> {
   fn strip_wrapping_parentheses(mut value: &str) -> (&str, bool) {
     let mut stripped_any = false;
     loop {
-      let trimmed = value.trim();
+      let trimmed = trim_ascii_whitespace(value);
       if !(trimmed.starts_with('(') && trimmed.ends_with(')')) {
         return (trimmed, stripped_any);
       }
@@ -990,7 +988,7 @@ fn parse_sizes_length(value: &str) -> Option<SizesLength> {
 }
 
 fn parse_sizes_math_arg(value: &str) -> Option<SizesLength> {
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   if trimmed.is_empty() {
     return None;
   }
@@ -1267,6 +1265,15 @@ mod tests {
       parsed.entries[1].length,
       Length::new(100.0, LengthUnit::Vw).into()
     );
+  }
+
+  #[test]
+  fn parse_sizes_does_not_trim_non_ascii_whitespace() {
+    // Like `srcset`, `sizes` parsing only strips ASCII whitespace. NBSP (U+00A0) should not be
+    // treated as whitespace, so leading/trailing NBSP make the value invalid.
+    let nbsp = "\u{00A0}";
+    assert!(parse_sizes(&format!("{nbsp}100vw")).is_none());
+    assert!(parse_sizes(&format!("100vw{nbsp}")).is_none());
   }
 
   #[test]

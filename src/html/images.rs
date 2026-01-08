@@ -69,12 +69,7 @@ enum DescriptorKind {
 }
 
 fn normalized_image_mime(mime: &str) -> String {
-  mime
-    .split(';')
-    .next()
-    .unwrap_or("")
-    .trim()
-    .to_ascii_lowercase()
+  trim_ascii_whitespace(mime.split(';').next().unwrap_or("")).to_ascii_lowercase()
 }
 
 pub(crate) fn is_supported_image_mime(mime: &str) -> bool {
@@ -481,7 +476,7 @@ impl ReplacedType {
 
 #[cfg(test)]
 mod tests {
-  use super::{image_sources_with_fallback, ImageSelectionContext};
+  use super::{image_sources_with_fallback, is_supported_image_mime, ImageSelectionContext};
   use crate::tree::box_tree::{PictureSource, SrcsetCandidate, SrcsetDescriptor};
 
   #[test]
@@ -507,5 +502,13 @@ mod tests {
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0].url, format!("a.png{nbsp}"));
     assert_eq!(sources[1].url, "a.png");
+  }
+
+  #[test]
+  fn supported_image_mime_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(is_supported_image_mime(" image/png"));
+    assert!(!is_supported_image_mime(&format!("{nbsp}image/png")));
+    assert!(!is_supported_image_mime(&format!("image/png{nbsp}")));
   }
 }
