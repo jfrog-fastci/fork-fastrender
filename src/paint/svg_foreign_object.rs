@@ -292,7 +292,7 @@ pub(crate) fn inline_svg_with_foreign_objects(
       device_pixel_ratio * transform_scale,
       max_iframe_depth,
     )?;
-    let replacement = foreign_object_image_tag(foreign, &data_url, idx, image_bounds);
+    let replacement = foreign_object_image_tag(foreign, &data_url, idx, image_bounds)?;
 
     replace_placeholder_or_insert(&mut out_svg, &placeholder, &replacement)?;
   }
@@ -305,28 +305,59 @@ pub(crate) fn foreign_object_image_tag(
   data_url: &str,
   idx: usize,
   image_bounds: Rect,
-) -> String {
-  let mut parts: Vec<String> = Vec::new();
-  parts.push(format!("x=\"{:.6}\"", image_bounds.x()));
-  parts.push(format!("y=\"{:.6}\"", image_bounds.y()));
-  parts.push(format!("width=\"{:.6}\"", image_bounds.width()));
-  parts.push(format!("height=\"{:.6}\"", image_bounds.height()));
-  let emits_computed_opacity = info.opacity < 1.0;
-  if emits_computed_opacity {
-    parts.push(format!("opacity=\"{:.3}\"", info.opacity.clamp(0.0, 1.0)));
+) -> Option<String> {
+  fn escape_upper_bound(value: &str) -> usize {
+    // Worst case: every byte is escaped to a 6-byte entity (e.g. `'` -> `&apos;`).
+    value.len().saturating_mul(6)
   }
 
+  fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    let bytes = haystack.as_bytes();
+    bytes
+      .windows(needle.len())
+      .any(|window| window.eq_ignore_ascii_case(needle))
+  }
+
+  fn write_escaped_attr_value<W: std::io::Write>(out: &mut W, value: &str) -> std::io::Result<()> {
+    let bytes = value.as_bytes();
+    let mut start = 0usize;
+    for (idx, &b) in bytes.iter().enumerate() {
+      let replacement: Option<&[u8]> = match b {
+        b'&' => Some(b"&amp;"),
+        b'<' => Some(b"&lt;"),
+        b'"' => Some(b"&quot;"),
+        b'\'' => Some(b"&apos;"),
+        _ => None,
+      };
+      let Some(replacement) = replacement else {
+        continue;
+      };
+      if start < idx {
+        out.write_all(&bytes[start..idx])?;
+      }
+      out.write_all(replacement)?;
+      start = idx + 1;
+    }
+    if start < bytes.len() {
+      out.write_all(&bytes[start..])?;
+    }
+    Ok(())
+  }
+
+  fn write_attr_value<W: std::io::Write>(out: &mut W, name: &str, value: &str) -> std::io::Result<()> {
+    out.write_all(b" ")?;
+    out.write_all(name.as_bytes())?;
+    out.write_all(b"=\"")?;
+    write_escaped_attr_value(out, value)?;
+    out.write_all(b"\"")?;
+    Ok(())
+  }
+
+  let emits_computed_opacity = info.opacity < 1.0;
   let mut clip_path: Option<&str> = None;
   let mut has_filter = !info.style.filter.is_empty();
   for (name, value) in &info.attributes {
-    if name.eq_ignore_ascii_case("x")
-      || name.eq_ignore_ascii_case("y")
-      || name.eq_ignore_ascii_case("width")
-      || name.eq_ignore_ascii_case("height")
-      || (emits_computed_opacity && name.eq_ignore_ascii_case("opacity"))
-    {
-      continue;
-    }
     if name.eq_ignore_ascii_case("clip-path") {
       clip_path = Some(value.as_str());
       continue;
@@ -334,25 +365,64 @@ pub(crate) fn foreign_object_image_tag(
     if name.eq_ignore_ascii_case("filter") {
       has_filter = true;
     } else if name.eq_ignore_ascii_case("style") {
-      has_filter |= value.to_ascii_lowercase().contains("filter");
+      has_filter |= contains_ascii_case_insensitive(value, "filter");
     }
-    parts.push(format!("{}=\"{}\"", name, escape_attr_value(value)));
   }
 
-  parts.push("preserveAspectRatio=\"none\"".to_string());
-  parts.push(format!("href=\"{}\"", escape_attr_value(data_url)));
+  let mut max_bytes = 512usize;
+  max_bytes = max_bytes.saturating_add(escape_upper_bound(data_url));
+  for (name, value) in &info.attributes {
+    max_bytes = max_bytes.saturating_add(name.len().saturating_add(escape_upper_bound(value)));
+  }
+  if let Some(value) = clip_path {
+    max_bytes = max_bytes.saturating_add(escape_upper_bound(value));
+  }
+
+  let mut out = FallibleVecWriter::new(max_bytes, "foreignObject svg image");
 
   if info.overflow_x == Overflow::Visible && info.overflow_y == Overflow::Visible {
-    if let Some(value) = clip_path {
-      parts.push(format!("clip-path=\"{}\"", escape_attr_value(value)));
+    out.write_all(b"<image").ok()?;
+    write!(
+      out,
+      " x=\"{:.6}\" y=\"{:.6}\" width=\"{:.6}\" height=\"{:.6}\"",
+      image_bounds.x(),
+      image_bounds.y(),
+      image_bounds.width(),
+      image_bounds.height()
+    )
+    .ok()?;
+    if emits_computed_opacity {
+      write!(out, " opacity=\"{:.3}\"", info.opacity.clamp(0.0, 1.0)).ok()?;
     }
-    return format!("<image {attrs}/>", attrs = parts.join(" "));
+
+    for (name, value) in &info.attributes {
+      if name.eq_ignore_ascii_case("x")
+        || name.eq_ignore_ascii_case("y")
+        || name.eq_ignore_ascii_case("width")
+        || name.eq_ignore_ascii_case("height")
+        || (emits_computed_opacity && name.eq_ignore_ascii_case("opacity"))
+      {
+        continue;
+      }
+      write_attr_value(&mut out, name, value).ok()?;
+    }
+
+    out
+      .write_all(b" preserveAspectRatio=\"none\"")
+      .ok()?;
+    write_attr_value(&mut out, "href", data_url).ok()?;
+    out.write_all(b"/>").ok()?;
+    return String::from_utf8(out.into_inner()).ok();
   }
 
-  let group_clip_path = clip_path
-    .map(|value| format!(" clip-path=\"{}\"", escape_attr_value(value)))
-    .unwrap_or_default();
-  let clip_id = format!("fastr-fo-{}", idx);
+  out.write_all(b"<g").ok()?;
+  if let Some(value) = clip_path {
+    out.write_all(b" clip-path=\"").ok()?;
+    write_escaped_attr_value(&mut out, value).ok()?;
+    out.write_all(b"\"").ok()?;
+  }
+  out.write_all(b">").ok()?;
+
   let mut clip_x = info.x;
   let mut clip_y = info.y;
   let mut clip_width = info.width;
@@ -379,22 +449,48 @@ pub(crate) fn foreign_object_image_tag(
       clip_height += margin * 2.0;
     }
   }
-  let clip = format!(
-    "<clipPath id=\"{}\"><rect x=\"{:.6}\" y=\"{:.6}\" width=\"{:.6}\" height=\"{:.6}\"/></clipPath>",
-    clip_id,
-    clip_x,
-    clip_y,
-    clip_width,
-    clip_height
-  );
 
-  format!(
-    "<g{group_clip_path}>{clip}<image clip-path=\"url(#{clip_id})\" {attrs}/></g>",
-    clip = clip,
-    clip_id = clip_id,
-    group_clip_path = group_clip_path,
-    attrs = parts.join(" ")
+  write!(
+    out,
+    "<clipPath id=\"fastr-fo-{idx}\"><rect x=\"{clip_x:.6}\" y=\"{clip_y:.6}\" width=\"{clip_width:.6}\" height=\"{clip_height:.6}\"/></clipPath>",
   )
+  .ok()?;
+
+  write!(out, "<image clip-path=\"url(#fastr-fo-{idx})\"").ok()?;
+  write!(
+    out,
+    " x=\"{:.6}\" y=\"{:.6}\" width=\"{:.6}\" height=\"{:.6}\"",
+    image_bounds.x(),
+    image_bounds.y(),
+    image_bounds.width(),
+    image_bounds.height()
+  )
+  .ok()?;
+  if emits_computed_opacity {
+    write!(out, " opacity=\"{:.3}\"", info.opacity.clamp(0.0, 1.0)).ok()?;
+  }
+
+  for (name, value) in &info.attributes {
+    if name.eq_ignore_ascii_case("x")
+      || name.eq_ignore_ascii_case("y")
+      || name.eq_ignore_ascii_case("width")
+      || name.eq_ignore_ascii_case("height")
+      || (emits_computed_opacity && name.eq_ignore_ascii_case("opacity"))
+      || name.eq_ignore_ascii_case("clip-path")
+    {
+      continue;
+    }
+    write_attr_value(&mut out, name, value).ok()?;
+  }
+
+  out
+    .write_all(b" preserveAspectRatio=\"none\"")
+    .ok()?;
+  write_attr_value(&mut out, "href", data_url).ok()?;
+  out.write_all(b"/>").ok()?;
+  out.write_all(b"</g>").ok()?;
+
+  String::from_utf8(out.into_inner()).ok()
 }
 
 fn render_foreign_object_data_url(
@@ -691,14 +787,6 @@ fn format_css_color(color: Rgba) -> String {
     color.b,
     color.a.clamp(0.0, 1.0)
   )
-}
-
-fn escape_attr_value(value: &str) -> String {
-  value
-    .replace('&', "&amp;")
-    .replace('<', "&lt;")
-    .replace('"', "&quot;")
-    .replace('\'', "&apos;")
 }
 
 fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {

@@ -15522,7 +15522,8 @@ mod tests {
       "data:image/png;base64,abc",
       0,
       Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-    );
+    )
+    .expect("foreignObject image tag");
     assert_eq!(output.match_indices("opacity=").count(), 1);
   }
 
@@ -15551,7 +15552,8 @@ mod tests {
       "data:image/png;base64,abc",
       0,
       Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-    );
+    )
+    .expect("foreignObject image tag");
     assert_eq!(output.match_indices("opacity=").count(), 1);
     assert!(
       output.contains("opacity=\"0.9\""),
@@ -15586,7 +15588,8 @@ mod tests {
         "data:image/png;base64,abc",
         0,
         Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-      );
+      )
+      .expect("foreignObject image tag");
     assert!(!output.contains("<g"), "visible overflow should not introduce wrapper groups");
     assert_eq!(output.match_indices("clip-path=").count(), 1);
     assert!(output.contains("clip-path=\"url(#foo)\""));
@@ -15618,7 +15621,8 @@ mod tests {
         "data:image/png;base64,abc",
         0,
         Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-      );
+      )
+      .expect("foreignObject image tag");
     assert!(output.contains("<g clip-path=\"url(#foo)\">"));
     assert!(output.contains("<image clip-path=\"url(#fastr-fo-0)\""));
     assert_eq!(output.match_indices("url(#foo)").count(), 1);
@@ -15654,7 +15658,8 @@ mod tests {
         "data:image/png;base64,abc",
         0,
         Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-      );
+      )
+      .expect("foreignObject image tag");
     assert!(
       output.contains("<rect x=\"-1.000000\" y=\"0.000000\" width=\"3.000000\" height=\"1.000000\""),
       "expected clip rect to extend in x for visible overflow, got {output:?}"
@@ -15684,7 +15689,8 @@ mod tests {
         "data:image/png;base64,abc",
         0,
         Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-      );
+      )
+      .expect("foreignObject image tag");
     assert!(
       output.contains("<rect x=\"0.000000\" y=\"-1.000000\" width=\"1.000000\" height=\"3.000000\""),
       "expected clip rect to extend in y for visible overflow, got {output:?}"
