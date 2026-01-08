@@ -670,6 +670,29 @@ fn tokenize_property_value<'a>(value_str: &'a str, allow_commas: bool) -> SmallV
       continue;
     }
 
+    // CSS comments act like whitespace. Skip them so `/*...*/` doesn't get mis-tokenized as a `/`
+    // separator token. Inside nested blocks we keep comments inside the token slice, but they must
+    // not affect delimiter nesting counts.
+    if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+      if paren == 0 && bracket == 0 && brace == 0 {
+        if let Some(start) = token_start.take() {
+          let slice = trim_ascii_whitespace(&value_str[start..idx]);
+          if !slice.is_empty() {
+            tokens.push(slice);
+          }
+        }
+      } else {
+        token_start.get_or_insert(idx);
+      }
+
+      idx += 2;
+      while idx + 1 < bytes.len() && !(bytes[idx] == b'*' && bytes[idx + 1] == b'/') {
+        idx += 1;
+      }
+      idx = idx.saturating_add(2).min(bytes.len());
+      continue;
+    }
+
     match b {
       b'"' | b'\'' => {
         token_start.get_or_insert(idx);
@@ -772,6 +795,20 @@ fn value_has_top_level_separator(value_str: &str, allow_commas: bool) -> bool {
         in_string = None;
       }
       idx += 1;
+      continue;
+    }
+
+    // CSS comments are treated as whitespace, so they are top-level separators (and should not be
+    // confused with the `/` token).
+    if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+      if paren == 0 && bracket == 0 && brace == 0 {
+        return true;
+      }
+      idx += 2;
+      while idx + 1 < bytes.len() && !(bytes[idx] == b'*' && bytes[idx + 1] == b'/') {
+        idx += 1;
+      }
+      idx = idx.saturating_add(2).min(bytes.len());
       continue;
     }
 
