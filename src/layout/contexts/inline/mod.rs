@@ -2648,7 +2648,7 @@ impl InlineFormattingContext {
     let constraints = LayoutConstraints::new(width_space, height_space)
       .with_used_border_box_size(Some(constraint_width), None);
     let fragment = fc.layout(box_node, &constraints)?;
-    let mut fragment = fragment;
+    let mut fragment = crate::layout::contexts::block::unconvert_fragment_axes_root(fragment);
     let log_ids = crate::debug::runtime::runtime_toggles()
       .usize_list("FASTR_LOG_INTRINSIC_IDS")
       .unwrap_or_default();

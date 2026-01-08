@@ -564,16 +564,20 @@ mod iterator_tests {
 
     let spaces: Vec<_> = line_spaces(&ctx, 0.0, 200.0).collect();
 
-    assert_eq!(spaces.len(), 3);
+    // Width changes at both float start and end boundaries.
+    assert_eq!(spaces.len(), 4);
 
-    // 0-100: left float
+    // 0-50: left float only
     assert_eq!(spaces[0].y, 0.0);
 
+    // 50-100: both floats
+    assert_eq!(spaces[1].y, 50.0);
+
     // 100-150: right float only
-    assert_eq!(spaces[1].y, 100.0);
+    assert_eq!(spaces[2].y, 100.0);
 
     // 150-200: no floats
-    assert_eq!(spaces[2].y, 150.0);
+    assert_eq!(spaces[3].y, 150.0);
   }
 
   #[test]

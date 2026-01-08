@@ -1693,14 +1693,9 @@ impl TextItem {
     let left_glyphs = run.glyphs[..glyph_split.min(run.glyphs.len())].to_vec();
     let mut right_glyphs = run.glyphs[glyph_split.min(run.glyphs.len())..].to_vec();
 
-    let run_axis = run_inline_axis(run);
     let left_advance = boundary.run_advance;
 
     for glyph in &mut right_glyphs {
-      match run_axis {
-        InlineAxis::Horizontal => glyph.x_offset -= left_advance,
-        InlineAxis::Vertical => glyph.y_offset -= left_advance,
-      }
       glyph.cluster = glyph.cluster.saturating_sub(local as u32);
     }
 
@@ -1719,11 +1714,8 @@ impl TextItem {
       right_run.start = 0;
       right_run.end = right_run.text.len();
       right_run.glyphs = right_glyphs;
-      right_run.advance = right_run
-        .glyphs
-        .iter()
-        .map(|g| glyph_inline_advance(g, run_axis))
-        .sum();
+      let run_axis = run_inline_axis(&right_run);
+      right_run.advance = right_run.glyphs.iter().map(|g| glyph_inline_advance(g, run_axis)).sum();
       after_runs.insert(0, right_run);
     }
 
@@ -5447,8 +5439,8 @@ mod tests {
         "cross-axis (x) offsets should remain unchanged for vertical runs"
       );
       assert!(
-        (new.y_offset - (orig.y_offset - left_advance)).abs() < EPS,
-        "inline-axis (y) offsets should be rebased by left_advance for vertical runs"
+        (new.y_offset - orig.y_offset).abs() < EPS,
+        "inline-axis (y) offsets should remain unchanged for vertical runs"
       );
       assert_eq!(
         new.cluster,

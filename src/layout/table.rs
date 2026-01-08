@@ -3473,16 +3473,9 @@ fn compute_collapsed_borders(
     let end_col = (cell.col + cell.colspan).min(columns);
     let start_row = cell.row;
     let end_row = (cell.row + cell.rowspan).min(rows);
-    // CSS 2.1 §17.4: `direction` affects the column ordering for table layout.
-    // The collapsed border algorithm resolves borders in the table's logical grid
-    // (source column order), so in RTL we map a cell's logical left/right borders
-    // onto the opposite physical grid lines.
-    let (left_border_col, right_border_col) = if matches!(direction, Direction::Rtl) {
-      (end_col, start_col)
-    } else {
-      (start_col, end_col)
-    };
-    let origin_col = cell.source_col;
+    let left_border_col = start_col;
+    let right_border_col = end_col;
+    let origin_col = cell.col;
 
     apply_vertical(
       left_border_col,
