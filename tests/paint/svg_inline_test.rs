@@ -914,6 +914,84 @@ fn foreign_object_overflow_x_clip_y_visible_allows_vertical_filter_bleed() {
 }
 
 #[test]
+fn foreign_object_overflow_x_visible_y_clip_allows_horizontal_content_overflow() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+        <style>body{margin:0;background:white} svg{display:block}</style>
+        <svg width="60" height="60" viewBox="0 0 60 60">
+          <foreignObject x="10" y="10" width="20" height="20" style="overflow-x:visible; overflow-y:clip">
+            <div xmlns="http://www.w3.org/1999/xhtml" style="width:40px;height:40px;background: rgb(255,0,0);"></div>
+          </foreignObject>
+        </svg>
+      "#;
+
+      let toggles = RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "display_list".to_string(),
+      )]));
+      let options = RenderOptions::new()
+        .with_viewport(60, 60)
+        .with_runtime_toggles(toggles);
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+
+      // Content should paint inside the foreignObject.
+      assert_eq!(pixel(&pixmap, 20, 20), [255, 0, 0, 255]);
+      // Horizontal overflow is visible, so the extra width should paint outside the x-bounds.
+      assert_eq!(pixel(&pixmap, 35, 20), [255, 0, 0, 255]);
+      // Vertical overflow is clipped, so content should not appear outside the y-bounds.
+      assert_eq!(pixel(&pixmap, 20, 35), [255, 255, 255, 255]);
+      assert_eq!(pixel(&pixmap, 35, 35), [255, 255, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn foreign_object_overflow_x_clip_y_visible_allows_vertical_content_overflow() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+        <style>body{margin:0;background:white} svg{display:block}</style>
+        <svg width="60" height="60" viewBox="0 0 60 60">
+          <foreignObject x="10" y="10" width="20" height="20" style="overflow-x:clip; overflow-y:visible">
+            <div xmlns="http://www.w3.org/1999/xhtml" style="width:40px;height:40px;background: rgb(255,0,0);"></div>
+          </foreignObject>
+        </svg>
+      "#;
+
+      let toggles = RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "display_list".to_string(),
+      )]));
+      let options = RenderOptions::new()
+        .with_viewport(60, 60)
+        .with_runtime_toggles(toggles);
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+
+      // Content should paint inside the foreignObject.
+      assert_eq!(pixel(&pixmap, 20, 20), [255, 0, 0, 255]);
+      // Vertical overflow is visible, so the extra height should paint outside the y-bounds.
+      assert_eq!(pixel(&pixmap, 20, 35), [255, 0, 0, 255]);
+      // Horizontal overflow is clipped, so content should not appear outside the x-bounds.
+      assert_eq!(pixel(&pixmap, 35, 20), [255, 255, 255, 255]);
+      assert_eq!(pixel(&pixmap, 35, 35), [255, 255, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_respects_display_none_when_document_css_injection_disabled_with_legacy_paint_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

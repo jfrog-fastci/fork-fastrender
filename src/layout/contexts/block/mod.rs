@@ -993,7 +993,7 @@ impl BlockFormattingContext {
     } else {
       max_width
     };
-    let mut clamped_content_width =
+    let clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
     if clamped_content_width != computed_width.content_width {
       let (margin_left, margin_right) = recompute_margins_for_width(
@@ -3214,7 +3214,7 @@ impl BlockFormattingContext {
         } else {
           max_width
         };
-        let mut clamped_content_width =
+        let clamped_content_width =
           crate::layout::utils::clamp_with_order(hypo_width.content_width, min_width, max_width);
         if clamped_content_width != hypo_width.content_width {
           let (margin_left, margin_right) = recompute_margins_for_width(
@@ -5099,7 +5099,7 @@ impl FormattingContext for BlockFormattingContext {
       max_width
     };
 
-    let mut clamped_content_width =
+    let clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
     let log_wide_block = toggles.truthy("FASTR_LOG_WIDE_FLEX");
     if log_wide_block && computed_width.content_width > self.viewport_size.width + 0.5 {

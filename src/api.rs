@@ -13829,6 +13829,84 @@ fn needs_top_layer_state(node: &DomNode) -> Result<bool> {
 
   Ok(false)
 }
+
+/// Lays out an HTML fragment using shared font/image resources.
+///
+/// This is used for nested rendering (e.g. SVG `<foreignObject>` content) where the caller wants
+/// access to the laid out [`FragmentTree`] before rasterizing to a pixmap.
+pub(crate) fn layout_html_with_shared_resources(
+  html: &str,
+  width: u32,
+  height: u32,
+  font_ctx: &FontContext,
+  image_cache: &ImageCache,
+  fetcher: Arc<dyn ResourceFetcher>,
+  base_url: Option<String>,
+  device_pixel_ratio: f32,
+  resource_policy: ResourceAccessPolicy,
+  resource_context: Option<ResourceContext>,
+  max_iframe_depth: usize,
+) -> Result<FragmentTree> {
+  let resource_context = resource_context.map(|mut ctx| {
+    if ctx.iframe_depth_remaining.is_none() {
+      ctx.iframe_depth_remaining = Some(max_iframe_depth);
+    }
+    ctx
+  });
+  let layout_config = LayoutConfig::for_viewport(Size::new(width as f32, height as f32))
+    .with_identifier("foreignObject");
+  let layout_engine = LayoutEngine::with_font_context_and_image_cache(
+    layout_config,
+    font_ctx.clone(),
+    image_cache.clone(),
+  );
+  let mut renderer = FastRender {
+    font_context: font_ctx.clone(),
+    shaping_pipeline: ShapingPipeline::new(),
+    layout_engine,
+    image_cache: image_cache.clone(),
+    fetcher,
+    diagnostics: None,
+    background_color: Rgba::TRANSPARENT,
+    default_width: width,
+    default_height: height,
+    device_pixel_ratio,
+    apply_meta_viewport: false,
+    fit_canvas_to_content: false,
+    pending_device_size: None,
+    base_url,
+    document_url: resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.document_url.clone()),
+    compat_profile: CompatProfile::default(),
+    dom_compat_mode: DomCompatibilityMode::Standard,
+    fragmentation: None,
+    resource_policy,
+    resource_context: resource_context.clone(),
+    max_iframe_depth,
+    runtime_toggles: runtime::runtime_toggles(),
+    paint_parallelism: PaintParallelism::default(),
+    layout_parallelism: LayoutParallelism::default(),
+  };
+
+  renderer
+    .image_cache
+    .set_resource_context(resource_context.clone());
+  renderer
+    .layout_engine
+    .image_cache_mut()
+    .set_resource_context(resource_context.clone());
+  renderer.layout_engine.reset_cached_formatting_contexts();
+  renderer.font_context.set_resource_context(resource_context);
+
+  let toggles = renderer.runtime_toggles.clone();
+  runtime::with_runtime_toggles(toggles, || {
+    let dom = renderer.parse_html(html)?;
+    renderer.update_base_url_from_dom(&dom);
+    renderer.layout_document_for_media(&dom, width, height, MediaType::Screen)
+  })
+}
+
 /// Renders an HTML fragment using shared font/image resources. This is used for nested rendering
 /// such as SVG `<foreignObject>` content so we can reuse the outer renderer's caches.
 pub(crate) fn render_html_with_shared_resources(

@@ -5,14 +5,21 @@
 //! render each captured HTML fragment via the normal HTML pipeline and inject the resulting pixels
 //! back into the SVG as `<image href="data:image/png;base64,…">`.
 
-use crate::api::render_html_with_shared_resources;
+use crate::api::layout_html_with_shared_resources;
 use crate::image_output::{encode_image, OutputFormat};
 use crate::image_loader::ImageCache;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::paint::painter::{
+  paint_backend_from_env, paint_tree_with_resources_scaled_offset_backend_with_iframe_depth,
+};
 use crate::resource::data_url;
+use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::style::types::{Direction, FontStyle as CssFontStyle, Overflow, WritingMode};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::ForeignObjectInfo;
+use crate::tree::fragment_tree::FragmentTree;
+use crate::{Point, Rect};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use tiny_skia::Pixmap;
@@ -74,7 +81,7 @@ pub(crate) fn inline_svg_with_foreign_objects(
 ) -> Option<String> {
   let mut svg = svg.to_string();
   for (idx, foreign) in foreign_objects.iter().enumerate() {
-    let data_url = render_foreign_object_data_url(
+    let (data_url, image_bounds) = render_foreign_object_data_url(
       foreign,
       shared_css,
       font_ctx,
@@ -82,7 +89,7 @@ pub(crate) fn inline_svg_with_foreign_objects(
       device_pixel_ratio,
       max_iframe_depth,
     )?;
-    let replacement = foreign_object_image_tag(foreign, &data_url, idx);
+    let replacement = foreign_object_image_tag(foreign, &data_url, idx, image_bounds);
     let placeholder = if foreign.placeholder.is_empty() {
       format!("<!--FASTRENDER_FOREIGN_OBJECT_{}-->", idx)
     } else {
@@ -95,12 +102,17 @@ pub(crate) fn inline_svg_with_foreign_objects(
   Some(svg)
 }
 
-pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str, idx: usize) -> String {
+pub(crate) fn foreign_object_image_tag(
+  info: &ForeignObjectInfo,
+  data_url: &str,
+  idx: usize,
+  image_bounds: Rect,
+) -> String {
   let mut parts: Vec<String> = Vec::new();
-  parts.push(format!("x=\"{:.6}\"", info.x));
-  parts.push(format!("y=\"{:.6}\"", info.y));
-  parts.push(format!("width=\"{:.6}\"", info.width));
-  parts.push(format!("height=\"{:.6}\"", info.height));
+  parts.push(format!("x=\"{:.6}\"", image_bounds.x()));
+  parts.push(format!("y=\"{:.6}\"", image_bounds.y()));
+  parts.push(format!("width=\"{:.6}\"", image_bounds.width()));
+  parts.push(format!("height=\"{:.6}\"", image_bounds.height()));
   let emits_computed_opacity = info.opacity < 1.0;
   if emits_computed_opacity {
     parts.push(format!("opacity=\"{:.3}\"", info.opacity.clamp(0.0, 1.0)));
@@ -148,16 +160,25 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
   let mut clip_width = info.width;
   let mut clip_height = info.height;
 
+  if info.overflow_x == Overflow::Visible {
+    clip_x = image_bounds.x();
+    clip_width = image_bounds.width();
+  }
+  if info.overflow_y == Overflow::Visible {
+    clip_y = image_bounds.y();
+    clip_height = image_bounds.height();
+  }
+
   if has_filter {
     if info.overflow_x == Overflow::Visible {
       let margin = info.width;
-      clip_x = info.x - margin;
-      clip_width = info.width + margin * 2.0;
+      clip_x -= margin;
+      clip_width += margin * 2.0;
     }
     if info.overflow_y == Overflow::Visible {
       let margin = info.height;
-      clip_y = info.y - margin;
-      clip_height = info.height + margin * 2.0;
+      clip_y -= margin;
+      clip_height += margin * 2.0;
     }
   }
   let clip = format!(
@@ -185,7 +206,7 @@ fn render_foreign_object_data_url(
   image_cache: &ImageCache,
   device_pixel_ratio: f32,
   max_iframe_depth: usize,
-) -> Option<String> {
+) -> Option<(String, Rect)> {
   let width = info.width.max(1.0).round() as u32;
   let height = info.height.max(1.0).round() as u32;
   if width == 0 || height == 0 {
@@ -203,28 +224,111 @@ fn render_foreign_object_data_url(
   // - document-level shared CSS (e.g. `body { background: white }`) cannot override it
   // - semi-transparent colors are only composited once
   let background = Rgba::TRANSPARENT;
-  let context = image_cache.resource_context();
+  let context = image_cache
+    .resource_context()
+    .map(|mut ctx| {
+      if ctx.iframe_depth_remaining.is_none() {
+        ctx.iframe_depth_remaining = Some(max_iframe_depth);
+      }
+      ctx
+    });
   let policy = context
     .as_ref()
     .map(|c| c.policy.clone())
     .unwrap_or_default();
-  let pixmap = render_html_with_shared_resources(
+
+  let fragment_tree = layout_html_with_shared_resources(
     &html,
     width,
     height,
-    background,
     font_ctx,
     image_cache,
     Arc::clone(image_cache.fetcher()),
     image_cache.base_url(),
     device_pixel_ratio,
     policy,
-    context,
+    context.clone(),
     max_iframe_depth,
   )
   .ok()?;
 
-  pixmap_to_data_url(pixmap)
+  let bounds = fragment_tree.content_size();
+  let viewport_width = width as f32;
+  let viewport_height = height as f32;
+  let (mut min_x, mut max_x) = (bounds.min_x(), bounds.max_x());
+  let (mut min_y, mut max_y) = (bounds.min_y(), bounds.max_y());
+  if info.overflow_x != Overflow::Visible {
+    min_x = 0.0;
+    max_x = viewport_width;
+  }
+  if info.overflow_y != Overflow::Visible {
+    min_y = 0.0;
+    max_y = viewport_height;
+  }
+
+  if !min_x.is_finite() || !max_x.is_finite() {
+    min_x = 0.0;
+    max_x = viewport_width;
+  }
+  if !min_y.is_finite() || !max_y.is_finite() {
+    min_y = 0.0;
+    max_y = viewport_height;
+  }
+
+  if max_x <= min_x {
+    min_x = 0.0;
+    max_x = viewport_width;
+  }
+  if max_y <= min_y {
+    min_y = 0.0;
+    max_y = viewport_height;
+  }
+
+  let origin_x = min_x.floor();
+  let origin_y = min_y.floor();
+  let paint_width = (max_x.ceil() - origin_x).max(1.0) as u32;
+  let paint_height = (max_y.ceil() - origin_y).max(1.0) as u32;
+
+  let mut paint_tree = FragmentTree::new(fragment_tree.root.clone());
+  paint_tree.additional_fragments = fragment_tree.additional_fragments.clone();
+  paint_tree.keyframes = fragment_tree.keyframes.clone();
+  paint_tree.svg_filter_defs = fragment_tree.svg_filter_defs.clone();
+  paint_tree.svg_id_defs = fragment_tree.svg_id_defs.clone();
+  paint_tree.scroll_metadata = fragment_tree.scroll_metadata.clone();
+
+  let mut paint_font_ctx = font_ctx.clone();
+  paint_font_ctx.set_resource_context(context.clone());
+  let mut paint_image_cache = image_cache.clone();
+  paint_image_cache.set_resource_context(context.clone());
+
+  let offset = Point::new(-origin_x, -origin_y);
+  let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
+    &paint_tree,
+    paint_width,
+    paint_height,
+    background,
+    paint_font_ctx,
+    paint_image_cache,
+    device_pixel_ratio,
+    offset,
+    PaintParallelism::default(),
+    &ScrollState::default(),
+    paint_backend_from_env(),
+    max_iframe_depth,
+  )
+  .ok()?;
+
+  let data_url = pixmap_to_data_url(pixmap)?;
+  let scale_x = info.width / width.max(1) as f32;
+  let scale_y = info.height / height.max(1) as f32;
+  let image_bounds = Rect::from_xywh(
+    info.x + origin_x * scale_x,
+    info.y + origin_y * scale_y,
+    paint_width as f32 * scale_x,
+    paint_height as f32 * scale_y,
+  );
+
+  Some((data_url, image_bounds))
 }
 
 fn escape_style_end_tags(css: &str) -> String {

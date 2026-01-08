@@ -15248,6 +15248,7 @@ mod tests {
       &foreign,
       "data:image/png;base64,abc",
       0,
+      Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
     );
     assert_eq!(output.match_indices("opacity=").count(), 1);
   }
@@ -15276,6 +15277,7 @@ mod tests {
       &foreign,
       "data:image/png;base64,abc",
       0,
+      Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
     );
     assert_eq!(output.match_indices("opacity=").count(), 1);
     assert!(
@@ -15305,15 +15307,14 @@ mod tests {
       overflow_y: Overflow::Visible,
     };
 
-    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
-      &foreign,
-      "data:image/png;base64,abc",
-      0,
-    );
-    assert!(
-      !output.contains("<g"),
-      "visible overflow should not introduce wrapper groups"
-    );
+    let output =
+      crate::paint::svg_foreign_object::foreign_object_image_tag(
+        &foreign,
+        "data:image/png;base64,abc",
+        0,
+        Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
+      );
+    assert!(!output.contains("<g"), "visible overflow should not introduce wrapper groups");
     assert_eq!(output.match_indices("clip-path=").count(), 1);
     assert!(output.contains("clip-path=\"url(#foo)\""));
   }
@@ -15338,11 +15339,13 @@ mod tests {
       overflow_y: Overflow::Hidden,
     };
 
-    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
-      &foreign,
-      "data:image/png;base64,abc",
-      0,
-    );
+    let output =
+      crate::paint::svg_foreign_object::foreign_object_image_tag(
+        &foreign,
+        "data:image/png;base64,abc",
+        0,
+        Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
+      );
     assert!(output.contains("<g clip-path=\"url(#foo)\">"));
     assert!(output.contains("<image clip-path=\"url(#fastr-fo-0)\""));
     assert_eq!(output.match_indices("url(#foo)").count(), 1);
@@ -15373,7 +15376,12 @@ mod tests {
     };
 
     let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+      crate::paint::svg_foreign_object::foreign_object_image_tag(
+        &foreign,
+        "data:image/png;base64,abc",
+        0,
+        Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
+      );
     assert!(
       output.contains("<rect x=\"-1.000000\" y=\"0.000000\" width=\"3.000000\" height=\"1.000000\""),
       "expected clip rect to extend in x for visible overflow, got {output:?}"
@@ -15398,7 +15406,12 @@ mod tests {
     };
 
     let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+      crate::paint::svg_foreign_object::foreign_object_image_tag(
+        &foreign,
+        "data:image/png;base64,abc",
+        0,
+        Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
+      );
     assert!(
       output.contains("<rect x=\"0.000000\" y=\"-1.000000\" width=\"1.000000\" height=\"3.000000\""),
       "expected clip rect to extend in y for visible overflow, got {output:?}"
