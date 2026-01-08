@@ -1276,6 +1276,7 @@ where
     root.bounds.origin,
     &mut clip_stack,
     get_style,
+    false,
     scroll_state,
   );
 
@@ -1306,6 +1307,7 @@ where
     root.bounds.origin,
     &mut clip_stack,
     get_style,
+    false,
     deadline_counter,
     scroll_state,
   )?;
@@ -1439,6 +1441,7 @@ fn build_stacking_tree_with_styles_internal_checked<F>(
   offset_from_parent_context: Point,
   clip_stack: &mut Vec<ClipChainLink>,
   get_style: &F,
+  skip_viewport_scroll_cancel: bool,
   deadline_counter: &mut usize,
   scroll_state: Option<&ScrollState>,
 ) -> Result<StackingContext>
@@ -1456,6 +1459,19 @@ where
   } else {
     is_root
   };
+  let establishes_fixed_cb = style
+    .as_deref()
+    .is_some_and(|style| style.establishes_fixed_containing_block());
+  let needs_viewport_scroll_cancel = style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed))
+    && !skip_viewport_scroll_cancel;
+  let skip_viewport_scroll_cancel_for_children =
+    skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
+  let viewport_scroll = scroll_state
+    .map(|state| state.viewport)
+    .filter(|scroll| scroll.x.is_finite() && scroll.y.is_finite())
+    .unwrap_or(Point::ZERO);
 
   if creates_context {
     let z_index = style
@@ -1475,7 +1491,14 @@ where
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
     context.clip_chain = clip_stack.clone();
-    context.offset_from_parent_context = offset_from_parent_context;
+    context.offset_from_parent_context = if needs_viewport_scroll_cancel {
+      Point::new(
+        offset_from_parent_context.x + viewport_scroll.x,
+        offset_from_parent_context.y + viewport_scroll.y,
+      )
+    } else {
+      offset_from_parent_context
+    };
     context.fragments.push(fragment.clone());
 
     let base_offset = Point::ZERO;
@@ -1495,6 +1518,7 @@ where
         child_offset,
         &mut child_clip_stack,
         get_style,
+        skip_viewport_scroll_cancel_for_children,
         deadline_counter,
         scroll_state,
       )?;
@@ -1587,6 +1611,7 @@ where
         child_offset,
         clip_stack,
         get_style,
+        skip_viewport_scroll_cancel_for_children,
         deadline_counter,
         scroll_state,
       )?;
@@ -1633,6 +1658,7 @@ fn build_stacking_tree_with_styles_internal<F>(
   offset_from_parent_context: Point,
   clip_stack: &mut Vec<ClipChainLink>,
   get_style: &F,
+  skip_viewport_scroll_cancel: bool,
   scroll_state: Option<&ScrollState>,
 ) -> StackingContext
 where
@@ -1646,6 +1672,19 @@ where
   } else {
     is_root
   };
+  let establishes_fixed_cb = style
+    .as_deref()
+    .is_some_and(|style| style.establishes_fixed_containing_block());
+  let needs_viewport_scroll_cancel = style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed))
+    && !skip_viewport_scroll_cancel;
+  let skip_viewport_scroll_cancel_for_children =
+    skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
+  let viewport_scroll = scroll_state
+    .map(|state| state.viewport)
+    .filter(|scroll| scroll.x.is_finite() && scroll.y.is_finite())
+    .unwrap_or(Point::ZERO);
 
   if creates_context {
     let z_index = style
@@ -1665,7 +1704,14 @@ where
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
     context.clip_chain = clip_stack.clone();
-    context.offset_from_parent_context = offset_from_parent_context;
+    context.offset_from_parent_context = if needs_viewport_scroll_cancel {
+      Point::new(
+        offset_from_parent_context.x + viewport_scroll.x,
+        offset_from_parent_context.y + viewport_scroll.y,
+      )
+    } else {
+      offset_from_parent_context
+    };
     context.fragments.push(fragment.clone());
 
     let base_offset = Point::ZERO;
@@ -1685,6 +1731,7 @@ where
         child_offset,
         &mut child_clip_stack,
         get_style,
+        skip_viewport_scroll_cancel_for_children,
         scroll_state,
       );
 
@@ -1776,6 +1823,7 @@ where
         child_offset,
         clip_stack,
         get_style,
+        skip_viewport_scroll_cancel_for_children,
         scroll_state,
       );
 

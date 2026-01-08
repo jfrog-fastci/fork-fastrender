@@ -1549,6 +1549,7 @@ impl Painter {
           offset,
           None,
           true,
+          false,
           root_paint,
           &mut items,
           &mut svg_filter_resolver,
@@ -1810,6 +1811,7 @@ impl Painter {
     offset: Point,
     parent_style: Option<&ComputedStyle>,
     is_root_context: bool,
+    skip_viewport_scroll_cancel: bool,
     root_paint: RootPaintOptions,
     items: &mut Vec<DisplayCommand>,
     svg_filters: &mut SvgFilterResolver,
@@ -1830,6 +1832,27 @@ impl Painter {
         return Ok(());
       }
     }
+
+    let style_ref = fragment.style.as_deref();
+    let establishes_fixed_cb =
+      style_ref.is_some_and(|style| style.establishes_fixed_containing_block());
+    let needs_viewport_scroll_cancel =
+      style_ref.is_some_and(|style| matches!(style.position, Position::Fixed))
+        && !skip_viewport_scroll_cancel;
+    let skip_viewport_scroll_cancel_for_children =
+      skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
+    let viewport_scroll = if self.scroll_state.viewport.x.is_finite()
+      && self.scroll_state.viewport.y.is_finite()
+    {
+      self.scroll_state.viewport
+    } else {
+      Point::ZERO
+    };
+    let offset = if needs_viewport_scroll_cancel {
+      Point::new(offset.x + viewport_scroll.x, offset.y + viewport_scroll.y)
+    } else {
+      offset
+    };
 
     let abs_bounds = Rect::from_xywh(
       fragment.bounds.x() + offset.x,
@@ -1869,7 +1892,6 @@ impl Painter {
       );
     }
 
-    let style_ref = fragment.style.as_deref();
     let establishes_context = style_ref
       .map(|s| creates_stacking_context(s, parent_style, is_root_context))
       .unwrap_or(is_root_context);
@@ -1940,6 +1962,7 @@ impl Painter {
           child_offset,
           style_ref,
           false,
+          skip_viewport_scroll_cancel_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -1953,6 +1976,7 @@ impl Painter {
           child_offset,
           style_ref,
           false,
+          skip_viewport_scroll_cancel_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -1964,6 +1988,7 @@ impl Painter {
           child_offset,
           style_ref,
           false,
+          skip_viewport_scroll_cancel_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -1975,6 +2000,7 @@ impl Painter {
           child_offset,
           style_ref,
           false,
+          skip_viewport_scroll_cancel_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -1986,6 +2012,7 @@ impl Painter {
           child_offset,
           style_ref,
           false,
+          skip_viewport_scroll_cancel_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -1999,6 +2026,7 @@ impl Painter {
           child_offset,
           style_ref,
           false,
+          skip_viewport_scroll_cancel_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2012,6 +2040,7 @@ impl Painter {
           child_offset,
           style_ref,
           false,
+          skip_viewport_scroll_cancel_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2077,6 +2106,7 @@ impl Painter {
         child_offset,
         style_ref,
         false,
+        skip_viewport_scroll_cancel_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2091,6 +2121,7 @@ impl Painter {
         child_offset,
         style_ref,
         false,
+        skip_viewport_scroll_cancel_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2102,6 +2133,7 @@ impl Painter {
         child_offset,
         style_ref,
         false,
+        skip_viewport_scroll_cancel_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2113,6 +2145,7 @@ impl Painter {
         child_offset,
         style_ref,
         false,
+        skip_viewport_scroll_cancel_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2124,6 +2157,7 @@ impl Painter {
         child_offset,
         style_ref,
         false,
+        skip_viewport_scroll_cancel_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2137,6 +2171,7 @@ impl Painter {
         child_offset,
         style_ref,
         false,
+        skip_viewport_scroll_cancel_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2150,6 +2185,7 @@ impl Painter {
         child_offset,
         style_ref,
         false,
+        skip_viewport_scroll_cancel_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -16016,6 +16052,7 @@ mod tests {
         Point::ZERO,
         None,
         true,
+        false,
         RootPaintOptions {
           use_root_background: false,
           extend_background_to_viewport: false,
