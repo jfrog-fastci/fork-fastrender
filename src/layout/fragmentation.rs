@@ -2365,8 +2365,17 @@ fn collect_break_opportunities(
       {
         strength = BreakStrength::Avoid;
       }
+      // Forced breaks before the first in-flow child should propagate to the start of the parent
+      // block rather than occurring at the child's border box start (which may be offset by
+      // padding/margins). This matches the CSS Break "break propagation" behavior and prevents
+      // fragmentainers that contain only leading padding space.
+      let pos = if matches!(strength, BreakStrength::Forced) {
+        abs_start
+      } else {
+        child_abs_start
+      };
       collection.opportunities.push(BreakOpportunity {
-        pos: child_abs_start,
+        pos,
         strength,
         kind: BreakKind::BetweenSiblings,
       });

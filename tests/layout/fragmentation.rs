@@ -136,6 +136,25 @@ fn pagination_without_candidates_uses_fragmentainer_size() {
 }
 
 #[test]
+fn forced_break_before_first_child_does_not_create_leading_empty_fragment() {
+  let mut child_style = ComputedStyle::default();
+  child_style.break_before = BreakBetween::Page;
+  let child_style = Arc::new(child_style);
+
+  // Simulate a first child that starts after a padding-like offset.
+  let mut child = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 10.0), 1, vec![]);
+  child.style = Some(child_style);
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), vec![child]);
+
+  // The forced break is at the start of the content flow; it should not create a fragmentainer
+  // slice containing only the leading offset.
+  let fragments = fragment_tree(&root, &FragmentationOptions::new(200.0)).unwrap();
+
+  assert_eq!(fragments.len(), 1);
+  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+}
+
+#[test]
 fn vertical_writing_fragment_tree_columns_use_inline_axis() {
   let mut style = ComputedStyle::default();
   style.display = Display::Block;
