@@ -1264,6 +1264,44 @@ fn container_style_query_range_feature_matches_offset_distance_percentage() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_translate() {
+  let html = r#"
+    <style>
+      .container-none { container-type: inline-size; translate: none; }
+      .container-small { container-type: inline-size; translate: 1px; }
+      .container-large { container-type: inline-size; translate: 3px; }
+      .container-nonuniform { container-type: inline-size; translate: 3px 1px; }
+      .child { color: rgb(0 0 255); }
+      @container style(translate > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-none">
+      <div id="none" class="child">hello</div>
+    </div>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+    <div class="container-nonuniform">
+      <div id="nonuniform" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let none = find_by_id(&styled, "none").expect("none element");
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  let nonuniform = find_by_id(&styled, "nonuniform").expect("nonuniform element");
+  assert_eq!(none.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(nonuniform.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_rotate() {
   let html = r#"
     <style>
