@@ -1200,6 +1200,58 @@ fn container_style_query_range_feature_matches_stroke_opacity() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_stroke_width() {
+  let html = r#"
+    <style>
+      .container-thin { container-type: inline-size; stroke-width: 1; }
+      .container-thick { container-type: inline-size; stroke-width: 3; }
+      .child { color: rgb(0 0 255); }
+      @container style(stroke-width > 2) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_stroke_dashoffset() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; stroke-dashoffset: 1; }
+      .container-large { container-type: inline-size; stroke-dashoffset: 3; }
+      .child { color: rgb(0 0 255); }
+      @container style(stroke-dashoffset > 2) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_widows() {
   let html = r#"
     <style>

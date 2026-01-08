@@ -2025,6 +2025,20 @@ fn eval_style_range_value(
         ty: NumericType::Number,
         value,
       }),
+      "stroke-width" => styles.svg_stroke_width.and_then(|value| match value {
+        crate::style::types::LengthOrNumber::Length(len) => length_to_numeric(&len, container, ctx),
+        crate::style::types::LengthOrNumber::Number(value) => Some(NumericValue {
+          ty: NumericType::Number,
+          value,
+        }),
+      }),
+      "stroke-dashoffset" => styles.svg_stroke_dashoffset.and_then(|value| match value {
+        crate::style::types::LengthOrNumber::Length(len) => length_to_numeric(&len, container, ctx),
+        crate::style::types::LengthOrNumber::Number(value) => Some(NumericValue {
+          ty: NumericType::Number,
+          value,
+        }),
+      }),
       "image-resolution" => {
         // `image-resolution: from-image` depends on the referenced image's metadata, which isn't
         // available during style query evaluation.
