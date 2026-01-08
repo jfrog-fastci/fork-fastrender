@@ -136,6 +136,19 @@ impl HeaderCaptureServer {
 </html>"#
                   .to_vec(),
               ),
+              "/frame_meta_no_referrer_with_style_import.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head>
+    <meta name="referrer" content="no-referrer">
+    <link rel="stylesheet" href="/style_import.css">
+  </head>
+  <body>frame</body>
+</html>"#
+                  .to_vec(),
+              ),
               "/style.css" => ("200 OK", "text/css; charset=utf-8", b"body { }".to_vec()),
               "/doc_response_policy.html" => (
                 "200 OK",
@@ -1677,6 +1690,69 @@ fn meta_referrer_policy_no_referrer_allows_iframe_referrerpolicy_override_for_ne
       header_value(&req.headers, "referer").as_deref(),
       Some(expected_referer.as_str()),
       "expected iframe referrerpolicy override to win over meta Referrer-Policy for {path}; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
+fn iframe_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy_for_nested_requests() {
+  let Some(server) = HeaderCaptureServer::start(
+    "iframe_meta_referrer_policy_no_referrer_overrides_iframe_referrerpolicy_for_nested_requests",
+  ) else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta name="referrer" content="no-referrer">
+      </head>
+      <body>
+        <iframe src="/frame_meta_no_referrer_with_style_import.html" referrerpolicy="origin" style="width: 10px; height: 10px"></iframe>
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in [
+    "/frame_meta_no_referrer_with_style_import.html",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+
+  let frame_req = requests
+    .iter()
+    .find(|req| req.path == "/frame_meta_no_referrer_with_style_import.html")
+    .expect("expected iframe navigation request");
+  assert_eq!(
+    header_value(&frame_req.headers, "referer").as_deref(),
+    Some(expected_referer.as_str()),
+    "expected iframe referrerpolicy override to win over parent meta Referrer-Policy for /frame_meta_no_referrer_with_style_import.html; got:\n{}",
+    frame_req.headers
+  );
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert!(
+      header_value(&req.headers, "referer").is_none(),
+      "expected iframe document meta Referrer-Policy to suppress Referer for {path}; got:\n{}",
       req.headers
     );
   }

@@ -555,7 +555,7 @@ fn inline_svg_use_references<'a>(
   const MAX_USE_EXPANSIONS: usize = 128;
   const MAX_INJECTED_BYTES: usize = 512 * 1024;
 
-  check_active(RenderStage::Paint).map_err(Error::Render)?;
+  check_root(RenderStage::Paint).map_err(Error::Render)?;
 
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     roxmltree::Document::parse(svg_content)
@@ -572,7 +572,7 @@ fn inline_svg_use_references<'a>(
   let mut expansions = 0usize;
 
   for node in doc.descendants().filter(|n| n.is_element()) {
-    check_active_periodic(
+    check_root_periodic(
       &mut deadline_counter,
       IMAGE_DECODE_DEADLINE_STRIDE,
       RenderStage::Paint,
@@ -629,7 +629,7 @@ fn inline_svg_use_references<'a>(
     }
 
     if !sprite_cache.contains_key(&resolved_url) {
-      check_active(RenderStage::Paint).map_err(Error::Render)?;
+      check_root(RenderStage::Paint).map_err(Error::Render)?;
 
       let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
       if let Some(ctx) = ctx {
@@ -667,7 +667,7 @@ fn inline_svg_use_references<'a>(
 
       let mut by_id = HashMap::new();
       for sprite_node in sprite_doc.descendants().filter(|n| n.is_element()) {
-        check_active_periodic(
+        check_root_periodic(
           &mut deadline_counter,
           IMAGE_DECODE_DEADLINE_STRIDE,
           RenderStage::Paint,
@@ -3896,7 +3896,7 @@ impl ImageCache {
     let mut deadline_counter = 0usize;
 
     loop {
-      check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint).map_err(Error::Render)?;
+      check_root_periodic(&mut deadline_counter, 32, RenderStage::Paint).map_err(Error::Render)?;
       let n = decoder.read(&mut buf).map_err(|e| {
         Error::Image(ImageError::DecodeFailed {
           url: url.to_string(),
