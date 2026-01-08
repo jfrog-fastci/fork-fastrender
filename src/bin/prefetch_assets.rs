@@ -1176,7 +1176,21 @@ mod disk_cache_main {
             .document_base_url
             .is_some_and(|base_url| base_url == importer_url)
           {
-            self.document_referrer
+            // `StyleSheet::resolve_imports_*` passes the current resolution base as the importer
+            // URL. For inline `<style>` blocks this base may differ from the document URL due to
+            // `<base href>`, but the HTTP request referrer should remain the document URL. Only
+            // apply this special-case when the importer URL hasn't been fetched as a stylesheet
+            // itself (e.g. when `<base href>` points directly at an imported stylesheet URL, nested
+            // imports must still use that stylesheet URL as the referrer).
+            if !self
+              .stylesheet_policies
+              .borrow()
+              .contains_key(importer_url)
+            {
+              self.document_referrer
+            } else {
+              importer_url
+            }
           } else {
             importer_url
           }
@@ -2547,6 +2561,78 @@ mod disk_cache_main {
       let policies = fetcher_impl.policies.lock().unwrap();
       assert_eq!(policies.len(), 1);
       assert_eq!(policies[0], ReferrerPolicy::NoReferrer);
+    }
+
+    #[test]
+    fn import_referrer_override_only_applies_to_inline_root_document_base_url() {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<(String, Option<String>)>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("expected prefetch to use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push((
+            req.url.to_string(),
+            req.referrer_url.map(|r| r.to_string()),
+          ));
+          let mut res = FetchedResource::with_final_url(
+            b"body {}".to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          );
+          res.status = Some(200);
+          Ok(res)
+        }
+      }
+
+      let document_referrer = "https://example.test/page.html";
+      let document_base_url = "https://example.test/base.css";
+      let nested_import_url = "https://example.test/nested.css";
+
+      let summary = RefCell::new(PageSummary::default());
+      let all_asset_urls = RefCell::new(BTreeSet::<String>::new());
+      let fetcher = RecordingFetcher::default();
+      let loader = PrefetchImportLoader::new(
+        &fetcher,
+        document_referrer,
+        Some(document_base_url),
+        None,
+        FetchDestination::Style,
+        FetchCredentialsMode::Include,
+        ReferrerPolicy::Origin,
+        &summary,
+        &all_asset_urls,
+        None,
+        2000,
+      );
+
+      // First-level import from an inline stylesheet: `importer_url` matches the document base URL
+      // (potentially affected by `<base href>`), but the request should still use the document URL
+      // as its referrer.
+      loader
+        .load_with_importer(document_base_url, Some(document_base_url))
+        .expect("fetch base stylesheet");
+
+      // Nested import from the fetched stylesheet: if the stylesheet URL happens to equal the
+      // document base URL, we must *not* fall back to the document referrer, because the imported
+      // stylesheet is now the correct referrer source.
+      loader
+        .load_with_importer(nested_import_url, Some(document_base_url))
+        .expect("fetch nested stylesheet");
+
+      let calls = fetcher.calls.lock().unwrap();
+      assert_eq!(calls.len(), 2);
+      assert_eq!(calls[0].0, document_base_url);
+      assert_eq!(calls[0].1.as_deref(), Some(document_referrer));
+      assert_eq!(calls[1].0, nested_import_url);
+      assert_eq!(calls[1].1.as_deref(), Some(document_base_url));
     }
 
     #[test]
