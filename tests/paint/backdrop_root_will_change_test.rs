@@ -396,6 +396,16 @@ fn will_change_webkit_mask_establishes_backdrop_root() {
 }
 
 #[test]
+fn will_change_webkit_mask_box_image_establishes_backdrop_root() {
+  let _guard = lock_tests();
+  // WebKit exposes `mask-border` as `-webkit-mask-box-image`; will-change hints should behave
+  // equivalently for Backdrop Root semantics.
+  let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-mask-box-image");
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_webkit_clip_path_establishes_backdrop_root() {
   let _guard = lock_tests();
   // `-webkit-clip-path` aliases `clip-path`; will-change hints should behave equivalently for
@@ -636,6 +646,16 @@ fn will_change_filter_is_case_insensitive() {
   let _guard = lock_tests();
   let pixmap = render_backdrop_invert_with_parent_will_change("FILTER");
   // Backdrop sampling stops at the will-change backdrop root.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_ident_function_establishes_backdrop_root() {
+  let _guard = lock_tests();
+  // CSS Values defines `ident()` to produce custom-ident values. `will-change` accepts custom-ident
+  // hints, so `ident(filter)` must behave like `filter`.
+  let pixmap = render_backdrop_invert_with_parent_will_change("ident(filter)");
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }

@@ -15409,8 +15409,15 @@ fn parse_will_change_from_str(text: &str) -> Option<WillChange> {
   let mut hints = Vec::new();
   while !parser.is_exhausted() {
     parser.skip_whitespace();
-    let ident = parser.expect_ident().ok()?;
-    let ident_lower = ident.as_ref().to_ascii_lowercase();
+    let token = parser.next().ok()?;
+    let ident = match token {
+      Token::Ident(ident) => ident.to_string(),
+      Token::Function(name) if name.as_ref().eq_ignore_ascii_case("ident") => parser
+        .parse_nested_block(crate::css::ident::parse_ident_function_contents)
+        .ok()?,
+      _ => return None,
+    };
+    let ident_lower = ident.to_ascii_lowercase();
     match ident_lower.as_str() {
       "auto" => return None,
       // These keywords are excluded from <<custom-ident>> in css-will-change-1 (which builds on
