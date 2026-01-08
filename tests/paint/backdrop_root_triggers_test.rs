@@ -284,6 +284,44 @@ fn opacity_triggers_backdrop_root() {
 }
 
 #[test]
+fn isolation_isolate_does_not_trigger_backdrop_root() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        /* `isolation: isolate` creates an isolated group (compositing), but Filter Effects Level 2
+           does NOT list it as a Backdrop Root trigger. Descendant backdrop-filter effects must
+           still be able to sample the page backdrop outside this element. */
+        isolation: isolate;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // Sanity-check that the overlay border landed where expected.
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  // The overlay extends outside `#parent`. Since `isolation:isolate` is NOT a Backdrop Root
+  // trigger, the overlay's backdrop-filter should still invert the body background outside the
+  // parent.
+  assert_eq!(pixel(&pixmap, 15, 15), (0, 255, 255, 255));
+}
+
+#[test]
 fn mask_image_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
