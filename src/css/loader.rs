@@ -28,6 +28,10 @@ fn is_ascii_whitespace_html_css(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
 }
 
+fn is_ascii_whitespace_html_css_byte(b: u8) -> bool {
+  matches!(b, b'\t' | b'\n' | b'\x0C' | b'\r' | b' ')
+}
+
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(is_ascii_whitespace_html_css)
 }
@@ -1748,7 +1752,7 @@ fn extract_attr_value(tag_source: &str, attr: &str) -> Option<String> {
     chars.next();
   }
   while let Some(&c) = chars.peek() {
-    if c.is_whitespace() || c == '>' {
+    if is_ascii_whitespace_html_css(c) || c == '>' {
       break;
     }
     chars.next();
@@ -1757,7 +1761,7 @@ fn extract_attr_value(tag_source: &str, attr: &str) -> Option<String> {
   loop {
     // Skip whitespace between attributes.
     while let Some(&c) = chars.peek() {
-      if c.is_whitespace() {
+      if is_ascii_whitespace_html_css(c) {
         chars.next();
       } else {
         break;
@@ -1775,7 +1779,7 @@ fn extract_attr_value(tag_source: &str, attr: &str) -> Option<String> {
 
     let mut name = String::new();
     while let Some(&c) = chars.peek() {
-      if c.is_whitespace() || c == '=' || c == '>' {
+      if is_ascii_whitespace_html_css(c) || c == '=' || c == '>' {
         break;
       }
       name.push(c);
@@ -1792,7 +1796,7 @@ fn extract_attr_value(tag_source: &str, attr: &str) -> Option<String> {
     let name_lower = name.to_ascii_lowercase();
 
     while let Some(&c) = chars.peek() {
-      if c.is_whitespace() {
+      if is_ascii_whitespace_html_css(c) {
         chars.next();
       } else {
         break;
@@ -1803,7 +1807,7 @@ fn extract_attr_value(tag_source: &str, attr: &str) -> Option<String> {
       chars.next();
 
       while let Some(&c) = chars.peek() {
-        if c.is_whitespace() {
+        if is_ascii_whitespace_html_css(c) {
           chars.next();
         } else {
           break;
@@ -1825,7 +1829,7 @@ fn extract_attr_value(tag_source: &str, attr: &str) -> Option<String> {
         } else {
           let mut val = String::new();
           while let Some(&ch) = chars.peek() {
-            if ch.is_whitespace() || ch == '>' {
+            if is_ascii_whitespace_html_css(ch) || ch == '>' {
               break;
             }
             val.push(ch);
@@ -2466,7 +2470,7 @@ pub(crate) fn extract_embedded_css_urls_with_meta(
     let mut start = abs_pos;
     while start > 0 {
       let c = bytes[start - 1] as char;
-      if matches!(c, '"' | '\'' | '`' | '(' | '<') || c.is_whitespace() {
+      if matches!(c, '"' | '\'' | '`' | '(' | '<') || is_ascii_whitespace_html_css(c) {
         break;
       }
       start -= 1;
@@ -2482,7 +2486,7 @@ pub(crate) fn extract_embedded_css_urls_with_meta(
     let mut end = abs_pos + 4;
     while end < bytes.len() {
       let c = bytes[end] as char;
-      if matches!(c, '"' | '\'' | '`' | ')' | '>' | '{' | '}') || c.is_whitespace() {
+      if matches!(c, '"' | '\'' | '`' | ')' | '>' | '{' | '}') || is_ascii_whitespace_html_css(c) {
         break;
       }
       end += 1;
@@ -2513,7 +2517,7 @@ pub(crate) fn extract_embedded_css_urls_with_meta(
     // rather than a URL. If the next non-whitespace character after the match is '=',
     // treat it as a property access and ignore it.
     let mut lookahead = end;
-    while lookahead < bytes.len() && (bytes[lookahead] as char).is_whitespace() {
+    while lookahead < bytes.len() && is_ascii_whitespace_html_css_byte(bytes[lookahead]) {
       lookahead += 1;
     }
     if lookahead < bytes.len() && bytes[lookahead] == b'=' {
@@ -2529,7 +2533,7 @@ pub(crate) fn extract_embedded_css_urls_with_meta(
         // Detect sourceURL/sourceMappingURL-style sourcemap markers (/*# or //#) immediately
         // preceding the token.
         let mut marker_back = start;
-        while marker_back > 0 && (bytes[marker_back - 1] as char).is_whitespace() {
+        while marker_back > 0 && is_ascii_whitespace_html_css_byte(bytes[marker_back - 1]) {
           marker_back -= 1;
         }
         let sourcemap_marker = if marker_back > 0 && bytes[marker_back - 1] == b'#' {
@@ -3996,6 +4000,14 @@ mod tests {
   fn extract_css_links_preserves_non_ascii_whitespace_in_href() {
     let nbsp = "\u{00A0}";
     let html = format!(r#"<link rel="stylesheet" href="a.css{nbsp}">"#);
+    let urls = extract_css_links(&html, "https://example.com/", MediaType::Screen).unwrap();
+    assert_eq!(urls, vec!["https://example.com/a.css%C2%A0".to_string()]);
+  }
+
+  #[test]
+  fn extract_css_links_does_not_treat_non_ascii_whitespace_as_attr_delimiter() {
+    let nbsp = "\u{00A0}";
+    let html = format!(r#"<link rel=stylesheet href=a.css{nbsp}>"#);
     let urls = extract_css_links(&html, "https://example.com/", MediaType::Screen).unwrap();
     assert_eq!(urls, vec!["https://example.com/a.css%C2%A0".to_string()]);
   }
