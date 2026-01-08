@@ -1466,31 +1466,44 @@ pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTi
   }
 }
 
-fn parse_animation_names(raw: &str) -> Vec<String> {
-  let mut names = Vec::new();
-  for part in split_top_level_commas(raw) {
-    let mut input = ParserInput::new(part.trim());
+fn parse_animation_names(raw: &str) -> Option<Vec<String>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
+  }
+
+  let mut names = Vec::with_capacity(parts.len());
+  let mut first_is_none_ident = false;
+  for (idx, part) in parts.into_iter().enumerate() {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+      return None;
+    }
+    let mut input = ParserInput::new(trimmed);
     let mut parser = Parser::new(&mut input);
     parser.skip_whitespace();
-    let token = match parser.next_including_whitespace() {
-      Ok(token) => token,
-      Err(_) => continue,
-    };
-    let name = match token {
-      Token::Ident(ident) => ident.to_string(),
-      Token::QuotedString(s) => s.to_string(),
-      _ => continue,
+    let token = parser.next_including_whitespace().ok()?;
+    let (name, is_none_ident) = match token {
+      Token::Ident(ident) => (ident.to_string(), ident.eq_ignore_ascii_case("none")),
+      Token::QuotedString(s) => (s.to_string(), false),
+      _ => return None,
     };
     parser.skip_whitespace();
     if !parser.is_exhausted() {
-      continue;
+      return None;
+    }
+    if idx == 0 {
+      first_is_none_ident = is_none_ident;
     }
     names.push(name);
   }
-  if names.len() == 1 && names[0].eq_ignore_ascii_case("none") {
-    Vec::new()
+
+  if names.len() == 1 && first_is_none_ident {
+    // The keyword `none` disables animations. A quoted string `"none"` is still a valid keyframes
+    // name, so only treat the ident token as the keyword.
+    Some(Vec::new())
   } else {
-    names
+    Some(names)
   }
 }
 
@@ -2452,18 +2465,16 @@ fn parse_animation_iteration_count(raw: &str) -> Option<AnimationIterationCount>
   }
 }
 
-fn parse_animation_iteration_count_list(raw: &str) -> Vec<AnimationIterationCount> {
-  let mut counts = Vec::new();
-  for part in split_top_level_commas(raw) {
-    if let Some(count) = parse_animation_iteration_count(&part) {
-      counts.push(count);
-    }
+fn parse_animation_iteration_count_list(raw: &str) -> Option<Vec<AnimationIterationCount>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
   }
-  if counts.is_empty() {
-    vec![AnimationIterationCount::default()]
-  } else {
-    counts
+  let mut counts = Vec::with_capacity(parts.len());
+  for part in parts {
+    counts.push(parse_animation_iteration_count(&part)?);
   }
+  Some(counts)
 }
 
 fn parse_animation_direction(raw: &str) -> Option<AnimationDirection> {
@@ -2476,18 +2487,16 @@ fn parse_animation_direction(raw: &str) -> Option<AnimationDirection> {
   }
 }
 
-fn parse_animation_direction_list(raw: &str) -> Vec<AnimationDirection> {
-  let mut dirs = Vec::new();
-  for part in split_top_level_commas(raw) {
-    if let Some(dir) = parse_animation_direction(&part) {
-      dirs.push(dir);
-    }
+fn parse_animation_direction_list(raw: &str) -> Option<Vec<AnimationDirection>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
   }
-  if dirs.is_empty() {
-    vec![AnimationDirection::default()]
-  } else {
-    dirs
+  let mut dirs = Vec::with_capacity(parts.len());
+  for part in parts {
+    dirs.push(parse_animation_direction(&part)?);
   }
+  Some(dirs)
 }
 
 fn parse_animation_fill_mode(raw: &str) -> Option<AnimationFillMode> {
@@ -2500,18 +2509,16 @@ fn parse_animation_fill_mode(raw: &str) -> Option<AnimationFillMode> {
   }
 }
 
-fn parse_animation_fill_mode_list(raw: &str) -> Vec<AnimationFillMode> {
-  let mut modes = Vec::new();
-  for part in split_top_level_commas(raw) {
-    if let Some(mode) = parse_animation_fill_mode(&part) {
-      modes.push(mode);
-    }
+fn parse_animation_fill_mode_list(raw: &str) -> Option<Vec<AnimationFillMode>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
   }
-  if modes.is_empty() {
-    vec![AnimationFillMode::default()]
-  } else {
-    modes
+  let mut modes = Vec::with_capacity(parts.len());
+  for part in parts {
+    modes.push(parse_animation_fill_mode(&part)?);
   }
+  Some(modes)
 }
 
 fn parse_animation_composition(raw: &str) -> Option<AnimationComposition> {
@@ -2523,18 +2530,16 @@ fn parse_animation_composition(raw: &str) -> Option<AnimationComposition> {
   }
 }
 
-fn parse_animation_composition_list(raw: &str) -> Vec<AnimationComposition> {
-  let mut compositions = Vec::new();
-  for part in split_top_level_commas(raw) {
-    if let Some(comp) = parse_animation_composition(&part) {
-      compositions.push(comp);
-    }
+fn parse_animation_composition_list(raw: &str) -> Option<Vec<AnimationComposition>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
   }
-  if compositions.is_empty() {
-    vec![AnimationComposition::default()]
-  } else {
-    compositions
+  let mut compositions = Vec::with_capacity(parts.len());
+  for part in parts {
+    compositions.push(parse_animation_composition(&part)?);
   }
+  Some(compositions)
 }
 
 fn parse_animation_play_state(raw: &str) -> Option<AnimationPlayState> {
@@ -2545,18 +2550,16 @@ fn parse_animation_play_state(raw: &str) -> Option<AnimationPlayState> {
   }
 }
 
-fn parse_animation_play_state_list(raw: &str) -> Vec<AnimationPlayState> {
-  let mut states = Vec::new();
-  for part in split_top_level_commas(raw) {
-    if let Some(state) = parse_animation_play_state(&part) {
-      states.push(state);
-    }
+fn parse_animation_play_state_list(raw: &str) -> Option<Vec<AnimationPlayState>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
   }
-  if states.is_empty() {
-    vec![AnimationPlayState::default()]
-  } else {
-    states
+  let mut states = Vec::with_capacity(parts.len());
+  for part in parts {
+    states.push(parse_animation_play_state(&part)?);
   }
+  Some(states)
 }
 
 fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> {
@@ -11333,7 +11336,9 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "animation-name" | "-webkit-animation-name" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_names = parse_animation_names(css_text);
+      if let Some(names) = parse_animation_names(css_text) {
+        styles.animation_names = names;
+      }
     }
     "animation-duration" | "-webkit-animation-duration" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
@@ -11355,23 +11360,33 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "animation-iteration-count" | "-webkit-animation-iteration-count" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_iteration_counts = parse_animation_iteration_count_list(css_text).into();
+      if let Some(list) = parse_animation_iteration_count_list(css_text) {
+        styles.animation_iteration_counts = list.into();
+      }
     }
     "animation-direction" | "-webkit-animation-direction" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_directions = parse_animation_direction_list(css_text).into();
+      if let Some(list) = parse_animation_direction_list(css_text) {
+        styles.animation_directions = list.into();
+      }
     }
     "animation-fill-mode" | "-webkit-animation-fill-mode" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_fill_modes = parse_animation_fill_mode_list(css_text).into();
+      if let Some(list) = parse_animation_fill_mode_list(css_text) {
+        styles.animation_fill_modes = list.into();
+      }
     }
     "animation-play-state" | "-webkit-animation-play-state" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_play_states = parse_animation_play_state_list(css_text).into();
+      if let Some(list) = parse_animation_play_state_list(css_text) {
+        styles.animation_play_states = list.into();
+      }
     }
     "animation-composition" | "-webkit-animation-composition" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_compositions = parse_animation_composition_list(css_text).into();
+      if let Some(list) = parse_animation_composition_list(css_text) {
+        styles.animation_compositions = list.into();
+      }
     }
     "animation" | "-webkit-animation" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
