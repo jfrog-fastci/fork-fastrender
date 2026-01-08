@@ -3077,6 +3077,211 @@ impl ImageCache {
       return Ok(());
     };
 
+    // SVGs can reference external resources via multiple vectors:
+    // - `href` / `xlink:href` attributes on elements like <image>, <use>, <feImage>, ...
+    // - inline CSS: `style="... url(...) ..."`
+    // - <style> blocks: `url(...)` and `@import`
+    //
+    // Keep scanning bounded so adversarial SVGs can't cause unbounded work or memory usage.
+    const MAX_URL_REFERENCES: usize = 128;
+    const MAX_CSS_BYTES_SCANNED: usize = 512 * 1024;
+
+    let mut url_refs_seen = 0usize;
+    let mut css_budget_remaining = MAX_CSS_BYTES_SCANNED;
+
+    let mut check_url = |raw: &str| -> Result<()> {
+      let href = raw.trim();
+      if href.is_empty()
+        || href.starts_with('#')
+        || crate::resource::is_data_url(href)
+        || is_about_url(href)
+      {
+        return Ok(());
+      }
+
+      url_refs_seen = url_refs_seen.saturating_add(1);
+      if url_refs_seen > MAX_URL_REFERENCES {
+        return Err(Error::Image(ImageError::LoadFailed {
+          url: svg_url.to_string(),
+          reason: format!(
+            "SVG subresource scan exceeded the maximum of {MAX_URL_REFERENCES} URL references"
+          ),
+        }));
+      }
+
+      let resolved = resolve_against_base(svg_url, href).unwrap_or_else(|| href.to_string());
+      if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved) {
+        return Err(Error::Image(ImageError::LoadFailed {
+          url: resolved,
+          reason: format!("Blocked SVG subresource by policy: {}", err.reason),
+        }));
+      }
+      Ok(())
+    };
+
+    fn scan_css_urls<F: FnMut(&str) -> Result<()>>(
+      css: &str,
+      include_imports: bool,
+      budget_remaining: &mut usize,
+      svg_url: &str,
+      record: &mut F,
+    ) -> Result<()> {
+      use cssparser::{Parser, ParserInput, Token};
+
+      if css.is_empty() {
+        return Ok(());
+      }
+
+      // Ensure CSS scanning remains bounded. Subtract based on the bytes actually scanned so this
+      // cap works across multiple style attributes/blocks.
+      let css_len = css.len();
+      if css_len > *budget_remaining {
+        return Err(Error::Image(ImageError::LoadFailed {
+          url: svg_url.to_string(),
+          reason: format!(
+            "SVG embedded CSS exceeded the scan budget of {MAX_CSS_BYTES_SCANNED} bytes"
+          ),
+        }));
+      }
+      *budget_remaining -= css_len;
+
+      let mut input = ParserInput::new(css);
+      let mut parser = Parser::new(&mut input);
+
+      fn scan_parser<'i, 't, F: FnMut(&str) -> Result<()>>(
+        parser: &mut cssparser::Parser<'i, 't>,
+        include_imports: bool,
+        svg_url: &str,
+        record: &mut F,
+        depth: usize,
+      ) -> Result<()> {
+        // Avoid pathological recursion on deeply nested blocks.
+        const MAX_DEPTH: usize = 32;
+        if depth > MAX_DEPTH {
+          return Err(Error::Image(ImageError::LoadFailed {
+            url: svg_url.to_string(),
+            reason: "SVG embedded CSS exceeded the maximum nested parse depth".to_string(),
+          }));
+        }
+
+        while let Ok(token) = parser.next_including_whitespace_and_comments() {
+          match token {
+            Token::UnquotedUrl(url) => {
+              record(url.as_ref())?;
+            }
+            Token::Function(ref name) if name.eq_ignore_ascii_case("url") => {
+              let mut nested_error: Option<Error> = None;
+              let parsed = parser.parse_nested_block(|nested| {
+                let mut url: Option<cssparser::CowRcStr<'i>> = None;
+
+                while !nested.is_exhausted() {
+                  match nested.next_including_whitespace_and_comments() {
+                    Ok(Token::WhiteSpace(_)) | Ok(Token::Comment(_)) => {}
+                    Ok(Token::QuotedString(s))
+                    | Ok(Token::UnquotedUrl(s))
+                    | Ok(Token::Ident(s)) => {
+                      url = Some(s.clone());
+                      break;
+                    }
+                    Ok(Token::BadUrl(_)) => {
+                      url = None;
+                      break;
+                    }
+                    Ok(Token::Function(_))
+                    | Ok(Token::ParenthesisBlock)
+                    | Ok(Token::SquareBracketBlock)
+                    | Ok(Token::CurlyBracketBlock) => {
+                      // Ignore nested blocks when parsing the url() argument; only first token
+                      // matters for our best-effort scan.
+                      let _ = nested.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'i, ()>>(()));
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                  }
+                }
+
+                Ok::<_, cssparser::ParseError<'i, ()>>(url)
+              });
+
+              if let Some(err) = nested_error.take() {
+                return Err(err);
+              }
+
+              if let Ok(Some(url)) = parsed {
+                record(url.as_ref())?;
+              }
+            }
+            Token::AtKeyword(ref name) if include_imports && name.eq_ignore_ascii_case("import") => {
+              // `@import` accepts either a quoted string or a `url(...)` token.
+              loop {
+                let token = match parser.next_including_whitespace_and_comments() {
+                  Ok(t) => t,
+                  Err(_) => break,
+                };
+                match token {
+                  Token::WhiteSpace(_) | Token::Comment(_) => continue,
+                  Token::QuotedString(s) => {
+                    record(s.as_ref())?;
+                    break;
+                  }
+                  Token::UnquotedUrl(s) => {
+                    record(s.as_ref())?;
+                    break;
+                  }
+                  Token::Function(ref func) if func.eq_ignore_ascii_case("url") => {
+                    let mut url: Option<cssparser::CowRcStr<'i>> = None;
+                    let _ = parser.parse_nested_block(|nested| {
+                      while !nested.is_exhausted() {
+                        match nested.next_including_whitespace_and_comments() {
+                          Ok(Token::WhiteSpace(_)) | Ok(Token::Comment(_)) => {}
+                          Ok(Token::QuotedString(s))
+                          | Ok(Token::UnquotedUrl(s))
+                          | Ok(Token::Ident(s)) => {
+                            url = Some(s.clone());
+                            break;
+                          }
+                          Ok(Token::BadUrl(_)) => break,
+                          Ok(_) => {}
+                          Err(_) => break,
+                        }
+                      }
+                      Ok::<_, cssparser::ParseError<'i, ()>>(())
+                    });
+                    if let Some(url) = url {
+                      record(url.as_ref())?;
+                    }
+                    break;
+                  }
+                  _ => break,
+                }
+              }
+            }
+            Token::Function(_)
+            | Token::ParenthesisBlock
+            | Token::SquareBracketBlock
+            | Token::CurlyBracketBlock => {
+              let mut nested_error: Option<Error> = None;
+              let _ = parser.parse_nested_block(|nested| {
+                if let Err(err) = scan_parser(nested, include_imports, svg_url, record, depth + 1) {
+                  nested_error = Some(err);
+                  return Err(nested.new_custom_error(()));
+                }
+                Ok::<_, cssparser::ParseError<'i, ()>>(())
+              });
+              if let Some(err) = nested_error {
+                return Err(err);
+              }
+            }
+            _ => {}
+          }
+        }
+
+        Ok(())
+      }
+
+      scan_parser(&mut parser, include_imports, svg_url, record, 0)
+    }
+
     let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       roxmltree::Document::parse(svg_content)
     })) {
@@ -3085,26 +3290,40 @@ impl ImageCache {
     };
 
     for node in doc.descendants() {
-      for attr in node.attributes() {
-        if attr.name() != "href" {
-          continue;
+      if node.is_element() {
+        for attr in node.attributes() {
+          let local_name = attr
+            .name()
+            .rsplit_once(':')
+            .map(|(_, name)| name)
+            .unwrap_or(attr.name());
+
+          if local_name == "href"
+            || (local_name == "src" && node.tag_name().name() == "image")
+          {
+            check_url(attr.value())?;
+          }
+
+          if local_name == "style" {
+            scan_css_urls(
+              attr.value(),
+              false,
+              &mut css_budget_remaining,
+              svg_url,
+              &mut check_url,
+            )?;
+          }
         }
 
-        let href = attr.value().trim();
-        if href.is_empty()
-          || href.starts_with('#')
-          || crate::resource::is_data_url(href)
-          || is_about_url(href)
-        {
-          continue;
-        }
-
-        let resolved = resolve_against_base(svg_url, href).unwrap_or_else(|| href.to_string());
-        if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved) {
-          return Err(Error::Image(ImageError::LoadFailed {
-            url: resolved,
-            reason: err.reason,
-          }));
+        if node.tag_name().name() == "style" {
+          // roxmltree normalizes CDATA sections into text nodes, so scanning text nodes covers both.
+          for child in node.children() {
+            if child.is_text() {
+              if let Some(text) = child.text() {
+                scan_css_urls(text, true, &mut css_budget_remaining, svg_url, &mut check_url)?;
+              }
+            }
+          }
         }
       }
     }
@@ -3718,9 +3937,11 @@ impl ImageCache {
     url: &str,
     device_pixel_ratio: f32,
   ) -> Result<Arc<tiny_skia::Pixmap>> {
-    // Policy enforcement is based on the SVG markup itself; injected document CSS does not add
-    // new `<image href>` style subresources that we currently police.
+    // Policy enforcement is based on SVG markup. Injected CSS can introduce additional `url(...)`
+    // references (filters/images/fonts), so scan both the original SVG and the injected `<style>`
+    // element.
     self.enforce_svg_resource_policy(svg_content, url)?;
+    self.enforce_svg_resource_policy(style_element, url)?;
     self.enforce_decode_limits(render_width, render_height, url)?;
     check_root(RenderStage::Paint).map_err(Error::Render)?;
 
@@ -5628,6 +5849,58 @@ mod tests {
     let key = svg_pixmap_key(svg, url, 0.0, 10, 10);
     let key_neg = svg_pixmap_key(svg, url, -0.0, 10, 10);
     assert_eq!(key, key_neg);
+  }
+
+  fn svg_policy_cache_same_origin_only(doc_url: &str) -> ImageCache {
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+    let mut cache = ImageCache::new();
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+    cache
+  }
+
+  #[test]
+  fn svg_policy_blocks_external_href() {
+    let cache = svg_policy_cache_same_origin_only("https://doc.test/");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><image href="https://cross.test/a.png"/></svg>"#;
+    let err = cache
+      .probe_svg_content(svg, "https://doc.test/icon.svg")
+      .expect_err("expected SVG subresource policy failure");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, "https://cross.test/a.png");
+        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_blocks_external_css_url() {
+    let cache = svg_policy_cache_same_origin_only("https://doc.test/");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>rect{fill:url(https://cross.test/a.png)}</style><rect width="10" height="10"/></svg>"#;
+    let err = cache
+      .probe_svg_content(svg, "https://doc.test/icon.svg")
+      .expect_err("expected SVG CSS subresource policy failure");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, "https://cross.test/a.png");
+        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_allows_data_urls_and_fragments() {
+    let cache = svg_policy_cache_same_origin_only("https://doc.test/");
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><g id="id"/></defs><use href="#id"/><image href="data:image/png;base64,AAAA"/></svg>"##;
+    cache
+      .probe_svg_content(svg, "https://doc.test/icon.svg")
+      .expect("expected data URLs and fragment-only hrefs to be ignored");
   }
 
   #[test]
