@@ -5,6 +5,11 @@ use tiny_skia::Pixmap;
 /// This avoids converting to `egui::ColorImage` (which can be CPU/alloc heavy for large frames),
 /// and instead writes the premultiplied RGBA8 bytes directly into a `wgpu::Texture` via
 /// `queue.write_texture`.
+///
+/// Important: `WgpuPixmapTexture` registers a `TextureId` inside `egui_wgpu::Renderer`. Dropping
+/// this type does **not** automatically unregister that ID (because `Drop` doesn't have access to
+/// the renderer). Call [`WgpuPixmapTexture::destroy`] when the texture is no longer needed (e.g.
+/// when closing a tab) to avoid leaking texture IDs in the renderer.
 pub struct WgpuPixmapTexture {
   texture: wgpu::Texture,
   view: wgpu::TextureView,
@@ -12,6 +17,66 @@ pub struct WgpuPixmapTexture {
   size_px: (u32, u32),
   staging: Vec<u8>,
   padded_bytes_per_row: u32,
+}
+
+/// Filter mode used for displaying rasterized page content.
+///
+/// We default to `Nearest` to keep text crisp when we draw at 1:1 physical pixel mapping.
+/// If the UI intentionally draws the image at fractional scale (e.g. smooth zooming), switching to
+/// `Linear` may look better at the cost of potentially blurrier text.
+const PAGE_TEXTURE_FILTER_MODE: wgpu::FilterMode = wgpu::FilterMode::Nearest;
+
+/// Minimal interface we need from `egui_wgpu::Renderer` to manage texture IDs.
+///
+/// This is kept internal so we can unit test ID lifecycle logic without requiring a real GPU.
+trait EguiWgpuTextureRegistry {
+  fn register_native_texture(
+    &mut self,
+    device: &wgpu::Device,
+    view: &wgpu::TextureView,
+    filter: wgpu::FilterMode,
+  ) -> egui::TextureId;
+
+  fn free_texture(&mut self, id: &egui::TextureId);
+}
+
+impl EguiWgpuTextureRegistry for egui_wgpu::Renderer {
+  fn register_native_texture(
+    &mut self,
+    device: &wgpu::Device,
+    view: &wgpu::TextureView,
+    filter: wgpu::FilterMode,
+  ) -> egui::TextureId {
+    egui_wgpu::Renderer::register_native_texture(self, device, view, filter)
+  }
+
+  fn free_texture(&mut self, id: &egui::TextureId) {
+    egui_wgpu::Renderer::free_texture(self, id)
+  }
+}
+
+fn recreate_on_resize<R, T>(
+  egui_renderer: &mut R,
+  size_px: &mut (u32, u32),
+  id: &mut egui::TextureId,
+  new_size_px: (u32, u32),
+  create: impl FnOnce(&mut R) -> (T, egui::TextureId),
+) -> Option<T>
+where
+  R: EguiWgpuTextureRegistry,
+{
+  if *size_px == new_size_px {
+    return None;
+  }
+
+  // Free the old egui `TextureId` first to avoid the renderer's texture registry growing
+  // indefinitely as we resize/recreate.
+  egui_renderer.free_texture(id);
+
+  let (resource, new_id) = create(egui_renderer);
+  *id = new_id;
+  *size_px = new_size_px;
+  Some(resource)
 }
 
 impl WgpuPixmapTexture {
@@ -47,18 +112,18 @@ impl WgpuPixmapTexture {
     let (w, h) = (pixmap.width(), pixmap.height());
     let src_stride = w.saturating_mul(4);
 
-    if self.size_px != (w, h) {
-      // If the size changes, the texture has to be recreated.
-      //
-      // Note: `register_native_texture` allocates a new egui `TextureId`. The old one should be
-      // freed to avoid growing the renderer's texture atlas indefinitely.
-      egui_renderer.free_texture(&self.id);
-
-      let (texture, view, id) = create_and_register_texture(device, egui_renderer, w, h);
+    if let Some((texture, view)) = recreate_on_resize(
+      egui_renderer,
+      &mut self.size_px,
+      &mut self.id,
+      (w, h),
+      |egui_renderer| {
+        let (texture, view, id) = create_and_register_texture(device, egui_renderer, w, h);
+        ((texture, view), id)
+      },
+    ) {
       self.texture = texture;
       self.view = view;
-      self.id = id;
-      self.size_px = (w, h);
       self.padded_bytes_per_row = align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
       self
         .staging
@@ -132,11 +197,20 @@ impl WgpuPixmapTexture {
     let (w, h) = self.size_px;
     egui::vec2(w as f32 / pixels_per_point, h as f32 / pixels_per_point)
   }
+
+  /// Unregister the underlying `TextureId` from `egui_wgpu::Renderer`.
+  ///
+  /// This should be called when dropping the page texture (e.g. when closing a tab) to avoid
+  /// leaking texture IDs in the renderer. It is safe to drop the returned `WgpuPixmapTexture`
+  /// afterwards; the underlying wgpu texture/view resources will be released normally via `Drop`.
+  pub fn destroy(self, egui_renderer: &mut egui_wgpu::Renderer) {
+    egui_renderer.free_texture(&self.id);
+  }
 }
 
 fn create_and_register_texture(
   device: &wgpu::Device,
-  egui_renderer: &mut egui_wgpu::Renderer,
+  egui_renderer: &mut impl EguiWgpuTextureRegistry,
   width: u32,
   height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView, egui::TextureId) {
@@ -158,7 +232,7 @@ fn create_and_register_texture(
 
   let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-  let id = egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Nearest);
+  let id = egui_renderer.register_native_texture(device, &view, PAGE_TEXTURE_FILTER_MODE);
   (texture, view, id)
 }
 
@@ -231,5 +305,50 @@ mod tests {
 
     assert_eq!(&staging[256..256 + 12], &src[12..24]);
     assert!(staging[256 + 12..512].iter().all(|&b| b == 0));
+  }
+
+  #[test]
+  fn recreate_on_resize_frees_old_texture_id_before_registering_new() {
+    #[derive(Default)]
+    struct MockRegistry {
+      freed: Vec<egui::TextureId>,
+    }
+
+    impl EguiWgpuTextureRegistry for MockRegistry {
+      fn register_native_texture(
+        &mut self,
+        _device: &wgpu::Device,
+        _view: &wgpu::TextureView,
+        _filter: wgpu::FilterMode,
+      ) -> egui::TextureId {
+        unreachable!("not used by this test")
+      }
+
+      fn free_texture(&mut self, id: &egui::TextureId) {
+        self.freed.push(*id);
+      }
+    }
+
+    let mut registry = MockRegistry::default();
+    let mut size_px = (10, 10);
+    let mut id = egui::TextureId::User(1);
+    let old_id = id;
+
+    let recreated = recreate_on_resize(
+      &mut registry,
+      &mut size_px,
+      &mut id,
+      (20, 30),
+      |registry| {
+        // Ensure we freed the old id before trying to "register" a new one.
+        assert_eq!(registry.freed, vec![old_id]);
+        ((), egui::TextureId::User(2))
+      },
+    );
+
+    assert!(recreated.is_some());
+    assert_eq!(registry.freed, vec![old_id]);
+    assert_eq!(size_px, (20, 30));
+    assert_eq!(id, egui::TextureId::User(2));
   }
 }

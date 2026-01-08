@@ -38,6 +38,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         match event {
           WindowEvent::CloseRequested => {
+            app.destroy_page_texture();
             *control_flow = ControlFlow::Exit;
           }
           WindowEvent::Resized(new_size) => {
@@ -185,6 +186,12 @@ impl App {
     self.page_size_px = [0, 0];
   }
 
+  fn destroy_page_texture(&mut self) {
+    if let Some(tex) = self.page_texture.take() {
+      tex.destroy(&mut self.egui_renderer);
+    }
+  }
+
   fn ensure_dummy_page_pixmap(&mut self, logical_size_points: egui::Vec2) {
     let width_px = ((logical_size_points.x.max(0.0) * self.pixels_per_point) as u32).max(1);
     let height_px = ((logical_size_points.y.max(0.0) * self.pixels_per_point) as u32).max(1);
@@ -196,10 +203,7 @@ impl App {
     let Some(mut pixmap) = tiny_skia::Pixmap::new(width_px, height_px) else {
       eprintln!("failed to allocate pixmap of size {width_px}x{height_px}");
       self.page_pixmap = None;
-      if let Some(tex) = self.page_texture.take() {
-        let id = tex.id();
-        self.egui_renderer.free_texture(&id);
-      }
+      self.destroy_page_texture();
       self.page_size_px = [0, 0];
       return;
     };
@@ -376,4 +380,3 @@ impl App {
     }
   }
 }
-
