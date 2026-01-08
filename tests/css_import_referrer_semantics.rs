@@ -1,7 +1,7 @@
 use fastrender::api::{FastRender, FastRenderConfig, RenderDiagnostics, RenderOptions, ResourceContext};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::error::{Error, Result};
-use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+use fastrender::resource::{origin_from_url, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
 use fastrender::style::media::MediaType;
 use std::collections::HashMap;
 use std::io;
@@ -12,6 +12,7 @@ struct RecordedRequest {
   url: String,
   destination: FetchDestination,
   referrer_url: Option<String>,
+  client_origin: Option<String>,
 }
 
 #[derive(Default)]
@@ -29,6 +30,14 @@ impl RecordingFetcher {
         Some("text/css".to_string()),
         final_url.map(|u| u.to_string()),
       ),
+    );
+    self
+  }
+
+  fn with_font(mut self, url: &str, body: &[u8], final_url: Option<&str>) -> Self {
+    self.responses.insert(
+      url.to_string(),
+      (body.to_vec(), None, final_url.map(|u| u.to_string())),
     );
     self
   }
@@ -74,6 +83,7 @@ impl ResourceFetcher for RecordingFetcher {
         url: req.url.to_string(),
         destination: req.destination,
         referrer_url: req.referrer_url.map(|r| r.to_string()),
+        client_origin: req.client_origin.map(|o| o.to_string()),
       });
     self.fetch(req.url)
   }
@@ -385,4 +395,153 @@ fn inline_stylesheets_for_document_resolves_base_href_without_changing_referrer(
     .find(|r| r.url == stylesheet_url && r.destination == FetchDestination::Style)
     .expect("request for stylesheet");
   assert_eq!(sheet_request.referrer_url.as_deref(), Some(document_url));
+}
+
+#[test]
+fn font_face_from_inline_style_uses_document_referrer_even_with_base_href() {
+  let document_url = "https://example.test/page.html";
+  let base_href = "https://cdn.example.test/assets/";
+  let font_url = "https://cdn.example.test/assets/font.woff2";
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
+
+  let fetcher = Arc::new(RecordingFetcher::default().with_font(font_url, b"", None));
+
+  let mut renderer = renderer_for(fetcher.clone());
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+        <base href="{base_href}">
+        <style>
+          @font-face {{
+            font-family: TestFont;
+            src: url("font.woff2");
+            font-display: block;
+          }}
+          body {{ font-family: TestFont; }}
+        </style>
+      </head><body>Hello</body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(16, 16),
+    )
+    .expect("render");
+
+  let requests = fetcher.requests();
+  let font_request = requests
+    .iter()
+    .find(|r| r.url == font_url && r.destination == FetchDestination::Font)
+    .expect("request for font");
+  assert_eq!(font_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(font_request.client_origin.as_deref(), Some(expected_origin.as_str()));
+}
+
+#[test]
+fn font_face_from_linked_stylesheet_uses_stylesheet_final_url_as_referrer() {
+  let document_url = "https://example.test/page.html";
+  let base_href = "https://cdn.example.test/assets/";
+
+  let stylesheet_url = "https://cdn.example.test/assets/style.css";
+  let stylesheet_final_url = "https://static.other.test/v2/style.css";
+  let font_url = "https://static.other.test/v2/font.woff2";
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
+
+  let css = r#"
+    @font-face {
+      font-family: TestFont;
+      src: url("font.woff2");
+      font-display: block;
+    }
+    body { font-family: TestFont; }
+  "#;
+
+  let fetcher = Arc::new(
+    RecordingFetcher::default()
+      .with_css(stylesheet_url, css, Some(stylesheet_final_url))
+      .with_font(font_url, b"", None),
+  );
+
+  let mut renderer = renderer_for(fetcher.clone());
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+        <base href="{base_href}">
+        <link rel="stylesheet" href="style.css">
+      </head><body>Hello</body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(16, 16),
+    )
+    .expect("render");
+
+  let requests = fetcher.requests();
+  let font_request = requests
+    .iter()
+    .find(|r| r.url == font_url && r.destination == FetchDestination::Font)
+    .expect("request for font");
+  assert_eq!(
+    font_request.referrer_url.as_deref(),
+    Some(stylesheet_final_url),
+    "expected font request referrer to be the stylesheet final URL"
+  );
+  assert_eq!(font_request.client_origin.as_deref(), Some(expected_origin.as_str()));
+}
+
+#[test]
+fn font_face_from_imported_stylesheet_uses_import_url_as_referrer() {
+  let document_url = "https://example.test/page.html";
+  let entry_css = "https://example.test/css/entry.css";
+  let import_css = "https://example.test/css/fonts.css";
+  let font_url = "https://example.test/css/font.woff2";
+  let expected_origin = origin_from_url(document_url)
+    .expect("origin")
+    .to_string();
+
+  let fetcher = Arc::new(
+    RecordingFetcher::default()
+      .with_css(entry_css, r#"@import "fonts.css";"#, None)
+      .with_css(
+        import_css,
+        r#"
+          @font-face {
+            font-family: TestFont;
+            src: url("font.woff2");
+            font-display: block;
+          }
+          body { font-family: TestFont; }
+        "#,
+        None,
+      )
+      .with_font(font_url, b"", None),
+  );
+
+  let mut renderer = renderer_for(fetcher.clone());
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="{entry_css}">
+      </head><body>Hello</body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(16, 16),
+    )
+    .expect("render");
+
+  let requests = fetcher.requests();
+  let font_request = requests
+    .iter()
+    .find(|r| r.url == font_url && r.destination == FetchDestination::Font)
+    .expect("request for font");
+  assert_eq!(
+    font_request.referrer_url.as_deref(),
+    Some(import_css),
+    "expected font request referrer to be the imported stylesheet URL"
+  );
+  assert_eq!(font_request.client_origin.as_deref(), Some(expected_origin.as_str()));
 }
