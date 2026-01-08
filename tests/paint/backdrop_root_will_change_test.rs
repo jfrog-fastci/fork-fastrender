@@ -592,6 +592,8 @@ fn will_change_other_stacking_context_hints_do_not_establish_backdrop_root() {
     "isolation",
     "contain",
     "z-index",
+    "-moz-transform",
+    "-ms-transform",
     "scroll-position",
     "contents",
   ] {
