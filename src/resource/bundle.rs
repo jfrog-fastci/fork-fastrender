@@ -1,6 +1,7 @@
 use crate::compat::CompatProfile;
 use crate::dom::DomCompatibilityMode;
 use crate::error::{Error, Result};
+use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::resource::{
   origin_from_url, DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchRequest,
   FetchedResource, ReferrerPolicy, ResourceFetcher,
@@ -8,7 +9,7 @@ use crate::resource::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read, Write as _};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -274,6 +275,43 @@ pub struct Bundle {
   vary_resources: HashMap<String, Arc<BundledVaryBucket>>,
 }
 
+fn read_all_with_limit<R: Read>(
+  reader: &mut R,
+  max_bytes: usize,
+  context: &'static str,
+) -> io::Result<Vec<u8>> {
+  let mut bytes = FallibleVecWriter::new(max_bytes, context);
+  let mut buf = [0u8; 8 * 1024];
+  loop {
+    let n = match reader.read(&mut buf) {
+      Ok(0) => break,
+      Ok(n) => n,
+      Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+      Err(err) => return Err(err),
+    };
+    bytes.write_all(&buf[..n])?;
+  }
+  Ok(bytes.into_inner())
+}
+
+fn read_file_fallible(path: &Path) -> io::Result<Vec<u8>> {
+  let mut file = fs::File::open(path)?;
+  let max_bytes = match file.metadata() {
+    Ok(meta) => usize::try_from(meta.len()).map_err(|_| {
+      io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+          "bundle file is too large to read on this platform: {} ({} bytes)",
+          path.display(),
+          meta.len()
+        ),
+      )
+    })?,
+    Err(_) => usize::MAX,
+  };
+  read_all_with_limit(&mut file, max_bytes, "bundle file")
+}
+
 impl Bundle {
   /// Load a bundle from a directory or `.tar` archive path.
   pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -297,8 +335,8 @@ impl Bundle {
 
   fn load_directory(dir: &Path) -> Result<Self> {
     let manifest_path = dir.join(BUNDLE_MANIFEST);
-    let manifest_bytes = fs::read(&manifest_path).map_err(|e| {
-      Error::Io(std::io::Error::new(
+    let manifest_bytes = read_file_fallible(&manifest_path).map_err(|e| {
+      Error::Io(io::Error::new(
         e.kind(),
         format!(
           "Failed to read manifest {path:?}: {e}",
@@ -331,8 +369,15 @@ impl Bundle {
         .to_string_lossy()
         .trim_start_matches("./")
         .to_string();
-      let mut data = Vec::new();
-      entry.read_to_end(&mut data).map_err(Error::Io)?;
+      let size = entry.header().size().map_err(Error::Io)?;
+      let max_bytes = usize::try_from(size).map_err(|_| {
+        Error::Other(format!(
+          "Bundle entry is too large to load on this platform: {path} ({size} bytes)"
+        ))
+      })?;
+      let data = read_all_with_limit(&mut entry, max_bytes, "bundle archive entry").map_err(
+        |err| Error::Io(io::Error::new(err.kind(), format!("Failed to read {path}: {err}"))),
+      )?;
       files.insert(path, data);
     }
 
@@ -384,7 +429,7 @@ impl Bundle {
             relative
           )));
         }
-        fs::read(&target).map_err(Error::Io)?
+        read_file_fallible(&target).map_err(Error::Io)?
       };
 
       let data = Arc::new(data);
@@ -742,6 +787,7 @@ mod tests {
   use super::*;
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use crate::resource::FetchDestination;
+  use std::io::Cursor;
 
   #[test]
   fn bundled_fetcher_decodes_data_urls_without_manifest_entries() {
@@ -792,6 +838,103 @@ mod tests {
       .expect("fetch data url");
     assert_eq!(res.bytes, b"hi");
     assert_eq!(res.content_type.as_deref(), Some("text/plain"));
+  }
+
+  #[test]
+  fn bundle_loader_loads_tar_archives() {
+    let document_bytes = "<!doctype html><html></html>".as_bytes().to_vec();
+    let asset_bytes = b"ok".to_vec();
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(
+        "https://example.com/asset.bin".to_string(),
+        BundledResourceInfo {
+          path: "asset.bin".to_string(),
+          content_type: Some("application/octet-stream".to_string()),
+          nosniff: false,
+          status: Some(200),
+          final_url: Some("https://example.com/asset.bin".to_string()),
+          etag: None,
+          last_modified: None,
+          response_referrer_policy: None,
+          vary: None,
+          access_control_allow_origin: None,
+          timing_allow_origin: None,
+          access_control_allow_credentials: false,
+        },
+      )]),
+    };
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+
+    let mut tar_bytes = Vec::new();
+    {
+      let mut builder = tar::Builder::new(&mut tar_bytes);
+
+      let mut header = tar::Header::new_gnu();
+      header.set_mode(0o644);
+      header.set_size(document_bytes.len() as u64);
+      header.set_cksum();
+      builder
+        .append_data(&mut header, "document.html", Cursor::new(&document_bytes))
+        .expect("append document");
+
+      let mut header = tar::Header::new_gnu();
+      header.set_mode(0o644);
+      header.set_size(asset_bytes.len() as u64);
+      header.set_cksum();
+      builder
+        .append_data(&mut header, "asset.bin", Cursor::new(&asset_bytes))
+        .expect("append asset");
+
+      let mut header = tar::Header::new_gnu();
+      header.set_mode(0o644);
+      header.set_size(manifest_bytes.len() as u64);
+      header.set_cksum();
+      builder
+        .append_data(&mut header, BUNDLE_MANIFEST, Cursor::new(&manifest_bytes))
+        .expect("append manifest");
+
+      builder.finish().expect("finish tar");
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let tar_path = tmp.path().join("bundle.tar");
+    std::fs::write(&tar_path, &tar_bytes).expect("write tar");
+
+    let bundle = Bundle::load(&tar_path).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+    let doc = fetcher.fetch("https://example.com/").expect("fetch doc");
+    assert_eq!(doc.bytes, document_bytes);
+    let asset = fetcher
+      .fetch("https://example.com/asset.bin")
+      .expect("fetch asset");
+    assert_eq!(asset.bytes, asset_bytes);
   }
 
   #[test]
