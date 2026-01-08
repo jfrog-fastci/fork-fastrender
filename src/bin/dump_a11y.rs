@@ -2,14 +2,14 @@ mod common;
 
 use clap::Parser;
 use common::args::parse_viewport;
+use common::render_pipeline::read_cached_document;
 use fastrender::api::{FastRender, RenderOptions};
-use fastrender::html::encoding::decode_html_bytes;
 use fastrender::resource::{
-  FetchRequest, HttpFetcher, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  FetchRequest, FetchedResource, HttpFetcher, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
+  DEFAULT_USER_AGENT,
 };
 use fastrender::style::media::MediaType;
 use std::error::Error;
-use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,19 +82,17 @@ fn main() -> Result<(), Box<dyn Error>> {
   }
   let fetcher: Arc<dyn ResourceFetcher> = Arc::new(http_fetcher);
 
-  let (html, base_hint) = load_html(&args.input, fetcher.as_ref())?;
-
   let mut renderer = FastRender::builder()
     .device_pixel_ratio(args.dpr)
     .fetcher(Arc::clone(&fetcher))
     .build()?;
-  renderer.set_base_url(base_hint.clone());
+  let resource = load_document_resource(&args.input, fetcher.as_ref())?;
 
   let options = RenderOptions::new()
     .with_viewport(args.viewport.0, args.viewport.1)
     .with_device_pixel_ratio(args.dpr)
     .with_media_type(MediaType::Screen);
-  let tree = renderer.accessibility_tree_html(&html, options)?;
+  let tree = renderer.accessibility_tree_fetched_html(&resource, None, options)?;
   let json = serde_json::to_value(tree)?;
 
   if args.compact {
@@ -106,36 +104,27 @@ fn main() -> Result<(), Box<dyn Error>> {
   Ok(())
 }
 
-fn load_html(
+fn load_document_resource(
   input: &str,
   fetcher: &dyn ResourceFetcher,
-) -> Result<(String, String), Box<dyn Error>> {
+) -> Result<FetchedResource, Box<dyn Error>> {
   if let Ok(url) = Url::parse(input) {
     if url.scheme() == "file" {
       let path_buf = url.to_file_path().map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file:// path")
       })?;
-      let bytes = fs::read(&path_buf)?;
-      let html = decode_html_bytes(&bytes, None);
-      return Ok((html, url.to_string()));
+      let cached = read_cached_document(&path_buf)?;
+      return Ok(cached.resource);
     }
 
-    let resource = fetcher.fetch_with_request(FetchRequest::document(url.as_str()))?;
-    let base_hint = resource
+    let mut resource = fetcher.fetch_with_request(FetchRequest::document(url.as_str()))?;
+    resource
       .final_url
-      .as_deref()
-      .unwrap_or_else(|| url.as_str())
-      .to_string();
-    let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
-    return Ok((html, base_hint));
+      .get_or_insert_with(|| url.as_str().to_string());
+    return Ok(resource);
   }
 
   let path = Path::new(input);
-  let bytes = fs::read(path)?;
-  let html = decode_html_bytes(&bytes, None);
-  let base_hint = Url::from_file_path(path)
-    .map(|u| u.to_string())
-    .unwrap_or_else(|_| format!("file://{}", input));
-
-  Ok((html, base_hint))
+  let cached = read_cached_document(path)?;
+  Ok(cached.resource)
 }

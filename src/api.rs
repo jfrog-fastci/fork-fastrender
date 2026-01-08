@@ -7588,6 +7588,76 @@ impl FastRender {
     })
   }
 
+  /// Computes the accessibility tree for a fetched HTML resource using render options.
+  ///
+  /// This is the accessibility-tree analogue of [`FastRender::render_fetched_html_with_options`]:
+  /// it allows callers that already have the response bytes/headers (for example cached HTML
+  /// snapshots) to preserve response metadata such as the `Referrer-Policy` header.
+  ///
+  /// The `Referrer-Policy` response header (stored in
+  /// [`crate::resource::FetchedResource::response_referrer_policy`])
+  /// is applied as the initial document referrer policy unless overridden by
+  /// `<meta name="referrer" ...>` within the document.
+  pub fn accessibility_tree_fetched_html(
+    &mut self,
+    resource: &crate::resource::FetchedResource,
+    base_hint: Option<&str>,
+    options: RenderOptions,
+  ) -> Result<AccessibilityNode> {
+    let toggles = self.resolve_runtime_toggles(&options);
+    let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
+    runtime::with_runtime_toggles(toggles, || {
+      let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+      let hint = resource.final_url.as_deref().or(base_hint).unwrap_or("");
+      self.set_document_url(hint);
+      if !hint.trim().is_empty() {
+        self.set_base_url(hint.to_string());
+      }
+
+      let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
+      let dom = self.parse_html(&html)?;
+      self.update_base_url_from_dom(&dom);
+
+      let shared_diagnostics = self
+        .diagnostics
+        .as_ref()
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
+      let context = Some(self.build_resource_context(
+        self.document_url(),
+        shared_diagnostics,
+        initial_referrer_policy,
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
+
+      if let Some(policy) =
+        crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)?
+      {
+        let needs_update = self
+          .resource_context
+          .as_ref()
+          .is_some_and(|ctx| ctx.referrer_policy != policy);
+        if needs_update {
+          if let Some(mut ctx) = self.resource_context.clone() {
+            ctx.referrer_policy = policy;
+            // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+            // resource context.
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
+
+      let result = self.accessibility_tree_with_options_for_dom(&dom, options);
+      self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+      result
+    })
+  }
+
   fn accessibility_tree_with_options_for_dom(
     &mut self,
     dom: &DomNode,
@@ -19836,6 +19906,105 @@ pub(crate) fn render_html_with_shared_resources(
     assert_eq!(stylesheet_request.url, stylesheet_url);
     assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
     assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
+  }
+
+  #[test]
+  fn response_referrer_policy_header_applies_to_accessibility_tree_stylesheet_requests() {
+    let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="style.css">
+      </head><body><div id="target">hello</div></body></html>"#;
+    let document_url = "https://example.com/page.html";
+    let stylesheet_url = "https://example.com/style.css";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      stylesheet_url,
+      "#target { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    let mut resource = FetchedResource::with_final_url(
+      html.as_bytes().to_vec(),
+      Some("text/html".to_string()),
+      Some(document_url.to_string()),
+    );
+    resource.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+
+    renderer
+      .accessibility_tree_fetched_html(
+        &resource,
+        Some(document_url),
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .unwrap();
+
+    let requests = fetcher.requests();
+    let stylesheet_request = requests
+      .iter()
+      .find(|request| request.destination == FetchDestination::Style)
+      .expect("stylesheet request");
+    assert_eq!(stylesheet_request.url, stylesheet_url);
+    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+    assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
+  }
+
+  #[test]
+  fn meta_referrer_policy_overrides_response_header_for_accessibility_tree() {
+    let html = r#"<!doctype html><html><head>
+        <meta name="referrer" content="origin">
+        <link rel="stylesheet" href="style.css">
+      </head><body><div id="target">hello</div></body></html>"#;
+    let document_url = "https://example.com/page.html";
+    let stylesheet_url = "https://example.com/style.css";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      stylesheet_url,
+      "#target { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    let mut resource = FetchedResource::with_final_url(
+      html.as_bytes().to_vec(),
+      Some("text/html".to_string()),
+      Some(document_url.to_string()),
+    );
+    resource.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+
+    renderer
+      .accessibility_tree_fetched_html(
+        &resource,
+        Some(document_url),
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .unwrap();
+
+    let requests = fetcher.requests();
+    let stylesheet_request = requests
+      .iter()
+      .find(|request| request.destination == FetchDestination::Style)
+      .expect("stylesheet request");
+    assert_eq!(stylesheet_request.url, stylesheet_url);
+    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+    assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::Origin);
   }
 
   #[test]
