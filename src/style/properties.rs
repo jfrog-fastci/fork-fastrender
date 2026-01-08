@@ -2588,18 +2588,31 @@ fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> 
   Some(props)
 }
 
-fn parse_transition_time_list(raw: &str) -> Vec<f32> {
+fn parse_transition_time_list(raw: &str, allow_negative: bool) -> Option<Vec<f32>> {
+  let parts = split_top_level_commas(raw);
+  if parts.is_empty() {
+    return None;
+  }
   let mut times = Vec::new();
-  for part in split_top_level_commas(raw) {
-    if let Some(ms) = parse_time_ms(&part) {
-      times.push(ms);
+  for part in parts {
+    let ms = parse_time_ms(&part)?;
+    if !ms.is_finite() {
+      return None;
     }
+    if !allow_negative && ms < 0.0 {
+      return None;
+    }
+    times.push(ms);
   }
-  if times.is_empty() {
-    vec![0.0]
-  } else {
-    times
-  }
+  Some(times)
+}
+
+fn parse_transition_duration_list(raw: &str) -> Option<Vec<f32>> {
+  parse_transition_time_list(raw, false)
+}
+
+fn parse_transition_delay_list(raw: &str) -> Option<Vec<f32>> {
+  parse_transition_time_list(raw, true)
 }
 
 fn parse_transition_behavior(raw: &str) -> Option<TransitionBehavior> {
@@ -3020,8 +3033,16 @@ fn parse_transition_shorthand(
       saw_any = true;
       if let Some(ms) = parse_time_ms(&token) {
         if duration.is_none() {
+          if !ms.is_finite() || ms < 0.0 {
+            invalid = true;
+            break;
+          }
           duration = Some(ms);
         } else if delay.is_none() {
+          if !ms.is_finite() {
+            invalid = true;
+            break;
+          }
           delay = Some(ms);
         } else {
           invalid = true;
@@ -11330,11 +11351,15 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "transition-duration" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.transition_durations = parse_transition_time_list(css_text).into();
+      if let Some(list) = parse_transition_duration_list(css_text) {
+        styles.transition_durations = list.into();
+      }
     }
     "transition-delay" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.transition_delays = parse_transition_time_list(css_text).into();
+      if let Some(list) = parse_transition_delay_list(css_text) {
+        styles.transition_delays = list.into();
+      }
     }
     "transition-timing-function" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
