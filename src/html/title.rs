@@ -2,6 +2,10 @@
 
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 /// Find the document title from a parsed DOM tree.
 ///
 /// - Prefers the first `<title>` element in the document `<head>`.
@@ -57,7 +61,7 @@ pub fn find_document_title(dom: &DomNode) -> Option<String> {
       }
     }
 
-    let trimmed = buf.trim();
+    let trimmed = trim_ascii_whitespace(&buf);
     if trimmed.is_empty() {
       None
     } else {
@@ -116,6 +120,19 @@ mod tests {
   fn finds_title_in_head() {
     let dom = parse_html("<html><head><title>Hello</title></head></html>").unwrap();
     assert_eq!(find_document_title(&dom), Some("Hello".to_string()));
+  }
+
+  #[test]
+  fn document_title_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let dom = parse_html(&format!(
+      "<html><head><title>{nbsp}Hello{nbsp}</title></head></html>"
+    ))
+    .unwrap();
+    assert_eq!(
+      find_document_title(&dom),
+      Some(format!("{nbsp}Hello{nbsp}"))
+    );
   }
 
   #[test]

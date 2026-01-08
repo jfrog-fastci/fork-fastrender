@@ -1,6 +1,20 @@
 use roxmltree::Document;
 use tiny_skia::Transform;
 
+fn is_svg_whitespace(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000D}' | ' ')
+}
+
+fn trim_svg_whitespace(value: &str) -> &str {
+  value.trim_matches(is_svg_whitespace)
+}
+
+fn split_svg_whitespace(value: &str) -> impl Iterator<Item = &str> {
+  value
+    .split(is_svg_whitespace)
+    .filter(|part| !part.is_empty())
+}
+
 /// Utility helpers for working with SVG metadata.
 ///
 /// SVG length attributes accept a subset of CSS absolute units. Percentages are
@@ -23,7 +37,7 @@ impl SvgLength {
 }
 
 pub(crate) fn parse_svg_length(value: &str) -> Option<SvgLength> {
-  let trimmed = value.trim();
+  let trimmed = trim_svg_whitespace(value);
   if trimmed.is_empty() {
     return None;
   }
@@ -46,7 +60,7 @@ pub(crate) fn parse_svg_length(value: &str) -> Option<SvgLength> {
     return None;
   }
 
-  let unit = trimmed[end..].trim();
+  let unit = trim_svg_whitespace(&trimmed[end..]);
   if unit.eq_ignore_ascii_case("%") {
     return Some(SvgLength::Percentage(number));
   }
@@ -98,7 +112,7 @@ pub(crate) fn svg_intrinsic_dimensions_from_attributes(
     .filter(|v| v.is_finite());
 
   let aspect_ratio_none = preserve_aspect_ratio
-    .and_then(|par| par.split_whitespace().next())
+    .and_then(|par| split_svg_whitespace(par).next())
     .map(|v| v.eq_ignore_ascii_case("none"))
     .unwrap_or(false);
 
@@ -137,7 +151,7 @@ pub(crate) fn svg_intrinsic_dimensions_from_attributes(
 fn parse_view_box_ratio(view_box: Option<&str>) -> Option<f32> {
   let raw = view_box?;
   let mut parts = raw
-    .split(|c: char| c == ',' || c.is_whitespace())
+    .split(|c: char| c == ',' || is_svg_whitespace(c))
     .filter(|s| !s.is_empty())
     .filter_map(|s| s.parse::<f32>().ok());
   let _ = parts.next();
@@ -193,11 +207,11 @@ impl SvgPreserveAspectRatio {
       meet_or_slice: SvgMeetOrSlice::Meet,
     };
 
-    let raw = value.unwrap_or("").trim();
+    let raw = trim_svg_whitespace(value.unwrap_or(""));
     if raw.is_empty() {
       return parsed;
     }
-    let mut parts = raw.split_whitespace();
+    let mut parts = split_svg_whitespace(raw);
     let first = parts.next().unwrap_or("");
     if first.eq_ignore_ascii_case("none") {
       parsed.none = true;
@@ -231,7 +245,7 @@ impl SvgPreserveAspectRatio {
 
 pub(crate) fn parse_svg_view_box(value: &str) -> Option<SvgViewBox> {
   let mut nums = value
-    .split(|c: char| c == ',' || c.is_whitespace())
+    .split(|c: char| c == ',' || is_svg_whitespace(c))
     .filter(|s| !s.is_empty())
     .filter_map(|s| s.parse::<f32>().ok());
   let min_x = nums.next()?;
@@ -344,7 +358,10 @@ pub(crate) fn svg_view_box_root_transform(
 
 #[cfg(test)]
 mod tests {
-  use super::{svg_root_view_box, svg_view_box_root_transform};
+  use super::{
+    parse_svg_length, parse_svg_view_box, svg_root_view_box, svg_view_box_root_transform,
+    SvgPreserveAspectRatio,
+  };
 
   #[test]
   fn svg_helpers_do_not_panic_on_invalid_markup() {
@@ -357,5 +374,26 @@ mod tests {
       svg_view_box_root_transform(invalid, 1.0, 1.0, 1.0, 1.0)
     }));
     assert!(transform.is_ok());
+  }
+
+  #[test]
+  fn svg_length_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(parse_svg_length("10px").is_some());
+    assert!(parse_svg_length(&format!("{nbsp}10px")).is_none());
+  }
+
+  #[test]
+  fn svg_preserve_aspect_ratio_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(SvgPreserveAspectRatio::parse(Some("none")).none);
+    assert!(!SvgPreserveAspectRatio::parse(Some(&format!("{nbsp}none"))).none);
+  }
+
+  #[test]
+  fn svg_view_box_does_not_split_on_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(parse_svg_view_box("0 0 10 10").is_some());
+    assert!(parse_svg_view_box(&format!("0{nbsp}0 10 10")).is_none());
   }
 }

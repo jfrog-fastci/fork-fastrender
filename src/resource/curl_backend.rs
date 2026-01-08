@@ -103,16 +103,29 @@ impl CurlFailure {
   }
 }
 
-fn sanitize_header_value(value: &str) -> String {
+fn trim_http_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, ' ' | '\t'))
+}
+
+fn trim_http_line(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\r' | '\n' | ' ' | '\t'))
+}
+
+fn split_http_whitespace(value: &str) -> impl Iterator<Item = &str> {
   value
+    .split(|c: char| matches!(c, ' ' | '\t'))
+    .filter(|part| !part.is_empty())
+}
+
+fn sanitize_header_value(value: &str) -> String {
+  let sanitized = value
     .chars()
     .map(|c| match c {
       '\r' | '\n' | '\0' => ' ',
       other => other,
     })
-    .collect::<String>()
-    .trim()
-    .to_string()
+    .collect::<String>();
+  trim_http_whitespace(&sanitized).to_string()
 }
 
 pub(super) fn build_curl_args(
@@ -145,8 +158,8 @@ pub(super) fn build_curl_args(
 }
 
 fn parse_status_line(line: &str) -> Option<u16> {
-  let trimmed = line.trim();
-  let mut parts = trimmed.split_whitespace();
+  let trimmed = trim_http_line(line);
+  let mut parts = split_http_whitespace(trimmed);
   let proto = parts.next()?;
   if !proto
     .get(.."http/".len())
@@ -1079,8 +1092,30 @@ mod tests {
   }
 
   #[test]
+  fn build_args_does_not_trim_non_ascii_whitespace_in_header_values() {
+    let nbsp = "\u{00A0}";
+    let headers = vec![("X-Test".to_string(), format!("{nbsp}foo{nbsp}"))];
+    let args = build_curl_args("https://example.com/", None, &headers, false);
+    let header_value = args
+      .iter()
+      .skip_while(|v| *v != "--header")
+      .nth(1)
+      .expect("expected header value");
+    assert_eq!(header_value, &format!("X-Test: {nbsp}foo{nbsp}"));
+  }
+
+  #[test]
   fn status_line_parses_http2() {
     assert_eq!(parse_status_line("HTTP/2 204\r\n"), Some(204));
+  }
+
+  #[test]
+  fn status_line_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(
+      parse_status_line(&format!("{nbsp}HTTP/2 204\r\n")),
+      None
+    );
   }
 
   #[test]

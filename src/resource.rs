@@ -315,7 +315,7 @@ pub struct PolicyError {
 ///
 /// Strips schemes and leading "www.", lowercases the host, and sanitizes for filenames.
 pub fn normalize_page_name(raw: &str) -> Option<String> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -14304,6 +14304,13 @@ mod tests {
   fn normalize_page_name_rejects_empty() {
     assert!(normalize_page_name("").is_none());
     assert!(normalize_page_name("   ").is_none());
+  }
+
+  #[test]
+  fn normalize_page_name_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let input = format!(" {nbsp}example.com ");
+    assert_eq!(normalize_page_name(&input).as_deref(), Some("_example.com"));
   }
 
   #[test]
