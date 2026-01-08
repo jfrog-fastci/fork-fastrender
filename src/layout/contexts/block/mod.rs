@@ -2319,7 +2319,7 @@ impl BlockFormattingContext {
       bounds,
       FragmentContent::Replaced {
         replaced_type: replaced_box.replaced_type.clone(),
-        box_id: None,
+        box_id: Some(child.id),
       },
       vec![],
       child.style.clone(),

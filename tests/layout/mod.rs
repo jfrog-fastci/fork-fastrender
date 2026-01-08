@@ -13,6 +13,7 @@ mod block_constraints_viewport_clamp;
 mod content_visibility_auto_skip;
 mod container_query_percentage_padding;
 mod container_query_border_calc;
+mod container_query_replaced_style_refresh;
 mod first_line_first_letter_integration_test;
 mod container_query_scrollbar_gutter;
 mod flex_alignment_order_test;
