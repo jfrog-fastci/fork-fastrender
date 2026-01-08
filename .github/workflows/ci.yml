@@ -79,6 +79,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Linux GUI dependencies (winit/wgpu)
+        if: runner.os == 'Linux'
+        run: bash scripts/ci_install_gui_deps_ubuntu.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -364,6 +368,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Linux GUI dependencies (winit/wgpu)
+        if: runner.os == 'Linux'
+        run: bash scripts/ci_install_gui_deps_ubuntu.sh
+
       - name: Install MSRV toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -412,6 +420,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install Linux GUI dependencies (winit/wgpu)
+        if: runner.os == 'Linux'
+        run: bash scripts/ci_install_gui_deps_ubuntu.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -498,6 +510,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install Linux GUI dependencies (winit/wgpu)
+        if: runner.os == 'Linux'
+        run: bash scripts/ci_install_gui_deps_ubuntu.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -701,6 +717,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install Linux GUI dependencies (winit/wgpu)
+        if: runner.os == 'Linux'
+        run: bash scripts/ci_install_gui_deps_ubuntu.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
