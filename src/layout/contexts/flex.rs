@@ -2993,40 +2993,98 @@ impl FormattingContext for FlexFormattingContext {
           };
           let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
 
-          if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
-            for child in fragment.children_mut() {
-              check_layout_deadline(&mut deadline_counter)?;
-              let Some(style) = child.style.as_deref() else {
-                continue;
-              };
-              if style.running_position.is_some()
-                || matches!(style.position, Position::Absolute | Position::Fixed)
-              {
-                continue;
-              }
-              let (cross_pos, child_cross) = if cross_is_horizontal {
-                (child.bounds.x(), child.bounds.width())
-              } else {
-                (child.bounds.y(), child.bounds.height())
-              };
-              if !cross_pos.is_finite() || !child_cross.is_finite() {
-                continue;
-              }
-              let rel = cross_pos - cross_content_start;
-              let new_pos = cross_content_start + (cross_inner_size - child_cross - rel);
-              let delta = new_pos - cross_pos;
-              if delta.abs() <= 1e-6 {
-                continue;
-              }
-              if cross_is_horizontal {
-                translate_fragment_tree(child, Point::new(delta, 0.0), &mut deadline_counter)?;
-              } else {
-                translate_fragment_tree(child, Point::new(0.0, delta), &mut deadline_counter)?;
-              }
-            }
-          }
-        }
-      }
+           if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
+             for child in fragment.children_mut() {
+               check_layout_deadline(&mut deadline_counter)?;
+               let Some(style) = child.style.as_deref() else {
+                 continue;
+               };
+               if style.running_position.is_some()
+                 || matches!(style.position, Position::Absolute | Position::Fixed)
+               {
+                 continue;
+               }
+               let (cross_pos, child_cross) = if cross_is_horizontal {
+                 (child.bounds.x(), child.bounds.width())
+               } else {
+                 (child.bounds.y(), child.bounds.height())
+               };
+               if !cross_pos.is_finite() || !child_cross.is_finite() {
+                 continue;
+               }
+               let rel = cross_pos - cross_content_start;
+               let new_pos = cross_content_start + (cross_inner_size - child_cross - rel);
+               let delta = new_pos - cross_pos;
+               if delta.abs() <= 1e-6 {
+                 continue;
+               }
+               if cross_is_horizontal {
+                 translate_fragment_tree(child, Point::new(delta, 0.0), &mut deadline_counter)?;
+               } else {
+                 translate_fragment_tree(child, Point::new(0.0, delta), &mut deadline_counter)?;
+               }
+             }
+
+             // Taffy's distributed `align-content` keywords fall back to "safe" alignment when there
+             // is no free space in the cross axis. In overflow, those safe variants resolve to
+             // physical `start` alignment.
+             //
+             // When we emulate `flex-wrap: wrap-reverse` by mirroring cross positions, we must not
+             // lose that "safe start" behaviour: mirroring converts a start-aligned layout into an
+             // end-aligned one. Detect the overflow case and shift the mirrored line stack back to
+             // the physical start edge.
+             if wrap_reverse
+               && matches!(
+                 box_node.style.align_content,
+                 AlignContent::Stretch
+                   | AlignContent::SpaceBetween
+                   | AlignContent::SpaceAround
+                   | AlignContent::SpaceEvenly
+               )
+             {
+               let mut min_rel = f32::INFINITY;
+               for child in fragment.children.iter() {
+                 check_layout_deadline(&mut deadline_counter)?;
+                 let Some(style) = child.style.as_deref() else {
+                   continue;
+                 };
+                 if style.running_position.is_some()
+                   || matches!(style.position, Position::Absolute | Position::Fixed)
+                 {
+                   continue;
+                 }
+                 let cross_pos = if cross_is_horizontal {
+                   child.bounds.x()
+                 } else {
+                   child.bounds.y()
+                 };
+                 if cross_pos.is_finite() {
+                   min_rel = min_rel.min(cross_pos - cross_content_start);
+                 }
+               }
+               if min_rel.is_finite() && min_rel < -1e-6 {
+                 let shift = -min_rel;
+                 for child in fragment.children_mut() {
+                   check_layout_deadline(&mut deadline_counter)?;
+                   let Some(style) = child.style.as_deref() else {
+                     continue;
+                   };
+                   if style.running_position.is_some()
+                     || matches!(style.position, Position::Absolute | Position::Fixed)
+                   {
+                     continue;
+                   }
+                   if cross_is_horizontal {
+                     translate_fragment_tree(child, Point::new(shift, 0.0), &mut deadline_counter)?;
+                   } else {
+                     translate_fragment_tree(child, Point::new(0.0, shift), &mut deadline_counter)?;
+                   }
+                 }
+               }
+             }
+           }
+         }
+       }
 
       let mut needs_baseline = matches!(box_node.style.align_items, AlignItems::Baseline);
       if !needs_baseline {
