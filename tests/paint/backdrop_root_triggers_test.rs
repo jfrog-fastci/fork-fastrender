@@ -1019,6 +1019,32 @@ fn mix_blend_mode_triggers_backdrop_root() {
 }
 
 #[test]
+fn mix_blend_mode_difference_with_same_backdrop_is_black() {
+  // Regression: leaf blend-mode elements should blend against the page backdrop without needing a
+  // non-isolated group surface initialized from backdrop (which would require an ambiguous
+  // uncompositing step when `out == backdrop`).
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #blend {
+        width: 40px;
+        height: 40px;
+        background: rgb(255 0 0);
+        mix-blend-mode: difference;
+      }
+    </style>
+    <div id="blend"></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // difference(red, red) = black.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 0, 0, 255));
+  // Control pixel outside the blend box stays red.
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn mix_blend_mode_triggers_backdrop_root_with_offset() {
   let html = r#"<!doctype html>
     <style>
