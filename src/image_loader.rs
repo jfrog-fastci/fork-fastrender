@@ -3823,6 +3823,24 @@ impl ImageCache {
   }
 
   fn decode_with_format(&self, bytes: &[u8], format: ImageFormat, url: &str) -> Result<DynamicImage> {
+    if format == ImageFormat::Png {
+      // Decode PNG via the `png` crate so output buffers are allocated fallibly (avoiding process
+      // aborts on OOM inside `image`'s decoders).
+      return match crate::image_compare::decode_png(bytes) {
+        Ok(rgba) => Ok(DynamicImage::ImageRgba8(rgba)),
+        Err(Error::Render(RenderError::InvalidParameters { message })) => {
+          Err(Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: message,
+          }))
+        }
+        Err(err) => Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: err.to_string(),
+        })),
+      };
+    }
+
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       ImageReader::with_format(DeadlineCursor::new(bytes), format).decode()
     })) {
