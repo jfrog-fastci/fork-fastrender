@@ -8,6 +8,9 @@ xtask = "run -p xtask --"
 #
 # This keeps `cargo build` working out-of-the-box while still supporting AVIF decode.
 AOM_TARGET_CPU = "generic"
+#
+# `cmake` crate forwards this env var as extra configure args.
+CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"
 
 # Some sys crates (notably `libaom-sys`, used for AVIF decoding) use CMake and attempt to enable
 # x86_64 assembly optimizations. Our CI/container images do not ship with `yasm`/`nasm`, so force
