@@ -48,6 +48,7 @@ use cssparser::ToCss;
 use cssparser::Token;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use svgtypes::PathParser;
@@ -1370,6 +1371,7 @@ fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
   }
 
   let mut names: Vec<String> = Vec::with_capacity(idents.len());
+  let mut seen: HashSet<String> = HashSet::new();
   for ident in idents {
     if ident.eq_ignore_ascii_case("none") || ident.eq_ignore_ascii_case("all") {
       return None;
@@ -1377,7 +1379,9 @@ fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
     if !ident.starts_with("--") {
       return None;
     }
-    names.push(ident);
+    if seen.insert(ident.clone()) {
+      names.push(ident);
+    }
   }
   if names.is_empty() {
     None
