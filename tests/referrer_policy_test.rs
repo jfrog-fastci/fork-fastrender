@@ -125,6 +125,11 @@ impl HeaderCaptureServer {
                 b"<!doctype html><body>frame</body>".to_vec(),
               ),
               "/style.css" => ("200 OK", "text/css; charset=utf-8", b"body { }".to_vec()),
+              "/style_redirect.css" => (
+                "302 Found",
+                "text/plain; charset=utf-8",
+                b"redirecting".to_vec(),
+              ),
               "/style_import_nested_policy.css" => (
                 "200 OK",
                 "text/css; charset=utf-8",
@@ -177,6 +182,9 @@ body { font-family: "TestFont"; }"#
               } else {
                 extra_headers.push_str("Access-Control-Allow-Origin: *\r\n");
               }
+            }
+            if path == "/style_redirect.css" {
+              extra_headers.push_str("Location: /style_import.css\r\n");
             }
             if matches!(path.as_str(), "/style_import_policy.css" | "/import_policy.css") {
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
@@ -873,6 +881,54 @@ fn imported_stylesheet_response_referrer_policy_no_referrer_suppresses_referer_f
     assert!(
       header_value(&req.headers, "referer").is_none(),
       "expected Referer header to be omitted for {path} due to imported stylesheet Referrer-Policy; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
+fn stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests() {
+  let Some(server) =
+    HeaderCaptureServer::start("stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests")
+  else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_redirect.css">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_redirect.css", "/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let expected_referrer = format!("{}/style_import.css", server.base_url);
+  for path in ["/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(expected_referrer.as_str()),
+      "expected nested request Referer to use the final stylesheet URL after redirects for {path}; got:\n{}",
       req.headers
     );
   }
