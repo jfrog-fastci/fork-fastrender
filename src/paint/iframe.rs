@@ -75,7 +75,8 @@ struct IframeRenderCacheKey {
   nested_depth: usize,
   background: BackgroundKey,
   policy_hash: u64,
-  referrer_policy: Option<ReferrerPolicy>,
+  referrer_url_hash: Option<u64>,
+  request_referrer_policy: ReferrerPolicy,
 }
 
 #[derive(Clone)]
@@ -442,12 +443,20 @@ pub(crate) fn render_iframe_srcdoc(
     cache.set_base_url(base_url);
   }
   let context = cache.resource_context();
+  let referrer_url = context
+    .as_ref()
+    .and_then(|ctx| ctx.document_url.as_deref())
+    .or(base_url.as_deref());
+  let doc_referrer_policy = context
+    .as_ref()
+    .map(|ctx| ctx.referrer_policy)
+    .unwrap_or_default();
+  let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+  let referrer_url_hash = referrer_url.map(|url| stable_hash_bytes(url.as_bytes()));
   let nested_depth = remaining_depth.saturating_sub(1);
   let nested_context = context.as_ref().map(|ctx| {
     let mut nested = ctx.clone().with_iframe_depth(nested_depth);
-    if let Some(policy) = referrer_policy {
-      nested.referrer_policy = policy;
-    }
+    nested.referrer_policy = request_referrer_policy;
     nested
   });
   let policy = nested_context
@@ -468,7 +477,8 @@ pub(crate) fn render_iframe_srcdoc(
     nested_depth,
     background: background.into(),
     policy_hash: policy_fingerprint(&policy),
-    referrer_policy,
+    referrer_url_hash,
+    request_referrer_policy,
   };
 
   let (flight, is_owner) = {
@@ -605,6 +615,18 @@ pub(crate) fn render_iframe_src(
     .map(|ctx| ctx.policy.clone())
     .unwrap_or_default();
 
+  let base_url = image_cache.base_url();
+  let referrer_url = context
+    .as_ref()
+    .and_then(|ctx| ctx.document_url.as_deref())
+    .or(base_url.as_deref());
+  let doc_referrer_policy = context
+    .as_ref()
+    .map(|ctx| ctx.referrer_policy)
+    .unwrap_or_default();
+  let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+  let referrer_url_hash = referrer_url.map(|url| stable_hash_bytes(url.as_bytes()));
+
   let key = IframeRenderCacheKey {
     image_cache_id: image_cache.instance_id(),
     content: IframeRenderCacheContent::Src {
@@ -616,7 +638,8 @@ pub(crate) fn render_iframe_src(
     nested_depth,
     background: background.into(),
     policy_hash: policy_fingerprint(&policy),
-    referrer_policy,
+    referrer_url_hash,
+    request_referrer_policy,
   };
   let (flight, is_owner) = {
     let mut cache = iframe_render_cache()
@@ -639,16 +662,6 @@ pub(crate) fn render_iframe_src(
   }
   let mut owner_guard = IframeInFlightOwnerGuard::new(key, flight);
 
-  let base_url = image_cache.base_url();
-  let referrer_url = context
-    .as_ref()
-    .and_then(|ctx| ctx.document_url.as_deref())
-    .or(base_url.as_deref());
-  let doc_referrer_policy = context
-    .as_ref()
-    .map(|ctx| ctx.referrer_policy)
-    .unwrap_or_default();
-  let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
   let origin_fallback = referrer_url.and_then(origin_from_url);
   let client_origin = context
     .as_ref()
@@ -823,6 +836,44 @@ mod tests {
         self.body.clone(),
         Some("text/html; charset=utf-8".to_string()),
       ))
+    }
+  }
+
+  struct CountingIframeFetcher {
+    iframe_url: String,
+    body: Vec<u8>,
+    iframe_calls: AtomicUsize,
+    iframe_requests: StdMutex<Vec<(Option<String>, ReferrerPolicy)>>,
+  }
+
+  impl ResourceFetcher for CountingIframeFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Err(Error::Io(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("unexpected fetch: {url}"),
+      )))
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> crate::error::Result<FetchedResource> {
+      match req.destination {
+        FetchDestination::Iframe => {
+          assert_eq!(req.url, self.iframe_url);
+          self.iframe_calls.fetch_add(1, Ordering::SeqCst);
+          self
+            .iframe_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((req.referrer_url.map(|u| u.to_string()), req.referrer_policy));
+          Ok(FetchedResource::new(
+            self.body.clone(),
+            Some("text/html; charset=utf-8".to_string()),
+          ))
+        }
+        other => Err(Error::Io(io::Error::new(
+          io::ErrorKind::NotFound,
+          format!("unexpected fetch destination {other:?} for url {}", req.url),
+        ))),
+      }
     }
   }
 
@@ -1071,6 +1122,188 @@ mod tests {
   }
 
   #[test]
+  fn iframe_render_cache_partitions_by_navigation_referrer_url() {
+    let font_ctx = FontContext::new();
+    let iframe_url = "https://example.com/iframe-render-cache-referrer-url-113.html";
+    let html = r#"
+      <style>html, body { margin: 0; padding: 0; background: rgb(25, 50, 75); }</style>
+      <div data-fastr-test="iframe-render-cache-referrer-url-113"></div>
+    "#;
+    let fetcher = Arc::new(CountingIframeFetcher {
+      iframe_url: iframe_url.to_string(),
+      body: html.as_bytes().to_vec(),
+      iframe_calls: AtomicUsize::new(0),
+      iframe_requests: StdMutex::new(Vec::new()),
+    });
+    let mut image_cache = ImageCache::with_fetcher(fetcher.clone());
+    let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+
+    image_cache.set_resource_context(Some(ResourceContext {
+      document_url: Some("https://parent-a.test/page-a.html".to_string()),
+      referrer_policy: ReferrerPolicy::OriginWhenCrossOrigin,
+      policy: ResourceAccessPolicy::default(),
+      diagnostics: None,
+      iframe_depth_remaining: None,
+    }));
+    render_iframe_src(
+      iframe_url,
+      None,
+      rect,
+      None,
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("first iframe render should succeed");
+    assert_eq!(
+      take_last_iframe_cache_hit(),
+      Some(false),
+      "first render should miss cache"
+    );
+
+    image_cache.set_resource_context(Some(ResourceContext {
+      document_url: Some("https://parent-b.test/page-b.html".to_string()),
+      referrer_policy: ReferrerPolicy::OriginWhenCrossOrigin,
+      policy: ResourceAccessPolicy::default(),
+      diagnostics: None,
+      iframe_depth_remaining: None,
+    }));
+    render_iframe_src(
+      iframe_url,
+      None,
+      rect,
+      None,
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("second iframe render should succeed");
+    assert_eq!(
+      take_last_iframe_cache_hit(),
+      Some(false),
+      "second render should miss cache due to different navigation referrer URL"
+    );
+    assert_eq!(
+      fetcher.iframe_calls.load(Ordering::SeqCst),
+      2,
+      "expected iframe HTML to be fetched again when the parent referrer URL changes"
+    );
+
+    let requests = fetcher
+      .iframe_requests
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .clone();
+    assert_eq!(
+      requests,
+      vec![
+        (
+          Some("https://parent-a.test/page-a.html".to_string()),
+          ReferrerPolicy::OriginWhenCrossOrigin
+        ),
+        (
+          Some("https://parent-b.test/page-b.html".to_string()),
+          ReferrerPolicy::OriginWhenCrossOrigin
+        ),
+      ],
+      "expected iframe fetch requests to use the active document URL as the referrer"
+    );
+  }
+
+  #[test]
+  fn iframe_render_cache_partitions_by_effective_navigation_referrer_policy() {
+    let font_ctx = FontContext::new();
+    let iframe_url = "https://example.com/iframe-render-cache-referrer-policy-113.html";
+    let html = r#"
+      <style>html, body { margin: 0; padding: 0; background: rgb(85, 40, 15); }</style>
+      <div data-fastr-test="iframe-render-cache-referrer-policy-113"></div>
+    "#;
+    let fetcher = Arc::new(CountingIframeFetcher {
+      iframe_url: iframe_url.to_string(),
+      body: html.as_bytes().to_vec(),
+      iframe_calls: AtomicUsize::new(0),
+      iframe_requests: StdMutex::new(Vec::new()),
+    });
+    let mut image_cache = ImageCache::with_fetcher(fetcher.clone());
+    let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+
+    image_cache.set_resource_context(Some(ResourceContext {
+      document_url: Some("https://parent.test/shared.html".to_string()),
+      referrer_policy: ReferrerPolicy::Origin,
+      policy: ResourceAccessPolicy::default(),
+      diagnostics: None,
+      iframe_depth_remaining: None,
+    }));
+    render_iframe_src(
+      iframe_url,
+      None,
+      rect,
+      None,
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("first iframe render should succeed");
+    assert_eq!(
+      take_last_iframe_cache_hit(),
+      Some(false),
+      "first render should miss cache"
+    );
+
+    image_cache.set_resource_context(Some(ResourceContext {
+      document_url: Some("https://parent.test/shared.html".to_string()),
+      referrer_policy: ReferrerPolicy::NoReferrer,
+      policy: ResourceAccessPolicy::default(),
+      diagnostics: None,
+      iframe_depth_remaining: None,
+    }));
+    render_iframe_src(
+      iframe_url,
+      None,
+      rect,
+      None,
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("second iframe render should succeed");
+    assert_eq!(
+      take_last_iframe_cache_hit(),
+      Some(false),
+      "second render should miss cache due to different effective referrer policy"
+    );
+    assert_eq!(
+      fetcher.iframe_calls.load(Ordering::SeqCst),
+      2,
+      "expected iframe HTML to be fetched again when the effective referrer policy changes"
+    );
+
+    let requests = fetcher
+      .iframe_requests
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .clone();
+    assert_eq!(
+      requests,
+      vec![
+        (
+          Some("https://parent.test/shared.html".to_string()),
+          ReferrerPolicy::Origin
+        ),
+        (
+          Some("https://parent.test/shared.html".to_string()),
+          ReferrerPolicy::NoReferrer
+        ),
+      ],
+      "expected iframe fetch requests to reflect the active document referrer policy"
+    );
+  }
+
+  #[test]
   fn iframe_src_allows_cross_origin_documents_when_same_origin_subresources_enabled() {
     let font_ctx = FontContext::new();
     let url = "https://other.test/iframe-cross-origin-policy-113.html";
@@ -1199,7 +1432,8 @@ mod tests {
       nested_depth: 2,
       background: Rgba::TRANSPARENT.into(),
       policy_hash: policy_fingerprint(&ResourceAccessPolicy::default()),
-      referrer_policy: None,
+      referrer_url_hash: None,
+      request_referrer_policy: ReferrerPolicy::default(),
     };
     let barrier = Arc::new(Barrier::new(2));
     let owners = Arc::new(AtomicUsize::new(0));
