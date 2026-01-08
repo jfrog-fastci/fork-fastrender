@@ -57,14 +57,19 @@ pub fn decode_css_bytes_cow<'a>(bytes: &'a [u8], content_type: Option<&str>) -> 
   text
 }
 
+fn trim_ascii_whitespace_str(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn charset_from_content_type(content_type: &str) -> Option<String> {
   for param in content_type.split(';').skip(1) {
     let mut parts = param.splitn(2, '=');
-    let name = parts.next()?.trim();
+    let name = trim_ascii_whitespace_str(parts.next()?);
     if !name.eq_ignore_ascii_case("charset") {
       continue;
     }
-    let value = parts.next()?.trim().trim_matches('"').trim_matches('\'');
+    let value = trim_ascii_whitespace_str(parts.next()?);
+    let value = value.trim_matches('"').trim_matches('\'');
     if !value.is_empty() {
       return Some(value.to_string());
     }
@@ -171,6 +176,18 @@ mod tests {
     let encoded = SHIFT_JIS.encode("body { color: red; }").0;
     let text = decode_css_bytes(&encoded, Some("text/css; charset=shift_jis"));
     assert!(text.contains("color: red"));
+  }
+
+  #[test]
+  fn decodes_with_content_type_charset_does_not_trim_non_ascii_whitespace() {
+    let encoded = SHIFT_JIS.encode("body::before { content: \"デ\"; }").0;
+    let nbsp = "\u{00A0}";
+    let header = format!("text/css; charset={nbsp}shift_jis");
+    let text = decode_css_bytes(&encoded, Some(&header));
+    assert!(
+      !text.contains('デ'),
+      "decoded text should not treat NBSP as whitespace in Content-Type charset: {text}"
+    );
   }
 
   #[test]
