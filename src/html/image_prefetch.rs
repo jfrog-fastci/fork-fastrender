@@ -82,10 +82,15 @@ const IMG_SRC_DATA_ATTR_FALLBACKS: [&str; 5] = [
 const IMG_SRCSET_DATA_ATTR_FALLBACKS: [&str; 3] =
   ["data-srcset", "data-lazy-srcset", "data-gl-srcset"];
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  // HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn get_non_empty_attr<'a>(node: &'a DomNode, name: &str) -> Option<&'a str> {
   node
     .get_attribute_ref(name)
-    .filter(|value| !value.trim().is_empty())
+    .filter(|value| !trim_ascii_whitespace(value).is_empty())
 }
 
 fn get_first_non_empty_attr<'a>(node: &'a DomNode, names: &[&str]) -> Option<&'a str> {
@@ -140,7 +145,7 @@ fn parse_crossorigin_attr(node: &DomNode) -> CrossOriginAttribute {
   match node.get_attribute_ref("crossorigin") {
     None => CrossOriginAttribute::None,
     Some(value) => {
-      let value = value.trim();
+      let value = trim_ascii_whitespace(value);
       if value.eq_ignore_ascii_case("use-credentials") {
         CrossOriginAttribute::UseCredentials
       } else {
@@ -243,7 +248,7 @@ fn srcset_has_width_descriptors(srcset: &[crate::tree::box_tree::SrcsetCandidate
 fn link_rel_is_preload_image(rel_tokens: &[String], as_attr: Option<&str>) -> bool {
   rel_tokens.iter().any(|t| t.eq_ignore_ascii_case("preload"))
     && as_attr
-      .map(|v| v.trim().eq_ignore_ascii_case("image"))
+      .map(|v| trim_ascii_whitespace(v).eq_ignore_ascii_case("image"))
       .unwrap_or(false)
 }
 
@@ -351,7 +356,7 @@ fn push_prefetch_selection(
         picture_sources,
         selection_ctx,
       );
-      if selected.url.trim().is_empty() {
+      if trim_ascii_whitespace(selected.url).is_empty() {
         continue;
       }
       let before_len = urls.len();
@@ -362,7 +367,7 @@ fn push_prefetch_selection(
     }
 
     // Ensure a plain `src` is still captured when we didn't fill the cap (e.g. malformed srcset).
-    if emitted < limits.max_urls_per_element && !img_src.trim().is_empty() {
+    if emitted < limits.max_urls_per_element && !trim_ascii_whitespace(img_src).is_empty() {
       push_unique_url(ctx, seen_urls, urls, img_src);
     }
     return;
@@ -437,7 +442,7 @@ fn push_prefetch_selection_with_crossorigin(
         picture_sources,
         selection_ctx,
       );
-      if selected.url.trim().is_empty() {
+      if trim_ascii_whitespace(selected.url).is_empty() {
         continue;
       }
       let before_len = urls.len();
@@ -448,7 +453,7 @@ fn push_prefetch_selection_with_crossorigin(
     }
 
     // Ensure a plain `src` is still captured when we didn't fill the cap (e.g. malformed srcset).
-    if emitted < limits.max_urls_per_element && !img_src.trim().is_empty() {
+    if emitted < limits.max_urls_per_element && !trim_ascii_whitespace(img_src).is_empty() {
       push_unique_request(ctx, crossorigin, seen_urls, urls, img_src);
     }
     return;
@@ -535,7 +540,7 @@ pub fn discover_image_prefetch_urls(
           break;
         }
         let img_src = get_img_src_attr(node).unwrap_or("");
-        let has_src = !img_src.trim().is_empty();
+        let has_src = !trim_ascii_whitespace(img_src).is_empty();
         let img_srcset_attr = get_img_srcset_attr(node);
         let has_srcset = img_srcset_attr.is_some();
         if has_src || has_srcset {
@@ -562,11 +567,11 @@ pub fn discover_image_prefetch_urls(
       } else if tag.eq_ignore_ascii_case("video") {
         let poster = node
           .get_attribute_ref("poster")
-          .filter(|value| !value.trim().is_empty())
+          .filter(|value| !trim_ascii_whitespace(value).is_empty())
           .or_else(|| {
             node
               .get_attribute_ref("gnt-gl-ps")
-              .filter(|value| !value.trim().is_empty())
+              .filter(|value| !trim_ascii_whitespace(value).is_empty())
           });
         if let Some(poster) = poster {
           if image_elements >= limits.max_image_elements {
@@ -584,7 +589,7 @@ pub fn discover_image_prefetch_urls(
         if let Some(rel_attr) = node.get_attribute_ref("rel") {
           let rel_tokens = tokenize_rel_list(rel_attr);
           if !rel_tokens.is_empty() {
-            let href = node.get_attribute_ref("href").unwrap_or("").trim();
+            let href = trim_ascii_whitespace(node.get_attribute_ref("href").unwrap_or(""));
             let as_attr = node.get_attribute_ref("as");
 
             let media_matches = match node.get_attribute_ref("media") {
@@ -727,7 +732,7 @@ pub fn discover_image_prefetch_requests(
           break;
         }
         let img_src = get_img_src_attr(node).unwrap_or("");
-        let has_src = !img_src.trim().is_empty();
+        let has_src = !trim_ascii_whitespace(img_src).is_empty();
         let img_srcset_attr = get_img_srcset_attr(node);
         let has_srcset = img_srcset_attr.is_some();
         if has_src || has_srcset {
@@ -756,11 +761,11 @@ pub fn discover_image_prefetch_requests(
       } else if tag.eq_ignore_ascii_case("video") {
         let poster = node
           .get_attribute_ref("poster")
-          .filter(|value| !value.trim().is_empty())
+          .filter(|value| !trim_ascii_whitespace(value).is_empty())
           .or_else(|| {
             node
               .get_attribute_ref("gnt-gl-ps")
-              .filter(|value| !value.trim().is_empty())
+              .filter(|value| !trim_ascii_whitespace(value).is_empty())
           });
         if let Some(poster) = poster {
           if image_elements >= limits.max_image_elements {
@@ -784,7 +789,7 @@ pub fn discover_image_prefetch_requests(
         if let Some(rel_attr) = node.get_attribute_ref("rel") {
           let rel_tokens = tokenize_rel_list(rel_attr);
           if !rel_tokens.is_empty() {
-            let href = node.get_attribute_ref("href").unwrap_or("").trim();
+            let href = trim_ascii_whitespace(node.get_attribute_ref("href").unwrap_or(""));
             let as_attr = node.get_attribute_ref("as");
 
             let media_matches = match node.get_attribute_ref("media") {
@@ -865,6 +870,7 @@ mod tests {
   use crate::style::media::MediaContext;
   use crate::tree::box_tree::CrossOriginAttribute;
   use selectors::context::QuirksMode;
+  use url::Url;
 
   fn media_ctx_for(viewport: (f32, f32), dpr: f32) -> MediaContext {
     MediaContext::screen(viewport.0, viewport.1)
@@ -926,6 +932,34 @@ mod tests {
     assert_eq!(out.image_elements, 0);
     assert!(out.urls.is_empty());
     assert!(!out.limited);
+  }
+
+  #[test]
+  fn discover_image_prefetch_urls_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let html = format!(r#"<img src=" {nbsp} ">"#);
+    let dom = parse_html(&html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_urls(
+      &dom,
+      ctx,
+      ImagePrefetchLimits {
+        max_image_elements: 10,
+        max_urls_per_element: 2,
+      },
+    );
+
+    assert_eq!(out.image_elements, 1);
+    assert!(!out.limited);
+
+    let expected = Url::parse("https://example.com/")
+      .unwrap()
+      .join(nbsp)
+      .unwrap()
+      .to_string();
+    assert_eq!(out.urls, vec![expected]);
   }
 
   #[test]

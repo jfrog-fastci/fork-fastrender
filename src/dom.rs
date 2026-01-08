@@ -3243,7 +3243,14 @@ pub(crate) fn img_src_is_placeholder(value: &str) -> bool {
       .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
   }
 
-  let value = value.trim();
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  }
+
+  // `<img src>` is stripped of leading/trailing ASCII whitespace, but not all Unicode whitespace
+  // (e.g. NBSP). Use an explicit ASCII trim so placeholder detection does not incorrectly treat
+  // non-ASCII whitespace as empty.
+  let value = trim_ascii_whitespace(value);
   if value.is_empty() {
     return true;
   }
@@ -3282,16 +3289,16 @@ pub(crate) fn img_src_is_placeholder(value: &str) -> bool {
   };
 
   let mut parts = metadata.split(';');
-  let mediatype = parts.next().unwrap_or("").trim();
+  let mediatype = trim_ascii_whitespace(parts.next().unwrap_or(""));
   if !mediatype.eq_ignore_ascii_case("image/gif") {
     return false;
   }
-  let is_base64 = parts.any(|part| part.trim().eq_ignore_ascii_case("base64"));
+  let is_base64 = parts.any(|part| trim_ascii_whitespace(part).eq_ignore_ascii_case("base64"));
   if !is_base64 {
     return false;
   }
 
-  let payload = payload.trim();
+  let payload = trim_ascii_whitespace(payload);
   if payload.is_empty() {
     return true;
   }
