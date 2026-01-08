@@ -4917,8 +4917,51 @@ fn scroll_driven_fill_progress(raw: f32, fill: AnimationFillMode) -> Option<f32>
   }
 }
 
-fn scroll_driven_effect_progress(style: &ComputedStyle, idx: usize, overall: f32) -> f32 {
-  scroll_driven_effect_state(style, idx, overall).progress
+fn progress_based_animation_state(
+  style: &ComputedStyle,
+  idx: usize,
+  overall_progress: f32,
+) -> Option<AnimationProgress> {
+  if !overall_progress.is_finite() {
+    return None;
+  }
+  let overall_progress = overall_progress.clamp(0.0, 1.0);
+
+  let raw_duration = pick(&style.animation_durations, idx, 0.0);
+  // `animation-duration: auto` is represented by a negative sentinel. When attached to a
+  // progress-based timeline (scroll/view), Web Animations forbids mixing `auto` iteration duration
+  // with time-based delays. Treat the delay as `0` and map scroll progress directly into
+  // iteration progress (the legacy behaviour).
+  //
+  // This engine historically treated scroll-driven animations with the CSS default duration
+  // (`0ms`) like `auto` so that simply attaching a scroll/view timeline yields a useful animation
+  // without requiring authors/tests to opt into `auto` explicitly. Preserve that behaviour here by
+  // treating non-positive durations like `auto`.
+  if raw_duration <= ANIMATION_DURATION_AUTO_SENTINEL_MS || raw_duration <= 0.0 {
+    return Some(scroll_driven_effect_state(style, idx, overall_progress));
+  }
+
+  let specified_duration_ms = raw_duration.max(0.0);
+  let specified_delay_ms = pick(&style.animation_delays, idx, 0.0);
+  let iteration_count = pick(
+    &style.animation_iteration_counts,
+    idx,
+    AnimationIterationCount::default(),
+  );
+  let iterations = iteration_count.as_f32();
+  // Scaling an infinite active duration into a finite [0,1] progress range is undefined here.
+  // Keep the existing deterministic behaviour until dedicated infinite-iteration support is
+  // implemented.
+  if !iterations.is_finite() {
+    return Some(scroll_driven_effect_state(style, idx, overall_progress));
+  }
+
+  let active_duration_ms = specified_duration_ms * iterations.max(0.0);
+  // CSS Animations do not have an end delay, so the end time is simply start delay + active
+  // duration (clamped to be non-negative for pathological negative delays).
+  let end_time_ms = (specified_delay_ms + active_duration_ms).max(0.0);
+  let time_ms = overall_progress * end_time_ms;
+  time_based_animation_state_impl(style, idx, time_ms, false)
 }
 
 fn scroll_driven_effect_state(
@@ -5257,7 +5300,9 @@ fn apply_animations_to_node_scoped(
                   }
                   TimelineState::Inactive => false,
                 };
-                active.then_some(scroll_driven_effect_state(&*style_arc, idx, 0.0))
+                active
+                  .then_some(0.0)
+                  .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
               })
             } else {
               let raw =
@@ -5297,7 +5342,7 @@ fn apply_animations_to_node_scoped(
               );
               raw
                 .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-                .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+                .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
             }
           }
           AnimationTimeline::Scroll(ref func) => {
@@ -5325,11 +5370,9 @@ fn apply_animations_to_node_scoped(
                   scroll_container.content.width,
                   scroll_container.content.height,
                 );
-                (scroll_range.abs() >= f32::EPSILON).then_some(scroll_driven_effect_state(
-                  &*style_arc,
-                  idx,
-                  0.0,
-                ))
+                (scroll_range.abs() >= f32::EPSILON)
+                  .then_some(0.0)
+                  .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
               })
             } else {
               let raw = scroll_progress_for_function(
@@ -5348,7 +5391,7 @@ fn apply_animations_to_node_scoped(
               );
               raw
                 .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-                .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+                .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
             }
           }
           AnimationTimeline::View(ref func) => {
@@ -5388,7 +5431,9 @@ fn apply_animations_to_node_scoped(
                   && target_start.is_finite()
                   && target_end.is_finite()
                   && (target_end - target_start).abs() > f32::EPSILON;
-                active.then_some(scroll_driven_effect_state(&*style_arc, idx, 0.0))
+                active
+                  .then_some(0.0)
+                  .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
               })
             } else {
               let raw = view_progress_for_function(
@@ -5407,7 +5452,7 @@ fn apply_animations_to_node_scoped(
               );
               raw
                 .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-                .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
+                .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
             }
           }
         };

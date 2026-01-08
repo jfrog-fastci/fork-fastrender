@@ -5,6 +5,7 @@ use fastrender::animation::apply_scroll_driven_animations;
 use fastrender::css::types::{Declaration, Keyframe, KeyframesRule, PropertyValue};
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::ScrollState;
+use fastrender::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
 use fastrender::style::types::{
   AnimationDirection, AnimationFillMode, AnimationIterationCount, AnimationPlayState,
   AnimationRange, AnimationTimeline, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
@@ -118,6 +119,85 @@ fn scroll_timeline_uses_element_scroll_offsets() {
   assert!(
     (opacity_for_scroll(&animated_style, &scroller_style, 50.0) - 0.5).abs() < 0.05,
     "opacity should reflect element scroll timeline progress"
+  );
+}
+
+#[test]
+fn scroll_timeline_respects_duration_and_delay_when_duration_is_time() {
+  let animation_name = "fade";
+  let timeline_name = "scroller";
+
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.scroll_timelines = vec![ScrollTimeline {
+    name: Some(timeline_name.to_string()),
+    axis: TimelineAxis::Block,
+    ..ScrollTimeline::default()
+  }];
+  let scroller_style = Arc::new(scroller_style);
+
+  let mut animated_style = ComputedStyle::default();
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
+  animated_style.animation_ranges = vec![AnimationRange::default()];
+  animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
+  animated_style.animation_durations = vec![2000.0].into();
+  animated_style.animation_delays = vec![1000.0].into();
+  animated_style.animation_fill_modes = vec![AnimationFillMode::Both].into();
+  animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+  let animated_style = Arc::new(animated_style);
+
+  let opacity = opacity_for_scroll(&animated_style, &scroller_style, 50.0);
+  assert!(
+    (opacity - 0.25).abs() < 0.05,
+    "expected duration+delay to remap progress (delay consumes 1/3 of the range), got {opacity}"
+  );
+}
+
+#[test]
+fn scroll_timeline_ignores_delay_when_duration_is_auto() {
+  let animation_name = "fade";
+  let timeline_name = "scroller";
+
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.scroll_timelines = vec![ScrollTimeline {
+    name: Some(timeline_name.to_string()),
+    axis: TimelineAxis::Block,
+    ..ScrollTimeline::default()
+  }];
+  let scroller_style = Arc::new(scroller_style);
+
+  let mut animated_style = ComputedStyle::default();
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
+  animated_style.animation_ranges = vec![AnimationRange::default()];
+  animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
+  animated_style.animation_delays = vec![1000.0].into();
+  animated_style.animation_fill_modes = vec![AnimationFillMode::Both].into();
+  animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+  let parent = ComputedStyle::default();
+  let declaration = Declaration {
+    property: "animation-duration".into(),
+    value: PropertyValue::Keyword("auto".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut animated_style,
+    &declaration,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+  let animated_style = Arc::new(animated_style);
+
+  let opacity = opacity_for_scroll(&animated_style, &scroller_style, 50.0);
+  assert!(
+    (opacity - 0.5).abs() < 0.05,
+    "expected delay to be ignored when duration is auto, got {opacity}"
   );
 }
 
