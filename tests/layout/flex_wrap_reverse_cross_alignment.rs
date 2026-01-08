@@ -97,6 +97,152 @@ fn layout_wrap_reverse_overflow_alignment(align_content: AlignContent) -> (f32, 
   (child1_y, child2_y, child3_y)
 }
 
+fn layout_wrap_reverse_overflow_alignment_vertical_rl(
+  align_content: AlignContent,
+) -> (f32, f32, f32) {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::VerticalRl;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_content = align_content;
+  container_style.align_items = AlignItems::FlexStart;
+  // Two 10px-wide columns (20px total) in a 15px container => negative free space.
+  container_style.width = Some(Length::px(15.0));
+  container_style.width_keyword = None;
+  container_style.height = Some(Length::px(40.0));
+  container_style.height_keyword = None;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.width_keyword = None;
+  child_style.height = Some(Length::px(20.0));
+  child_style.height_keyword = None;
+  child_style.flex_shrink = 0.0;
+  let child_style = Arc::new(child_style);
+
+  let mut children = Vec::new();
+  for id in 1..=3 {
+    let mut child = BoxNode::new_block(child_style.clone(), FormattingContextType::Block, vec![]);
+    child.id = id;
+    children.push(child);
+  }
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    children,
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(15.0, 40.0))
+    .expect("layout succeeds");
+
+  let mut child1_x = None;
+  let mut child2_x = None;
+  let mut child3_x = None;
+  let mut debug_children = Vec::new();
+
+  for child in fragment.children.iter() {
+    let id = fragment_box_id(&child.content);
+    debug_children.push((
+      id,
+      child.bounds.x(),
+      child.bounds.y(),
+      child.bounds.width(),
+      child.bounds.height(),
+    ));
+    match id {
+      Some(1) => child1_x = Some(child.bounds.x()),
+      Some(2) => child2_x = Some(child.bounds.x()),
+      Some(3) => child3_x = Some(child.bounds.x()),
+      _ => {}
+    }
+  }
+
+  let child1_x = child1_x.unwrap_or_else(|| panic!("missing child1: {:?}", debug_children));
+  let child2_x = child2_x.unwrap_or_else(|| panic!("missing child2: {:?}", debug_children));
+  let child3_x = child3_x.unwrap_or_else(|| panic!("missing child3: {:?}", debug_children));
+
+  (child1_x, child2_x, child3_x)
+}
+
+fn layout_wrap_reverse_overflow_alignment_rtl_column(
+  align_content: AlignContent,
+) -> (f32, f32, f32) {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.direction = Direction::Rtl;
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_content = align_content;
+  container_style.align_items = AlignItems::FlexStart;
+  // Two 10px-wide columns (20px total) in a 15px container => negative free space.
+  container_style.width = Some(Length::px(15.0));
+  container_style.width_keyword = None;
+  container_style.height = Some(Length::px(40.0));
+  container_style.height_keyword = None;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.width_keyword = None;
+  child_style.height = Some(Length::px(20.0));
+  child_style.height_keyword = None;
+  child_style.flex_shrink = 0.0;
+  let child_style = Arc::new(child_style);
+
+  let mut children = Vec::new();
+  for id in 1..=3 {
+    let mut child = BoxNode::new_block(child_style.clone(), FormattingContextType::Block, vec![]);
+    child.id = id;
+    children.push(child);
+  }
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    children,
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(15.0, 40.0))
+    .expect("layout succeeds");
+
+  let mut child1_x = None;
+  let mut child2_x = None;
+  let mut child3_x = None;
+  let mut debug_children = Vec::new();
+
+  for child in fragment.children.iter() {
+    let id = fragment_box_id(&child.content);
+    debug_children.push((
+      id,
+      child.bounds.x(),
+      child.bounds.y(),
+      child.bounds.width(),
+      child.bounds.height(),
+    ));
+    match id {
+      Some(1) => child1_x = Some(child.bounds.x()),
+      Some(2) => child2_x = Some(child.bounds.x()),
+      Some(3) => child3_x = Some(child.bounds.x()),
+      _ => {}
+    }
+  }
+
+  let child1_x = child1_x.unwrap_or_else(|| panic!("missing child1: {:?}", debug_children));
+  let child2_x = child2_x.unwrap_or_else(|| panic!("missing child2: {:?}", debug_children));
+  let child3_x = child3_x.unwrap_or_else(|| panic!("missing child3: {:?}", debug_children));
+
+  (child1_x, child2_x, child3_x)
+}
+
 #[test]
 fn flex_wrap_reverse_single_line_cross_start_alignment_flips() {
   let fc = FlexFormattingContext::new();
@@ -1304,6 +1450,62 @@ fn flex_wrap_reverse_align_content_distributed_overflow_falls_back_to_safe_start
     assert!(
       (child2_y - 10.0).abs() < eps,
       "align-content={align:?}: expected first line (child2) to start at y=10 under wrap-reverse; got y={child2_y}"
+    );
+  }
+}
+
+#[test]
+fn flex_wrap_reverse_vertical_rl_align_content_distributed_overflow_falls_back_to_safe_start() {
+  // When the physical cross-start edge is the right edge (`writing-mode: vertical-rl`) and we don't
+  // mirror the cross axis for wrap-reverse, ensure the "safe start" fallback for distributed
+  // align-content values still packs the line stack to the physical start edge.
+  let eps = 1e-3;
+  for align in [
+    AlignContent::SpaceBetween,
+    AlignContent::SpaceAround,
+    AlignContent::SpaceEvenly,
+    AlignContent::Stretch,
+  ] {
+    let (child1_x, child2_x, child3_x) = layout_wrap_reverse_overflow_alignment_vertical_rl(align);
+    assert!(
+      (child3_x - 5.0).abs() < eps,
+      "align-content={align:?}: expected second column (child3) to align to x=5 under safe start fallback; got x={child3_x}"
+    );
+    assert!(
+      (child1_x + 5.0).abs() < eps,
+      "align-content={align:?}: expected first column (child1) to overflow to x=-5 under safe start fallback; got x={child1_x}"
+    );
+    assert!(
+      (child2_x + 5.0).abs() < eps,
+      "align-content={align:?}: expected first column (child2) to overflow to x=-5 under safe start fallback; got x={child2_x}"
+    );
+  }
+}
+
+#[test]
+fn flex_wrap_reverse_rtl_column_align_content_distributed_overflow_falls_back_to_safe_start() {
+  // Same as above but with a horizontal inline axis in RTL mode. Inline-start is the physical right
+  // edge, and wrap-reverse flips cross-start/cross-end, so ensure the safe fallback still aligns to
+  // the physical start edge.
+  let eps = 1e-3;
+  for align in [
+    AlignContent::SpaceBetween,
+    AlignContent::SpaceAround,
+    AlignContent::SpaceEvenly,
+    AlignContent::Stretch,
+  ] {
+    let (child1_x, child2_x, child3_x) = layout_wrap_reverse_overflow_alignment_rtl_column(align);
+    assert!(
+      (child3_x - 5.0).abs() < eps,
+      "align-content={align:?}: expected second column (child3) to align to x=5 under safe start fallback; got x={child3_x}"
+    );
+    assert!(
+      (child1_x + 5.0).abs() < eps,
+      "align-content={align:?}: expected first column (child1) to overflow to x=-5 under safe start fallback; got x={child1_x}"
+    );
+    assert!(
+      (child2_x + 5.0).abs() < eps,
+      "align-content={align:?}: expected first column (child2) to overflow to x=-5 under safe start fallback; got x={child2_x}"
     );
   }
 }

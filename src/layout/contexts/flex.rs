@@ -3081,10 +3081,128 @@ impl FormattingContext for FlexFormattingContext {
                    }
                  }
                }
-             }
-           }
-         }
-       }
+              }
+            }
+          }
+
+          // Distributed `align-content` values fall back to "safe start" when there is no free space.
+          // That safe start alignment is defined in terms of the *physical* start edge, which can be
+          // the right/bottom edges in vertical writing modes or RTL.
+          //
+          // When `flex-wrap: wrap-reverse` cancels a negative cross axis (so we don't perform the
+          // mirror pass above), Taffy's internal fallback still start-aligns in its positive-axis
+          // coordinate space. Correct by shifting the in-flow items so the overflow is biased toward
+          // the physical end edge instead.
+          if wrap_reverse
+            && !should_mirror_cross
+            && !base_cross_positive
+            && matches!(
+              box_node.style.align_content,
+              AlignContent::Stretch
+                | AlignContent::SpaceBetween
+                | AlignContent::SpaceAround
+                | AlignContent::SpaceEvenly
+            )
+            && cross_size.is_finite()
+            && cross_size > 0.0
+          {
+            let cb_width = fragment.bounds.width();
+            let border_left = self.resolve_length_for_width(
+              box_node.style.used_border_left_width(),
+              cb_width,
+              &box_node.style,
+            );
+            let border_right = self.resolve_length_for_width(
+              box_node.style.used_border_right_width(),
+              cb_width,
+              &box_node.style,
+            );
+            let border_top = self.resolve_length_for_width(
+              box_node.style.used_border_top_width(),
+              cb_width,
+              &box_node.style,
+            );
+            let border_bottom = self.resolve_length_for_width(
+              box_node.style.used_border_bottom_width(),
+              cb_width,
+              &box_node.style,
+            );
+            let padding_left =
+              self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
+            let padding_right = self.resolve_length_for_width(
+              box_node.style.padding_right,
+              cb_width,
+              &box_node.style,
+            );
+            let padding_top =
+              self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
+            let padding_bottom = self.resolve_length_for_width(
+              box_node.style.padding_bottom,
+              cb_width,
+              &box_node.style,
+            );
+
+            let (cross_content_start, cross_content_end) = if cross_is_horizontal {
+              (border_left + padding_left, border_right + padding_right)
+            } else {
+              (border_top + padding_top, border_bottom + padding_bottom)
+            };
+            let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
+            if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
+              let mut max_rel = f32::NEG_INFINITY;
+              for child in fragment.children.iter() {
+                check_layout_deadline(&mut deadline_counter)?;
+                let Some(style) = child.style.as_deref() else {
+                  continue;
+                };
+                if style.running_position.is_some()
+                  || matches!(style.position, Position::Absolute | Position::Fixed)
+                {
+                  continue;
+                }
+                let (cross_pos, child_cross) = if cross_is_horizontal {
+                  (child.bounds.x(), child.bounds.width())
+                } else {
+                  (child.bounds.y(), child.bounds.height())
+                };
+                if !cross_pos.is_finite() || !child_cross.is_finite() {
+                  continue;
+                }
+                max_rel = max_rel.max((cross_pos - cross_content_start) + child_cross);
+              }
+
+              if max_rel.is_finite() && max_rel > cross_inner_size + 1e-6 {
+                let shift = cross_inner_size - max_rel;
+                if shift.is_finite() && shift.abs() > 1e-6 {
+                  for child in fragment.children_mut() {
+                    check_layout_deadline(&mut deadline_counter)?;
+                    let Some(style) = child.style.as_deref() else {
+                      continue;
+                    };
+                    if style.running_position.is_some()
+                      || matches!(style.position, Position::Absolute | Position::Fixed)
+                    {
+                      continue;
+                    }
+                    if cross_is_horizontal {
+                      translate_fragment_tree(
+                        child,
+                        Point::new(shift, 0.0),
+                        &mut deadline_counter,
+                      )?;
+                    } else {
+                      translate_fragment_tree(
+                        child,
+                        Point::new(0.0, shift),
+                        &mut deadline_counter,
+                      )?;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
 
       let mut needs_baseline = matches!(box_node.style.align_items, AlignItems::Baseline);
       if !needs_baseline {
@@ -8026,28 +8144,6 @@ impl FlexFormattingContext {
                             child.bounds.max_y(),
                         );
           }
-        }
-      }
-      // Guard against cross-axis drift when column flex containers produce children far
-      // outside the container width. Clamp children back to the start edge to avoid
-      // dropping content offscreen when Taffy returns oversized x positions.
-      let container_w = rect.width();
-      let max_child_x = children
-        .iter()
-        .map(|c| c.bounds.max_x())
-        .fold(0.0, f32::max);
-      if max_child_x > container_w + 0.5 {
-        let available = if container_w.is_finite() {
-          container_w.max(1.0)
-        } else {
-          self.viewport_size.width.max(1.0)
-        };
-        for child in &mut children {
-          let w = child.bounds.width().min(available);
-          child.bounds = Rect::new(
-            Point::new(0.0, child.bounds.y()),
-            Size::new(w, child.bounds.height()),
-          );
         }
       }
     }
