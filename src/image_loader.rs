@@ -548,7 +548,10 @@ fn inline_svg_use_references<'a>(
   ctx: Option<&ResourceContext>,
 ) -> Result<Cow<'a, str>> {
   // Avoid parsing unless it looks like we might have `<use>` references.
-  if !svg_content.contains("<use") {
+  // Note: inline SVG content in HTML is sometimes namespaced (e.g. `<svg:use>`). The cheap string
+  // check is intentionally conservative to avoid parsing most SVGs while still catching prefixed
+  // `<use>` tags.
+  if !svg_content.contains("<use") && !svg_content.contains(":use") {
     return Ok(Cow::Borrowed(svg_content));
   }
 
@@ -609,6 +612,11 @@ fn inline_svg_use_references<'a>(
 
     // Resolve the URL without the fragment for fetching.
     let Some(resolved_base) = resolve_against_base(svg_url, href_url_part)
+      .or_else(|| {
+        ctx
+          .and_then(|ctx| ctx.document_url.as_deref())
+          .and_then(|base| resolve_against_base(base, href_url_part))
+      })
       .or_else(|| Url::parse(href_url_part).ok().map(|u| u.to_string()))
     else {
       continue;
@@ -3919,9 +3927,7 @@ impl ImageCache {
       if out.len().saturating_add(n) > MAX_SVGZ_DECOMPRESSED_BYTES {
         return Err(Error::Image(ImageError::DecodeFailed {
           url: url.to_string(),
-          reason: format!(
-            "SVGZ decompressed payload exceeded {MAX_SVGZ_DECOMPRESSED_BYTES} bytes"
-          ),
+          reason: format!("SVGZ decompressed payload exceeded {MAX_SVGZ_DECOMPRESSED_BYTES} bytes"),
         }));
       }
       out.extend_from_slice(&buf[..n]);
@@ -3966,8 +3972,11 @@ impl ImageCache {
     let mime_is_svg = content_type
       .map(|m| m.contains("image/svg"))
       .unwrap_or(false);
-    let url_is_svgz =
-      url_ends_with_svgz(url) || resource.final_url.as_deref().is_some_and(url_ends_with_svgz);
+    let url_is_svgz = url_ends_with_svgz(url)
+      || resource
+        .final_url
+        .as_deref()
+        .is_some_and(url_ends_with_svgz);
 
     if let Ok(content) = std::str::from_utf8(bytes) {
       if mime_is_svg || svg_text_looks_like_markup(content) {
@@ -4022,8 +4031,11 @@ impl ImageCache {
     let mime_is_svg = content_type
       .map(|m| m.contains("image/svg"))
       .unwrap_or(false);
-    let url_is_svgz =
-      url_ends_with_svgz(url) || resource.final_url.as_deref().is_some_and(url_ends_with_svgz);
+    let url_is_svgz = url_ends_with_svgz(url)
+      || resource
+        .final_url
+        .as_deref()
+        .is_some_and(url_ends_with_svgz);
 
     if let Ok(content) = std::str::from_utf8(bytes) {
       if mime_is_svg || svg_text_looks_like_markup(content) {
@@ -7316,7 +7328,9 @@ mod tests {
     let fetcher = MapFetcher::with_entries([(url.to_string(), res)]);
     let cache = ImageCache::with_fetcher(Arc::new(fetcher));
 
-    let img = cache.load(url).expect("load svgz content via svg content-type");
+    let img = cache
+      .load(url)
+      .expect("load svgz content via svg content-type");
     assert!(img.is_vector);
     assert_eq!(img.dimensions(), (10, 20));
   }
@@ -7727,6 +7741,39 @@ mod tests {
     assert!(
       fetcher.requests().iter().all(|(url, _)| url != sprite_url),
       "blocked sprite should not be fetched"
+    );
+  }
+
+  #[test]
+  fn inline_svg_external_use_sprite_uses_document_url_as_base() {
+    let doc_url = "https://example.test/page.html";
+    let sprite_url = "https://example.test/sprite.svg";
+
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svg#icon"/></svg>"#;
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    cache.set_resource_context(Some(ctx));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(main_svg, 1, 1, "inline-svg", 1.0)
+      .expect("rendered pixmap");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
     );
   }
 
