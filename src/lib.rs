@@ -199,6 +199,7 @@ pub mod html;
 pub mod image_compare;
 pub mod image_loader;
 pub mod image_output;
+pub mod js;
 pub mod pageset;
 pub mod resource;
 pub(crate) mod rayon_init;
