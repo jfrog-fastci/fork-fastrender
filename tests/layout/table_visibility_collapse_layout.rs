@@ -257,6 +257,151 @@ fn collapsed_column_removal_adjusts_colspans_and_offsets_rtl() {
 }
 
 #[test]
+fn collapsed_column_removal_adjusts_colspans_and_offsets_collapsed_border_model() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: collapse;
+            border: none;
+            table-layout: fixed;
+          }
+          col { width: 20px; }
+          td { padding: 0; margin: 0; border: 0; height: 10px; font-size: 0; line-height: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col />
+          <col style="visibility: collapse;" />
+          <col />
+          <tr><td colspan="3">S</td></tr>
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column cell should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell in first visible column present");
+  let c = cells.get(&'C').expect("cell in last visible column present");
+  let s = cells.get(&'S').expect("spanning cell present");
+
+  let expected_c_x = a.rect.x() + a.rect.width();
+  let gap = c.rect.x() - expected_c_x;
+  assert!(
+    gap.abs() < 0.1,
+    "collapsed column should be removed from offsets in collapsed border model (expected C x={expected_c_x}, got {}, gap={gap})",
+    c.rect.x()
+  );
+
+  let expected_span_width = a.rect.width() + c.rect.width();
+  let span_gap = s.rect.width() - expected_span_width;
+  assert!(
+    span_gap.abs() < 0.1,
+    "colspan should shrink to visible columns in collapsed border model (expected S width={expected_span_width}, got {}, gap={span_gap})",
+    s.rect.width()
+  );
+}
+
+#[test]
+fn collapsed_column_removal_adjusts_colspans_and_offsets_collapsed_border_model_rtl() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: collapse;
+            border: none;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          col { width: 20px; }
+          td { padding: 0; margin: 0; border: 0; height: 10px; font-size: 0; line-height: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col />
+          <col style="visibility: collapse;" />
+          <col />
+          <tr><td colspan="3">S</td></tr>
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column cell should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell in first visible column present");
+  let c = cells.get(&'C').expect("cell in last visible column present");
+  let s = cells.get(&'S').expect("spanning cell present");
+
+  assert!(
+    a.rect.x() > c.rect.x(),
+    "expected RTL order A (right) > C (left), got A.x={} C.x={}",
+    a.rect.x(),
+    c.rect.x()
+  );
+  let gap = a.rect.x() - (c.rect.x() + c.rect.width());
+  assert!(
+    gap.abs() < 0.1,
+    "collapsed column should be removed from offsets in RTL collapsed border model (gap={gap})"
+  );
+
+  let expected_span_width = a.rect.width() + c.rect.width();
+  let span_gap = s.rect.width() - expected_span_width;
+  assert!(
+    span_gap.abs() < 0.1,
+    "colspan should shrink to visible columns in RTL collapsed border model (expected S width={expected_span_width}, got {}, gap={span_gap})",
+    s.rect.width()
+  );
+  assert!(
+    (s.rect.x() - c.rect.x()).abs() < 0.1,
+    "expected spanning cell to start at leftmost visible column in RTL collapsed border model (S.x={} C.x={})",
+    s.rect.x(),
+    c.rect.x()
+  );
+}
+
+#[test]
 fn column_visibility_collapse_removes_column_from_layout() {
   ensure_rayon_threads();
   let html = r#"
