@@ -77,6 +77,11 @@ struct HeaderCaptureServer {
   join: Option<thread::JoinHandle<()>>,
 }
 
+fn test_woff2_bytes() -> &'static [u8] {
+  // Small WOFF2 fixture already checked into the repo (from an offline pageset capture).
+  include_bytes!("pages/fixtures/ebay.com/assets/688dde5436f7262e45f65fa87ba02f36.woff2")
+}
+
 impl HeaderCaptureServer {
   fn start(context: &str) -> Option<Self> {
     let listener = try_bind_localhost(context)?;
@@ -101,7 +106,7 @@ impl HeaderCaptureServer {
               });
             }
 
-            let (status, content_type, mut body) = match path.as_str() {
+            let (status, content_type, body) = match path.as_str() {
               "/img.png" => ("200 OK", "image/png", minimal_png().to_vec()),
               "/frame.html" => (
                 "200 OK",
@@ -109,6 +114,20 @@ impl HeaderCaptureServer {
                 b"<!doctype html><body>frame</body>".to_vec(),
               ),
               "/style.css" => ("200 OK", "text/css; charset=utf-8", b"body { }".to_vec()),
+              "/style_import.css" => (
+                "200 OK",
+                "text/css; charset=utf-8",
+                br#"@import url("import.css");
+@font-face { font-family: "TestFont"; src: url("font.woff2"); }
+body { font-family: "TestFont"; }"#
+                  .to_vec(),
+              ),
+              "/import.css" => (
+                "200 OK",
+                "text/css; charset=utf-8",
+                b"body { color: red; }".to_vec(),
+              ),
+              "/font.woff2" => ("200 OK", "font/woff2", test_woff2_bytes().to_vec()),
               _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
             };
 
@@ -355,4 +374,50 @@ fn stylesheet_referrerpolicy_no_referrer_suppresses_referer_header() {
     "expected Referer header to be omitted; got:\n{}",
     css_req.headers
   );
+}
+
+#[test]
+fn stylesheet_referrerpolicy_no_referrer_suppresses_referer_for_imports_and_fonts() {
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_referrerpolicy_no_referrer_suppresses_referer_for_imports_and_fonts",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_import.css" referrerpolicy="no-referrer">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert!(
+      header_value(&req.headers, "referer").is_none(),
+      "expected Referer header to be omitted for {path}; got:\n{}",
+      req.headers
+    );
+  }
 }
