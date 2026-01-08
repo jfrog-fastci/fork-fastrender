@@ -48,7 +48,12 @@ fn collect_numbers_with_positions(
   fragments: &[TextFragment],
   position: impl Fn(&TextFragment) -> f32,
 ) -> Vec<PositionedNumber> {
-  fn flush(buf: &mut String, buf_pos: &mut Option<f32>, out: &mut Vec<PositionedNumber>) {
+  fn flush(
+    buf: &mut String,
+    buf_pos: &mut Option<f32>,
+    last_digit_xy: &mut Option<(f32, f32)>,
+    out: &mut Vec<PositionedNumber>,
+  ) {
     if buf.is_empty() {
       return;
     }
@@ -60,23 +65,33 @@ fn collect_numbers_with_positions(
     }
     buf.clear();
     *buf_pos = None;
+    *last_digit_xy = None;
   }
 
   let mut out = Vec::new();
   let mut digits = String::new();
   let mut digit_pos: Option<f32> = None;
+  let mut last_digit_xy: Option<(f32, f32)> = None;
+  let max_join_distance = 25.0;
 
   for frag in fragments {
     let trimmed = frag.text.trim();
     if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+      if let Some((prev_x, prev_y)) = last_digit_xy {
+        let dist = (frag.x - prev_x).abs() + (frag.y - prev_y).abs();
+        if dist > max_join_distance {
+          flush(&mut digits, &mut digit_pos, &mut last_digit_xy, &mut out);
+        }
+      }
       if digit_pos.is_none() {
         digit_pos = Some(position(frag));
       }
       digits.push_str(trimmed);
+      last_digit_xy = Some((frag.x, frag.y));
       continue;
     }
 
-    flush(&mut digits, &mut digit_pos, &mut out);
+    flush(&mut digits, &mut digit_pos, &mut last_digit_xy, &mut out);
 
     let mut seq = String::new();
     for ch in frag.text.chars() {
@@ -102,7 +117,7 @@ fn collect_numbers_with_positions(
     }
   }
 
-  flush(&mut digits, &mut digit_pos, &mut out);
+  flush(&mut digits, &mut digit_pos, &mut last_digit_xy, &mut out);
   out
 }
 

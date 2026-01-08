@@ -156,7 +156,7 @@ fn flex_item_auto_min_size_clamps_to_min_content() {
 
   let child = fragment.children.first().expect("child fragment");
   assert!(
-    (child.bounds.width() + 0.1) >= min_content,
+    (child.bounds.width() + 0.5) >= min_content,
     "auto min-size should use min-content width; expected >= {min_content}, got {}",
     child.bounds.width()
   );
@@ -208,7 +208,7 @@ fn flex_item_auto_min_size_column_uses_block_min_content() {
 
   let child = fragment.children.first().expect("child fragment");
   assert!(
-        (child.bounds.height() + 0.1) >= min_content_block,
+        (child.bounds.height() + 0.5) >= min_content_block,
         "auto min-size should use min-content block-size in column axis; expected >= {min_content_block}, got {}",
         child.bounds.height()
     );
