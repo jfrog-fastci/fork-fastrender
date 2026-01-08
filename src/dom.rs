@@ -5274,11 +5274,15 @@ impl<'a> ElementRef<'a> {
         return false;
       }
 
-      if input_type.eq_ignore_ascii_case("checkbox") || input_type.eq_ignore_ascii_case("radio") {
+      if input_type.eq_ignore_ascii_case("checkbox") {
         if required {
           return self.node.get_attribute_ref("checked").is_some();
         }
         return true;
+      }
+
+      if input_type.eq_ignore_ascii_case("radio") {
+        return !self.radio_group_is_missing();
       }
 
       return !(required && value.trim().is_empty());
@@ -5344,6 +5348,150 @@ impl<'a> ElementRef<'a> {
         .map(|t| t.eq_ignore_ascii_case("form"))
         .unwrap_or(false)
     })
+  }
+
+  fn tree_root_info(&self) -> (&'a DomNode, &'a [&'a DomNode]) {
+    if self.all_ancestors.is_empty() {
+      return (self.node, &[]);
+    }
+
+    let mut start = 0usize;
+    for (idx, ancestor) in self.all_ancestors.iter().enumerate() {
+      if matches!(ancestor.node_type, DomNodeType::ShadowRoot { .. }) {
+        start = idx;
+      }
+    }
+
+    (self.all_ancestors[start], &self.all_ancestors[start..])
+  }
+
+  fn collect_forms_by_id<'b>(tree_root: &'b DomNode) -> HashMap<&'b str, &'b DomNode> {
+    let mut forms: HashMap<&'b str, &'b DomNode> = HashMap::new();
+    let mut stack: Vec<&'b DomNode> = vec![tree_root];
+
+    while let Some(node) = stack.pop() {
+      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) && !ptr::eq(node, tree_root) {
+        continue;
+      }
+
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+      {
+        if let Some(id) = node.get_attribute_ref("id") {
+          forms.entry(id).or_insert(node);
+        }
+      }
+
+      for child in node.traversal_children().iter().rev() {
+        stack.push(child);
+      }
+    }
+
+    forms
+  }
+
+  fn resolve_form_owner_for_node<'b>(
+    node: &'b DomNode,
+    nearest_form_ancestor: Option<&'b DomNode>,
+    forms_by_id: &HashMap<&'b str, &'b DomNode>,
+  ) -> Option<&'b DomNode> {
+    if let Some(form_attr) = node.get_attribute_ref("form") {
+      if let Some(form) = forms_by_id.get(form_attr).copied() {
+        return Some(form);
+      }
+    }
+    nearest_form_ancestor
+  }
+
+  pub(crate) fn form_owner(&self) -> Option<&DomNode> {
+    let Some(tag) = self.node.tag_name() else {
+      return None;
+    };
+    if !(tag.eq_ignore_ascii_case("input")
+      || tag.eq_ignore_ascii_case("button")
+      || tag.eq_ignore_ascii_case("select")
+      || tag.eq_ignore_ascii_case("textarea"))
+    {
+      return None;
+    }
+
+    let (tree_root, ancestors_in_tree) = self.tree_root_info();
+    let forms_by_id = Self::collect_forms_by_id(tree_root);
+
+    let nearest_form_ancestor = ancestors_in_tree.iter().rev().copied().find(|node| {
+      node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+    });
+
+    Self::resolve_form_owner_for_node(self.node, nearest_form_ancestor, &forms_by_id)
+  }
+
+  fn radio_group_is_missing(&self) -> bool {
+    let name = self.node.get_attribute_ref("name").unwrap_or("");
+    if name.is_empty() {
+      return self.node.get_attribute_ref("required").is_some()
+        && self.node.get_attribute_ref("checked").is_none();
+    }
+
+    let (tree_root, ancestors_in_tree) = self.tree_root_info();
+    let forms_by_id = Self::collect_forms_by_id(tree_root);
+
+    let self_nearest_form = ancestors_in_tree.iter().rev().copied().find(|node| {
+      node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+    });
+    let self_form_owner =
+      Self::resolve_form_owner_for_node(self.node, self_nearest_form, &forms_by_id)
+        .map(|form| form as *const DomNode);
+
+    let mut group_required = false;
+    let mut stack: Vec<(&DomNode, Option<&DomNode>)> = vec![(tree_root, None)];
+
+    while let Some((node, nearest_form)) = stack.pop() {
+      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) && !ptr::eq(node, tree_root) {
+        continue;
+      }
+
+      let mut nearest_form = nearest_form;
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+      {
+        nearest_form = Some(node);
+      }
+
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+        && node
+          .get_attribute_ref("type")
+          .unwrap_or("text")
+          .eq_ignore_ascii_case("radio")
+        && node.get_attribute_ref("name") == Some(name)
+      {
+        let owner =
+          Self::resolve_form_owner_for_node(node, nearest_form, &forms_by_id).map(|form| {
+            form as *const DomNode
+          });
+        if owner == self_form_owner {
+          if node.get_attribute_ref("checked").is_some() {
+            return false;
+          }
+          if node.get_attribute_ref("required").is_some() {
+            group_required = true;
+          }
+        }
+      }
+
+      for child in node.traversal_children().iter().rev() {
+        stack.push((child, nearest_form));
+      }
+    }
+
+    group_required
   }
 
   fn is_default_submit_candidate(node: &DomNode, ancestors: &[&DomNode]) -> bool {
