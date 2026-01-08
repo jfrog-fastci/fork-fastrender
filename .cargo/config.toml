@@ -17,9 +17,3 @@ CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"
 [target.'cfg(target_os = "linux")']
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
-[env]
-# `libaom-sys` (pulled in by AVIF support) defaults to building x86_64 assembly that requires
-# `yasm`/`nasm` to be installed. Our CI/agent environments are intentionally minimal; force a
-# portable build configuration that doesn't need an external assembler.
-AOM_TARGET_CPU = "generic"
