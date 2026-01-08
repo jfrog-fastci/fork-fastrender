@@ -215,23 +215,36 @@ impl StickyConstraints {
     let viewport = containing_block.viewport_size();
     let inline_base = containing_block.inline_percentage_base();
     let block_base = containing_block.block_percentage_base();
+    // `top/right/bottom/left` percentage values are always relative to the physical axes
+    // (CSS 2.1 §10.5/10.6). Our containing blocks track logical inline/block sizes, so swap the
+    // bases when the writing mode's block axis is horizontal (vertical/sideways modes).
+    let x_base = if block_axis_is_horizontal(style.writing_mode) {
+      block_base
+    } else {
+      inline_base
+    };
+    let y_base = if block_axis_is_horizontal(style.writing_mode) {
+      inline_base
+    } else {
+      block_base
+    };
     Self {
-      top: resolve_offset_for_positioned(&style.top, block_base, viewport, style, font_context),
+      top: resolve_offset_for_positioned(&style.top, y_base, viewport, style, font_context),
       right: resolve_offset_for_positioned(
         &style.right,
-        inline_base,
+        x_base,
         viewport,
         style,
         font_context,
       ),
       bottom: resolve_offset_for_positioned(
         &style.bottom,
-        block_base,
+        y_base,
         viewport,
         style,
         font_context,
       ),
-      left: resolve_offset_for_positioned(&style.left, inline_base, viewport, style, font_context),
+      left: resolve_offset_for_positioned(&style.left, x_base, viewport, style, font_context),
     }
   }
 
@@ -524,23 +537,33 @@ pub(crate) fn compute_relative_offset(
   let viewport = containing_block.viewport_size();
   let inline_base = containing_block.inline_percentage_base();
   let block_base = containing_block.block_percentage_base();
+  let x_base = if block_axis_is_horizontal(style.writing_mode) {
+    block_base
+  } else {
+    inline_base
+  };
+  let y_base = if block_axis_is_horizontal(style.writing_mode) {
+    inline_base
+  } else {
+    block_base
+  };
 
   // Vertical offset: `top` takes precedence over `bottom`.
   let offset_y = if let Some(top) =
-    resolve_offset_for_positioned(&style.top, block_base, viewport, style, font_context)
+    resolve_offset_for_positioned(&style.top, y_base, viewport, style, font_context)
   {
     top
   } else if let Some(bottom) =
-    resolve_offset_for_positioned(&style.bottom, block_base, viewport, style, font_context)
+    resolve_offset_for_positioned(&style.bottom, y_base, viewport, style, font_context)
   {
     -bottom
   } else {
     0.0
   };
 
-  let left = resolve_offset_for_positioned(&style.left, inline_base, viewport, style, font_context);
+  let left = resolve_offset_for_positioned(&style.left, x_base, viewport, style, font_context);
   let right =
-    resolve_offset_for_positioned(&style.right, inline_base, viewport, style, font_context);
+    resolve_offset_for_positioned(&style.right, x_base, viewport, style, font_context);
 
   // Horizontal offset: when both `left` and `right` are specified, the used value
   // depends on `direction` (CSS 2.1 §9.3.2).
