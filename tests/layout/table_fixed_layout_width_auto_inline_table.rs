@@ -50,3 +50,37 @@ fn table_layout_fixed_with_width_auto_inline_table_uses_auto_layout() {
   );
 }
 
+#[test]
+fn table_layout_fixed_with_width_auto_inline_table_uses_auto_layout_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            table-layout: fixed;
+            border-collapse: separate;
+            border-spacing: 0;
+            padding: 0;
+            border: 0;
+            direction: rtl;
+          }
+          td { padding: 0; border: 0; }
+        </style>
+      </head>
+      <body><table><tr><td><div style="width:10px;height:10px"></div></td></tr><tr><td><div style="width:200px;height:10px"></div></td></tr></table></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let document = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&document, 800, 200).unwrap();
+
+  let table = find_inline_table(&tree.root).expect("expected inline-table fragment");
+  let width = table.bounds.width();
+  assert!(
+    (width - 200.0).abs() < 0.5,
+    "expected inline-table width ~200px in RTL, got {width}",
+  );
+}
