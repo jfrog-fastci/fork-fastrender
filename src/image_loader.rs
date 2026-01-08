@@ -12,13 +12,13 @@ use crate::render_control::{self, check_active, check_active_periodic};
 use crate::resource::CacheArtifactKind;
 use crate::resource::CachingFetcher;
 use crate::resource::CachingFetcherConfig;
-use crate::resource::FetchCredentialsMode;
 use crate::resource::FetchContextKind;
+use crate::resource::FetchCredentialsMode;
 use crate::resource::FetchDestination;
 use crate::resource::FetchRequest;
-use crate::resource::ReferrerPolicy;
 use crate::resource::FetchedResource;
 use crate::resource::HttpFetcher;
+use crate::resource::ReferrerPolicy;
 use crate::resource::ResourceFetcher;
 use crate::resource::{ensure_http_success, ensure_image_mime_sane, origin_from_url};
 use crate::style::color::Rgba;
@@ -66,7 +66,9 @@ use std::time::{Duration, Instant};
 use tiny_skia::{FilterQuality, IntSize, Pixmap};
 use url::Url;
 
-fn fetch_credentials_mode_for_crossorigin(crossorigin: CrossOriginAttribute) -> FetchCredentialsMode {
+fn fetch_credentials_mode_for_crossorigin(
+  crossorigin: CrossOriginAttribute,
+) -> FetchCredentialsMode {
   match crossorigin {
     CrossOriginAttribute::None => FetchCredentialsMode::Include,
     CrossOriginAttribute::Anonymous => FetchCredentialsMode::Omit,
@@ -494,6 +496,356 @@ fn inline_svg_cache_key(svg_content: &str) -> String {
   let mut hasher = DefaultHasher::new();
   svg_content.hash(&mut hasher);
   format!("inline-svg:{:016x}:{}", hasher.finish(), svg_content.len())
+}
+
+fn escape_xml_attr_value(value: &str) -> Cow<'_, str> {
+  if !value.contains('&')
+    && !value.contains('<')
+    && !value.contains('>')
+    && !value.contains('"')
+    && !value.contains('\'')
+  {
+    return Cow::Borrowed(value);
+  }
+  let mut out = String::with_capacity(value.len());
+  for ch in value.chars() {
+    match ch {
+      '&' => out.push_str("&amp;"),
+      '<' => out.push_str("&lt;"),
+      '>' => out.push_str("&gt;"),
+      '"' => out.push_str("&quot;"),
+      '\'' => out.push_str("&apos;"),
+      other => out.push(other),
+    }
+  }
+  Cow::Owned(out)
+}
+
+#[derive(Debug, Clone)]
+struct SvgUseInlineElement {
+  tag_name: String,
+  range: std::ops::Range<usize>,
+  inner_range: Option<std::ops::Range<usize>>,
+  view_box: Option<String>,
+  preserve_aspect_ratio: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SvgUseInlineSprite {
+  content: String,
+  by_id: HashMap<String, SvgUseInlineElement>,
+}
+
+/// Best-effort preprocessor that expands external `<use href="sprite.svg#id">` references by
+/// fetching the referenced SVG and inlining the matched `id` element.
+///
+/// This is intentionally narrow: it exists because `usvg`/`resvg` do not fetch HTTP(S) external
+/// `<use>` targets by default, which causes common SVG sprite patterns to silently disappear.
+fn inline_svg_use_references<'a>(
+  svg_content: &'a str,
+  svg_url: &str,
+  fetcher: &dyn ResourceFetcher,
+  ctx: Option<&ResourceContext>,
+) -> Result<Cow<'a, str>> {
+  // Avoid parsing unless it looks like we might have `<use>` references.
+  if !svg_content.contains("<use") {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  const MAX_USE_EXPANSIONS: usize = 128;
+  const MAX_INJECTED_BYTES: usize = 512 * 1024;
+
+  check_active(RenderStage::Paint).map_err(Error::Render)?;
+
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(svg_content)
+  })) {
+    Ok(Ok(doc)) => doc,
+    // Best-effort: if the SVG doesn't parse, don't fail the entire image decode.
+    Ok(Err(_)) | Err(_) => return Ok(Cow::Borrowed(svg_content)),
+  };
+
+  let mut deadline_counter = 0usize;
+  let mut sprite_cache: HashMap<String, SvgUseInlineSprite> = HashMap::new();
+  let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+  let mut injected_bytes = 0usize;
+  let mut expansions = 0usize;
+
+  for node in doc.descendants().filter(|n| n.is_element()) {
+    check_active_periodic(
+      &mut deadline_counter,
+      IMAGE_DECODE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )
+    .map_err(Error::Render)?;
+
+    if node.tag_name().name() != "use" {
+      continue;
+    }
+
+    let mut href = None;
+    for attr in node.attributes() {
+      if attr.name() == "href" {
+        href = Some(attr.value());
+        break;
+      }
+    }
+    let href = href.map(str::trim).filter(|v| !v.is_empty());
+
+    let Some(href) = href else {
+      continue;
+    };
+
+    let Some((href_url_part, fragment)) = href.split_once('#') else {
+      continue;
+    };
+    let href_url_part = href_url_part.trim();
+    let fragment = fragment.trim();
+
+    // Internal-only references (`#id`) are handled by usvg; we only patch external sprite uses.
+    if href_url_part.is_empty() || href_url_part.starts_with('#') || fragment.is_empty() {
+      continue;
+    }
+
+    // Resolve the URL without the fragment for fetching.
+    let Some(resolved_base) = resolve_against_base(svg_url, href_url_part)
+      .or_else(|| Url::parse(href_url_part).ok().map(|u| u.to_string()))
+    else {
+      continue;
+    };
+    let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
+      continue;
+    };
+    resolved_url.set_fragment(None);
+    let resolved_url = resolved_url.to_string();
+
+    if let Some(ctx) = ctx {
+      if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved_url) {
+        return Err(Error::Image(ImageError::LoadFailed {
+          url: resolved_url.clone(),
+          reason: err.reason,
+        }));
+      }
+    }
+
+    if !sprite_cache.contains_key(&resolved_url) {
+      check_active(RenderStage::Paint).map_err(Error::Render)?;
+
+      let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
+      if let Some(ctx) = ctx {
+        if let Some(origin) = ctx.policy.document_origin.as_ref() {
+          req = req.with_client_origin(origin);
+        }
+        if let Some(referrer_url) = ctx.document_url.as_deref() {
+          req = req.with_referrer_url(referrer_url);
+        }
+        req = req.with_referrer_policy(ctx.referrer_policy);
+      }
+
+      let res = match fetcher.fetch_with_request(req) {
+        Ok(res) => res,
+        // Best-effort: keep the `<use>` element intact if the sprite fetch fails.
+        Err(_) => continue,
+      };
+      if let Err(_) = ensure_http_success(&res, &resolved_url)
+        .and_then(|()| ensure_image_mime_sane(&res, &resolved_url))
+      {
+        continue;
+      }
+
+      let sprite_text = match String::from_utf8(res.bytes) {
+        Ok(text) => text,
+        Err(_) => continue,
+      };
+
+      let sprite_doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        roxmltree::Document::parse(&sprite_text)
+      })) {
+        Ok(Ok(doc)) => doc,
+        Ok(Err(_)) | Err(_) => continue,
+      };
+
+      let mut by_id = HashMap::new();
+      for sprite_node in sprite_doc.descendants().filter(|n| n.is_element()) {
+        check_active_periodic(
+          &mut deadline_counter,
+          IMAGE_DECODE_DEADLINE_STRIDE,
+          RenderStage::Paint,
+        )
+        .map_err(Error::Render)?;
+
+        let Some(id) = sprite_node
+          .attribute("id")
+          .map(str::trim)
+          .filter(|id| !id.is_empty())
+        else {
+          continue;
+        };
+
+        // Record the first element for a given id (SVG ids should be unique).
+        by_id.entry(id.to_string()).or_insert_with(|| {
+          let tag_name = sprite_node.tag_name().name().to_string();
+          let range = sprite_node.range();
+          let mut inner_start: Option<usize> = None;
+          let mut inner_end: Option<usize> = None;
+          for child in sprite_node.children() {
+            let r = child.range();
+            inner_start = Some(inner_start.map_or(r.start, |s| s.min(r.start)));
+            inner_end = Some(inner_end.map_or(r.end, |e| e.max(r.end)));
+          }
+          let inner_range = match (inner_start, inner_end) {
+            (Some(s), Some(e)) if s <= e => Some(s..e),
+            _ => None,
+          };
+
+          SvgUseInlineElement {
+            tag_name,
+            range,
+            inner_range,
+            view_box: sprite_node.attribute("viewBox").map(|v| v.to_string()),
+            preserve_aspect_ratio: sprite_node
+              .attribute("preserveAspectRatio")
+              .map(|v| v.to_string()),
+          }
+        });
+      }
+
+      let sprite = SvgUseInlineSprite {
+        content: sprite_text,
+        by_id,
+      };
+      sprite_cache.insert(resolved_url.clone(), sprite);
+    }
+
+    let Some(sprite) = sprite_cache.get(&resolved_url) else {
+      continue;
+    };
+
+    let Some(element) = sprite.by_id.get(fragment) else {
+      continue;
+    };
+
+    let referenced_markup = if element.tag_name == "symbol" {
+      let inner = element
+        .inner_range
+        .as_ref()
+        .and_then(|r| sprite.content.get(r.clone()))
+        .unwrap_or_default();
+
+      let width = node
+        .attribute("width")
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("100%");
+      let height = node
+        .attribute("height")
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("100%");
+
+      let mut out = String::new();
+      out.push_str("<svg width=\"");
+      out.push_str(&escape_xml_attr_value(width));
+      out.push_str("\" height=\"");
+      out.push_str(&escape_xml_attr_value(height));
+      out.push('"');
+      if let Some(view_box) = element.view_box.as_deref() {
+        out.push_str(" viewBox=\"");
+        out.push_str(&escape_xml_attr_value(view_box));
+        out.push('"');
+      }
+      if let Some(par) = element.preserve_aspect_ratio.as_deref() {
+        out.push_str(" preserveAspectRatio=\"");
+        out.push_str(&escape_xml_attr_value(par));
+        out.push('"');
+      }
+      out.push('>');
+      out.push_str(inner);
+      out.push_str("</svg>");
+      out
+    } else {
+      match sprite.content.get(element.range.clone()) {
+        Some(slice) => slice.to_string(),
+        None => continue,
+      }
+    };
+
+    let x = node
+      .attribute("x")
+      .and_then(parse_svg_length_px)
+      .unwrap_or(0.0);
+    let y = node
+      .attribute("y")
+      .and_then(parse_svg_length_px)
+      .unwrap_or(0.0);
+    let use_transform = node.attribute("transform").map(str::trim).unwrap_or("");
+
+    let mut transform = String::new();
+    if x != 0.0 || y != 0.0 {
+      transform.push_str(&format!("translate({x} {y})"));
+    }
+    if !use_transform.is_empty() {
+      if !transform.is_empty() {
+        transform.push(' ');
+      }
+      transform.push_str(use_transform);
+    }
+
+    let mut wrapper_attrs = String::new();
+    for attr in node.attributes() {
+      // Only copy non-namespaced attributes; otherwise we might lose the prefix (`xml:*`,
+      // `xlink:*`, etc) and produce invalid markup.
+      if attr.namespace().is_some() {
+        continue;
+      }
+
+      match attr.name() {
+        "href" | "x" | "y" | "width" | "height" | "transform" => continue,
+        "xmlns" => continue,
+        _ => {}
+      }
+
+      wrapper_attrs.push(' ');
+      wrapper_attrs.push_str(attr.name());
+      wrapper_attrs.push_str("=\"");
+      wrapper_attrs.push_str(&escape_xml_attr_value(attr.value()));
+      wrapper_attrs.push('"');
+    }
+    if !transform.is_empty() {
+      wrapper_attrs.push_str(" transform=\"");
+      wrapper_attrs.push_str(&escape_xml_attr_value(&transform));
+      wrapper_attrs.push('"');
+    }
+
+    let replacement = format!("<g{wrapper_attrs}>{referenced_markup}</g>");
+
+    expansions += 1;
+    injected_bytes = injected_bytes.saturating_add(replacement.len());
+    if expansions > MAX_USE_EXPANSIONS || injected_bytes > MAX_INJECTED_BYTES {
+      break;
+    }
+
+    replacements.push((node.range(), replacement));
+  }
+
+  if replacements.is_empty() {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  replacements.sort_by_key(|(range, _)| range.start);
+  let mut out = String::with_capacity(svg_content.len().saturating_add(injected_bytes));
+  let mut cursor = 0usize;
+  for (range, replacement) in replacements {
+    if range.start < cursor || range.end < range.start || range.end > svg_content.len() {
+      // If ranges overlap or are otherwise invalid, fall back to the original markup.
+      return Ok(Cow::Borrowed(svg_content));
+    }
+    out.push_str(&svg_content[cursor..range.start]);
+    out.push_str(&replacement);
+    cursor = range.end;
+  }
+  out.push_str(&svg_content[cursor..]);
+  Ok(Cow::Owned(out))
 }
 
 fn svg_parse_fill_color(value: &str) -> Option<Rgba> {
@@ -1789,8 +2141,13 @@ impl ImageCache {
     }
 
     record_image_cache_miss();
-    let result =
-      self.fetch_and_decode(&cache_key, &resolved_url, destination, crossorigin, referrer_policy);
+    let result = self.fetch_and_decode(
+      &cache_key,
+      &resolved_url,
+      destination,
+      crossorigin,
+      referrer_policy,
+    );
     let shared = match &result {
       Ok(img) => SharedImageResult::Success(Arc::clone(img)),
       Err(err) => SharedImageResult::Error(err.clone()),
@@ -2347,7 +2704,11 @@ impl ImageCache {
     }
 
     let resolved_url = self.resolve_url(trimmed);
-    self.probe_resolved_with_crossorigin_and_referrer_policy(&resolved_url, crossorigin, referrer_policy)
+    self.probe_resolved_with_crossorigin_and_referrer_policy(
+      &resolved_url,
+      crossorigin,
+      referrer_policy,
+    )
   }
 
   pub fn probe_resolved(&self, resolved_url: &str) -> Result<Arc<CachedImageMetadata>> {
@@ -2499,8 +2860,13 @@ impl ImageCache {
     }
 
     record_image_cache_miss();
-    let result =
-      self.fetch_and_probe(cache_key, resolved_url, destination, crossorigin, referrer_policy);
+    let result = self.fetch_and_probe(
+      cache_key,
+      resolved_url,
+      destination,
+      crossorigin,
+      referrer_policy,
+    );
     let shared = match &result {
       Ok(meta) => SharedMetaResult::Success(Arc::clone(meta)),
       Err(err) => SharedMetaResult::Error(err.clone()),
@@ -3369,6 +3735,14 @@ impl ImageCache {
 
     let render_timer = Instant::now();
 
+    let svg_content = inline_svg_use_references(
+      svg_content,
+      url,
+      self.fetcher.as_ref(),
+      self.resource_context.as_ref(),
+    )?;
+    let svg_content = svg_content.as_ref();
+
     if let Some(pixmap) = try_render_simple_svg_pixmap(svg_content, render_width, render_height)? {
       let pixmap = Arc::new(pixmap);
       record_image_decode_ms(render_timer.elapsed().as_secs_f64() * 1000.0);
@@ -3712,12 +4086,12 @@ impl ImageCache {
     let (sniffed_format, sniff_panic) = Self::sniff_image_format(bytes);
     let (pre_dims, dims_panic) =
       self.predecoded_dimensions(bytes, format_from_content_type, sniffed_format);
-    let panic_error = dims_panic
-      .or(sniff_panic)
-      .map(|panic| Error::Image(ImageError::DecodeFailed {
+    let panic_error = dims_panic.or(sniff_panic).map(|panic| {
+      Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
         reason: format!("Image decode panicked: {panic}"),
-      }));
+      })
+    });
     if let Some((width, height)) = pre_dims {
       self.enforce_decode_limits(width, height, url)?;
     }
@@ -3876,7 +4250,12 @@ impl ImageCache {
     }
   }
 
-  fn decode_with_format(&self, bytes: &[u8], format: ImageFormat, url: &str) -> Result<DynamicImage> {
+  fn decode_with_format(
+    &self,
+    bytes: &[u8],
+    format: ImageFormat,
+    url: &str,
+  ) -> Result<DynamicImage> {
     if format == ImageFormat::Png {
       // Decode PNG via the `png` crate so output buffers are allocated fallibly (avoiding process
       // aborts on OOM inside `image`'s decoders). Keep render deadlines responsive by reading
@@ -3921,10 +4300,12 @@ impl ImageCache {
       let rgba_bytes = u64::from(width)
         .checked_mul(u64::from(height))
         .and_then(|px| px.checked_mul(4))
-        .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
-          url: url.to_string(),
-          reason: format!("PNG dimensions overflow ({width}x{height})"),
-        }))?;
+        .ok_or_else(|| {
+          Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: format!("PNG dimensions overflow ({width}x{height})"),
+          })
+        })?;
       if rgba_bytes > MAX_PIXMAP_BYTES {
         return Err(Error::Image(ImageError::DecodeFailed {
           url: url.to_string(),
@@ -3933,42 +4314,50 @@ impl ImageCache {
           ),
         }));
       }
-      let rgba_len = usize::try_from(rgba_bytes).map_err(|_| Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: format!("PNG decoded byte size does not fit in usize ({width}x{height})"),
-      }))?;
+      let rgba_len = usize::try_from(rgba_bytes).map_err(|_| {
+        Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!("PNG decoded byte size does not fit in usize ({width}x{height})"),
+        })
+      })?;
 
-      let out_size = reader.output_buffer_size().ok_or_else(|| Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: "PNG output buffer size not available".to_string(),
-      }))?;
-      let out_size_u64 = u64::try_from(out_size).map_err(|_| Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: "PNG output buffer size does not fit in u64".to_string(),
-      }))?;
+      let out_size = reader.output_buffer_size().ok_or_else(|| {
+        Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: "PNG output buffer size not available".to_string(),
+        })
+      })?;
+      let out_size_u64 = u64::try_from(out_size).map_err(|_| {
+        Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: "PNG output buffer size does not fit in u64".to_string(),
+        })
+      })?;
       if out_size_u64 > MAX_PIXMAP_BYTES {
         return Err(Error::Image(ImageError::DecodeFailed {
           url: url.to_string(),
-          reason: format!(
-            "PNG output buffer is {out_size_u64} bytes (limit {MAX_PIXMAP_BYTES})"
-          ),
+          reason: format!("PNG output buffer is {out_size_u64} bytes (limit {MAX_PIXMAP_BYTES})"),
         }));
       }
-      let out_size = usize::try_from(out_size_u64).map_err(|_| Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: "PNG output buffer size does not fit in usize".to_string(),
-      }))?;
+      let out_size = usize::try_from(out_size_u64).map_err(|_| {
+        Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: "PNG output buffer size does not fit in usize".to_string(),
+        })
+      })?;
 
       let mut buf = Vec::new();
-      buf
-        .try_reserve_exact(out_size)
-        .map_err(|err| Error::Image(ImageError::DecodeFailed {
+      buf.try_reserve_exact(out_size).map_err(|err| {
+        Error::Image(ImageError::DecodeFailed {
           url: url.to_string(),
           reason: format!("PNG output buffer allocation failed for {out_size} bytes: {err}"),
-        }))?;
+        })
+      })?;
       buf.resize(out_size, 0);
 
-      let frame = reader.next_frame(&mut buf).map_err(|e| map_png_error(url, &e))?;
+      let frame = reader
+        .next_frame(&mut buf)
+        .map_err(|e| map_png_error(url, &e))?;
       buf.truncate(frame.buffer_size());
 
       let rgba = match (frame.color_type, frame.bit_depth) {
@@ -3982,23 +4371,29 @@ impl ImageCache {
               ),
             }));
           }
-          RgbaImage::from_raw(width, height, buf).ok_or_else(|| Error::Image(ImageError::DecodeFailed {
-            url: url.to_string(),
-            reason: "PNG RGBA buffer was invalid".to_string(),
-          }))?
+          RgbaImage::from_raw(width, height, buf).ok_or_else(|| {
+            Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "PNG RGBA buffer was invalid".to_string(),
+            })
+          })?
         }
         (png::ColorType::Rgb, png::BitDepth::Eight) => {
           let rgb_len = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|px| px.checked_mul(3))
-            .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+            .ok_or_else(|| {
+              Error::Image(ImageError::DecodeFailed {
+                url: url.to_string(),
+                reason: "PNG RGB byte size overflow".to_string(),
+              })
+            })?;
+          let rgb_len = usize::try_from(rgb_len).map_err(|_| {
+            Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
-              reason: "PNG RGB byte size overflow".to_string(),
-            }))?;
-          let rgb_len = usize::try_from(rgb_len).map_err(|_| Error::Image(ImageError::DecodeFailed {
-            url: url.to_string(),
-            reason: "PNG RGB byte size does not fit in usize".to_string(),
-          }))?;
+              reason: "PNG RGB byte size does not fit in usize".to_string(),
+            })
+          })?;
           if buf.len() != rgb_len {
             return Err(Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
@@ -4010,12 +4405,12 @@ impl ImageCache {
           }
 
           let mut out = Vec::new();
-          out
-            .try_reserve_exact(rgba_len)
-            .map_err(|err| Error::Image(ImageError::DecodeFailed {
+          out.try_reserve_exact(rgba_len).map_err(|err| {
+            Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
               reason: format!("PNG RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
-            }))?;
+            })
+          })?;
           out.resize(rgba_len, 0);
           for (in_px, out_px) in buf.chunks_exact(3).zip(out.chunks_exact_mut(4)) {
             out_px[0] = in_px[0];
@@ -4023,22 +4418,28 @@ impl ImageCache {
             out_px[2] = in_px[2];
             out_px[3] = 255;
           }
-          RgbaImage::from_raw(width, height, out).ok_or_else(|| Error::Image(ImageError::DecodeFailed {
-            url: url.to_string(),
-            reason: "PNG RGB->RGBA buffer was invalid".to_string(),
-          }))?
+          RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+            Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "PNG RGB->RGBA buffer was invalid".to_string(),
+            })
+          })?
         }
         (png::ColorType::Grayscale, png::BitDepth::Eight) => {
           let gray_len = u64::from(width)
             .checked_mul(u64::from(height))
-            .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+            .ok_or_else(|| {
+              Error::Image(ImageError::DecodeFailed {
+                url: url.to_string(),
+                reason: "PNG grayscale byte size overflow".to_string(),
+              })
+            })?;
+          let gray_len = usize::try_from(gray_len).map_err(|_| {
+            Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
-              reason: "PNG grayscale byte size overflow".to_string(),
-            }))?;
-          let gray_len = usize::try_from(gray_len).map_err(|_| Error::Image(ImageError::DecodeFailed {
-            url: url.to_string(),
-            reason: "PNG grayscale byte size does not fit in usize".to_string(),
-          }))?;
+              reason: "PNG grayscale byte size does not fit in usize".to_string(),
+            })
+          })?;
           if buf.len() != gray_len {
             return Err(Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
@@ -4050,12 +4451,12 @@ impl ImageCache {
           }
 
           let mut out = Vec::new();
-          out
-            .try_reserve_exact(rgba_len)
-            .map_err(|err| Error::Image(ImageError::DecodeFailed {
+          out.try_reserve_exact(rgba_len).map_err(|err| {
+            Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
               reason: format!("PNG RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
-            }))?;
+            })
+          })?;
           out.resize(rgba_len, 0);
           for (gray, out_px) in buf.iter().zip(out.chunks_exact_mut(4)) {
             out_px[0] = *gray;
@@ -4063,23 +4464,29 @@ impl ImageCache {
             out_px[2] = *gray;
             out_px[3] = 255;
           }
-          RgbaImage::from_raw(width, height, out).ok_or_else(|| Error::Image(ImageError::DecodeFailed {
-            url: url.to_string(),
-            reason: "PNG grayscale->RGBA buffer was invalid".to_string(),
-          }))?
+          RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+            Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "PNG grayscale->RGBA buffer was invalid".to_string(),
+            })
+          })?
         }
         (png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => {
           let ga_len = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|px| px.checked_mul(2))
-            .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+            .ok_or_else(|| {
+              Error::Image(ImageError::DecodeFailed {
+                url: url.to_string(),
+                reason: "PNG grayscale-alpha byte size overflow".to_string(),
+              })
+            })?;
+          let ga_len = usize::try_from(ga_len).map_err(|_| {
+            Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
-              reason: "PNG grayscale-alpha byte size overflow".to_string(),
-            }))?;
-          let ga_len = usize::try_from(ga_len).map_err(|_| Error::Image(ImageError::DecodeFailed {
-            url: url.to_string(),
-            reason: "PNG grayscale-alpha byte size does not fit in usize".to_string(),
-          }))?;
+              reason: "PNG grayscale-alpha byte size does not fit in usize".to_string(),
+            })
+          })?;
           if buf.len() != ga_len {
             return Err(Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
@@ -4091,12 +4498,12 @@ impl ImageCache {
           }
 
           let mut out = Vec::new();
-          out
-            .try_reserve_exact(rgba_len)
-            .map_err(|err| Error::Image(ImageError::DecodeFailed {
+          out.try_reserve_exact(rgba_len).map_err(|err| {
+            Error::Image(ImageError::DecodeFailed {
               url: url.to_string(),
               reason: format!("PNG RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
-            }))?;
+            })
+          })?;
           out.resize(rgba_len, 0);
           for (in_px, out_px) in buf.chunks_exact(2).zip(out.chunks_exact_mut(4)) {
             let gray = in_px[0];
@@ -4105,10 +4512,12 @@ impl ImageCache {
             out_px[2] = gray;
             out_px[3] = in_px[1];
           }
-          RgbaImage::from_raw(width, height, out).ok_or_else(|| Error::Image(ImageError::DecodeFailed {
-            url: url.to_string(),
-            reason: "PNG grayscale-alpha->RGBA buffer was invalid".to_string(),
-          }))?
+          RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+            Error::Image(ImageError::DecodeFailed {
+              url: url.to_string(),
+              reason: "PNG grayscale-alpha->RGBA buffer was invalid".to_string(),
+            })
+          })?
         }
         _ => {
           return Err(Error::Image(ImageError::DecodeFailed {
@@ -4131,7 +4540,10 @@ impl ImageCache {
       Ok(Err(err)) => Err(self.decode_error(url, err)),
       Err(panic) => Err(Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
-        reason: format!("image decode panicked: {}", panic_payload_to_reason(&*panic)),
+        reason: format!(
+          "image decode panicked: {}",
+          panic_payload_to_reason(&*panic)
+        ),
       })),
     }
   }
@@ -4348,12 +4760,15 @@ impl ImageCache {
     // Bound decoded images even when the caller disables `max_decoded_*` limits so we don't
     // allocate unbounded buffers that can abort the process on OOM.
     let pixels = u64::from(width) * u64::from(height);
-    let bytes = pixels
-      .checked_mul(4)
-      .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+    let bytes = pixels.checked_mul(4).ok_or_else(|| {
+      Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
-        reason: format!("Image dimensions {}x{} overflow decoded byte size", width, height),
-      }))?;
+        reason: format!(
+          "Image dimensions {}x{} overflow decoded byte size",
+          width, height
+        ),
+      })
+    })?;
     if bytes > MAX_PIXMAP_BYTES {
       return Err(Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
@@ -4794,6 +5209,13 @@ impl ImageCache {
       }
     }
     self.enforce_svg_resource_policy(svg_content, url)?;
+    let svg_content = inline_svg_use_references(
+      svg_content,
+      url,
+      self.fetcher.as_ref(),
+      self.resource_context.as_ref(),
+    )?;
+    let svg_content = svg_content.as_ref();
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       usvg::Tree::from_str(svg_content, &options)
     })) {
@@ -7162,6 +7584,102 @@ mod tests {
   }
 
   #[test]
+  fn svg_external_use_sprite_renders() {
+    let sprite_url = "https://example.test/sprite.svg";
+    let main_url = "https://example.test/main.svg";
+
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svg#icon"/></svg>"#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (sprite_url.to_string(), sprite_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(main_url).expect("load main svg");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "external <use href> sprite should inline and render red pixel"
+    );
+  }
+
+  #[test]
+  fn svg_external_use_sprite_blocked_by_policy() {
+    let doc_url = "https://example.test/";
+    let main_url = "https://example.test/main.svg";
+    let sprite_url = "https://cross.test/sprite.svg";
+
+    let main_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="{sprite_url}#icon"/></svg>"#
+    );
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (sprite_url.to_string(), sprite_res),
+    ]);
+
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+
+    let err = match cache.load(main_url) {
+      Ok(_) => panic!("cross-origin sprite should be blocked"),
+      Err(err) => err,
+    };
+    match err {
+      Error::Image(ImageError::LoadFailed { reason, .. }) => {
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "unexpected policy reason: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+
+    assert!(
+      fetcher.requests().iter().all(|(url, _)| url != sprite_url),
+      "blocked sprite should not be fetched"
+    );
+  }
+
+  #[test]
   fn svg_mask_application() {
     let cache = ImageCache::new();
     let svg = r#"
@@ -7491,7 +8009,9 @@ mod tests {
     let fetcher = Arc::new(MapFetcher::with_entries(entries));
     let cache = ImageCache::with_fetcher_and_config(
       fetcher,
-      ImageCacheConfig::default().with_max_decoded_dimension(1024).with_max_decoded_pixels(1024 * 1024),
+      ImageCacheConfig::default()
+        .with_max_decoded_dimension(1024)
+        .with_max_decoded_pixels(1024 * 1024),
     );
 
     for (name, _) in cases {
@@ -7547,16 +8067,15 @@ mod tests {
       (
         "short_ext_size",
         vec![
-          0x00, 0x00, 0x00, 0x01, b'f', b't', b'y', b'p', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-          0x00,
+          0x00, 0x00, 0x00, 0x01, b'f', b't', b'y', b'p', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ],
       ),
       // Extended size is present but invalid (smaller than the 16-byte extended header).
       (
         "invalid_ext_size",
         vec![
-          0x00, 0x00, 0x00, 0x01, b'f', b't', b'y', b'p', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-          0x00, 0x08,
+          0x00, 0x00, 0x00, 0x01, b'f', b't', b'y', b'p', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          0x08,
         ],
       ),
     ];
@@ -7570,7 +8089,9 @@ mod tests {
     let fetcher = Arc::new(MapFetcher::with_entries(entries));
     let cache = ImageCache::with_fetcher_and_config(
       fetcher,
-      ImageCacheConfig::default().with_max_decoded_dimension(1024).with_max_decoded_pixels(1024 * 1024),
+      ImageCacheConfig::default()
+        .with_max_decoded_dimension(1024)
+        .with_max_decoded_pixels(1024 * 1024),
     );
 
     for (name, _) in cases {
