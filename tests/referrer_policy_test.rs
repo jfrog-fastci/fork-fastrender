@@ -481,3 +481,64 @@ fn stylesheet_referrerpolicy_origin_applies_to_imports_and_fonts() {
     );
   }
 }
+
+#[test]
+fn stylesheet_referrerpolicy_same_origin_uses_document_referrer_for_sheet_and_stylesheet_referrer_for_nested(
+) {
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_referrerpolicy_same_origin_uses_document_referrer_for_sheet_and_stylesheet_referrer_for_nested",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_import.css" referrerpolicy="same-origin">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let stylesheet_url = format!("{}/style_import.css", server.base_url);
+  let requests = server.take_requests();
+  let sheet_req = requests
+    .iter()
+    .find(|req| req.path == "/style_import.css")
+    .expect("expected /style_import.css request");
+  assert_eq!(
+    header_value(&sheet_req.headers, "referer").as_deref(),
+    Some(document_url.as_str()),
+    "expected stylesheet request Referer to be the full document URL; got:\n{}",
+    sheet_req.headers
+  );
+
+  for path in ["/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(stylesheet_url.as_str()),
+      "expected nested request Referer to be the importing stylesheet URL for {path}; got:\n{}",
+      req.headers
+    );
+  }
+}
