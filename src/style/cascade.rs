@@ -1959,6 +1959,16 @@ fn eval_style_range_value(
       "border-left-width" => length_to_numeric(&styles.border_left_width, container, ctx),
       "outline-width" => length_to_numeric(&styles.outline_width, container, ctx),
       "outline-offset" => length_to_numeric(&styles.outline_offset, container, ctx),
+      "column-count" => styles.column_count.map(|count| NumericValue {
+        ty: NumericType::Number,
+        value: count as f32,
+      }),
+      "column-width" => styles
+        .column_width
+        .as_ref()
+        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "column-gap" => length_to_numeric(&styles.column_gap, container, ctx),
+      "column-rule-width" => length_to_numeric(&styles.column_rule_width, container, ctx),
       "line-height" => match &styles.line_height {
         crate::style::types::LineHeight::Normal => {
           let font_size = styles
