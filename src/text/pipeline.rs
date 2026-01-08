@@ -6241,7 +6241,12 @@ impl ShapingPipeline {
     let all_small = matches!(style.font_variant_caps, FontVariantCaps::AllSmallCaps);
 
     for (idx, ch) in text.char_indices() {
-      let is_small = ch.is_lowercase() || (all_small && ch.is_uppercase());
+      let mut is_small = ch.is_lowercase() || (all_small && ch.is_uppercase());
+      if is_unicode_mark(ch) {
+        if let Some(flag) = current_small {
+          is_small = flag;
+        }
+      }
       if let Some(flag) = current_small {
         if flag != is_small {
           let Some(segment_original) = text.get(segment_start..idx) else {
@@ -8021,6 +8026,32 @@ mod tests {
     let shaped = ShapingPipeline::new().shape("Abc", &style, &ctx).unwrap();
     assert!(shaped.iter().any(|r| (r.font_size - 16.0).abs() < 0.1));
     assert!(shaped.iter().any(|r| (r.font_size - 20.0).abs() < 0.1));
+  }
+
+  #[test]
+  fn small_caps_keeps_combining_marks_in_scaled_run() {
+    let mut db = FontDatabase::empty();
+    db
+      .load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
+      .expect("fixture font should load");
+    db.refresh_generic_fallbacks();
+    let ctx = FontContext::with_database(Arc::new(db));
+
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
+    style.font_variant = FontVariant::SmallCaps;
+    style.font_size = 20.0;
+
+    let shaped = ShapingPipeline::new()
+      .shape("a\u{0301}", &style, &ctx)
+      .expect("shape with combining mark");
+
+    assert!(
+      shaped
+        .iter()
+        .all(|run| (run.font_size - 16.0).abs() < 0.1),
+      "synthetic small-caps should keep combining marks with the scaled segment"
+    );
   }
 
   #[test]
