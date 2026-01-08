@@ -1433,7 +1433,12 @@ pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTi
           match lower.as_str() {
             "auto" => AnimationTimeline::Auto,
             "none" => AnimationTimeline::None,
-            _ => AnimationTimeline::Named(ident.to_string()),
+            _ => {
+              if custom_ident_is_excluded_keyword(&lower) {
+                return Err(p.new_custom_error(()));
+              }
+              AnimationTimeline::Named(ident.to_string())
+            }
           }
         }
         Token::Function(name) => {
@@ -20992,6 +20997,48 @@ mod tests {
         AnimationTimeline::Auto,
         AnimationTimeline::Named("foo".to_string()),
       ]
+    );
+  }
+
+  #[test]
+  fn animation_timeline_ignores_invalid_custom_ident_entries() {
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    let valid = parse_declarations("animation-timeline: foo;").pop().unwrap();
+    apply_declaration_with_base(
+      &mut styles,
+      &valid,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+      false,
+    );
+    assert_eq!(
+      styles.animation_timelines,
+      vec![AnimationTimeline::Named("foo".to_string())]
+    );
+
+    // CSS-wide keywords are excluded from <custom-ident>, so `inherit` should invalidate the whole
+    // declaration rather than being treated as a timeline name.
+    let invalid = parse_declarations("animation-timeline: inherit, auto;").pop().unwrap();
+    apply_declaration_with_base(
+      &mut styles,
+      &invalid,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+      false,
+    );
+    assert_eq!(
+      styles.animation_timelines,
+      vec![AnimationTimeline::Named("foo".to_string())]
     );
   }
 
