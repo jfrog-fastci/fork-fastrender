@@ -183,4 +183,17 @@ add:
   - Do not try to run all of WPT early; pick targeted tests that map to the primitives you’re
     implementing.
 
+### Running the curated test262 semantics suite
+
+See [`docs/js_test262.md`](../docs/js_test262.md) for the full workflow.
+
+Quickstart:
+
+```bash
+git submodule update --init engines/ecma-rs
+git -C engines/ecma-rs submodule update --init test262-semantic/data
+
+cargo xtask js test262
+```
+
 The point of tests is to prevent regressions, not to build heavy harness infrastructure.
