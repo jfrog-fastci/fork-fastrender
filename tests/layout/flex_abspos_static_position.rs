@@ -419,6 +419,27 @@ fn abspos_static_position_respects_row_reverse_main_start() {
 }
 
 #[test]
+fn abspos_static_position_respects_row_reverse_main_end() {
+  // `justify-content:flex-end` aligns to the main-end edge (left) in `row-reverse`.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::RowReverse;
+  container_style.justify_content = JustifyContent::FlexEnd;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+}
+
+#[test]
 fn abspos_static_position_respects_justify_content_start_in_row_reverse() {
   // `justify-content: start` resolves against the container's inline-start edge and should not be
   // affected by `flex-direction: row-reverse` (unlike `flex-start`).
@@ -483,6 +504,27 @@ fn abspos_static_position_respects_column_reverse_main_start() {
 }
 
 #[test]
+fn abspos_static_position_respects_column_reverse_main_end() {
+  // `justify-content:flex-end` aligns to the main-end edge (top) in `column-reverse`.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::ColumnReverse;
+  container_style.justify_content = JustifyContent::FlexEnd;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_justify_content_start_in_column_reverse() {
   // `justify-content: start` resolves against the block-start edge and is not affected by
   // `flex-direction: column-reverse`.
@@ -525,6 +567,28 @@ fn abspos_static_position_respects_rtl_row_reverse_flex_start() {
 
   let (x, _) = layout_abspos_child(container_style, child_style);
   assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+}
+
+#[test]
+fn abspos_static_position_respects_rtl_row_reverse_flex_end() {
+  // In RTL + `row-reverse`, the main-end edge is on the right.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.direction = Direction::Rtl;
+  container_style.flex_direction = FlexDirection::RowReverse;
+  container_style.justify_content = JustifyContent::FlexEnd;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
 }
 
 #[test]
