@@ -2105,6 +2105,10 @@ fn eval_style_range_value(
         ty: NumericType::Number,
         value: styles.flex_shrink,
       }),
+      "flex-basis" => match &styles.flex_basis {
+        crate::style::types::FlexBasis::Length(len) => length_to_numeric(len, container, ctx),
+        crate::style::types::FlexBasis::Auto | crate::style::types::FlexBasis::Content => None,
+      },
       "order" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.order as f32,

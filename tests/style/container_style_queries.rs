@@ -1512,6 +1512,32 @@ fn container_style_query_range_feature_matches_flex_shrink() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_flex_basis() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; flex-basis: 1px; }
+      .container-large { container-type: inline-size; flex-basis: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(flex-basis > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_order() {
   let html = r#"
     <style>
