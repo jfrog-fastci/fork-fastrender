@@ -8,7 +8,7 @@ use crate::debug::runtime;
 use crate::error::{Error, ImageError, RenderError, RenderStage, Result};
 use crate::paint::painter::with_paint_diagnostics;
 use crate::paint::pixmap::{new_pixmap, MAX_PIXMAP_BYTES};
-use crate::render_control::{self, check_root, check_root_periodic};
+use crate::render_control::{self, check_active, check_active_periodic, check_root, check_root_periodic};
 use crate::resource::CacheArtifactKind;
 use crate::resource::CachingFetcher;
 use crate::resource::CachingFetcherConfig;
