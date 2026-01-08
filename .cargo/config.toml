@@ -1,13 +1,14 @@
 [alias]
 xtask = "run -p xtask --"
 
-# libaom (used for AVIF decoding via `image`/`avif-decode`) requires an assembler (yasm/nasm) for
-# optimized builds. Our CI/agent environments don't necessarily have those tools installed, so
-# force the portable (non-asm) build by default.
+# Some sys crates (notably `libaom-sys`, used for AVIF decoding) use CMake and attempt to enable
+# x86_64 assembly optimizations. Our CI/container images do not ship with `yasm`/`nasm`, so force
+# libaom to fall back to the generic (no-asm) CPU target.
 #
-# This keeps `cargo build` working out-of-the-box while still supporting AVIF decode.
+# Override `AOM_TARGET_CPU` in your shell to re-enable optimized builds.
 [env]
 AOM_TARGET_CPU = "generic"
+CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"
 
 # Use the mold linker on Linux for much faster links (and to avoid sporadic `rust-lld` SIGBUS
 # incidents observed under heavy concurrency).
@@ -16,11 +17,3 @@ AOM_TARGET_CPU = "generic"
 [target.'cfg(target_os = "linux")']
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
-[env]
-# Some sys crates (notably `libaom-sys`, used for AVIF decoding) use CMake and attempt to enable
-# x86_64 assembly optimizations. Our CI/container images do not ship with `yasm`/`nasm`, so force
-# libaom to fall back to the generic (no-asm) CPU target.
-#
-# `cmake` crate forwards this env var as extra configure args.
-CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"

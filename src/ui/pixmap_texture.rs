@@ -60,7 +60,6 @@ impl PageTexture {
 fn pixmap_to_color_image(pixmap: &tiny_skia::Pixmap) -> ColorImage {
   let size = [pixmap.width() as usize, pixmap.height() as usize];
 
-  // `Pixmap` stores premultiplied RGBA8.
   let data = pixmap.data();
   debug_assert_eq!(data.len(), size[0] * size[1] * 4);
 
@@ -87,11 +86,10 @@ fn unpremultiply_channel(c_premul: u8, a: u8) -> u8 {
     0 => 0,
     255 => c_premul,
     a => {
-      // `round(c * 255 / a)`, in integer math.
       let a = u32::from(a);
       let c = u32::from(c_premul);
       let unmultiplied = (c * 255 + a / 2) / a;
-      u8::try_from(unmultiplied.min(255)).expect("value fits in u8")
+      unmultiplied.min(255) as u8
     }
   }
 }
