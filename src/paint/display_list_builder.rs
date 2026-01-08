@@ -652,6 +652,15 @@ fn paint_build_breakdown_enabled() -> bool {
   paint_diagnostics_enabled() && runtime::runtime_toggles().truthy("FASTR_PAINT_BUILD_BREAKDOWN")
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn trim_ascii_whitespace_start(value: &str) -> &str {
+  value
+    .trim_start_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 impl DisplayListBuilder {
   fn viewport_rect(&self) -> Option<Rect> {
     self
@@ -3677,7 +3686,7 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     bounds: Rect,
   ) -> Option<Arc<ImageData>> {
-    let trimmed = src.trim();
+    let trimmed = trim_ascii_whitespace(src);
     if let Some(id) = trimmed.strip_prefix('#') {
       if let Some(svg) = self.inline_svg_for_svg_mask(id, bounds) {
         return self.decode_image(
@@ -3743,7 +3752,7 @@ impl DisplayListBuilder {
       let resolved_mode = match layer.mode {
         MaskMode::MatchSource => match image {
           BackgroundImage::Url(src) => {
-            let trimmed = src.trim_start();
+            let trimmed = trim_ascii_whitespace_start(src);
             if trimmed.starts_with('#') {
               // Fragment-only URLs are resolved via `svg_id_defs` (see `decode_mask_image_url`).
               // They do not correspond to fetchable external images, so skip probing the network
@@ -10399,7 +10408,7 @@ impl DisplayListBuilder {
     reject_placeholder: bool,
   ) -> Option<Arc<ImageData>> {
     let image_cache = self.image_cache.as_ref()?;
-    let trimmed = src.trim_start();
+    let trimmed = trim_ascii_whitespace_start(src);
     let inline_svg = trimmed.starts_with('<');
 
     let (resolved_src, image) = if inline_svg {
@@ -10674,6 +10683,29 @@ mod tests {
 
   fn create_text_fragment(x: f32, y: f32, width: f32, height: f32, text: &str) -> FragmentNode {
     FragmentNode::new_text(Rect::from_xywh(x, y, width, height), text.to_string(), 12.0)
+  }
+
+  #[test]
+  fn mask_image_fragment_only_urls_do_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let defs = HashMap::from([(
+      "mask".to_string(),
+      r#"<mask id="mask"><rect width="100%" height="100%" fill="white"/></mask>"#.to_string(),
+    )]);
+    let builder = DisplayListBuilder::new().with_svg_id_defs(Some(Arc::new(defs)));
+    let style = ComputedStyle::default();
+    let bounds = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+
+    assert!(
+      builder.decode_mask_image_url("#mask", &style, bounds).is_some(),
+      "expected fragment-only URL to resolve with SVG id defs"
+    );
+    assert!(
+      builder
+        .decode_mask_image_url(&format!("#mask{nbsp}"), &style, bounds)
+        .is_none(),
+      "expected NBSP-suffixed fragment to not match existing SVG ids"
+    );
   }
 
   #[test]

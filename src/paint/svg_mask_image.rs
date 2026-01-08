@@ -70,6 +70,10 @@ fn collect_svg_fragment_references(fragment: &str) -> HashSet<String> {
     return HashSet::new();
   };
 
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  }
+
   let mut refs = HashSet::new();
   fn walk(node: roxmltree::Node, in_svg_style: bool, out: &mut HashSet<String>) {
     if node.is_element() {
@@ -86,7 +90,7 @@ fn collect_svg_fragment_references(fragment: &str) -> HashSet<String> {
               .rsplit_once(':')
               .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
           {
-            let trimmed = attr.value().trim();
+            let trimmed = trim_ascii_whitespace(attr.value());
             if let Some(id) = trimmed.strip_prefix('#') {
               if !id.is_empty() {
                 out.insert(id.to_string());
@@ -245,5 +249,24 @@ mod tests {
     let ids = collect_svg_fragment_ids(fragment);
     assert!(ids.contains("m"));
     assert!(ids.contains("ref"));
+  }
+
+  #[test]
+  fn svg_mask_image_helpers_do_not_trim_non_ascii_whitespace_in_href_refs() {
+    let nbsp = "\u{00A0}";
+    let fragment = format!(
+      r##"<svg xmlns="http://www.w3.org/2000/svg"><use href="#ref{}"/></svg>"##,
+      nbsp
+    );
+
+    let refs = collect_svg_fragment_references(&fragment);
+    assert!(
+      refs.contains(&format!("ref{nbsp}")),
+      "expected href refs to preserve NBSP, got {refs:?}"
+    );
+    assert!(
+      !refs.contains("ref"),
+      "href refs should not trim non-ASCII whitespace like NBSP"
+    );
   }
 }

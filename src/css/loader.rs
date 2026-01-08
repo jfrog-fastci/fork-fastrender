@@ -2052,6 +2052,12 @@ pub fn extract_css_links_with_meta(
     toggles.truthy_with_default("FASTR_FETCH_ALTERNATE_STYLESHEETS", true);
   let scoped_sources = extract_scoped_css_sources(&dom);
 
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    })
+  }
+
   let mut consider_source = |source: &StylesheetSource| {
     let StylesheetSource::External(link) = source else {
       return;
@@ -2059,7 +2065,8 @@ pub fn extract_css_links_with_meta(
     if link.disabled {
       return;
     }
-    if link.href.trim().is_empty() {
+    let href_trimmed = trim_ascii_whitespace(&link.href);
+    if href_trimmed.is_empty() {
       return;
     }
 
@@ -2084,7 +2091,7 @@ pub fn extract_css_links_with_meta(
 
     // DOM attribute parsing decodes valid HTML entities, but we still run our permissive entity
     // decoder to catch common broken patterns observed in the wild (e.g. `&/#47;` for `/`).
-    let href = decode_html_entities(link.href.trim());
+    let href = decode_html_entities(href_trimmed);
     if debug {
       eprintln!(
         "[css] found <link>: href={href} rel={:?} media={:?} crossorigin={:?}",
@@ -2915,12 +2922,9 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
             .any(|token| token.eq_ignore_ascii_case("canonical"))
           {
             if let Some(href) = node.get_attribute_ref("href") {
-              let trimmed = href.trim();
-              if !trimmed.is_empty() {
-                if let Some(resolved) = resolve_href(base_url, trimmed) {
-                  if resolved.starts_with("http://") || resolved.starts_with("https://") {
-                    return Some(resolved);
-                  }
+              if let Some(resolved) = resolve_href(base_url, href) {
+                if resolved.starts_with("http://") || resolved.starts_with("https://") {
+                  return Some(resolved);
                 }
               }
             }
@@ -2964,12 +2968,9 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
           .is_some_and(|prop| prop.eq_ignore_ascii_case("og:url"))
         {
           if let Some(content) = node.get_attribute_ref("content") {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-              if let Some(resolved) = resolve_href(base_url, trimmed) {
-                if resolved.starts_with("http://") || resolved.starts_with("https://") {
-                  return Some(resolved);
-                }
+            if let Some(resolved) = resolve_href(base_url, content) {
+              if resolved.starts_with("http://") || resolved.starts_with("https://") {
+                return Some(resolved);
               }
             }
           }
@@ -3971,6 +3972,14 @@ mod tests {
   }
 
   #[test]
+  fn extract_css_links_preserves_non_ascii_whitespace_in_href() {
+    let nbsp = "\u{00A0}";
+    let html = format!(r#"<link rel="stylesheet" href="a.css{nbsp}">"#);
+    let urls = extract_css_links(&html, "https://example.com/", MediaType::Screen).unwrap();
+    assert_eq!(urls, vec!["https://example.com/a.css%C2%A0".to_string()]);
+  }
+
+  #[test]
   fn extracts_unquoted_stylesheet_hrefs() {
     let html = r#"
             <link rel=stylesheet href=/styles/a.css media=screen>
@@ -4619,6 +4628,14 @@ mod tests {
         "#;
     let base = infer_base_url(html, "file:///tmp/cache/example.net.html");
     assert_eq!(base, "https://example.net/app/");
+  }
+
+  #[test]
+  fn uses_canonical_hint_preserving_non_ascii_whitespace_for_file_inputs() {
+    let nbsp = "\u{00A0}";
+    let html = format!(r#"<link rel="canonical" href="https://example.net/app/{nbsp}">"#);
+    let base = infer_base_url(&html, "file:///tmp/cache/example.net.html");
+    assert_eq!(base, "https://example.net/app/%C2%A0");
   }
 
   #[test]

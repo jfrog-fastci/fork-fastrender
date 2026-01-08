@@ -7732,6 +7732,12 @@ impl FastRender {
     let current_base_url = self.base_url.as_deref();
     let base_href = crate::html::find_base_href(dom);
 
+    fn trim_ascii_whitespace(value: &str) -> &str {
+      value.trim_matches(|c: char| {
+        matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+      })
+    }
+
     let is_http_base = |url: &str| url.starts_with("http://") || url.starts_with("https://");
     let resolve_http_hint =
       |doc_url: &str, inferred_base: Option<&str>, value: &str| -> Option<String> {
@@ -7820,7 +7826,7 @@ impl FastRender {
               .any(|token| token.eq_ignore_ascii_case("canonical"))
             {
               if let Some(href) = node.get_attribute_ref("href") {
-                let trimmed = href.trim();
+                let trimmed = trim_ascii_whitespace(href);
                 if !trimmed.is_empty() {
                   return Some(trimmed.to_string());
                 }
@@ -7873,7 +7879,7 @@ impl FastRender {
             .is_some_and(|prop| prop.eq_ignore_ascii_case("og:url"))
           {
             if let Some(content) = node.get_attribute_ref("content") {
-              let trimmed = content.trim();
+              let trimmed = trim_ascii_whitespace(content);
               if !trimmed.is_empty() {
                 return Some(trimmed.to_string());
               }
@@ -11671,6 +11677,12 @@ impl FastRender {
         && (style.width.is_some() || style.height.is_some())
     }
 
+    fn trim_ascii_whitespace(value: &str) -> &str {
+      value.trim_matches(|c: char| {
+        matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+      })
+    }
+
     let maybe_collect =
       |box_id: usize,
        replaced_box: &ReplacedBox,
@@ -11717,7 +11729,7 @@ impl FastRender {
         }
 
         let has_image_source =
-          !src.trim().is_empty() || !srcset.is_empty() || !picture_sources.is_empty();
+          !trim_ascii_whitespace(src).is_empty() || !srcset.is_empty() || !picture_sources.is_empty();
         if !has_image_source {
           return;
         }
@@ -11760,7 +11772,7 @@ impl FastRender {
           }
         }
 
-        let selected_url = selected.url.trim();
+        let selected_url = trim_ascii_whitespace(&selected.url);
         if selected_url.is_empty() {
           return;
         }
@@ -22500,6 +22512,91 @@ pub(crate) fn render_html_with_shared_resources(
   }
 
   #[test]
+  fn resolve_intrinsic_sizes_preserves_non_ascii_whitespace_in_src() {
+    let nbsp = "\u{00A0}";
+    let expected_url = "https://example.com/img.png%C2%A0".to_string();
+
+    #[derive(Clone)]
+    struct RecordingFetcher {
+      expected_url: String,
+      urls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        assert_eq!(url, self.expected_url);
+        self
+          .urls
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push(url.to_string());
+
+        // 1x1 PNG.
+        let bytes = base64::engine::general_purpose::STANDARD
+          .decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNoaGj4DwAFhAKAjM1mJgAAAABJRU5ErkJggg==",
+          )
+          .expect("decode png");
+        let mut res = FetchedResource::new(bytes, Some("image/png".to_string()));
+        res.status = Some(200);
+        Ok(res)
+      }
+    }
+
+    let urls = Arc::new(Mutex::new(Vec::new()));
+    let fetcher = Arc::new(RecordingFetcher {
+      expected_url: expected_url.clone(),
+      urls: Arc::clone(&urls),
+    });
+    let config = FastRenderConfig::default().with_base_url("https://example.com/");
+    let renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher as Arc<dyn ResourceFetcher>),
+    )
+    .expect("init renderer");
+
+    let mut node = BoxNode::new_replaced(
+      Arc::new(ComputedStyle::default()),
+      ReplacedType::Image {
+        src: format!("img.png{nbsp}"),
+        alt: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+      },
+      None,
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+
+    assert_eq!(
+      replaced.intrinsic_size,
+      Some(Size::new(1.0, 1.0)),
+      "expected PNG intrinsic size to be derived from the fetched image"
+    );
+
+    let seen = urls
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    assert!(
+      !seen.is_empty(),
+      "expected intrinsic sizing to fetch the image URL"
+    );
+    assert!(
+      seen.iter().all(|url| url == &expected_url),
+      "expected intrinsic sizing to preserve NBSP in URLs; got {seen:?}"
+    );
+  }
+
+  #[test]
   fn resolve_intrinsic_sizes_image_width_only_preserves_natural_ratio() {
     let renderer = FastRender::new().expect("init renderer");
     let style = Arc::new(ComputedStyle::default());
@@ -24604,6 +24701,54 @@ pub(crate) fn render_html_with_shared_resources(
     renderer
       .render_html_with_stylesheets(
         html,
+        document_url,
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .unwrap();
+
+    let requests = fetcher.requests();
+    let stylesheet_request = requests
+      .iter()
+      .find(|request| request.destination == FetchDestination::Style)
+      .expect("stylesheet request");
+    assert_eq!(stylesheet_request.url, stylesheet_url);
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
+  }
+
+  #[test]
+  fn file_document_canonical_hint_preserves_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      r#"<!doctype html><html><head>
+        <link rel="canonical" href="https://good.example/app/{nbsp}">
+        <link rel="stylesheet" href="?style.css">
+      </head><body></body></html>"#
+    );
+    let document_url = "file:///tmp/cache/good.example.html";
+    let stylesheet_url = "https://good.example/app/%C2%A0?style.css";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      stylesheet_url,
+      "body { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    renderer
+      .render_html_with_stylesheets(
+        &html,
         document_url,
         RenderOptions::new().with_viewport(64, 64),
       )

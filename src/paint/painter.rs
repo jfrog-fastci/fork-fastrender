@@ -3578,7 +3578,9 @@ impl Painter {
 
       let url_tile = match image {
         BackgroundImage::Url(src) => {
-          let trimmed = src.trim();
+          let trimmed = src.trim_matches(|c: char| {
+            matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+          });
           if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
             let Some(defs) = self.svg_id_defs.as_ref() else {
               continue;
@@ -3624,7 +3626,9 @@ impl Painter {
 
             resolved_mode = match layer.mode {
               MaskMode::MatchSource => {
-                let trimmed = src.trim_start();
+                let trimmed = src.trim_start_matches(|c: char| {
+                  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+                });
                 if trimmed.starts_with('<') {
                   MaskMode::Alpha
                 } else if image.image.color().has_alpha() {
