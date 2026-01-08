@@ -154,7 +154,7 @@ where
   pub fn poll(&mut self, host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
     while let Some((handle, source)) = host.poll_complete()? {
       if let Some(spec) = self.async_pending.remove(&handle) {
-        Self::queue_script_task(event_loop, spec, source);
+        Self::queue_script_task(event_loop, spec, source)?;
         continue;
       }
       if let Some(idx) = self.defer_by_handle.remove(&handle) {
@@ -167,7 +167,7 @@ where
       }
     }
 
-    self.queue_ready_deferred(event_loop);
+    self.queue_ready_deferred(event_loop)?;
     Ok(())
   }
 
@@ -177,9 +177,9 @@ where
     self.poll(host, event_loop)
   }
 
-  fn queue_ready_deferred(&mut self, event_loop: &mut EventLoop<Host>) {
+  fn queue_ready_deferred(&mut self, event_loop: &mut EventLoop<Host>) -> Result<()> {
     if !self.parsing_finished {
-      return;
+      return Ok(());
     }
 
     while self.next_defer_to_queue < self.defer_scripts.len() {
@@ -192,14 +192,20 @@ where
         .take()
         .expect("deferred script should have a spec until it is queued");
       self.next_defer_to_queue += 1;
-      Self::queue_script_task(event_loop, spec, source);
+      Self::queue_script_task(event_loop, spec, source)?;
     }
+    Ok(())
   }
 
-  fn queue_script_task(event_loop: &mut EventLoop<Host>, spec: ScriptElementSpec, source: String) {
+  fn queue_script_task(
+    event_loop: &mut EventLoop<Host>,
+    spec: ScriptElementSpec,
+    source: String,
+  ) -> Result<()> {
     event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
       host.execute_classic_script(&source, &spec, event_loop)
-    });
+    })?;
+    Ok(())
   }
 }
 
@@ -281,7 +287,7 @@ mod tests {
         event_loop.queue_microtask(move |host, _event_loop| {
           host.log.push(format!("microtask-after-{name}"));
           Ok(())
-        });
+        })?;
       }
       Ok(())
     }
