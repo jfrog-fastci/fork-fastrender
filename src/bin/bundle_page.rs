@@ -85,7 +85,9 @@ fn should_skip_crawl_url(url: &str) -> bool {
 
 fn default_credentials_mode_for_destination(destination: FetchDestination) -> FetchCredentialsMode {
   match destination {
-    FetchDestination::Font | FetchDestination::ImageCors => FetchCredentialsMode::Omit,
+    FetchDestination::Font | FetchDestination::ImageCors | FetchDestination::StyleCors => {
+      FetchCredentialsMode::Omit
+    }
     _ => FetchCredentialsMode::Include,
   }
 }
@@ -2621,6 +2623,14 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
     }));
 
     Ok(())
+  }
+
+  #[test]
+  fn default_credentials_mode_for_destination_omits_for_stylecors() {
+    assert_eq!(
+      default_credentials_mode_for_destination(FetchDestination::StyleCors),
+      FetchCredentialsMode::Omit
+    );
   }
 
   #[test]
