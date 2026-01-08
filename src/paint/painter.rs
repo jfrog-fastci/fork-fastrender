@@ -14204,7 +14204,11 @@ fn mask_tile_from_image(tile: &Pixmap, mode: MaskMode) -> RenderResult<Option<Pi
   let Some(size) = IntSize::from_wh(tile.width(), tile.height()) else {
     return Ok(None);
   };
-  let mut data = Vec::with_capacity(tile.data().len());
+
+  let mut data = Vec::new();
+  if data.try_reserve_exact(tile.data().len()).is_err() {
+    return Ok(None);
+  }
   let mut deadline_counter = 0usize;
   let chunk_bytes = CLIP_MASK_DEADLINE_STRIDE.saturating_mul(4);
   for pixel_chunk in tile.data().chunks(chunk_bytes) {
