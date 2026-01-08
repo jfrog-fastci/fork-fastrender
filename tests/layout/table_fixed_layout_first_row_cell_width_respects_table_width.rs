@@ -164,3 +164,127 @@ fn table_fixed_layout_first_row_cell_width_respects_table_width_rtl() {
   let gap = a.x() - (b.x() + b.width());
   assert!(gap.abs() < 0.1, "expected cells to be adjacent (gap={gap})");
 }
+
+#[test]
+fn table_fixed_layout_first_row_cell_width_respects_table_width_collapsed_border_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            table-layout: fixed;
+            width: 300px;
+            border-collapse: collapse;
+            border: none;
+            padding: 0;
+          }
+          td { padding: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td style="width: 200px">A</td><td>B</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let table_width = table.bounds.width();
+  assert!(
+    (table_width - 300.0).abs() < 0.1,
+    "expected table width ~300px, got {table_width}"
+  );
+
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+  assert_eq!(cells.len(), 2, "expected two table cells");
+
+  let a = cells.get(&'A').expect("cell A");
+  let b = cells.get(&'B').expect("cell B");
+  let first = a.width();
+  let second = b.width();
+  assert!(
+    (first - 200.0).abs() < 0.1,
+    "expected first column width ~200px, got {first}"
+  );
+  assert!(
+    (second - 100.0).abs() < 0.1,
+    "expected second column width ~100px, got {second}"
+  );
+
+  let gap = b.x() - (a.x() + a.width());
+  assert!(
+    gap.abs() < 0.1,
+    "expected cells to be adjacent after width distribution (gap={gap})"
+  );
+}
+
+#[test]
+fn table_fixed_layout_first_row_cell_width_respects_table_width_collapsed_border_model_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            table-layout: fixed;
+            width: 300px;
+            border-collapse: collapse;
+            border: none;
+            padding: 0;
+            direction: rtl;
+          }
+          td { padding: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td style="width: 200px">A</td><td>B</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let table_width = table.bounds.width();
+  assert!(
+    (table_width - 300.0).abs() < 0.1,
+    "expected table width ~300px, got {table_width}"
+  );
+
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+  assert_eq!(cells.len(), 2, "expected two table cells");
+
+  let a = cells.get(&'A').expect("cell A");
+  let b = cells.get(&'B').expect("cell B");
+  assert!(
+    a.x() > b.x(),
+    "expected RTL order A (right) > B (left), got A.x={} B.x={}",
+    a.x(),
+    b.x()
+  );
+  assert!(
+    (a.width() - 200.0).abs() < 0.1,
+    "expected first row cell width to remain 200px in RTL (A width {})",
+    a.width()
+  );
+  assert!(
+    (b.width() - 100.0).abs() < 0.1,
+    "expected remaining column width to be 100px in RTL (B width {})",
+    b.width()
+  );
+
+  let gap = a.x() - (b.x() + b.width());
+  assert!(gap.abs() < 0.1, "expected cells to be adjacent (gap={gap})");
+}
