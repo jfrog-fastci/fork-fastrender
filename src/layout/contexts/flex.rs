@@ -63,7 +63,8 @@ use crate::layout::running_elements::clear_running_position_in_box_tree;
 use crate::layout::taffy_integration::{
   record_taffy_compute, record_taffy_invocation, record_taffy_measure_call,
   record_taffy_node_cache_hit, record_taffy_node_cache_miss, record_taffy_style_cache_hit,
-  record_taffy_style_cache_miss, taffy_flex_style_fingerprint, taffy_template_cache_limit,
+  record_taffy_style_cache_miss, taffy_counters_enabled, taffy_flex_style_fingerprint,
+  taffy_template_cache_limit,
   CachedTaffyTemplate, SendSyncStyle, TaffyAdapterKind, TaffyNodeCache, TaffyNodeCacheKey,
   TAFFY_ABORT_CHECK_STRIDE,
 };
@@ -676,10 +677,11 @@ impl FormattingContext for FlexFormattingContext {
     // Do not cache flex containers that contain running elements: running anchors are synthesized
     // based on in-flow position, so reusing cached fragments can capture the wrong snapshot.
     let toggles = crate::debug::runtime::runtime_toggles();
-    let taffy_counters_enabled = crate::layout::taffy_integration::taffy_counters_enabled();
-    let disable_global_layout_cache = taffy_counters_enabled
-      || toggles.truthy("FASTR_DISABLE_FLEX_CACHE")
-      || has_running_children;
+    // Avoid short-circuiting flex layout with higher-level fragment caches when collecting Taffy
+    // usage stats; we want to observe the underlying template reuse behavior.
+    let disable_global_layout_cache = toggles.truthy("FASTR_DISABLE_FLEX_CACHE")
+      || has_running_children
+      || taffy_counters_enabled();
     if !disable_global_layout_cache {
       if let Some(cached) = layout_cache_lookup(
         box_node,

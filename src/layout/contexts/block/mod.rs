@@ -739,6 +739,10 @@ impl BlockFormattingContext {
       && block_axis_is_horizontal(style.writing_mode)
       && available_block_border_box.is_finite()
     {
+      // When flowing in a vertical/sideways writing mode, the block axis maps to the physical
+      // x-axis. `width: auto` should therefore stretch to fill the available block size of the
+      // containing block (mirroring the auto-width behavior for block boxes in horizontal writing
+      // modes) instead of collapsing to the content size.
       specified_height = Some((available_block_border_box - vertical_edges).max(0.0));
     }
     let child_height_space = specified_height
@@ -1357,6 +1361,10 @@ impl BlockFormattingContext {
           .with_used_border_box_size(used_border_box_width, used_border_box_height);
 
           let mut fragment = fc.layout(child, &fc_constraints)?;
+          // Non-block formatting contexts (grid/flex/table) return fragments in physical
+          // coordinates. The block formatting context keeps fragments in logical coordinates
+          // until `convert_fragment_axes` runs at the end of `layout`, so convert the subtree
+          // back into logical space here to avoid double-applying the writing-mode transform.
           fragment = unconvert_fragment_axes_root(fragment);
           let desired_origin = child_border_origin;
           let offset = Point::new(
@@ -2185,7 +2193,6 @@ impl BlockFormattingContext {
     {
       return None;
     }
-
     let deadline = active_deadline();
     let stage = active_stage();
     let parallel_results = parent
@@ -2270,8 +2277,11 @@ impl BlockFormattingContext {
 
       let delta = box_y - fragment.bounds.y();
       Self::translate_fragment_tree(&mut fragment, Point::new(0.0, delta));
-      content_height = content_height.max(fragment.bounds.max_y());
-      current_y = box_y + fragment.bounds.height();
+
+      let block_extent = fragment.bounds.height();
+      let next_y = box_y + block_extent;
+      content_height = content_height.max(next_y);
+      current_y = next_y;
 
       if matches!(child.style.position, Position::Relative) {
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
@@ -2991,7 +3001,8 @@ impl BlockFormattingContext {
           float_base_y,
           paint_viewport,
         )?;
-        let next_y = box_y + fragment.bounds.height();
+        let block_extent = fragment.bounds.height();
+        let next_y = box_y + block_extent;
         Ok((fragment, next_y))
       };
 
@@ -3034,22 +3045,23 @@ impl BlockFormattingContext {
             let pending_margin = margin_ctx.consume_pending();
             *current_y += pending_margin;
             let box_y = *current_y;
-            let fragment = self.layout_block_child(
-              parent,
-              &child,
-              containing_width,
-              constraints,
-              box_y,
-              nearest_positioned_cb,
-              nearest_fixed_cb,
-              Some(&mut *float_ctx_ref),
-              float_base_y,
-              paint_viewport,
-            )?;
-            let next_y = box_y + fragment.bounds.height();
+           let fragment = self.layout_block_child(
+             parent,
+             &child,
+             containing_width,
+             constraints,
+             box_y,
+             nearest_positioned_cb,
+             nearest_fixed_cb,
+             Some(&mut *float_ctx_ref),
+             float_base_y,
+             paint_viewport,
+           )?;
+            let block_extent = fragment.bounds.height();
+            let next_y = box_y + block_extent;
             (fragment, next_y)
           };
-          *content_height = content_height.max(fragment.bounds.max_y());
+          *content_height = content_height.max(next_y);
           *current_y = next_y;
           let mut fragment = fragment;
           if child.style.position.is_relative() {
@@ -3932,7 +3944,7 @@ impl BlockFormattingContext {
                     );
         }
 
-        content_height = content_height.max(fragment.bounds.max_y());
+        content_height = content_height.max(next_y);
         current_y = next_y;
         let mut fragment = fragment;
         if child.style.position.is_relative() {
@@ -3960,9 +3972,9 @@ impl BlockFormattingContext {
             float_ctx,
             &mut deadline_counter,
           )?;
-          let (fragment, next_y) =
-            layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
-          content_height = content_height.max(fragment.bounds.max_y());
+           let (fragment, next_y) =
+             layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
+          content_height = content_height.max(next_y);
           current_y = next_y;
           let mut fragment = fragment;
           if child.style.position.is_relative() {
@@ -4176,7 +4188,6 @@ impl BlockFormattingContext {
     if children.is_empty() {
       return Ok((Vec::new(), 0.0, Vec::new(), 0.0));
     }
-
     let writing_mode = parent.style.writing_mode;
     let direction = parent.style.direction;
     let inline_is_horizontal = inline_axis_is_horizontal(writing_mode);
@@ -4188,7 +4199,8 @@ impl BlockFormattingContext {
       LayoutConstraints::new(AvailableSpace::Definite(column_width), available_block)
     } else {
       LayoutConstraints::new(available_block, AvailableSpace::Definite(column_width))
-    };
+    }
+    .with_inline_percentage_base(Some(column_width));
 
     if column_count <= 1 {
       let parent_clone = Self::clone_with_children(parent, children.to_vec());
@@ -5018,16 +5030,11 @@ impl BlockFormattingContext {
         let span_parent =
           Self::clone_with_children(parent, vec![parent.children[span_idx].clone()]);
         let span_constraints = if inline_is_horizontal {
-          LayoutConstraints::new(
-            AvailableSpace::Definite(available_inline),
-            constraints.available_height,
-          )
+          LayoutConstraints::new(AvailableSpace::Definite(available_inline), available_block)
         } else {
-          LayoutConstraints::new(
-            constraints.available_width,
-            AvailableSpace::Definite(available_inline),
-          )
-        };
+          LayoutConstraints::new(available_block, AvailableSpace::Definite(available_inline))
+        }
+        .with_inline_percentage_base(Some(available_inline));
         let (mut span_fragments, span_height, mut span_positioned) = self.layout_children(
           &span_parent,
           &span_constraints,
@@ -7125,13 +7132,13 @@ impl FormattingContext for BlockFormattingContext {
   }
 }
 
-fn convert_fragment_axes(
-  mut fragment: FragmentNode,
+fn convert_fragment_axes_in_place(
+  fragment: &mut FragmentNode,
   parent_inline_size: f32,
   parent_block_size: f32,
   parent_writing_mode: WritingMode,
   parent_direction: crate::style::types::Direction,
-) -> FragmentNode {
+) {
   // Fragment bounds are always expressed in the coordinate system of their parent fragment.
   // That coordinate system is determined by the parent's writing mode, not the child's.
   //
@@ -7244,22 +7251,35 @@ fn convert_fragment_axes(
 
   // Recurse into children using this fragment's writing mode (children are laid out in the
   // fragment's logical coordinate system).
-  let children = std::mem::take(&mut fragment.children);
-  let mapped_children: Vec<_> = children
-    .into_iter()
-    .map(|c| convert_fragment_axes(c, child_inline, child_block, style_wm, dir))
-    .collect();
-  fragment.children = mapped_children.into();
-  fragment
+  for child in fragment.children_mut() {
+    convert_fragment_axes_in_place(child, child_inline, child_block, style_wm, dir);
+  }
 }
 
-fn unconvert_fragment_axes(
+fn convert_fragment_axes(
   mut fragment: FragmentNode,
   parent_inline_size: f32,
   parent_block_size: f32,
   parent_writing_mode: WritingMode,
   parent_direction: crate::style::types::Direction,
 ) -> FragmentNode {
+  convert_fragment_axes_in_place(
+    &mut fragment,
+    parent_inline_size,
+    parent_block_size,
+    parent_writing_mode,
+    parent_direction,
+  );
+  fragment
+}
+
+fn unconvert_fragment_axes_in_place(
+  fragment: &mut FragmentNode,
+  parent_inline_size: f32,
+  parent_block_size: f32,
+  parent_writing_mode: WritingMode,
+  parent_direction: crate::style::types::Direction,
+) {
   // Inverse of `convert_fragment_axes`: map physical bounds back into the logical coordinate system
   // of the parent fragment.
   let parent_block_is_horizontal = block_axis_is_horizontal(parent_writing_mode);
@@ -7308,7 +7328,8 @@ fn unconvert_fragment_axes(
     parent_physical_width - phys_x - inline_size
   };
 
-  fragment.bounds = Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size);
+  fragment.bounds =
+    Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size);
   if let Some(logical) = fragment.logical_override {
     let phys_x = logical.x();
     let phys_y = logical.y();
@@ -7365,12 +7386,25 @@ fn unconvert_fragment_axes(
     style_wm,
     dir,
   );
-  let children = std::mem::take(&mut fragment.children);
-  let mapped_children: Vec<_> = children
-    .into_iter()
-    .map(|c| unconvert_fragment_axes(c, child_inline, child_block, style_wm, dir))
-    .collect();
-  fragment.children = mapped_children.into();
+  for child in fragment.children_mut() {
+    unconvert_fragment_axes_in_place(child, child_inline, child_block, style_wm, dir);
+  }
+}
+
+fn unconvert_fragment_axes(
+  mut fragment: FragmentNode,
+  parent_inline_size: f32,
+  parent_block_size: f32,
+  parent_writing_mode: WritingMode,
+  parent_direction: crate::style::types::Direction,
+) -> FragmentNode {
+  unconvert_fragment_axes_in_place(
+    &mut fragment,
+    parent_inline_size,
+    parent_block_size,
+    parent_writing_mode,
+    parent_direction,
+  );
   fragment
 }
 

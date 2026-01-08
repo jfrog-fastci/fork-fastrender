@@ -117,7 +117,7 @@ use unicode_vo::char_orientation;
 use unicode_vo::Orientation as VerticalOrientation;
 
 pub(crate) const DEFAULT_OBLIQUE_ANGLE_DEG: f32 = 14.0;
-const SHAPING_CACHE_CAPACITY: usize = 2048;
+const SHAPING_CACHE_CAPACITY: usize = 65536;
 const SHAPING_CACHE_HASH_COLLISION_BUCKET_LIMIT: usize = 8;
 const FONT_RESOLUTION_CACHE_SIZE: usize = 131072;
 const TEXT_FALLBACK_CACHE_CAPACITY_ENV: &str = "FASTR_TEXT_FALLBACK_CACHE_CAPACITY";

@@ -461,8 +461,17 @@ impl AbsoluteLayout {
           )
           .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
           .map(shrink),
-       },
+        },
       }
+    };
+
+    let available_for_shrink = |left: Option<f32>, right: Option<f32>| {
+      cb_width
+        - left.unwrap_or(0.0)
+        - right.unwrap_or(0.0)
+        - margin_left
+        - margin_right
+        - total_horizontal_spacing
     };
 
     // When `width` is an intrinsic sizing keyword like `fit-content`, its resolution may depend on
@@ -482,39 +491,42 @@ impl AbsoluteLayout {
       _ => (left, right),
     };
 
-    // Pre-resolve the width without applying overconstraint rules so we can detect when the
-    // authored values actually satisfy the constraint equation (CSS 2.1 §10.3.7).
-    let available_for_shrink_full = cb_width
-      - probe_left.unwrap_or(0.0)
-      - probe_right.unwrap_or(0.0)
-      - margin_left
-      - margin_right
-      - total_horizontal_spacing;
-    let specified_width_full = match width_value {
+    let specified_width_for_overconstraint = match width_value {
       WidthValue::Auto => None,
-      WidthValue::Length(len) => {
-        resolve_length_for_positioned_size(&len, inline_base, viewport, style, &self.font_context)
-          .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
+      WidthValue::Length(len) => resolve_length_for_positioned_size(
+        &len,
+        inline_base,
+        viewport,
+        style,
+        &self.font_context,
+      )
+      .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing)),
+      WidthValue::Keyword(keyword) => {
+        resolve_keyword(keyword, available_for_shrink(probe_left, probe_right))
       }
-      WidthValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink_full),
     };
 
-    let has_all_edges = left.is_some() && right.is_some() && specified_width_full.is_some();
-    let overconstrained = has_all_edges
+    // CSS 2.1 treats (left, width, right) all being non-auto as potentially overconstrained.
+    //
+    // For inline-level absolutely positioned boxes, follow the overconstraint path whenever a
+    // non-auto intrinsic keyword is present (e.g. `fit-content`), matching the "ignore trailing
+    // inset" behavior expected by the inline positioning tests.
+    let insets_and_width_specified = left.is_some()
+      && right.is_some()
+      && specified_width_for_overconstraint.is_some()
       && !margin_left_auto
-      && !margin_right_auto
-      && {
-        let total = left.unwrap_or(0.0)
-          + margin_left
-          + border_left
-          + padding_left
-          + specified_width_full.unwrap_or(0.0)
-          + padding_right
-          + border_right
-          + margin_right
-          + right.unwrap_or(0.0);
-        (total - cb_width).abs() > 0.5
-      };
+      && !margin_right_auto;
+    let overconstrained = if !insets_and_width_specified {
+      false
+    } else if matches!(width_value, WidthValue::Keyword(_)) && style.display.is_inline_level() {
+      true
+    } else {
+      let left = left.unwrap();
+      let right = right.unwrap();
+      let width = specified_width_for_overconstraint.unwrap();
+      let total = left + right + margin_left + margin_right + total_horizontal_spacing + width;
+      (total - cb_width).abs() > 0.01
+    };
 
     let (resolved_left, resolved_right) = if overconstrained {
       match style.direction {
@@ -525,23 +537,19 @@ impl AbsoluteLayout {
       (left, right)
     };
 
-    let available_for_shrink = cb_width
-      - resolved_left.unwrap_or(0.0)
-      - resolved_right.unwrap_or(0.0)
-      - margin_left
-      - margin_right
-      - total_horizontal_spacing;
+    let available_for_shrink = available_for_shrink(resolved_left, resolved_right);
 
     let specified_width = match width_value {
       WidthValue::Auto => None,
-      WidthValue::Length(_) => specified_width_full,
-      WidthValue::Keyword(keyword) => {
-        if overconstrained {
-          resolve_keyword(keyword, available_for_shrink)
-        } else {
-          specified_width_full
-        }
-      }
+      WidthValue::Length(len) => resolve_length_for_positioned_size(
+        &len,
+        inline_base,
+        viewport,
+        style,
+        &self.font_context,
+      )
+      .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing)),
+      WidthValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink),
     };
 
     let min_width = style
@@ -2319,6 +2327,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
 ) -> PositionedStyle {
   let mut resolved = PositionedStyle::default();
   resolved.position = style.position;
+  resolved.display = style.display;
   #[derive(Clone, Copy)]
   enum InsetEdge {
     Top,

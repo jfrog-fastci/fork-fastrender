@@ -243,6 +243,7 @@ struct FloatSweepState {
   active: Vec<bool>,
   active_left: BinaryHeap<(FloatKey, usize)>,
   active_right: BinaryHeap<(Reverse<FloatKey>, usize)>,
+  active_end: BinaryHeap<(Reverse<FloatKey>, usize)>,
   active_shape_left: Vec<usize>,
   active_shape_right: Vec<usize>,
 }
@@ -263,6 +264,7 @@ impl FloatSweepState {
       active: vec![false; float_count],
       active_left: BinaryHeap::new(),
       active_right: BinaryHeap::new(),
+      active_end: BinaryHeap::new(),
       active_shape_left: Vec::new(),
       active_shape_right: Vec::new(),
     }
@@ -550,6 +552,9 @@ impl FloatContext {
     match event.kind {
       FloatEventKind::Start => {
         state.active[event.float_id] = true;
+        state
+          .active_end
+          .push((Reverse(FloatKey(float.bottom())), event.float_id));
         match float.side {
           FloatSide::Left => {
             if float.shape.is_some() {
@@ -603,6 +608,12 @@ impl FloatContext {
         break;
       }
       state.active_right.pop();
+    }
+    while let Some(&(Reverse(_), id)) = state.active_end.peek() {
+      if state.active[id] {
+        break;
+      }
+      state.active_end.pop();
     }
   }
 
@@ -1078,20 +1089,18 @@ impl FloatContext {
     (left_edge, (right_edge - left_edge).max(0.0))
   }
 
-  /// Returns the next Y coordinate after `y` where float-induced available
-  /// width might change.
+  /// Returns the next Y coordinate after `y` where float-induced available width might change for
+  /// line boxes starting at `y`.
   ///
-  /// This is the minimum of the next float entering/leaving the sweep or the
-  /// next `shape-outside` span change for active shapes.
+  /// This advances to the next float *event* (start/end) or `shape-outside` boundary for floats
+  /// already present in the context. Note that floats encountered earlier in source order can still
+  /// be positioned below `y`, so callers must consider upcoming float start boundaries as well as
+  /// ends.
   pub fn next_float_boundary_after(&self, y: f32) -> f32 {
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
     let next = self.next_float_boundary_after_internal(&*state, y);
-    if next.is_finite() && next > y {
-      next
-    } else {
-      y
-    }
+    if next.is_finite() && next > y { next } else { y }
   }
 
   /// Compute the clearance needed for an element with the given clear value

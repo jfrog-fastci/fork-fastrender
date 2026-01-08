@@ -354,7 +354,20 @@ fn shared_system_fontdb() -> Arc<FontDbDatabase> {
   Arc::clone(SYSTEM_FONT_DB.get_or_init(|| {
     let mut db = FontDbDatabase::new();
     db.load_system_fonts();
-    Arc::new(db)
+    // `FontDatabase::with_config` configures generic-family fallbacks (serif/sans-serif/etc)
+    // after loading system fonts. When many `FontContext` instances are created (as happens in
+    // the layout test suite), re-scanning + reconfiguring system fonts becomes prohibitively
+    // expensive. We therefore load and configure system font metadata once and share it across
+    // instances.
+    let mut wrapper = FontDatabase {
+      db: Arc::new(db),
+      cache: RwLock::new(HashMap::new()),
+      math_fonts: RwLock::new(None),
+      emoji_fonts: RwLock::new(None),
+      glyph_coverage: GlyphCoverageCache::new(GLYPH_COVERAGE_CACHE_SIZE),
+    };
+    wrapper.set_generic_fallbacks();
+    wrapper.db
   }))
 }
 
@@ -1294,6 +1307,9 @@ impl FontDatabase {
   pub fn with_config(config: &FontConfig) -> Self {
     if !config.use_system_fonts && config.font_dirs.is_empty() {
       return Self::shared_bundled();
+    }
+    if config.use_system_fonts && !config.use_bundled_fonts && config.font_dirs.is_empty() {
+      return Self::shared_system();
     }
 
     let mut this = Self {

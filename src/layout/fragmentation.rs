@@ -2596,8 +2596,8 @@ fn collect_forced_boundaries_with_axes_internal(
             let child_style = child
               .style
               .as_ref()
-              .map(|s| s.as_ref())
-              .unwrap_or(default_style);
+             .map(|s| s.as_ref())
+             .unwrap_or(default_style);
             let placement = &grid_items.items[idx];
             let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 

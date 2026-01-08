@@ -60,8 +60,9 @@ use crate::layout::taffy_integration::{
   record_taffy_compute, record_taffy_invocation, record_taffy_measure_call,
   record_taffy_node_cache_hit, record_taffy_node_cache_miss, record_taffy_style_cache_hit,
   record_taffy_style_cache_miss, taffy_grid_container_style_fingerprint,
-  taffy_grid_item_style_fingerprint, taffy_template_cache_limit, CachedTaffyTemplate,
-  SendSyncStyle, TaffyAdapterKind, TaffyNodeCache, TaffyNodeCacheKey, TAFFY_ABORT_CHECK_STRIDE,
+  taffy_counters_enabled, taffy_grid_item_style_fingerprint, taffy_template_cache_limit,
+  CachedTaffyTemplate, SendSyncStyle, TaffyAdapterKind, TaffyNodeCache, TaffyNodeCacheKey,
+  TAFFY_ABORT_CHECK_STRIDE,
 };
 use crate::layout::utils::border_size_from_box_sizing;
 use crate::layout::utils::clamp_with_order;
@@ -207,7 +208,7 @@ impl GridAxisStyle {
   }
 
   fn inline_positive(self) -> bool {
-    self.direction != Direction::Rtl
+    crate::style::inline_axis_positive(self.writing_mode, self.direction)
   }
 
   fn block_positive(self) -> bool {
@@ -2642,9 +2643,17 @@ impl GridFormattingContext {
       }
 
       // Subgrid flags + extra line names.
+      taffy_style.subgrid_columns = if swap_grid_axes {
+        css_row_subgrid
+      } else {
+        css_column_subgrid
+      };
+      taffy_style.subgrid_rows = if swap_grid_axes {
+        css_column_subgrid
+      } else {
+        css_row_subgrid
+      };
       if swap_grid_axes {
-        taffy_style.subgrid_columns = css_row_subgrid;
-        taffy_style.subgrid_rows = css_column_subgrid;
         if css_row_subgrid && !style.subgrid_row_line_names.is_empty() {
           taffy_style.subgrid_column_names = style.subgrid_row_line_names.clone();
         }
@@ -2652,8 +2661,6 @@ impl GridFormattingContext {
           taffy_style.subgrid_row_names = style.subgrid_column_line_names.clone();
         }
       } else {
-        taffy_style.subgrid_columns = css_column_subgrid;
-        taffy_style.subgrid_rows = css_row_subgrid;
         if css_column_subgrid && !style.subgrid_column_line_names.is_empty() {
           taffy_style.subgrid_column_names = style.subgrid_column_line_names.clone();
         }
@@ -2754,16 +2761,18 @@ impl GridFormattingContext {
       }
 
       // Gap
-      taffy_style.gap = if swap_grid_axes {
-        taffy::geometry::Size {
-          width: self.convert_length_to_lp(&style.grid_row_gap, style),
-          height: self.convert_length_to_lp(&style.grid_column_gap, style),
-        }
-      } else {
-        taffy::geometry::Size {
-          width: self.convert_length_to_lp(&style.grid_column_gap, style),
-          height: self.convert_length_to_lp(&style.grid_row_gap, style),
-        }
+      taffy_style.gap = taffy::geometry::Size {
+        // Column gap follows the inline axis; row gap follows the block axis.
+        width: if inline_is_horizontal_container {
+          self.convert_length_to_lp(&style.grid_column_gap, style)
+        } else {
+          self.convert_length_to_lp(&style.grid_row_gap, style)
+        },
+        height: if inline_is_horizontal_container {
+          self.convert_length_to_lp(&style.grid_row_gap, style)
+        } else {
+          self.convert_length_to_lp(&style.grid_column_gap, style)
+        },
       };
       taffy_style.subgrid_gap = taffy::geometry::Size {
         width: if inline_is_horizontal_container {
@@ -3034,6 +3043,8 @@ impl GridFormattingContext {
       taffy_style.grid_column = css_grid_column;
       taffy_style.grid_row = css_grid_row;
     } else {
+      // Inline axis is vertical in the containing grid; swap row/column placement into Taffy's
+      // physical axes.
       taffy_style.grid_column = css_grid_row;
       taffy_style.grid_row = css_grid_column;
     }
@@ -7919,10 +7930,12 @@ impl FormattingContext for GridFormattingContext {
     )?;
 
     let style_override = style_override_for(box_node.id);
+    // Avoid short-circuiting grid layout with higher-level fragment caches when collecting Taffy
+    // usage stats; we want to observe the underlying template reuse behavior.
     // Do not cache grid containers that contain running elements: running anchors are synthesized
     // based on in-flow position, so reusing cached fragments can capture the wrong snapshot.
-    let taffy_counters_enabled = crate::layout::taffy_integration::taffy_counters_enabled();
-    if !has_running_children && !taffy_counters_enabled {
+    let disable_global_layout_cache = has_running_children || taffy_counters_enabled();
+    if !disable_global_layout_cache {
       if let Some(cached) = layout_cache_lookup(
         box_node,
         FormattingContextType::Grid,
@@ -9406,7 +9419,7 @@ impl FormattingContext for GridFormattingContext {
       }
     }
 
-    if !has_running_children {
+    if !disable_global_layout_cache {
       layout_cache_store(
         box_node,
         FormattingContextType::Grid,

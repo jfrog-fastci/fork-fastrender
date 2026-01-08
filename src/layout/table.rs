@@ -95,6 +95,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use rustc_hash::FxHasher;
 
+const TABLE_PARALLEL_MAX_THREADS: usize = 8;
+
 fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
   if let Err(RenderError::Timeout { elapsed, .. }) =
     check_active_periodic(counter, 64, RenderStage::Layout)
@@ -5059,7 +5061,7 @@ impl TableFormattingContext {
     let max_threads = self
       .parallelism
       .max_threads
-      .unwrap_or_else(default_layout_thread_budget)
+      .unwrap_or_else(|| default_layout_thread_budget().min(TABLE_PARALLEL_MAX_THREADS))
       .max(1);
     let measure_cells_in_parallel = self.parallelism.should_parallelize(structure.cells.len())
       || (structure.cells.len() > 256 && max_threads > 1);
@@ -6840,7 +6842,10 @@ impl FormattingContext for TableFormattingContext {
             );
           }
           let height = fragment.bounds.height();
-          let baseline = cell_baseline(&fragment);
+          let baseline = effective_vertical_align
+            .is_baseline_relative()
+            .then(|| cell_baseline(&fragment))
+            .flatten();
           CellOutcome::Success(LaidOutCell {
             cell: cell.clone(),
             fragment,
@@ -6856,7 +6861,7 @@ impl FormattingContext for TableFormattingContext {
     let max_threads = self
       .parallelism
       .max_threads
-      .unwrap_or_else(default_layout_thread_budget)
+      .unwrap_or_else(|| default_layout_thread_budget().min(TABLE_PARALLEL_MAX_THREADS))
       .max(1);
     let should_parallelize_cells = !dump
       && (self.parallelism.should_parallelize(structure.cells.len())
