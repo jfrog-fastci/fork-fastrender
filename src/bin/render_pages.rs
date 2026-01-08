@@ -9,20 +9,22 @@ mod common;
 use clap::{ArgAction, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use common::args::{
   cpu_budget, default_jobs, parse_bool_preference, parse_color_scheme, parse_contrast, parse_shard,
-  parse_viewport, CompatArgs, DiskCacheArgs, LayoutParallelArgs, MemoryGuardArgs, ResourceAccessArgs,
+  parse_viewport, CompatArgs, DiskCacheArgs, DiskCacheStalePolicyArg, LayoutParallelArgs,
+  MemoryGuardArgs, ResourceAccessArgs,
 };
 use common::render_pipeline::{
   append_timeout_stderr_note, apply_test_render_delay, apply_worker_common_args,
   build_http_fetcher, build_render_configs, compute_soft_timeout_ms, configure_worker_stdio,
   decode_html_resource, follow_client_redirects_resource, format_error_with_chain,
-  format_exit_status, log_diagnostics, read_cached_document, render_fetched_document_with_artifacts,
-  summarize_exit_status, ExitStatusSummary, RenderConfigBundle, RenderSurface, WorkerCommonArgs,
-  CLI_RENDER_STACK_SIZE,
+  format_exit_status, log_diagnostics, read_cached_document,
+  render_fetched_document_with_artifacts, summarize_exit_status, ExitStatusSummary,
+  RenderConfigBundle, RenderSurface, WorkerCommonArgs, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::debug::snapshot::QuirksModeSnapshot;
 use fastrender::dom::{DomNode, DomNodeType};
+use fastrender::error::ResourceError;
 use fastrender::image_output::encode_image;
 use fastrender::pageset::{pageset_stem, PagesetFilter, CACHE_HTML_DIR};
 use fastrender::paint::display_list::DisplayItem;
@@ -32,6 +34,9 @@ use fastrender::resource::CachingFetcher;
 use fastrender::resource::CachingFetcherConfig;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
+use fastrender::resource::FetchRequest;
+use fastrender::resource::FetchedResource;
+use fastrender::resource::HttpFetcher;
 use fastrender::resource::ResourceFetcher;
 use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
 use fastrender::resource::DEFAULT_USER_AGENT;
@@ -98,8 +103,18 @@ fn apply_mem_limit(args: &MemoryGuardArgs) -> io::Result<()> {
     Ok(fastrender::process_limits::AddressSpaceLimitStatus::Disabled) => Ok(()),
     Err(err) => Err(io::Error::new(
       io::ErrorKind::Other,
-      format!("failed to apply --mem-limit-mb {}: {err}", args.mem_limit_mb),
+      format!(
+        "failed to apply --mem-limit-mb {}: {err}",
+        args.mem_limit_mb
+      ),
     )),
+  }
+}
+
+fn enforce_offline_requires_disk_cache(args: &Args) {
+  if args.offline && !cfg!(feature = "disk_cache") {
+    eprintln!("error: --offline requires building with --features disk_cache");
+    std::process::exit(2);
   }
 }
 
@@ -220,6 +235,16 @@ struct Args {
 
   #[command(flatten)]
   disk_cache: DiskCacheArgs,
+
+  /// Disable all network fetches (disk-cache only).
+  ///
+  /// Note: requires building with `--features disk_cache`.
+  #[arg(long)]
+  offline: bool,
+
+  /// How to handle stale disk-cache entries under cooperative render timeouts.
+  #[arg(long, value_enum, default_value_t = DiskCacheStalePolicyArg::UseStaleWhenDeadline)]
+  disk_cache_stale_policy: DiskCacheStalePolicyArg,
 
   /// Override disk cache directory (defaults to fetches/assets)
   ///
@@ -390,6 +415,7 @@ fn main() {
 
 fn run(args: Args) -> io::Result<()> {
   apply_mem_limit(&args.memory)?;
+  enforce_offline_requires_disk_cache(&args);
   if args.jobs == 0 {
     eprintln!("jobs must be > 0");
     std::process::exit(2);
@@ -478,9 +504,16 @@ fn run(args: Args) -> io::Result<()> {
       args.disk_cache.max_bytes,
       max_age
     );
+    println!(
+      "Disk cache stale policy: {}",
+      args.disk_cache_stale_policy.as_str()
+    );
   }
   if let Some((index, total)) = args.shard {
     println!("Shard: {}/{}", index, total);
+  }
+  if args.offline {
+    println!("Mode: offline (disk-cache only)");
   }
   if args.in_process {
     println!("Mode: in-process (no worker isolation)");
@@ -691,6 +724,126 @@ fn collect_entries(args: &Args, page_filter: Option<PagesetFilter>) -> Vec<Cache
   entries
 }
 
+#[derive(Clone)]
+struct NoNetworkFetcher {
+  inner: HttpFetcher,
+}
+
+impl NoNetworkFetcher {
+  fn new(inner: HttpFetcher) -> Self {
+    Self { inner }
+  }
+
+  fn url_is_http_like(url: &str) -> bool {
+    let trimmed = url.trim_start();
+    trimmed
+      .get(..8)
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+      || trimmed
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+  }
+
+  fn offline_error(url: &str) -> fastrender::Error {
+    fastrender::Error::Resource(
+      ResourceError::new(url.to_string(), "offline mode: network disabled")
+        .with_final_url(url.to_string()),
+    )
+  }
+}
+
+impl ResourceFetcher for NoNetworkFetcher {
+  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+    if Self::url_is_http_like(url) {
+      return Err(Self::offline_error(url));
+    }
+    self.inner.fetch(url)
+  }
+
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+    if Self::url_is_http_like(req.url) {
+      return Err(Self::offline_error(req.url));
+    }
+    self.inner.fetch_with_request(req)
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    self.inner.request_header_value(req, header_name)
+  }
+
+  fn fetch_with_request_and_validation(
+    &self,
+    req: FetchRequest<'_>,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+  ) -> fastrender::Result<FetchedResource> {
+    if Self::url_is_http_like(req.url) {
+      return Err(Self::offline_error(req.url));
+    }
+    self
+      .inner
+      .fetch_with_request_and_validation(req, etag, last_modified)
+  }
+}
+
+#[derive(Clone)]
+enum BaseFetcher {
+  Network(HttpFetcher),
+  Offline(NoNetworkFetcher),
+}
+
+impl ResourceFetcher for BaseFetcher {
+  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+    match self {
+      BaseFetcher::Network(fetcher) => fetcher.fetch(url),
+      BaseFetcher::Offline(fetcher) => fetcher.fetch(url),
+    }
+  }
+
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+    match self {
+      BaseFetcher::Network(fetcher) => fetcher.fetch_with_request(req),
+      BaseFetcher::Offline(fetcher) => fetcher.fetch_with_request(req),
+    }
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    match self {
+      BaseFetcher::Network(fetcher) => fetcher.request_header_value(req, header_name),
+      BaseFetcher::Offline(fetcher) => fetcher.request_header_value(req, header_name),
+    }
+  }
+
+  fn fetch_with_request_and_validation(
+    &self,
+    req: FetchRequest<'_>,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+  ) -> fastrender::Result<FetchedResource> {
+    match self {
+      BaseFetcher::Network(fetcher) => {
+        fetcher.fetch_with_request_and_validation(req, etag, last_modified)
+      }
+      BaseFetcher::Offline(fetcher) => {
+        fetcher.fetch_with_request_and_validation(req, etag, last_modified)
+      }
+    }
+  }
+}
+
+fn build_base_fetcher(args: &Args, fetch_timeout_secs: Option<u64>) -> BaseFetcher {
+  let http = build_http_fetcher(
+    &args.user_agent,
+    &args.accept_language,
+    fetch_timeout_secs.map(Duration::from_secs),
+  );
+  if args.offline {
+    BaseFetcher::Offline(NoNetworkFetcher::new(http))
+  } else {
+    BaseFetcher::Network(http)
+  }
+}
+
 fn build_render_shared(
   args: &Args,
   pool_size: usize,
@@ -699,16 +852,16 @@ fn build_render_shared(
   soft_timeout_ms: Option<u64>,
 ) -> io::Result<RenderShared> {
   // Create shared caching fetcher
-  let http = build_http_fetcher(
-    &args.user_agent,
-    &args.accept_language,
-    fetch_timeout_secs.map(Duration::from_secs),
-  );
+  let http = build_base_fetcher(args, fetch_timeout_secs);
   let honor_http_freshness = cfg!(feature = "disk_cache") && !args.no_http_freshness;
-  let memory_config = CachingFetcherConfig {
+  let mut memory_config = CachingFetcherConfig {
     honor_http_cache_freshness: honor_http_freshness,
     ..CachingFetcherConfig::default()
   };
+  #[cfg(feature = "disk_cache")]
+  {
+    memory_config.stale_policy = args.disk_cache_stale_policy.as_cache_stale_policy();
+  }
   #[cfg(feature = "disk_cache")]
   let mut disk_config = args.disk_cache.to_config();
   #[cfg(feature = "disk_cache")]
@@ -857,9 +1010,7 @@ fn render_entry(shared: &RenderShared, entry: &CachedEntry) -> PageResult {
       format!("simulated crash for {}", entry.stem),
     );
   }
-  let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-    render_entry_inner(shared, entry)
-  }));
+  let result = std::panic::catch_unwind(AssertUnwindSafe(|| render_entry_inner(shared, entry)));
   match result {
     Ok(res) => res,
     Err(panic) => render_panic_result(shared, entry, started, panic_to_string(panic)),
@@ -1147,13 +1298,13 @@ fn run_in_process(
   Ok(results)
 }
 
-fn spawn_worker(
+fn build_worker_command(
   exe: &Path,
   args: &Args,
   entry: &CachedEntry,
   soft_timeout_ms: Option<u64>,
   rayon_threads_per_worker: usize,
-) -> io::Result<Child> {
+) -> io::Result<Command> {
   let mut cmd = Command::new(exe);
   cmd
     .arg("worker")
@@ -1195,6 +1346,12 @@ fn spawn_worker(
     .arg(args.disk_cache.allow_no_store.to_string())
     .arg("--disk-cache-writeback-under-deadline")
     .arg(args.disk_cache.writeback_under_deadline.to_string());
+  cmd
+    .arg("--disk-cache-stale-policy")
+    .arg(args.disk_cache_stale_policy.as_str());
+  if args.offline {
+    cmd.arg("--offline");
+  }
   if args.diagnostics_json {
     cmd.arg("--diagnostics-json");
   }
@@ -1216,7 +1373,17 @@ fn spawn_worker(
   maybe_set_worker_rayon_threads(&mut cmd, rayon_threads_per_worker);
   configure_worker_stdio(&mut cmd, &stderr_path_for(&args.out_dir, &entry.stem))?;
 
-  cmd.spawn()
+  Ok(cmd)
+}
+
+fn spawn_worker(
+  exe: &Path,
+  args: &Args,
+  entry: &CachedEntry,
+  soft_timeout_ms: Option<u64>,
+  rayon_threads_per_worker: usize,
+) -> io::Result<Child> {
+  build_worker_command(exe, args, entry, soft_timeout_ms, rayon_threads_per_worker)?.spawn()
 }
 
 fn read_worker_result(out_dir: &Path, stem: &str) -> Option<PageResult> {
@@ -1444,6 +1611,7 @@ fn run_workers(
 fn worker_main(worker_args: WorkerArgs) -> io::Result<()> {
   let args = worker_args.args;
   apply_mem_limit(&args.memory)?;
+  enforce_offline_requires_disk_cache(&args);
   let entry = CachedEntry {
     path: worker_args.cache_path,
     stem: worker_args.stem,
@@ -1954,10 +2122,14 @@ fn truncate_text(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
   use super::{
-    default_rayon_threads_per_worker, maybe_set_worker_rayon_threads, pageset_stem,
-    WORKER_RAYON_THREADS_ENV,
+    build_base_fetcher, build_worker_command, default_rayon_threads_per_worker,
+    maybe_set_worker_rayon_threads, pageset_stem, BaseFetcher, CachedEntry, Cli,
+    DiskCacheStalePolicyArg, WORKER_RAYON_THREADS_ENV,
   };
+  use clap::Parser;
+  use fastrender::resource::ResourceFetcher as _;
   use std::ffi::OsStr;
+  use std::path::Path;
   use std::process::Command;
 
   static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -2060,5 +2232,65 @@ mod tests {
       Some(value) => std::env::set_var(WORKER_RAYON_THREADS_ENV, value),
       None => std::env::remove_var(WORKER_RAYON_THREADS_ENV),
     }
+  }
+
+  #[test]
+  fn disk_cache_stale_policy_parses_and_is_forwarded_to_worker_args() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let out_dir = dir.path().join("out");
+    let cache_dir = dir.path().join("cache");
+    let cli = Cli::try_parse_from([
+      "render_pages",
+      "--out-dir",
+      out_dir.to_str().unwrap(),
+      "--cache-dir",
+      cache_dir.to_str().unwrap(),
+      "--disk-cache-stale-policy",
+      "use-stale-when-deadline",
+    ])
+    .expect("parse args");
+    assert_eq!(
+      cli.args.disk_cache_stale_policy,
+      DiskCacheStalePolicyArg::UseStaleWhenDeadline
+    );
+
+    let entry = CachedEntry {
+      path: dir.path().join("page.html"),
+      stem: "page".to_string(),
+      cache_stem: "page".to_string(),
+    };
+
+    let cmd = build_worker_command(Path::new("render_pages"), &cli.args, &entry, None, 1)
+      .expect("build worker command");
+    let cmd_args: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect();
+    let pos = cmd_args
+      .iter()
+      .position(|arg| arg == "--disk-cache-stale-policy")
+      .expect("worker command should forward --disk-cache-stale-policy");
+    assert_eq!(
+      cmd_args.get(pos + 1).map(String::as_str),
+      Some("use-stale-when-deadline")
+    );
+  }
+
+  #[test]
+  fn offline_base_fetcher_builder_selects_no_network_fetcher() {
+    let cli = Cli::try_parse_from(["render_pages", "--offline"]).expect("parse args");
+    let fetcher = build_base_fetcher(&cli.args, None);
+    assert!(
+      matches!(fetcher, BaseFetcher::Offline(_)),
+      "expected offline base fetcher when --offline is set"
+    );
+
+    let err = fetcher
+      .fetch("https://example.com/asset.png")
+      .expect_err("offline fetcher should reject network URLs");
+    assert!(
+      err.to_string().contains("offline mode"),
+      "offline error should mention offline mode: {err}"
+    );
   }
 }

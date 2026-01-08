@@ -4,6 +4,7 @@ use fastrender::dom::DomCompatibilityMode;
 use fastrender::image_output::OutputFormat;
 use fastrender::layout::engine::LayoutParallelism;
 use fastrender::layout::engine::DEFAULT_LAYOUT_MIN_FANOUT;
+use fastrender::resource::CacheStalePolicy;
 use fastrender::style::media::MediaType;
 use std::time::Duration;
 
@@ -329,6 +330,33 @@ pub struct ResourceAccessArgs {
   /// Allow additional origins when blocking cross-origin subresources (repeatable).
   #[arg(long, value_name = "ORIGIN")]
   pub allow_subresource_origin: Vec<String>,
+}
+
+/// Policy controlling how stale disk-cache entries are handled under render deadlines.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum DiskCacheStalePolicyArg {
+  /// Revalidate stale entries when possible, falling back to cached bytes only after network
+  /// failure.
+  Revalidate,
+  /// When a cooperative render timeout is active, serve stale cached bytes immediately instead of
+  /// revalidating.
+  UseStaleWhenDeadline,
+}
+
+impl DiskCacheStalePolicyArg {
+  pub fn as_cache_stale_policy(self) -> CacheStalePolicy {
+    match self {
+      DiskCacheStalePolicyArg::Revalidate => CacheStalePolicy::Revalidate,
+      DiskCacheStalePolicyArg::UseStaleWhenDeadline => CacheStalePolicy::UseStaleWhenDeadline,
+    }
+  }
+
+  pub fn as_str(self) -> &'static str {
+    match self {
+      DiskCacheStalePolicyArg::Revalidate => "revalidate",
+      DiskCacheStalePolicyArg::UseStaleWhenDeadline => "use-stale-when-deadline",
+    }
+  }
 }
 
 #[derive(Debug, Clone, Args)]
