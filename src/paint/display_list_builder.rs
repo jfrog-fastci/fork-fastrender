@@ -690,6 +690,7 @@ impl DisplayListBuilder {
         || !ty.is_finite()
         || !tw.is_finite()
         || tw.abs() < Transform3D::MIN_PROJECTIVE_W
+        || tw < 0.0
       {
         return None;
       }

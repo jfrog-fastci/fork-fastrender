@@ -1,7 +1,9 @@
+use fastrender::css::types::Transform;
 use fastrender::geometry::{Point, Rect};
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::scroll::ScrollState;
+use fastrender::style::values::Length;
 use fastrender::style::position::Position;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
@@ -65,6 +67,92 @@ fn base_scene_with_fixed_root() -> FragmentNode {
 fn scene_with_fixed_containing_block() -> FragmentNode {
   let mut container_style = ComputedStyle::default();
   container_style.containment.layout = true;
+  let container_style = Arc::new(container_style);
+
+  let mut green_style = ComputedStyle::default();
+  green_style.background_color = Rgba::GREEN;
+  let green_style = Arc::new(green_style);
+
+  let mut blue_style = ComputedStyle::default();
+  blue_style.background_color = Rgba::BLUE;
+  let blue_style = Arc::new(blue_style);
+
+  let mut red_fixed_style = ComputedStyle::default();
+  red_fixed_style.background_color = Rgba::RED;
+  red_fixed_style.position = Position::Fixed;
+  let red_fixed_style = Arc::new(red_fixed_style);
+
+  let stripe_a = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 8.0, 2.0),
+    vec![],
+    green_style,
+  );
+  let stripe_b = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 2.0, 8.0, 2.0),
+    vec![],
+    blue_style,
+  );
+  let fixed = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
+    vec![],
+    red_fixed_style,
+  );
+
+  let container = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
+    vec![stripe_a, stripe_b, fixed],
+    container_style,
+  );
+
+  FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 8.0, 8.0), vec![container])
+}
+
+fn scene_with_transformed_fixed_containing_block() -> FragmentNode {
+  let mut container_style = ComputedStyle::default();
+  container_style.transform = vec![Transform::TranslateX(Length::px(0.0))];
+  let container_style = Arc::new(container_style);
+
+  let mut green_style = ComputedStyle::default();
+  green_style.background_color = Rgba::GREEN;
+  let green_style = Arc::new(green_style);
+
+  let mut blue_style = ComputedStyle::default();
+  blue_style.background_color = Rgba::BLUE;
+  let blue_style = Arc::new(blue_style);
+
+  let mut red_fixed_style = ComputedStyle::default();
+  red_fixed_style.background_color = Rgba::RED;
+  red_fixed_style.position = Position::Fixed;
+  let red_fixed_style = Arc::new(red_fixed_style);
+
+  let stripe_a = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 8.0, 2.0),
+    vec![],
+    green_style,
+  );
+  let stripe_b = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 2.0, 8.0, 2.0),
+    vec![],
+    blue_style,
+  );
+  let fixed = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
+    vec![],
+    red_fixed_style,
+  );
+
+  let container = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
+    vec![stripe_a, stripe_b, fixed],
+    container_style,
+  );
+
+  FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 8.0, 8.0), vec![container])
+}
+
+fn scene_with_perspective_fixed_containing_block() -> FragmentNode {
+  let mut container_style = ComputedStyle::default();
+  container_style.perspective = Some(Length::px(100.0));
   let container_style = Arc::new(container_style);
 
   let mut green_style = ComputedStyle::default();
@@ -176,6 +264,26 @@ fn fixed_position_inside_fixed_containing_block_is_translated_by_viewport_scroll
   let pixmap = render(&root, Point::new(0.0, 2.0));
 
   // The container establishes the fixed containing block, so the fixed element scrolls away.
+  assert_eq!(pixel(&pixmap, 1, 0), (0, 0, 255, 255));
+  assert_eq!(pixel(&pixmap, 1, 1), (0, 0, 255, 255));
+}
+
+#[test]
+fn fixed_position_inside_transformed_containing_block_is_translated_by_viewport_scroll() {
+  let root = scene_with_transformed_fixed_containing_block();
+  let pixmap = render(&root, Point::new(0.0, 2.0));
+
+  // A non-none transform establishes the fixed containing block, so the fixed element scrolls away.
+  assert_eq!(pixel(&pixmap, 1, 0), (0, 0, 255, 255));
+  assert_eq!(pixel(&pixmap, 1, 1), (0, 0, 255, 255));
+}
+
+#[test]
+fn fixed_position_inside_perspective_containing_block_is_translated_by_viewport_scroll() {
+  let root = scene_with_perspective_fixed_containing_block();
+  let pixmap = render(&root, Point::new(0.0, 2.0));
+
+  // A perspective value establishes the fixed containing block, so the fixed element scrolls away.
   assert_eq!(pixel(&pixmap, 1, 0), (0, 0, 255, 255));
   assert_eq!(pixel(&pixmap, 1, 1), (0, 0, 255, 255));
 }

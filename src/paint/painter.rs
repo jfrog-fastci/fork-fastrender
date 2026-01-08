@@ -3236,14 +3236,15 @@ impl Painter {
         let mut dest_quad_device = src_quad;
         let mut projected = true;
         let layer_bounds_css = Rect::from_xywh(0.0, 0.0, bounds.width(), bounds.height());
-        for (idx, corner) in rect_corners(layer_bounds_css).iter().enumerate() {
-          let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
-          if !tx.is_finite() || !ty.is_finite() || tw.abs() < 1e-6 || !tw.is_finite() {
-            projected = false;
-            break;
+          for (idx, corner) in rect_corners(layer_bounds_css).iter().enumerate() {
+            let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
+            if !tx.is_finite() || !ty.is_finite() || !tw.is_finite() || tw.abs() < 1e-6 || tw < 0.0
+            {
+              projected = false;
+              break;
+            }
+            dest_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
           }
-          dest_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
-        }
         if !projected {
           dest_quad_device = src_quad;
         }
@@ -3262,14 +3263,15 @@ impl Painter {
           );
           let mut backdrop_quad_device = [Point::ZERO; 4];
           let mut projected = true;
-          for (idx, corner) in rect_corners(root_local).iter().enumerate() {
-            let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
-            if !tx.is_finite() || !ty.is_finite() || tw.abs() < 1e-6 || !tw.is_finite() {
+           for (idx, corner) in rect_corners(root_local).iter().enumerate() {
+             let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
+            if !tx.is_finite() || !ty.is_finite() || !tw.is_finite() || tw.abs() < 1e-6 || tw < 0.0
+            {
               projected = false;
               break;
             }
-            backdrop_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
-          }
+             backdrop_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
+           }
           let backdrop_bounds_device = if projected {
             quad_bounds(&backdrop_quad_device)
           } else {
@@ -11899,7 +11901,12 @@ fn stacking_context_bounds(
     let mut projected = [Point::ZERO; 4];
     for (idx, corner) in corners.iter().enumerate() {
       let (tx, ty, _tz, tw) = transform.transform_point(corner.x, corner.y, 0.0);
-      if tw.abs() < 1e-6 || !tx.is_finite() || !ty.is_finite() || !tw.is_finite() {
+      if !tx.is_finite()
+        || !ty.is_finite()
+        || !tw.is_finite()
+        || tw.abs() < 1e-6
+        || tw < 0.0
+      {
         return None;
       }
       projected[idx] = Point::new(tx / tw, ty / tw);

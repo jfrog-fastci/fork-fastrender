@@ -1454,7 +1454,12 @@ where
       dst_quad[i] = (local_x, local_y);
 
       let (tx, ty, _tz, tw) = projective.transform.transform_point(*x, *y, 0.0);
-      if !tw.is_finite() || tw.abs() < 1e-6 {
+      if !tw.is_finite()
+        || tw.abs() < 1e-6
+        || tw < 0.0
+        || !tx.is_finite()
+        || !ty.is_finite()
+      {
         valid = false;
         break;
       }
@@ -1466,6 +1471,10 @@ where
       let screen_y = px * projective.parent_transform.ky
         + py * projective.parent_transform.sy
         + projective.parent_transform.ty;
+      if !screen_x.is_finite() || !screen_y.is_finite() {
+        valid = false;
+        break;
+      }
       src_quad[i] = Point::new(screen_x - clamped_x as f32, screen_y - clamped_y as f32);
     }
 
@@ -2025,6 +2034,39 @@ struct Preserve3dClipMaskScratch {
 thread_local! {
   static PRESERVE_3D_CLIP_MASK_SCRATCH: RefCell<Preserve3dClipMaskScratch> =
     RefCell::new(Preserve3dClipMaskScratch::default());
+}
+
+fn with_preserve_3d_clip_mask_scratch<R>(f: impl FnOnce(&mut Preserve3dClipMaskScratch) -> R) -> R {
+  PRESERVE_3D_CLIP_MASK_SCRATCH.with(|scratch_cell| {
+    // Avoid holding a `RefCell` borrow across nested preserve-3d rendering. Preserve-3d planes can
+    // rasterize nested preserve-3d contexts (and projective warps may execute rayon work that can
+    // re-enter the renderer on the same thread via work stealing). Holding the borrow across those
+    // calls triggers a `RefCell already borrowed` panic.
+    let mut scratch = {
+      let mut borrowed = scratch_cell.borrow_mut();
+      std::mem::take(&mut *borrowed)
+    };
+
+    let result = f(&mut scratch);
+
+    // Restore scratch masks, keeping whichever allocations are larger in case nested calls
+    // populated the TLS scratch while this call was executing.
+    {
+      let mut borrowed = scratch_cell.borrow_mut();
+      let scratch_combined_len = scratch.combined.as_ref().map(|m| m.data().len()).unwrap_or(0);
+      let borrowed_combined_len = borrowed.combined.as_ref().map(|m| m.data().len()).unwrap_or(0);
+      if scratch_combined_len > borrowed_combined_len {
+        borrowed.combined = scratch.combined;
+      }
+      let scratch_temp_len = scratch.temp.as_ref().map(|m| m.data().len()).unwrap_or(0);
+      let borrowed_temp_len = borrowed.temp.as_ref().map(|m| m.data().len()).unwrap_or(0);
+      if scratch_temp_len > borrowed_temp_len {
+        borrowed.temp = scratch.temp;
+      }
+    }
+
+    result
+  })
 }
 
 pub(crate) fn reset_thread_local_scratch_for_tests() {
@@ -7927,7 +7969,12 @@ impl DisplayListRenderer {
             src_quad[i] = Point::new(src_x - layer_origin.0 as f32, src_y - layer_origin.1 as f32);
 
             let (tx, ty, _tz, tw) = projective_transform.transform_point(*x, *y, 0.0);
-            if !tw.is_finite() || tw.abs() < 1e-6 {
+            if !tw.is_finite()
+              || tw.abs() < 1e-6
+              || tw < 0.0
+              || !tx.is_finite()
+              || !ty.is_finite()
+            {
               valid = false;
               break;
             }
@@ -7939,6 +7986,10 @@ impl DisplayListRenderer {
             let dst_y = px * record.parent_transform.ky
               + py * record.parent_transform.sy
               + record.parent_transform.ty;
+            if !dst_x.is_finite() || !dst_y.is_finite() {
+              valid = false;
+              break;
+            }
             dst_quad_points[i] = Point::new(dst_x, dst_y);
           }
 
@@ -9791,7 +9842,7 @@ impl DisplayListRenderer {
 
     for (x, y) in corners {
       let (tx, ty, _tz, tw) = transform.transform_point(x, y, 0.0);
-      if !tw.is_finite() || tw.abs() < Transform3D::MIN_PROJECTIVE_W {
+      if !tw.is_finite() || tw.abs() < Transform3D::MIN_PROJECTIVE_W || tw < 0.0 {
         return Some(affine_bounds());
       }
       let px = (tx / tw) * self.scale;
@@ -9835,9 +9886,7 @@ impl DisplayListRenderer {
     let warp_enabled = self.projective_warp_enabled;
 
     let mut f = Some(f);
-    let result = PRESERVE_3D_CLIP_MASK_SCRATCH.with(|cell| -> Result<Option<T>> {
-      let mut scratch = cell.borrow_mut();
-      let scratch = &mut *scratch;
+    let result = with_preserve_3d_clip_mask_scratch(|scratch| -> Result<Option<T>> {
       let resize = |slot: &mut Option<Mask>| {
         let replace = slot
           .as_ref()
@@ -11418,7 +11467,12 @@ impl DisplayListRenderer {
               src_quad[i] = Point::new(src_x - origin.0 as f32, src_y - origin.1 as f32);
 
               let (tx, ty, _tz, tw) = projective_transform.transform_point(*x, *y, 0.0);
-              if tw.abs() < 1e-6 {
+              if !tw.is_finite()
+                || tw.abs() < 1e-6
+                || tw < 0.0
+                || !tx.is_finite()
+                || !ty.is_finite()
+              {
                 valid = false;
                 break;
               }
@@ -11430,6 +11484,10 @@ impl DisplayListRenderer {
               let dst_y = px * record.parent_transform.ky
                 + py * record.parent_transform.sy
                 + record.parent_transform.ty;
+              if !dst_x.is_finite() || !dst_y.is_finite() {
+                valid = false;
+                break;
+              }
               dst_quad[i] = (dst_x, dst_y);
               dst_quad_points[i] = Point::new(dst_x, dst_y);
             }
