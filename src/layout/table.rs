@@ -6437,7 +6437,9 @@ impl FormattingContext for TableFormattingContext {
       let height = table_height.unwrap_or(0.0);
       let mut fragment = FragmentNode::new_with_style(
         Rect::from_xywh(0.0, 0.0, width, height),
-        FragmentContent::Block { box_id: None },
+        FragmentContent::Block {
+          box_id: Some(table_box.id),
+        },
         vec![],
         table_box.style.clone(),
       );
@@ -7411,8 +7413,8 @@ impl FormattingContext for TableFormattingContext {
     // attribute. Track the "source" column index separately from the visible column index so
     // `visibility: collapse` filtering doesn't desync the traversal.
     let mut column_styles: Vec<Option<Arc<ComputedStyle>>> = vec![None; structure.column_count];
-    let mut column_spans: Vec<(usize, usize, Arc<ComputedStyle>)> = Vec::new();
-    let mut column_groups: Vec<(usize, usize, Arc<ComputedStyle>)> = Vec::new();
+    let mut column_spans: Vec<(usize, usize, usize, Arc<ComputedStyle>)> = Vec::new();
+    let mut column_groups: Vec<(usize, usize, usize, Arc<ComputedStyle>)> = Vec::new();
     let mut source_col_idx = 0usize;
     for child in table_box
       .children
@@ -7443,7 +7445,7 @@ impl FormattingContext for TableFormattingContext {
             // remains valid regardless of traversal order.
             let start = first.min(last);
             let end = first.max(last) + 1;
-            column_spans.push((start, end, child.style.clone()));
+            column_spans.push((start, end, child.id, child.style.clone()));
           }
           source_col_idx += span;
         }
@@ -7479,7 +7481,7 @@ impl FormattingContext for TableFormattingContext {
               if let (Some(first), Some(last)) = (col_first_visible, col_last_visible) {
                 let start = first.min(last);
                 let end = first.max(last) + 1;
-                column_spans.push((start, end, col_child.style.clone()));
+                column_spans.push((start, end, col_child.id, col_child.style.clone()));
               }
               source_col_idx += span;
             }
@@ -7501,7 +7503,7 @@ impl FormattingContext for TableFormattingContext {
           if let (Some(first), Some(last)) = (first_visible, last_visible) {
             let start = first.min(last);
             let end = first.max(last) + 1;
-            column_groups.push((start, end, child.style.clone()));
+            column_groups.push((start, end, child.id, child.style.clone()));
           }
         }
         _ => {}
@@ -7510,6 +7512,7 @@ impl FormattingContext for TableFormattingContext {
 
     let mut push_column_span_fragment = |fragments: &mut Vec<FragmentNode>,
                                          cache: &mut HashMap<usize, Arc<ComputedStyle>>,
+                                         box_id: usize,
                                          style: Arc<ComputedStyle>,
                                          start: usize,
                                          end: usize| {
@@ -7558,25 +7561,29 @@ impl FormattingContext for TableFormattingContext {
       let rect = Rect::from_xywh(x, content_origin_y, width, content_height);
       fragments.push(FragmentNode::new_with_style(
         rect,
-        FragmentContent::Block { box_id: None },
+        FragmentContent::Block {
+          box_id: Some(box_id),
+        },
         Vec::new(),
         style,
       ));
     };
 
-    for (start, end, style) in column_groups {
+    for (start, end, box_id, style) in column_groups {
       push_column_span_fragment(
         &mut fragments,
         &mut stripped_border_cache,
+        box_id,
         style,
         start,
         end,
       );
     }
-    for (start, end, style) in column_spans {
+    for (start, end, box_id, style) in column_spans {
       push_column_span_fragment(
         &mut fragments,
         &mut stripped_border_cache,
+        box_id,
         style,
         start,
         end,
@@ -7585,8 +7592,8 @@ impl FormattingContext for TableFormattingContext {
 
     // Paint order backgrounds before cells.
     // Row groups
-    let mut row_styles: Vec<Option<Arc<ComputedStyle>>> = vec![None; structure.row_count];
-    let mut row_groups: Vec<(usize, usize, Arc<ComputedStyle>, Display)> = Vec::new();
+    let mut row_styles: Vec<Option<(usize, Arc<ComputedStyle>)>> = vec![None; structure.row_count];
+    let mut row_groups: Vec<(usize, usize, usize, Arc<ComputedStyle>, Display)> = Vec::new();
     let mut row_cursor = 0usize;
     let mut seen_header_group = false;
     let mut seen_footer_group = false;
@@ -7623,20 +7630,20 @@ impl FormattingContext for TableFormattingContext {
           for row_child in &child.children {
             if TableStructure::get_table_element_type(row_child) == TableElementType::Row {
               if let Some(visible) = source_row_to_visible.get(row_cursor).and_then(|m| *m) {
-                row_styles[visible] = Some(row_child.style.clone());
-                first_visible.get_or_insert(visible);
-                last_visible = Some(visible);
-              }
+                 row_styles[visible] = Some((row_child.id, row_child.style.clone()));
+                 first_visible.get_or_insert(visible);
+                 last_visible = Some(visible);
+               }
               row_cursor += 1;
             }
           }
           if let (Some(start), Some(end)) = (first_visible, last_visible) {
-            row_groups.push((start, end + 1, child.style.clone(), effective_display));
+            row_groups.push((start, end + 1, child.id, child.style.clone(), effective_display));
           }
         }
         TableElementType::Row => {
           if let Some(visible) = source_row_to_visible.get(row_cursor).and_then(|m| *m) {
-            row_styles[visible] = Some(child.style.clone());
+            row_styles[visible] = Some((child.id, child.style.clone()));
           }
           row_cursor += 1;
         }
@@ -7644,7 +7651,7 @@ impl FormattingContext for TableFormattingContext {
       }
     }
 
-    for (start, end, style, effective_display) in row_groups {
+    for (start, end, row_group_id, style, effective_display) in row_groups {
       // Table fragmentation repeats `thead`/`tfoot` by scanning for table header/footer group
       // fragments (see `fragmentation::inject_table_headers_and_footers`). Emit marker fragments for
       // these row groups even when they don't paint a background/border so the fragmentation pass can
@@ -7702,22 +7709,26 @@ impl FormattingContext for TableFormattingContext {
       let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
       fragments.push(FragmentNode::new_with_style(
         rect,
-        FragmentContent::Block { box_id: None },
+        FragmentContent::Block {
+          box_id: Some(row_group_id),
+        },
         Vec::new(),
         style,
       ));
     }
 
     // Rows
-    for (idx, style) in row_styles.into_iter().enumerate() {
-      if let Some(style) = style {
+    for (idx, row) in row_styles.into_iter().enumerate() {
+      if let Some((row_id, style)) = row {
         let style = strip_borders_cached(&style, &mut stripped_border_cache);
         let top = row_offsets.get(idx).copied().unwrap_or(0.0);
         let height = row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
         let rect = Rect::from_xywh(content_origin_x, top, content_width, height);
         fragments.push(FragmentNode::new_with_style(
           rect,
-          FragmentContent::Block { box_id: None },
+          FragmentContent::Block {
+            box_id: Some(row_id),
+          },
           Vec::new(),
           style,
         ));
@@ -7972,7 +7983,9 @@ impl FormattingContext for TableFormattingContext {
     if captions.is_empty() {
       let mut fragment = FragmentNode::new_with_style(
         table_bounds,
-        FragmentContent::Block { box_id: None },
+        FragmentContent::Block {
+          box_id: Some(table_box.id),
+        },
         fragments,
         Arc::new(table_style),
       );
@@ -8048,7 +8061,9 @@ impl FormattingContext for TableFormattingContext {
 
     let mut table_fragment = FragmentNode::new_with_style(
       table_bounds,
-      FragmentContent::Block { box_id: None },
+      FragmentContent::Block {
+        box_id: Some(table_box.id),
+      },
       fragments,
       Arc::new(table_style),
     );
@@ -8205,7 +8220,9 @@ impl FormattingContext for TableFormattingContext {
 
     let mut wrapper_fragment = FragmentNode::new_with_style(
       Rect::from_xywh(0.0, 0.0, wrapper_width, offset_y),
-      FragmentContent::Block { box_id: None },
+      FragmentContent::Block {
+        box_id: Some(table_box.id),
+      },
       wrapper_children,
       Arc::new(wrapper_style),
     );

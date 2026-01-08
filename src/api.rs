@@ -15915,7 +15915,9 @@ fn refresh_fragment_styles(
   boxes: &HashMap<usize, &BoxNode>,
   styles: &HashMap<usize, Arc<ComputedStyle>>,
   inherited_style: Option<Arc<ComputedStyle>>,
+  parent_is_table_wrapper: bool,
 ) {
+  let previous_style = fragment.style.clone();
   let self_box_id = fragment_box_id(fragment);
 
   if let Some(box_id) = self_box_id {
@@ -15926,9 +15928,116 @@ fn refresh_fragment_styles(
         }
       }
     }
-  } else if fragment.style.is_some() {
+  } else if fragment.style.is_some()
+    && matches!(
+      &fragment.content,
+      FragmentContent::Inline { .. }
+        | FragmentContent::Text { .. }
+        | FragmentContent::Replaced { .. }
+    )
+  {
     if let Some(inherited) = inherited_style.as_ref() {
       fragment.style = Some(Arc::clone(inherited));
+    }
+  }
+
+  let has_table_caption_child = fragment.children.iter().any(|child| {
+    child
+      .style
+      .as_ref()
+      .is_some_and(|style| matches!(style.display, crate::style::display::Display::TableCaption))
+  });
+  let is_table_wrapper_fragment = fragment
+    .style
+    .as_ref()
+    .is_some_and(|style| {
+      matches!(
+        style.display,
+        crate::style::display::Display::Table | crate::style::display::Display::InlineTable
+      ) && has_table_caption_child
+    });
+
+  if is_table_wrapper_fragment {
+    if let Some(style) = fragment.style.as_ref() {
+      let mut wrapper_style = style.as_ref().clone();
+      wrapper_style.reset_background_to_initial();
+      wrapper_style.padding_top = Length::px(0.0);
+      wrapper_style.padding_right = Length::px(0.0);
+      wrapper_style.padding_bottom = Length::px(0.0);
+      wrapper_style.padding_left = Length::px(0.0);
+      wrapper_style.outline_style = crate::style::types::OutlineStyle::None;
+      wrapper_style.overflow_x = crate::style::types::Overflow::Visible;
+      wrapper_style.overflow_y = crate::style::types::Overflow::Visible;
+      wrapper_style.border_top_width = Length::px(0.0);
+      wrapper_style.border_right_width = Length::px(0.0);
+      wrapper_style.border_bottom_width = Length::px(0.0);
+      wrapper_style.border_left_width = Length::px(0.0);
+      wrapper_style.border_top_style = crate::style::types::BorderStyle::None;
+      wrapper_style.border_right_style = crate::style::types::BorderStyle::None;
+      wrapper_style.border_bottom_style = crate::style::types::BorderStyle::None;
+      wrapper_style.border_left_style = crate::style::types::BorderStyle::None;
+      wrapper_style.box_shadow.clear();
+      fragment.style = Some(Arc::new(wrapper_style));
+    }
+  } else if fragment
+    .style
+    .as_ref()
+    .is_some_and(|style| {
+      matches!(
+        style.display,
+        crate::style::display::Display::Table | crate::style::display::Display::InlineTable
+      )
+    })
+  {
+    if let Some(style) = fragment.style.as_ref() {
+      let mut table_style = style.as_ref().clone();
+      if matches!(
+        table_style.border_collapse,
+        crate::style::types::BorderCollapse::Collapse
+      ) {
+        table_style.border_top_width = Length::px(0.0);
+        table_style.border_right_width = Length::px(0.0);
+        table_style.border_bottom_width = Length::px(0.0);
+        table_style.border_left_width = Length::px(0.0);
+        table_style.logical.border_width_orders.top = 0;
+        table_style.logical.border_width_orders.right = 0;
+        table_style.logical.border_width_orders.bottom = 0;
+        table_style.logical.border_width_orders.left = 0;
+      }
+
+      if parent_is_table_wrapper {
+        table_style.transform.clear();
+        table_style.filter.clear();
+        table_style.backdrop_filter.clear();
+        table_style.opacity = 1.0;
+        table_style.mix_blend_mode = crate::style::types::MixBlendMode::Normal;
+        table_style.isolation = crate::style::types::Isolation::Auto;
+      }
+
+      fragment.style = Some(Arc::new(table_style));
+    }
+  } else if let (Some(previous), Some(style)) = (previous_style.as_deref(), fragment.style.as_ref())
+  {
+    if matches!(
+      previous.display,
+      crate::style::display::Display::TableColumn
+        | crate::style::display::Display::TableColumnGroup
+        | crate::style::display::Display::TableRow
+        | crate::style::display::Display::TableRowGroup
+        | crate::style::display::Display::TableHeaderGroup
+        | crate::style::display::Display::TableFooterGroup
+    ) {
+      let mut updated = style.as_ref().clone();
+      updated.display = previous.display;
+      updated.border_top_width = Length::px(0.0);
+      updated.border_right_width = Length::px(0.0);
+      updated.border_bottom_width = Length::px(0.0);
+      updated.border_left_width = Length::px(0.0);
+      updated.border_top_style = crate::style::types::BorderStyle::None;
+      updated.border_right_style = crate::style::types::BorderStyle::None;
+      updated.border_bottom_style = crate::style::types::BorderStyle::None;
+      updated.border_left_style = crate::style::types::BorderStyle::None;
+      fragment.style = Some(Arc::new(updated));
     }
   }
 
@@ -15945,7 +16054,7 @@ fn refresh_fragment_styles(
   match &mut fragment.content {
     FragmentContent::RunningAnchor { snapshot, .. }
     | FragmentContent::FootnoteAnchor { snapshot } => {
-      refresh_fragment_styles(Arc::make_mut(snapshot), boxes, styles, None);
+      refresh_fragment_styles(Arc::make_mut(snapshot), boxes, styles, None, false);
     }
     _ => {}
   }
@@ -15956,7 +16065,13 @@ fn refresh_fragment_styles(
     .cloned()
     .or_else(|| inherited_style.clone());
   for child in fragment.children_mut() {
-    refresh_fragment_styles(child, boxes, styles, child_inherited.clone());
+    refresh_fragment_styles(
+      child,
+      boxes,
+      styles,
+      child_inherited.clone(),
+      is_table_wrapper_fragment,
+    );
   }
 
   if let (Some(box_id), Some(base_style)) = (self_box_id, fragment.style.clone()) {
@@ -15990,9 +16105,9 @@ fn refresh_fragment_tree_styles(
   boxes: &HashMap<usize, &BoxNode>,
   styles: &HashMap<usize, Arc<ComputedStyle>>,
 ) {
-  refresh_fragment_styles(&mut tree.root, boxes, styles, None);
+  refresh_fragment_styles(&mut tree.root, boxes, styles, None, false);
   for root in &mut tree.additional_fragments {
-    refresh_fragment_styles(root, boxes, styles, None);
+    refresh_fragment_styles(root, boxes, styles, None, false);
   }
 }
 
@@ -17583,7 +17698,7 @@ pub(crate) fn render_html_with_shared_resources(
 
     let mut anchor =
       FragmentNode::new_footnote_anchor(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), snapshot);
-    super::refresh_fragment_styles(&mut anchor, &box_map, &style_map, None);
+    super::refresh_fragment_styles(&mut anchor, &box_map, &style_map, None, false);
 
     match &anchor.content {
       FragmentContent::FootnoteAnchor { snapshot } => {
@@ -17656,7 +17771,7 @@ pub(crate) fn render_html_with_shared_resources(
     );
     root_fragment.style = Some(old_style);
 
-    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None);
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None, false);
 
     let text_style = root_fragment.children[0].children[0]
       .style
@@ -17738,7 +17853,7 @@ pub(crate) fn render_html_with_shared_resources(
     );
     root_fragment.style = Some(old_style);
 
-    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None);
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None, false);
 
     assert!(
       Arc::ptr_eq(
@@ -17808,7 +17923,7 @@ pub(crate) fn render_html_with_shared_resources(
     );
     root_fragment.style = Some(old_style);
 
-    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None);
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None, false);
 
     assert!(
       Arc::ptr_eq(
@@ -17827,6 +17942,226 @@ pub(crate) fn render_html_with_shared_resources(
       ),
       "expected boxless inline fragments (text-overflow markers, tabs, etc.) to inherit refreshed styles"
     );
+  }
+
+  #[test]
+  fn refresh_fragment_styles_does_not_clobber_boxless_block_fragments() {
+    let mut inherited_old = ComputedStyle::default();
+    inherited_old.background_color = Rgba::GREEN;
+    let inherited_old = Arc::new(inherited_old);
+    let mut inherited_new = ComputedStyle::default();
+    inherited_new.background_color = Rgba::BLUE;
+    let inherited_new = Arc::new(inherited_new);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.background_color = Rgba::RED;
+    child_style.display = crate::style::display::Display::TableHeaderGroup;
+    let child_style = Arc::new(child_style);
+
+    let mut root_box = BoxNode::new_block(inherited_old.clone(), FormattingContextType::Block, vec![]);
+    root_box.styled_node_id = Some(1);
+    let box_tree = BoxTree::new(root_box);
+    let root_id = box_tree.root.id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&box_tree.root, &mut box_map);
+
+    let mut style_map = HashMap::new();
+    style_map.insert(1 << super::STYLE_KEY_SHIFT, inherited_new.clone());
+
+    let child_fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+      FragmentContent::Block { box_id: None },
+      vec![],
+      child_style.clone(),
+    );
+    let mut root_fragment =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), root_id, vec![
+        child_fragment,
+      ]);
+    root_fragment.style = Some(inherited_old);
+
+    super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None, false);
+
+    assert!(
+      Arc::ptr_eq(
+        root_fragment.style.as_ref().expect("root style refreshed"),
+        &inherited_new
+      ),
+      "expected root style to refresh from style map"
+    );
+
+    let child = &root_fragment.children[0];
+    let child_style = child.style.as_ref().expect("child style preserved");
+    assert_eq!(
+      child_style.background_color,
+      Rgba::RED,
+      "expected boxless block fragment style to not be overwritten by inherited styles"
+    );
+    assert!(
+      matches!(
+        child_style.display,
+        crate::style::display::Display::TableHeaderGroup
+      ),
+      "expected boxless block fragment display to remain intact"
+    );
+  }
+
+  #[test]
+  fn refresh_fragment_styles_reapplies_table_wrapper_and_grid_style_splitting() {
+    let old_style = Arc::new(ComputedStyle::default());
+
+    let mut base_style = ComputedStyle::default();
+    base_style.display = crate::style::display::Display::Table;
+    base_style.background_color = Rgba::RED;
+    base_style.opacity = 0.5;
+    base_style.mix_blend_mode = crate::style::types::MixBlendMode::Multiply;
+    base_style.isolation = crate::style::types::Isolation::Isolate;
+    let base_style = Arc::new(base_style);
+
+    let mut table_box = BoxNode::new_block(old_style.clone(), FormattingContextType::Table, vec![]);
+    table_box.styled_node_id = Some(1);
+    let box_tree = BoxTree::new(table_box);
+    let table_id = box_tree.root.id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&box_tree.root, &mut box_map);
+
+    let mut style_map = HashMap::new();
+    style_map.insert(1 << super::STYLE_KEY_SHIFT, base_style.clone());
+
+    let mut caption_style = ComputedStyle::default();
+    caption_style.display = crate::style::display::Display::TableCaption;
+    let caption_style = Arc::new(caption_style);
+
+    let caption = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      FragmentContent::Block { box_id: None },
+      vec![],
+      caption_style,
+    );
+
+    let grid = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 10.0, 10.0, 10.0),
+      FragmentContent::Block {
+        box_id: Some(table_id),
+      },
+      vec![],
+      Arc::new(ComputedStyle::default()),
+    );
+
+    let mut wrapper = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 10.0, 20.0),
+      FragmentContent::Block {
+        box_id: Some(table_id),
+      },
+      vec![caption, grid],
+      Arc::new(ComputedStyle::default()),
+    );
+
+    super::refresh_fragment_styles(&mut wrapper, &box_map, &style_map, None, false);
+
+    let wrapper_style = wrapper.style.as_ref().expect("wrapper style refreshed");
+    assert_eq!(
+      wrapper_style.background_color,
+      Rgba::TRANSPARENT,
+      "expected table wrapper to reset backgrounds"
+    );
+    assert!((wrapper_style.opacity - 0.5).abs() < f32::EPSILON);
+    assert_eq!(
+      wrapper_style.mix_blend_mode,
+      crate::style::types::MixBlendMode::Multiply
+    );
+    assert_eq!(
+      wrapper_style.isolation,
+      crate::style::types::Isolation::Isolate
+    );
+
+    let grid_style = wrapper.children[1]
+      .style
+      .as_ref()
+      .expect("grid style refreshed");
+    assert_eq!(
+      grid_style.background_color,
+      Rgba::RED,
+      "expected table grid to keep author background"
+    );
+    assert!(
+      (grid_style.opacity - 1.0).abs() < f32::EPSILON,
+      "expected table grid to clear opacity when wrapper exists"
+    );
+    assert_eq!(
+      grid_style.mix_blend_mode,
+      crate::style::types::MixBlendMode::Normal
+    );
+    assert_eq!(grid_style.isolation, crate::style::types::Isolation::Auto);
+  }
+
+  #[test]
+  fn refresh_fragment_styles_preserves_table_decoration_display_and_border_stripping() {
+    let old_style = Arc::new(ComputedStyle::default());
+
+    let mut table_box = BoxNode::new_block(old_style.clone(), FormattingContextType::Table, vec![]);
+    table_box.styled_node_id = Some(1);
+    let mut row_group_box =
+      BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![]);
+    row_group_box.styled_node_id = Some(2);
+    table_box.children.push(row_group_box);
+    let box_tree = BoxTree::new(table_box);
+    let row_group_id = box_tree.root.children[0].id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&box_tree.root, &mut box_map);
+
+    let mut refreshed = ComputedStyle::default();
+    refreshed.display = crate::style::display::Display::TableHeaderGroup;
+    refreshed.background_color = Rgba::RED;
+    refreshed.border_top_style = crate::style::types::BorderStyle::Solid;
+    refreshed.border_top_width = Length::px(4.0);
+    let refreshed = Arc::new(refreshed);
+
+    let mut style_map = HashMap::new();
+    style_map.insert(2 << super::STYLE_KEY_SHIFT, refreshed);
+
+    let mut stripped = ComputedStyle::default();
+    stripped.display = crate::style::display::Display::TableRowGroup;
+    stripped.background_color = Rgba::GREEN;
+    stripped.border_top_style = crate::style::types::BorderStyle::None;
+    stripped.border_top_width = Length::px(0.0);
+    stripped.border_right_style = crate::style::types::BorderStyle::None;
+    stripped.border_right_width = Length::px(0.0);
+    stripped.border_bottom_style = crate::style::types::BorderStyle::None;
+    stripped.border_bottom_width = Length::px(0.0);
+    stripped.border_left_style = crate::style::types::BorderStyle::None;
+    stripped.border_left_width = Length::px(0.0);
+    let stripped = Arc::new(stripped);
+
+    let mut fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      FragmentContent::Block {
+        box_id: Some(row_group_id),
+      },
+      vec![],
+      stripped,
+    );
+
+    super::refresh_fragment_styles(&mut fragment, &box_map, &style_map, None, false);
+
+    let style = fragment.style.as_ref().expect("style refreshed");
+    assert_eq!(
+      style.background_color,
+      Rgba::RED,
+      "expected table decoration fragment to pick up refreshed background"
+    );
+    assert!(
+      matches!(style.display, crate::style::display::Display::TableRowGroup),
+      "expected effective display override to be preserved"
+    );
+    assert!(
+      matches!(style.border_top_style, crate::style::types::BorderStyle::None),
+      "expected table decoration borders to remain stripped"
+    );
+    assert!(style.border_top_width.to_px().abs() < f32::EPSILON);
   }
 
   #[test]
@@ -17883,7 +18218,7 @@ pub(crate) fn render_html_with_shared_resources(
       Arc::new(ComputedStyle::default()),
     );
 
-    super::refresh_fragment_styles(&mut fragment, &box_map, &style_map, None);
+    super::refresh_fragment_styles(&mut fragment, &box_map, &style_map, None, false);
 
     let FragmentContent::Replaced { replaced_type, .. } = &fragment.content else {
       panic!("expected replaced fragment");
