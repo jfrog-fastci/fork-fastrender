@@ -6,6 +6,11 @@ pub mod import;
 mod attrs;
 
 pub use error::DomError;
+pub mod query;
+pub mod traversal;
+
+#[cfg(test)]
+mod query_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -274,7 +279,6 @@ impl Document {
     }
   }
 }
-
 #[cfg(test)]
 mod attrs_tests;
 #[cfg(test)]
