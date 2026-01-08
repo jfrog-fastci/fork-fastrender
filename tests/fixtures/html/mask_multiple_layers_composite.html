@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      body {
+        margin: 0;
+        background: white;
+      }
+
+      .box {
+        position: absolute;
+        width: 60px;
+        height: 60px;
+        background: rgb(0, 128, 255);
+        /* Two hard-edged masks: right half + bottom half. */
+        mask-image: linear-gradient(90deg, transparent 0 50%, black 50% 100%),
+          linear-gradient(180deg, transparent 0 50%, black 50% 100%);
+        mask-size: 100% 100%;
+        mask-repeat: no-repeat;
+        mask-origin: border-box;
+        mask-clip: border-box;
+      }
+
+      #add {
+        left: 10px;
+        top: 10px;
+        mask-composite: add;
+      }
+
+      #intersect {
+        left: 80px;
+        top: 10px;
+        mask-composite: intersect;
+      }
+
+      #subtract {
+        left: 10px;
+        top: 80px;
+        mask-composite: subtract;
+      }
+
+      #exclude {
+        left: 80px;
+        top: 80px;
+        mask-composite: exclude;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="add" class="box"></div>
+    <div id="intersect" class="box"></div>
+    <div id="subtract" class="box"></div>
+    <div id="exclude" class="box"></div>
+  </body>
+</html>
