@@ -73,6 +73,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config --global core.longpaths true
           git submodule update --init engines/ecma-rs
 
       - name: Assert ecma-rs is checked out
