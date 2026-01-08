@@ -201,6 +201,49 @@ fn abspos_static_position_respects_space_between_fallback_in_row_reverse() {
 }
 
 #[test]
+fn abspos_static_position_space_between_negative_free_space_falls_back_to_safe_start() {
+  // Flexbox §justify-content: with negative free space, `space-between` falls back to `safe flex-start`.
+  // Safe overflow alignment causes the item to start-align to the physical start edge (not main-start).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::RowReverse;
+  container_style.justify_content = JustifyContent::SpaceBetween;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(120.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+}
+
+#[test]
+fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_start() {
+  // Flexbox §justify-content: with negative free space, `space-around` falls back to `safe center`,
+  // which becomes start-aligned under safe overflow alignment.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.justify_content = JustifyContent::SpaceAround;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(120.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+}
+
+#[test]
 fn abspos_static_position_respects_row_reverse_main_start() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
