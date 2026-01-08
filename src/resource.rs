@@ -6189,9 +6189,10 @@ impl HttpFetcher {
     let limit = self.policy.allowed_response_limit()?;
     let mut chosen_path: Option<std::path::PathBuf> = None;
     let mut bytes: Option<Vec<u8>> = None;
+    let mut file_too_large = false;
     let mut last_err = None;
 
-    for candidate in &path_candidates {
+    'candidates: for candidate in &path_candidates {
       if let Ok(meta) = std::fs::metadata(candidate) {
         if let Ok(len) = usize::try_from(meta.len()) {
           if len > limit {
@@ -6213,16 +6214,36 @@ impl HttpFetcher {
         }
       }
 
-      match std::fs::read(candidate) {
-        Ok(read) => {
-          chosen_path = Some(candidate.clone());
-          bytes = Some(read);
-          break;
-        }
-        Err(err) => {
-          last_err = Some(err);
-        }
-      }
+      match std::fs::File::open(candidate) {
+        Ok(mut file) => match read_response_prefix(&mut file, limit) {
+          Ok(read) => {
+            let mut candidate_too_large = false;
+            if read.len() == limit {
+              let mut extra = [0u8; 1];
+              loop {
+                match file.read(&mut extra) {
+                  Ok(0) => break,
+                  Ok(_) => {
+                    candidate_too_large = true;
+                    break;
+                  }
+                  Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                  Err(err) => {
+                    last_err = Some(err);
+                    continue 'candidates;
+                  }
+                }
+              }
+            }
+            chosen_path = Some(candidate.clone());
+            bytes = Some(read);
+            file_too_large = candidate_too_large;
+            break;
+          }
+          Err(err) => last_err = Some(err),
+        },
+        Err(err) => last_err = Some(err),
+      };
     }
 
     let chosen_path = chosen_path.ok_or_else(|| {
@@ -6234,20 +6255,25 @@ impl HttpFetcher {
       )
     })?;
     let mut bytes = bytes.unwrap_or_default();
+    let observed_len = if file_too_large {
+      limit.saturating_add(1)
+    } else {
+      bytes.len()
+    };
 
-    if bytes.len() > limit {
+    if observed_len > limit {
       if let Some(remaining) = self.policy.remaining_budget() {
-        if bytes.len() > remaining {
+        if observed_len > remaining {
           return Err(policy_error(format!(
             "total bytes budget exceeded ({} > {} bytes remaining)",
-            bytes.len(),
+            observed_len,
             remaining
           )));
         }
       }
       return Err(policy_error(format!(
         "response too large ({} > {} bytes)",
-        bytes.len(),
+        observed_len,
         limit
       )));
     }
@@ -9576,6 +9602,29 @@ mod tests {
       decoded.capacity() <= body.len(),
       "read_response_prefix capacity {} exceeds limit {}",
       decoded.capacity(),
+      body.len()
+    );
+  }
+
+  #[test]
+  fn fetch_file_does_not_overallocate_beyond_limit() {
+    let body = vec![0x7fu8; 10_000];
+    let mut file = NamedTempFile::new().expect("temp file");
+    file.write_all(&body).expect("write file");
+    file.flush().expect("flush");
+
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+    let fetcher = HttpFetcher::new().with_max_size(body.len());
+    let res = fetcher
+      .fetch_with_context(FetchContextKind::Other, &url)
+      .expect("fetch file");
+    assert_eq!(res.bytes, body);
+    assert!(
+      res.bytes.capacity() <= body.len(),
+      "file response capacity {} exceeds limit {}",
+      res.bytes.capacity(),
       body.len()
     );
   }
