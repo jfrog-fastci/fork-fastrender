@@ -29,7 +29,7 @@ fn builder_pagination_without_page_rules_fragments() {
       <head>
         <style>
           body { margin: 0; }
-          .tall { height: 360px; }
+          .tall { block-size: 360px; }
         </style>
       </head>
       <body>
@@ -87,7 +87,7 @@ fn pagination_respects_vertical_writing_mode() {
         <style>
           html { writing-mode: vertical-rl; }
           body { margin: 0; }
-          .tall { height: 360px; }
+          .tall { block-size: 360px; }
         </style>
       </head>
       <body>
