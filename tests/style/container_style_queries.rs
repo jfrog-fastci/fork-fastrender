@@ -926,6 +926,110 @@ fn container_style_query_range_feature_matches_webkit_line_clamp() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_transition_duration() {
+  let html = r#"
+    <style>
+      .container-short { container-type: inline-size; transition-duration: 100ms; }
+      .container-long { container-type: inline-size; transition-duration: 0.2s; }
+      .child { color: rgb(0 0 255); }
+      @container style(transition-duration > 150ms) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-short">
+      <div id="short" class="child">hello</div>
+    </div>
+    <div class="container-long">
+      <div id="long" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let short = find_by_id(&styled, "short").expect("short element");
+  let long = find_by_id(&styled, "long").expect("long element");
+  assert_eq!(short.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(long.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_transition_delay() {
+  let html = r#"
+    <style>
+      .container-neg { container-type: inline-size; transition-delay: -100ms; }
+      .container-pos { container-type: inline-size; transition-delay: 100ms; }
+      .child { color: rgb(0 0 255); }
+      @container style(transition-delay > 0ms) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-neg">
+      <div id="neg" class="child">hello</div>
+    </div>
+    <div class="container-pos">
+      <div id="pos" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let neg = find_by_id(&styled, "neg").expect("neg element");
+  let pos = find_by_id(&styled, "pos").expect("pos element");
+  assert_eq!(neg.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(pos.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_animation_duration() {
+  let html = r#"
+    <style>
+      .container-auto { container-type: inline-size; animation-duration: auto; }
+      .container-long { container-type: inline-size; animation-duration: 2s; }
+      .child { color: rgb(0 0 255); }
+      @container style(animation-duration > 1s) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-auto">
+      <div id="auto" class="child">hello</div>
+    </div>
+    <div class="container-long">
+      <div id="long" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let auto = find_by_id(&styled, "auto").expect("auto element");
+  let long = find_by_id(&styled, "long").expect("long element");
+  assert_eq!(auto.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(long.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_animation_delay() {
+  let html = r#"
+    <style>
+      .container-neg { container-type: inline-size; animation-delay: -100ms; }
+      .container-pos { container-type: inline-size; animation-delay: 100ms; }
+      .child { color: rgb(0 0 255); }
+      @container style(animation-delay > 0ms) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-neg">
+      <div id="neg" class="child">hello</div>
+    </div>
+    <div class="container-pos">
+      <div id="pos" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let neg = find_by_id(&styled, "neg").expect("neg element");
+  let pos = find_by_id(&styled, "pos").expect("pos element");
+  assert_eq!(neg.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(pos.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_letter_spacing() {
   let html = r#"
     <style>

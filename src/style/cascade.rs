@@ -1987,6 +1987,39 @@ fn eval_style_range_value(
         ty: NumericType::Number,
         value: lines as f32,
       }),
+      "transition-duration" => match styles.transition_durations.as_ref() {
+        [ms] if ms.is_finite() => Some(NumericValue {
+          ty: NumericType::TimeMs,
+          value: *ms,
+        }),
+        _ => None,
+      },
+      "transition-delay" => match styles.transition_delays.as_ref() {
+        [ms] if ms.is_finite() => Some(NumericValue {
+          ty: NumericType::TimeMs,
+          value: *ms,
+        }),
+        _ => None,
+      },
+      "animation-duration" | "-webkit-animation-duration" => match styles.animation_durations.as_ref() {
+        [ms]
+          if ms.is_finite()
+            && *ms != crate::style::properties::ANIMATION_DURATION_AUTO_SENTINEL_MS =>
+        {
+          Some(NumericValue {
+            ty: NumericType::TimeMs,
+            value: *ms,
+          })
+        }
+        _ => None,
+      },
+      "animation-delay" | "-webkit-animation-delay" => match styles.animation_delays.as_ref() {
+        [ms] if ms.is_finite() => Some(NumericValue {
+          ty: NumericType::TimeMs,
+          value: *ms,
+        }),
+        _ => None,
+      },
       "font-weight" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.font_weight.to_u16() as f32,
