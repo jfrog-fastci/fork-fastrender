@@ -706,7 +706,12 @@ fn adjust_for_atomic_ranges(start: f32, mut end: f32, ranges: &[AtomicRange]) ->
   if let Some(containing_end) = ranges
     .iter()
     .copied()
-    .find(|range| end > range.start + EPSILON && end < range.end - EPSILON && range.end > range.start)
+    .filter(|range| end > range.start + EPSILON && end < range.end - EPSILON && range.end > range.start)
+    .min_by(|a, b| {
+      a.start
+        .partial_cmp(&b.start)
+        .unwrap_or(std::cmp::Ordering::Equal)
+    })
   {
     if containing_end.start <= start + EPSILON {
       end = end.max(containing_end.end);

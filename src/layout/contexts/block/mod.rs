@@ -4525,6 +4525,8 @@ impl BlockFormattingContext {
           rule_width = column_gap;
         }
         rule_style.display = Display::Block;
+        rule_style.writing_mode = writing_mode;
+        rule_style.direction = direction;
         if inline_is_horizontal {
           rule_style.border_left_width = Length::px(rule_width);
           rule_style.border_left_style = parent.style.column_rule_style;

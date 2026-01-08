@@ -1434,8 +1434,13 @@ pub(crate) fn clip_node(
     return Ok(None);
   }
 
+  // `node_flow_end` is based on the fragment's own bounds, which may be limited to the viewport
+  // even when descendants overflow (common for the root when paginating). Use the logical bounding
+  // box extent instead so the clip window stays consistent for descendants—especially when block
+  // progression is reversed (e.g. `writing-mode: vertical-rl`), where the physical origin of the
+  // clip window depends on both its start *and* end.
   let clipped_flow_start = node_flow_start.max(fragment_start);
-  let clipped_flow_end = node_flow_end.min(fragment_end);
+  let clipped_flow_end = node_bbox_flow_end.min(fragment_end);
   let new_block_size = (clipped_flow_end - clipped_flow_start).max(0.0);
   let clipped_phys_start = axis.flow_box_start_to_physical(
     clipped_flow_start - parent_abs_flow_start,
@@ -1465,7 +1470,7 @@ pub(crate) fn clip_node(
   if previously_fragmented {
     original_block_size = original_block_size.max(node.slice_info.original_block_size);
   }
-  let node_block_span = (node_flow_end - node_flow_start).max(node_block_size);
+  let node_block_span = (node_bbox_flow_end - node_flow_start).max(node_block_size);
   original_block_size = original_block_size.max(base_offset + node_block_span);
   let slice_offset = base_offset + (clipped_flow_start - node_flow_start).max(0.0);
   let slice_end_offset = base_offset + (clipped_flow_end - node_flow_start).max(0.0);

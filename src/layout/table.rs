@@ -7575,16 +7575,27 @@ impl FormattingContext for TableFormattingContext {
     for (start, end, style) in row_groups {
       // Table fragmentation repeats `thead`/`tfoot` by scanning for table header/footer group
       // fragments (see `fragmentation::inject_table_headers_and_footers`). Emit marker fragments for
-      // these row groups even when they don't paint a background so the fragmentation pass can
+      // these row groups even when they don't paint a background/border so the fragmentation pass can
       // identify the regions to repeat.
-      let is_header_or_footer = matches!(
-        style.display,
-        Display::TableHeaderGroup | Display::TableFooterGroup
-      );
-      if !is_header_or_footer && !style_paints_background_or_border(&style, false) {
+      let paints = style_paints_background_or_border(&style, false);
+      let is_header_or_footer =
+        matches!(style.display, Display::TableHeaderGroup | Display::TableFooterGroup);
+      if !paints && !is_header_or_footer {
         continue;
       }
-      let style = strip_borders_cached(&style, &mut stripped_border_cache);
+      let style = if paints {
+        strip_borders_cached(&style, &mut stripped_border_cache)
+      } else {
+        // Fragmentation repeats `<thead>`/`<tfoot>` groups by cloning fragments tagged with
+        // `display: table-header-group` / `table-footer-group` (see `inject_table_headers_and_footers`).
+        // The table layout engine only emits row-group fragments when they paint a background/border,
+        // so create a zero-paint marker fragment for header/footer groups to keep fragmentation working.
+        let mut marker_style = crate::style::ComputedStyle::default();
+        marker_style.display = style.display;
+        marker_style.writing_mode = style.writing_mode;
+        marker_style.direction = style.direction;
+        Arc::new(marker_style)
+      };
       if start >= row_offsets.len() {
         break;
       }
@@ -7641,6 +7652,8 @@ impl FormattingContext for TableFormattingContext {
       let height = row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
       let mut marker_style = crate::style::ComputedStyle::default();
       marker_style.display = Display::TableRow;
+      marker_style.writing_mode = table_root_style.writing_mode;
+      marker_style.direction = table_root_style.direction;
       let rect = Rect::from_xywh(content_origin_x, *offset, content_width, height);
       fragments.push(FragmentNode::new_with_style(
         rect,
