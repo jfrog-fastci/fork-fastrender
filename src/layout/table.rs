@@ -4826,7 +4826,7 @@ impl TableFormattingContext {
     structure: &TableStructure,
     available_content_width: f32,
     percent_base: Option<f32>,
-  ) -> Vec<f32> {
+  ) -> Result<Vec<f32>, LayoutError> {
     let wants_fixed_layout = matches!(table_box.style.table_layout, TableLayout::Fixed);
     let has_computed_width =
       table_box.style.width.is_some() || table_box.style.width_keyword.is_some();
@@ -4849,18 +4849,21 @@ impl TableFormattingContext {
         percent_base,
         &style_overrides,
       )
-      .unwrap_or_else(|err| panic!("bench_column_constraints_and_distribute: {err}"));
+      ?;
     self.normalize_percentage_constraints(&mut constraints, percent_base);
     let distributor = ColumnDistributor::new(mode).with_min_column_width(0.0);
     let distribution = distributor.distribute(&constraints, available_content_width);
     if let Some(err) = distributor.take_timeout_error() {
-      panic!("table column distribution timed out: {err:?}");
+      return Err(err);
     }
-    if distribution.widths.len() == structure.column_count {
-      distribution.widths
-    } else {
-      vec![0.0; structure.column_count]
+    if distribution.widths.len() != structure.column_count {
+      return Err(LayoutError::MissingContext(format!(
+        "table column distribution produced {} widths for {} columns",
+        distribution.widths.len(),
+        structure.column_count
+      )));
     }
+    Ok(distribution.widths)
   }
 
   /// Returns the table box to use for layout, avoiding redundant fixup work for
@@ -8686,6 +8689,98 @@ mod tests {
 
     BoxNode::new_block(Arc::new(style), FormattingContextType::Table, table_rows)
       .with_debug_info(DebugInfo::new(Some("table".to_string()), None, vec![]))
+  }
+
+  #[test]
+  fn bench_column_constraints_and_distribute_ok_has_expected_len() -> Result<(), LayoutError> {
+    let viewport = crate::geometry::Size::new(800.0, 600.0);
+    let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+    let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+      .with_parallelism(LayoutParallelism::disabled());
+    let tfc = TableFormattingContext::with_factory(factory);
+
+    let table_box = create_simple_table(1, 3);
+    let structure = TableStructure::from_box_tree(&table_box);
+    let widths =
+      tfc.bench_column_constraints_and_distribute(&table_box, &structure, 800.0, Some(800.0))?;
+    assert_eq!(widths.len(), structure.column_count);
+    Ok(())
+  }
+
+  #[test]
+  fn bench_column_constraints_and_distribute_times_out_instead_of_panicking() {
+    fn create_text_table(cols: usize) -> BoxNode {
+      let mut table_style = ComputedStyle::default();
+      table_style.display = Display::Table;
+      table_style.table_layout = TableLayout::Auto;
+      let table_style = Arc::new(table_style);
+
+      let mut row_style = ComputedStyle::default();
+      row_style.display = Display::TableRow;
+      let row_style = Arc::new(row_style);
+
+      let mut cell_style = ComputedStyle::default();
+      cell_style.display = Display::TableCell;
+      let cell_style = Arc::new(cell_style);
+
+      let mut inline_style = ComputedStyle::default();
+      inline_style.display = Display::Block;
+      let inline_style = Arc::new(inline_style);
+
+      let mut text_style = ComputedStyle::default();
+      text_style.display = Display::Inline;
+      let text_style = Arc::new(text_style);
+
+      let mut cells = Vec::with_capacity(cols);
+      for idx in 0..cols {
+        let text = BoxNode::new_text(text_style.clone(), format!("cell-{idx} lorem ipsum"));
+        let inline = BoxNode::new_block(
+          inline_style.clone(),
+          FormattingContextType::Inline,
+          vec![text],
+        );
+        cells.push(BoxNode::new_block(
+          cell_style.clone(),
+          FormattingContextType::Block,
+          vec![inline],
+        ));
+      }
+
+      let row = BoxNode::new_block(row_style, FormattingContextType::Block, cells);
+      BoxNode::new_block(table_style, FormattingContextType::Table, vec![row])
+    }
+
+    let viewport = crate::geometry::Size::new(800.0, 600.0);
+    let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+    let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+      .with_parallelism(LayoutParallelism::disabled());
+    let tfc = TableFormattingContext::with_factory(factory);
+
+    // Keep this small enough that `populate_column_constraints` does not hit its periodic deadline
+    // check, but large enough that column distribution does.
+    let table_box = create_text_table(20);
+    let structure = TableStructure::from_box_tree(&table_box);
+    assert!(!table_box.children.is_empty(), "table should have a row");
+    let row = &table_box.children[0];
+    let (min_sum, max_sum) =
+      tfc.bench_measure_cells_intrinsic_widths(&row.children, structure.border_collapse, None);
+    assert!(
+      max_sum > min_sum,
+      "fixture should yield a max-content total > min-content total"
+    );
+    let available_content_width = min_sum + (max_sum - min_sum) * 0.5;
+
+    let deadline = RenderDeadline::new(Some(Duration::ZERO), None);
+    let result = with_deadline(Some(&deadline), || {
+      tfc.bench_column_constraints_and_distribute(
+        &table_box,
+        &structure,
+        available_content_width,
+        None,
+      )
+    });
+
+    assert!(matches!(result, Err(LayoutError::Timeout { .. })));
   }
 
   fn table_with_loose_cell() -> BoxNode {

@@ -651,12 +651,18 @@ fn bench_table_intrinsic(c: &mut Criterion) {
     let percent_base = Some(available_content_width);
     group.bench_function("table_column_constraints_only", |b| {
       b.iter(|| {
-        let widths = tfc.bench_column_constraints_and_distribute(
+        let widths = match tfc.bench_column_constraints_and_distribute(
           black_box(&table_box),
           black_box(&structure),
           black_box(available_content_width),
           percent_base,
-        );
+        ) {
+          Ok(widths) => widths,
+          Err(err) => {
+            eprintln!("Skipping bench iteration due to table distribution error: {err}");
+            Vec::new()
+          }
+        };
         black_box(widths);
       })
     });

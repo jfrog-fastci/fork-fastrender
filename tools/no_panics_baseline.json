@@ -18,30 +18,6 @@
     "count": 1
   },
   {
-    "path": "src/bin/browser.rs",
-    "kind": "expect",
-    "line": ".expect(\"failed to create winit window\");",
-    "count": 1
-  },
-  {
-    "path": "src/bin/diff_snapshots.rs",
-    "kind": "unreachable",
-    "line": "(None, None) => unreachable!(\"stem discovered without any snapshots\"),",
-    "count": 1
-  },
-  {
-    "path": "src/bin/font_coverage.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"clap enforces one input source\")",
-    "count": 1
-  },
-  {
-    "path": "src/bin/inspect_frag.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(\"validated mutual exclusion above\"),",
-    "count": 1
-  },
-  {
     "path": "src/css/properties.rs",
     "kind": "expect",
     "line": "return Ok(values.pop().expect(\"length checked\"));",
@@ -120,12 +96,6 @@
     "count": 1
   },
   {
-    "path": "src/image_output.rs",
-    "kind": "unreachable",
-    "line": "(None, None) => unreachable!(\"loop bounds ensure at least one pixel is present\"),",
-    "count": 1
-  },
-  {
     "path": "src/layout/contexts/block/mod.rs",
     "kind": "unwrap",
     "line": "let (min_content, max_content) = intrinsic_content_sizes.unwrap();",
@@ -150,33 +120,9 @@
     "count": 1
   },
   {
-    "path": "src/layout/contexts/block/mod.rs",
-    "kind": "unreachable",
-    "line": "Float::None | Float::Footnote => unreachable!(),",
-    "count": 1
-  },
-  {
     "path": "src/layout/contexts/flex.rs",
     "kind": "expect",
     "line": "let mut fragment = fragment.take().expect(\"fragment already normalized\");",
-    "count": 1
-  },
-  {
-    "path": "src/layout/contexts/flex.rs",
-    "kind": "assert",
-    "line": "assert!(",
-    "count": 1
-  },
-  {
-    "path": "src/layout/contexts/flex.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(\"width_is_intrinsic_probe guarded avail.width\"),",
-    "count": 1
-  },
-  {
-    "path": "src/layout/contexts/inline/mod.rs",
-    "kind": "unreachable",
-    "line": "crate::style::float::Float::None | crate::style::float::Float::Footnote => unreachable!(),",
     "count": 1
   },
   {
@@ -207,36 +153,6 @@
     "path": "src/layout/table.rs",
     "kind": "unwrap",
     "line": "let row = row.unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "assert",
-    "line": "assert!(!metrics.has_baseline);",
-    "count": 1
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "assert",
-    "line": "assert!((metrics.baseline_height() - 15.0).abs() < 0.01);",
-    "count": 1
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "assert",
-    "line": "assert!((metrics.baseline_height() - 24.0).abs() < 0.01);",
-    "count": 1
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "panic",
-    "line": ".unwrap_or_else(|err| panic!(\"bench_column_constraints_and_distribute: {err}\"));",
-    "count": 1
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "panic",
-    "line": "panic!(\"table column distribution timed out: {err:?}\");",
     "count": 1
   },
   {
@@ -372,12 +288,6 @@
     "count": 1
   },
   {
-    "path": "src/resource.rs",
-    "kind": "unreachable",
-    "line": "ReferrerPolicy::EmptyString => unreachable!(\"policy resolved above\"),",
-    "count": 1
-  },
-  {
     "path": "src/resource/curl_backend.rs",
     "kind": "expect",
     "line": "let budget = timeout_budget.expect(\"budget mode should be active\");",
@@ -510,12 +420,6 @@
     "count": 3
   },
   {
-    "path": "src/style/cascade.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"build_part_index only sorts ::part pseudos\")",
-    "count": 2
-  },
-  {
     "path": "src/style/grid.rs",
     "kind": "unwrap",
     "line": "let (flow_parsed, remainder) = parse_auto_flow_tokens(right.unwrap());",
@@ -538,12 +442,6 @@
     "kind": "unwrap",
     "line": "line_names.last_mut().unwrap().extend(first.iter().cloned());",
     "count": 2
-  },
-  {
-    "path": "src/style/media.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(),",
-    "count": 3
   },
   {
     "path": "src/style/properties.rs",
@@ -666,12 +564,6 @@
     "count": 1
   },
   {
-    "path": "src/tree/anonymous.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"split stack always returns from within the loop\");",
-    "count": 1
-  },
-  {
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
     "line": ".expect(\"children state always has composed children\");",
@@ -720,42 +612,6 @@
     "count": 1
   },
   {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "Display::None => unreachable!(\"display:none pseudo-elements are filtered before counter scope\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "Display::None | Display::Contents => unreachable!(\"handled above\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "Visibility::Collapse => unreachable!(\"collapse is normalized to hidden\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(\"memchr2 returned non-matching byte\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(\"memchr3 returned non-matching byte\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"non-empty pseudo-element content values must be ContentValue::Items\");",
-    "count": 1
-  },
-  {
     "path": "src/tree/box_generation_demo.rs",
     "kind": "unwrap",
     "line": "let text = node.text.as_ref().unwrap().clone();",
@@ -765,12 +621,6 @@
     "path": "src/tree/fragment_tree.rs",
     "kind": "expect",
     "line": ".expect(\"at least one fragment root required\");",
-    "count": 1
-  },
-  {
-    "path": "src/ui/pixmap_texture.rs",
-    "kind": "expect",
-    "line": "u8::try_from(unmultiplied.min(255)).expect(\"value fits in u8\")",
     "count": 1
   }
 ]

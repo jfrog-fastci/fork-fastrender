@@ -371,12 +371,18 @@ fn bench_table_cell_intrinsic_and_distribution(c: &mut Criterion) {
   let mut group = c.benchmark_group("layout_hotspots_table_intrinsic");
   group.bench_function("cell_intrinsic_and_distribution_12x12", |b| {
     b.iter(|| {
-      let widths = tfc.bench_column_constraints_and_distribute(
+      let widths = match tfc.bench_column_constraints_and_distribute(
         black_box(&table_box),
         black_box(&structure),
         black_box(available_content_width),
         percent_base,
-      );
+      ) {
+        Ok(widths) => widths,
+        Err(err) => {
+          eprintln!("Skipping bench iteration due to table distribution error: {err}");
+          Vec::new()
+        }
+      };
       black_box(widths);
     })
   });
