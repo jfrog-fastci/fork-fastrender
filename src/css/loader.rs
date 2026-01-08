@@ -409,8 +409,14 @@ pub fn absolutize_css_urls_cow<'a>(
     false
   }
 
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    })
+  }
+
   fn should_resolve_css_url(url: &str) -> bool {
-    let trimmed = url.trim();
+    let trimmed = trim_ascii_whitespace(url);
     if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('<') {
       return false;
     }
@@ -489,7 +495,7 @@ pub fn absolutize_css_urls_cow<'a>(
 
   fn resolve_css_url(base: &mut BaseUrlJoinCache<'_>, href: &str) -> Option<ResolvedCssUrl> {
     let href = unescape_js_escapes(href);
-    let href = href.trim();
+    let href = trim_ascii_whitespace(href.as_ref());
     if href.is_empty() {
       return None;
     }

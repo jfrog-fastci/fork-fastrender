@@ -129,6 +129,17 @@ fn resolve_href_does_not_trim_non_ascii_whitespace() {
 }
 
 #[test]
+fn absolutize_does_not_trim_non_ascii_whitespace_in_url_tokens() {
+  let nbsp = "\u{00A0}";
+  let css = format!("div {{ background: url(\"  foo{nbsp}  \"); }}");
+  let out = absolutize_css_urls(&css, "https://example.com/base/main.css").unwrap();
+  assert!(
+    out.contains("url(\"https://example.com/base/foo%C2%A0\")"),
+    "expected NBSP to be preserved and percent-encoded: {out}"
+  );
+}
+
+#[test]
 fn inline_imports_resolves_urls_relative_to_imported_sheet() {
   let mut state = InlineImportState::new();
   let mut fetch = |url: &str, _referrer: &str| -> fastrender::error::Result<FetchedStylesheet> {
