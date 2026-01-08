@@ -558,6 +558,68 @@ fn vertical_rl_writing_mode_align_content_end_packs_lines_against_cross_end() {
 }
 
 #[test]
+fn vertical_lr_writing_mode_align_content_start_packs_lines_against_cross_start() {
+  let fc = FlexFormattingContext::new();
+
+  // In `VerticalLr`, the cross-start edge for a row-direction flex container is on the physical
+  // left edge. `align-content: start` should pack the line box against that edge, leaving all
+  // remaining free space on the right.
+  let container = build_multiline_container(
+    AlignContent::Start,
+    WritingMode::VerticalLr,
+    FlexDirection::Row,
+    FlexWrap::Wrap,
+    50.0,
+    60.0,
+    5.0,
+    0.0,
+    10.0,
+    30.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(50.0, 60.0))
+    .expect("layout succeeds");
+
+  // Two lines (10px wide) plus 5px row-gap => total cross span 25px.
+  // Packed against cross-start (left): first line at x=0, second line at x=15.
+  let epsilon = 0.6;
+  assert_approx(find_block_child(&fragment, 1).bounds.x(), 0.0, epsilon, "child1 x");
+  assert_approx(find_block_child(&fragment, 2).bounds.x(), 0.0, epsilon, "child2 x");
+  assert_approx(find_block_child(&fragment, 3).bounds.x(), 15.0, epsilon, "child3 x");
+}
+
+#[test]
+fn vertical_lr_writing_mode_align_content_end_packs_lines_against_cross_end() {
+  let fc = FlexFormattingContext::new();
+
+  // In `VerticalLr`, the cross-start edge for a row-direction flex container is on the physical
+  // left edge. `align-content: end` should instead pack the line box against the cross-end edge on
+  // the physical right, leaving all remaining free space on the left.
+  let container = build_multiline_container(
+    AlignContent::End,
+    WritingMode::VerticalLr,
+    FlexDirection::Row,
+    FlexWrap::Wrap,
+    50.0,
+    60.0,
+    5.0,
+    0.0,
+    10.0,
+    30.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(50.0, 60.0))
+    .expect("layout succeeds");
+
+  // Two lines (10px wide) plus 5px row-gap => total cross span 25px.
+  // Packed against cross-end (right): first line at x=25, second line at x=40.
+  let epsilon = 0.6;
+  assert_approx(find_block_child(&fragment, 1).bounds.x(), 25.0, epsilon, "child1 x");
+  assert_approx(find_block_child(&fragment, 2).bounds.x(), 25.0, epsilon, "child2 x");
+  assert_approx(find_block_child(&fragment, 3).bounds.x(), 40.0, epsilon, "child3 x");
+}
+
+#[test]
 fn space_evenly_respects_padding_and_row_gap_between_lines() {
   let fc = FlexFormattingContext::new();
 
