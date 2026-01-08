@@ -8774,6 +8774,24 @@ mod tests {
   }
 
   #[test]
+  fn nested_has_is_forgiven_inside_is() {
+    // Nested `:has()` is invalid, but selector lists in `:is()` are forgiving, so the invalid
+    // selector should be dropped and the remaining selector list should still parse and match.
+    let selector = parse_selector(".a:has(:is(.b, :has(.c)))");
+
+    let dom = element_with_attrs(
+      "div",
+      vec![("class", "a")],
+      vec![element_with_attrs("div", vec![("class", "b")], vec![])],
+    );
+    let anchor = ElementRef::new(&dom);
+    assert!(
+      selector_matches(&anchor, &selector),
+      "expected nested :has() inside :is() to be ignored, leaving :is(.b)"
+    );
+  }
+
+  #[test]
   fn bloom_summary_pruning_handles_is_breakouts() {
     // `:is()` can contain selectors that match ancestors of the current element, which may live
     // outside the :has() anchor's subtree. Bloom-summary pruning must never treat those ancestor
