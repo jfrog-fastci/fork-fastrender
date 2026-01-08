@@ -2879,13 +2879,13 @@ impl DisplayListBuilder {
       if let Some(root_background) = root_background.as_ref() {
         self.emit_root_background(root_background);
       }
+      self.emit_fragment_list_shallow(
+        &context.fragments,
+        root_fragment_offset,
+        has_opacity,
+        local_child_visibility,
+      );
       if skip_contents {
-        self.emit_fragment_list_shallow(
-          &context.fragments,
-          root_fragment_offset,
-          has_opacity,
-          local_child_visibility,
-        );
         self.pop_clips(ancestor_clips_pushed);
         return self_is_backdrop_sensitive || has_backdrop_sensitive_descendants;
       }
@@ -2903,12 +2903,6 @@ impl DisplayListBuilder {
         );
       }
 
-      self.emit_fragment_list_shallow(
-        &context.fragments,
-        root_fragment_offset,
-        has_opacity,
-        local_child_visibility,
-      );
       self.emit_fragment_list(
         &context.layer3_blocks,
         descendant_content_offset,

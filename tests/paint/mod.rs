@@ -90,6 +90,7 @@ mod projective_mapping;
 mod range_track_pseudo_element;
 mod range_pseudo_opacity;
 mod rasterize_test;
+mod root_negative_z_index_order;
 mod responsive_srcset_golden;
 mod responsive_width_srcset_golden;
 mod scene_tree_test;
