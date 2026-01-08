@@ -13,6 +13,16 @@ use std::ffi::c_void;
 use std::io::Write;
 use tiny_skia::Pixmap;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RgbaAlphaMode {
+  /// The RGBA output buffer uses premultiplied alpha, matching tiny-skia's internal `Pixmap`
+  /// representation.
+  Premultiplied,
+  /// The RGBA output buffer uses straight/unpremultiplied alpha, matching the semantics used by
+  /// [`encode_image`] for PNG/JPEG/WebP output.
+  Straight,
+}
+
 /// Summary of a pixel diff operation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiffMetrics {
@@ -76,17 +86,13 @@ fn unpremultiply_rgba_row(src: &[u8], dst: &mut [u8]) {
   }
 }
 
-pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
-  let width = pixmap.width();
-  let height = pixmap.height();
-  let pixels = pixmap.data();
-
-  // Guard against attempts to encode absurdly large pixmaps: even though the pixmap already
-  // exists, encoders may allocate temporary buffers and we want to fail gracefully instead of
-  // risking an abort on OOM.
+fn checked_pixmap_len(width: u32, height: u32, context: &str) -> Result<usize> {
+  // Guard against absurdly large pixmaps: even though the pixmap already exists, consumers may
+  // allocate temporary buffers (or in the case of `pixmap_to_rgba8`, allocate a second full-frame
+  // RGBA buffer) and we want to fail gracefully instead of risking an abort on OOM.
   if width == 0 || height == 0 {
     return Err(Error::Render(RenderError::InvalidParameters {
-      message: format!("encode_image: pixmap size is zero ({width}x{height})"),
+      message: format!("{context}: pixmap size is zero ({width}x{height})"),
     }));
   }
 
@@ -95,30 +101,86 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
     .and_then(|px| px.checked_mul(4))
     .ok_or_else(|| {
       Error::Render(RenderError::InvalidParameters {
-        message: format!("encode_image: pixmap dimensions overflow ({width}x{height})"),
+        message: format!("{context}: pixmap dimensions overflow ({width}x{height})"),
       })
     })?;
   if expected_len > MAX_PIXMAP_BYTES {
     return Err(Error::Render(RenderError::InvalidParameters {
       message: format!(
-        "encode_image: pixmap {}x{} is {} bytes (limit {})",
+        "{context}: pixmap {}x{} is {} bytes (limit {})",
         width, height, expected_len, MAX_PIXMAP_BYTES
       ),
     }));
   }
-  let expected_len = usize::try_from(expected_len).map_err(|_| {
+
+  usize::try_from(expected_len).map_err(|_| {
     Error::Render(RenderError::InvalidParameters {
-      message: format!("encode_image: pixmap byte size does not fit in usize ({width}x{height})"),
+      message: format!("{context}: pixmap byte size does not fit in usize ({width}x{height})"),
     })
-  })?;
-  if pixels.len() != expected_len {
+  })
+}
+
+fn checked_pixmap_data<'a>(
+  pixmap: &'a Pixmap,
+  context: &str,
+) -> Result<(u32, u32, &'a [u8], usize)> {
+  let width = pixmap.width();
+  let height = pixmap.height();
+  let pixels = pixmap.data();
+
+  let expected_len_usize = checked_pixmap_len(width, height, context)?;
+  if pixels.len() != expected_len_usize {
     return Err(Error::Render(RenderError::InvalidParameters {
       message: format!(
-        "encode_image: pixmap data length mismatch (expected {expected_len} bytes, got {})",
+        "{context}: pixmap data length mismatch (expected {expected_len_usize} bytes, got {})",
         pixels.len()
       ),
     }));
   }
+
+  Ok((width, height, pixels, expected_len_usize))
+}
+
+pub fn pixmap_to_rgba8(pixmap: &Pixmap, mode: RgbaAlphaMode) -> Result<Vec<u8>> {
+  let (width, _height, pixels, expected_len) = checked_pixmap_data(pixmap, "pixmap_to_rgba8")?;
+  let expected_len_u64 = u64::try_from(expected_len).map_err(|_| {
+    Error::Render(RenderError::InvalidParameters {
+      message: format!("pixmap_to_rgba8: pixmap byte size does not fit in u64 ({width}px wide)"),
+    })
+  })?;
+
+  match mode {
+    RgbaAlphaMode::Premultiplied => {
+      let mut out =
+        reserve_buffer(expected_len_u64, "pixmap_to_rgba8: RGBA output buffer").map_err(Error::Render)?;
+      out.extend_from_slice(pixels);
+      Ok(out)
+    }
+    RgbaAlphaMode::Straight => {
+      let row_len = (width as usize).checked_mul(4).ok_or_else(|| {
+        Error::Render(RenderError::InvalidParameters {
+          message: format!("pixmap_to_rgba8: row byte size overflow (width={width})"),
+        })
+      })?;
+
+      let mut out =
+        reserve_buffer(expected_len_u64, "pixmap_to_rgba8: RGBA output buffer").map_err(Error::Render)?;
+      out.resize(expected_len, 0);
+
+      for (src_row, dst_row) in pixels
+        .chunks_exact(row_len)
+        .zip(out.chunks_exact_mut(row_len))
+      {
+        unpremultiply_rgba_row(src_row, dst_row);
+      }
+
+      Ok(out)
+    }
+  }
+}
+
+pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
+  let (width, height, pixels, _expected_len) = checked_pixmap_data(pixmap, "encode_image")?;
 
   match format {
     OutputFormat::Png => {
@@ -524,4 +586,38 @@ pub fn diff_png_with_alpha(
   };
 
   Ok((metrics, diff_png))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn pixmap_to_rgba8_converts_premultiplied_and_straight() {
+    let mut pixmap = Pixmap::new(3, 1).expect("pixmap");
+    let premultiplied: [u8; 12] = [
+      5, 10, 15, 0, // alpha=0 -> RGB should become 0 in straight mode
+      64, 32, 128, 128, // alpha=128 -> exercises f32 rounding
+      200, 100, 50, 255, // alpha=255 -> unchanged
+    ];
+    pixmap.data_mut().copy_from_slice(&premultiplied);
+
+    let premultiplied_out =
+      pixmap_to_rgba8(&pixmap, RgbaAlphaMode::Premultiplied).expect("premultiplied");
+    assert_eq!(&premultiplied_out, premultiplied.as_slice());
+
+    let straight_out = pixmap_to_rgba8(&pixmap, RgbaAlphaMode::Straight).expect("straight");
+    let expected_straight: [u8; 12] = [0, 0, 0, 0, 127, 63, 254, 128, 200, 100, 50, 255];
+    assert_eq!(&straight_out, expected_straight.as_slice());
+  }
+
+  #[test]
+  fn pixmap_len_rejects_oversized_dimensions() {
+    let width = (MAX_PIXMAP_BYTES / 4 + 1) as u32;
+    let height = 1;
+    assert!(matches!(
+      checked_pixmap_len(width, height, "pixmap_to_rgba8"),
+      Err(Error::Render(RenderError::InvalidParameters { .. }))
+    ));
+  }
 }
