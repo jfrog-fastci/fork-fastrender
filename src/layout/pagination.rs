@@ -60,6 +60,128 @@ impl Default for PaginateOptions {
 
 const EPSILON: f32 = 0.01;
 
+fn subtree_has_text(node: &FragmentNode) -> bool {
+  if matches!(node.content, FragmentContent::Text { .. }) {
+    return true;
+  }
+  node.children.iter().any(subtree_has_text)
+}
+
+fn pos_is_inside_atomic(pos: f32, atomic: &[AtomicRange]) -> bool {
+  // Atomic ranges treat their endpoints as break-safe (see `atomic_containing` in
+  // `layout::fragmentation`). Treat near-equal comparisons as outside the interval so pagination can
+  // still place boundaries exactly at atomic endpoints.
+  atomic.iter().any(|range| {
+    pos > range.start + EPSILON && pos < range.end - EPSILON && range.end > range.start + EPSILON
+  })
+}
+
+fn best_in_flow_block_boundary(
+  node: &FragmentNode,
+  abs_start: f32,
+  axis: &FragmentAxis,
+  parent_block_size: f32,
+  start: f32,
+  end: f32,
+  atomic: &[AtomicRange],
+  default_style: &ComputedStyle,
+) -> Option<f32> {
+  const MIN_FRACTION_OF_NEXT_BLOCK_ON_PAGE: f32 = 0.5;
+
+  let node_block_size = axis.block_size(&node.bounds);
+  if node_block_size <= EPSILON {
+    return None;
+  }
+  let node_abs_end = abs_start + node_block_size;
+  if node_abs_end <= start + EPSILON || abs_start >= end - EPSILON {
+    return None;
+  }
+
+  let style = node
+    .style
+    .as_ref()
+    .map(|s| s.as_ref())
+    .unwrap_or(default_style);
+  if style.float.is_floating() {
+    return None;
+  }
+
+  let mut best: Option<f32> = None;
+  for idx in 0..node.children.len().saturating_sub(1) {
+    let child = &node.children[idx];
+    let next = &node.children[idx + 1];
+    if !child.content.is_block() || !next.content.is_block() {
+      continue;
+    }
+
+    let (_child_abs_start, child_abs_end) =
+      axis.flow_range(abs_start, parent_block_size, &child.bounds);
+    let (next_abs_start, next_abs_end) = axis.flow_range(abs_start, parent_block_size, &next.bounds);
+
+    let mut boundary = child_abs_end;
+    if let Some(meta) = child.block_metadata.as_ref() {
+      let mut candidate = child_abs_end + meta.margin_bottom;
+      if candidate < child_abs_end {
+        candidate = child_abs_end;
+      }
+      candidate = candidate.min(next_abs_start);
+      boundary = candidate;
+    }
+
+    if boundary <= start + EPSILON || boundary > end + EPSILON {
+      continue;
+    }
+    if pos_is_inside_atomic(boundary, atomic) {
+      continue;
+    }
+
+    // Only apply this heuristic when the fragmentainer boundary would cut through the start of
+    // `next` (i.e., `next` would be partially visible on this page), and that partial portion is a
+    // small fraction of the block. This avoids forcing earlier breaks for "spacer" blocks where
+    // clipping is acceptable (e.g. an empty div used for vertical space).
+    if next_abs_start >= end - EPSILON || next_abs_end <= end + EPSILON {
+      continue;
+    }
+    let next_block_size = next_abs_end - next_abs_start;
+    if next_block_size <= EPSILON {
+      continue;
+    }
+    if next_block_size > (end - start) + EPSILON {
+      continue;
+    }
+    let fraction_on_page = ((end - next_abs_start).max(0.0) / next_block_size).min(1.0);
+    if fraction_on_page >= MIN_FRACTION_OF_NEXT_BLOCK_ON_PAGE {
+      continue;
+    }
+    if !subtree_has_text(next) {
+      continue;
+    }
+    best = Some(best.map_or(boundary, |prev| prev.max(boundary)));
+  }
+
+  for child in node.children.iter() {
+    let child_block_size = axis.block_size(&child.bounds);
+    if child_block_size <= EPSILON {
+      continue;
+    }
+    let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+    if let Some(candidate) = best_in_flow_block_boundary(
+      child,
+      child_abs_start,
+      axis,
+      child_block_size,
+      start,
+      end,
+      atomic,
+      default_style,
+    ) {
+      best = Some(best.map_or(candidate, |prev| prev.max(candidate)));
+    }
+  }
+
+  best
+}
+
 fn opposite_page_side(side: PageSide) -> PageSide {
   match side {
     PageSide::Left => PageSide::Right,
@@ -477,14 +599,44 @@ pub fn paginate_fragment_tree(
         page_style.content_size.height
       }
       .max(1.0);
-      let mut end_candidate = (start + page_block).min(total_height);
+      let natural_end = (start + page_block).min(total_height);
+      let mut end_candidate = natural_end;
+      let mut forced_break = false;
       if let Some(boundary) = next_forced_boundary(&layout.forced_boundaries, start, end_candidate)
       {
         end_candidate = boundary;
+        forced_break = true;
       }
 
       end_candidate =
         adjust_for_atomic_ranges(start, end_candidate, &layout.atomic_ranges).min(total_height);
+
+      // When the fragmentainer limit would clip into the start of an in-flow block (e.g. showing
+      // the first line of the next heading at the bottom of the page), prefer breaking at the
+      // prior in-flow boundary instead. This approximates the standard fragmentation algorithm of
+      // filling the fragmentainer until the next sibling would overflow, without forcing earlier
+      // breaks for spacer-only blocks.
+      //
+      // Keep forced breaks and atomic-range adjustments authoritative: those are already producing
+      // a deliberate boundary choice.
+      if !forced_break
+        && (end_candidate - natural_end).abs() < EPSILON
+        && natural_end + EPSILON < total_height
+      {
+        let default_style = ComputedStyle::default();
+        if let Some(boundary) = best_in_flow_block_boundary(
+          &layout.root,
+          0.0,
+          &axis,
+          root_block_size,
+          start,
+          end_candidate,
+          &layout.atomic_ranges,
+          &default_style,
+        ) {
+          end_candidate = boundary;
+        }
+      }
 
       if end_candidate <= start + EPSILON {
         end_candidate = adjust_for_atomic_ranges(
