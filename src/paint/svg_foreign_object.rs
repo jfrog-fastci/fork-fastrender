@@ -23,7 +23,7 @@ use crate::tree::fragment_tree::FragmentTree;
 use crate::{Point, Rect};
 use std::fmt::Write as _;
 use std::sync::Arc;
-use tiny_skia::Pixmap;
+use tiny_skia::{Pixmap, Transform};
 
 /// Compute the device pixel ratio to use when rasterizing `<foreignObject>` HTML into a PNG.
 ///
@@ -104,6 +104,95 @@ pub(crate) fn foreign_object_html_device_pixel_ratio(
   outer_device_pixel_ratio * scale_factor
 }
 
+fn transform_scale_factor(transform: Transform) -> f32 {
+  let scale_x = (transform.sx * transform.sx + transform.ky * transform.ky).sqrt();
+  let scale_y = (transform.kx * transform.kx + transform.sy * transform.sy).sqrt();
+  if scale_x.is_finite() && scale_y.is_finite() && scale_x > 0.0 && scale_y > 0.0 {
+    scale_x.max(scale_y)
+  } else {
+    1.0
+  }
+}
+
+fn parse_svg_transform_attribute(value: &str) -> Option<Transform> {
+  let mut combined = Transform::identity();
+  for item in svgtypes::TransformListParser::from(value) {
+    let item = item.ok()?;
+    let t = match item {
+      svgtypes::TransformListToken::Matrix { a, b, c, d, e, f } => {
+        Transform::from_row(a as f32, b as f32, c as f32, d as f32, e as f32, f as f32)
+      }
+      svgtypes::TransformListToken::Translate { tx, ty } => {
+        Transform::from_translate(tx as f32, ty as f32)
+      }
+      svgtypes::TransformListToken::Scale { sx, sy } => {
+        Transform::from_scale(sx as f32, sy as f32)
+      }
+      svgtypes::TransformListToken::Rotate { angle } => Transform::from_rotate(angle as f32),
+      svgtypes::TransformListToken::SkewX { angle } => {
+        let tan = (angle as f32).to_radians().tan();
+        Transform::from_row(1.0, 0.0, tan, 1.0, 0.0, 0.0)
+      }
+      svgtypes::TransformListToken::SkewY { angle } => {
+        let tan = (angle as f32).to_radians().tan();
+        Transform::from_row(1.0, tan, 0.0, 1.0, 0.0, 0.0)
+      }
+    };
+    combined = combined.pre_concat(t);
+  }
+  Some(combined)
+}
+
+fn foreign_object_transform_scale(
+  svg_doc: Option<&roxmltree::Document<'_>>,
+  placeholder: &str,
+  attributes: &[(String, String)],
+) -> f32 {
+  let mut combined = Transform::identity();
+
+  if let Some(doc) = svg_doc {
+    let needle = placeholder
+      .trim()
+      .strip_prefix("<!--")
+      .and_then(|s| s.strip_suffix("-->"))
+      .unwrap_or_else(|| placeholder.trim())
+      .trim();
+
+    if !needle.is_empty() {
+      let comment = doc
+        .descendants()
+        .find(|node| node.is_comment() && node.text().is_some_and(|t| t.trim() == needle));
+      if let Some(comment) = comment {
+        let mut current = comment.parent();
+        while let Some(node) = current {
+          if node.is_element() {
+            for attr in node.attributes() {
+              if attr.name().eq_ignore_ascii_case("transform") {
+                if let Some(t) = parse_svg_transform_attribute(attr.value()) {
+                  combined = t.pre_concat(combined);
+                }
+                break;
+              }
+            }
+          }
+          current = node.parent();
+        }
+      }
+    }
+  }
+
+  for (name, value) in attributes {
+    if name.eq_ignore_ascii_case("transform") {
+      if let Some(t) = parse_svg_transform_attribute(value) {
+        combined = combined.pre_concat(t);
+      }
+      break;
+    }
+  }
+
+  transform_scale_factor(combined).max(1.0)
+}
+
 fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacement: &str) {
   if let Some(pos) = svg.find(placeholder) {
     let end = pos + placeholder.len();
@@ -159,27 +248,31 @@ pub(crate) fn inline_svg_with_foreign_objects(
   device_pixel_ratio: f32,
   max_iframe_depth: usize,
 ) -> Option<String> {
-  let mut svg = svg.to_string();
+  let svg_doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(svg)))
+    .ok()
+    .and_then(|doc| doc.ok());
+  let mut out_svg = svg.to_string();
   for (idx, foreign) in foreign_objects.iter().enumerate() {
-    let (data_url, image_bounds) = render_foreign_object_data_url(
-      foreign,
-      shared_css,
-      font_ctx,
-      image_cache,
-      device_pixel_ratio,
-      max_iframe_depth,
-    )?;
-    let replacement = foreign_object_image_tag(foreign, &data_url, idx, image_bounds);
     let placeholder = if foreign.placeholder.is_empty() {
       format!("<!--FASTRENDER_FOREIGN_OBJECT_{}-->", idx)
     } else {
       foreign.placeholder.clone()
     };
+    let transform_scale = foreign_object_transform_scale(svg_doc.as_ref(), &placeholder, &foreign.attributes);
+    let (data_url, image_bounds) = render_foreign_object_data_url(
+      foreign,
+      shared_css,
+      font_ctx,
+      image_cache,
+      device_pixel_ratio * transform_scale,
+      max_iframe_depth,
+    )?;
+    let replacement = foreign_object_image_tag(foreign, &data_url, idx, image_bounds);
 
-    replace_placeholder_or_insert(&mut svg, &placeholder, &replacement);
+    replace_placeholder_or_insert(&mut out_svg, &placeholder, &replacement);
   }
 
-  Some(svg)
+  Some(out_svg)
 }
 
 pub(crate) fn foreign_object_image_tag(
@@ -699,4 +792,18 @@ mod tests {
     let dpr = foreign_object_html_device_pixel_ratio(svg, 1.0, 160.0, 160.0, 160.0, 160.0);
     assert!((dpr - 10.0).abs() < 0.01, "expected dpr ~10, got {dpr}");
   }
-} 
+
+  #[test]
+  fn foreign_object_transform_scale_accounts_for_ancestor_and_element_transforms() {
+    let svg =
+      r#"<svg xmlns="http://www.w3.org/2000/svg"><g transform="scale(2)"><!--FASTRENDER_FOREIGN_OBJECT_0--></g></svg>"#;
+    let doc = roxmltree::Document::parse(svg).expect("parse svg");
+    let attrs = vec![(
+      "transform".to_string(),
+      "translate(0 0) scale(3)".to_string(),
+    )];
+    let scale =
+      super::foreign_object_transform_scale(Some(&doc), "<!--FASTRENDER_FOREIGN_OBJECT_0-->", &attrs);
+    assert!((scale - 6.0).abs() < 0.01, "expected scale ~6, got {scale}");
+  }
+}  

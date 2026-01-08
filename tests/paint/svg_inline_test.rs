@@ -426,6 +426,132 @@ fn foreign_object_rasterization_accounts_for_svg_view_box_scale_legacy_backend()
 }
 
 #[test]
+fn foreign_object_rasterization_accounts_for_svg_transform_scale_display_list_backend() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="320" height="160" viewBox="0 0 320 160">
+        <g transform="scale(10)">
+          <foreignObject x="0" y="0" width="16" height="16">
+            <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;background:white;position:relative;">
+              <div style="position:absolute;left:8px;top:0;width:1px;height:16px;background:black;"></div>
+            </div>
+          </foreignObject>
+        </g>
+        <foreignObject x="0" y="0" width="16" height="16" transform="translate(160 0) scale(10)">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;background:white;position:relative;">
+            <div style="position:absolute;left:8px;top:0;width:1px;height:16px;background:black;"></div>
+          </div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      let toggles = RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "display_list".to_string(),
+      )]));
+      let options = RenderOptions::new()
+        .with_viewport(400, 200)
+        .with_runtime_toggles(toggles);
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+
+      for (name, x0) in [("ancestor", 80u32), ("self", 240u32)] {
+        let left = pixel(&pixmap, x0 - 1, 80);
+        let start = pixel(&pixmap, x0, 80);
+        let end = pixel(&pixmap, x0 + 9, 80);
+        let right = pixel(&pixmap, x0 + 10, 80);
+        assert!(
+          left[0] > 240 && left[1] > 240 && left[2] > 240,
+          "({name}) expected crisp white pixel just outside the line, got {left:?}"
+        );
+        assert!(
+          start[0] < 20 && start[1] < 20 && start[2] < 20,
+          "({name}) expected dark pixel inside the line, got {start:?}"
+        );
+        assert!(
+          end[0] < 20 && end[1] < 20 && end[2] < 20,
+          "({name}) expected dark pixel inside the line, got {end:?}"
+        );
+        assert!(
+          right[0] > 240 && right[1] > 240 && right[2] > 240,
+          "({name}) expected crisp white pixel just outside the line, got {right:?}"
+        );
+      }
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn foreign_object_rasterization_accounts_for_svg_transform_scale_legacy_backend() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="320" height="160" viewBox="0 0 320 160">
+        <g transform="scale(10)">
+          <foreignObject x="0" y="0" width="16" height="16">
+            <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;background:white;position:relative;">
+              <div style="position:absolute;left:8px;top:0;width:1px;height:16px;background:black;"></div>
+            </div>
+          </foreignObject>
+        </g>
+        <foreignObject x="0" y="0" width="16" height="16" transform="translate(160 0) scale(10)">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;background:white;position:relative;">
+            <div style="position:absolute;left:8px;top:0;width:1px;height:16px;background:black;"></div>
+          </div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      let toggles = RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "legacy".to_string(),
+      )]));
+      let options = RenderOptions::new()
+        .with_viewport(400, 200)
+        .with_runtime_toggles(toggles);
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+
+      for (name, x0) in [("ancestor", 80u32), ("self", 240u32)] {
+        let left = pixel(&pixmap, x0 - 1, 80);
+        let start = pixel(&pixmap, x0, 80);
+        let end = pixel(&pixmap, x0 + 9, 80);
+        let right = pixel(&pixmap, x0 + 10, 80);
+        assert!(
+          left[0] > 240 && left[1] > 240 && left[2] > 240,
+          "({name}) expected crisp white pixel just outside the line, got {left:?}"
+        );
+        assert!(
+          start[0] < 20 && start[1] < 20 && start[2] < 20,
+          "({name}) expected dark pixel inside the line, got {start:?}"
+        );
+        assert!(
+          end[0] < 20 && end[1] < 20 && end[2] < 20,
+          "({name}) expected dark pixel inside the line, got {end:?}"
+        );
+        assert!(
+          right[0] > 240 && right[1] > 240 && right[2] > 240,
+          "({name}) expected crisp white pixel just outside the line, got {right:?}"
+        );
+      }
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_applies_foreign_object_opacity_presentation_attribute() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
