@@ -1914,12 +1914,19 @@ fn collect_break_opportunities(
             abs_start
           } else if boundary_idx == tracks.len() {
             abs_end
-          } else if let Some((_, track_end)) = tracks.get(boundary_idx.saturating_sub(1)).copied() {
-            // The gutter belongs to the following band; align the boundary to the end edge of the
-            // preceding track so breaks never land after a `row-gap`/`column-gap`.
-            abs_start + axis.flow_offset(track_end, 0.0, node_block_size)
           } else {
-            continue;
+            let Some((track_start, track_end)) = tracks.get(boundary_idx.saturating_sub(1)).copied()
+            else {
+              continue;
+            };
+            let track_size = track_end - track_start;
+            if track_size <= BREAK_EPSILON {
+              continue;
+            }
+            // The gutter belongs to the following band; align the boundary to the end edge of the
+            // preceding track (in the flow direction) so breaks never land after a
+            // `row-gap`/`column-gap`.
+            abs_start + axis.flow_offset(track_start, track_size, node_block_size) + track_size
           };
 
           collection.opportunities.push(BreakOpportunity {
@@ -2223,34 +2230,41 @@ fn collect_forced_boundaries_with_axes_internal(
           }
 
           if boundary_reqs.iter().any(|req| req.forced) {
-             // Grid line boundaries should align to row/column band atomic ranges. Our atomic range
-             // collection treats the gutter *following* a track as belonging to the next band, so
-             // the boundary before line `i + 1` is the end edge of track `i` (rather than the start
-             // edge of track `i + 1`, which would land after the gutter and can create gap-only
-             // pages when page sizes line up exactly with track ends).
-             let mut track_flow_ends = Vec::with_capacity(tracks.len());
-             for (_track_start, track_end) in tracks.iter().copied() {
-               track_flow_ends.push(abs_start + axis.flow_offset(track_end, 0.0, parent_block_size));
-             }
+            // Grid line boundaries should align to row/column band atomic ranges. Our atomic range
+            // collection treats the gutter *following* a track as belonging to the next band, so
+            // the boundary before line `i + 1` is the end edge of track `i` (rather than the start
+            // edge of track `i + 1`, which would land after the gutter and can create gap-only
+            // pages when page sizes line up exactly with track ends).
+            let mut track_flow_ends = Vec::with_capacity(tracks.len());
+            for (track_start, track_end) in tracks.iter().copied() {
+              let track_size = track_end - track_start;
+              if track_size <= BREAK_EPSILON {
+                track_flow_ends.push(abs_start);
+                continue;
+              }
+              track_flow_ends.push(
+                abs_start + axis.flow_offset(track_start, track_size, parent_block_size) + track_size,
+              );
+            }
 
-             if boundary_reqs[0].forced {
-               forced.push(ForcedBoundary {
-                 position: abs_start,
-                 page_side: boundary_reqs[0].side,
-               });
-             }
-             for idx in 1..tracks.len() {
-               let req = boundary_reqs[idx];
-               if !req.forced {
-                 continue;
-               }
-               if let Some(&position) = track_flow_ends.get(idx.saturating_sub(1)) {
-                 forced.push(ForcedBoundary {
-                   position,
-                   page_side: req.side,
-                 });
-               }
-             }
+            if boundary_reqs[0].forced {
+              forced.push(ForcedBoundary {
+                position: abs_start,
+                page_side: boundary_reqs[0].side,
+              });
+            }
+            for idx in 1..tracks.len() {
+              let req = boundary_reqs[idx];
+              if !req.forced {
+                continue;
+              }
+              if let Some(&position) = track_flow_ends.get(idx.saturating_sub(1)) {
+                forced.push(ForcedBoundary {
+                  position,
+                  page_side: req.side,
+                });
+              }
+            }
             let end_req = boundary_reqs[tracks.len()];
             if end_req.forced {
               forced.push(ForcedBoundary {
@@ -2462,45 +2476,39 @@ fn collect_atomic_range_for_node(
       } else {
         &grid_tracks.rows
       };
-      let mut push_grid_range = |physical_start: f32, physical_end: f32, filter_size: f32| {
-        let size = physical_end - physical_start;
-        if size <= BREAK_EPSILON {
-          return;
-        }
-        if matches!(context, FragmentationContext::Page) {
-          if let Some(fragmentainer_size) = fragmentainer_size {
-            if filter_size > fragmentainer_size + BREAK_EPSILON {
-              return;
-            }
-          }
-        }
-
-        let flow_offset = axis.flow_offset(physical_start, size, node_block_size);
-        let start = abs_start + flow_offset;
-        let end = start + size;
-        if end <= start + BREAK_EPSILON {
-          return;
-        }
-        ranges.push(AtomicRange { start, end });
-      };
 
       // Treat each grid track as indivisible. Additionally, treat the inter-track gutter preceding
       // each track as part of the following track so pagination never splits a `row-gap`/`column-gap`
       // across fragmentainers (and avoids producing a fragmentainer that contains only the gap).
-      let mut prev_end: Option<f32> = None;
+      let mut prev_flow_end: Option<f32> = None;
       for (track_start, track_end) in tracks.iter().copied() {
         let track_size = track_end - track_start;
         if track_size <= BREAK_EPSILON {
-          prev_end = Some(track_end);
           continue;
         }
 
-        let physical_start = match prev_end {
-          Some(prev_end) if track_start > prev_end + BREAK_EPSILON => prev_end,
-          _ => track_start,
-        };
-        push_grid_range(physical_start, track_end, track_size);
-        prev_end = Some(track_end);
+        let flow_offset = axis.flow_offset(track_start, track_size, node_block_size);
+        let mut start = abs_start + flow_offset;
+        let end = start + track_size;
+
+        if let Some(prev_end) = prev_flow_end {
+          if start > prev_end + BREAK_EPSILON {
+            start = prev_end;
+          }
+        }
+        prev_flow_end = Some(end);
+
+        if matches!(context, FragmentationContext::Page) {
+          if let Some(fragmentainer_size) = fragmentainer_size {
+            if track_size > fragmentainer_size + BREAK_EPSILON {
+              continue;
+            }
+          }
+        }
+
+        if end > start + BREAK_EPSILON {
+          ranges.push(AtomicRange { start, end });
+        }
       }
     }
   }
@@ -2680,7 +2688,7 @@ fn default_style() -> &'static ComputedStyle {
 mod tests {
   use super::*;
   use crate::layout::axis::FragmentAxes;
-  use crate::tree::fragment_tree::GridTrackRanges;
+  use crate::tree::fragment_tree::{GridFragmentationInfo, GridTrackRanges};
   use std::sync::Arc;
   use std::time::{Duration, Instant};
 
@@ -2797,6 +2805,130 @@ mod tests {
     assert!(
       (first_break - 15.0).abs() < BREAK_EPSILON,
       "expected break before the grid row band, got {first_break} (boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
+  fn grid_forced_breaks_align_to_track_boundaries_in_block_negative_writing_mode() {
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    grid_style.writing_mode = WritingMode::VerticalRl;
+    let grid_style = Arc::new(grid_style);
+
+    let mut first_style = ComputedStyle::default();
+    first_style.break_after = BreakBetween::Page;
+    first_style.writing_mode = WritingMode::VerticalRl;
+    let first_style = Arc::new(first_style);
+
+    let mut first = FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 0.0, 30.0, 20.0),
+      vec![],
+      first_style,
+    );
+    // Ensure the metadata is wired consistently for the propagation logic.
+    first.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut second = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 30.0, 20.0),
+      vec![],
+      Arc::new({
+        let mut style = ComputedStyle::default();
+        style.writing_mode = WritingMode::VerticalRl;
+        style
+      }),
+    );
+    second.content = FragmentContent::Block { box_id: Some(2) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 70.0, 20.0),
+      vec![first, second],
+      grid_style,
+    );
+    // Two 30px columns with a 10px gap between them in physical space. In `writing-mode: vertical-rl`
+    // the block axis is horizontal and negative, so the first column appears on the right.
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: Vec::new(),
+      columns: vec![(40.0, 70.0), (0.0, 30.0)],
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 1,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 2,
+          row_start: 1,
+          row_end: 2,
+          column_start: 2,
+          column_end: 3,
+        },
+      ],
+    }));
+
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 70.0, 20.0), vec![grid]);
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Page,
+      FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr),
+      Some(100.0),
+    );
+    let total_extent = analyzer.content_extent().max(100.0);
+    let boundaries = analyzer.boundaries(100.0, total_extent).unwrap();
+
+    assert_eq!(
+      boundaries
+        .iter()
+        .copied()
+        .filter(|b| *b > BREAK_EPSILON && (*b - 30.0).abs() < BREAK_EPSILON)
+        .count(),
+      1,
+      "expected the forced break to align to the end edge of the first column track (flow pos 30), got {boundaries:?}"
+    );
+  }
+
+  #[test]
+  fn grid_gutters_are_not_split_in_block_negative_writing_mode() {
+    // Two 30px tracks separated by a 10px gap. Use a fragmentainer size that would land 5px into
+    // the gap if we didn't treat the gutter as belonging to the following track.
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    grid_style.writing_mode = WritingMode::VerticalRl;
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 70.0, 20.0),
+      vec![
+        FragmentNode::new_block(Rect::from_xywh(40.0, 0.0, 30.0, 20.0), vec![]),
+        FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 30.0, 20.0), vec![]),
+      ],
+      Arc::new(grid_style),
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: Vec::new(),
+      columns: vec![(40.0, 70.0), (0.0, 30.0)],
+    }));
+
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 70.0, 20.0), vec![grid]);
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Page,
+      FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr),
+      Some(35.0),
+    );
+    let total_extent = analyzer.content_extent().max(35.0);
+    let boundaries = analyzer.boundaries(35.0, total_extent).unwrap();
+
+    let first_break = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+    assert!(
+      (first_break - 30.0).abs() < BREAK_EPSILON,
+      "expected break at the start of the 10px column gap (flow pos 30), got {first_break} (boundaries={boundaries:?})"
     );
   }
 
