@@ -2816,7 +2816,8 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
     if parts.is_empty() || parts.len() > 2 {
       return None;
     }
-    let count = parts[0].parse::<u32>().ok()?;
+    let count_raw = parts[0].parse::<i64>().ok()?;
+    let count = u32::try_from(count_raw).ok()?;
     if count == 0 {
       return None;
     }

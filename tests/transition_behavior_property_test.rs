@@ -2,7 +2,7 @@ use fastrender::css::types::{Declaration, PropertyValue};
 use fastrender::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
 use fastrender::style::types::{
   AnimationComposition, AnimationDirection, AnimationFillMode, AnimationIterationCount,
-  AnimationPlayState, TransitionBehavior, TransitionProperty, TransitionTimingFunction,
+  AnimationPlayState, StepPosition, TransitionBehavior, TransitionProperty, TransitionTimingFunction,
 };
 use fastrender::style::ComputedStyle;
 
@@ -1404,6 +1404,36 @@ fn transition_timing_function_rejects_invalid_steps_function() {
       vec![TransitionTimingFunction::Linear].into()
     );
   }
+}
+
+#[test]
+fn transition_timing_function_steps_accepts_positive_sign() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "transition-timing-function".into(),
+    value: PropertyValue::Keyword("steps(+4, end)".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::Steps(4, StepPosition::End)].into()
+  );
 }
 
 #[test]
