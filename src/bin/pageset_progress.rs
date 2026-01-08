@@ -23,7 +23,7 @@ use common::render_pipeline::{
   build_http_fetcher, build_render_configs, decode_html_resource,
   follow_client_redirects_resource_with_deadline, format_error_with_chain, log_layout_parallelism,
   read_cached_document, render_fetched_document, render_fetched_document_with_artifacts,
-  RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
+  CachedDocument, RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{
   CascadeDiagnostics, DiagnosticsLevel, LayoutDiagnostics, PaintDiagnostics, RenderArtifactRequest,
@@ -31,7 +31,7 @@ use fastrender::api::{
   ResourceDiagnostics, ResourceFetchError, ResourceKind,
 };
 use fastrender::debug::snapshot;
-use fastrender::error::{RenderError, RenderStage};
+use fastrender::error::{RenderError, RenderStage, ResourceError};
 use fastrender::image_compare::{self, CompareConfig};
 use fastrender::pageset::{
   pageset_entries, pageset_stem, PagesetEntry, PagesetFilter, CACHE_HTML_DIR,
@@ -45,6 +45,7 @@ use fastrender::resource::CachingFetcher;
 use fastrender::resource::CachingFetcherConfig;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
+use fastrender::resource::FetchRequest;
 use fastrender::resource::HttpFetcher;
 use fastrender::resource::ResourceFetcher;
 use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
@@ -157,6 +158,29 @@ enum DumpLevel {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum AccuracyBaselineArg {
   Chrome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum DiskCacheStalePolicyArg {
+  Revalidate,
+  UseStaleWhenDeadline,
+}
+
+impl DiskCacheStalePolicyArg {
+  fn as_str(&self) -> &'static str {
+    match self {
+      DiskCacheStalePolicyArg::Revalidate => "revalidate",
+      DiskCacheStalePolicyArg::UseStaleWhenDeadline => "use-stale-when-deadline",
+    }
+  }
+
+  fn to_policy(self) -> CacheStalePolicy {
+    match self {
+      DiskCacheStalePolicyArg::Revalidate => CacheStalePolicy::Revalidate,
+      DiskCacheStalePolicyArg::UseStaleWhenDeadline => CacheStalePolicy::UseStaleWhenDeadline,
+    }
+  }
 }
 
 impl AccuracyBaselineArg {
@@ -393,6 +417,21 @@ struct RunArgs {
   /// Disable serving fresh cached HTTP responses without revalidation
   #[arg(long, action = ArgAction::SetTrue)]
   no_http_freshness: bool,
+
+  /// Policy controlling whether stale disk-cache entries are served without revalidation when a
+  /// render deadline is active.
+  #[arg(
+    long = "disk-cache-stale-policy",
+    value_enum,
+    default_value_t = DiskCacheStalePolicyArg::UseStaleWhenDeadline
+  )]
+  disk_cache_stale_policy: DiskCacheStalePolicyArg,
+
+  /// Disable network fetches and serve subresources from disk cache only.
+  ///
+  /// Cache misses are recorded as fetch errors and cause the page to be marked `status=error`.
+  #[arg(long)]
+  offline: bool,
 
   /// Treat cached HTML documents with HTTP error statuses (>= 400) as failures.
   ///
@@ -748,6 +787,21 @@ struct WorkerArgs {
   #[arg(long, action = ArgAction::SetTrue)]
   no_http_freshness: bool,
 
+  /// Policy controlling whether stale disk-cache entries are served without revalidation when a
+  /// render deadline is active.
+  #[arg(
+    long = "disk-cache-stale-policy",
+    value_enum,
+    default_value_t = DiskCacheStalePolicyArg::UseStaleWhenDeadline
+  )]
+  disk_cache_stale_policy: DiskCacheStalePolicyArg,
+
+  /// Disable network fetches and serve subresources from disk cache only.
+  ///
+  /// Cache misses are recorded as fetch errors and cause the page to be marked `status=error`.
+  #[arg(long)]
+  offline: bool,
+
   /// Treat cached HTML documents with HTTP error statuses (>= 400) as failures.
   ///
   /// By default, pageset progress renders whatever HTML is cached on disk (even if the original
@@ -1019,6 +1073,64 @@ fn build_worker_http_fetcher(
   // Use a *total* HTTP timeout budget so pre-render fetches (e.g. client redirect following)
   // cannot spend `max_attempts × timeout + backoff` wall time outside the render deadline.
   build_http_fetcher(user_agent, accept_language, Some(fetch_timeout))
+}
+
+const OFFLINE_NETWORK_ERROR_MESSAGE: &str = "offline mode: network fetch disabled";
+
+#[derive(Debug, Clone)]
+struct OfflineNetworkFetcher<F> {
+  inner: F,
+}
+
+impl<F> OfflineNetworkFetcher<F> {
+  fn new(inner: F) -> Self {
+    Self { inner }
+  }
+
+  fn is_network_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+  }
+
+  fn error_for(url: &str) -> fastrender::Error {
+    ResourceError::new(url, OFFLINE_NETWORK_ERROR_MESSAGE).into()
+  }
+}
+
+impl<F: ResourceFetcher> ResourceFetcher for OfflineNetworkFetcher<F> {
+  fn fetch(&self, url: &str) -> fastrender::Result<fastrender::resource::FetchedResource> {
+    if Self::is_network_url(url) {
+      return Err(Self::error_for(url));
+    }
+    self.inner.fetch(url)
+  }
+
+  fn fetch_with_request(
+    &self,
+    req: FetchRequest<'_>,
+  ) -> fastrender::Result<fastrender::resource::FetchedResource> {
+    if Self::is_network_url(req.url) {
+      return Err(Self::error_for(req.url));
+    }
+    self.inner.fetch_with_request(req)
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    self.inner.request_header_value(req, header_name)
+  }
+
+  fn fetch_with_request_and_validation(
+    &self,
+    req: FetchRequest<'_>,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+  ) -> fastrender::Result<fastrender::resource::FetchedResource> {
+    if Self::is_network_url(req.url) {
+      return Err(Self::error_for(req.url));
+    }
+    self
+      .inner
+      .fetch_with_request_and_validation(req, etag, last_modified)
+  }
 }
 
 fn normalize_hotspot(h: &str) -> String {
@@ -1303,6 +1415,14 @@ struct ProgressConfig {
   disk_cache_max_bytes: Option<u64>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   disk_cache_max_age_secs: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  disk_cache_stale_policy: Option<DiskCacheStalePolicyArg>,
+  #[serde(default, skip_serializing_if = "bool_is_false")]
+  offline: bool,
+}
+
+fn bool_is_false(value: &bool) -> bool {
+  !*value
 }
 
 fn http_browser_headers_enabled_from_raw(raw: Option<&str>) -> bool {
@@ -1320,15 +1440,20 @@ fn progress_config_from_parts(
   disk_cache: &DiskCacheArgs,
   disk_cache_enabled: bool,
   http_browser_headers_enabled: bool,
+  disk_cache_stale_policy: DiskCacheStalePolicyArg,
+  offline: bool,
 ) -> ProgressConfig {
   let mut config = ProgressConfig {
     disk_cache_enabled,
     http_browser_headers_enabled,
     disk_cache_max_bytes: None,
     disk_cache_max_age_secs: None,
+    disk_cache_stale_policy: None,
+    offline,
   };
 
   if disk_cache_enabled {
+    config.disk_cache_stale_policy = Some(disk_cache_stale_policy);
     if disk_cache.max_bytes != DEFAULT_DISK_CACHE_MAX_BYTES {
       config.disk_cache_max_bytes = Some(disk_cache.max_bytes);
     }
@@ -1340,12 +1465,18 @@ fn progress_config_from_parts(
   config
 }
 
-fn current_progress_config(disk_cache: &DiskCacheArgs) -> ProgressConfig {
+fn current_progress_config(
+  disk_cache: &DiskCacheArgs,
+  disk_cache_stale_policy: DiskCacheStalePolicyArg,
+  offline: bool,
+) -> ProgressConfig {
   let raw = std::env::var("FASTR_HTTP_BROWSER_HEADERS").ok();
   progress_config_from_parts(
     disk_cache,
     cfg!(feature = "disk_cache"),
     http_browser_headers_enabled_from_raw(raw.as_deref()),
+    disk_cache_stale_policy,
+    offline,
   )
 }
 
@@ -1359,6 +1490,8 @@ fn migrate_progress_config(progress: &mut PageProgress) {
     http_browser_headers_enabled: true,
     disk_cache_max_bytes: None,
     disk_cache_max_age_secs: None,
+    disk_cache_stale_policy: None,
+    offline: false,
   });
 }
 
@@ -1553,10 +1686,39 @@ fn compute_accuracy_for_pixmap(
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ProgressInputs {
+  html_sha256: String,
+  html_bytes: usize,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  cached_status: Option<u16>,
+}
+
+impl ProgressInputs {
+  fn from_cached_document(cached: &CachedDocument) -> Self {
+    Self {
+      html_sha256: sha256_bytes_hex(&cached.resource.bytes),
+      html_bytes: cached.resource.bytes.len(),
+      cached_status: cached.resource.status,
+    }
+  }
+}
+
+fn maybe_set_progress_inputs_from_cache_path(progress: &mut PageProgress, cache_path: &Path) {
+  if progress.inputs.is_some() {
+    return;
+  }
+  if let Ok(cached) = read_cached_document(cache_path) {
+    progress.inputs = Some(ProgressInputs::from_cached_document(&cached));
+  }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct PageProgress {
   url: String,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   config: Option<ProgressConfig>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  inputs: Option<ProgressInputs>,
   status: ProgressStatus,
   total_ms: Option<f64>,
   stages_ms: StageBuckets,
@@ -1579,6 +1741,7 @@ impl PageProgress {
     Self {
       url,
       config: None,
+      inputs: None,
       status: ProgressStatus::Error,
       total_ms: None,
       stages_ms: StageBuckets::default(),
@@ -2300,7 +2463,8 @@ fn migrate(args: MigrateArgs) -> io::Result<()> {
         )
       })?
       .to_string();
-    let cache_exists = args.html_dir.join(format!("{stem}.html")).exists();
+    let cache_path = args.html_dir.join(format!("{stem}.html"));
+    let cache_exists = cache_path.exists();
 
     let raw = read_to_string_capped(&path, MAX_PROGRESS_JSON_BYTES)?;
     let json_value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
@@ -2322,6 +2486,14 @@ fn migrate(args: MigrateArgs) -> io::Result<()> {
     migrate_legacy_notes(&mut progress);
     migrate_progress_config(&mut progress);
     normalize_missing_cache_placeholder(&mut progress, cache_exists);
+    if progress.inputs.is_none()
+      && cache_exists
+      && !matches!(progress.auto_notes.trim(), "not run" | "missing cache")
+    {
+      if let Ok(cached) = read_cached_document(&cache_path) {
+        progress.inputs = Some(ProgressInputs::from_cached_document(&cached));
+      }
+    }
 
     // Some legacy progress artifacts collapse the box-tree build time into `stages_ms.cascade`.
     // When we have structured stage timings, split that bucket proportionally so `report` can
@@ -2437,6 +2609,7 @@ fn sync(args: SyncArgs) -> io::Result<()> {
         progress.hotspot = "fetch".to_string();
       }
       progress.auto_notes = "missing cache".to_string();
+      progress.inputs = None;
       progress.total_ms = None;
       progress.stages_ms = StageBuckets::default();
       progress.failure_stage = None;
@@ -2666,6 +2839,21 @@ fn failure_stage_from_fetch_errors(fetch_errors: &[ResourceFetchError]) -> Optio
   None
 }
 
+fn offline_failure_stage_from_fetch_errors(fetch_errors: &[ResourceFetchError]) -> Option<ProgressStage> {
+  for err in fetch_errors {
+    if is_bot_mitigation_fetch_error(err) {
+      continue;
+    }
+    match err.kind {
+      ResourceKind::Document => return Some(ProgressStage::DomParse),
+      ResourceKind::Stylesheet | ResourceKind::Font => return Some(ProgressStage::Css),
+      ResourceKind::Image => return Some(ProgressStage::Paint),
+      ResourceKind::Other => {}
+    }
+  }
+  None
+}
+
 pub(crate) fn populate_timeout_progress(
   progress: &mut PageProgress,
   stage: RenderStage,
@@ -2726,7 +2914,11 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   let started = Instant::now();
   let mut log = String::new();
   let current_sha = current_git_sha();
-  let progress_config = current_progress_config(&args.disk_cache);
+  let progress_config = current_progress_config(
+    &args.disk_cache,
+    args.disk_cache_stale_policy,
+    args.offline,
+  );
 
   let progress_before = read_progress(&args.progress_path);
 
@@ -2759,6 +2951,8 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     }
   };
 
+  let progress_inputs = ProgressInputs::from_cached_document(&cached);
+
   let mut url = cached.document.base_hint.clone();
   if let Ok(parsed) = url::Url::parse(&url) {
     url = parsed.to_string();
@@ -2771,6 +2965,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     let status = cached.resource.status;
     let mut progress = PageProgress::new(url.clone());
     progress.config = Some(progress_config.clone());
+    progress.inputs = Some(progress_inputs.clone());
     progress.status = ProgressStatus::Error;
     progress.total_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
     if let Some(note) = cached_html_status_note.as_deref() {
@@ -2790,16 +2985,12 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
 
   let hard_timeout = Duration::from_secs(args.timeout);
   let fetch_timeout = compute_fetch_timeout(hard_timeout, args.soft_timeout_ms);
-  let serve_stale_when_deadline = cfg!(feature = "disk_cache")
-    && std::env::var("FASTR_PAGESET_SERVE_STALE")
-      .ok()
-      .map(|raw| {
-        !matches!(
-          raw.trim().to_ascii_lowercase().as_str(),
-          "0" | "false" | "no" | "off"
-        )
-      })
-      .unwrap_or(true);
+  if args.offline && !cfg!(feature = "disk_cache") {
+    return Err(io::Error::new(
+      io::ErrorKind::Other,
+      "--offline requires pageset_progress to be built with --features disk_cache",
+    ));
+  }
 
   log.push_str(&format!("=== {} ===\n", args.stem));
   log.push_str(&format!("Cache: {}\n", args.cache_path.display()));
@@ -2854,12 +3045,13 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
       args.disk_cache.max_bytes, max_age, args.disk_cache.writeback_under_deadline
     ));
     log.push_str(&format!("Disk cache dir: {}\n", args.cache_dir.display()));
-    let stale_policy = if serve_stale_when_deadline {
-      "use_stale_when_deadline"
-    } else {
-      "revalidate"
-    };
-    log.push_str(&format!("Disk cache stale policy: {stale_policy}\n"));
+    log.push_str(&format!(
+      "Disk cache stale policy: {}\n",
+      args.disk_cache_stale_policy.as_str()
+    ));
+    if args.offline {
+      log.push_str("Offline: true\n");
+    }
   }
 
   let dump_timeout_secs = args
@@ -2882,14 +3074,15 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   flush_log(&log, &args.log_path);
 
   let http = build_worker_http_fetcher(&args.user_agent, &args.accept_language, fetch_timeout);
+  let http: Arc<dyn ResourceFetcher> = if args.offline {
+    Arc::new(OfflineNetworkFetcher::new(http))
+  } else {
+    Arc::new(http)
+  };
   let honor_http_freshness = cfg!(feature = "disk_cache") && !args.no_http_freshness;
   let memory_config = CachingFetcherConfig {
     honor_http_cache_freshness: honor_http_freshness,
-    stale_policy: if serve_stale_when_deadline {
-      CacheStalePolicy::UseStaleWhenDeadline
-    } else {
-      CacheStalePolicy::Revalidate
-    },
+    stale_policy: args.disk_cache_stale_policy.to_policy(),
     ..CachingFetcherConfig::default()
   };
   #[cfg(feature = "disk_cache")]
@@ -2967,6 +3160,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
         log.push_str(&format!("Renderer init error: {log_msg}\n"));
         let mut progress = PageProgress::new(url);
         progress.config = Some(progress_config.clone());
+        progress.inputs = Some(progress_inputs.clone());
         progress.status = ProgressStatus::Error;
         progress.auto_notes = format!("renderer init: {note_msg}");
         progress.failure_stage = heartbeat
@@ -3024,6 +3218,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
 
   let mut progress = PageProgress::new(url);
   progress.config = Some(progress_config.clone());
+  progress.inputs = Some(progress_inputs.clone());
   progress.total_ms = Some(elapsed_ms);
   let mut rendered_pixmap: Option<Pixmap> = None;
 
@@ -3081,7 +3276,42 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
         format!("{label}={}{}", summary.total, kinds)
       };
 
-      if progress.failure_stage.is_some() || fetch_error_summary.is_some() {
+      let offline_has_fetch_failures = args.offline
+        && (!diagnostics.fetch_errors.is_empty() || !diagnostics.blocked_fetch_errors.is_empty());
+
+      if offline_has_fetch_failures {
+        progress.status = ProgressStatus::Error;
+        if progress.failure_stage.is_none() {
+          progress.failure_stage = offline_failure_stage_from_fetch_errors(&diagnostics.fetch_errors)
+            .or_else(|| offline_failure_stage_from_fetch_errors(&diagnostics.blocked_fetch_errors));
+        }
+        let mut note = String::from("offline cache miss: ");
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(stage) = progress.failure_stage {
+          parts.push(format!("failure_stage={}", stage.as_str()));
+        }
+        if let Some(summary) = fetch_error_summary.as_ref() {
+          parts.push(format_summary("fetch_errors", summary));
+        }
+        if !diagnostics.blocked_fetch_errors.is_empty() {
+          parts.push(format!(
+            "blocked_fetch_errors={}",
+            diagnostics.blocked_fetch_errors.len()
+          ));
+        }
+        if let Some(summary) = bot_mitigation_summary.as_ref() {
+          parts.push(format_summary("bot_mitigation", summary));
+        }
+        if let Some(summary) = external_network_failure_summary.as_ref() {
+          parts.push(format_summary("external_network_failures", summary));
+        }
+        if parts.is_empty() {
+          note.push_str("unknown");
+        } else {
+          note.push_str(&parts.join(" "));
+        }
+        progress.auto_notes = note;
+      } else if progress.failure_stage.is_some() || fetch_error_summary.is_some() {
         let mut note = String::from("ok with failures: ");
         let mut parts: Vec<String> = Vec::new();
         if let Some(stage) = progress.failure_stage {
@@ -3117,7 +3347,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
       } else {
         None
       };
-      log.push_str("Status: OK\n");
+      log.push_str(&format!("Status: {}\n", progress.status.as_str().to_ascii_uppercase()));
       append_fetch_error_summary(&mut log, &diagnostics);
       append_stage_summary(&mut log, &diagnostics);
       log_layout_parallelism(&diagnostics, |line| {
@@ -7310,6 +7540,17 @@ fn sha256_file_hex(path: &Path) -> io::Result<String> {
   Ok(out)
 }
 
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+  let mut hasher = Sha256::new();
+  hasher.update(bytes);
+  let digest = hasher.finalize();
+  let mut out = String::with_capacity(digest.len() * 2);
+  for byte in digest {
+    out.push_str(&format!("{byte:02x}"));
+  }
+  out
+}
+
 fn dpr_matches_metadata(expected: f32, actual: f32) -> bool {
   if !expected.is_finite() || !actual.is_finite() {
     return false;
@@ -7748,6 +7989,12 @@ fn push_worker_args(
   if args.no_http_freshness {
     cmd.arg("--no-http-freshness");
   }
+  cmd
+    .arg("--disk-cache-stale-policy")
+    .arg(args.disk_cache_stale_policy.as_str());
+  if args.offline {
+    cmd.arg("--offline");
+  }
   if args.fail_on_cached_http_error_status {
     cmd.arg("--fail-on-cached-http-error-status");
   }
@@ -7914,7 +8161,11 @@ fn run_queue(
   let total_cpus = cpu_budget();
   let rayon_threads_per_worker = default_rayon_threads_per_worker(total_cpus, jobs);
   let current_sha = current_git_sha();
-  let progress_config = current_progress_config(&args.disk_cache);
+  let progress_config = current_progress_config(
+    &args.disk_cache,
+    args.disk_cache_stale_policy,
+    args.offline,
+  );
   let poll_interval = std::env::var("FASTR_TEST_PAGESET_POLL_INTERVAL_MS")
     .ok()
     .and_then(|raw| raw.parse::<u64>().ok())
@@ -7997,6 +8248,7 @@ fn run_queue(
         .to_string();
         let mut progress = PageProgress::new(entry.item.url.clone());
         progress.config = Some(progress_config.clone());
+        maybe_set_progress_inputs_from_cache_path(&mut progress, &entry.item.cache_path);
         progress.status = if crash_at_timeout {
           ProgressStatus::Panic
         } else {
@@ -8085,6 +8337,7 @@ fn run_queue(
               let heartbeat_stage = read_stage_heartbeat(&entry.item.stage_path);
               let mut progress = PageProgress::new(entry.item.url.clone());
               progress.config = Some(progress_config.clone());
+              maybe_set_progress_inputs_from_cache_path(&mut progress, &entry.item.cache_path);
               progress.status = ProgressStatus::Panic;
               progress.total_ms = Some(entry.started.elapsed().as_secs_f64() * 1000.0);
               progress.auto_notes =
@@ -8121,6 +8374,7 @@ fn run_queue(
             let heartbeat_stage = read_stage_heartbeat(&entry.item.stage_path);
             let mut progress = PageProgress::new(entry.item.url.clone());
             progress.config = Some(progress_config.clone());
+            maybe_set_progress_inputs_from_cache_path(&mut progress, &entry.item.cache_path);
             progress.status = ProgressStatus::Panic;
             progress.total_ms = Some(entry.started.elapsed().as_secs_f64() * 1000.0);
             let note = synthesize_missing_progress_note(exit_summary);
@@ -8177,6 +8431,7 @@ fn run_queue(
           let heartbeat_stage = read_stage_heartbeat(&entry.item.stage_path);
           let mut progress = PageProgress::new(entry.item.url.clone());
           progress.config = Some(progress_config.clone());
+          maybe_set_progress_inputs_from_cache_path(&mut progress, &entry.item.cache_path);
           progress.status = ProgressStatus::Panic;
           progress.total_ms = Some(entry.started.elapsed().as_secs_f64() * 1000.0);
           progress.auto_notes = "worker try_wait failed".to_string();
@@ -8350,6 +8605,10 @@ fn merge_cascade_stats_into_progress(progress: &mut PageProgress, rerun_stats: &
 
 fn run(mut args: RunArgs) -> io::Result<()> {
   ensure_disk_cache_feature_available();
+  if args.offline && !cfg!(feature = "disk_cache") {
+    eprintln!("--offline requires pageset_progress to be built with --features disk_cache");
+    std::process::exit(2);
+  }
   if args.memory.mem_limit_mb > 0 {
     match fastrender::process_limits::apply_address_space_limit_mb(args.memory.mem_limit_mb) {
       Ok(fastrender::process_limits::AddressSpaceLimitStatus::Applied) => {}
@@ -9073,7 +9332,11 @@ fn worker_on_large_stack(args: WorkerArgs) -> io::Result<()> {
   let verbose = args.verbose;
   let started = Instant::now();
   let current_sha = current_git_sha();
-  let progress_config = current_progress_config(&args.disk_cache);
+  let progress_config = current_progress_config(
+    &args.disk_cache,
+    args.disk_cache_stale_policy,
+    args.offline,
+  );
 
   let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render_worker(args)));
   match result {
@@ -9103,6 +9366,7 @@ fn worker_on_large_stack(args: WorkerArgs) -> io::Result<()> {
         .and_then(|path| read_stage_heartbeat(path));
       let mut progress = PageProgress::new(url);
       progress.config = Some(progress_config.clone());
+      maybe_set_progress_inputs_from_cache_path(&mut progress, &cache_path);
       progress.status = ProgressStatus::Panic;
       progress.total_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
       progress.auto_notes = panic_msg;
@@ -9242,6 +9506,77 @@ mod tests {
       Cli::try_parse_from(parse_argv).is_ok(),
       "worker args should remain clap-parseable"
     );
+  }
+
+  #[test]
+  fn push_worker_args_forwards_disk_cache_stale_policy_and_offline() {
+    let cli = Cli::try_parse_from([
+      "pageset_progress",
+      "run",
+      "--pages",
+      "discord.com",
+      "--disk-cache-stale-policy",
+      "revalidate",
+      "--offline",
+    ])
+    .expect("parse run args");
+    let CommandKind::Run(args) = cli.command else {
+      panic!("expected Run args");
+    };
+
+    let item = WorkItem {
+      stem: "discord.com".to_string(),
+      cache_stem: "discord.com".to_string(),
+      url: "https://discord.com/".to_string(),
+      cache_path: PathBuf::from("fetches/html/discord.com.html"),
+      progress_path: PathBuf::from("progress/pages/discord.com.json"),
+      log_path: PathBuf::from("target/pageset/logs/discord.com.log"),
+      stderr_path: PathBuf::from("target/pageset/logs/discord.com.stderr.log"),
+      stage_path: PathBuf::from("target/pageset/logs/discord.com.stage"),
+      trace_out: None,
+    };
+
+    let mut cmd = Command::new("pageset_progress");
+    push_worker_args(
+      &mut cmd,
+      &args,
+      &item,
+      DiagnosticsArg::Basic,
+      None,
+      Duration::from_secs(5),
+      None,
+    );
+
+    let args_vec: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect();
+
+    let stale_pos = args_vec
+      .iter()
+      .position(|arg| arg.as_str() == "--disk-cache-stale-policy")
+      .expect("expected --disk-cache-stale-policy");
+    assert_eq!(
+      args_vec.get(stale_pos + 1).map(String::as_str),
+      Some("revalidate")
+    );
+    assert!(
+      args_vec.iter().any(|arg| arg.as_str() == "--offline"),
+      "expected --offline in worker argv"
+    );
+
+    let mut parse_argv = Vec::with_capacity(args_vec.len() + 1);
+    parse_argv.push("pageset_progress".to_string());
+    parse_argv.extend(args_vec);
+    let parsed = Cli::try_parse_from(parse_argv).expect("worker argv should parse");
+    let CommandKind::Worker(worker_args) = parsed.command else {
+      panic!("expected worker args");
+    };
+    assert_eq!(
+      worker_args.disk_cache_stale_policy,
+      DiskCacheStalePolicyArg::Revalidate
+    );
+    assert!(worker_args.offline);
   }
 
   #[test]
@@ -9621,6 +9956,8 @@ mod tests {
       user_agent: DEFAULT_USER_AGENT.to_string(),
       accept_language: DEFAULT_ACCEPT_LANGUAGE.to_string(),
       no_http_freshness: false,
+      disk_cache_stale_policy: DiskCacheStalePolicyArg::UseStaleWhenDeadline,
+      offline: false,
       fail_on_cached_http_error_status: false,
       disk_cache: DiskCacheArgs {
         max_bytes: common::args::DEFAULT_DISK_CACHE_MAX_BYTES,
@@ -9796,7 +10133,8 @@ mod tests {
       writeback_under_deadline: false,
     };
 
-    let config = current_progress_config(&disk_cache);
+    let config =
+      current_progress_config(&disk_cache, DiskCacheStalePolicyArg::UseStaleWhenDeadline, false);
     assert_eq!(
       config.disk_cache_enabled,
       cfg!(feature = "disk_cache"),
@@ -9832,16 +10170,66 @@ mod tests {
       writeback_under_deadline: false,
     };
 
-    let enabled = progress_config_from_parts(&disk_cache, true, true);
+    let enabled = progress_config_from_parts(
+      &disk_cache,
+      true,
+      true,
+      DiskCacheStalePolicyArg::UseStaleWhenDeadline,
+      false,
+    );
     assert_eq!(
       enabled.disk_cache_max_bytes,
       Some(DEFAULT_DISK_CACHE_MAX_BYTES + 1)
     );
     assert_eq!(enabled.disk_cache_max_age_secs, Some(0));
 
-    let disabled = progress_config_from_parts(&disk_cache, false, true);
+    let disabled = progress_config_from_parts(
+      &disk_cache,
+      false,
+      true,
+      DiskCacheStalePolicyArg::UseStaleWhenDeadline,
+      false,
+    );
     assert_eq!(disabled.disk_cache_max_bytes, None);
     assert_eq!(disabled.disk_cache_max_age_secs, None);
+  }
+
+  #[test]
+  fn migrate_backfills_cached_html_fingerprints() {
+    let dir = tempdir().unwrap();
+    let progress_dir = dir.path().join("progress");
+    let html_dir = dir.path().join("html");
+    fs::create_dir_all(&progress_dir).unwrap();
+    fs::create_dir_all(&html_dir).unwrap();
+
+    let html_bytes = b"<!doctype html><title>hello</title>";
+    let expected_sha = sha256_bytes_hex(html_bytes);
+
+    let cache_path = html_dir.join("example.html");
+    fs::write(&cache_path, html_bytes).unwrap();
+    fs::write(
+      html_dir.join("example.html.meta"),
+      "url: https://example.test/\nstatus: 200\ncontent-type: text/html\n",
+    )
+    .unwrap();
+
+    let progress_path = progress_dir.join("example.json");
+    let mut progress = PageProgress::new("https://example.test/".to_string());
+    progress.status = ProgressStatus::Ok;
+    progress.total_ms = Some(1.0);
+    write_progress(&progress_path, &progress).unwrap();
+
+    migrate(MigrateArgs {
+      progress_dir: progress_dir.clone(),
+      html_dir: html_dir.clone(),
+    })
+    .unwrap();
+
+    let migrated = read_progress(&progress_path).expect("migrated progress");
+    let inputs = migrated.inputs.expect("inputs should be backfilled");
+    assert_eq!(inputs.html_bytes, html_bytes.len());
+    assert_eq!(inputs.html_sha256, expected_sha);
+    assert_eq!(inputs.cached_status, Some(200));
   }
 
   #[test]

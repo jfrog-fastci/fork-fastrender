@@ -5,7 +5,11 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
 - Bootstrap with `pageset_progress sync` (`cargo run --release --bin pageset_progress -- sync [--prune]`) to materialize one placeholder per official pageset URL, even on a fresh checkout with no caches.
 - `sync` writes minimal `status: error` entries with `auto_notes: "not run"` or `auto_notes: "missing cache"`; `--prune` removes files for URLs no longer in the pageset list.
 - `pageset_progress run` updates these files after caches exist.
-- `pageset_progress migrate` rewrites existing progress files without rendering, applying legacy schema migrations (e.g. splitting mixed legacy `notes` into durable `notes` + machine `auto_notes`) and reserializing deterministically.
+- `pageset_progress migrate` rewrites existing progress files without rendering, applying legacy schema migrations (e.g. splitting mixed legacy `notes` into durable `notes` + machine `auto_notes`), backfilling missing `inputs` fingerprints when cached HTML exists, and reserializing deterministically.
+- Non-placeholder progress files may include an `inputs` section describing the cached HTML used for the run:
+  - `html_sha256`: SHA-256 hex digest of the cached HTML bytes read from `fetches/html/<stem>.html`.
+  - `html_bytes`: cached HTML byte length.
+  - `cached_status`: optional HTTP status code parsed from `fetches/html/<stem>.html.meta` (when present).
 - Each `<stem>.json` should match the cached HTML filename stem under `fetches/html/<stem>.html` (same normalization as `fetch_pages`).
 - Keep these files small and stable (no raw HTML, no machine-local paths, no traces).
 - When diagnostics are enabled, successful renders may include `diagnostics.stats` (structured `RenderStats` timing/count summaries) to power `pageset_progress report --verbose-stats`. No giant blobs or logs.
@@ -19,6 +23,9 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
 - These are auto-generated; don't hand-edit them except for durable human fields like `notes`/`last_*` when needed.
 - `notes` is intended for durable human explanations; `auto_notes` is machine-generated last-run diagnostics and is rewritten on each run.
 - Successful pages can still report non-fatal problems under `auto_notes` (for example: `ok with failures: ...` when a render completes but records `failure_stage=<...>` and/or subresource `fetch_errors`).
+- `pageset_progress run` caching knobs:
+  - `--disk-cache-stale-policy <revalidate|use-stale-when-deadline>` controls whether stale cache entries are served immediately under render deadlines (default: `use-stale-when-deadline`).
+  - `--offline` disables network fetches and serves subresources from disk cache only (requires building with `--features disk_cache`). Cache misses show up as fetch errors and the page is marked `status=error`.
 - When `pageset_progress run --accuracy --baseline-dir <dir>` is used, successful pages may include an `accuracy` section with visual diff telemetry against baseline PNGs (typically Chrome screenshots in `fetches/chrome_renders`).
   - `baseline`: baseline renderer label (currently `chrome`).
   - `diff_pixels`: number of pixels that differ (after applying `tolerance`).
