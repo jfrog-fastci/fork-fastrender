@@ -544,17 +544,24 @@ impl<Host: 'static> EventLoop<Host> {
       }
 
       self.queue_task(TaskSource::Timer, move |host, event_loop| {
-        event_loop.fire_timer(host, id)
+        // HTML timers validate the global ID→uniqueHandle map at *task execution time* so that
+        // `clearTimeout`/`clearInterval` (and potential ID reuse) can cancel already-queued tasks.
+        event_loop.fire_timer(host, id, schedule_seq)
       })?;
     }
     Ok(())
   }
 
-  fn fire_timer(&mut self, host: &mut Host, id: TimerId) -> Result<()> {
+  fn fire_timer(&mut self, host: &mut Host, id: TimerId, generation: u64) -> Result<()> {
+    // Execution-time validation: the timer might have been cleared after it became due (or the ID
+    // could have been reused). In either case, abort without invoking the callback.
     let (kind, interval, nesting_level, mut callback) = {
       let Some(timer) = self.timers.get_mut(&id) else {
         return Ok(());
       };
+      if timer.schedule_seq != generation {
+        return Ok(());
+      }
       let callback = timer
         .callback
         .take()
@@ -568,6 +575,10 @@ impl<Host: 'static> EventLoop<Host> {
 
     if let Err(err) = (callback)(host, self) {
       if let Some(timer) = self.timers.get_mut(&id) {
+        // Only restore the callback if this is still the same logical timer.
+        if timer.schedule_seq != generation {
+          return Err(err);
+        }
         timer.callback = Some(callback);
       }
       return Err(err);
@@ -575,8 +586,15 @@ impl<Host: 'static> EventLoop<Host> {
 
     match kind {
       TimerKind::Timeout => {
-        // `clearTimeout` may have already removed the timer.
-        self.timers.remove(&id);
+        // Post-handler validation (mirrors HTML): the timer could have been cleared (or reused)
+        // during the callback.
+        if self
+          .timers
+          .get(&id)
+          .is_some_and(|timer| timer.schedule_seq == generation)
+        {
+          self.timers.remove(&id);
+        }
       }
       TimerKind::Interval => {
         let Some(interval) = interval else {
@@ -590,10 +608,13 @@ impl<Host: 'static> EventLoop<Host> {
         let schedule_seq = self.next_timer_seq;
         self.next_timer_seq = self.next_timer_seq.wrapping_add(1);
 
-        // The callback may have cleared this timer.
+        // Post-handler validation: the callback may have cleared (or reused) this timer.
         let Some(timer) = self.timers.get_mut(&id) else {
           return Ok(());
         };
+        if timer.schedule_seq != generation {
+          return Ok(());
+        }
         timer.callback = Some(callback);
         timer.due = due;
         timer.nesting_level = nesting_level;
@@ -677,6 +698,8 @@ enum RunStepError {
 mod tests {
   use super::*;
   use crate::js::VirtualClock;
+  use std::cell::Cell;
+  use std::rc::Rc;
 
   #[derive(Default)]
   struct TestHost {
@@ -841,5 +864,125 @@ mod tests {
       .expect_err("task should fail");
     assert!(matches!(err, Error::Other(msg) if msg == "boom"));
     assert_eq!(event_loop.currently_running_task(), None);
+  }
+
+  #[test]
+  fn clear_timeout_after_due_but_before_run_cancels_callback() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock));
+
+    let id = event_loop.set_timeout(Duration::from_millis(0), |host, _event_loop| {
+      host.count += 1;
+      Ok(())
+    })?;
+
+    // Enqueue due timers as runnable tasks without executing them.
+    event_loop.queue_due_timers()?;
+    event_loop.clear_timeout(id);
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 0);
+    Ok(())
+  }
+
+  #[test]
+  fn interval_cleared_inside_callback_does_not_reschedule() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock));
+
+    let id_cell: Rc<Cell<Option<TimerId>>> = Rc::new(Cell::new(None));
+    let id_cell_for_cb = Rc::clone(&id_cell);
+
+    let id = event_loop.set_interval(Duration::from_millis(0), move |host, event_loop| {
+      host.count += 1;
+      let id = id_cell_for_cb.get().expect("interval id should be set");
+      event_loop.clear_interval(id);
+      Ok(())
+    })?;
+    id_cell.set(Some(id));
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 1);
+
+    // Even if time advances again, the cleared interval should not fire a second time.
+    clock.advance(Duration::from_millis(0));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn interval_cleared_after_first_firing_but_before_queued_second_firing_cancels_second() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock));
+
+    let id = event_loop.set_interval(Duration::from_millis(5), |host, _event_loop| {
+      host.count += 1;
+      Ok(())
+    })?;
+
+    // Run the first firing.
+    clock.advance(Duration::from_millis(5));
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(host.count, 1);
+
+    // Enqueue the second firing, then clear before executing it.
+    clock.advance(Duration::from_millis(5));
+    event_loop.queue_due_timers()?;
+    event_loop.clear_interval(id);
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn reused_timer_id_does_not_run_stale_enqueued_task() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock));
+
+    let id = event_loop.set_timeout(Duration::from_millis(0), |_host, _event_loop| Ok(()))?;
+    event_loop.queue_due_timers()?;
+    event_loop.clear_timeout(id);
+
+    // Force ID reuse by rewinding the internal counter (mirrors the HTML model where IDs can be
+    // reused once cleared).
+    event_loop.next_timer_id = id.0;
+    let _new_id = event_loop.set_timeout(Duration::from_millis(5), |host, _event_loop| {
+      host.count += 1;
+      Ok(())
+    })?;
+
+    // The stale task enqueued for the old timer must not run the new timer early.
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 0);
+
+    // Once time advances enough for the new timer, it should fire normally.
+    clock.advance(Duration::from_millis(5));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 1);
+    Ok(())
   }
 }
