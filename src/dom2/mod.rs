@@ -5,8 +5,9 @@ pub mod error;
 pub mod events;
 pub mod import;
 mod attrs;
+mod mutation;
 
-pub use error::DomError;
+pub use error::{DomError, Result};
 pub mod query;
 pub mod traversal;
 
@@ -266,14 +267,14 @@ impl Document {
     }
   }
 
-  pub fn text_data(&self, node: NodeId) -> Result<&str, DomError> {
+  pub fn text_data(&self, node: NodeId) -> Result<&str> {
     match &self.node(node).kind {
       NodeKind::Text { content } => Ok(content.as_str()),
       _ => Err(DomError::InvalidNodeType),
     }
   }
 
-  pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
+  pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool> {
     match &mut self.node_mut(node).kind {
       NodeKind::Text { content } => {
         if content == data {
@@ -286,7 +287,12 @@ impl Document {
       _ => Err(DomError::InvalidNodeType),
     }
   }
+
+  pub fn set_text(&mut self, node: NodeId, new_text: &str) -> Result<bool> {
+    self.set_text_data(node, new_text)
+  }
 }
+
 #[cfg(test)]
 mod attrs_tests;
 #[cfg(test)]
