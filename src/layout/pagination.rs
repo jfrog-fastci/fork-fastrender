@@ -276,8 +276,13 @@ pub fn paginate_fragment_tree(
   initial_page_name: Option<String>,
   enable_layout_cache: bool,
 ) -> Result<Vec<FragmentNode>, LayoutError> {
-  let root_axes =
-    FragmentAxes::from_writing_mode_and_direction(root_style.writing_mode, root_style.direction);
+  // Page progression is defined in terms of the document's principal writing mode and direction.
+  // The box tree root is normalized to carry the root element's writing mode + direction, even
+  // when the root box is a synthetic wrapper.
+  let root_axes = FragmentAxes::from_writing_mode_and_direction(
+    box_tree.root.style.writing_mode,
+    box_tree.root.style.direction,
+  );
   let root_axis = FragmentAxis {
     block_is_horizontal: root_axes.block_axis() == PhysicalAxis::X,
     block_positive: root_axes.block_positive(),
@@ -739,7 +744,7 @@ pub fn paginate_fragment_tree_with_options(
     enable_layout_cache,
   )?;
 
-  apply_page_stacking(&mut pages, root_style.writing_mode, options.stacking);
+  apply_page_stacking(&mut pages, box_tree.root.style.writing_mode, options.stacking);
 
   Ok(pages)
 }

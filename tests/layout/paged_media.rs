@@ -2321,6 +2321,39 @@ fn forced_start_side_suppresses_leading_blank_pages() {
 }
 
 #[test]
+fn page_progression_uses_root_element_direction() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          body { direction: ltr; margin: 0; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          .tall { height: 600px; }
+        </style>
+      </head>
+      <body>
+        <div class="tall"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2);
+  assert!(find_text(page_roots[0], "LEFT").is_some());
+  assert!(find_text(page_roots[0], "RIGHT").is_none());
+  assert!(find_text(page_roots[1], "RIGHT").is_some());
+}
+
+#[test]
 fn blank_page_inserted_for_forced_side() {
   let html = r#"
     <html>
