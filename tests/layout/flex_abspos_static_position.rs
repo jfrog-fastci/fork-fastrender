@@ -1059,6 +1059,46 @@ fn abspos_static_position_respects_wrap_reverse_cross_axis_direction() {
 }
 
 #[test]
+fn abspos_static_position_respects_wrap_reverse_cross_axis_direction_inside_content_box() {
+  // Like `abspos_static_position_respects_wrap_reverse_cross_axis_direction`, but ensure the
+  // wrap-reverse cross axis flip is computed relative to the flex container's content box (inside
+  // border + padding).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.box_sizing = BoxSizing::BorderBox;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  container_style.border_left_style = BorderStyle::Solid;
+  container_style.border_right_style = BorderStyle::Solid;
+  container_style.border_top_style = BorderStyle::Solid;
+  container_style.border_bottom_style = BorderStyle::Solid;
+  container_style.border_left_width = Length::px(2.0);
+  container_style.border_right_width = Length::px(8.0);
+  container_style.border_top_width = Length::px(4.0);
+  container_style.border_bottom_width = Length::px(6.0);
+
+  container_style.padding_left = Length::px(5.0);
+  container_style.padding_right = Length::px(15.0);
+  container_style.padding_top = Length::px(7.0);
+  container_style.padding_bottom = Length::px(9.0);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  // Content box is 70×74. Under wrap-reverse, cross-start is content bottom: y = 4+7+(74-10)=75.
+  assert!((x - 7.0).abs() < 0.1, "expected x≈7, got {}", x);
+  assert!((y - 75.0).abs() < 0.1, "expected y≈75, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_align_items_flex_end_under_wrap_reverse() {
   // Under `wrap-reverse` in a horizontal writing mode, the flex cross-end edge is the physical top
   // edge, so `align-items:flex-end` should place the child at y≈0.
@@ -1196,6 +1236,47 @@ fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis() {
   let (x, y) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
   assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis_inside_content_box() {
+  // Like `abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis`, but ensure the
+  // wrap-reverse cross-axis flip is computed relative to the content box when the cross axis is
+  // horizontal.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.box_sizing = BoxSizing::BorderBox;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  container_style.border_left_style = BorderStyle::Solid;
+  container_style.border_right_style = BorderStyle::Solid;
+  container_style.border_top_style = BorderStyle::Solid;
+  container_style.border_bottom_style = BorderStyle::Solid;
+  container_style.border_left_width = Length::px(2.0);
+  container_style.border_right_width = Length::px(8.0);
+  container_style.border_top_width = Length::px(4.0);
+  container_style.border_bottom_width = Length::px(6.0);
+
+  container_style.padding_left = Length::px(5.0);
+  container_style.padding_right = Length::px(15.0);
+  container_style.padding_top = Length::px(7.0);
+  container_style.padding_bottom = Length::px(9.0);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  // Content box is 70×74. Under wrap-reverse, cross-start is content right: x = 2+5+(70-10)=67.
+  assert!((x - 67.0).abs() < 0.1, "expected x≈67, got {}", x);
+  assert!((y - 11.0).abs() < 0.1, "expected y≈11, got {}", y);
 }
 
 #[test]
