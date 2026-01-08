@@ -885,6 +885,38 @@ fn abspos_static_position_respects_rtl_direction_in_vertical_lr_writing_mode_for
 }
 
 #[test]
+fn abspos_static_position_respects_start_end_keywords_in_vertical_lr_writing_mode_rtl_row_reverse() {
+  // `start`/`end` alignment keywords resolve against the inline-start/inline-end edges (affected by
+  // `direction`), but are independent of `flex-direction` reversal.
+  //
+  // In vertical writing modes with `direction: rtl`, inline-start is the physical bottom edge and
+  // inline-end is the physical top edge.
+  for (justify, expected_y) in [(JustifyContent::Start, 90.0), (JustifyContent::End, 0.0)] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.writing_mode = WritingMode::VerticalLr;
+    container_style.direction = Direction::Rtl;
+    container_style.flex_direction = FlexDirection::RowReverse;
+    container_style.justify_content = justify;
+    container_style.align_items = AlignItems::FlexStart;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+
+    let (_, y) = layout_abspos_child(container_style, child_style);
+    assert!(
+      (y - expected_y).abs() < 0.1,
+      "expected y≈{expected_y} for justify-content={justify:?}, got {y}"
+    );
+  }
+}
+
+#[test]
 fn abspos_static_position_respects_start_keyword_in_vertical_writing_mode_row_reverse() {
   // In vertical writing mode, `flex-direction: row-reverse` reverses the main axis (inline axis),
   // but `justify-content: start` should still align to the inline-start edge (top).
