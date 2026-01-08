@@ -1023,7 +1023,7 @@ fn is_layout_cacheable(box_node: &BoxNode, fc_type: FormattingContextType) -> bo
   ) {
     return false;
   }
-  if box_node.style.float != Float::None {
+  if box_node.style.float.is_floating() {
     return false;
   }
 

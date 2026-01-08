@@ -989,9 +989,11 @@ impl BlockFormattingContext {
     };
     let mut clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
-    if clamped_content_width > inline_viewport {
-      clamped_content_width = inline_viewport;
-    }
+    let clamped_content_width = if clamped_content_width > inline_viewport {
+      inline_viewport
+    } else {
+      clamped_content_width
+    };
     if clamped_content_width != computed_width.content_width {
       let (margin_left, margin_right) = recompute_margins_for_width(
         style,
@@ -5287,9 +5289,11 @@ impl FormattingContext for BlockFormattingContext {
 
     let mut clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
-    if clamped_content_width > inline_viewport {
-      clamped_content_width = inline_viewport;
-    }
+    let clamped_content_width = if clamped_content_width > inline_viewport {
+      inline_viewport
+    } else {
+      clamped_content_width
+    };
     let log_wide_block = toggles.truthy("FASTR_LOG_WIDE_FLEX");
     if log_wide_block && computed_width.content_width > self.viewport_size.width + 0.5 {
       let selector = box_node

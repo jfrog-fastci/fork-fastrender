@@ -352,7 +352,7 @@ pub fn establishes_bfc(style: &ComputedStyle) -> bool {
   if style.containment.size || style.containment.inline_size || style.containment.layout {
     return true;
   }
-  if style.float != Float::None {
+  if style.float.is_floating() {
     return true;
   }
   if style.position == Position::Absolute || style.position == Position::Fixed {
@@ -656,6 +656,16 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.float = Float::Left;
     assert!(establishes_bfc(&style));
+  }
+
+  #[test]
+  fn test_establishes_bfc_footnote_float_does_not() {
+    let mut style = ComputedStyle::default();
+    style.float = Float::Footnote;
+    assert!(
+      !establishes_bfc(&style),
+      "footnote floats are not left/right floats and should not establish a BFC"
+    );
   }
 
   #[test]
