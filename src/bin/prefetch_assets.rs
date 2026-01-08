@@ -1103,6 +1103,7 @@ mod disk_cache_main {
     credentials_mode: FetchCredentialsMode,
     referrer_policy: ReferrerPolicy,
     css_cache: RefCell<HashMap<String, FetchedStylesheet>>,
+    stylesheet_policies: RefCell<HashMap<String, ReferrerPolicy>>,
     summary: &'a RefCell<PageSummary>,
     all_asset_urls: &'a RefCell<BTreeSet<String>>,
     css_asset_urls: Option<&'a RefCell<BTreeSet<String>>>,
@@ -1132,11 +1133,26 @@ mod disk_cache_main {
         credentials_mode,
         referrer_policy,
         css_cache: RefCell::new(HashMap::new()),
+        stylesheet_policies: RefCell::new(HashMap::new()),
         summary,
         all_asset_urls,
         css_asset_urls,
         max_discovered_assets_per_page,
       }
+    }
+
+    fn referrer_policy_for_importer(&self, importer_url: Option<&str>) -> ReferrerPolicy {
+      if let Some(importer_url) = importer_url {
+        if let Some(policy) = self
+          .stylesheet_policies
+          .borrow()
+          .get(importer_url)
+          .copied()
+        {
+          return policy;
+        }
+      }
+      self.referrer_policy
     }
   }
 
@@ -1167,9 +1183,10 @@ mod disk_cache_main {
         }
         None => self.document_referrer,
       };
+      let referrer_policy = self.referrer_policy_for_importer(importer_url);
       let mut request = FetchRequest::new(url, self.destination)
         .with_referrer_url(referrer_url)
-        .with_referrer_policy(self.referrer_policy)
+        .with_referrer_policy(referrer_policy)
         .with_credentials_mode(self.credentials_mode);
       if let Some(origin) = self.client_origin {
         request = request.with_client_origin(origin);
@@ -1185,6 +1202,12 @@ mod disk_cache_main {
           }
           self.summary.borrow_mut().fetched_imports += 1;
           let base = res.final_url.as_deref().unwrap_or(url);
+          let effective_policy = res.response_referrer_policy.unwrap_or(referrer_policy);
+          {
+            let mut policies = self.stylesheet_policies.borrow_mut();
+            policies.insert(url.to_string(), effective_policy);
+            policies.insert(base.to_string(), effective_policy);
+          }
           let decoded = decode_css_bytes(&res.bytes, res.content_type.as_deref());
           let rewritten = match absolutize_css_urls_cow(&decoded, base) {
             Ok(std::borrow::Cow::Owned(css)) => css,
@@ -1990,6 +2013,8 @@ mod disk_cache_main {
                 };
 
                 let resolved = if sheet.contains_imports() {
+                  let import_referrer_policy =
+                    res.response_referrer_policy.unwrap_or(effective_referrer_policy);
                   let import_loader = PrefetchImportLoader::new(
                     fetcher.as_ref(),
                     base_hint,
@@ -1997,7 +2022,7 @@ mod disk_cache_main {
                     document_origin.as_ref(),
                     destination,
                     credentials_mode,
-                    effective_referrer_policy,
+                    import_referrer_policy,
                     &summary,
                     &all_asset_urls,
                     css_asset_urls_ref,
@@ -2522,6 +2547,101 @@ mod disk_cache_main {
       let policies = fetcher_impl.policies.lock().unwrap();
       assert_eq!(policies.len(), 1);
       assert_eq!(policies[0], ReferrerPolicy::NoReferrer);
+    }
+
+    #[test]
+    fn stylesheet_referrer_policy_header_applies_to_import_requests() {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("expected prefetch to use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push((
+            req.url.to_string(),
+            req.destination,
+            req.referrer_policy,
+          ));
+
+          match req.url {
+            "https://example.com/style.css" => {
+              let mut res = FetchedResource::with_final_url(
+                br#"@import url("https://example.com/import.css"); body { color: rgb(1, 2, 3); }"#
+                  .to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              res.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+              Ok(res)
+            }
+            "https://example.com/import.css" => {
+              let mut res = FetchedResource::with_final_url(
+                b"body { background: rgb(0, 0, 0); }".to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            other => Err(fastrender::Error::Other(format!("unexpected fetch: {other}"))),
+          }
+        }
+      }
+
+      let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="https://example.com/style.css">
+      </head><body></body></html>"#;
+      let document_url = "https://example.com/page.html";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        html,
+        document_url,
+        "https://example.com/",
+        ReferrerPolicy::Origin,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      assert_eq!(summary.fetched_css, 1);
+      assert_eq!(summary.fetched_imports, 1);
+
+      let calls = fetcher_impl.calls.lock().unwrap();
+      assert!(
+        calls.iter().any(|(url, dest, policy)| {
+          url == "https://example.com/import.css"
+            && *dest == FetchDestination::Style
+            && *policy == ReferrerPolicy::NoReferrer
+        }),
+        "expected import request to inherit stylesheet response Referrer-Policy header, got: {calls:?}"
+      );
     }
 
     #[test]

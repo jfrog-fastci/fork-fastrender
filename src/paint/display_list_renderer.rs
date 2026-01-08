@@ -10215,7 +10215,7 @@ impl DisplayListRenderer {
             is_backdrop_root,
             needs_layer,
             item.mix_blend_mode,
-            init_from_backdrop,
+            false,
             canvas_layer_depth_before,
             depth_after,
             stacking_depth_before,
