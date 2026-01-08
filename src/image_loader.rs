@@ -655,6 +655,16 @@ fn inline_svg_use_references<'a>(
         // Best-effort: keep the `<use>` element intact if the sprite fetch fails.
         Err(_) => continue,
       };
+      if let Some(ctx) = ctx {
+        if let Err(err) =
+          ctx.check_allowed_with_final(ResourceKind::Image, &resolved_url, res.final_url.as_deref())
+        {
+          return Err(Error::Image(ImageError::LoadFailed {
+            url: resolved_url.clone(),
+            reason: err.reason,
+          }));
+        }
+      }
       if let Err(_) = ensure_http_success(&res, &resolved_url)
         .and_then(|()| ensure_image_mime_sane(&res, &resolved_url))
       {
@@ -3420,7 +3430,9 @@ impl ImageCache {
         // (e.g. fall back to legacy paint) but should not cause subresource decoding to be dropped
         // when the overall render deadline still has time remaining.
         let deadline = render_control::root_deadline();
-        render_control::with_deadline(deadline.as_ref(), || self.decode_resource(&resource, resolved_url))
+        render_control::with_deadline(deadline.as_ref(), || {
+          self.decode_resource(&resource, resolved_url)
+        })
       } {
         Ok(decoded) => decoded,
         Err(err) => {
@@ -3496,11 +3508,14 @@ impl ImageCache {
     let total_start = profile_enabled.then(Instant::now);
     let decode_timer = Instant::now();
     let decode_start = profile_enabled.then_some(decode_timer);
-    let (img, orientation, resolution, is_vector, intrinsic_ratio, aspect_ratio_none, svg_content) = {
-      // See `fetch_and_decode` for why we temporarily switch to the root deadline for decoding.
-      let deadline = render_control::root_deadline();
-      render_control::with_deadline(deadline.as_ref(), || self.decode_resource(resource, resolved_url))
-    }?;
+    let (img, orientation, resolution, is_vector, intrinsic_ratio, aspect_ratio_none, svg_content) =
+      {
+        // See `fetch_and_decode` for why we temporarily switch to the root deadline for decoding.
+        let deadline = render_control::root_deadline();
+        render_control::with_deadline(deadline.as_ref(), || {
+          self.decode_resource(resource, resolved_url)
+        })
+      }?;
     let decode_ms_value = decode_timer.elapsed().as_secs_f64() * 1000.0;
     let decode_ms = decode_start.map(|_| decode_ms_value);
     record_image_decode_ms(decode_ms_value);
@@ -5985,9 +6000,13 @@ mod tests {
       render_control::with_deadline(Some(&nested), || {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
           .join("tests/fixtures/accuracy_png/baseline.png");
-        let url = Url::from_file_path(path).expect("baseline.png file URL").to_string();
+        let url = Url::from_file_path(path)
+          .expect("baseline.png file URL")
+          .to_string();
         let cache = ImageCache::new();
-        let img = cache.load(&url).expect("image should load under root deadline");
+        let img = cache
+          .load(&url)
+          .expect("image should load under root deadline");
         assert!(
           !cache.is_placeholder_image(&img),
           "loaded image should not be the about: placeholder"
@@ -8256,6 +8275,62 @@ mod tests {
       fetcher.requests().iter().all(|(url, _)| url != sprite_url),
       "blocked sprite should not be fetched"
     );
+  }
+
+  #[test]
+  fn svg_external_use_sprite_redirect_blocked_by_policy() {
+    let doc_url = "https://example.test/";
+    let main_url = "https://example.test/main.svg";
+    let sprite_url = "https://example.test/sprite.svg";
+    let sprite_final_url = "https://cross.test/sprite.svg";
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svg#icon"/></svg>"#;
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_final_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (sprite_url.to_string(), sprite_res),
+    ]);
+
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+
+    let err = match cache.load(main_url) {
+      Ok(_) => panic!("redirected cross-origin sprite should be blocked"),
+      Err(err) => err,
+    };
+    match err {
+      Error::Image(ImageError::LoadFailed { reason, .. }) => {
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "unexpected policy reason: {reason}"
+        );
+        assert!(
+          reason.contains(sprite_final_url),
+          "policy reason should mention final URL: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
   }
 
   #[test]
