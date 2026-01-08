@@ -42,8 +42,14 @@ impl FloatShape {
     if y_end <= self.start_y || y_start >= self.bottom() {
       return None;
     }
+    let len = self.spans.len();
     let start_idx = ((y_start - self.start_y).floor()).max(0.0) as usize;
-    let end_idx = ((y_end - self.start_y).ceil()).min(self.spans.len() as f32) as usize;
+    let end_idx = ((y_end - self.start_y).ceil()).max(0.0) as usize;
+    let start_idx = start_idx.min(len);
+    let end_idx = end_idx.min(len);
+    if start_idx >= end_idx {
+      return None;
+    }
     let mut min_x = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
     for span in &self.spans[start_idx..end_idx] {
@@ -114,7 +120,7 @@ pub fn build_float_shape(
     ShapeOutside::None => Ok(None),
     ShapeOutside::Box(reference) => {
       let rect = select_reference_box(reference_boxes, *reference);
-      Ok(Some(expand_spans(rect_span(rect), shape_margin)))
+      Ok(rect_span(rect).and_then(|base| expand_spans(base, shape_margin)))
     }
     ShapeOutside::BasicShape(basic, reference_override) => {
       let reference = reference_override.unwrap_or(ReferenceBox::MarginBox);
@@ -137,22 +143,26 @@ pub fn build_float_shape(
       let Some((mask, origin)) = rasterize_clip_shape(&resolved) else {
         return Ok(None);
       };
-      let base = spans_from_mask(&mask, origin, 0.0);
-      Ok(Some(expand_spans(base, shape_margin)))
+      let Some(base) = spans_from_mask(&mask, origin, 0.0) else {
+        return Ok(None);
+      };
+      Ok(expand_spans(base, shape_margin))
     }
     ShapeOutside::Image(image) => {
       let reference_rect = reference_boxes.margin;
       let Some(bitmap) = image_mask(image, reference_rect, style, viewport, image_cache) else {
         return Ok(None);
       };
-      let base = spans_from_alpha_pixels(
+      let Some(base) = spans_from_alpha_pixels(
         bitmap.width,
         bitmap.height,
         &bitmap.data,
         Point::new(reference_rect.x(), reference_rect.y()),
         style.shape_image_threshold,
-      );
-      Ok(Some(expand_spans(base, shape_margin)))
+      ) else {
+        return Ok(None);
+      };
+      Ok(expand_spans(base, shape_margin))
     }
   }
 }
@@ -254,37 +264,43 @@ fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect 
   )
 }
 
-fn rect_span(rect: Rect) -> SpanBuffer {
+fn rect_span(rect: Rect) -> Option<SpanBuffer> {
   let start_y = rect.y();
   let height = rect.height().ceil().max(0.0) as usize;
-  let mut spans = vec![None; height];
-  for (idx, span) in spans.iter_mut().enumerate() {
+  let mut spans = Vec::new();
+  spans.try_reserve_exact(height).ok()?;
+  spans.resize(height, None);
+  for (idx, span) in spans.iter_mut().take(height).enumerate() {
     let y = start_y + idx as f32;
     if y >= rect.y() && y < rect.max_y() {
       *span = Some((rect.x(), rect.max_x()));
     }
   }
-  SpanBuffer { start_y, spans }
+  Some(SpanBuffer { start_y, spans })
 }
 
-fn expand_spans(base: SpanBuffer, margin: f32) -> FloatShape {
+fn expand_spans(base: SpanBuffer, margin: f32) -> Option<FloatShape> {
   if margin <= 0.0 {
-    return FloatShape {
+    return Some(FloatShape {
       start_y: base.start_y,
       spans: base.spans,
-    };
+    });
   }
 
   let start_y = base.start_y - margin;
   let end_y = base.start_y + base.spans.len() as f32 + margin;
   let out_len = (end_y - start_y).ceil().max(0.0) as usize;
-  let mut spans = vec![None; out_len];
+  let mut spans = Vec::new();
+  spans.try_reserve_exact(out_len).ok()?;
+  spans.resize(out_len, None);
 
   for (row_idx, span) in base.spans.iter().enumerate() {
     let Some((min_x, max_x)) = span else { continue };
     let base_center_y = base.start_y + row_idx as f32 + 0.5;
     let out_start = ((base_center_y - margin - start_y - 0.5).floor()).max(0.0) as usize;
-    let out_end = ((base_center_y + margin - start_y - 0.5).ceil()).min(out_len as f32) as usize;
+    let out_end = ((base_center_y + margin - start_y - 0.5).ceil()).max(0.0) as usize;
+    let out_start = out_start.min(out_len);
+    let out_end = out_end.min(out_len);
 
     for out_idx in out_start..out_end {
       let center_y = start_y + out_idx as f32 + 0.5;
@@ -304,7 +320,7 @@ fn expand_spans(base: SpanBuffer, margin: f32) -> FloatShape {
     }
   }
 
-  FloatShape { start_y, spans }
+  Some(FloatShape { start_y, spans })
 }
 
 fn rasterize_clip_shape(shape: &ResolvedClipPath) -> Option<(Mask, Point)> {
@@ -325,11 +341,13 @@ fn rasterize_clip_shape(shape: &ResolvedClipPath) -> Option<(Mask, Point)> {
     .map(|m| (m, origin))
 }
 
-fn spans_from_mask(mask: &Mask, origin: Point, threshold: f32) -> SpanBuffer {
+fn spans_from_mask(mask: &Mask, origin: Point, threshold: f32) -> Option<SpanBuffer> {
   let width = mask.width();
   let height = mask.height();
   let data = mask.data();
-  let mut spans = Vec::with_capacity(height as usize);
+  let height_usize = usize::try_from(height).ok()?;
+  let mut spans = Vec::new();
+  spans.try_reserve_exact(height_usize).ok()?;
   let start_y = origin.y;
   let row_stride = if height > 0 {
     data.len() / height as usize
@@ -357,7 +375,7 @@ fn spans_from_mask(mask: &Mask, origin: Point, threshold: f32) -> SpanBuffer {
     row_start += row_stride;
   }
 
-  SpanBuffer { start_y, spans }
+  Some(SpanBuffer { start_y, spans })
 }
 
 struct SpanBuffer {
@@ -377,17 +395,27 @@ fn spans_from_alpha_pixels(
   data: &[u8],
   origin: Point,
   threshold: f32,
-) -> SpanBuffer {
-  let mut spans = Vec::with_capacity(height as usize);
+) -> Option<SpanBuffer> {
+  let width_usize = usize::try_from(width).ok()?;
+  let height_usize = usize::try_from(height).ok()?;
+  let expected_len = width_usize.checked_mul(height_usize)?;
+  if data.len() < expected_len {
+    return None;
+  }
+
+  let mut spans = Vec::new();
+  spans.try_reserve_exact(height_usize).ok()?;
   let threshold_u8 = (threshold.clamp(0.0, 1.0) * 255.0) as u8;
-  for row in 0..height {
-    let row_start = (row * width) as usize;
+  for row in 0..height_usize {
+    let row_start = row.checked_mul(width_usize)?;
+    let row_data = data.get(row_start..row_start + width_usize)?;
     let mut min_x = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
-    for col in 0..width {
-      if data[row_start + col as usize] > threshold_u8 {
-        min_x = min_x.min(origin.x + col as f32);
-        max_x = max_x.max(origin.x + col as f32 + 1.0);
+    for (col_idx, alpha) in row_data.iter().enumerate() {
+      if *alpha > threshold_u8 {
+        let col = col_idx as f32;
+        min_x = min_x.min(origin.x + col);
+        max_x = max_x.max(origin.x + col + 1.0);
       }
     }
     if max_x > min_x {
@@ -397,10 +425,10 @@ fn spans_from_alpha_pixels(
     }
   }
 
-  SpanBuffer {
+  Some(SpanBuffer {
     start_y: origin.y,
     spans,
-  }
+  })
 }
 
 fn image_mask(
@@ -611,7 +639,23 @@ fn alpha_from_pixmap(pixmap: Pixmap, _origin: Point) -> AlphaBitmap {
       data: Vec::new(),
     };
   };
-  let mut alpha = reserve_buffer(bytes, "shape-outside alpha from pixmap").unwrap_or_default();
+  let mut alpha = match reserve_buffer(bytes, "shape-outside alpha from pixmap") {
+    Ok(buf) => buf,
+    Err(err) => {
+      eprintln!(
+        "shape-outside alpha {}x{} ({} bytes) skipped: {}",
+        pixmap.width(),
+        pixmap.height(),
+        bytes,
+        err
+      );
+      return AlphaBitmap {
+        width: pixmap.width(),
+        height: pixmap.height(),
+        data: Vec::new(),
+      };
+    }
+  };
   for chunk in pixmap.data().chunks_exact(4) {
     alpha.push(chunk[3]);
   }
