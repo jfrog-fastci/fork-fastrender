@@ -27,6 +27,10 @@ struct PrefetchAssetsCapabilitiesFlags {
   max_discovered_assets_per_page: bool,
   max_images_per_page: bool,
   max_image_urls_per_element: bool,
+  report_json: bool,
+  report_per_page_dir: bool,
+  max_report_urls_per_kind: bool,
+  dry_run: bool,
 }
 
 fn capabilities_json(disk_cache_feature: bool) -> String {
@@ -42,6 +46,10 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
       max_discovered_assets_per_page: true,
       max_images_per_page: true,
       max_image_urls_per_element: true,
+      report_json: true,
+      report_per_page_dir: true,
+      max_report_urls_per_kind: true,
+      dry_run: true,
     }
   } else {
     PrefetchAssetsCapabilitiesFlags {
@@ -55,6 +63,10 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
       max_discovered_assets_per_page: false,
       max_images_per_page: false,
       max_image_urls_per_element: false,
+      report_json: false,
+      report_per_page_dir: false,
+      max_report_urls_per_kind: false,
+      dry_run: false,
     }
   };
 
@@ -111,6 +123,10 @@ mod capabilities_tests {
       "max_discovered_assets_per_page",
       "max_images_per_page",
       "max_image_urls_per_element",
+      "report_json",
+      "report_per_page_dir",
+      "max_report_urls_per_kind",
+      "dry_run",
     ] {
       assert_eq!(
         flags.get(key).and_then(Value::as_bool),
@@ -138,8 +154,8 @@ mod disk_cache_main {
   use clap::{ArgAction, Parser};
   use fastrender::css::encoding::decode_css_bytes;
   use fastrender::css::loader::{
-    absolutize_css_urls_cow, extract_css_links_with_meta, extract_embedded_css_urls, FetchedStylesheet,
-    link_rel_is_stylesheet_candidate, resolve_href, resolve_href_with_base,
+    absolutize_css_urls_cow, extract_css_links_with_meta, extract_embedded_css_urls,
+    link_rel_is_stylesheet_candidate, resolve_href, resolve_href_with_base, FetchedStylesheet,
   };
   use fastrender::css::parser::{
     extract_scoped_css_sources, parse_stylesheet, tokenize_rel_list, StylesheetSource,
@@ -156,18 +172,20 @@ mod disk_cache_main {
   use fastrender::pageset::{cache_html_path, pageset_entries, PagesetEntry, PagesetFilter};
   use fastrender::resource::{
     ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane,
-    ensure_stylesheet_mime_sane, is_data_url, origin_from_url, CachingFetcherConfig,
-    CorsMode, DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode, FetchDestination,
-    FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
-    DEFAULT_USER_AGENT,
+    ensure_stylesheet_mime_sane, is_data_url, origin_from_url, CachingFetcherConfig, CorsMode,
+    DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
+    FetchedResource, ReferrerPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
   };
   use fastrender::style::media::{MediaContext, MediaQuery, MediaQueryCache};
   use fastrender::tree::box_tree::CrossOriginAttribute;
   use rayon::prelude::*;
   use rayon::ThreadPoolBuilder;
   use regex::Regex;
+  use serde::Serialize;
   use std::cell::RefCell;
   use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+  use std::fs;
+  use std::io;
   use std::path::{Path, PathBuf};
   use std::sync::{Arc, OnceLock};
   use std::time::Duration;
@@ -297,6 +315,22 @@ mod disk_cache_main {
     #[arg(long, default_value_t = 2000)]
     max_discovered_assets_per_page: usize,
 
+    /// Discovery-only mode: scan HTML/CSS but do not fetch/write any assets to the cache.
+    #[arg(long, alias = "discover-only")]
+    dry_run: bool,
+
+    /// Write a single deterministic JSON report describing the prefetch run.
+    #[arg(long, value_name = "PATH")]
+    report_json: Option<PathBuf>,
+
+    /// Write one report JSON per page stem under the given directory.
+    #[arg(long, value_name = "DIR")]
+    report_per_page_dir: Option<PathBuf>,
+
+    /// Cap the number of sampled URLs per asset kind in the report (0 => counts only).
+    #[arg(long, default_value_t = 50)]
+    max_report_urls_per_kind: usize,
+
     /// Override disk cache directory (defaults to fetches/assets)
     #[arg(long, default_value = DEFAULT_ASSET_DIR)]
     cache_dir: PathBuf,
@@ -308,6 +342,40 @@ mod disk_cache_main {
     /// Process only a deterministic shard of the page set (index/total, 0-based)
     #[arg(long, value_parser = parse_shard)]
     shard: Option<(usize, usize)>,
+  }
+
+  #[derive(Debug, Default, Clone)]
+  struct UrlOutcomeSet {
+    discovered: BTreeSet<String>,
+    fetched: BTreeSet<String>,
+    failed: BTreeSet<String>,
+  }
+
+  impl UrlOutcomeSet {
+    fn record_discovered(&mut self, url: impl Into<String>) {
+      self.discovered.insert(url.into());
+    }
+
+    fn record_fetch_result(&mut self, url: impl Into<String>, success: bool) {
+      let url = url.into();
+      self.discovered.insert(url.clone());
+      if success {
+        self.fetched.insert(url.clone());
+        self.failed.remove(&url);
+      } else if !self.fetched.contains(&url) {
+        self.failed.insert(url);
+      }
+    }
+  }
+
+  #[derive(Debug, Default, Clone)]
+  struct PageSummaryReport {
+    css: UrlOutcomeSet,
+    imports: UrlOutcomeSet,
+    fonts: UrlOutcomeSet,
+    images: UrlOutcomeSet,
+    documents: UrlOutcomeSet,
+    css_url_assets: UrlOutcomeSet,
   }
 
   #[derive(Debug, Default, Clone)]
@@ -330,6 +398,7 @@ mod disk_cache_main {
     fetched_css_assets: usize,
     failed_css_assets: usize,
     skipped: bool,
+    report: PageSummaryReport,
   }
 
   #[derive(Debug, Clone, Copy)]
@@ -343,9 +412,123 @@ mod disk_cache_main {
     prefetch_css_url_assets: bool,
     max_discovered_assets_per_page: usize,
     image_limits: ImagePrefetchLimits,
+    dry_run: bool,
+  }
+
+  const PREFETCH_ASSETS_REPORT_VERSION: u32 = 1;
+
+  #[derive(Serialize, Debug, Clone)]
+  struct PrefetchAssetsReportCountAndSample {
+    count: usize,
+    urls: Vec<String>,
+  }
+
+  #[derive(Serialize, Debug, Clone)]
+  struct PrefetchAssetsReportKind {
+    discovered: PrefetchAssetsReportCountAndSample,
+    fetched: PrefetchAssetsReportCountAndSample,
+    failed: PrefetchAssetsReportCountAndSample,
+  }
+
+  #[derive(Serialize, Debug, Clone)]
+  struct PrefetchAssetsReportPage {
+    stem: String,
+    skipped: bool,
+    css: PrefetchAssetsReportKind,
+    imports: PrefetchAssetsReportKind,
+    fonts: PrefetchAssetsReportKind,
+    images: PrefetchAssetsReportKind,
+    documents: PrefetchAssetsReportKind,
+    css_url_assets: PrefetchAssetsReportKind,
+  }
+
+  #[derive(Serialize, Debug, Clone)]
+  struct PrefetchAssetsReport {
+    version: u32,
+    cache_dir: String,
+    dry_run: bool,
+    max_report_urls_per_kind: usize,
+    pages: Vec<PrefetchAssetsReportPage>,
+  }
+
+  fn sample_urls(urls: &BTreeSet<String>, max: usize) -> Vec<String> {
+    if max == 0 {
+      return Vec::new();
+    }
+    urls.iter().take(max).cloned().collect()
+  }
+
+  fn build_kind_report(kind: &UrlOutcomeSet, max: usize) -> PrefetchAssetsReportKind {
+    PrefetchAssetsReportKind {
+      discovered: PrefetchAssetsReportCountAndSample {
+        count: kind.discovered.len(),
+        urls: sample_urls(&kind.discovered, max),
+      },
+      fetched: PrefetchAssetsReportCountAndSample {
+        count: kind.fetched.len(),
+        urls: sample_urls(&kind.fetched, max),
+      },
+      failed: PrefetchAssetsReportCountAndSample {
+        count: kind.failed.len(),
+        urls: sample_urls(&kind.failed, max),
+      },
+    }
+  }
+
+  fn build_prefetch_assets_report(
+    pages: &[PageSummary],
+    cache_dir: &Path,
+    dry_run: bool,
+    max_report_urls_per_kind: usize,
+  ) -> PrefetchAssetsReport {
+    let mut ordered: Vec<&PageSummary> = pages.iter().collect();
+    ordered.sort_by(|a, b| a.stem.cmp(&b.stem));
+
+    PrefetchAssetsReport {
+      version: PREFETCH_ASSETS_REPORT_VERSION,
+      cache_dir: cache_dir.display().to_string(),
+      dry_run,
+      max_report_urls_per_kind,
+      pages: ordered
+        .into_iter()
+        .map(|page| PrefetchAssetsReportPage {
+          stem: page.stem.clone(),
+          skipped: page.skipped,
+          css: build_kind_report(&page.report.css, max_report_urls_per_kind),
+          imports: build_kind_report(&page.report.imports, max_report_urls_per_kind),
+          fonts: build_kind_report(&page.report.fonts, max_report_urls_per_kind),
+          images: build_kind_report(&page.report.images, max_report_urls_per_kind),
+          documents: build_kind_report(&page.report.documents, max_report_urls_per_kind),
+          css_url_assets: build_kind_report(&page.report.css_url_assets, max_report_urls_per_kind),
+        })
+        .collect(),
+    }
+  }
+
+  fn prefetch_assets_report_json(report: &PrefetchAssetsReport) -> serde_json::Result<String> {
+    let mut json = serde_json::to_string_pretty(report)?;
+    json.push('\n');
+    Ok(json)
+  }
+
+  fn write_prefetch_assets_report(path: &Path, report: &PrefetchAssetsReport) -> io::Result<()> {
+    let json = prefetch_assets_report_json(report)
+      .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    if let Some(parent) = path.parent() {
+      fs::create_dir_all(parent)?;
+    }
+    fs::write(path, json)
   }
 
   fn merge_page_summary(into: &mut PageSummary, other: PageSummary) {
+    fn merge_outcomes(into: &mut UrlOutcomeSet, other: UrlOutcomeSet) {
+      into.discovered.extend(other.discovered);
+      into.fetched.extend(other.fetched);
+      into.failed.extend(other.failed);
+      // A success in any nested pass should dominate a failure.
+      into.failed.retain(|url| !into.fetched.contains(url));
+    }
+
     into.discovered_css += other.discovered_css;
     into.fetched_css += other.fetched_css;
     into.failed_css += other.failed_css;
@@ -362,6 +545,13 @@ mod disk_cache_main {
     into.discovered_css_assets += other.discovered_css_assets;
     into.fetched_css_assets += other.fetched_css_assets;
     into.failed_css_assets += other.failed_css_assets;
+
+    merge_outcomes(&mut into.report.css, other.report.css);
+    merge_outcomes(&mut into.report.imports, other.report.imports);
+    merge_outcomes(&mut into.report.fonts, other.report.fonts);
+    merge_outcomes(&mut into.report.images, other.report.images);
+    merge_outcomes(&mut into.report.documents, other.report.documents);
+    merge_outcomes(&mut into.report.css_url_assets, other.report.css_url_assets);
   }
 
   fn selected_pages(
@@ -737,9 +927,9 @@ mod disk_cache_main {
       Ok(re) => re,
       Err(_) => return,
     };
-    let attr_rel = match ATTR_REL.get_or_init(|| {
-      Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    }) {
+    let attr_rel = match ATTR_REL
+      .get_or_init(|| Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"))
+    {
       Ok(re) => re,
       Err(_) => return,
     };
@@ -860,15 +1050,15 @@ mod disk_cache_main {
       Ok(re) => re,
       Err(_) => return,
     };
-    let video_poster_attr = match VIDEO_POSTER_ATTR.get_or_init(|| {
-      Regex::new("(?is)\\sposter\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    }) {
+    let video_poster_attr = match VIDEO_POSTER_ATTR
+      .get_or_init(|| Regex::new("(?is)\\sposter\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"))
+    {
       Ok(re) => re,
       Err(_) => return,
     };
-    let video_gnt_gl_ps_attr = match VIDEO_GNT_GL_PS_ATTR.get_or_init(|| {
-      Regex::new("(?is)\\sgnt-gl-ps\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    }) {
+    let video_gnt_gl_ps_attr = match VIDEO_GNT_GL_PS_ATTR
+      .get_or_init(|| Regex::new("(?is)\\sgnt-gl-ps\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"))
+    {
       Ok(re) => re,
       Err(_) => return,
     };
@@ -1143,12 +1333,7 @@ mod disk_cache_main {
 
     fn referrer_policy_for_importer(&self, importer_url: Option<&str>) -> ReferrerPolicy {
       if let Some(importer_url) = importer_url {
-        if let Some(policy) = self
-          .stylesheet_policies
-          .borrow()
-          .get(importer_url)
-          .copied()
-        {
+        if let Some(policy) = self.stylesheet_policies.borrow().get(importer_url).copied() {
           return policy;
         }
       }
@@ -1158,7 +1343,9 @@ mod disk_cache_main {
 
   impl CssImportLoader for PrefetchImportLoader<'_> {
     fn load(&self, url: &str) -> fastrender::Result<String> {
-      self.load_with_importer(url, None).map(|fetched| fetched.css)
+      self
+        .load_with_importer(url, None)
+        .map(|fetched| fetched.css)
     }
 
     fn referrer_policy_for_stylesheet(&self, url: &str) -> Option<ReferrerPolicy> {
@@ -1186,11 +1373,7 @@ mod disk_cache_main {
             // apply this special-case when the importer URL hasn't been fetched as a stylesheet
             // itself (e.g. when `<base href>` points directly at an imported stylesheet URL, nested
             // imports must still use that stylesheet URL as the referrer).
-            if !self
-              .stylesheet_policies
-              .borrow()
-              .contains_key(importer_url)
-            {
+            if !self.stylesheet_policies.borrow().contains_key(importer_url) {
               self.document_referrer
             } else {
               importer_url
@@ -1215,10 +1398,22 @@ mod disk_cache_main {
           if let Err(err) =
             ensure_http_success(&res, url).and_then(|()| ensure_stylesheet_mime_sane(&res, url))
           {
-            self.summary.borrow_mut().failed_imports += 1;
+            let mut summary = self.summary.borrow_mut();
+            summary.failed_imports += 1;
+            summary
+              .report
+              .imports
+              .record_fetch_result(url.to_string(), false);
             return Err(err);
           }
-          self.summary.borrow_mut().fetched_imports += 1;
+          {
+            let mut summary = self.summary.borrow_mut();
+            summary.fetched_imports += 1;
+            summary
+              .report
+              .imports
+              .record_fetch_result(url.to_string(), true);
+          }
           let base = res.final_url.as_deref().unwrap_or(url);
           let effective_policy = res.response_referrer_policy.unwrap_or(referrer_policy);
           {
@@ -1256,7 +1451,12 @@ mod disk_cache_main {
           Ok(fetched)
         }
         Err(err) => {
-          self.summary.borrow_mut().failed_imports += 1;
+          let mut summary = self.summary.borrow_mut();
+          summary.failed_imports += 1;
+          summary
+            .report
+            .imports
+            .record_fetch_result(url.to_string(), false);
           Err(err)
         }
       }
@@ -1273,11 +1473,18 @@ mod disk_cache_main {
     },
   }
 
-  fn stylesheet_fetch_profile(cors_mode: Option<CorsMode>) -> (FetchDestination, FetchCredentialsMode) {
+  fn stylesheet_fetch_profile(
+    cors_mode: Option<CorsMode>,
+  ) -> (FetchDestination, FetchCredentialsMode) {
     match cors_mode {
       None => (FetchDestination::Style, FetchCredentialsMode::Include),
-      Some(CorsMode::Anonymous) => (FetchDestination::StyleCors, FetchCredentialsMode::SameOrigin),
-      Some(CorsMode::UseCredentials) => (FetchDestination::StyleCors, FetchCredentialsMode::Include),
+      Some(CorsMode::Anonymous) => (
+        FetchDestination::StyleCors,
+        FetchCredentialsMode::SameOrigin,
+      ),
+      Some(CorsMode::UseCredentials) => {
+        (FetchDestination::StyleCors, FetchCredentialsMode::Include)
+      }
     }
   }
 
@@ -1537,8 +1744,14 @@ mod disk_cache_main {
     summary: &mut PageSummary,
   ) {
     for face in sheet.collect_font_face_rules_with_cache(media_ctx, Some(media_query_cache)) {
-      let stylesheet_url = face.source_stylesheet_url.as_deref().unwrap_or(referrer_url);
-      let base_url = face.source_stylesheet_url.as_deref().unwrap_or(css_base_url);
+      let stylesheet_url = face
+        .source_stylesheet_url
+        .as_deref()
+        .unwrap_or(referrer_url);
+      let base_url = face
+        .source_stylesheet_url
+        .as_deref()
+        .unwrap_or(css_base_url);
       let effective_referrer_policy = face.source_referrer_policy.unwrap_or(referrer_policy);
       for url_source in ordered_remote_font_face_sources(&face.sources) {
         let Some(resolved) = resolve_href(base_url, &url_source.url) else {
@@ -1569,6 +1782,10 @@ mod disk_cache_main {
         };
 
         seen_fonts.insert(resolved.clone(), success);
+        summary
+          .report
+          .fonts
+          .record_fetch_result(resolved.clone(), success);
         if success {
           summary.fetched_fonts += 1;
           break;
@@ -1658,7 +1875,15 @@ mod disk_cache_main {
       }
     };
 
-    summary.borrow_mut().discovered_css = tasks.len();
+    {
+      let mut summary = summary.borrow_mut();
+      summary.discovered_css = tasks.len();
+      for task in &tasks {
+        if let StylesheetTask::External { url, .. } = task {
+          summary.report.css.record_discovered(url.clone());
+        }
+      }
+    }
     if tasks.is_empty()
       && !(opts.prefetch_images
         || opts.prefetch_icons
@@ -1928,7 +2153,7 @@ mod disk_cache_main {
               Err(_) => continue,
             };
 
-            let resolved = if sheet.contains_imports() {
+            let resolved = if !opts.dry_run && sheet.contains_imports() {
               let (destination, credentials_mode) = stylesheet_fetch_profile(None);
               let import_loader = PrefetchImportLoader::new(
                 fetcher.as_ref(),
@@ -1959,7 +2184,7 @@ mod disk_cache_main {
               sheet
             };
 
-            if opts.prefetch_fonts {
+            if !opts.dry_run && opts.prefetch_fonts {
               let mut summary = summary.borrow_mut();
               prefetch_fonts_from_stylesheet(
                 fetcher.as_ref(),
@@ -1980,6 +2205,9 @@ mod disk_cache_main {
             cors_mode,
             referrer_policy: link_referrer_policy,
           } => {
+            if opts.dry_run {
+              continue;
+            }
             let effective_referrer_policy = link_referrer_policy.unwrap_or(referrer_policy);
             let (destination, credentials_mode) = stylesheet_fetch_profile(cors_mode);
             let mut request = FetchRequest::new(css_url.as_str(), destination)
@@ -1989,19 +2217,26 @@ mod disk_cache_main {
             if let Some(origin) = document_origin.as_ref() {
               request = request.with_client_origin(origin);
             }
-            match fetcher.fetch_with_request(
-              request,
-            ) {
+            match fetcher.fetch_with_request(request) {
               Ok(res) => {
                 if ensure_http_success(&res, &css_url)
                   .and_then(|()| ensure_stylesheet_mime_sane(&res, &css_url))
                   .is_err()
                 {
-                  summary.borrow_mut().failed_css += 1;
+                  let mut summary = summary.borrow_mut();
+                  summary.failed_css += 1;
+                  summary.report.css.record_fetch_result(css_url, false);
                   continue;
                 }
 
-                summary.borrow_mut().fetched_css += 1;
+                {
+                  let mut summary = summary.borrow_mut();
+                  summary.fetched_css += 1;
+                  summary
+                    .report
+                    .css
+                    .record_fetch_result(css_url.clone(), true);
+                }
                 let sheet_base = res.final_url.as_deref().unwrap_or(&css_url);
                 let mut css_text = decode_css_bytes(&res.bytes, res.content_type.as_deref());
                 if let Ok(std::borrow::Cow::Owned(rewritten)) =
@@ -2026,8 +2261,9 @@ mod disk_cache_main {
                   }
                 }
 
-                let stylesheet_referrer_policy =
-                  res.response_referrer_policy.unwrap_or(effective_referrer_policy);
+                let stylesheet_referrer_policy = res
+                  .response_referrer_policy
+                  .unwrap_or(effective_referrer_policy);
 
                 let sheet: StyleSheet = match parse_stylesheet(&css_text) {
                   Ok(sheet) => sheet,
@@ -2080,7 +2316,11 @@ mod disk_cache_main {
                   );
                 }
               }
-              Err(_) => summary.borrow_mut().failed_css += 1,
+              Err(_) => {
+                let mut summary = summary.borrow_mut();
+                summary.failed_css += 1;
+                summary.report.css.record_fetch_result(css_url, false);
+              }
             }
           }
         }
@@ -2098,13 +2338,35 @@ mod disk_cache_main {
           .count();
       summary.discovered_documents = document_urls.len();
       summary.discovered_css_assets = css_asset_urls.len();
+
+      summary
+        .report
+        .images
+        .discovered
+        .extend(image_urls.iter().cloned());
+      summary
+        .report
+        .images
+        .discovered
+        .extend(cors_image_urls.keys().cloned());
+      summary
+        .report
+        .documents
+        .discovered
+        .extend(document_urls.iter().cloned());
+      summary
+        .report
+        .css_url_assets
+        .discovered
+        .extend(css_asset_urls.iter().cloned());
     }
 
-    if opts.prefetch_images || opts.prefetch_icons || opts.prefetch_video_posters {
+    if !opts.dry_run && (opts.prefetch_images || opts.prefetch_icons || opts.prefetch_video_posters)
+    {
       let image_cache = ImageCache::with_fetcher(Arc::clone(fetcher));
       let mut summary = summary.borrow_mut();
       for url in &image_urls {
-        match fetcher.fetch_with_request(
+        let success = match fetcher.fetch_with_request(
           FetchRequest::new(url.as_str(), FetchDestination::Image)
             .with_referrer_url(base_hint)
             .with_referrer_policy(referrer_policy),
@@ -2119,12 +2381,21 @@ mod disk_cache_main {
               // metadata into the disk cache so subsequent renders can avoid repeating image header
               // parsing during box-tree construction.
               let _ = image_cache.probe(url.as_str());
+              true
             } else {
               summary.failed_images += 1;
+              false
             }
           }
-          Err(_) => summary.failed_images += 1,
-        }
+          Err(_) => {
+            summary.failed_images += 1;
+            false
+          }
+        };
+        summary
+          .report
+          .images
+          .record_fetch_result(url.clone(), success);
       }
 
       let plain_fetched = image_urls
@@ -2134,7 +2405,7 @@ mod disk_cache_main {
         .collect::<HashSet<_>>();
       for (url, crossorigin) in &cors_image_urls {
         if !plain_fetched.contains(url) {
-          match fetcher.fetch_with_request(
+          let success = match fetcher.fetch_with_request(
             FetchRequest::new(url.as_str(), FetchDestination::Image)
               .with_referrer_url(base_hint)
               .with_referrer_policy(referrer_policy),
@@ -2146,12 +2417,21 @@ mod disk_cache_main {
               {
                 summary.fetched_images += 1;
                 let _ = image_cache.probe(url.as_str());
+                true
               } else {
                 summary.failed_images += 1;
+                false
               }
             }
-            Err(_) => summary.failed_images += 1,
-          }
+            Err(_) => {
+              summary.failed_images += 1;
+              false
+            }
+          };
+          summary
+            .report
+            .images
+            .record_fetch_result(url.clone(), success);
         }
 
         let credentials_mode = match crossorigin {
@@ -2159,7 +2439,7 @@ mod disk_cache_main {
           CrossOriginAttribute::Anonymous => FetchCredentialsMode::Omit,
           CrossOriginAttribute::UseCredentials => FetchCredentialsMode::Include,
         };
-        match fetcher.fetch_with_request(
+        let success = match fetcher.fetch_with_request(
           FetchRequest::new(url.as_str(), FetchDestination::ImageCors)
             .with_referrer_url(base_hint)
             .with_referrer_policy(referrer_policy)
@@ -2172,16 +2452,25 @@ mod disk_cache_main {
             {
               summary.fetched_images += 1;
               let _ = image_cache.probe_with_crossorigin(url.as_str(), *crossorigin);
+              true
             } else {
               summary.failed_images += 1;
+              false
             }
           }
-          Err(_) => summary.failed_images += 1,
-        }
+          Err(_) => {
+            summary.failed_images += 1;
+            false
+          }
+        };
+        summary
+          .report
+          .images
+          .record_fetch_result(url.clone(), success);
       }
     }
 
-    if opts.prefetch_iframes || opts.prefetch_embeds {
+    if !opts.dry_run && (opts.prefetch_iframes || opts.prefetch_embeds) {
       let mut fetched_docs: Vec<(String, FetchedResource)> = Vec::new();
       // Embedded documents (iframes/embeds/objects) are fetched as subframe navigations, which use
       // a distinct `Sec-Fetch-Dest: iframe` profile (and a distinct cache kind).
@@ -2189,7 +2478,7 @@ mod disk_cache_main {
       {
         let mut summary = summary.borrow_mut();
         for url in &document_urls {
-          match fetcher.fetch_with_request(
+          let success = match fetcher.fetch_with_request(
             FetchRequest::new(url.as_str(), fetch_destination)
               .with_referrer_url(base_hint)
               .with_referrer_policy(referrer_policy),
@@ -2201,12 +2490,21 @@ mod disk_cache_main {
               if is_html {
                 summary.fetched_documents += 1;
                 fetched_docs.push((url.clone(), res));
+                true
               } else {
                 summary.failed_documents += 1;
+                false
               }
             }
-            Err(_) => summary.failed_documents += 1,
-          }
+            Err(_) => {
+              summary.failed_documents += 1;
+              false
+            }
+          };
+          summary
+            .report
+            .documents
+            .record_fetch_result(url.clone(), success);
         }
       }
 
@@ -2236,10 +2534,10 @@ mod disk_cache_main {
       }
     }
 
-    if opts.prefetch_css_url_assets {
+    if !opts.dry_run && opts.prefetch_css_url_assets {
       let mut summary = summary.borrow_mut();
       for url in &css_asset_urls {
-        match fetcher.fetch_with_request(
+        let success = match fetcher.fetch_with_request(
           FetchRequest::new(url.as_str(), FetchDestination::Image)
             .with_referrer_url(base_hint)
             .with_referrer_policy(referrer_policy),
@@ -2250,12 +2548,21 @@ mod disk_cache_main {
               .is_ok()
             {
               summary.fetched_css_assets += 1;
+              true
             } else {
               summary.failed_css_assets += 1;
+              false
             }
           }
-          Err(_) => summary.failed_css_assets += 1,
-        }
+          Err(_) => {
+            summary.failed_css_assets += 1;
+            false
+          }
+        };
+        summary
+          .report
+          .css_url_assets
+          .record_fetch_result(url.clone(), success);
       }
     }
 
@@ -2350,12 +2657,215 @@ mod disk_cache_main {
         "max_discovered_assets_per_page",
         "max_images_per_page",
         "max_image_urls_per_element",
+        "report_json",
+        "report_per_page_dir",
+        "max_report_urls_per_kind",
+        "dry_run",
       ] {
         assert!(
           flags.get(key).and_then(Value::as_bool).is_some(),
           "capabilities should include boolean key flags.{key}"
         );
       }
+    }
+
+    #[test]
+    fn report_json_is_deterministic_and_sorted() {
+      let mut page_b = PageSummary::default();
+      page_b.stem = "b".to_string();
+      page_b
+        .report
+        .images
+        .record_discovered("https://example.com/z.png".to_string());
+      page_b
+        .report
+        .images
+        .record_discovered("https://example.com/a.png".to_string());
+      page_b
+        .report
+        .images
+        .record_discovered("https://example.com/m.png".to_string());
+
+      let mut page_a = PageSummary::default();
+      page_a.stem = "a".to_string();
+      page_a
+        .report
+        .css
+        .record_fetch_result("https://example.com/style.css".to_string(), true);
+
+      let report1 = build_prefetch_assets_report(
+        &[page_b.clone(), page_a.clone()],
+        Path::new("cache"),
+        false,
+        2,
+      );
+      let report2 = build_prefetch_assets_report(&[page_a, page_b], Path::new("cache"), false, 2);
+
+      let json1 = prefetch_assets_report_json(&report1).expect("serialize report");
+      let json2 = prefetch_assets_report_json(&report2).expect("serialize report");
+      assert_eq!(json1, json2, "report JSON should be deterministic");
+
+      let parsed: Value = serde_json::from_str(&json1).expect("parse report JSON");
+      let pages = parsed
+        .get("pages")
+        .and_then(Value::as_array)
+        .expect("pages array");
+      assert_eq!(pages.len(), 2);
+      assert_eq!(pages[0].get("stem").and_then(Value::as_str), Some("a"));
+      assert_eq!(pages[1].get("stem").and_then(Value::as_str), Some("b"));
+
+      let images = pages[1]
+        .get("images")
+        .and_then(Value::as_object)
+        .expect("images section");
+      let discovered = images
+        .get("discovered")
+        .and_then(Value::as_object)
+        .expect("images.discovered");
+      assert_eq!(
+        discovered.get("count").and_then(Value::as_u64),
+        Some(3),
+        "report should include full discovered count"
+      );
+      let urls = discovered
+        .get("urls")
+        .and_then(Value::as_array)
+        .expect("images.discovered.urls");
+      let urls: Vec<_> = urls
+        .iter()
+        .map(|v| v.as_str().expect("url string"))
+        .collect();
+      assert_eq!(
+        urls,
+        vec!["https://example.com/a.png", "https://example.com/m.png"],
+        "report URL samples should be sorted and capped"
+      );
+    }
+
+    #[test]
+    fn dry_run_does_not_call_fetcher() {
+      #[derive(Clone)]
+      struct PanicOnFetch;
+
+      impl ResourceFetcher for PanicOnFetch {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("fetch should not be called in dry-run mode");
+        }
+
+        fn fetch_with_request(
+          &self,
+          _req: FetchRequest<'_>,
+        ) -> fastrender::Result<FetchedResource> {
+          panic!("fetch_with_request should not be called in dry-run mode");
+        }
+      }
+
+      let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="https://example.com/style.css">
+        <style>body { background-image: url("https://example.com/bg.png"); }</style>
+      </head><body>
+        <img src="https://example.com/img.png">
+        <iframe src="https://example.com/frame.html"></iframe>
+      </body></html>"#;
+      let document_url = "https://example.com/page";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: true,
+        prefetch_images: true,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: true,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: true,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+        dry_run: true,
+      };
+      let fetcher: Arc<dyn ResourceFetcher> = Arc::new(PanicOnFetch);
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        html,
+        document_url,
+        "https://example.com/",
+        ReferrerPolicy::default(),
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      assert_eq!(summary.fetched_css, 0);
+      assert_eq!(summary.failed_css, 0);
+      assert_eq!(summary.fetched_imports, 0);
+      assert_eq!(summary.failed_imports, 0);
+      assert_eq!(summary.fetched_fonts, 0);
+      assert_eq!(summary.failed_fonts, 0);
+      assert_eq!(summary.fetched_images, 0);
+      assert_eq!(summary.failed_images, 0);
+      assert_eq!(summary.fetched_documents, 0);
+      assert_eq!(summary.failed_documents, 0);
+      assert_eq!(summary.fetched_css_assets, 0);
+      assert_eq!(summary.failed_css_assets, 0);
+
+      assert_eq!(summary.discovered_images, 1);
+      assert_eq!(summary.discovered_documents, 1);
+      assert_eq!(summary.discovered_css_assets, 1);
+      assert!(
+        summary
+          .report
+          .css
+          .discovered
+          .contains("https://example.com/style.css"),
+        "expected CSS URL to be recorded in report discovery"
+      );
+      assert!(
+        summary
+          .report
+          .images
+          .discovered
+          .contains("https://example.com/img.png"),
+        "expected image URL to be recorded in report discovery"
+      );
+    }
+
+    #[test]
+    fn report_url_samples_are_truncated_deterministically() {
+      let mut summary = PageSummary::default();
+      summary.stem = "test".to_string();
+      for url in [
+        "https://example.com/c.png",
+        "https://example.com/a.png",
+        "https://example.com/b.png",
+      ] {
+        summary.report.images.record_discovered(url.to_string());
+      }
+
+      let report = build_prefetch_assets_report(&[summary], Path::new("cache"), true, 2);
+      let json = prefetch_assets_report_json(&report).expect("serialize report");
+      let parsed: Value = serde_json::from_str(&json).expect("parse report JSON");
+      let pages = parsed
+        .get("pages")
+        .and_then(Value::as_array)
+        .expect("pages array");
+      let discovered = pages[0]["images"]["discovered"]
+        .as_object()
+        .expect("images.discovered");
+      assert_eq!(discovered.get("count").and_then(Value::as_u64), Some(3));
+      let urls = discovered
+        .get("urls")
+        .and_then(Value::as_array)
+        .expect("images.discovered.urls");
+      let urls: Vec<_> = urls
+        .iter()
+        .map(|v| v.as_str().expect("url string"))
+        .collect();
+      assert_eq!(
+        urls,
+        vec!["https://example.com/a.png", "https://example.com/b.png"]
+      );
     }
 
     #[test]
@@ -2460,6 +2970,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -2537,6 +3048,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let mut resource = FetchedResource::with_final_url(
@@ -2584,10 +3096,11 @@ mod disk_cache_main {
         }
 
         fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
-          self.calls.lock().unwrap().push((
-            req.url.to_string(),
-            req.referrer_url.map(|r| r.to_string()),
-          ));
+          self
+            .calls
+            .lock()
+            .unwrap()
+            .push((req.url.to_string(), req.referrer_url.map(|r| r.to_string())));
           let mut res = FetchedResource::with_final_url(
             b"body {}".to_vec(),
             Some("text/css".to_string()),
@@ -2683,7 +3196,9 @@ mod disk_cache_main {
               res.status = Some(200);
               Ok(res)
             }
-            other => Err(fastrender::Error::Other(format!("unexpected fetch: {other}"))),
+            other => Err(fastrender::Error::Other(format!(
+              "unexpected fetch: {other}"
+            ))),
           }
         }
       }
@@ -2706,6 +3221,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -2760,8 +3276,7 @@ mod disk_cache_main {
           match req.url {
             "https://example.com/style.css" => {
               let mut res = FetchedResource::with_final_url(
-                br#"@import url("import.css"); body { color: rgb(1, 2, 3); }"#
-                  .to_vec(),
+                br#"@import url("import.css"); body { color: rgb(1, 2, 3); }"#.to_vec(),
                 Some("text/css".to_string()),
                 Some(req.url.to_string()),
               );
@@ -2771,8 +3286,7 @@ mod disk_cache_main {
             }
             "https://example.com/import.css" => {
               let mut res = FetchedResource::with_final_url(
-                br#"@import url("nested.css"); body { background: rgb(0, 0, 0); }"#
-                  .to_vec(),
+                br#"@import url("nested.css"); body { background: rgb(0, 0, 0); }"#.to_vec(),
                 Some("text/css".to_string()),
                 Some("https://cdn.example.com/import-final.css".to_string()),
               );
@@ -2798,7 +3312,9 @@ mod disk_cache_main {
               res.status = Some(200);
               Ok(res)
             }
-            other => Err(fastrender::Error::Other(format!("unexpected fetch: {other}"))),
+            other => Err(fastrender::Error::Other(format!(
+              "unexpected fetch: {other}"
+            ))),
           }
         }
       }
@@ -2821,6 +3337,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -2850,7 +3367,9 @@ mod disk_cache_main {
         "expected nested import request to inherit imported stylesheet response Referrer-Policy header, got: {calls:?}"
       );
       assert!(
-        calls.iter().all(|(url, _, _)| url != "https://example.com/nested.css"),
+        calls
+          .iter()
+          .all(|(url, _, _)| url != "https://example.com/nested.css"),
         "expected nested import to resolve against imported stylesheet final URL, got: {calls:?}"
       );
     }
@@ -2896,7 +3415,9 @@ mod disk_cache_main {
               res.status = Some(200);
               Ok(res)
             }
-            other => Err(fastrender::Error::Other(format!("unexpected fetch: {other}"))),
+            other => Err(fastrender::Error::Other(format!(
+              "unexpected fetch: {other}"
+            ))),
           }
         }
       }
@@ -2919,6 +3440,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3000,7 +3522,9 @@ mod disk_cache_main {
               res.status = Some(200);
               Ok(res)
             }
-            other => Err(fastrender::Error::Other(format!("unexpected fetch: {other}"))),
+            other => Err(fastrender::Error::Other(format!(
+              "unexpected fetch: {other}"
+            ))),
           }
         }
       }
@@ -3023,6 +3547,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3121,6 +3646,7 @@ mod disk_cache_main {
           max_image_elements: n,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3207,6 +3733,7 @@ mod disk_cache_main {
           max_image_elements: n,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3280,6 +3807,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3312,7 +3840,14 @@ mod disk_cache_main {
 
       #[derive(Default)]
       struct RecordingFetcher {
-        calls: Mutex<Vec<(String, FetchDestination, Option<String>, Option<DocumentOrigin>)>>,
+        calls: Mutex<
+          Vec<(
+            String,
+            FetchDestination,
+            Option<String>,
+            Option<DocumentOrigin>,
+          )>,
+        >,
       }
 
       impl ResourceFetcher for RecordingFetcher {
@@ -3378,6 +3913,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3489,6 +4025,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3507,7 +4044,11 @@ mod disk_cache_main {
 
       let calls = fetcher_impl.calls.lock().unwrap().clone();
       let stylesheet_calls: Vec<_> = calls.iter().filter(|(url, ..)| url == STYLESHEET).collect();
-      assert_eq!(stylesheet_calls.len(), 1, "expected stylesheet fetch for {STYLESHEET}");
+      assert_eq!(
+        stylesheet_calls.len(),
+        1,
+        "expected stylesheet fetch for {STYLESHEET}"
+      );
       assert_eq!(stylesheet_calls[0].1, FetchDestination::StyleCors);
       assert_eq!(stylesheet_calls[0].2, expected_credentials);
       assert_eq!(stylesheet_calls[0].3.as_deref(), Some(DOCUMENT_URL));
@@ -3582,6 +4123,7 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3666,6 +4208,7 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3749,6 +4292,7 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3832,6 +4376,7 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let fetcher_impl = Arc::new(RecordingFetcher::default());
@@ -3956,6 +4501,7 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let summary = prefetch_assets_for_html(
@@ -4105,6 +4651,7 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let summary = prefetch_assets_for_html(
@@ -4273,6 +4820,7 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        dry_run: false,
       };
 
       let summary = prefetch_assets_for_html(
@@ -4446,13 +4994,14 @@ body { background-image: url(/bg.png); }
       prefetch_css_url_assets: args.prefetch_css_url_assets,
       max_discovered_assets_per_page: args.max_discovered_assets_per_page,
       image_limits,
+      dry_run: args.dry_run,
     };
     let prefetch_any_images =
       args.prefetch_images || args.prefetch_icons || args.prefetch_video_posters;
     let prefetch_any_documents = args.prefetch_iframes || args.prefetch_embeds;
 
     println!(
-      "Prefetching assets for {} page(s) ({} parallel, {}s timeout, fonts={} images={} iframes={} embeds={} icons={} video_posters={} css_url_assets={} max_assets_per_page={})...",
+      "Prefetching assets for {} page(s) ({} parallel, {}s timeout, fonts={} images={} iframes={} embeds={} icons={} video_posters={} css_url_assets={} max_assets_per_page={} dry_run={})...",
       selected.len(),
       args.jobs,
       per_request_timeout_label,
@@ -4463,7 +5012,8 @@ body { background-image: url(/bg.png); }
       args.prefetch_icons,
       args.prefetch_video_posters,
       args.prefetch_css_url_assets,
-      args.max_discovered_assets_per_page
+      args.max_discovered_assets_per_page,
+      args.dry_run
     );
     if args.prefetch_images
       || args.prefetch_iframes
@@ -4511,7 +5061,10 @@ body { background-image: url(/bg.png); }
     let pool = match ThreadPoolBuilder::new().num_threads(args.jobs).build() {
       Ok(pool) => pool,
       Err(err) => {
-        eprintln!("Failed to create thread pool with {} job(s): {err}", args.jobs);
+        eprintln!(
+          "Failed to create thread pool with {} job(s): {err}",
+          args.jobs
+        );
         std::process::exit(2);
       }
     };
@@ -4524,6 +5077,44 @@ body { background-image: url(/bg.png); }
     });
 
     results.sort_by(|a, b| a.stem.cmp(&b.stem));
+
+    let report_requested = args.report_json.is_some() || args.report_per_page_dir.is_some();
+    let report = report_requested.then(|| {
+      build_prefetch_assets_report(
+        &results,
+        &args.cache_dir,
+        args.dry_run,
+        args.max_report_urls_per_kind,
+      )
+    });
+    if let Some(report) = &report {
+      if let Some(path) = &args.report_json {
+        if let Err(err) = write_prefetch_assets_report(path, report) {
+          eprintln!("Failed to write --report-json {}: {err}", path.display());
+          std::process::exit(2);
+        }
+      }
+      if let Some(dir) = &args.report_per_page_dir {
+        for page in &report.pages {
+          let mut path = dir.join(PathBuf::from(&page.stem));
+          path.set_extension("json");
+          let single = PrefetchAssetsReport {
+            version: report.version,
+            cache_dir: report.cache_dir.clone(),
+            dry_run: report.dry_run,
+            max_report_urls_per_kind: report.max_report_urls_per_kind,
+            pages: vec![page.clone()],
+          };
+          if let Err(err) = write_prefetch_assets_report(&path, &single) {
+            eprintln!(
+              "Failed to write --report-per-page-dir file {}: {err}",
+              path.display()
+            );
+            std::process::exit(2);
+          }
+        }
+      }
+    }
 
     let mut total_discovered = 0usize;
     let mut total_fetched = 0usize;
