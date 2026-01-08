@@ -49,7 +49,7 @@ pub fn parse_grid_line<S: BuildHasher>(
   }
 
   // Check if it's "auto"
-  if value == "auto" {
+  if value.eq_ignore_ascii_case("auto") {
     return 0; // 0 means auto-placement in Taffy
   }
 
