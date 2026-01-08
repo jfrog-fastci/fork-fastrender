@@ -2261,12 +2261,16 @@ fn consume_nested_tokens_for_slice<'i, 't>(
 }
 
 fn parse_background_box_keyword(kw: &str, allow_text: bool) -> Option<BackgroundBox> {
-  match kw {
-    "border-box" => Some(BackgroundBox::BorderBox),
-    "padding-box" => Some(BackgroundBox::PaddingBox),
-    "content-box" => Some(BackgroundBox::ContentBox),
-    "text" if allow_text => Some(BackgroundBox::Text),
-    _ => None,
+  if kw.eq_ignore_ascii_case("border-box") {
+    Some(BackgroundBox::BorderBox)
+  } else if kw.eq_ignore_ascii_case("padding-box") {
+    Some(BackgroundBox::PaddingBox)
+  } else if kw.eq_ignore_ascii_case("content-box") {
+    Some(BackgroundBox::ContentBox)
+  } else if allow_text && kw.eq_ignore_ascii_case("text") {
+    Some(BackgroundBox::Text)
+  } else {
+    None
   }
 }
 

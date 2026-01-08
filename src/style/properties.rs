@@ -12325,12 +12325,17 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "background-attachment" => {
       let parse = |value: &PropertyValue| match value {
-        PropertyValue::Keyword(kw) => match kw.as_str() {
-          "scroll" => Some(BackgroundAttachment::Scroll),
-          "fixed" => Some(BackgroundAttachment::Fixed),
-          "local" => Some(BackgroundAttachment::Local),
-          _ => None,
-        },
+        PropertyValue::Keyword(kw) => {
+          if kw.eq_ignore_ascii_case("scroll") {
+            Some(BackgroundAttachment::Scroll)
+          } else if kw.eq_ignore_ascii_case("fixed") {
+            Some(BackgroundAttachment::Fixed)
+          } else if kw.eq_ignore_ascii_case("local") {
+            Some(BackgroundAttachment::Local)
+          } else {
+            None
+          }
+        }
         _ => None,
       };
       if let Some(attachments) = parse_layer_list(resolved_value, parse) {
@@ -15015,7 +15020,7 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
 
 pub fn parse_background_size_component(value: &PropertyValue) -> Option<BackgroundSizeComponent> {
   match value {
-    PropertyValue::Keyword(kw) if kw == "auto" => Some(BackgroundSizeComponent::Auto),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => Some(BackgroundSizeComponent::Auto),
     PropertyValue::Length(len) => Some(BackgroundSizeComponent::Length(*len)),
     PropertyValue::Number(n) if *n == 0.0 => Some(BackgroundSizeComponent::Length(Length::px(0.0))),
     PropertyValue::Percentage(p) => Some(BackgroundSizeComponent::Length(Length::percent(*p))),
@@ -15025,15 +15030,20 @@ pub fn parse_background_size_component(value: &PropertyValue) -> Option<Backgrou
 
 fn parse_background_size(value: &PropertyValue) -> Option<BackgroundSize> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "cover" => Some(BackgroundSize::Keyword(BackgroundSizeKeyword::Cover)),
-      "contain" => Some(BackgroundSize::Keyword(BackgroundSizeKeyword::Contain)),
-      "auto" => Some(BackgroundSize::Explicit(
-        BackgroundSizeComponent::Auto,
-        BackgroundSizeComponent::Auto,
-      )),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("cover") {
+        Some(BackgroundSize::Keyword(BackgroundSizeKeyword::Cover))
+      } else if kw.eq_ignore_ascii_case("contain") {
+        Some(BackgroundSize::Keyword(BackgroundSizeKeyword::Contain))
+      } else if kw.eq_ignore_ascii_case("auto") {
+        Some(BackgroundSize::Explicit(
+          BackgroundSizeComponent::Auto,
+          BackgroundSizeComponent::Auto,
+        ))
+      } else {
+        None
+      }
+    }
     PropertyValue::Multiple(values) => {
       if values.len() == 1 {
         if let Some(single) = parse_background_size(&values[0]) {
@@ -17058,46 +17068,65 @@ fn parse_mix_blend_mode(kw: &str) -> Option<MixBlendMode> {
 
 fn parse_background_box(value: &PropertyValue) -> Option<BackgroundBox> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "border-box" => Some(BackgroundBox::BorderBox),
-      "padding-box" => Some(BackgroundBox::PaddingBox),
-      "content-box" => Some(BackgroundBox::ContentBox),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("border-box") {
+        Some(BackgroundBox::BorderBox)
+      } else if kw.eq_ignore_ascii_case("padding-box") {
+        Some(BackgroundBox::PaddingBox)
+      } else if kw.eq_ignore_ascii_case("content-box") {
+        Some(BackgroundBox::ContentBox)
+      } else {
+        None
+      }
+    }
     _ => None,
   }
 }
 
 fn parse_background_clip(value: &PropertyValue) -> Option<BackgroundBox> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "border-box" => Some(BackgroundBox::BorderBox),
-      "padding-box" => Some(BackgroundBox::PaddingBox),
-      "content-box" => Some(BackgroundBox::ContentBox),
-      "text" => Some(BackgroundBox::Text),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("border-box") {
+        Some(BackgroundBox::BorderBox)
+      } else if kw.eq_ignore_ascii_case("padding-box") {
+        Some(BackgroundBox::PaddingBox)
+      } else if kw.eq_ignore_ascii_case("content-box") {
+        Some(BackgroundBox::ContentBox)
+      } else if kw.eq_ignore_ascii_case("text") {
+        Some(BackgroundBox::Text)
+      } else {
+        None
+      }
+    }
     _ => None,
   }
 }
 
 fn parse_repeat_keyword(kw: &str) -> Option<BackgroundRepeatKeyword> {
-  match kw {
-    "repeat" => Some(BackgroundRepeatKeyword::Repeat),
-    "space" => Some(BackgroundRepeatKeyword::Space),
-    "round" => Some(BackgroundRepeatKeyword::Round),
-    "no-repeat" => Some(BackgroundRepeatKeyword::NoRepeat),
-    _ => None,
+  if kw.eq_ignore_ascii_case("repeat") {
+    Some(BackgroundRepeatKeyword::Repeat)
+  } else if kw.eq_ignore_ascii_case("space") {
+    Some(BackgroundRepeatKeyword::Space)
+  } else if kw.eq_ignore_ascii_case("round") {
+    Some(BackgroundRepeatKeyword::Round)
+  } else if kw.eq_ignore_ascii_case("no-repeat") {
+    Some(BackgroundRepeatKeyword::NoRepeat)
+  } else {
+    None
   }
 }
 
 fn parse_background_repeat(value: &PropertyValue) -> Option<BackgroundRepeat> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "repeat-x" => Some(BackgroundRepeat::repeat_x()),
-      "repeat-y" => Some(BackgroundRepeat::repeat_y()),
-      _ => parse_repeat_keyword(kw).map(|k| BackgroundRepeat { x: k, y: k }),
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("repeat-x") {
+        Some(BackgroundRepeat::repeat_x())
+      } else if kw.eq_ignore_ascii_case("repeat-y") {
+        Some(BackgroundRepeat::repeat_y())
+      } else {
+        parse_repeat_keyword(kw).map(|k| BackgroundRepeat { x: k, y: k })
+      }
+    }
     PropertyValue::Multiple(values) if values.len() == 2 => {
       if let (PropertyValue::Keyword(x_kw), PropertyValue::Keyword(y_kw)) = (&values[0], &values[1])
       {
@@ -17114,51 +17143,71 @@ fn parse_background_repeat(value: &PropertyValue) -> Option<BackgroundRepeat> {
 
 fn parse_mask_mode(value: &PropertyValue) -> Option<MaskMode> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "alpha" => Some(MaskMode::Alpha),
-      "luminance" => Some(MaskMode::Luminance),
-      "match-source" => Some(MaskMode::MatchSource),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("alpha") {
+        Some(MaskMode::Alpha)
+      } else if kw.eq_ignore_ascii_case("luminance") {
+        Some(MaskMode::Luminance)
+      } else if kw.eq_ignore_ascii_case("match-source") {
+        Some(MaskMode::MatchSource)
+      } else {
+        None
+      }
+    }
     _ => None,
   }
 }
 
 fn parse_mask_origin(value: &PropertyValue) -> Option<MaskOrigin> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "border-box" => Some(MaskOrigin::BorderBox),
-      "padding-box" => Some(MaskOrigin::PaddingBox),
-      "content-box" => Some(MaskOrigin::ContentBox),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("border-box") {
+        Some(MaskOrigin::BorderBox)
+      } else if kw.eq_ignore_ascii_case("padding-box") {
+        Some(MaskOrigin::PaddingBox)
+      } else if kw.eq_ignore_ascii_case("content-box") {
+        Some(MaskOrigin::ContentBox)
+      } else {
+        None
+      }
+    }
     _ => None,
   }
 }
 
 fn parse_mask_clip(value: &PropertyValue) -> Option<MaskClip> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "border-box" => Some(MaskClip::BorderBox),
-      "padding-box" => Some(MaskClip::PaddingBox),
-      "content-box" => Some(MaskClip::ContentBox),
-      "text" => Some(MaskClip::Text),
-      "no-clip" => Some(MaskClip::NoClip),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      if kw.eq_ignore_ascii_case("border-box") {
+        Some(MaskClip::BorderBox)
+      } else if kw.eq_ignore_ascii_case("padding-box") {
+        Some(MaskClip::PaddingBox)
+      } else if kw.eq_ignore_ascii_case("content-box") {
+        Some(MaskClip::ContentBox)
+      } else if kw.eq_ignore_ascii_case("text") {
+        Some(MaskClip::Text)
+      } else if kw.eq_ignore_ascii_case("no-clip") {
+        Some(MaskClip::NoClip)
+      } else {
+        None
+      }
+    }
     _ => None,
   }
 }
 
 fn parse_mask_composite(value: &PropertyValue) -> Option<MaskComposite> {
   match value {
-    PropertyValue::Keyword(kw) => match kw.as_str() {
-      "add" | "source-over" | "src-over" => Some(MaskComposite::Add),
-      "subtract" | "source-out" | "src-out" => Some(MaskComposite::Subtract),
-      "intersect" | "source-in" | "src-in" => Some(MaskComposite::Intersect),
-      "exclude" | "xor" => Some(MaskComposite::Exclude),
-      _ => None,
-    },
+    PropertyValue::Keyword(kw) => {
+      let lower = kw.to_ascii_lowercase();
+      match lower.as_str() {
+        "add" | "source-over" | "src-over" => Some(MaskComposite::Add),
+        "subtract" | "source-out" | "src-out" => Some(MaskComposite::Subtract),
+        "intersect" | "source-in" | "src-in" => Some(MaskComposite::Intersect),
+        "exclude" | "xor" => Some(MaskComposite::Exclude),
+        _ => None,
+      }
+    }
     _ => None,
   }
 }
@@ -17189,14 +17238,21 @@ fn parse_background_position(value: &PropertyValue) -> Option<BackgroundPosition
 
   fn classify(value: &PropertyValue) -> Option<Part> {
     match value {
-      PropertyValue::Keyword(kw) => match kw.as_str() {
-        "left" => Some(Part::Keyword(AxisKind::Horizontal, 0.0)),
-        "right" => Some(Part::Keyword(AxisKind::Horizontal, 1.0)),
-        "top" => Some(Part::Keyword(AxisKind::Vertical, 0.0)),
-        "bottom" => Some(Part::Keyword(AxisKind::Vertical, 1.0)),
-        "center" => Some(Part::Keyword(AxisKind::Either, 0.5)),
-        _ => None,
-      },
+      PropertyValue::Keyword(kw) => {
+        if kw.eq_ignore_ascii_case("left") {
+          Some(Part::Keyword(AxisKind::Horizontal, 0.0))
+        } else if kw.eq_ignore_ascii_case("right") {
+          Some(Part::Keyword(AxisKind::Horizontal, 1.0))
+        } else if kw.eq_ignore_ascii_case("top") {
+          Some(Part::Keyword(AxisKind::Vertical, 0.0))
+        } else if kw.eq_ignore_ascii_case("bottom") {
+          Some(Part::Keyword(AxisKind::Vertical, 1.0))
+        } else if kw.eq_ignore_ascii_case("center") {
+          Some(Part::Keyword(AxisKind::Either, 0.5))
+        } else {
+          None
+        }
+      }
       PropertyValue::Length(l) => Some(Part::Offset(*l)),
       PropertyValue::Percentage(p) => Some(Part::Offset(Length::percent(*p))),
       PropertyValue::Number(n) if *n == 0.0 => Some(Part::Offset(Length::px(0.0))),
