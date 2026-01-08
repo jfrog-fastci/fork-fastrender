@@ -779,10 +779,28 @@ fn consume_bracket_block(s: &str) -> Option<(&str, &str)> {
   let mut idx = 1usize;
   let mut depth = 1u32;
   let mut in_string: Option<u8> = None;
+  let mut in_line_comment = false;
+  let mut in_block_comment = false;
   let mut escape = false;
 
   while idx < bytes.len() {
     let b = bytes[idx];
+    if in_line_comment {
+      if b == b'\n' {
+        in_line_comment = false;
+      }
+      idx += 1;
+      continue;
+    }
+    if in_block_comment {
+      if b == b'*' && idx + 1 < bytes.len() && bytes[idx + 1] == b'/' {
+        in_block_comment = false;
+        idx += 2;
+        continue;
+      }
+      idx += 1;
+      continue;
+    }
     if let Some(q) = in_string {
       if escape {
         escape = false;
@@ -799,6 +817,19 @@ fn consume_bracket_block(s: &str) -> Option<(&str, &str)> {
       }
       idx += 1;
       continue;
+    }
+
+    if b == b'/' && idx + 1 < bytes.len() {
+      if bytes[idx + 1] == b'/' {
+        in_line_comment = true;
+        idx += 2;
+        continue;
+      }
+      if bytes[idx + 1] == b'*' {
+        in_block_comment = true;
+        idx += 2;
+        continue;
+      }
     }
 
     match b {

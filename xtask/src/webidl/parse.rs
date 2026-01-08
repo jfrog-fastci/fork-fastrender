@@ -1,6 +1,7 @@
 use crate::webidl::ast::{
   Argument, BuiltinType, IdlLiteral, IdlType, InterfaceMember, SpecialOperation,
 };
+use crate::webidl::ExtendedAttribute;
 use anyhow::{anyhow, bail, Result};
 use std::ops::Range;
 
@@ -573,9 +574,9 @@ fn parse_argument_list(p: &mut Parser<'_>) -> Result<Vec<Argument>> {
 }
 
 fn parse_argument(p: &mut Parser<'_>) -> Result<Argument> {
-  // Ignore argument-level extended attributes (`[Clamp] long x`), but do not reject them.
+  let mut ext_attrs = Vec::<ExtendedAttribute>::new();
   while matches!(&p.peek().kind, TokenKind::Punct('[')) {
-    p.skip_bracket_block()?;
+    ext_attrs.extend(parse_ext_attr_block(p)?);
   }
 
   let optional = p.eat_ident("optional");
@@ -588,12 +589,40 @@ fn parse_argument(p: &mut Parser<'_>) -> Result<Argument> {
     None
   };
   Ok(Argument {
+    ext_attrs,
     name,
     type_,
     optional,
     variadic,
     default,
   })
+}
+
+fn parse_ext_attr_block(p: &mut Parser<'_>) -> Result<Vec<ExtendedAttribute>> {
+  p.expect_punct('[')?;
+  let mut depth = 1u32;
+  let mut content = String::new();
+
+  loop {
+    let tok = p.next().clone();
+    match tok.kind {
+      TokenKind::Punct('[') => {
+        depth += 1;
+        content.push_str(&p.input[tok.span]);
+      }
+      TokenKind::Punct(']') => {
+        depth -= 1;
+        if depth == 0 {
+          break;
+        }
+        content.push(']');
+      }
+      TokenKind::Eof => bail!(p.error_here("unterminated extended attribute block")),
+      _ => content.push_str(&p.input[tok.span]),
+    }
+  }
+
+  Ok(super::parse_ext_attr_list(&content))
 }
 
 fn parse_literal(p: &mut Parser<'_>) -> Result<IdlLiteral> {

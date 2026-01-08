@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use std::fmt;
+use super::ExtendedAttribute;
 
 /// A WebIDL type expression.
 ///
@@ -136,6 +137,7 @@ pub enum IdlLiteral {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Argument {
+  pub ext_attrs: Vec<ExtendedAttribute>,
   pub name: String,
   pub type_: IdlType,
   pub optional: bool,
