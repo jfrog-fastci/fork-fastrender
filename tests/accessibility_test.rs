@@ -538,6 +538,109 @@ fn accessibility_aria_describedby_skips_aria_hidden_reference() {
 }
 
 #[test]
+fn accessibility_title_falls_back_to_description_when_name_is_explicit() {
+  let html = r##"
+    <html>
+      <body>
+        <input id="x" aria-label="Name" title="Tooltip">
+      </body>
+    </html>
+  "##;
+  let tree = render_accessibility_json(html);
+  let node = find_json_node(&tree, "x").expect("node x");
+
+  assert_eq!(node.get("name").and_then(|v| v.as_str()), Some("Name"));
+  assert_eq!(
+    node.get("description").and_then(|v| v.as_str()),
+    Some("Tooltip")
+  );
+}
+
+#[test]
+fn accessibility_title_not_duplicated_when_used_as_name() {
+  let html = r##"
+    <html>
+      <body>
+        <button id="y" title="  Tooltip  "></button>
+      </body>
+    </html>
+  "##;
+  let tree = render_accessibility_json(html);
+  let node = find_json_node(&tree, "y").expect("node y");
+
+  assert_eq!(
+    node.get("name").and_then(|v| v.as_str()),
+    Some("Tooltip"),
+    "name should normalize title whitespace"
+  );
+  assert!(
+    node.get("description").is_none(),
+    "description should be omitted when identical to the name"
+  );
+}
+
+#[test]
+fn accessibility_aria_errormessage_only_included_when_invalid() {
+  let invalid_html = r##"
+    <html>
+      <body>
+        <input id="inv" required aria-errormessage="msg">
+        <div id="msg">Required</div>
+      </body>
+    </html>
+  "##;
+  let invalid_tree = render_accessibility_json(invalid_html);
+  let invalid_node = find_json_node(&invalid_tree, "inv").expect("invalid input");
+  assert_eq!(
+    invalid_node.get("description").and_then(|v| v.as_str()),
+    Some("Required")
+  );
+
+  let valid_html = r##"
+    <html>
+      <body>
+        <input id="inv" required value="ok" aria-errormessage="msg">
+        <div id="msg">Required</div>
+      </body>
+    </html>
+  "##;
+  let valid_tree = render_accessibility_json(valid_html);
+  let valid_node = find_json_node(&valid_tree, "inv").expect("valid input");
+  assert!(
+    valid_node.get("description").is_none(),
+    "aria-errormessage should be ignored when the control is valid"
+  );
+}
+
+#[test]
+fn accessibility_description_ordering_and_deduping() {
+  let html = r##"
+    <html>
+      <body>
+        <span id="d">Help</span>
+        <div id="e">Error</div>
+        <input
+          id="combo"
+          aria-describedby="d"
+          aria-errormessage="e"
+          aria-invalid="true"
+          aria-description="  Help  "
+          title="Tooltip"
+        >
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let node = find_json_node(&tree, "combo").expect("combo");
+
+  assert_eq!(
+    node.get("description").and_then(|v| v.as_str()),
+    Some("Help Error")
+  );
+}
+
+#[test]
 fn accessibility_range_slider_exposes_default_value() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r#"<input id="r" type="range" min="0" max="10" />"#;
@@ -1259,10 +1362,7 @@ fn accessibility_multi_select_value() {
   let select = find_json_node(&tree, "m").expect("select node");
 
   assert_eq!(select.get("role").and_then(|v| v.as_str()), Some("listbox"));
-  assert_eq!(
-    select.get("value").and_then(|v| v.as_str()),
-    Some("One")
-  );
+  assert_eq!(select.get("value").and_then(|v| v.as_str()), Some("One"));
 }
 
 #[test]

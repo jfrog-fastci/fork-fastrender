@@ -562,16 +562,6 @@ fn build_nodes<'a>(
         return children;
       }
 
-      let mut name = compute_name(node, ctx, !presentational_role);
-      let mut description = compute_description(node, ctx);
-      let decorative_image = is_decorative_img(node, ctx);
-
-      if decorative_image {
-        role = None;
-        name = None;
-        description = None;
-      }
-
       // HTML-AAM: `section` and `form` only expose implicit landmark roles when they have an
       // author-provided accessible name (not a name derived from their content).
       if !role_from_attr
@@ -583,6 +573,8 @@ fn build_nodes<'a>(
 
       let role_description = compute_role_description(role.as_deref(), &node.node);
 
+      let mut name = compute_name(node, ctx, !presentational_role);
+
       let native_disabled = compute_native_disabled(node, styled_ancestors);
       let aria_disabled = parse_bool_attr(&node.node, "aria-disabled");
       let disabled = native_disabled || aria_disabled == Some(true);
@@ -591,9 +583,18 @@ fn build_nodes<'a>(
       let aria_required = parse_bool_attr(&node.node, "aria-required");
       let required = native_required || aria_required == Some(true);
       let invalid = parse_invalid(node, &element_ref, styled_ancestors, ctx);
+
+      let mut description = compute_description(node, ctx, invalid, name.as_deref());
+      let decorative_image = is_decorative_img(node, ctx);
+
+      if decorative_image {
+        role = None;
+        name = None;
+        description = None;
+      }
+
       let checked = compute_checked(node, role.as_deref(), &element_ref);
-      let selected =
-        compute_selected(node, role.as_deref(), &element_ref, styled_ancestors, ctx);
+      let selected = compute_selected(node, role.as_deref(), &element_ref, styled_ancestors, ctx);
       let pressed = compute_pressed(node, role.as_deref());
       let busy = attr_truthy(&node.node, "aria-busy");
       let modal = compute_modal(&node.node);
@@ -1325,13 +1326,12 @@ fn compute_name(
   allow_name_from_content: bool,
 ) -> Option<String> {
   let mut visited = HashSet::new();
-  ctx
-    .text_alternative(
-      node,
-      &mut visited,
-      TextAlternativeMode::Visible,
-      Some(allow_name_from_content),
-    )
+  ctx.text_alternative(
+    node,
+    &mut visited,
+    TextAlternativeMode::Visible,
+    Some(allow_name_from_content),
+  )
 }
 
 fn native_name_from_html<'a>(
@@ -1382,10 +1382,7 @@ fn allows_visible_text_name(tag: Option<&str>, role: Option<&str>) -> bool {
   let tag_blocked = tag
     .map(|t| {
       let lower = t.to_ascii_lowercase();
-      matches!(
-        lower.as_str(),
-        "fieldset" | "figure" | "table" | "select"
-      )
+      matches!(lower.as_str(), "fieldset" | "figure" | "table" | "select")
     })
     .unwrap_or(false);
 
@@ -2067,11 +2064,18 @@ fn compute_role_description(role: Option<&str>, node: &DomNode) -> Option<String
   }
 }
 
-fn compute_description(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
-  let mut parts = Vec::new();
-  let mut visited = HashSet::new();
+fn compute_description(
+  node: &StyledNode,
+  ctx: &BuildContext,
+  invalid: bool,
+  computed_name: Option<&str>,
+) -> Option<String> {
+  let mut parts: Vec<String> = Vec::new();
+  let mut seen: HashSet<String> = HashSet::new();
 
+  let mut has_describedby = false;
   if let Some(desc_attr) = node.node.get_attribute_ref("aria-describedby") {
+    let mut visited = HashSet::new();
     let desc = referenced_text_attr(
       ctx,
       node.node_id,
@@ -2080,14 +2084,59 @@ fn compute_description(node: &StyledNode, ctx: &BuildContext) -> Option<String> 
       TextAlternativeMode::Referenced,
     );
     if !desc.is_empty() {
-      parts.push(desc);
+      has_describedby = true;
+      if seen.insert(desc.clone()) {
+        parts.push(desc);
+      }
     }
   }
 
+  if invalid {
+    if let Some(err_attr) = node.node.get_attribute_ref("aria-errormessage") {
+      if let Some(target) = resolve_idref_target(ctx, node, err_attr) {
+        let mut visited = HashSet::new();
+        let text = ctx
+          .text_alternative(
+            target,
+            &mut visited,
+            TextAlternativeMode::Referenced,
+            Some(true),
+          )
+          .unwrap_or_default();
+        let norm = normalize_whitespace(&text);
+        if !norm.is_empty() && seen.insert(norm.clone()) {
+          parts.push(norm);
+        }
+      }
+    }
+  }
+
+  let mut has_aria_description = false;
   if let Some(description) = node.node.get_attribute_ref("aria-description") {
     let norm = normalize_whitespace(description);
     if !norm.is_empty() {
-      parts.push(norm);
+      has_aria_description = true;
+      if seen.insert(norm.clone()) {
+        parts.push(norm);
+      }
+    }
+  }
+
+  // The HTML `title` attribute is treated as a low-priority description fallback when ARIA
+  // description sources are absent. Avoid duplicating the title when it was already used as the
+  // accessible name.
+  if !has_describedby && !has_aria_description {
+    if let Some(title) = node.node.get_attribute_ref("title") {
+      let norm_title = normalize_whitespace(title);
+      if !norm_title.is_empty() {
+        let name_matches_title = computed_name
+          .map(|name| normalize_whitespace(name))
+          .is_some_and(|name| name == norm_title);
+
+        if !name_matches_title && seen.insert(norm_title.clone()) {
+          parts.push(norm_title);
+        }
+      }
     }
   }
 
@@ -2137,6 +2186,26 @@ fn resolve_idref(ctx: &BuildContext, origin: &StyledNode, attr_value: &str) -> O
     .get_attribute_ref("id")
     .filter(|value| !value.is_empty())
     .map(|value| value.to_string())
+}
+
+fn resolve_idref_target<'a>(
+  ctx: &BuildContext<'a>,
+  origin: &StyledNode,
+  attr_value: &str,
+) -> Option<&'a StyledNode> {
+  let trimmed = attr_value.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // `aria-errormessage` is an IDREF, not a list; ignore whitespace-separated lists.
+  let mut tokens = trimmed.split_whitespace();
+  let token = tokens.next()?;
+  if tokens.next().is_some() {
+    return None;
+  }
+
+  ctx.node_for_id_scoped(origin.node_id, token)
 }
 
 fn compute_relations(node: &StyledNode, ctx: &BuildContext) -> Option<AccessibilityRelations> {
@@ -2363,11 +2432,9 @@ fn compute_native_disabled(node: &StyledNode, styled_ancestors: &[&StyledNode]) 
 
   if tag == "option" || tag == "optgroup" {
     for ancestor in styled_ancestors.iter().rev() {
-      if ancestor
-        .node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("select") || tag.eq_ignore_ascii_case("optgroup"))
-        && ancestor.node.get_attribute_ref("disabled").is_some()
+      if ancestor.node.tag_name().is_some_and(|tag| {
+        tag.eq_ignore_ascii_case("select") || tag.eq_ignore_ascii_case("optgroup")
+      }) && ancestor.node.get_attribute_ref("disabled").is_some()
       {
         return true;
       }
@@ -2511,11 +2578,16 @@ fn compute_invalid(
     return textarea_value_text(node, ctx).is_empty();
   }
 
-  if node.node.tag_name().is_some_and(|tag| tag.eq_ignore_ascii_case("input")) {
+  if node
+    .node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+  {
     let input_type = node.node.get_attribute_ref("type");
     let required = element_ref.accessibility_required();
 
-    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio")) {
+    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio"))
+    {
       return required && node.node.get_attribute_ref("checked").is_none();
     }
 
@@ -2572,7 +2644,9 @@ fn compute_invalid(
         .is_empty();
     }
 
-    if crate::dom::supports_placeholder(input_type) && !matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number")) {
+    if crate::dom::supports_placeholder(input_type)
+      && !matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number"))
+    {
       let value = node.node.get_attribute_ref("value").unwrap_or_default();
       return required && value.is_empty();
     }
@@ -2599,7 +2673,8 @@ fn compute_checked(
       .get_attribute_ref("type")
       .is_some_and(|t| t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio"));
 
-  if is_native_checkbox_or_radio && matches!(role, Some("checkbox") | Some("radio") | Some("switch"))
+  if is_native_checkbox_or_radio
+    && matches!(role, Some("checkbox") | Some("radio") | Some("switch"))
   {
     if element_ref.accessibility_indeterminate() {
       return Some(CheckState::Mixed);
