@@ -56,9 +56,9 @@ fn logical_padding_maps_in_sideways_lr_writing_mode() {
   );
   resolve_pending_logical_properties(&mut style);
 
-  // Sideways-lr: inline axis is vertical (top → bottom), block axis is horizontal left → right.
-  assert_eq!(style.padding_top, Length::px(6.0));
-  assert_eq!(style.padding_bottom, Length::px(8.0));
+  // Sideways-lr + ltr: inline axis is vertical (bottom → top), block axis is horizontal left → right.
+  assert_eq!(style.padding_top, Length::px(8.0));
+  assert_eq!(style.padding_bottom, Length::px(6.0));
   assert_eq!(style.padding_left, Length::px(3.0));
   assert_eq!(style.padding_right, Length::px(9.0));
 }
@@ -108,8 +108,8 @@ fn logical_inset_maps_in_sideways_lr_writing_mode() {
   );
   resolve_pending_logical_properties(&mut style);
 
-  // Sideways-lr: inline axis vertical -> start maps to top; block axis horizontal left→right -> end maps to right.
-  assert_eq!(style.top, InsetValue::Length(Length::px(5.0)));
+  // Sideways-lr + ltr: inline axis vertical -> start maps to bottom; block axis horizontal left→right -> end maps to right.
+  assert_eq!(style.bottom, InsetValue::Length(Length::px(5.0)));
   assert_eq!(style.right, InsetValue::Length(Length::px(7.0)));
 }
 
@@ -136,8 +136,8 @@ fn logical_margins_map_in_sideways_lr_writing_mode() {
   );
   resolve_pending_logical_properties(&mut style);
 
-  // Sideways-lr: inline axis vertical -> start maps to top; block axis horizontal left→right -> end maps to right.
-  assert_eq!(style.margin_top, Some(Length::px(12.0)));
+  // Sideways-lr + ltr: inline axis vertical -> start maps to bottom; block axis horizontal left→right -> end maps to right.
+  assert_eq!(style.margin_bottom, Some(Length::px(12.0)));
   assert_eq!(style.margin_right, Some(Length::px(4.0)));
 }
 
@@ -164,10 +164,10 @@ fn border_inline_color_maps_in_sideways_lr_writing_mode() {
   );
   resolve_pending_logical_properties(&mut style);
 
-  // Sideways-lr: inline axis is vertical -> start maps to top, end maps to bottom.
-  assert_eq!(style.border_top_color, fastrender::style::color::Rgba::RED);
+  // Sideways-lr + ltr: inline axis is vertical -> start maps to bottom, end maps to top.
+  assert_eq!(style.border_bottom_color, fastrender::style::color::Rgba::RED);
   assert_eq!(
-    style.border_bottom_color,
+    style.border_top_color,
     fastrender::style::color::Rgba::GREEN
   );
 }
@@ -191,13 +191,13 @@ fn border_inline_style_maps_in_sideways_lr_writing_mode() {
   );
   resolve_pending_logical_properties(&mut style);
 
-  // Sideways-lr inline axis is vertical -> start is top, end is bottom.
+  // Sideways-lr + ltr: inline axis is vertical -> start is bottom, end is top.
   assert_eq!(
-    style.border_top_style,
+    style.border_bottom_style,
     fastrender::style::types::BorderStyle::Dashed
   );
   assert_eq!(
-    style.border_bottom_style,
+    style.border_top_style,
     fastrender::style::types::BorderStyle::Dotted
   );
 }
@@ -221,9 +221,9 @@ fn border_inline_width_maps_in_sideways_lr_writing_mode() {
   );
   resolve_pending_logical_properties(&mut style);
 
-  // Sideways-lr inline axis is vertical -> start width maps to top, end width maps to bottom.
-  assert_eq!(style.border_top_width, Length::px(2.0));
-  assert_eq!(style.border_bottom_width, Length::px(5.0));
+  // Sideways-lr + ltr: inline axis is vertical -> start width maps to bottom, end width maps to top.
+  assert_eq!(style.border_bottom_width, Length::px(2.0));
+  assert_eq!(style.border_top_width, Length::px(5.0));
 }
 
 #[test]
@@ -252,14 +252,14 @@ fn logical_border_radius_maps_in_sideways_lr_writing_mode() {
   );
   resolve_pending_logical_properties(&mut style);
 
-  // Sideways-lr: inline axis vertical, block axis horizontal left→right.
-  // start-start → top-left, end-end → bottom-right.
+  // Sideways-lr + ltr: inline axis vertical (bottom→top), block axis horizontal left→right.
+  // start-start → bottom-left, end-end → top-right.
   assert_eq!(
-    style.border_top_left_radius,
+    style.border_bottom_left_radius,
     BorderCornerRadius::uniform(Length::px(9.0))
   );
   assert_eq!(
-    style.border_bottom_right_radius,
+    style.border_top_right_radius,
     BorderCornerRadius::uniform(Length::px(4.0))
   );
 }

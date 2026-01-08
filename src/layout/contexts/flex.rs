@@ -78,7 +78,6 @@ use crate::style::types::AlignContent;
 use crate::style::types::AlignItems;
 use crate::style::types::AspectRatio;
 use crate::style::types::BoxSizing;
-use crate::style::types::Direction;
 use crate::style::types::FlexBasis;
 use crate::style::types::FlexDirection;
 use crate::style::types::FlexWrap;
@@ -9046,14 +9045,11 @@ impl FlexFormattingContext {
   }
 
   fn inline_axis_positive(&self, style: &ComputedStyle) -> bool {
-    style.direction != Direction::Rtl
+    crate::style::inline_axis_positive(style.writing_mode, style.direction)
   }
 
   fn block_axis_positive(&self, style: &ComputedStyle) -> bool {
-    match style.writing_mode {
-      WritingMode::VerticalRl | WritingMode::SidewaysRl => false,
-      _ => true,
-    }
+    crate::style::block_axis_positive(style.writing_mode)
   }
 
   fn justify_content_to_taffy(

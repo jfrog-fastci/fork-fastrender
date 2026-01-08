@@ -12,6 +12,7 @@ use crate::css::types::Declaration;
 use crate::css::types::PropertyValue;
 use crate::geometry::Size;
 use crate::style::block_axis_is_horizontal;
+use crate::style::block_axis_positive;
 use crate::style::color::Color;
 use crate::style::color::Rgba;
 use crate::style::content::parse_content;
@@ -29,6 +30,7 @@ use crate::style::grid::parse_subgrid_line_names;
 use crate::style::grid::parse_track_list;
 use crate::style::grid::ParsedGridTemplate;
 use crate::style::grid::ParsedTracks;
+use crate::style::inline_axis_positive;
 use crate::style::inline_axis_is_horizontal;
 use crate::style::position::Position;
 use crate::style::string_set::parse_string_set_value;
@@ -32314,17 +32316,6 @@ fn parse_variation_setting<'i, 't>(
     tag: tag_bytes,
     value,
   })
-}
-
-fn inline_axis_positive(_wm: WritingMode, dir: Direction) -> bool {
-  dir != Direction::Rtl
-}
-
-fn block_axis_positive(wm: WritingMode) -> bool {
-  match wm {
-    WritingMode::VerticalRl | WritingMode::SidewaysRl => false,
-    _ => true,
-  }
 }
 
 fn inline_physical_sides(

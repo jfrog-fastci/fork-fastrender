@@ -7,7 +7,10 @@ use crate::style::types::{
 };
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
-use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal, PhysicalSide};
+use crate::style::{
+  block_axis_is_horizontal, block_axis_positive, inline_axis_is_horizontal, inline_axis_positive,
+  PhysicalSide,
+};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
 /// Viewport and element scroll offsets used when applying scroll snap.
@@ -94,17 +97,6 @@ fn is_vertical_writing_mode(mode: WritingMode) -> bool {
       | WritingMode::SidewaysRl
       | WritingMode::SidewaysLr
   )
-}
-
-fn inline_axis_positive(_mode: WritingMode, direction: Direction) -> bool {
-  direction != Direction::Rtl
-}
-
-fn block_axis_positive(mode: WritingMode) -> bool {
-  match mode {
-    WritingMode::VerticalRl | WritingMode::SidewaysRl => false,
-    _ => true,
-  }
 }
 
 fn axis_sides(

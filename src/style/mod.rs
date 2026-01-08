@@ -303,10 +303,13 @@ pub(crate) fn is_vertical_typographic_mode(wm: WritingMode) -> bool {
   matches!(wm, WritingMode::VerticalRl | WritingMode::VerticalLr)
 }
 
-pub(crate) fn inline_axis_positive(_wm: WritingMode, dir: Direction) -> bool {
+pub(crate) fn inline_axis_positive(wm: WritingMode, dir: Direction) -> bool {
   // `direction` flips the inline-start/inline-end edges even when the inline axis is vertical
   // (e.g. `writing-mode: vertical-rl`).
-  dir != Direction::Rtl
+  match wm {
+    WritingMode::SidewaysLr => dir == Direction::Rtl,
+    _ => dir != Direction::Rtl,
+  }
 }
 
 pub(crate) fn block_axis_positive(wm: WritingMode) -> bool {

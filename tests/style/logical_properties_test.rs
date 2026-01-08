@@ -349,9 +349,9 @@ fn logical_padding_maps_in_sideways_lr_writing_mode() {
   );
   resolve_pending_logical_properties(&mut style);
 
-  // Sideways-lr: inline axis is vertical (top → bottom), block axis is horizontal left → right.
-  assert_eq!(style.padding_top, Length::px(6.0));
-  assert_eq!(style.padding_bottom, Length::px(8.0));
+  // Sideways-lr + ltr: inline axis is vertical (bottom → top), block axis is horizontal left → right.
+  assert_eq!(style.padding_top, Length::px(8.0));
+  assert_eq!(style.padding_bottom, Length::px(6.0));
   assert_eq!(style.padding_left, Length::px(3.0));
   assert_eq!(style.padding_right, Length::px(9.0));
 }
@@ -388,8 +388,8 @@ fn logical_padding_maps_in_sideways_lr_writing_mode_direction_rtl() {
     16.0,
   );
   resolve_pending_logical_properties(&mut style);
-  assert_eq!(style.padding_bottom, Length::px(6.0));
-  assert_eq!(style.padding_top, Length::px(8.0));
+  assert_eq!(style.padding_top, Length::px(6.0));
+  assert_eq!(style.padding_bottom, Length::px(8.0));
   assert_eq!(style.padding_left, Length::px(3.0));
   assert_eq!(style.padding_right, Length::px(9.0));
 }

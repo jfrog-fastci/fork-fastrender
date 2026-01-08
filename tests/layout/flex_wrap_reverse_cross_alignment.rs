@@ -1657,14 +1657,19 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_content_start_packs_lines_to
     let first_y = first_y.unwrap_or_else(|| panic!("missing first child: {:?}", debug_children));
     let last_y = last_y.unwrap_or_else(|| panic!("missing last child: {:?}", debug_children));
 
+    let (expected_first_y, expected_last_y) = if writing_mode == WritingMode::SidewaysLr {
+      (0.0, 20.0)
+    } else {
+      (80.0, 60.0)
+    };
     assert!(
-      (first_y - 80.0).abs() < 1e-3,
-      "first line should start at y=80 under {writing_mode:?} + rtl + column + wrap + align-content:start: {:?}",
+      (first_y - expected_first_y).abs() < 1e-3,
+      "first line should start at y={expected_first_y} under {writing_mode:?} + rtl + column + wrap + align-content:start: {:?}",
       debug_children
     );
     assert!(
-      (last_y - 60.0).abs() < 1e-3,
-      "second line should start at y=60 under {writing_mode:?} + rtl + column + wrap + align-content:start: {:?}",
+      (last_y - expected_last_y).abs() < 1e-3,
+      "second line should start at y={expected_last_y} under {writing_mode:?} + rtl + column + wrap + align-content:start: {:?}",
       debug_children
     );
   }
@@ -1748,14 +1753,19 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_content_end_packs_lines_to_i
     let first_y = first_y.unwrap_or_else(|| panic!("missing first child: {:?}", debug_children));
     let last_y = last_y.unwrap_or_else(|| panic!("missing last child: {:?}", debug_children));
 
+    let (expected_first_y, expected_last_y) = if writing_mode == WritingMode::SidewaysLr {
+      (60.0, 80.0)
+    } else {
+      (20.0, 0.0)
+    };
     assert!(
-      (first_y - 20.0).abs() < 1e-3,
-      "first line should start at y=20 under {writing_mode:?} + rtl + column + wrap + align-content:end: {:?}",
+      (first_y - expected_first_y).abs() < 1e-3,
+      "first line should start at y={expected_first_y} under {writing_mode:?} + rtl + column + wrap + align-content:end: {:?}",
       debug_children
     );
     assert!(
-      (last_y - 0.0).abs() < 1e-3,
-      "second line should start at y=0 under {writing_mode:?} + rtl + column + wrap + align-content:end: {:?}",
+      (last_y - expected_last_y).abs() < 1e-3,
+      "second line should start at y={expected_last_y} under {writing_mode:?} + rtl + column + wrap + align-content:end: {:?}",
       debug_children
     );
   }
@@ -1842,14 +1852,19 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_items_start_uses_inline_star
     let tall_y = tall_y.unwrap_or_else(|| panic!("missing tall child: {:?}", debug_children));
     let short_y = short_y.unwrap_or_else(|| panic!("missing short child: {:?}", debug_children));
 
+    let (expected_tall_y, expected_short_y) = if writing_mode == WritingMode::SidewaysLr {
+      (0.0, 0.0)
+    } else {
+      (80.0, 90.0)
+    };
     assert!(
-      (tall_y - 80.0).abs() < 1e-3,
-      "tall child should start at y=80 under {writing_mode:?} + rtl + column + wrap: {:?}",
+      (tall_y - expected_tall_y).abs() < 1e-3,
+      "tall child should start at y={expected_tall_y} under {writing_mode:?} + rtl + column + wrap: {:?}",
       debug_children
     );
     assert!(
-      (short_y - 90.0).abs() < 1e-3,
-      "short child should align to inline-start (bottom) under {writing_mode:?} + rtl + column + wrap: {:?}",
+      (short_y - expected_short_y).abs() < 1e-3,
+      "short child should align to inline-start under {writing_mode:?} + rtl + column + wrap: {:?}",
       debug_children
     );
   }
@@ -1936,14 +1951,19 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_items_end_uses_inline_end_wi
     let tall_y = tall_y.unwrap_or_else(|| panic!("missing tall child: {:?}", debug_children));
     let short_y = short_y.unwrap_or_else(|| panic!("missing short child: {:?}", debug_children));
 
+    let (expected_tall_y, expected_short_y) = if writing_mode == WritingMode::SidewaysLr {
+      (0.0, 10.0)
+    } else {
+      (80.0, 80.0)
+    };
     assert!(
-      (tall_y - 80.0).abs() < 1e-3,
-      "tall child should start at y=80 under {writing_mode:?} + rtl + column + wrap: {:?}",
+      (tall_y - expected_tall_y).abs() < 1e-3,
+      "tall child should start at y={expected_tall_y} under {writing_mode:?} + rtl + column + wrap: {:?}",
       debug_children
     );
     assert!(
-      (short_y - 80.0).abs() < 1e-3,
-      "short child should align to inline-end (top) under {writing_mode:?} + rtl + column + wrap: {:?}",
+      (short_y - expected_short_y).abs() < 1e-3,
+      "short child should align to inline-end under {writing_mode:?} + rtl + column + wrap: {:?}",
       debug_children
     );
   }
@@ -1961,13 +1981,18 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_start_packs_
       writing_mode,
       AlignContent::Start,
     );
+    let (expected_first_y, expected_last_y) = if writing_mode == WritingMode::SidewaysLr {
+      (20.0, 0.0)
+    } else {
+      (60.0, 80.0)
+    };
     assert!(
-      (first_y - 60.0).abs() < 1e-3,
-      "first line should start at y=60 under {writing_mode:?} + rtl + column + wrap-reverse + align-content:start; got y={first_y}"
+      (first_y - expected_first_y).abs() < 1e-3,
+      "first line should start at y={expected_first_y} under {writing_mode:?} + rtl + column + wrap-reverse + align-content:start; got y={first_y}"
     );
     assert!(
-      (last_y - 80.0).abs() < 1e-3,
-      "second line should start at y=80 under {writing_mode:?} + rtl + column + wrap-reverse + align-content:start; got y={last_y}"
+      (last_y - expected_last_y).abs() < 1e-3,
+      "second line should start at y={expected_last_y} under {writing_mode:?} + rtl + column + wrap-reverse + align-content:start; got y={last_y}"
     );
   }
 }
@@ -1984,13 +2009,18 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_start_p
       writing_mode,
       AlignContent::FlexStart,
     );
+    let (expected_first_y, expected_last_y) = if writing_mode == WritingMode::SidewaysLr {
+      (80.0, 60.0)
+    } else {
+      (0.0, 20.0)
+    };
     assert!(
-      (first_y - 0.0).abs() < 1e-3,
-      "first line should start at y=0 under {writing_mode:?} + rtl + column + wrap-reverse + align-content:flex-start; got y={first_y}"
+      (first_y - expected_first_y).abs() < 1e-3,
+      "first line should start at y={expected_first_y} under {writing_mode:?} + rtl + column + wrap-reverse + align-content:flex-start; got y={first_y}"
     );
     assert!(
-      (last_y - 20.0).abs() < 1e-3,
-      "second line should start at y=20 under {writing_mode:?} + rtl + column + wrap-reverse + align-content:flex-start; got y={last_y}"
+      (last_y - expected_last_y).abs() < 1e-3,
+      "second line should start at y={expected_last_y} under {writing_mode:?} + rtl + column + wrap-reverse + align-content:flex-start; got y={last_y}"
     );
   }
 }
@@ -2007,13 +2037,18 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_end_packs_li
       writing_mode,
       AlignContent::End,
     );
+    let (expected_first_y, expected_last_y) = if writing_mode == WritingMode::SidewaysLr {
+      (80.0, 60.0)
+    } else {
+      (0.0, 20.0)
+    };
     assert!(
-      (first_y - 0.0).abs() < 1e-3,
-      "first line should start at y=0 under {writing_mode:?} + rtl + column + wrap-reverse + align-content:end; got y={first_y}"
+      (first_y - expected_first_y).abs() < 1e-3,
+      "first line should start at y={expected_first_y} under {writing_mode:?} + rtl + column + wrap-reverse + align-content:end; got y={first_y}"
     );
     assert!(
-      (last_y - 20.0).abs() < 1e-3,
-      "second line should start at y=20 under {writing_mode:?} + rtl + column + wrap-reverse + align-content:end; got y={last_y}"
+      (last_y - expected_last_y).abs() < 1e-3,
+      "second line should start at y={expected_last_y} under {writing_mode:?} + rtl + column + wrap-reverse + align-content:end; got y={last_y}"
     );
   }
 }
@@ -2030,13 +2065,18 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_end_pac
       writing_mode,
       AlignContent::FlexEnd,
     );
+    let (expected_first_y, expected_last_y) = if writing_mode == WritingMode::SidewaysLr {
+      (20.0, 0.0)
+    } else {
+      (60.0, 80.0)
+    };
     assert!(
-      (first_y - 60.0).abs() < 1e-3,
-      "first line should start at y=60 under {writing_mode:?} + rtl + column + wrap-reverse + align-content:flex-end; got y={first_y}"
+      (first_y - expected_first_y).abs() < 1e-3,
+      "first line should start at y={expected_first_y} under {writing_mode:?} + rtl + column + wrap-reverse + align-content:flex-end; got y={first_y}"
     );
     assert!(
-      (last_y - 80.0).abs() < 1e-3,
-      "second line should start at y=80 under {writing_mode:?} + rtl + column + wrap-reverse + align-content:flex-end; got y={last_y}"
+      (last_y - expected_last_y).abs() < 1e-3,
+      "second line should start at y={expected_last_y} under {writing_mode:?} + rtl + column + wrap-reverse + align-content:flex-end; got y={last_y}"
     );
   }
 }
@@ -2053,13 +2093,18 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_start_uses_inl
       writing_mode,
       AlignItems::Start,
     );
+    let expected_short_y = if writing_mode == WritingMode::SidewaysLr {
+      0.0
+    } else {
+      10.0
+    };
     assert!(
       (tall_y - 0.0).abs() < 1e-3,
       "tall child should start at y=0 under {writing_mode:?} + rtl + column + wrap-reverse; got y={tall_y}"
     );
     assert!(
-      (short_y - 10.0).abs() < 1e-3,
-      "short child should align to inline-start (bottom) under {writing_mode:?} + rtl + column + wrap-reverse; got y={short_y}"
+      (short_y - expected_short_y).abs() < 1e-3,
+      "short child should align to inline-start under {writing_mode:?} + rtl + column + wrap-reverse; got y={short_y}"
     );
   }
 }
@@ -2076,13 +2121,18 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_start_use
       writing_mode,
       AlignItems::FlexStart,
     );
+    let expected_short_y = if writing_mode == WritingMode::SidewaysLr {
+      10.0
+    } else {
+      0.0
+    };
     assert!(
       (tall_y - 0.0).abs() < 1e-3,
       "tall child should start at y=0 under {writing_mode:?} + rtl + column + wrap-reverse; got y={tall_y}"
     );
     assert!(
-      (short_y - 0.0).abs() < 1e-3,
-      "short child should align to cross-start (top) under {writing_mode:?} + rtl + column + wrap-reverse; got y={short_y}"
+      (short_y - expected_short_y).abs() < 1e-3,
+      "short child should align to cross-start under {writing_mode:?} + rtl + column + wrap-reverse; got y={short_y}"
     );
   }
 }
@@ -2099,13 +2149,18 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_end_uses_inlin
       writing_mode,
       AlignItems::End,
     );
+    let expected_short_y = if writing_mode == WritingMode::SidewaysLr {
+      10.0
+    } else {
+      0.0
+    };
     assert!(
       (tall_y - 0.0).abs() < 1e-3,
       "tall child should start at y=0 under {writing_mode:?} + rtl + column + wrap-reverse; got y={tall_y}"
     );
     assert!(
-      (short_y - 0.0).abs() < 1e-3,
-      "short child should align to inline-end (top) under {writing_mode:?} + rtl + column + wrap-reverse; got y={short_y}"
+      (short_y - expected_short_y).abs() < 1e-3,
+      "short child should align to inline-end under {writing_mode:?} + rtl + column + wrap-reverse; got y={short_y}"
     );
   }
 }
@@ -2122,13 +2177,18 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_end_uses_
       writing_mode,
       AlignItems::FlexEnd,
     );
+    let expected_short_y = if writing_mode == WritingMode::SidewaysLr {
+      0.0
+    } else {
+      10.0
+    };
     assert!(
       (tall_y - 0.0).abs() < 1e-3,
       "tall child should start at y=0 under {writing_mode:?} + rtl + column + wrap-reverse; got y={tall_y}"
     );
     assert!(
-      (short_y - 10.0).abs() < 1e-3,
-      "short child should align to cross-end (bottom) under {writing_mode:?} + rtl + column + wrap-reverse; got y={short_y}"
+      (short_y - expected_short_y).abs() < 1e-3,
+      "short child should align to cross-end under {writing_mode:?} + rtl + column + wrap-reverse; got y={short_y}"
     );
   }
 }

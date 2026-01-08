@@ -67,27 +67,33 @@ fn scroll_snap_inline_start_end_flip_in_vertical_inline_axes_under_rtl() {
     WritingMode::SidewaysRl,
     WritingMode::SidewaysLr,
   ] {
+    let (expected_ltr_start, expected_rtl_start, expected_ltr_end, expected_rtl_end) =
+      if writing_mode == WritingMode::SidewaysLr {
+        (10.0, 100.0, 100.0, 10.0)
+      } else {
+        (100.0, 10.0, 10.0, 100.0)
+      };
+
     let ltr_start = snap_target_y(writing_mode, Direction::Ltr, ScrollSnapAlign::Start);
     let rtl_start = snap_target_y(writing_mode, Direction::Rtl, ScrollSnapAlign::Start);
     assert!(
-      (ltr_start - 100.0).abs() < 1e-3,
-      "expected inline-start target to resolve to y=100 under {writing_mode:?} + ltr, got {ltr_start}"
+      (ltr_start - expected_ltr_start).abs() < 1e-3,
+      "expected inline-start target to resolve to y={expected_ltr_start} under {writing_mode:?} + ltr, got {ltr_start}"
     );
     assert!(
-      (rtl_start - 10.0).abs() < 1e-3,
-      "expected inline-start target to resolve to y=10 under {writing_mode:?} + rtl, got {rtl_start}"
+      (rtl_start - expected_rtl_start).abs() < 1e-3,
+      "expected inline-start target to resolve to y={expected_rtl_start} under {writing_mode:?} + rtl, got {rtl_start}"
     );
 
     let ltr_end = snap_target_y(writing_mode, Direction::Ltr, ScrollSnapAlign::End);
     let rtl_end = snap_target_y(writing_mode, Direction::Rtl, ScrollSnapAlign::End);
     assert!(
-      (ltr_end - 10.0).abs() < 1e-3,
-      "expected inline-end target to resolve to y=10 under {writing_mode:?} + ltr, got {ltr_end}"
+      (ltr_end - expected_ltr_end).abs() < 1e-3,
+      "expected inline-end target to resolve to y={expected_ltr_end} under {writing_mode:?} + ltr, got {ltr_end}"
     );
     assert!(
-      (rtl_end - 100.0).abs() < 1e-3,
-      "expected inline-end target to resolve to y=100 under {writing_mode:?} + rtl, got {rtl_end}"
+      (rtl_end - expected_rtl_end).abs() < 1e-3,
+      "expected inline-end target to resolve to y={expected_rtl_end} under {writing_mode:?} + rtl, got {rtl_end}"
     );
   }
 }
-
