@@ -8570,6 +8570,7 @@ impl FastRender {
       let mut include_opacity = false;
       let mut include_z_index = false;
       let mut include_position = false;
+      let mut include_visibility = false;
       let mut include_overflow = false;
       let mut include_font_size = false;
       let mut properties: Vec<String> = Vec::new();
@@ -8579,6 +8580,7 @@ impl FastRender {
           "background-color" => include_background_color = true,
           "display" => include_display = true,
           "position" => include_position = true,
+          "visibility" => include_visibility = true,
           "overflow" | "overflow-x" | "overflow-y" => include_overflow = true,
           "opacity" => include_opacity = true,
           "z-index" => include_z_index = true,
@@ -8594,6 +8596,7 @@ impl FastRender {
         && !include_background_color
         && !include_display
         && !include_position
+        && !include_visibility
         && !include_overflow
         && !include_opacity
         && !include_z_index
@@ -8608,6 +8611,7 @@ impl FastRender {
           include_background_color,
           include_display,
           include_position,
+          include_visibility,
           include_overflow,
           include_opacity,
           include_z_index,
@@ -12851,6 +12855,7 @@ struct ContainerQueryFingerprintConfig {
   include_background_color: bool,
   include_display: bool,
   include_position: bool,
+  include_visibility: bool,
   include_overflow: bool,
   include_opacity: bool,
   include_z_index: bool,
@@ -12919,6 +12924,14 @@ fn overflow_fingerprint(overflow: crate::style::types::Overflow) -> u8 {
   }
 }
 
+fn visibility_fingerprint(visibility: crate::style::computed::Visibility) -> u8 {
+  match visibility {
+    crate::style::computed::Visibility::Visible => 0,
+    crate::style::computed::Visibility::Hidden => 1,
+    crate::style::computed::Visibility::Collapse => 2,
+  }
+}
+
 fn container_query_context_fingerprint(
   ctx: &ContainerQueryContext,
   config: Option<&ContainerQueryFingerprintConfig>,
@@ -12962,6 +12975,9 @@ fn container_query_context_fingerprint(
       }
       if config.include_position {
         info.styles.position.hash(&mut hasher);
+      }
+      if config.include_visibility {
+        visibility_fingerprint(info.styles.visibility).hash(&mut hasher);
       }
       if config.include_overflow {
         overflow_fingerprint(info.styles.overflow_x).hash(&mut hasher);
@@ -16955,6 +16971,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_background_color: false,
       include_display: false,
       include_position: false,
+      include_visibility: false,
       include_overflow: false,
       include_opacity: false,
       include_z_index: false,
@@ -17038,6 +17055,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_background_color: false,
       include_display: false,
       include_position: false,
+      include_visibility: false,
       include_overflow: false,
       include_opacity: false,
       include_z_index: false,
@@ -17112,6 +17130,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_background_color: false,
       include_display: false,
       include_position: false,
+      include_visibility: false,
       include_overflow: false,
       include_opacity: true,
       include_z_index: false,
@@ -17187,6 +17206,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_background_color: false,
       include_display: false,
       include_position: false,
+      include_visibility: false,
       include_overflow: false,
       include_opacity: false,
       include_z_index: true,
@@ -17262,6 +17282,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_background_color: false,
       include_display: false,
       include_position: true,
+      include_visibility: false,
       include_overflow: false,
       include_opacity: false,
       include_z_index: false,
@@ -17340,6 +17361,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_background_color: false,
       include_display: false,
       include_position: false,
+      include_visibility: false,
       include_overflow: true,
       include_opacity: false,
       include_z_index: false,
@@ -17402,6 +17424,85 @@ pub(crate) fn render_html_with_shared_resources(
   }
 
   #[test]
+  fn container_query_fingerprint_tracks_visibility_used_by_style_queries() {
+    let stylesheet = crate::css::parser::parse_stylesheet(
+      "@container style(visibility: hidden) { .a { color: red; } }",
+    )
+    .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
+
+    assert!(
+      metadata.container_style_query_properties.contains("visibility"),
+      "metadata should track style-query property"
+    );
+
+    let mut custom_properties: Vec<String> = metadata
+      .container_style_query_custom_properties
+      .into_iter()
+      .chain(metadata.container_size_query_custom_properties.into_iter())
+      .collect();
+    custom_properties.sort();
+    custom_properties.dedup();
+    let cfg = ContainerQueryFingerprintConfig {
+      custom_properties,
+      include_color: false,
+      include_background_color: false,
+      include_display: false,
+      include_position: false,
+      include_visibility: true,
+      include_overflow: false,
+      include_opacity: false,
+      include_z_index: false,
+      include_font_size: false,
+      properties: Vec::new(),
+    };
+
+    fn ctx_with_visibility(
+      media_ctx: &MediaContext,
+      visibility: crate::style::computed::Visibility,
+    ) -> ContainerQueryContext {
+      let mut style = ComputedStyle::default();
+      style.visibility = visibility;
+      let mut containers = HashMap::new();
+      containers.insert(
+        1usize,
+        crate::style::cascade::ContainerQueryInfo {
+          width: 100.0,
+          height: 200.0,
+          inline_size: 100.0,
+          block_size: 200.0,
+          container_type: crate::style::types::ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(style),
+        },
+      );
+      ContainerQueryContext {
+        base_media: media_ctx.clone(),
+        containers,
+      }
+    }
+
+    let ctx_a = ctx_with_visibility(&media_ctx, crate::style::computed::Visibility::Visible);
+    let ctx_b = ctx_with_visibility(&media_ctx, crate::style::computed::Visibility::Hidden);
+    let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
+    let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
+    assert_ne!(
+      fp_a, fp_b,
+      "fingerprint should change when tracked style-query properties change"
+    );
+
+    // Without a config, style-query properties should not affect the fingerprint.
+    let fp_a_untracked = container_query_context_fingerprint(&ctx_a, None);
+    let fp_b_untracked = container_query_context_fingerprint(&ctx_b, None);
+    assert_eq!(
+      fp_a_untracked, fp_b_untracked,
+      "untracked style-query properties should not affect the fingerprint"
+    );
+  }
+
+  #[test]
   fn container_query_fingerprint_tracks_raw_custom_props_used_by_style_query_subjects() {
     // Style queries against unregistered custom properties compare the authored token stream (with
     // no var() substitution). Ensure the fingerprint captures changes in that raw token stream even
@@ -17433,6 +17534,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_background_color: false,
       include_display: false,
       include_position: false,
+      include_visibility: false,
       include_overflow: false,
       include_opacity: false,
       include_z_index: false,
@@ -17508,6 +17610,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_background_color: false,
       include_display: false,
       include_position: false,
+      include_visibility: false,
       include_overflow: false,
       include_opacity: false,
       include_z_index: false,
