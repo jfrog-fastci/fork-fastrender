@@ -445,6 +445,23 @@ jobs:
           path: target
           key: ${{ runner.os }}-msrv-cargo-build-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global core.longpaths true
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
+
       - name: Build browser UI with MSRV (compile-only)
         run: cargo build --all-features --bin browser
 
