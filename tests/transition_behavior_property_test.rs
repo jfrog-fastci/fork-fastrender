@@ -247,3 +247,58 @@ fn transition_property_accepts_none_as_single_value() {
     vec![TransitionProperty::None].into()
   );
 }
+
+#[test]
+fn transition_shorthand_rejects_none_in_comma_list() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "transition".into(),
+    value: PropertyValue::Keyword("opacity 1s linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+  assert_eq!(
+    styles.transition_properties,
+    vec![TransitionProperty::Name("opacity".to_string())].into()
+  );
+
+  // `transition-property/none` is only valid when it is the sole shorthand entry; mixed lists like
+  // `none, opacity 1s` should be invalid and ignored.
+  let invalid_decl = Declaration {
+    property: "transition".into(),
+    value: PropertyValue::Keyword("none, opacity 1s".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_properties,
+    vec![TransitionProperty::Name("opacity".to_string())].into()
+  );
+}

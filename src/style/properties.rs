@@ -2992,18 +2992,20 @@ fn parse_animation_shorthand(
 
 fn parse_transition_shorthand(
   raw: &str,
-) -> (
+) -> Option<(
   Vec<TransitionProperty>,
   Vec<f32>,
   Vec<f32>,
   Vec<TransitionTimingFunction>,
   Vec<TransitionBehavior>,
-) {
+)> {
   let mut properties = Vec::new();
   let mut durations = Vec::new();
   let mut delays = Vec::new();
   let mut timings = Vec::new();
   let mut behaviors = Vec::new();
+
+  let mut saw_any = false;
 
   for part in split_top_level_commas(raw) {
     let mut property: Option<TransitionProperty> = None;
@@ -3012,26 +3014,38 @@ fn parse_transition_shorthand(
     let mut timing: Option<TransitionTimingFunction> = None;
     let mut behavior: Option<TransitionBehavior> = None;
 
+    let mut invalid = false;
+
     for token in split_top_level_whitespace(&part) {
+      saw_any = true;
       if let Some(ms) = parse_time_ms(&token) {
         if duration.is_none() {
           duration = Some(ms);
         } else if delay.is_none() {
           delay = Some(ms);
+        } else {
+          invalid = true;
+          break;
         }
         continue;
       }
 
       if let Some(tf) = parse_transition_timing_function(&token) {
-        timing = Some(tf);
+        if timing.is_none() {
+          timing = Some(tf);
+          continue;
+        }
+        invalid = true;
         continue;
       }
 
-      if behavior.is_none() {
-        if let Some(found) = parse_transition_behavior(&token) {
+      if let Some(found) = parse_transition_behavior(&token) {
+        if behavior.is_none() {
           behavior = Some(found);
           continue;
         }
+        invalid = true;
+        break;
       }
 
       if property.is_none() {
@@ -3043,7 +3057,14 @@ fn parse_transition_shorthand(
           "none" => TransitionProperty::None,
           _ => TransitionProperty::Name(canonical.to_string()),
         });
+      } else {
+        invalid = true;
+        break;
       }
+    }
+
+    if invalid {
+      return None;
     }
 
     properties.push(property.unwrap_or(TransitionProperty::All));
@@ -3053,17 +3074,21 @@ fn parse_transition_shorthand(
     behaviors.push(behavior.unwrap_or(TransitionBehavior::Normal));
   }
 
-  if properties.is_empty() {
-    (
-      vec![TransitionProperty::All],
-      vec![0.0],
-      vec![0.0],
-      vec![TransitionTimingFunction::Ease],
-      vec![TransitionBehavior::Normal],
-    )
-  } else {
-    (properties, durations, delays, timings, behaviors)
+  if !saw_any {
+    return None;
   }
+
+  // Per CSS Transitions 1 §3.4: `transition-property/none` is only valid in the shorthand when it
+  // is the sole `<single-transition>` entry.
+  if properties.len() > 1
+    && properties
+      .iter()
+      .any(|property| matches!(property, TransitionProperty::None))
+  {
+    return None;
+  }
+
+  Some((properties, durations, delays, timings, behaviors))
 }
 
 fn parse_touch_action_keywords(tokens: &[String]) -> Option<TouchAction> {
@@ -11287,12 +11312,14 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "transition" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let (props, durations, delays, timings, behaviors) = parse_transition_shorthand(css_text);
-      styles.transition_properties = props.into();
-      styles.transition_durations = durations.into();
-      styles.transition_delays = delays.into();
-      styles.transition_timing_functions = timings.into();
-      styles.transition_behaviors = behaviors.into();
+      if let Some((props, durations, delays, timings, behaviors)) = parse_transition_shorthand(css_text)
+      {
+        styles.transition_properties = props.into();
+        styles.transition_durations = durations.into();
+        styles.transition_delays = delays.into();
+        styles.transition_timing_functions = timings.into();
+        styles.transition_behaviors = behaviors.into();
+      }
     }
     "scrollbar-gutter" => {
       let mut stable = false;
