@@ -1201,10 +1201,10 @@ fn parse_scroll_timeline_list(raw: &str) -> Vec<ScrollTimeline> {
   timelines
 }
 
-fn parse_named_timeline_name_list(raw: &str) -> Vec<Option<String>> {
+fn parse_named_timeline_name_list(raw: &str) -> Option<Vec<Option<String>>> {
   let trimmed = raw.trim();
   if trimmed.is_empty() {
-    return Vec::new();
+    return None;
   }
   let mut names = Vec::new();
   for part in split_top_level_commas(trimmed) {
@@ -1218,7 +1218,13 @@ fn parse_named_timeline_name_list(raw: &str) -> Vec<Option<String>> {
       names.push(Some(name.to_string()));
     }
   }
-  names
+  if names.is_empty() {
+    return None;
+  }
+  if names.len() == 1 && names[0].is_none() {
+    return Some(Vec::new());
+  }
+  Some(names)
 }
 
 fn parse_timeline_axis_list(raw: &str) -> Vec<TimelineAxis> {
@@ -11203,8 +11209,13 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "scroll-timeline-name" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let names = parse_named_timeline_name_list(css_text);
+      let Some(names) = parse_named_timeline_name_list(css_text) else {
+        return;
+      };
       if names.is_empty() {
+        for tl in styles.scroll_timelines.iter_mut() {
+          tl.name = None;
+        }
         return;
       }
       let target_len = styles.scroll_timelines.len().max(names.len());
@@ -11242,8 +11253,13 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "view-timeline-name" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let names = parse_named_timeline_name_list(css_text);
+      let Some(names) = parse_named_timeline_name_list(css_text) else {
+        return;
+      };
       if names.is_empty() {
+        for tl in styles.view_timelines.iter_mut() {
+          tl.name = None;
+        }
         return;
       }
       let target_len = styles.view_timelines.len().max(names.len());
