@@ -11,10 +11,19 @@
     "css": 22.044532727272724,
     "cascade": 33.066799090909086,
     "box_tree": 9.018217933884298,
-    "layout": 21.042508512396694,
+    "layout": 21.042508512396697,
     "paint": 78.15788876033058
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 891677,
+    "diff_percent": 92.883,
+    "perceptual": 0.393,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
@@ -29,10 +38,10 @@
         "dom_convert_ms": 0.306036,
         "dom_shadow_attach_ms": 0.0157,
         "dom_compat_ms": 0.0,
-        "dom_meta_viewport_ms": 0.012721000000000001,
+        "dom_meta_viewport_ms": 0.012721,
         "dom_clone_ms": null,
         "dom_top_layer_ms": null,
-        "css_inlining_ms": 15.266378000000001,
+        "css_inlining_ms": 15.266378,
         "css_inline_extract_links_ms": null,
         "css_inline_extract_embedded_urls_ms": null,
         "css_inline_stylesheet_fetch_cpu_ms": null,
@@ -53,7 +62,7 @@
         "paint_build_ms": 20.476512999999997,
         "paint_optimize_ms": 0.016151,
         "paint_rasterize_ms": 51.93657,
-        "text_rasterize_cpu_ms": 1.8550510000000002,
+        "text_rasterize_cpu_ms": 1.855051,
         "encode_ms": null
       },
       "counts": {
@@ -174,7 +183,7 @@
         "blur_cache_misses": 3,
         "blur_tiles": 0,
         "blur_calls": 3,
-        "blur_ms": 18.537969999999998,
+        "blur_ms": 18.53797,
         "blur_pixels": 435713,
         "blur_bytes": 1742852,
         "blur_cancellations": 0

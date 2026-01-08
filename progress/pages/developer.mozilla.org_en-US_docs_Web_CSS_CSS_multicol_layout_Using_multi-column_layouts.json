@@ -12,9 +12,18 @@
     "cascade": 239.0005444922179,
     "box_tree": 10.000022782101167,
     "layout": 138.0003143929961,
-    "paint": 26.000059233463038
+    "paint": 26.00005923346304
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 288641,
+    "diff_percent": 30.0668,
+    "perceptual": 0.902,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -45,14 +54,14 @@
         "css_parse_collect_font_faces_ms": 0.03164,
         "css_parse_load_webfonts_ms": 1.543004,
         "css_parse_collect_keyframes_ms": 0.000029999999999999997,
-        "cascade_ms": 239.40399100000002,
+        "cascade_ms": 239.403991,
         "box_tree_ms": 8.59446,
-        "layout_ms": 136.87989100000001,
+        "layout_ms": 136.879891,
         "text_fallback_cpu_ms": 1.0555229999999998,
         "text_shape_cpu_ms": 5.4486539999999986,
         "paint_build_ms": 14.183964,
         "paint_optimize_ms": 0.016451,
-        "paint_rasterize_ms": 0.40930900000000003,
+        "paint_rasterize_ms": 0.409309,
         "text_rasterize_cpu_ms": 0.0,
         "encode_ms": null
       },

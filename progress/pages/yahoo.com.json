@@ -5,7 +5,7 @@
     "http_browser_headers_enabled": true
   },
   "status": "ok",
-  "total_ms": 237.58198099999998,
+  "total_ms": 237.581981,
   "stages_ms": {
     "fetch": 82.20136051476793,
     "css": 30.073668481012657,
@@ -15,6 +15,15 @@
     "paint": 44.10804710548523
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 515684,
+    "diff_percent": 53.7171,
+    "perceptual": 0.7722,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -27,7 +36,7 @@
         "dom_parse_ms": 4.350106,
         "dom_html5ever_ms": 3.17636,
         "dom_convert_ms": 0.995082,
-        "dom_shadow_attach_ms": 0.053241000000000004,
+        "dom_shadow_attach_ms": 0.053241,
         "dom_compat_ms": 0.0,
         "dom_meta_viewport_ms": 0.005071,
         "dom_clone_ms": null,

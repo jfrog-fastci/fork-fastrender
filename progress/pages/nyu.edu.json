@@ -10,11 +10,20 @@
     "fetch": 104.05792635573124,
     "css": 48.02673524110673,
     "cascade": 116.06461016600792,
-    "box_tree": 13.007240794466405,
+    "box_tree": 13.007240794466403,
     "layout": 72.04010286166009,
     "paint": 406.22613558102773
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 159526,
+    "diff_percent": 16.6173,
+    "perceptual": 0.8249,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
@@ -25,8 +34,8 @@
       "timings": {
         "html_decode_ms": null,
         "dom_parse_ms": 4.455819,
-        "dom_html5ever_ms": 3.0431880000000002,
-        "dom_convert_ms": 1.1241050000000001,
+        "dom_html5ever_ms": 3.043188,
+        "dom_convert_ms": 1.124105,
         "dom_shadow_attach_ms": 0.093112,
         "dom_compat_ms": 0.0,
         "dom_meta_viewport_ms": 0.004901,
@@ -208,7 +217,7 @@
         "raster_pixmap_cache_hits": 0,
         "raster_pixmap_cache_misses": 0,
         "raster_pixmap_cache_bytes": 0,
-        "image_decode_ms": 106.78929199999999
+        "image_decode_ms": 106.789292
       }
     }
   }

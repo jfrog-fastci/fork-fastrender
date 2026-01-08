@@ -5,7 +5,7 @@
     "http_browser_headers_enabled": true
   },
   "status": "ok",
-  "total_ms": 453.60157200000003,
+  "total_ms": 453.601572,
   "stages_ms": {
     "fetch": 95.91575090748898,
     "css": 44.96050823788546,
@@ -15,6 +15,15 @@
     "paint": 192.83062422026433
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 900710,
+    "diff_percent": 93.824,
+    "perceptual": 0.878,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
@@ -26,13 +35,13 @@
         "html_decode_ms": null,
         "dom_parse_ms": 3.379515,
         "dom_html5ever_ms": 2.7303800000000003,
-        "dom_convert_ms": 0.45482999999999996,
+        "dom_convert_ms": 0.45483,
         "dom_shadow_attach_ms": 0.047500999999999995,
         "dom_compat_ms": 0.0,
         "dom_meta_viewport_ms": 0.007209999999999999,
         "dom_clone_ms": null,
         "dom_top_layer_ms": null,
-        "css_inlining_ms": 39.510887000000004,
+        "css_inlining_ms": 39.510887,
         "css_inline_extract_links_ms": null,
         "css_inline_extract_embedded_urls_ms": null,
         "css_inline_stylesheet_fetch_cpu_ms": null,

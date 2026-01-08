@@ -7,7 +7,7 @@
   "status": "ok",
   "total_ms": 518.153729,
   "stages_ms": {
-    "fetch": 103.03056773552123,
+    "fetch": 103.03056773552125,
     "css": 18.00534193436293,
     "cascade": 65.01929031853281,
     "box_tree": 14.004154837837836,
@@ -15,6 +15,15 @@
     "paint": 166.04926450579148
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 819613,
+    "diff_percent": 85.3764,
+    "perceptual": 0.5582,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,
@@ -50,7 +59,7 @@
         "layout_ms": 150.503374,
         "text_fallback_cpu_ms": 24.24119400000001,
         "text_shape_cpu_ms": 4.973589999999997,
-        "paint_build_ms": 12.784747000000001,
+        "paint_build_ms": 12.784747,
         "paint_optimize_ms": 0.037131,
         "paint_rasterize_ms": 144.042089,
         "text_rasterize_cpu_ms": 17.943788999999995,

@@ -15,6 +15,15 @@
     "paint": 93.97342363636363
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 134046,
+    "diff_percent": 13.9631,
+    "perceptual": 0.3963,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -41,7 +50,7 @@
         "css_inline_imports_cpu_ms": null,
         "css_inline_inject_ms": null,
         "css_parse_ms": 2.998957,
-        "css_parse_used_codepoints_ms": 0.11506300000000001,
+        "css_parse_used_codepoints_ms": 0.115063,
         "css_parse_collect_font_faces_ms": 0.146063,
         "css_parse_load_webfonts_ms": 2.73667,
         "css_parse_collect_keyframes_ms": 0.000031,

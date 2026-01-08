@@ -5,9 +5,9 @@
     "http_browser_headers_enabled": true
   },
   "status": "ok",
-  "total_ms": 401.31149100000005,
+  "total_ms": 401.3114910000001,
   "stages_ms": {
-    "fetch": 106.08233926683293,
+    "fetch": 106.08233926683292,
     "css": 6.004660713216959,
     "cascade": 65.05049105985039,
     "box_tree": 11.008544640897757,
@@ -15,6 +15,15 @@
     "paint": 94.07301784039902
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 454469,
+    "diff_percent": 47.3405,
+    "perceptual": 0.4945,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "layout",
   "failure_stage": null,
   "timeout_stage": null,
@@ -164,7 +173,7 @@
         "layer_alloc_bytes": 6483584,
         "parallel_tasks": 20,
         "parallel_threads": 20,
-        "parallel_ms": 11.609615999999999,
+        "parallel_ms": 11.609616,
         "serial_ms": 136.67446199999998,
         "filter_cache_hits": 0,
         "filter_cache_misses": 0,

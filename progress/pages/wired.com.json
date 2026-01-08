@@ -7,7 +7,7 @@
   "status": "ok",
   "total_ms": 445.0933,
   "stages_ms": {
-    "fetch": 112.02348224719103,
+    "fetch": 112.02348224719104,
     "css": 18.00377393258427,
     "cascade": 80.01677303370786,
     "box_tree": 12.00251595505618,
@@ -15,6 +15,15 @@
     "paint": 21.004402921348316
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 261973,
+    "diff_percent": 27.2889,
+    "perceptual": 0.9942,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "layout",
   "failure_stage": null,
   "timeout_stage": null,
@@ -164,7 +173,7 @@
         "parallel_threads": 1,
         "parallel_fallback_reason": "estimated paint work below parallel threshold",
         "parallel_ms": 0.0,
-        "serial_ms": 14.008752999999999,
+        "serial_ms": 14.008753,
         "filter_cache_hits": 0,
         "filter_cache_misses": 0,
         "blur_cache_hits": 0,

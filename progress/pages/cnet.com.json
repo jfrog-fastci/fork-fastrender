@@ -15,6 +15,15 @@
     "paint": 62.018142810210875
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 238784,
+    "diff_percent": 24.8733,
+    "perceptual": 0.9899,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "layout",
   "failure_stage": null,
   "timeout_stage": null,
@@ -48,7 +57,7 @@
         "cascade_ms": 269.402355,
         "box_tree_ms": 29.315029,
         "layout_ms": 401.902849,
-        "text_fallback_cpu_ms": 1.9336520000000006,
+        "text_fallback_cpu_ms": 1.9336520000000008,
         "text_shape_cpu_ms": 19.262348,
         "paint_build_ms": 40.411355,
         "paint_optimize_ms": 0.051821,
@@ -205,7 +214,7 @@
         "raster_pixmap_cache_hits": 0,
         "raster_pixmap_cache_misses": 0,
         "raster_pixmap_cache_bytes": 0,
-        "image_decode_ms": 22.719602000000002
+        "image_decode_ms": 22.719602
       }
     }
   }

@@ -7,14 +7,23 @@
   "status": "ok",
   "total_ms": 541.6712679999999,
   "stages_ms": {
-    "fetch": 91.11291199260627,
+    "fetch": 91.11291199260629,
     "css": 13.016130284658038,
-    "cascade": 247.30647540850273,
+    "cascade": 247.3064754085027,
     "box_tree": 15.01861186691312,
     "layout": 146.18115550462105,
-    "paint": 29.035982942698702
+    "paint": 29.035982942698706
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 418093,
+    "diff_percent": 43.5514,
+    "perceptual": 0.9353,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -24,14 +33,14 @@
     "stats": {
       "timings": {
         "html_decode_ms": null,
-        "dom_parse_ms": 10.108222999999999,
+        "dom_parse_ms": 10.108223,
         "dom_html5ever_ms": 6.927923,
         "dom_convert_ms": 2.444384,
         "dom_shadow_attach_ms": 0.226665,
         "dom_compat_ms": 0.0,
         "dom_meta_viewport_ms": 0.00556,
         "dom_clone_ms": null,
-        "dom_top_layer_ms": 0.10268200000000001,
+        "dom_top_layer_ms": 0.102682,
         "css_inlining_ms": 6.146876,
         "css_inline_extract_links_ms": null,
         "css_inline_extract_embedded_urls_ms": null,

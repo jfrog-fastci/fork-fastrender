@@ -17,6 +17,15 @@
     "paint": 50.01913104719764
   },
   "notes": "No longer a layout timeout after the float sweep event-heap refactor (see docs/notes/layout-timeouts-profiling.md). Now renders under 5s; current largest stage is cascade.",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 406592,
+    "diff_percent": 42.3533,
+    "perceptual": 0.9732,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,

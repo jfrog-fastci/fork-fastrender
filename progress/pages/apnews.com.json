@@ -12,9 +12,18 @@
     "cascade": 726.2824858870704,
     "box_tree": 65.02529143617022,
     "layout": 122.0474700801964,
-    "paint": 103.04007719885435
+    "paint": 103.04007719885436
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 99554,
+    "diff_percent": 10.3702,
+    "perceptual": 0.2146,
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,

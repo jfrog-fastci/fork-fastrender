@@ -34,6 +34,12 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
   - `tolerance`: per-channel tolerance used for pixel comparisons (0-255).
   - `max_diff_percent`: threshold used to classify diffs as acceptable/unacceptable (0-100).
   - `computed_at_commit`: git SHA captured when the metrics were computed (omitted when unknown).
+- To seed initial `accuracy` values for pages that have offline fixtures under `tests/pages/fixtures/<stem>/index.html`, diff those fixtures against Chrome and sync the metrics into `progress/pages/*.json`:
+  - Recommended starter set: `tests/pages/pageset_guardrails.json` (curated high-signal pages).
+  - Commands:
+    - `cargo xtask fixture-chrome-diff --fixtures <stem1,stem2,...> --viewport 1200x800 --js off --tolerance 0 --max-diff-percent 0`
+    - `cargo xtask sync-progress-accuracy --report target/fixture_chrome_diff/report.json --progress-dir progress/pages`
+  - Note: baselines depend on the installed Chrome/Chromium build, so reruns can cause churn when Chrome versions differ.
 - Renderer-provided `failure_stage`/`timeout_stage` fields stay `null` on placeholders and are populated directly from diagnostics during runs for programmatic triage.
 - `stages_ms` buckets are a coarse **wall-time** attribution (mutually exclusive buckets; `fetch`,
   `css`, `cascade`, `box_tree`, `layout`, `paint`) derived
