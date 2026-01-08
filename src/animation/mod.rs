@@ -5069,6 +5069,23 @@ fn scroll_driven_effect_state(
   let end_progress = animation_end_progress(direction, iterations);
   let end_iteration = animation_end_iteration(iterations);
 
+  // Scroll/view timelines are finite (progress-based) timelines. When converting an animation to
+  // proportions for a finite timeline, the Web Animations Level 2 proportional timing algorithm
+  // divides by the animation's end time. For `animation-iteration-count: infinite` the end time is
+  // infinite, which yields 0 for all converted proportions. Scroll Animations Level 1 explicitly
+  // calls this out for `animation-duration: auto` by defining the used iteration duration and
+  // resulting active duration as 0.
+  //
+  // In practice, this means infinite-iteration scroll-driven animations should behave like a
+  // 0-duration animation sampled at time 0 (i.e. the start of the first iteration) rather than
+  // progressing across the scroll range.
+  if !iterations.is_finite() {
+    return AnimationProgress {
+      progress: start_progress,
+      iteration: 0,
+    };
+  }
+
   let overall = overall.clamp(0.0, 1.0);
   if overall <= f32::EPSILON {
     return AnimationProgress {

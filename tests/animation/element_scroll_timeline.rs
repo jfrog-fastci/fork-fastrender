@@ -373,6 +373,108 @@ fn scroll_timeline_paused_freezes_progress() {
   );
 }
 
+#[test]
+fn scroll_timeline_infinite_iterations_do_not_progress() {
+  let animation_name = "fade";
+  let timeline_name = "scroller";
+
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.scroll_timelines = vec![ScrollTimeline {
+    name: Some(timeline_name.to_string()),
+    axis: TimelineAxis::Block,
+    ..ScrollTimeline::default()
+  }];
+  let scroller_style = Arc::new(scroller_style);
+
+  let mut animated_style = ComputedStyle::default();
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
+  animated_style.animation_ranges = vec![AnimationRange::default()];
+  animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
+  animated_style.animation_iteration_counts = vec![AnimationIterationCount::Infinite].into();
+  animated_style.animation_fill_modes = vec![AnimationFillMode::Both].into();
+  animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+  // Use the declaration parser so the test doesn't depend on the internal sentinel value used to
+  // represent `animation-duration:auto`.
+  let defaults = ComputedStyle::default();
+  let decl_duration = Declaration {
+    property: "animation-duration".into(),
+    value: PropertyValue::Keyword("auto".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut animated_style,
+    &decl_duration,
+    &defaults,
+    &defaults,
+    None,
+    defaults.font_size,
+    defaults.root_font_size,
+    Size::new(50.0, 100.0),
+    false,
+  );
+
+  let animated_style = Arc::new(animated_style);
+
+  let opacity = opacity_for_scroll(&animated_style, &scroller_style, 50.0);
+  assert!(
+    opacity < 0.05,
+    "expected infinite scroll-driven animation to remain at start state, got {opacity}"
+  );
+}
+
+#[test]
+fn scroll_timeline_infinite_iterations_with_time_duration_do_not_progress() {
+  let animation_name = "fade";
+  let timeline_name = "scroller";
+
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.scroll_timelines = vec![ScrollTimeline {
+    name: Some(timeline_name.to_string()),
+    axis: TimelineAxis::Block,
+    ..ScrollTimeline::default()
+  }];
+  let scroller_style = Arc::new(scroller_style);
+
+  let mut animated_style = ComputedStyle::default();
+  animated_style.animation_names = vec![Some(animation_name.to_string())];
+  animated_style.animation_ranges = vec![AnimationRange::default()];
+  animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
+  animated_style.animation_iteration_counts = vec![AnimationIterationCount::Infinite].into();
+  animated_style.animation_fill_modes = vec![AnimationFillMode::Both].into();
+  animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+  let defaults = ComputedStyle::default();
+  let decl_duration = Declaration {
+    property: "animation-duration".into(),
+    value: PropertyValue::Keyword("1000ms".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut animated_style,
+    &decl_duration,
+    &defaults,
+    &defaults,
+    None,
+    defaults.font_size,
+    defaults.root_font_size,
+    Size::new(50.0, 100.0),
+    false,
+  );
+
+  let animated_style = Arc::new(animated_style);
+
+  let opacity = opacity_for_scroll(&animated_style, &scroller_style, 50.0);
+  assert!(
+    opacity < 0.05,
+    "expected proportional conversion with infinite iterations to yield no progress, got {opacity}"
+  );
+}
+
 fn build_named_scroll_timeline_tree(
   scroller_style: Arc<ComputedStyle>,
   animated_style: Arc<ComputedStyle>,
