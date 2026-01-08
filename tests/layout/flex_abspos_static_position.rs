@@ -241,6 +241,90 @@ fn abspos_static_position_respects_space_evenly_fallback_for_single_item() {
 }
 
 #[test]
+fn abspos_static_position_respects_space_between_fallback_for_single_item_in_column() {
+  // `space-between` falls back to `flex-start` in the main axis. Cover a vertical main axis.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.justify_content = JustifyContent::SpaceBetween;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_space_between_fallback_in_column_reverse() {
+  // Same as above, but with a reversed main axis.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::ColumnReverse;
+  container_style.justify_content = JustifyContent::SpaceBetween;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_space_around_fallback_for_single_item_in_column() {
+  // `space-around` falls back to `safe center` with a single item.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.justify_content = JustifyContent::SpaceAround;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 45.0).abs() < 0.1, "expected y≈45, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_space_evenly_fallback_for_single_item_in_column() {
+  // `space-evenly` centers a single item.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.justify_content = JustifyContent::SpaceEvenly;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 45.0).abs() < 0.1, "expected y≈45, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_space_between_negative_free_space_falls_back_to_safe_start() {
   // Flexbox §justify-content: with negative free space, `space-between` falls back to `safe flex-start`.
   // Safe overflow alignment causes the item to start-align to the physical start edge (not main-start).
@@ -387,6 +471,28 @@ fn abspos_static_position_space_evenly_negative_free_space_falls_back_to_safe_st
   container_style.height = Some(Length::px(100.0));
   container_style.flex_direction = FlexDirection::ColumnReverse;
   container_style.justify_content = JustifyContent::SpaceEvenly;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(120.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_start_in_column_reverse() {
+  // `space-around` falls back to `safe center` under negative free space, which becomes physical
+  // start alignment. Cover a reversed vertical main axis.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::ColumnReverse;
+  container_style.justify_content = JustifyContent::SpaceAround;
   container_style.align_items = AlignItems::FlexStart;
 
   let mut child_style = ComputedStyle::default();
