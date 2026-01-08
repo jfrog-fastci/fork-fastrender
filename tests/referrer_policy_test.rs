@@ -176,6 +176,18 @@ impl HeaderCaptureServer {
 </html>"#
                   .to_vec(),
               ),
+              "/doc_response_policy_value_list_img.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head></head>
+  <body>
+    <img src="/img.png" style="width: 10px; height: 10px">
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
               "/doc_response_policy_invalid_header_img.html" => (
                 "200 OK",
                 "text/html; charset=utf-8",
@@ -554,6 +566,9 @@ body { font-family: "TestFont"; }"#
             }
             if path == "/doc_response_policy_invalid_header_img.html" {
               extra_headers.push_str("Referrer-Policy: bogus-policy\r\n");
+            }
+            if path == "/doc_response_policy_value_list_img.html" {
+              extra_headers.push_str("Referrer-Policy: no-referrer, origin\r\n");
             }
             if path == "/doc_redirect_policy.html" {
               extra_headers.push_str("Location: /doc_links_style_import.html\r\n");
@@ -2026,6 +2041,46 @@ fn meta_referrer_policy_inside_template_is_ignored() {
 }
 
 #[test]
+fn meta_referrer_policy_outside_head_is_ignored() {
+  let Some(server) = HeaderCaptureServer::start("meta_referrer_policy_outside_head_is_ignored") else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head></head>
+      <body>
+        <meta name="referrer" content="no-referrer">
+        <img src="/img.png" style="width: 10px; height: 10px">
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html#section", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected image request to be issued for the test fixture",
+  );
+
+  let expected_referer = format!("{}/page.html", server.base_url);
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert_eq!(
+    header_value(&img_req.headers, "referer").as_deref(),
+    Some(expected_referer.as_str()),
+    "expected meta Referrer-Policy outside <head> to be ignored and default strict-origin-when-cross-origin policy to apply; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
 fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() {
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",
@@ -2433,6 +2488,42 @@ fn document_response_referrer_policy_invalid_token_is_ignored_for_images() {
     header_value(&img_req.headers, "referer").as_deref(),
     Some(doc_url.as_str()),
     "expected invalid document response Referrer-Policy value to be ignored and default strict-origin-when-cross-origin policy to apply; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
+fn document_response_referrer_policy_value_list_last_token_wins_for_images() {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_response_referrer_policy_value_list_last_token_wins_for_images",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_response_policy_value_list_img.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in ["/doc_response_policy_value_list_img.html", "/img.png"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert_eq!(
+    header_value(&img_req.headers, "referer").as_deref(),
+    Some(expected_referer.as_str()),
+    "expected document response Referrer-Policy value list to use the last token for /img.png; got:\n{}",
     img_req.headers
   );
 }
