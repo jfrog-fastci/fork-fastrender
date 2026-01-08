@@ -14,10 +14,10 @@ use crate::layout::formatting_context::{
   layout_style_fingerprint, set_fragmentainer_block_size_hint, LayoutError,
 };
 use crate::layout::fragmentation::{
-  apply_grid_parallel_flow_forced_break_shifts, clip_node, collect_atomic_ranges_with_axes,
-  collect_forced_boundaries_for_pagination_with_axes, normalize_atomic_ranges,
-  normalize_fragment_margins, parallel_flow_content_extent, propagate_fragment_metadata,
-  AtomicRange, ForcedBoundary, FragmentAxis, FragmentationContext,
+  apply_float_parallel_flow_forced_break_shifts, apply_grid_parallel_flow_forced_break_shifts,
+  clip_node, collect_atomic_ranges_with_axes, collect_forced_boundaries_for_pagination_with_axes,
+  normalize_atomic_ranges, normalize_fragment_margins, parallel_flow_content_extent,
+  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentAxis, FragmentationContext,
 };
 use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
 use crate::style::content::{
@@ -169,6 +169,12 @@ impl CachedLayout {
     };
 
     apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, style_block_size);
+    apply_float_parallel_flow_forced_break_shifts(
+      &mut root,
+      axes,
+      style_block_size,
+      FragmentationContext::Page,
+    );
     let page_name_transitions = collect_page_name_transitions(&root, &axis, fallback_page_name);
 
     let mut forced = collect_forced_boundaries_for_pagination_with_axes(&root, 0.0, axes);

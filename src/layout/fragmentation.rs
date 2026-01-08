@@ -501,6 +501,110 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
   walk(root, 0.0, &axis, axes, fragmentainer_size, default_style);
 }
 
+pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
+  root: &mut FragmentNode,
+  axes: FragmentAxes,
+  fragmentainer_size: f32,
+  context: FragmentationContext,
+) {
+  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+    return;
+  }
+
+  let axis = axis_from_fragment_axes(axes);
+  let default_style = default_style();
+  let root_writing_mode = root
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(WritingMode::HorizontalTb);
+
+  fn walk(
+    node: &mut FragmentNode,
+    abs_start: f32,
+    axis: &FragmentAxis,
+    fragmentainer_size: f32,
+    context: FragmentationContext,
+    inherited_writing_mode: WritingMode,
+    default_style: &ComputedStyle,
+  ) {
+    let style = node
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let node_writing_mode = node
+      .style
+      .as_ref()
+      .map(|s| s.writing_mode)
+      .unwrap_or(inherited_writing_mode);
+    let node_block_size = axis.block_size(&node.bounds);
+
+    if style.float.is_floating() {
+      // Forced breaks inside floats form a parallel fragmentation flow. They should not force page
+      // breaks for the main flow, but instead insert blank space up to the next fragmentainer
+      // boundary, increasing the float's effective height (CSS Break 3 §Parallel Fragmentation
+      // Flows).
+      let mut collection = BreakCollection::default();
+      collect_break_opportunities(
+        node,
+        abs_start,
+        &mut collection,
+        0,
+        0,
+        context,
+        axis,
+        node_writing_mode,
+        false,
+      );
+
+      let float_end = abs_start + node_block_size;
+      let mut positions: Vec<f32> = collection
+        .opportunities
+        .into_iter()
+        .filter(|o| matches!(o.strength, BreakStrength::Forced))
+        .map(|o| o.pos)
+        .collect();
+      positions.retain(|p| *p > abs_start + BREAK_EPSILON && *p < float_end - BREAK_EPSILON);
+      if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
+        apply_parallel_flow_shifts_to_descendants(node, abs_start, 0.0, axis, &shifts);
+      }
+
+      // Nested floats are already accounted for when collecting break opportunities inside this
+      // float. Avoid applying shifts multiple times by not recursing into descendants.
+      return;
+    }
+
+    for child in node.children_mut().iter_mut() {
+      let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+      let child_writing_mode = child
+        .style
+        .as_ref()
+        .map(|s| s.writing_mode)
+        .unwrap_or(node_writing_mode);
+      walk(
+        child,
+        child_abs_start,
+        axis,
+        fragmentainer_size,
+        context,
+        child_writing_mode,
+        default_style,
+      );
+    }
+  }
+
+  walk(
+    root,
+    0.0,
+    &axis,
+    fragmentainer_size,
+    context,
+    root_writing_mode,
+    default_style,
+  );
+}
+
 fn grid_container_parallel_flow_required_block_size(
   node: &FragmentNode,
   axis: &FragmentAxis,
@@ -696,6 +800,7 @@ impl FragmentationAnalyzer {
       context,
       &axis,
       root_writing_mode,
+      true,
     );
 
     let mut atomic = collection.atomic;
@@ -1201,6 +1306,12 @@ pub fn fragment_tree(
   if matches!(context, FragmentationContext::Page) {
     apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, options.fragmentainer_size);
   }
+  apply_float_parallel_flow_forced_break_shifts(
+    &mut root,
+    axes,
+    options.fragmentainer_size,
+    context,
+  );
 
   let mut analyzer =
     FragmentationAnalyzer::new(&root, context, axes, Some(options.fragmentainer_size));
@@ -2040,6 +2151,7 @@ fn collect_break_opportunities(
   context: FragmentationContext,
   axis: &FragmentAxis,
   inherited_writing_mode: WritingMode,
+  suppress_float_descendants: bool,
 ) {
   let default_style = default_style();
   let style = node
@@ -2068,15 +2180,13 @@ fn collect_break_opportunities(
       FragmentContent::Line { .. } | FragmentContent::Inline { .. }
     ));
 
+  if suppress_float_descendants && style.float.is_floating() {
+    return;
+  }
+
   let node_block_size = axis.block_size(&node.bounds);
   let node_flow_start = abs_start;
   let abs_end = abs_start + node_block_size;
-  if style.float.is_floating() {
-    collection.atomic.push(AtomicRange {
-      start: node_flow_start,
-      end: abs_end,
-    });
-  }
 
   // When the fragment includes both grid track ranges and per-item placement metadata, break hints
   // on grid items apply to the corresponding grid line boundaries (CSS Grid 2 §Fragmenting Grid
@@ -2271,6 +2381,7 @@ fn collect_break_opportunities(
         context,
         &child_axis,
         child_writing_mode,
+        suppress_float_descendants,
       );
     }
 
@@ -2428,6 +2539,9 @@ fn collect_forced_boundaries_with_axes_internal(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
+    if suppress_parallel_grid_item_descendants && node_style.float.is_floating() {
+      return;
+    }
     let grid_items = if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
       node.grid_fragmentation.as_deref()
     } else {
@@ -2679,14 +2793,14 @@ fn collect_atomic_range_for_node(
   node: &FragmentNode,
   abs_start: f32,
   axis: &FragmentAxis,
-  _parent_block_size: f32,
+  parent_block_size: f32,
   ranges: &mut Vec<AtomicRange>,
   context: FragmentationContext,
   fragmentainer_size: Option<f32>,
 ) {
   let node_block_size = axis.block_size(&node.bounds);
   let start = abs_start;
-  let end = abs_start + node_block_size;
+  let mut end = abs_start + node_block_size;
   if end <= start + BREAK_EPSILON {
     return;
   }
@@ -2695,14 +2809,37 @@ fn collect_atomic_range_for_node(
     .as_ref()
     .map(|s| s.as_ref())
     .unwrap_or(default_style());
+  if style.float.is_floating() {
+    // Floats are only atomic when they fit within a single fragmentainer. Otherwise they may split
+    // across fragmentainers (CSS Break 3 §Parallel Fragmentation Flows).
+    //
+    // Use the logical bounding box so forced breaks modeled as blank insertion (or other overflow)
+    // can expand the float's effective height.
+    let parent_abs_flow_start = abs_start
+      - axis.flow_offset(
+        axis.block_start(&node.bounds),
+        node_block_size,
+        parent_block_size,
+      );
+    let bbox = node.logical_bounding_box();
+    let bbox_block_size = axis.block_size(&bbox);
+    let bbox_flow_start = parent_abs_flow_start
+      + axis.flow_offset(axis.block_start(&bbox), bbox_block_size, parent_block_size);
+    let bbox_flow_end = bbox_flow_start + bbox_block_size;
+    if bbox_flow_end > end + BREAK_EPSILON {
+      end = bbox_flow_end;
+    }
+
+    let height = end - start;
+    if fragmentainer_size.is_some_and(|size| height <= size + BREAK_EPSILON) {
+      ranges.push(AtomicRange { start, end });
+    }
+  }
+
   let height = end - start;
   let fits_fragmentainer = fragmentainer_size
     .map(|size| height <= size + BREAK_EPSILON)
     .unwrap_or(true);
-  if style.float.is_floating() {
-    ranges.push(AtomicRange { start, end });
-  }
-
   let is_table_row_like = matches!(
     style.display,
     Display::TableRow
@@ -2814,6 +2951,9 @@ fn collect_atomic_ranges_with_axis(
     .as_ref()
     .map(|s| s.as_ref())
     .unwrap_or(default_style);
+  if style.float.is_floating() {
+    return;
+  }
   let grid_items = if matches!(context, FragmentationContext::Page)
     && matches!(style.display, Display::Grid | Display::InlineGrid)
   {
