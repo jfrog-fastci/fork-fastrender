@@ -15147,6 +15147,12 @@ fn parse_will_change_from_str(text: &str) -> Option<WillChange> {
       break;
     }
     parser.expect_comma().ok()?;
+    // `will-change` uses the `#` list grammar (one-or-more, comma-separated), which does not allow
+    // trailing commas. Reject `will-change: filter,` and similar values.
+    parser.skip_whitespace();
+    if parser.is_exhausted() {
+      return None;
+    }
   }
 
   if hints.is_empty() {

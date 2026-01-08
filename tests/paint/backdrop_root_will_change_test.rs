@@ -580,6 +580,15 @@ fn will_change_with_auto_mixed_in_is_invalid_and_ignored() {
 }
 
 #[test]
+fn will_change_trailing_comma_is_invalid_and_ignored() {
+  // Trailing commas are not allowed in comma-separated lists.
+  let pixmap = render_backdrop_invert_with_parent_will_change("filter,");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_none_is_invalid_and_does_not_override() {
   // css-will-change-1 excludes `none` from <<custom-ident>>, so it is invalid here and should not
   // override the earlier Backdrop Root-triggering value.
