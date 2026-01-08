@@ -5346,7 +5346,14 @@ impl TableFormattingContext {
         let end = (cell.col + cell.colspan).min(constraints.len());
 
         if mode == DistributionMode::Fixed {
-          if let Some(span_width) = span_specified_width {
+          let span_width = span_specified_width.or_else(|| {
+            if width_is_percent {
+              specified_width
+            } else {
+              None
+            }
+          });
+          if let Some(span_width) = span_width {
             // CSS 2.1 §17.5.2.1: if the first-row cell spans multiple columns, its width is
             // divided over those columns. Treat this as a fixed width contribution so the
             // remaining columns share the remaining table space instead of forcing an
