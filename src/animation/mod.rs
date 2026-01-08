@@ -4524,6 +4524,10 @@ fn root_scroll_container_context(
   root_content: Rect,
   writing_mode: WritingMode,
   direction: Direction,
+  scroll_padding_top: Length,
+  scroll_padding_right: Length,
+  scroll_padding_bottom: Length,
+  scroll_padding_left: Length,
 ) -> ScrollContainerContext {
   ScrollContainerContext {
     scroll: scroll_state.viewport,
@@ -4532,10 +4536,10 @@ fn root_scroll_container_context(
     origin: Point::ZERO,
     writing_mode,
     direction,
-    scroll_padding_top: Length::px(0.0),
-    scroll_padding_right: Length::px(0.0),
-    scroll_padding_bottom: Length::px(0.0),
-    scroll_padding_left: Length::px(0.0),
+    scroll_padding_top,
+    scroll_padding_right,
+    scroll_padding_bottom,
+    scroll_padding_left,
   }
 }
 
@@ -5711,8 +5715,35 @@ pub fn apply_animations(
     .as_deref()
     .map(|s| s.direction)
     .unwrap_or(Direction::Ltr);
-  let root_context =
-    root_scroll_container_context(scroll_state, viewport, content, root_writing_mode, root_direction);
+  let (scroll_padding_top, scroll_padding_right, scroll_padding_bottom, scroll_padding_left) = tree
+    .root
+    .style
+    .as_deref()
+    .map(|s| {
+      (
+        s.scroll_padding_top,
+        s.scroll_padding_right,
+        s.scroll_padding_bottom,
+        s.scroll_padding_left,
+      )
+    })
+    .unwrap_or((
+      Length::px(0.0),
+      Length::px(0.0),
+      Length::px(0.0),
+      Length::px(0.0),
+    ));
+  let root_context = root_scroll_container_context(
+    scroll_state,
+    viewport,
+    content,
+    root_writing_mode,
+    root_direction,
+    scroll_padding_top,
+    scroll_padding_right,
+    scroll_padding_bottom,
+    scroll_padding_left,
+  );
 
   {
     let root_offset = Point::new(tree.root.bounds.x(), tree.root.bounds.y());

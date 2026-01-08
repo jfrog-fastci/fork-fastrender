@@ -6,6 +6,7 @@ use fastrender::css::types::{Declaration, Keyframe, KeyframesRule, PropertyValue
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::ScrollState;
 use fastrender::style::properties::{apply_declaration_with_base, DEFAULT_VIEWPORT};
+use fastrender::Length;
 use fastrender::style::types::{
   AnimationDirection, AnimationFillMode, AnimationIterationCount, AnimationPlayState,
   AnimationRange, AnimationTimeline, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
@@ -731,5 +732,65 @@ fn view_root_timeline_paused_freezes_progress() {
   assert!(
     opacity < 0.05,
     "expected paused view() timeline to freeze at start keyframe, got {opacity}"
+  );
+}
+
+#[test]
+fn view_root_timeline_inset_auto_uses_root_scroll_padding() {
+  let box_id = 1usize;
+
+  let mut root_style = ComputedStyle::default();
+  root_style.scroll_padding_top = Length::px(50.0);
+  let root_style = Arc::new(root_style);
+
+  let mut target_style = ComputedStyle::default();
+  target_style.animation_names = vec![Some("fade".to_string())];
+  target_style.animation_timelines = vec![AnimationTimeline::View(ViewFunctionTimeline {
+    scroller: ScrollTimelineScroller::Root,
+    axis: TimelineAxis::Block,
+    inset: None,
+  })];
+  target_style.animation_ranges = vec![AnimationRange::default()];
+  target_style.animation_fill_modes = vec![AnimationFillMode::Both].into();
+  target_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+  let target_style = Arc::new(target_style);
+
+  let mut target = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 150.0, 50.0, 50.0),
+    FragmentContent::Block {
+      box_id: Some(box_id),
+    },
+    vec![],
+    target_style,
+  );
+  target.scroll_overflow = target.bounds;
+
+  let root = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 0.0, 50.0, 100.0),
+    FragmentContent::Block { box_id: None },
+    vec![target],
+    root_style,
+  );
+  let mut tree = FragmentTree::with_viewport(root, Size::new(50.0, 100.0));
+  tree
+    .keyframes
+    .insert("fade".to_string(), fade_keyframes("fade"));
+
+  // `view-timeline-inset:auto` should use the root scroller's `scroll-padding-top` to define the
+  // "cover" range. With inset_start=50px, the end of the default range becomes:
+  // target_end - inset_start = (150 + 50) - 50 = 150.
+  //
+  // Without using scroll-padding, inset_start is treated as 0 and the progress is ~0.666.
+  let scroll_state = ScrollState::with_viewport(Point::new(0.0, 150.0));
+  apply_scroll_driven_animations(&mut tree, &scroll_state);
+
+  let opacity = tree.root.children[0]
+    .style
+    .as_ref()
+    .expect("animated style present")
+    .opacity;
+  assert!(
+    (opacity - 1.0).abs() < 0.05,
+    "expected root scroll-padding to affect view-timeline-inset:auto, got opacity {opacity}"
   );
 }
