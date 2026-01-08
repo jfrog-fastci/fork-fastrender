@@ -9,6 +9,7 @@ use crate::style::types::ContainIntrinsicSizeAxis;
 use crate::style::types::FontSizeAdjustMetric;
 use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::IntrinsicSizeKeyword;
+use crate::style::types::Overflow;
 use crate::style::types::ScrollbarWidth;
 use crate::style::values::CalcLength;
 use crate::style::values::Length;
@@ -569,15 +570,42 @@ pub fn compute_replaced_size(
   let resolve_for_width = |len: Length| {
     sanitize(resolve_replaced_length(&len, width_base, viewport, style, None).unwrap_or(0.0))
   };
-  let horizontal_edges = resolve_for_width(style.padding_left)
-    + resolve_for_width(style.padding_right)
-    + resolve_for_width(style.used_border_left_width())
-    + resolve_for_width(style.used_border_right_width());
+  let mut padding_left = resolve_for_width(style.padding_left);
+  let mut padding_right = resolve_for_width(style.padding_right);
   // Percentages on padding/borders resolve against the containing block width in both axes.
-  let vertical_edges = resolve_for_width(style.padding_top)
-    + resolve_for_width(style.padding_bottom)
-    + resolve_for_width(style.used_border_top_width())
-    + resolve_for_width(style.used_border_bottom_width());
+  let mut padding_top = resolve_for_width(style.padding_top);
+  let mut padding_bottom = resolve_for_width(style.padding_bottom);
+  let border_left = resolve_for_width(style.used_border_left_width());
+  let border_right = resolve_for_width(style.used_border_right_width());
+  let border_top = resolve_for_width(style.used_border_top_width());
+  let border_bottom = resolve_for_width(style.used_border_bottom_width());
+
+  let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
+    || (style.scrollbar_gutter.stable && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+  if reserve_vertical_gutter {
+    let gutter = resolve_scrollbar_width(style);
+    if gutter > 0.0 {
+      if style.scrollbar_gutter.both_edges {
+        padding_left += gutter;
+      }
+      padding_right += gutter;
+    }
+  }
+
+  let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
+    || (style.scrollbar_gutter.stable && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+  if reserve_horizontal_gutter {
+    let gutter = resolve_scrollbar_width(style);
+    if gutter > 0.0 {
+      if style.scrollbar_gutter.both_edges {
+        padding_top += gutter;
+      }
+      padding_bottom += gutter;
+    }
+  }
+
+  let horizontal_edges = padding_left + padding_right + border_left + border_right;
+  let vertical_edges = padding_top + padding_bottom + border_top + border_bottom;
 
   // Intrinsic replaced sizes are defined for the content box. Intrinsic sizing keywords
   // (`min-content`, `max-content`, `fit-content`) resolve in terms of that intrinsic content size
@@ -892,6 +920,8 @@ mod tests {
   use super::*;
   use crate::style::types::BoxSizing;
   use crate::style::types::IntrinsicSizeKeyword;
+  use crate::style::types::Overflow;
+  use crate::style::types::ScrollbarGutter;
   use crate::style::types::ScrollbarWidth;
   use crate::style::values::CalcLength;
   use crate::style::values::Length;
@@ -2029,6 +2059,54 @@ mod tests {
     // derives height 150px.
     assert!((size.width - 300.0).abs() < 0.01);
     assert!((size.height - 150.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn compute_replaced_size_accounts_for_scrollbar_gutter_edges() {
+    let mut style = ComputedStyle::default();
+    style.box_sizing = BoxSizing::BorderBox;
+    style.width = Some(Length::px(200.0));
+    style.height = Some(Length::px(100.0));
+    style.overflow_y = Overflow::Scroll;
+    style.scrollbar_width = ScrollbarWidth::Auto;
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: None,
+      aspect_ratio: None,
+      no_intrinsic_ratio: false,
+    };
+
+    let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
+    assert!(
+      (size.width - 184.0).abs() < 0.01,
+      "expected 184px content width, got {:.2}px",
+      size.width
+    );
+    assert!(
+      (size.height - 100.0).abs() < 0.01,
+      "expected 100px content height, got {:.2}px",
+      size.height
+    );
+
+    style.scrollbar_gutter = ScrollbarGutter {
+      stable: false,
+      both_edges: true,
+    };
+    let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
+    assert!(
+      (size.width - 168.0).abs() < 0.01,
+      "expected 168px content width with both-edges gutters, got {:.2}px",
+      size.width
+    );
   }
 
   #[test]

@@ -4372,34 +4372,66 @@ impl InlineFormattingContext {
     } else {
       0.0
     };
-    let padding_left = resolve_length_for_width(
+    let mut padding_left = resolve_length_for_width(
       style.padding_left,
       percentage_base,
       style,
       &self.font_context,
       self.viewport_size,
     );
-    let padding_right = resolve_length_for_width(
+    let mut padding_right = resolve_length_for_width(
       style.padding_right,
       percentage_base,
       style,
       &self.font_context,
       self.viewport_size,
     );
-    let padding_top = resolve_length_for_width(
+    let mut padding_top = resolve_length_for_width(
       style.padding_top,
       percentage_base,
       style,
       &self.font_context,
       self.viewport_size,
     );
-    let padding_bottom = resolve_length_for_width(
+    let mut padding_bottom = resolve_length_for_width(
       style.padding_bottom,
       percentage_base,
       style,
       &self.font_context,
       self.viewport_size,
     );
+
+    let reserve_vertical_gutter = matches!(style.overflow_y, crate::style::types::Overflow::Scroll)
+      || (style.scrollbar_gutter.stable
+        && matches!(
+          style.overflow_y,
+          crate::style::types::Overflow::Auto | crate::style::types::Overflow::Scroll
+        ));
+    if reserve_vertical_gutter {
+      let gutter = crate::layout::utils::resolve_scrollbar_width(style);
+      if gutter > 0.0 {
+        if style.scrollbar_gutter.both_edges {
+          padding_left += gutter;
+        }
+        padding_right += gutter;
+      }
+    }
+
+    let reserve_horizontal_gutter = matches!(style.overflow_x, crate::style::types::Overflow::Scroll)
+      || (style.scrollbar_gutter.stable
+        && matches!(
+          style.overflow_x,
+          crate::style::types::Overflow::Auto | crate::style::types::Overflow::Scroll
+        ));
+    if reserve_horizontal_gutter {
+      let gutter = crate::layout::utils::resolve_scrollbar_width(style);
+      if gutter > 0.0 {
+        if style.scrollbar_gutter.both_edges {
+          padding_top += gutter;
+        }
+        padding_bottom += gutter;
+      }
+    }
 
     let border_left = resolve_length_for_width(
       style.used_border_left_width(),

@@ -6827,7 +6827,7 @@ fn horizontal_padding_and_borders(
   viewport: crate::geometry::Size,
   font_context: &FontContext,
 ) -> f32 {
-  resolve_length_for_width(
+  let mut total = resolve_length_for_width(
     style.padding_left,
     percentage_base,
     style,
@@ -6851,7 +6851,22 @@ fn horizontal_padding_and_borders(
     style,
     font_context,
     viewport,
-  )
+  );
+
+  let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
+    || (style.scrollbar_gutter.stable
+      && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+  if reserve_vertical_gutter {
+    let gutter = resolve_scrollbar_width(style);
+    if gutter > 0.0 {
+      total += gutter;
+      if style.scrollbar_gutter.both_edges {
+        total += gutter;
+      }
+    }
+  }
+
+  total
 }
 
 fn vertical_padding_and_borders(
@@ -6860,7 +6875,7 @@ fn vertical_padding_and_borders(
   viewport: crate::geometry::Size,
   font_context: &FontContext,
 ) -> f32 {
-  resolve_length_for_width(
+  let mut total = resolve_length_for_width(
     style.padding_top,
     percentage_base,
     style,
@@ -6884,7 +6899,22 @@ fn vertical_padding_and_borders(
     style,
     font_context,
     viewport,
-  )
+  );
+
+  let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
+    || (style.scrollbar_gutter.stable
+      && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+  if reserve_horizontal_gutter {
+    let gutter = resolve_scrollbar_width(style);
+    if gutter > 0.0 {
+      total += gutter;
+      if style.scrollbar_gutter.both_edges {
+        total += gutter;
+      }
+    }
+  }
+
+  total
 }
 
 fn inline_axis_padding_and_borders(
