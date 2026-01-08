@@ -357,6 +357,44 @@ fn logical_padding_maps_in_sideways_lr_writing_mode() {
 }
 
 #[test]
+fn logical_padding_maps_in_sideways_lr_writing_mode_direction_rtl() {
+  let mut style = ComputedStyle::default();
+  style.writing_mode = WritingMode::SidewaysLr;
+  style.direction = Direction::Rtl;
+  apply_declaration(
+    &mut style,
+    &decl(
+      "padding-inline",
+      PropertyValue::Multiple(vec![
+        PropertyValue::Length(Length::px(6.0)),
+        PropertyValue::Length(Length::px(8.0)),
+      ]),
+    ),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  apply_declaration(
+    &mut style,
+    &decl(
+      "padding-block",
+      PropertyValue::Multiple(vec![
+        PropertyValue::Length(Length::px(3.0)),
+        PropertyValue::Length(Length::px(9.0)),
+      ]),
+    ),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  resolve_pending_logical_properties(&mut style);
+  assert_eq!(style.padding_bottom, Length::px(6.0));
+  assert_eq!(style.padding_top, Length::px(8.0));
+  assert_eq!(style.padding_left, Length::px(3.0));
+  assert_eq!(style.padding_right, Length::px(9.0));
+}
+
+#[test]
 fn inline_and_block_sizes_map_to_physical_axes() {
   let mut style = ComputedStyle::default();
   apply_declaration(

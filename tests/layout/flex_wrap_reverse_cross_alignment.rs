@@ -1581,7 +1581,12 @@ fn flex_wrap_rtl_column_align_items_end_uses_inline_end_within_line() {
 
 #[test]
 fn flex_wrap_vertical_writing_mode_rtl_column_align_content_start_packs_lines_to_inline_start() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let fc = FlexFormattingContext::new();
 
     let mut container_style = ComputedStyle::default();
@@ -1667,7 +1672,12 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_content_start_packs_lines_to
 
 #[test]
 fn flex_wrap_vertical_writing_mode_rtl_column_align_content_end_packs_lines_to_inline_end() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let fc = FlexFormattingContext::new();
 
     let mut container_style = ComputedStyle::default();
@@ -1753,7 +1763,12 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_content_end_packs_lines_to_i
 
 #[test]
 fn flex_wrap_vertical_writing_mode_rtl_column_align_items_start_uses_inline_start_within_line() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let fc = FlexFormattingContext::new();
 
     let mut container_style = ComputedStyle::default();
@@ -1842,7 +1857,12 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_items_start_uses_inline_star
 
 #[test]
 fn flex_wrap_vertical_writing_mode_rtl_column_align_items_end_uses_inline_end_within_line() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let fc = FlexFormattingContext::new();
 
     let mut container_style = ComputedStyle::default();
@@ -1931,7 +1951,12 @@ fn flex_wrap_vertical_writing_mode_rtl_column_align_items_end_uses_inline_end_wi
 
 #[test]
 fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_start_packs_lines_to_inline_start() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let (first_y, last_y) = layout_wrap_reverse_vertical_writing_mode_rtl_column_align_content(
       writing_mode,
       AlignContent::Start,
@@ -1949,7 +1974,12 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_start_packs_
 
 #[test]
 fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_start_packs_lines_to_cross_start() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let (first_y, last_y) = layout_wrap_reverse_vertical_writing_mode_rtl_column_align_content(
       writing_mode,
       AlignContent::FlexStart,
@@ -1967,7 +1997,12 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_start_p
 
 #[test]
 fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_end_packs_lines_to_inline_end() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let (first_y, last_y) = layout_wrap_reverse_vertical_writing_mode_rtl_column_align_content(
       writing_mode,
       AlignContent::End,
@@ -1985,7 +2020,12 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_end_packs_li
 
 #[test]
 fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_end_packs_lines_to_cross_end() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let (first_y, last_y) = layout_wrap_reverse_vertical_writing_mode_rtl_column_align_content(
       writing_mode,
       AlignContent::FlexEnd,
@@ -2003,7 +2043,12 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_content_flex_end_pac
 
 #[test]
 fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_start_uses_inline_start_within_line() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let (tall_y, short_y) = layout_wrap_reverse_vertical_writing_mode_rtl_column_align_items(
       writing_mode,
       AlignItems::Start,
@@ -2021,7 +2066,12 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_start_uses_inl
 
 #[test]
 fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_start_uses_cross_start_within_line() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let (tall_y, short_y) = layout_wrap_reverse_vertical_writing_mode_rtl_column_align_items(
       writing_mode,
       AlignItems::FlexStart,
@@ -2039,7 +2089,12 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_start_use
 
 #[test]
 fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_end_uses_inline_end_within_line() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let (tall_y, short_y) = layout_wrap_reverse_vertical_writing_mode_rtl_column_align_items(
       writing_mode,
       AlignItems::End,
@@ -2057,7 +2112,12 @@ fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_end_uses_inlin
 
 #[test]
 fn flex_wrap_reverse_vertical_writing_mode_rtl_column_align_items_flex_end_uses_cross_end_within_line() {
-  for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+  for writing_mode in [
+    WritingMode::VerticalRl,
+    WritingMode::VerticalLr,
+    WritingMode::SidewaysRl,
+    WritingMode::SidewaysLr,
+  ] {
     let (tall_y, short_y) = layout_wrap_reverse_vertical_writing_mode_rtl_column_align_items(
       writing_mode,
       AlignItems::FlexEnd,
