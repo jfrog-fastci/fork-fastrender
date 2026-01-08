@@ -11402,20 +11402,28 @@ fn apply_declaration_with_base_internal_with_order(
         }
       };
 
-      let mut sides: Vec<TextOverflowSide> = match resolved_value {
-        PropertyValue::Multiple(values) => values.iter().filter_map(parse_side).collect(),
-        other => parse_side(other).into_iter().collect(),
+      let sides: Option<Vec<TextOverflowSide>> = match resolved_value {
+        PropertyValue::Multiple(values) => {
+          if values.is_empty() || values.len() > 2 {
+            None
+          } else {
+            values.iter().map(parse_side).collect()
+          }
+        }
+        other => parse_side(other).map(|side| vec![side]),
       };
 
-      if sides.len() == 1 {
-        sides.push(sides[0].clone());
-      }
+      if let Some(mut sides) = sides {
+        if sides.len() == 1 {
+          sides.push(sides[0].clone());
+        }
 
-      if sides.len() == 2 {
-        styles.text_overflow = TextOverflow {
-          inline_start: sides[0].clone(),
-          inline_end: sides[1].clone(),
-        };
+        if sides.len() == 2 {
+          styles.text_overflow = TextOverflow {
+            inline_start: sides[0].clone(),
+            inline_end: sides[1].clone(),
+          };
+        }
       }
     }
     "unicode-bidi" => {
