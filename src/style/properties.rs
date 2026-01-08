@@ -12182,24 +12182,252 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(parts) => parts.clone(),
         other => vec![other.clone()],
       };
+      if tokens.is_empty() {
+        return;
+      }
 
-      let mut saw_source = false;
-      let mut has_image_source = false;
-      for token in &tokens {
-        if let Some(source) = parse_border_image_source(token) {
-          saw_source = true;
-          if matches!(source, BorderImageSource::Image(_)) {
-            has_image_source = true;
+      // Minimal parser for the `mask-border` shorthand. We only record whether the shorthand
+      // contains a non-`none` image source (so we can establish Filter Effects Level 2 Backdrop
+      // Roots), but we still need to validate the overall syntax so invalid declarations are
+      // ignored and don't accidentally clear/create Backdrop Roots.
+      //
+      // Note: FastRender does not paint mask borders yet.
+      let is_repeat_keyword = |token: &PropertyValue| -> bool {
+        matches!(
+          token,
+          PropertyValue::Keyword(kw)
+            if matches!(kw.as_str(), "stretch" | "repeat" | "round" | "space")
+        )
+      };
+
+      let is_fill_keyword = |token: &PropertyValue| -> bool {
+        matches!(token, PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("fill"))
+      };
+
+      let is_slice_value = |token: &PropertyValue| -> bool {
+        match token {
+          PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
+          PropertyValue::Percentage(p) => p.is_finite() && *p >= 0.0,
+          PropertyValue::Length(len)
+            if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent) =>
+          {
+            len.value.is_finite() && len.value >= 0.0
+          }
+          _ => false,
+        }
+      };
+
+      let is_width_value = |token: &PropertyValue| -> bool {
+        match token {
+          PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => true,
+          PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
+          PropertyValue::Length(len) => len.value.is_finite() && len.value >= 0.0,
+          _ => false,
+        }
+      };
+
+      let is_outset_value = |token: &PropertyValue| -> bool {
+        match token {
+          PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
+          PropertyValue::Length(len) => len.value.is_finite() && len.value >= 0.0,
+          _ => false,
+        }
+      };
+
+      let mut slash_positions = Vec::new();
+      for (idx, token) in tokens.iter().enumerate() {
+        if matches!(token, PropertyValue::Keyword(k) if k == "/") {
+          slash_positions.push(idx);
+        }
+      }
+      if slash_positions.len() > 2 {
+        return;
+      }
+
+      // Track which tokens are consumed by the slice/width/outset portions of the shorthand so we
+      // can validate the remaining tokens as source/repeat/mode.
+      let mut used = vec![false; tokens.len()];
+      for idx in &slash_positions {
+        used[*idx] = true;
+      }
+
+      if slash_positions.is_empty() {
+        // Without slashes, any `<number>` / `<percentage>` / `fill` tokens must form a single
+        // contiguous slice group (if present).
+        let slice_indices: Vec<usize> = tokens
+          .iter()
+          .enumerate()
+          .filter_map(|(idx, token)| {
+            (is_slice_value(token) || is_fill_keyword(token)).then_some(idx)
+          })
+          .collect();
+
+        if !slice_indices.is_empty() {
+          let start = slice_indices[0];
+          let end = *slice_indices.last().unwrap();
+          let mut slice_values = 0usize;
+          let mut fill = false;
+          for idx in start..=end {
+            let token = &tokens[idx];
+            if is_slice_value(token) {
+              slice_values += 1;
+              if slice_values > 4 {
+                return;
+              }
+              used[idx] = true;
+              continue;
+            }
+            if is_fill_keyword(token) {
+              if fill {
+                return;
+              }
+              fill = true;
+              used[idx] = true;
+              continue;
+            }
+            // Slice group must be contiguous; anything else between the first/last slice token is
+            // invalid.
+            return;
+          }
+          if slice_values == 0 {
+            return;
+          }
+        }
+      } else {
+        // With slashes, the slice group must be an uninterrupted suffix before the first slash.
+        let first_slash = slash_positions[0];
+        if first_slash == 0 || first_slash + 1 >= tokens.len() {
+          return;
+        }
+
+        let mut slice_values = 0usize;
+        let mut fill = false;
+        let mut slice_start = first_slash;
+        while slice_start > 0 {
+          let token = &tokens[slice_start - 1];
+          if is_slice_value(token) {
+            slice_values += 1;
+            if slice_values > 4 {
+              return;
+            }
+            slice_start -= 1;
+            continue;
+          }
+          if is_fill_keyword(token) {
+            if fill {
+              return;
+            }
+            fill = true;
+            slice_start -= 1;
+            continue;
+          }
+          break;
+        }
+        if slice_values == 0 {
+          return;
+        }
+        // No slice tokens may precede the slice suffix; widths/outsets can only appear after `/`.
+        for token in &tokens[..slice_start] {
+          if is_slice_value(token) || is_fill_keyword(token) {
+            return;
+          }
+        }
+        for idx in slice_start..first_slash {
+          used[idx] = true;
+        }
+
+        let width_start = first_slash + 1;
+        if slash_positions.len() == 2 {
+          let second_slash = slash_positions[1];
+          if second_slash <= width_start || second_slash + 1 >= tokens.len() {
+            return;
+          }
+          let width_tokens = &tokens[width_start..second_slash];
+          if width_tokens.is_empty() || width_tokens.len() > 4 {
+            return;
+          }
+          if parse_border_image_width_list(width_tokens).is_none() {
+            return;
+          }
+          for idx in width_start..second_slash {
+            used[idx] = true;
+          }
+
+          // Outset tokens follow the second slash; allow other components (source/repeat/mode)
+          // afterward.
+          let outset_start = second_slash + 1;
+          let mut outset_end = outset_start;
+          let mut outset_values = 0usize;
+          while outset_end < tokens.len() && is_outset_value(&tokens[outset_end]) {
+            outset_values += 1;
+            if outset_values > 4 {
+              return;
+            }
+            used[outset_end] = true;
+            outset_end += 1;
+          }
+          if outset_values == 0 {
+            return;
+          }
+        } else {
+          // One slash: width tokens start immediately after `/` and may be followed by
+          // source/repeat/mode tokens.
+          let mut width_end = width_start;
+          let mut width_values = 0usize;
+          while width_end < tokens.len() && is_width_value(&tokens[width_end]) {
+            width_values += 1;
+            if width_values > 4 {
+              return;
+            }
+            used[width_end] = true;
+            width_end += 1;
+          }
+          if width_values == 0 {
+            return;
           }
         }
       }
 
-      // Invalid values are ignored per spec. The mask-border shorthand must contain a valid
-      // <mask-border-source> token (including `none`); if we cannot parse one, treat the
-      // declaration as invalid and leave the previous computed value intact.
-      if saw_source {
-        styles.mask_border = has_image_source;
+      let mut source: Option<BorderImageSource> = None;
+      let mut mode_seen = false;
+      let mut repeat_indices: Vec<usize> = Vec::new();
+      for (idx, token) in tokens.iter().enumerate() {
+        if used[idx] {
+          continue;
+        }
+        if let Some(parsed_source) = parse_border_image_source(token) {
+          if source.is_some() {
+            return;
+          }
+          source = Some(parsed_source);
+          continue;
+        }
+
+        if parse_mask_mode(token).is_some() {
+          if mode_seen {
+            return;
+          }
+          mode_seen = true;
+          continue;
+        }
+
+        if is_repeat_keyword(token) {
+          repeat_indices.push(idx);
+          if repeat_indices.len() > 2 {
+            return;
+          }
+          continue;
+        }
+
+        // Unknown token -> invalid shorthand value, ignore declaration.
+        return;
       }
+
+      if repeat_indices.len() == 2 && repeat_indices[1] != repeat_indices[0] + 1 {
+        return;
+      }
+
+      styles.mask_border = matches!(source, Some(BorderImageSource::Image(_)));
     }
     "mask-image" => {
       if let Some(mut images) = parse_background_image_list(resolved_value) {

@@ -527,6 +527,126 @@ fn mask_border_url_triggers_backdrop_root_even_when_unresolved() {
 }
 
 #[test]
+fn mask_border_shorthand_with_repeat_and_mode_triggers_backdrop_root_even_when_unresolved() {
+  let html_without_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+  let pixmap = render(html_without_backdrop_root, 64, 64);
+  assert_eq!(
+    pixel(&pixmap, 15, 15),
+    (0, 255, 255, 255),
+    "sanity: without a backdrop-root boundary, the overlay should invert the body background"
+  );
+
+  let html_with_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        /* Backdrop Root triggers apply to the entire shorthand, including slash-separated
+           width/outset portions and trailing repeat/mode keywords. */
+        mask-border: url(#missing) 30 / 10px / 0 stretch alpha;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html_with_backdrop_root, 64, 64);
+
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 15), (255, 0, 0, 255));
+}
+
+#[test]
+fn invalid_mask_border_shorthand_is_ignored_and_does_not_establish_backdrop_root() {
+  let html_without_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+  let pixmap = render(html_without_backdrop_root, 64, 64);
+  assert_eq!(
+    pixel(&pixmap, 15, 15),
+    (0, 255, 255, 255),
+    "sanity: without a backdrop-root boundary, the overlay should invert the body background"
+  );
+
+  let html_with_invalid_mask_border = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        /* Invalid shorthand values must be ignored. */
+        mask-border: url(#missing) bogus;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html_with_invalid_mask_border, 64, 64);
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 15), (0, 255, 255, 255));
+}
+
+#[test]
 fn webkit_mask_box_image_url_triggers_backdrop_root_even_when_unresolved() {
   let html_without_backdrop_root = r#"<!doctype html>
     <style>
