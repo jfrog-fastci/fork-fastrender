@@ -1890,6 +1890,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "quotes"
       | "size"
       | "text-combine-upright"
+      | "text-indent"
       | "text-emphasis"
       | "text-emphasis-style"
       | "text-emphasis-position"

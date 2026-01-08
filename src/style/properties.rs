@@ -10565,7 +10565,7 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "line-height" => match resolved_value {
-      PropertyValue::Keyword(kw) if kw == "normal" => {
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("normal") => {
         styles.line_height = LineHeight::Normal;
       }
       PropertyValue::Number(n) => {
@@ -10618,18 +10618,22 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "vertical-align" => match resolved_value {
       PropertyValue::Keyword(kw) => {
-        styles.vertical_align = match kw.as_str() {
-          "baseline" => VerticalAlign::Baseline,
-          "sub" => VerticalAlign::Sub,
-          "super" => VerticalAlign::Super,
-          "text-top" => VerticalAlign::TextTop,
-          "text-bottom" => VerticalAlign::TextBottom,
-          "middle" => VerticalAlign::Middle,
-          "top" => VerticalAlign::Top,
-          "bottom" => VerticalAlign::Bottom,
-          _ => styles.vertical_align,
+        let kw = kw.to_ascii_lowercase();
+        let parsed = match kw.as_str() {
+          "baseline" => Some(VerticalAlign::Baseline),
+          "sub" => Some(VerticalAlign::Sub),
+          "super" => Some(VerticalAlign::Super),
+          "text-top" => Some(VerticalAlign::TextTop),
+          "text-bottom" => Some(VerticalAlign::TextBottom),
+          "middle" => Some(VerticalAlign::Middle),
+          "top" => Some(VerticalAlign::Top),
+          "bottom" => Some(VerticalAlign::Bottom),
+          _ => None,
         };
-        styles.vertical_align_specified = true;
+        if let Some(value) = parsed {
+          styles.vertical_align = value;
+          styles.vertical_align_specified = true;
+        }
       }
       PropertyValue::Length(len) => {
         styles.vertical_align = VerticalAlign::Length(*len);
@@ -10643,6 +10647,7 @@ fn apply_declaration_with_base_internal_with_order(
     },
     "text-align" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         let parsed = match kw.as_str() {
           "start" => Some(TextAlign::Start),
           "end" => Some(TextAlign::End),
@@ -10661,6 +10666,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "text-align-all" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         let parsed = match kw.as_str() {
           "start" => Some(TextAlign::Start),
           "end" => Some(TextAlign::End),
@@ -10679,6 +10685,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "text-align-last" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.text_align_last = match kw.as_str() {
           "auto" => TextAlignLast::Auto,
           "start" => TextAlignLast::Start,
@@ -10709,6 +10716,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "text-justify" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.text_justify = match kw.as_str() {
           "auto" => TextJustify::Auto,
           "none" => TextJustify::None,
@@ -10771,11 +10779,13 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Percentage(pct) => length = Length::percent(*pct),
         // CSS `<length-percentage>` allows unitless `0` as a `<length>`.
         PropertyValue::Number(n) if *n == 0.0 => length = Length::px(0.0),
-        PropertyValue::Keyword(kw) => match kw.as_str() {
-          "hanging" => hanging = true,
-          "each-line" => each_line = true,
-          _ => {}
-        },
+        PropertyValue::Keyword(kw) => {
+          if kw.eq_ignore_ascii_case("hanging") {
+            hanging = true;
+          } else if kw.eq_ignore_ascii_case("each-line") {
+            each_line = true;
+          }
+        }
         _ => {}
       };
 
@@ -10796,11 +10806,11 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "direction" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.direction = match kw.as_str() {
-          "ltr" => Direction::Ltr,
-          "rtl" => Direction::Rtl,
-          _ => styles.direction,
-        };
+        if kw.eq_ignore_ascii_case("ltr") {
+          styles.direction = Direction::Ltr;
+        } else if kw.eq_ignore_ascii_case("rtl") {
+          styles.direction = Direction::Rtl;
+        }
       }
     }
     "text-decoration-line" => {
@@ -10906,6 +10916,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "ruby-position" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.ruby_position = match kw.as_str() {
           "over" => RubyPosition::Over,
           "under" => RubyPosition::Under,
@@ -10917,6 +10928,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "ruby-align" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.ruby_align = match kw.as_str() {
           "auto" => RubyAlign::Auto,
           "start" => RubyAlign::Start,
@@ -10929,6 +10941,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "ruby-merge" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.ruby_merge = match kw.as_str() {
           "separate" => RubyMerge::Separate,
           "collapse" => RubyMerge::Collapse,
@@ -11102,6 +11115,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "white-space" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.white_space = match kw.as_str() {
           "normal" => WhiteSpace::Normal,
           "nowrap" => WhiteSpace::Nowrap,
@@ -11115,6 +11129,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "line-break" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.line_break = match kw.as_str() {
           "auto" => LineBreak::Auto,
           "loose" => LineBreak::Loose,
@@ -11132,46 +11147,46 @@ fn apply_declaration_with_base_internal_with_order(
       );
       let column_alias = matches!(property, "column-break-before" | "column-break-after");
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         let value = match kw.as_str() {
-          "auto" => BreakBetween::Auto,
-          "avoid" => {
-            if from_page_break {
-              BreakBetween::AvoidPage
-            } else if column_alias {
-              BreakBetween::AvoidColumn
-            } else {
-              BreakBetween::Avoid
-            }
-          }
-          "avoid-page" => BreakBetween::AvoidPage,
-          "avoid-column" => BreakBetween::AvoidColumn,
-          "always" => {
-            if from_page_break {
-              BreakBetween::Page
-            } else if column_alias {
-              BreakBetween::Column
-            } else {
-              BreakBetween::Always
-            }
-          }
-          "column" => BreakBetween::Column,
-          "page" => BreakBetween::Page,
-          "left" => BreakBetween::Left,
-          "right" => BreakBetween::Right,
-          "recto" => BreakBetween::Recto,
-          "verso" => BreakBetween::Verso,
-          _ => BreakBetween::Auto,
+          "auto" => Some(BreakBetween::Auto),
+          "avoid" => Some(if from_page_break {
+            BreakBetween::AvoidPage
+          } else if column_alias {
+            BreakBetween::AvoidColumn
+          } else {
+            BreakBetween::Avoid
+          }),
+          "avoid-page" => Some(BreakBetween::AvoidPage),
+          "avoid-column" => Some(BreakBetween::AvoidColumn),
+          "always" => Some(if from_page_break {
+            BreakBetween::Page
+          } else if column_alias {
+            BreakBetween::Column
+          } else {
+            BreakBetween::Always
+          }),
+          "column" => Some(BreakBetween::Column),
+          "page" => Some(BreakBetween::Page),
+          "left" => Some(BreakBetween::Left),
+          "right" => Some(BreakBetween::Right),
+          "recto" => Some(BreakBetween::Recto),
+          "verso" => Some(BreakBetween::Verso),
+          _ => None,
         };
-        if matches!(property, "break-before" | "column-break-before") {
-          styles.break_before = value;
-        } else {
-          styles.break_after = value;
+        if let Some(value) = value {
+          if matches!(property, "break-before" | "column-break-before") {
+            styles.break_before = value;
+          } else {
+            styles.break_after = value;
+          }
         }
       }
     }
     "break-inside" | "column-break-inside" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         let column_alias = decl.property.as_str() == "column-break-inside";
+        let kw = kw.to_ascii_lowercase();
         styles.break_inside = match kw.as_str() {
           "auto" => BreakInside::Auto,
           "avoid" => {
@@ -11222,6 +11237,7 @@ fn apply_declaration_with_base_internal_with_order(
     },
     "hyphens" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.hyphens = match kw.as_str() {
           "none" => HyphensMode::None,
           "manual" => HyphensMode::Manual,
@@ -11232,6 +11248,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "word-break" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.word_break = match kw.as_str() {
           "normal" => WordBreak::Normal,
           "break-all" => WordBreak::BreakAll,
@@ -11244,6 +11261,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "overflow-wrap" | "word-wrap" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.overflow_wrap = match kw.as_str() {
           "normal" => OverflowWrap::Normal,
           "break-word" => OverflowWrap::BreakWord,
@@ -11254,6 +11272,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "overflow-anchor" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.overflow_anchor = match kw.as_str() {
           "auto" => OverflowAnchor::Auto,
           "none" => OverflowAnchor::None,
@@ -11340,6 +11359,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "unicode-bidi" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.unicode_bidi = match kw.as_str() {
           "normal" => UnicodeBidi::Normal,
           "embed" => UnicodeBidi::Embed,
@@ -11400,6 +11420,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "scroll-behavior" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.scroll_behavior = match kw.as_str() {
           "auto" => ScrollBehavior::Auto,
           "smooth" => ScrollBehavior::Smooth,
