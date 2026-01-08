@@ -793,6 +793,29 @@ fn abspos_static_position_respects_align_self_on_cross_axis() {
 }
 
 #[test]
+fn abspos_static_position_respects_align_self_flex_end_under_wrap_reverse() {
+  // Under `wrap-reverse`, `flex-end` aligns to the physical top edge (cross-end) for a horizontal
+  // flex container, so abspos static-position probes must apply the same cross-axis mirroring.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.align_self = Some(AlignItems::FlexEnd);
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_align_self_self_start_with_different_direction() {
   // `self-start` resolves against the item's own writing-mode/direction rather than the flex
   // container's. Use a column flex container (horizontal cross axis) and give the abspos child an
