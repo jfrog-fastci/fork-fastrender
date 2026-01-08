@@ -10145,6 +10145,42 @@ mod tests {
   }
 
   #[test]
+  fn mask_image_establishes_backdrop_root_even_when_unresolved() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let child_bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
+
+    let mut child_style = ComputedStyle::default();
+    let mut layer = crate::style::types::MaskLayer::default();
+    layer.image = Some(BackgroundImage::Url("#missing".into()));
+    child_style.set_mask_layers(vec![layer]);
+    let child_style = Arc::new(child_style);
+
+    let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
+    let root =
+      FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+
+    // Without an image cache (and without an in-document SVG id definition), the mask-image cannot
+    // be resolved for painting. Even so, the element still establishes a Backdrop Root boundary
+    // because the trigger is based on property presence (filter-effects-2), not resolved masks.
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+
+    let child_context = list.items().iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(ctx) if ctx.bounds == child_bounds => Some(ctx),
+      _ => None,
+    });
+    let child_context = child_context.expect("expected a stacking context for mask-image:url()");
+
+    assert!(
+      child_context.establishes_backdrop_root,
+      "mask-image:url(#missing) should establish a backdrop root even when the image cannot be resolved"
+    );
+    assert!(
+      child_context.mask.is_none(),
+      "unresolved mask-image:url(#missing) should not resolve to any paint-time mask"
+    );
+  }
+
+  #[test]
   fn clip_path_establishes_backdrop_root_even_when_resolved_none() {
     let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
     let child_bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
