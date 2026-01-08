@@ -52,6 +52,7 @@ mod grid_intrinsic_sizing_keywords;
 mod grid_named_span_autoplacement;
 mod grid_overflow_auto_min_size;
 mod grid_span_token_order;
+mod grid_self_start_self_end_alignment;
 mod grid_percent_gap;
 mod grid_percent_rows_indefinite_height;
 mod grid_percent_tracks_definite;

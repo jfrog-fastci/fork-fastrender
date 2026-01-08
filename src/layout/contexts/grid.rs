@@ -2490,6 +2490,41 @@ impl GridFormattingContext {
     let inline_positive_item = item_axis_style.inline_positive();
     let block_positive_item = item_axis_style.block_positive();
     let inline_is_horizontal_item = item_axis_style.inline_is_horizontal();
+    // `self-start`/`self-end` resolve against the alignment subject's (item's) writing-mode and
+    // direction, but on the physical axis being aligned. Compute the polarity for each physical
+    // axis so we can map these keywords correctly even when writing modes differ.
+    let self_axes =
+      FragmentAxes::from_writing_mode_and_direction(style.writing_mode, style.direction);
+    let self_axis_positive = |axis: PhysicalAxis| {
+      if axis == self_axes.inline_axis() {
+        self_axes.inline_positive()
+      } else {
+        self_axes.block_positive()
+      }
+    };
+    let self_physical_x_positive = self_axis_positive(PhysicalAxis::X);
+    let self_physical_y_positive = self_axis_positive(PhysicalAxis::Y);
+    let container_physical_x_positive = if inline_is_horizontal_item {
+      inline_positive_item
+    } else {
+      block_positive_item
+    };
+    let container_physical_y_positive = if inline_is_horizontal_item {
+      block_positive_item
+    } else {
+      inline_positive_item
+    };
+    let convert_item_alignment = |align: AlignItems, axis: PhysicalAxis| {
+      let (container_positive, self_positive) = match axis {
+        PhysicalAxis::X => (container_physical_x_positive, self_physical_x_positive),
+        PhysicalAxis::Y => (container_physical_y_positive, self_physical_y_positive),
+      };
+      let axis_positive = match align {
+        AlignItems::SelfStart | AlignItems::SelfEnd => self_positive,
+        _ => container_positive,
+      };
+      self.convert_align_items(&align, axis_positive)
+    };
 
     // Display mode
     if is_grid {
@@ -2771,37 +2806,37 @@ impl GridFormattingContext {
     if inline_is_horizontal_item {
       taffy_style.align_self = style
         .align_self
-        .map(|a| self.convert_align_items(&a, block_positive_item));
+        .map(|a| convert_item_alignment(a, PhysicalAxis::Y));
       taffy_style.justify_self = style
         .justify_self
-        .map(|a| self.convert_align_items(&a, inline_positive_item));
+        .map(|a| convert_item_alignment(a, PhysicalAxis::X));
     } else {
       taffy_style.align_self = style
         .justify_self
-        .map(|a| self.convert_align_items(&a, inline_positive_item));
+        .map(|a| convert_item_alignment(a, PhysicalAxis::Y));
       taffy_style.justify_self = style
         .align_self
-        .map(|a| self.convert_align_items(&a, block_positive_item));
+        .map(|a| convert_item_alignment(a, PhysicalAxis::X));
     }
 
     if let Some(containing_grid) = containing_grid {
       if inline_is_horizontal_item {
         if taffy_style.justify_self.is_none() {
           taffy_style.justify_self =
-            Some(self.convert_align_items(&containing_grid.justify_items, inline_positive_item));
+            Some(convert_item_alignment(containing_grid.justify_items, PhysicalAxis::X));
         }
         if taffy_style.align_self.is_none() {
           taffy_style.align_self =
-            Some(self.convert_align_items(&containing_grid.align_items, block_positive_item));
+            Some(convert_item_alignment(containing_grid.align_items, PhysicalAxis::Y));
         }
       } else {
         if taffy_style.align_self.is_none() {
           taffy_style.align_self =
-            Some(self.convert_align_items(&containing_grid.justify_items, inline_positive_item));
+            Some(convert_item_alignment(containing_grid.justify_items, PhysicalAxis::Y));
         }
         if taffy_style.justify_self.is_none() {
           taffy_style.justify_self =
-            Some(self.convert_align_items(&containing_grid.align_items, block_positive_item));
+            Some(convert_item_alignment(containing_grid.align_items, PhysicalAxis::X));
         }
       }
     }
