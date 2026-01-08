@@ -211,3 +211,133 @@ fn backdrop_filter_crosses_sticky_position_stacking_context() {
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn backdrop_filter_crosses_negative_z_index_stacking_context() {
+  let html = r#"<!doctype html>
+    <style>
+      body { margin: 0; background: rgb(255 0 0); }
+      #sc { position: relative; z-index: -1; width: 60px; height: 60px; }
+      #overlay { position: absolute; left: 0; top: 0; width: 40px; height: 40px; backdrop-filter: invert(1); }
+    </style>
+    <div id="sc"><div id="overlay"></div></div>
+  "#;
+
+  let (pixmap, stacking_reasons, display_list_stacking_contexts) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::PositionedWithZIndex),
+    "expected a z-index stacking context; got {stacking_reasons:?}"
+  );
+  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, -1)
+    .expect("expected display list stacking context for #sc");
+  assert!(
+    !sc_context.establishes_backdrop_root,
+    "negative z-index stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
+  );
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn backdrop_filter_crosses_transform_stacking_context() {
+  let html = r#"<!doctype html>
+    <style>
+      body { margin: 0; background: rgb(255 0 0); }
+      #sc { position: relative; transform: translate(0px, 0px); width: 60px; height: 60px; }
+      #overlay { position: absolute; left: 0; top: 0; width: 40px; height: 40px; backdrop-filter: invert(1); }
+    </style>
+    <div id="sc"><div id="overlay"></div></div>
+  "#;
+
+  let (pixmap, stacking_reasons, display_list_stacking_contexts) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::Transform),
+    "expected a transform stacking context; got {stacking_reasons:?}"
+  );
+  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+    .expect("expected display list stacking context for #sc");
+  assert!(
+    !sc_context.establishes_backdrop_root,
+    "transform stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
+  );
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn backdrop_filter_crosses_perspective_stacking_context() {
+  let html = r#"<!doctype html>
+    <style>
+      body { margin: 0; background: rgb(255 0 0); }
+      #sc { position: relative; perspective: 1000px; width: 60px; height: 60px; }
+      #overlay { position: absolute; left: 0; top: 0; width: 40px; height: 40px; backdrop-filter: invert(1); }
+    </style>
+    <div id="sc"><div id="overlay"></div></div>
+  "#;
+
+  let (pixmap, stacking_reasons, display_list_stacking_contexts) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::Perspective),
+    "expected a perspective stacking context; got {stacking_reasons:?}"
+  );
+  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+    .expect("expected display list stacking context for #sc");
+  assert!(
+    !sc_context.establishes_backdrop_root,
+    "perspective stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
+  );
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn backdrop_filter_crosses_flex_item_z_index_stacking_context() {
+  let html = r#"<!doctype html>
+    <style>
+      body { margin: 0; background: rgb(255 0 0); display: flex; }
+      #sc { z-index: 1; width: 60px; height: 60px; }
+      #overlay { width: 40px; height: 40px; backdrop-filter: invert(1); }
+    </style>
+    <div id="sc"><div id="overlay"></div></div>
+  "#;
+
+  let (pixmap, stacking_reasons, display_list_stacking_contexts) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::FlexItemWithZIndex),
+    "expected a flex item z-index stacking context; got {stacking_reasons:?}"
+  );
+  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
+    .expect("expected display list stacking context for #sc");
+  assert!(
+    !sc_context.establishes_backdrop_root,
+    "flex item z-index stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
+  );
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn backdrop_filter_crosses_grid_item_z_index_stacking_context() {
+  let html = r#"<!doctype html>
+    <style>
+      body { margin: 0; background: rgb(255 0 0); display: grid; }
+      #sc { z-index: 1; width: 60px; height: 60px; }
+      #overlay { width: 40px; height: 40px; backdrop-filter: invert(1); }
+    </style>
+    <div id="sc"><div id="overlay"></div></div>
+  "#;
+
+  let (pixmap, stacking_reasons, display_list_stacking_contexts) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::GridItemWithZIndex),
+    "expected a grid item z-index stacking context; got {stacking_reasons:?}"
+  );
+  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
+    .expect("expected display list stacking context for #sc");
+  assert!(
+    !sc_context.establishes_backdrop_root,
+    "grid item z-index stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
+  );
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
