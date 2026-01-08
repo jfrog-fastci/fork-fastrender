@@ -21,6 +21,10 @@ pub enum ScriptType {
   Unknown,
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| c.is_ascii_whitespace())
+}
+
 /// A parsed `<script>` element, normalized into a scheduler-friendly record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptElementSpec {
@@ -71,7 +75,7 @@ pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
     if value.is_empty() {
       "text/javascript".to_string()
     } else {
-      value.trim().to_string()
+      trim_ascii_whitespace(value).to_string()
     }
   } else if let Some(value) = language_value_raw {
     if value.is_empty() {
@@ -94,9 +98,9 @@ pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
   // JavaScript MIME type essence match (WHATWG MIME Sniffing + HTML).
   let mime_essence = type_string
     .split_once(';')
-    .map(|(essence, _)| essence.trim())
+    .map(|(essence, _)| trim_ascii_whitespace(essence))
     .unwrap_or(type_string.as_str())
-    .trim();
+    .trim_matches(|c: char| c.is_ascii_whitespace());
 
   const JS_MIME_TYPE_ESSENCES: [&str; 16] = [
     "application/ecmascript",
@@ -199,6 +203,23 @@ mod tests {
     let node = script(&[("type", "importmap")]);
     assert_eq!(determine_script_type(&node), ScriptType::ImportMap);
     let node = script(&[("type", "importmap; foo=bar")]);
+    assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+  }
+
+  #[test]
+  fn type_trimming_is_ascii_only() {
+    // HTML trims ASCII whitespace, not all Unicode whitespace.
+    let nbsp = "\u{00A0}";
+    let module_trailing = format!("module{nbsp}");
+    let module_wrapped = format!("{nbsp}module{nbsp}");
+    let js_trailing = format!("text/javascript{nbsp}");
+
+    let node = script(&[("type", module_trailing.as_str())]);
+    assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+    let node = script(&[("type", module_wrapped.as_str())]);
+    assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+
+    let node = script(&[("type", js_trailing.as_str())]);
     assert_eq!(determine_script_type(&node), ScriptType::Unknown);
   }
 }
