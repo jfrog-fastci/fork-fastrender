@@ -530,4 +530,25 @@ fn logical_border_radius_maps_corners() {
     vertical.border_bottom_right_radius,
     BorderCornerRadius::uniform(Length::px(3.0))
   );
+
+  // Directionality still flips the inline axis when the inline axis is vertical.
+  let mut vertical_rtl = ComputedStyle::default();
+  vertical_rtl.writing_mode = WritingMode::VerticalRl;
+  vertical_rtl.direction = Direction::Rtl;
+  apply_declaration(
+    &mut vertical_rtl,
+    &decl(
+      "border-start-end-radius",
+      PropertyValue::Length(Length::px(3.0)),
+    ),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  resolve_pending_logical_properties(&mut vertical_rtl);
+  // In vertical-rl + rtl: block-start -> right, inline-end -> top.
+  assert_eq!(
+    vertical_rtl.border_top_right_radius,
+    BorderCornerRadius::uniform(Length::px(3.0))
+  );
 }
