@@ -1342,8 +1342,13 @@ fn url_ends_with_svgz(url: &str) -> bool {
 }
 
 fn svg_text_looks_like_markup(text: &str) -> bool {
-  let trimmed = text.trim_start();
-  trimmed.starts_with("<svg") || trimmed.starts_with("<?xml")
+  let trimmed = text.strip_prefix('\u{feff}').unwrap_or(text).trim_start();
+  trimmed
+    .get(..4)
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("<svg"))
+    || trimmed
+      .get(..5)
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("<?xml"))
 }
 
 fn about_url_placeholder_image() -> Arc<CachedImage> {
@@ -7367,6 +7372,46 @@ mod tests {
     let meta = cache
       .probe_resolved(url)
       .expect("probe svgz content should succeed");
+    assert!(meta.is_vector);
+    assert_eq!(meta.dimensions(), (10, 20));
+  }
+
+  #[test]
+  fn svgz_load_uses_final_url_suffix() {
+    let requested = "https://example.com/icon";
+    let final_url = "https://example.com/icon.svgz?redirect=1";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"></svg>"#;
+    let svgz = gzip_bytes(svg.as_bytes());
+
+    let mut res = FetchedResource::new(svgz, Some("application/octet-stream".to_string()));
+    res.status = Some(200);
+    res.final_url = Some(final_url.to_string());
+    let fetcher = MapFetcher::with_entries([(requested.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let img = cache
+      .load(requested)
+      .expect("load svgz content via final URL .svgz suffix");
+    assert!(img.is_vector);
+    assert_eq!(img.dimensions(), (10, 20));
+  }
+
+  #[test]
+  fn svgz_probe_uses_final_url_suffix() {
+    let requested = "https://example.com/icon";
+    let final_url = "https://example.com/icon.svgz?redirect=1";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"></svg>"#;
+    let svgz = gzip_bytes(svg.as_bytes());
+
+    let mut res = FetchedResource::new(svgz, Some("application/octet-stream".to_string()));
+    res.status = Some(200);
+    res.final_url = Some(final_url.to_string());
+    let fetcher = MapFetcher::with_entries([(requested.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let meta = cache
+      .probe_resolved(requested)
+      .expect("probe svgz content via final URL .svgz suffix");
     assert!(meta.is_vector);
     assert_eq!(meta.dimensions(), (10, 20));
   }
