@@ -4980,6 +4980,17 @@ body { background-image: url(/bg.png); }
     println!();
   }
 
+  #[derive(Clone)]
+  struct DryRunFetcher;
+
+  impl ResourceFetcher for DryRunFetcher {
+    fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+      Err(fastrender::Error::Other(format!(
+        "dry-run: network/disk fetch disabled ({url})"
+      )))
+    }
+  }
+
   pub fn main() {
     let args = Args::parse();
     if args.capabilities {
@@ -5035,26 +5046,30 @@ body { background-image: url(/bg.png); }
     )
     .with_device_pixel_ratio(args.viewport.dpr)
     .with_env_overrides();
-    let http = build_http_fetcher(
-      &args.user_agent,
-      &args.accept_language,
-      timeout_secs.map(Duration::from_secs),
-    );
     let mut disk_config = args.disk_cache.to_config();
     let lock_stale_after = disk_config.lock_stale_after;
-    disk_config.namespace = Some(disk_cache_namespace(
-      &args.user_agent,
-      &args.accept_language,
-    ));
-    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(DiskCachingFetcher::with_configs(
-      http,
-      args.cache_dir.clone(),
-      CachingFetcherConfig {
-        honor_http_cache_freshness: true,
-        ..CachingFetcherConfig::default()
-      },
-      disk_config,
-    ));
+    let fetcher: Arc<dyn ResourceFetcher> = if args.dry_run {
+      Arc::new(DryRunFetcher)
+    } else {
+      let http = build_http_fetcher(
+        &args.user_agent,
+        &args.accept_language,
+        timeout_secs.map(Duration::from_secs),
+      );
+      disk_config.namespace = Some(disk_cache_namespace(
+        &args.user_agent,
+        &args.accept_language,
+      ));
+      Arc::new(DiskCachingFetcher::with_configs(
+        http,
+        args.cache_dir.clone(),
+        CachingFetcherConfig {
+          honor_http_cache_freshness: true,
+          ..CachingFetcherConfig::default()
+        },
+        disk_config,
+      ))
+    };
 
     let image_limits = ImagePrefetchLimits {
       max_image_elements: args.max_images_per_page,
