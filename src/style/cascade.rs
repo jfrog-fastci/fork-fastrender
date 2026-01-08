@@ -496,6 +496,34 @@ fn resolve_container_query_length(
   cqi_base: f32,
   cqb_base: f32,
 ) -> Option<f32> {
+  // Container query units require the corresponding query container dimension. When the query
+  // container's size is unknown (non-finite), treat these lengths as unresolved so the overall
+  // size query becomes unknown instead of silently resolving to `0px`.
+  if length.unit.is_container_query_relative()
+    || length
+      .calc
+      .is_some_and(|calc| calc.has_container_query_relative())
+  {
+    let bases_known = |unit: LengthUnit| match unit {
+      LengthUnit::Cqw => cqw_base.is_finite(),
+      LengthUnit::Cqh => cqh_base.is_finite(),
+      LengthUnit::Cqi => cqi_base.is_finite(),
+      LengthUnit::Cqb => cqb_base.is_finite(),
+      LengthUnit::Cqmin | LengthUnit::Cqmax => cqi_base.is_finite() && cqb_base.is_finite(),
+      _ => true,
+    };
+
+    if let Some(calc) = length.calc {
+      for term in calc.terms() {
+        if term.unit.is_container_query_relative() && !bases_known(term.unit) {
+          return None;
+        }
+      }
+    } else if length.unit.is_container_query_relative() && !bases_known(length.unit) {
+      return None;
+    }
+  }
+
   let mut length = *length;
   length = length.resolve_container_query_units(cqw_base, cqh_base, cqi_base, cqb_base);
 
@@ -620,7 +648,13 @@ fn evaluate_container_size_feature(
   );
   let supports_block = matches!(container.container_type, ContainerType::Size);
 
-  let clamp = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+  let clamp = |value: f32| {
+    if value.is_finite() {
+      value.max(0.0)
+    } else {
+      f32::NAN
+    }
+  };
 
   let cqi_base = if supports_inline {
     clamp(container.inline_size)

@@ -678,6 +678,40 @@ fn not_container_query_with_unknown_block_size_does_not_match() {
 }
 
 #[test]
+fn container_query_container_units_with_unknown_block_size_do_not_match() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 1cqb) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.container_type = ContainerType::Size;
+  let styles = Arc::new(style);
+
+  let styled = cascade_with_containers(
+    HTML,
+    css,
+    vec![(
+      "c",
+      ContainerQueryInfo {
+        width: 500.0,
+        height: f32::NAN,
+        inline_size: 500.0,
+        block_size: f32::NAN,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: styles.font_size,
+        styles,
+      },
+    )],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
 fn container_query_resolves_container_units_in_size_features() {
   let css = r#"
     .target { display: block; }
