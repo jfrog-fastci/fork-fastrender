@@ -5008,26 +5008,57 @@ impl DisplayListBuilder {
               }
 
               // Form controls should clip their internal painting by default, even when
-              // `overflow` does not clip. Use the content box to avoid allowing text to bleed into
+              // `overflow` does not clip. For single-line text inputs, CSS UI specifies that the
+              // inline axis is clipped to the content edge while the block axis is clipped to the
+              // padding edge (so vertically-centered text can use available padding space).
+              //
+              // Use the content box for most controls to avoid allowing text to bleed into
               // padding (unlike `overflow: clip`, which clips to the padding box).
               let content_rect = rects.content;
-              if content_rect.width() <= 0.0 || content_rect.height() <= 0.0 {
+              let padding_rect = rects.padding;
+              let clip_rect = if matches!(&control.control, FormControlKind::Text { .. }) {
+                let inline_vertical = block_axis_is_horizontal(style.writing_mode);
+                if inline_vertical {
+                  Rect::from_xywh(
+                    padding_rect.x(),
+                    content_rect.y(),
+                    padding_rect.width(),
+                    content_rect.height(),
+                  )
+                } else {
+                  Rect::from_xywh(
+                    content_rect.x(),
+                    padding_rect.y(),
+                    content_rect.width(),
+                    padding_rect.height(),
+                  )
+                }
+              } else {
+                content_rect
+              };
+              if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
                 return None;
               }
 
-              let radii = Self::resolve_clip_radii(
-                style,
-                &rects,
-                BackgroundBox::ContentBox,
-                self.viewport,
-                self.build_breakdown.as_deref(),
-              )
-              .clamped(content_rect.width(), content_rect.height());
-              let radii = (!radii.is_zero()).then_some(radii);
+              let radii = if clip_rect == content_rect {
+                let radii = Self::resolve_clip_radii(
+                  style,
+                  &rects,
+                  BackgroundBox::ContentBox,
+                  self.viewport,
+                  self.build_breakdown.as_deref(),
+                )
+                .clamped(content_rect.width(), content_rect.height());
+                (!radii.is_zero()).then_some(radii)
+              } else {
+                // The default text-input clip rectangle mixes content/padding edges, so the usual
+                // background radii do not apply cleanly. Prefer a rectangular clip here.
+                None
+              };
 
               Some(ClipItem {
                 shape: ClipShape::Rect {
-                  rect: content_rect,
+                  rect: clip_rect,
                   radii,
                 },
               })
@@ -8829,9 +8860,30 @@ impl DisplayListBuilder {
           );
         }
 
+        let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
+        let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
+        let line_height =
+          compute_line_height_with_metrics_viewport(&text_style, metrics_scaled.as_ref(), viewport);
+        let baseline_offset_y = if line_height.is_finite() {
+          (text_rect.height() - line_height) / 2.0
+        } else {
+          0.0
+        };
+        let baseline_offset_y = if baseline_offset_y.is_finite() {
+          baseline_offset_y
+        } else {
+          0.0
+        };
+        let centered_text_rect = Rect::from_xywh(
+          text_rect.x(),
+          text_rect.y() + baseline_offset_y,
+          text_rect.width(),
+          text_rect.height(),
+        );
+
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
-            let _ = self.emit_text_with_style_raw(text, Some(&text_style), text_rect);
+            let _ = self.emit_text_with_style_raw(text, Some(&text_style), centered_text_rect);
           }
         }
         if let Some(affordance_rect) = affordance_rect {
@@ -8869,13 +8921,6 @@ impl DisplayListBuilder {
             CaretColor::Auto => style.color,
           };
           if !caret_color.is_transparent() {
-            let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
-            let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
-            let line_height = compute_line_height_with_metrics_viewport(
-              &text_style,
-              metrics_scaled.as_ref(),
-              viewport,
-            );
             let caret_advance = if value_is_empty {
               0.0
             } else {
@@ -8906,11 +8951,11 @@ impl DisplayListBuilder {
               text_style.font_size,
             );
             let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
-            let baseline_y = text_rect.y() + half_leading + metrics.baseline_offset;
+            let baseline_y = text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
             let top = baseline_y - metrics.ascent;
             let bottom = baseline_y + metrics.descent;
             let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-            if let Some(clipped) = caret_rect.intersection(content_rect) {
+            if let Some(clipped) = caret_rect.intersection(padding_rect) {
               if clipped.width() > 0.0 && clipped.height() > 0.0 {
                 self.list.push(DisplayItem::FillRect(FillRectItem {
                   rect: clipped,

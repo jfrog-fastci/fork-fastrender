@@ -6286,29 +6286,55 @@ impl Painter {
       }
 
       if clip_x || clip_y {
-        let clip_box = if matches!(replaced_type, ReplacedType::FormControl(_)) {
-          if internal_clip_form_control {
-            crate::style::types::BackgroundBox::ContentBox
-          } else {
-            crate::style::types::BackgroundBox::PaddingBox
+        let (clip_bounds, clip_box_for_radii, allow_radii) = match replaced_type {
+          ReplacedType::FormControl(control) => {
+            if internal_clip_form_control {
+              if matches!(&control.control, FormControlKind::Text { .. }) {
+                // CSS UI text inputs clip inline to the content edge and block to the padding
+                // edge, so vertically-centered text can use the padding area.
+                let inline_vertical = crate::style::block_axis_is_horizontal(style.writing_mode);
+                let clip_bounds = if inline_vertical {
+                  Rect::from_xywh(
+                    padding_rect.x(),
+                    content_rect.y(),
+                    padding_rect.width(),
+                    content_rect.height(),
+                  )
+                } else {
+                  Rect::from_xywh(
+                    content_rect.x(),
+                    padding_rect.y(),
+                    content_rect.width(),
+                    padding_rect.height(),
+                  )
+                };
+                (clip_bounds, crate::style::types::BackgroundBox::ContentBox, false)
+              } else {
+                (
+                  content_rect,
+                  crate::style::types::BackgroundBox::ContentBox,
+                  true,
+                )
+              }
+            } else {
+              (
+                rects.padding,
+                crate::style::types::BackgroundBox::PaddingBox,
+                true,
+              )
+            }
           }
-        } else {
-          crate::style::types::BackgroundBox::ContentBox
-        };
-        let clip_bounds = match clip_box {
-          crate::style::types::BackgroundBox::PaddingBox => rects.padding,
-          _ => content_rect,
+          _ => (
+            content_rect,
+            crate::style::types::BackgroundBox::ContentBox,
+            true,
+          ),
         };
         let canvas_w = self.pixmap.width();
         let canvas_h = self.pixmap.height();
         let mut clip_rect = self.device_rect(clip_bounds);
-        let clip_radii = if clip_x && clip_y {
-          resolve_clip_radii(
-            style,
-            rects,
-            clip_box,
-            Some(viewport),
-          )
+        let clip_radii = if clip_x && clip_y && allow_radii {
+          resolve_clip_radii(style, rects, clip_box_for_radii, Some(viewport))
         } else {
           BorderRadii::ZERO
         };
@@ -7413,9 +7439,32 @@ impl Painter {
             rect.height(),
           );
         }
+
+        let metrics_scaled = self.resolve_scaled_metrics(&text_style);
+        let line_height = compute_line_height_with_metrics_viewport(
+          &text_style,
+          metrics_scaled.as_ref(),
+          Some(Size::new(self.css_width, self.css_height)),
+        );
+        let baseline_offset_y = if line_height.is_finite() {
+          (rect.height() - line_height) / 2.0
+        } else {
+          0.0
+        };
+        let baseline_offset_y = if baseline_offset_y.is_finite() {
+          baseline_offset_y
+        } else {
+          0.0
+        };
+        let centered_rect = Rect::from_xywh(
+          rect.x(),
+          rect.y() + baseline_offset_y,
+          rect.width(),
+          rect.height(),
+        );
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
-            let _ = self.paint_alt_text_raw(text, &text_style, rect, clip_mask);
+            let _ = self.paint_alt_text_raw(text, &text_style, centered_rect, clip_mask);
           }
         }
         if affordance_space > 0.0 {
@@ -7458,24 +7507,30 @@ impl Painter {
             CaretColor::Auto => style.color,
           };
           if !caret_color.is_transparent() {
-            let metrics_scaled = self.resolve_scaled_metrics(&text_style);
-            let line_height = compute_line_height_with_metrics_viewport(
-              &text_style,
-              metrics_scaled.as_ref(),
-              Some(Size::new(self.css_width, self.css_height)),
-            );
-            let ascent = metrics_scaled
-              .as_ref()
-              .map(|m| m.ascent)
-              .unwrap_or(text_style.font_size * 0.8);
-            let descent = metrics_scaled
-              .as_ref()
-              .map(|m| m.descent)
-              .unwrap_or(text_style.font_size * 0.2);
-            let half_leading = (line_height - (ascent + descent)) / 2.0;
-            let baseline_y = rect.y() + ascent + half_leading * 2.0;
-            let top = baseline_y - ascent;
-            let bottom = baseline_y + descent;
+            let mut sample_text = paint_text.unwrap_or("M");
+            if sample_text.trim().is_empty() {
+              sample_text = "M";
+            }
+            let runs = self
+              .shaper
+              .shape(sample_text, &text_style, &self.font_ctx)
+              .ok()
+              .map(|mut runs| {
+                TextItem::apply_spacing_to_runs(
+                  &mut runs,
+                  sample_text,
+                  text_style.letter_spacing,
+                  text_style.word_spacing,
+                );
+                runs
+              })
+              .unwrap_or_default();
+            let metrics =
+              TextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, text_style.font_size);
+            let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+            let baseline_y = rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
+            let top = baseline_y - metrics.ascent;
+            let bottom = baseline_y + metrics.descent;
 
             let caret_x = if value_is_empty {
               Self::aligned_text_start_x(&text_style, rect, 0.0)
@@ -7492,7 +7547,7 @@ impl Painter {
             let caret_x = caret_x.clamp(rect.x(), max_caret_x);
 
             let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-            if let Some(clipped) = caret_rect.intersection(content_rect) {
+            if let Some(clipped) = caret_rect.intersection(padding_rect) {
               if clipped.width() > 0.0 && clipped.height() > 0.0 {
                 let device_rect = self.device_rect(clipped);
                 fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
