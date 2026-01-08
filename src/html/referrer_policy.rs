@@ -12,7 +12,7 @@
 //! - When multiple policies are provided (comma/whitespace separated), the last recognized token
 //!   wins (matches `Referrer-Policy` header parsing semantics).
 
-use crate::dom::{DomNode, DomNodeType};
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{Error, RenderStage, Result};
 use crate::render_control::check_active_periodic;
 use crate::resource::ReferrerPolicy;
@@ -67,10 +67,7 @@ fn for_each_attribute<'a>(
     }
 
     let name_start = i;
-    while i < bytes.len()
-      && !bytes[i].is_ascii_whitespace()
-      && bytes[i] != b'='
-      && bytes[i] != b'>'
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>'
     {
       i += 1;
     }
@@ -92,9 +89,7 @@ fn for_each_attribute<'a>(
         i += 1;
       }
 
-      if i + 1 < bytes.len()
-        && bytes[i] == b'\\'
-        && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
+      if i + 1 < bytes.len() && bytes[i] == b'\\' && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
       {
         let quote = bytes[i + 1];
         i += 2;
@@ -297,7 +292,9 @@ pub fn extract_referrer_policy(dom: &DomNode) -> Option<ReferrerPolicy> {
   extract_referrer_policy_impl(dom, None).ok().flatten()
 }
 
-pub(crate) fn extract_referrer_policy_with_deadline(dom: &DomNode) -> Result<Option<ReferrerPolicy>> {
+pub(crate) fn extract_referrer_policy_with_deadline(
+  dom: &DomNode,
+) -> Result<Option<ReferrerPolicy>> {
   let mut counter = 0usize;
   extract_referrer_policy_impl(dom, Some(&mut counter))
 }
@@ -311,8 +308,12 @@ fn extract_referrer_policy_impl(
 
   while let Some(node) = stack.pop() {
     if let Some(counter) = deadline_counter.as_deref_mut() {
-      check_active_periodic(counter, REFERRER_POLICY_DEADLINE_STRIDE, RenderStage::DomParse)
-        .map_err(Error::Render)?;
+      check_active_periodic(
+        counter,
+        REFERRER_POLICY_DEADLINE_STRIDE,
+        RenderStage::DomParse,
+      )
+      .map_err(Error::Render)?;
     }
 
     if let DomNodeType::ShadowRoot { .. } = node.node_type {
@@ -322,11 +323,13 @@ fn extract_referrer_policy_impl(
       continue;
     }
 
-    if let Some(tag) = node.tag_name() {
-      if tag.eq_ignore_ascii_case("head") {
-        head = Some(node);
-        break;
-      }
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("head"))
+      && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
+    {
+      head = Some(node);
+      break;
     }
 
     for child in node.traversal_children().iter().rev() {
@@ -338,42 +341,55 @@ fn extract_referrer_policy_impl(
     return Ok(None);
   };
 
-  let mut stack = vec![head];
+  let mut stack: Vec<(&DomNode, bool)> = vec![(head, false)];
   let mut policy: Option<ReferrerPolicy> = None;
 
-  while let Some(node) = stack.pop() {
+  while let Some((node, in_foreign_namespace)) = stack.pop() {
     if let Some(counter) = deadline_counter.as_deref_mut() {
-      check_active_periodic(counter, REFERRER_POLICY_DEADLINE_STRIDE, RenderStage::DomParse)
-        .map_err(Error::Render)?;
+      check_active_periodic(
+        counter,
+        REFERRER_POLICY_DEADLINE_STRIDE,
+        RenderStage::DomParse,
+      )
+      .map_err(Error::Render)?;
     }
 
-    let tag_name = node.tag_name();
-    if let Some(tag) = tag_name {
-      if tag.eq_ignore_ascii_case("meta") {
-        let name_attr = node.get_attribute_ref("name");
-        let content_attr = node.get_attribute_ref("content");
+    let next_in_foreign_namespace = in_foreign_namespace
+      || matches!(
+        node.namespace(),
+        Some(ns) if !(ns.is_empty() || ns == HTML_NAMESPACE)
+      );
 
-        if name_attr
-          .map(|n| n.eq_ignore_ascii_case("referrer"))
-          .unwrap_or(false)
-        {
-          if let Some(content) = content_attr {
-            if let Some(parsed) = parse_referrer_policy_value(content) {
-              policy = Some(parsed);
-            }
+    if !in_foreign_namespace
+      && node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("meta"))
+      && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
+    {
+      let name_attr = node.get_attribute_ref("name");
+      let content_attr = node.get_attribute_ref("content");
+
+      if name_attr
+        .map(|n| n.eq_ignore_ascii_case("referrer"))
+        .unwrap_or(false)
+      {
+        if let Some(content) = content_attr {
+          if let Some(parsed) = parse_referrer_policy_value(content) {
+            policy = Some(parsed);
           }
         }
       }
     }
 
-    let skip_children =
-      matches!(node.node_type, DomNodeType::ShadowRoot { .. }) || node.is_template_element();
+    let skip_children = matches!(node.node_type, DomNodeType::ShadowRoot { .. })
+      || node.is_template_element()
+      || next_in_foreign_namespace;
     if skip_children {
       continue;
     }
 
     for child in node.traversal_children().iter().rev() {
-      stack.push(child);
+      stack.push((child, next_in_foreign_namespace));
     }
   }
 
@@ -383,6 +399,8 @@ fn extract_referrer_policy_impl(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::dom::{DomNode, DomNodeType, SVG_NAMESPACE};
+  use selectors::context::QuirksMode;
 
   #[test]
   fn parses_single_referrer_policy_token() {
@@ -445,5 +463,130 @@ mod tests {
       <meta name="referrer" content="no-referrer">
     </body></html>"#;
     assert_eq!(extract_referrer_policy_from_html(html), None);
+  }
+
+  #[test]
+  fn extract_referrer_policy_ignores_foreign_namespace_meta() {
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "head".to_string(),
+          namespace: crate::dom::HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "svg".to_string(),
+              namespace: SVG_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "meta".to_string(),
+                namespace: SVG_NAMESPACE.to_string(),
+                attributes: vec![
+                  ("name".to_string(), "referrer".to_string()),
+                  ("content".to_string(), "no-referrer".to_string()),
+                ],
+              },
+              children: vec![],
+            }],
+          },
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "meta".to_string(),
+              namespace: crate::dom::HTML_NAMESPACE.to_string(),
+              attributes: vec![
+                ("name".to_string(), "referrer".to_string()),
+                ("content".to_string(), "origin".to_string()),
+              ],
+            },
+            children: vec![],
+          },
+        ],
+      }],
+    };
+
+    assert_eq!(extract_referrer_policy(&dom), Some(ReferrerPolicy::Origin));
+  }
+
+  #[test]
+  fn extract_referrer_policy_ignores_foreign_namespace_meta_when_foreign_meta_is_last() {
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "head".to_string(),
+          namespace: crate::dom::HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "meta".to_string(),
+              namespace: crate::dom::HTML_NAMESPACE.to_string(),
+              attributes: vec![
+                ("name".to_string(), "referrer".to_string()),
+                ("content".to_string(), "origin".to_string()),
+              ],
+            },
+            children: vec![],
+          },
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "svg".to_string(),
+              namespace: SVG_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "meta".to_string(),
+                namespace: SVG_NAMESPACE.to_string(),
+                attributes: vec![
+                  ("name".to_string(), "referrer".to_string()),
+                  ("content".to_string(), "no-referrer".to_string()),
+                ],
+              },
+              children: vec![],
+            }],
+          },
+        ],
+      }],
+    };
+
+    assert_eq!(extract_referrer_policy(&dom), Some(ReferrerPolicy::Origin));
+  }
+
+  #[test]
+  fn extract_referrer_policy_ignores_template_contents() {
+    let dom = crate::dom::parse_html(
+      r#"<!doctype html><html><head>
+        <template><meta name="referrer" content="no-referrer"></template>
+        <meta name="referrer" content="origin">
+      </head></html>"#,
+    )
+    .unwrap();
+
+    assert_eq!(extract_referrer_policy(&dom), Some(ReferrerPolicy::Origin));
+  }
+
+  #[test]
+  fn extract_referrer_policy_ignores_shadow_root_contents() {
+    let dom = crate::dom::parse_html(
+      r#"<!doctype html><html><head></head><body>
+        <div id="host">
+          <template shadowroot="open"><meta name="referrer" content="no-referrer"></template>
+        </div>
+      </body></html>"#,
+    )
+    .unwrap();
+
+    assert_eq!(extract_referrer_policy(&dom), None);
   }
 }

@@ -4,7 +4,7 @@
 //! real sites. It intentionally ignores unknown keys and malformed values to
 //! avoid derailing layout when authors provide non-standard tokens.
 
-use crate::dom::{DomNode, DomNodeType};
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{Error, RenderStage, Result};
 use crate::render_control::check_active_periodic;
 
@@ -163,11 +163,13 @@ fn extract_viewport_impl(
       continue;
     }
 
-    if let Some(tag) = node.tag_name() {
-      if tag.eq_ignore_ascii_case("head") {
-        head = Some(node);
-        break;
-      }
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("head"))
+      && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
+    {
+      head = Some(node);
+      break;
     }
 
     for child in node.traversal_children().iter().rev() {
@@ -179,40 +181,49 @@ fn extract_viewport_impl(
     return Ok(None);
   };
 
-  let mut stack = vec![head];
-  while let Some(node) = stack.pop() {
+  let mut stack: Vec<(&DomNode, bool)> = vec![(head, false)];
+  while let Some((node, in_foreign_namespace)) = stack.pop() {
     if let Some(counter) = deadline_counter.as_deref_mut() {
       check_active_periodic(counter, VIEWPORT_DEADLINE_STRIDE, RenderStage::DomParse)
         .map_err(Error::Render)?;
     }
 
-    let tag_name = node.tag_name();
-    if let Some(tag) = tag_name {
-      if tag.eq_ignore_ascii_case("meta") {
-        let name_attr = node.get_attribute_ref("name");
-        let content_attr = node.get_attribute_ref("content");
+    let next_in_foreign_namespace = in_foreign_namespace
+      || matches!(
+        node.namespace(),
+        Some(ns) if !(ns.is_empty() || ns == HTML_NAMESPACE)
+      );
 
-        if name_attr
-          .map(|n| n.eq_ignore_ascii_case("viewport"))
-          .unwrap_or(false)
-        {
-          if let Some(content) = content_attr {
-            if let Some(parsed) = parse_meta_viewport_content(content) {
-              return Ok(Some(parsed));
-            }
+    if !in_foreign_namespace
+      && node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("meta"))
+      && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
+    {
+      let name_attr = node.get_attribute_ref("name");
+      let content_attr = node.get_attribute_ref("content");
+
+      if name_attr
+        .map(|n| n.eq_ignore_ascii_case("viewport"))
+        .unwrap_or(false)
+      {
+        if let Some(content) = content_attr {
+          if let Some(parsed) = parse_meta_viewport_content(content) {
+            return Ok(Some(parsed));
           }
         }
       }
     }
 
-    let skip_children =
-      matches!(node.node_type, DomNodeType::ShadowRoot { .. }) || node.is_template_element();
+    let skip_children = matches!(node.node_type, DomNodeType::ShadowRoot { .. })
+      || node.is_template_element()
+      || next_in_foreign_namespace;
     if skip_children {
       continue;
     }
 
     for child in node.traversal_children().iter().rev() {
-      stack.push(child);
+      stack.push((child, next_in_foreign_namespace));
     }
   }
 
@@ -389,6 +400,62 @@ mod tests {
       "<html><head><template><meta name=viewport content='width=device-width'></template></head></html>";
     let dom = crate::dom::parse_html(html).unwrap();
     assert!(extract_viewport(&dom).is_none());
+  }
+
+  #[test]
+  fn extract_viewport_ignores_foreign_namespace_meta() {
+    use crate::dom::{DomNode, DomNodeType, SVG_NAMESPACE};
+
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "head".to_string(),
+          // Exercise the empty-namespace HTML optimisation.
+          namespace: String::new(),
+          attributes: vec![],
+        },
+        children: vec![
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "svg".to_string(),
+              namespace: SVG_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "meta".to_string(),
+                namespace: SVG_NAMESPACE.to_string(),
+                attributes: vec![
+                  ("name".to_string(), "viewport".to_string()),
+                  ("content".to_string(), "width=111".to_string()),
+                ],
+              },
+              children: vec![],
+            }],
+          },
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "meta".to_string(),
+              namespace: crate::dom::HTML_NAMESPACE.to_string(),
+              attributes: vec![
+                ("name".to_string(), "viewport".to_string()),
+                ("content".to_string(), "width=222".to_string()),
+              ],
+            },
+            children: vec![],
+          },
+        ],
+      }],
+    };
+
+    let expected = MetaViewport {
+      width: Some(ViewportLength::Absolute(222.0)),
+      ..Default::default()
+    };
+    assert_eq!(extract_viewport(&dom), Some(expected));
   }
 
   #[test]
