@@ -203,6 +203,48 @@ fn abspos_static_position_respects_justify_content_start_in_row_reverse() {
 }
 
 #[test]
+fn abspos_static_position_respects_column_reverse_main_start() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::ColumnReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_justify_content_start_in_column_reverse() {
+  // `justify-content: start` resolves against the block-start edge and is not affected by
+  // `flex-direction: column-reverse`.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::ColumnReverse;
+  container_style.justify_content = JustifyContent::Start;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_rtl_row_reverse_flex_start() {
   // In RTL, `flex-direction: row-reverse` makes the main axis physical direction left-to-right.
   // `justify-content: flex-start` aligns to the main-start edge (left).
