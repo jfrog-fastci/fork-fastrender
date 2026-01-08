@@ -2098,6 +2098,7 @@ fn crawl_document(
       FetchDestination::Style | FetchDestination::StyleCors => {
         let css_base = res.final_url.as_deref().unwrap_or(&url);
         let css = decode_css_bytes(&res.bytes, res.content_type.as_deref());
+        let import_referrer_policy = res.response_referrer_policy.unwrap_or(referrer_policy);
         for (dep, mut dep_destination) in discover_css_urls_with_destination(&css, css_base) {
           let mut dep_credentials_mode = default_credentials_mode_for_destination(dep_destination);
           let (dep_referrer_url, dep_referrer_policy) = if dep_destination == FetchDestination::Font
@@ -2109,7 +2110,7 @@ fn crawl_document(
             dep_credentials_mode = credentials_mode;
             // `@import` requests use the importing stylesheet as the referrer while inheriting
             // the stylesheet's referrer policy (which may be overridden by `<link referrerpolicy>`).
-            (css_base, referrer_policy)
+            (css_base, import_referrer_policy)
           } else {
             if dep_destination == FetchDestination::Image {
               if let Some((preferred_dest, preferred_creds)) = preferred_image_requests.get(&dep) {
@@ -2816,6 +2817,106 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
         "expected {url} to use the document referrer policy"
       );
     }
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_applies_stylesheet_referrer_policy_header_to_import_requests() -> Result<()> {
+    #[derive(Default)]
+    struct PolicyFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+    }
+
+    impl PolicyFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, ReferrerPolicy)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for PolicyFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .unwrap()
+          .push((req.url.to_string(), req.destination, req.referrer_policy));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><link rel="stylesheet" href="/style.css"></head></html>"#.to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/style.css" => {
+            let mut res = FetchedResource::with_final_url(
+              br#"@import url('/import.css'); body { background: url('/bg.png'); }"#.to_vec(),
+              Some("text/css".to_string()),
+              Some(req.url.to_string()),
+            );
+            res.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+            Ok(res)
+          }
+          "https://example.com/import.css" => Ok(FetchedResource::with_final_url(
+            b"body { color: rgb(1, 2, 3); }".to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/bg.png" => Ok(FetchedResource::with_final_url(
+            vec![0u8, 1, 2, 3],
+            Some("image/png".to_string()),
+            Some(req.url.to_string()),
+          )),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(PolicyFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let calls = inner.calls();
+    assert!(
+      calls.iter().any(|(url, dest, policy)| {
+        url == "https://example.com/import.css"
+          && *dest == FetchDestination::Style
+          && *policy == ReferrerPolicy::NoReferrer
+      }),
+      "expected @import fetch to inherit stylesheet Referrer-Policy header"
+    );
+    assert!(
+      calls.iter().any(|(url, dest, policy)| {
+        url == "https://example.com/bg.png"
+          && *dest == FetchDestination::Image
+          && *policy == ReferrerPolicy::default()
+      }),
+      "expected background-image fetch to keep using the document referrer policy"
+    );
 
     Ok(())
   }

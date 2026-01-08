@@ -7022,13 +7022,15 @@ impl FastRender {
             let mut sheet = sheet;
             sheet.set_font_face_source_stylesheet_url(&sheet_base);
             let resolved = if sheet.contains_imports() {
+              let import_referrer_policy =
+                resource.response_referrer_policy.unwrap_or(request_referrer_policy);
               let loader = CssImportFetcher::new(
                 Some(sheet_base.clone()),
                 cors_mode,
                 Arc::clone(fetcher),
                 resource_context.clone(),
                 stylesheet_fetch_counter.clone(),
-                request_referrer_policy,
+                import_referrer_policy,
               );
               sheet.resolve_imports_owned_with_cache(
                 &loader,
@@ -7381,13 +7383,15 @@ impl FastRender {
                 parse_stylesheet_with_media(css_text.as_ref(), media_ctx, Some(media_query_cache))?;
               sheet.set_font_face_source_stylesheet_url(&sheet_base);
               if sheet.contains_imports() {
+                let import_referrer_policy =
+                  resource.response_referrer_policy.unwrap_or(request_referrer_policy);
                 let loader = CssImportFetcher::new(
                   Some(sheet_base.clone()),
                   cors_mode,
                   Arc::clone(&fetcher),
                   resource_context.cloned(),
                   stylesheet_fetch_counter.clone(),
-                  request_referrer_policy,
+                  import_referrer_policy,
                 );
                 let resolved = sheet.resolve_imports_owned_with_cache(
                   &loader,
@@ -11761,6 +11765,11 @@ struct CssImportFetcher {
   ///
   /// For linked stylesheets this should incorporate any per-element `referrerpolicy` override.
   referrer_policy: ReferrerPolicy,
+  /// Effective referrer policies for stylesheets already fetched through this loader.
+  ///
+  /// This enables `Referrer-Policy` response header overrides on a stylesheet to affect any nested
+  /// `@import` requests originating from that stylesheet (and only those imports).
+  imported_stylesheet_policies: RefCell<HashMap<String, ReferrerPolicy>>,
 }
 
 impl CssImportFetcher {
@@ -11779,11 +11788,26 @@ impl CssImportFetcher {
       resource_context,
       stylesheet_fetch_counter,
       referrer_policy,
+      imported_stylesheet_policies: RefCell::new(HashMap::new()),
     }
   }
 
   fn resolve_url(&self, href: &str) -> Option<String> {
     resolve_href_with_base(self.base_url.as_deref(), href)
+  }
+
+  fn referrer_policy_for_importer(&self, importer_url: Option<&str>) -> ReferrerPolicy {
+    if let Some(importer_url) = importer_url {
+      if let Some(policy) = self
+        .imported_stylesheet_policies
+        .borrow()
+        .get(importer_url)
+        .copied()
+      {
+        return policy;
+      }
+    }
+    self.referrer_policy
   }
 }
 
@@ -11828,7 +11852,7 @@ impl CssImportLoader for CssImportFetcher {
         .as_ref()
         .and_then(|ctx| ctx.document_url.as_deref())
     });
-    let referrer_policy = self.referrer_policy;
+    let referrer_policy = self.referrer_policy_for_importer(importer_url);
     let origin_fallback = referrer_url.and_then(origin_from_url);
     let client_origin = self
       .resource_context
@@ -11915,6 +11939,14 @@ impl CssImportLoader for CssImportFetcher {
     // Decode CSS bytes with charset handling
     let decoded = decode_css_bytes(&resource.bytes, resource.content_type.as_deref());
     let sheet_base = resource.final_url.clone().unwrap_or_else(|| resolved.clone());
+    let effective_policy = resource.response_referrer_policy.unwrap_or(referrer_policy);
+    {
+      let mut policies = self.imported_stylesheet_policies.borrow_mut();
+      policies.insert(sheet_base.clone(), effective_policy);
+      if sheet_base != resolved {
+        policies.insert(resolved.clone(), effective_policy);
+      }
+    }
     let rewritten = match absolutize_css_urls_cow(&decoded, &sheet_base)? {
       std::borrow::Cow::Borrowed(_) => decoded,
       std::borrow::Cow::Owned(rewritten) => rewritten,
