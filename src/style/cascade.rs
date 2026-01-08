@@ -2371,6 +2371,20 @@ fn eval_style_range_value(
       "max-block-size" => (if inline_horizontal { &styles.max_height } else { &styles.max_width })
         .as_ref()
         .and_then(|len| length_to_numeric(len, container, ctx)),
+      "margin" => {
+        let top = margin_for_side(crate::style::PhysicalSide::Top)?;
+        let right = margin_for_side(crate::style::PhysicalSide::Right)?;
+        let bottom = margin_for_side(crate::style::PhysicalSide::Bottom)?;
+        let left = margin_for_side(crate::style::PhysicalSide::Left)?;
+        let equals = |a: NumericValue, b: NumericValue| -> bool {
+          a.ty == b.ty && (a.value - b.value).abs() < 1e-6
+        };
+        if equals(top, right) && equals(top, bottom) && equals(top, left) {
+          Some(top)
+        } else {
+          None
+        }
+      }
       "margin-top" => styles
         .margin_top
         .as_ref()
@@ -2391,6 +2405,20 @@ fn eval_style_range_value(
       "margin-inline-end" => margin_for_side(inline_sides.1),
       "margin-block-start" => margin_for_side(block_sides.0),
       "margin-block-end" => margin_for_side(block_sides.1),
+      "padding" => {
+        let top = padding_for_side(crate::style::PhysicalSide::Top)?;
+        let right = padding_for_side(crate::style::PhysicalSide::Right)?;
+        let bottom = padding_for_side(crate::style::PhysicalSide::Bottom)?;
+        let left = padding_for_side(crate::style::PhysicalSide::Left)?;
+        let equals = |a: NumericValue, b: NumericValue| -> bool {
+          a.ty == b.ty && (a.value - b.value).abs() < 1e-6
+        };
+        if equals(top, right) && equals(top, bottom) && equals(top, left) {
+          Some(top)
+        } else {
+          None
+        }
+      }
       "padding-top" => length_to_numeric(&styles.padding_top, container, ctx),
       "padding-right" => length_to_numeric(&styles.padding_right, container, ctx),
       "padding-bottom" => length_to_numeric(&styles.padding_bottom, container, ctx),
