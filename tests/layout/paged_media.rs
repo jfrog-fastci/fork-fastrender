@@ -2203,7 +2203,9 @@ fn rtl_direction_flips_first_page_side() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -2237,7 +2239,9 @@ fn vertical_rl_flips_first_page_side() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -2269,7 +2273,9 @@ fn recto_break_depends_on_page_progression() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(page_roots.len(), 3);
@@ -2303,7 +2309,9 @@ fn forced_start_side_suppresses_leading_blank_pages() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 400, 400).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(page_roots.len(), 1);
