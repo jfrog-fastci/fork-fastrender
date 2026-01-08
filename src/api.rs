@@ -5260,6 +5260,26 @@ impl FastRender {
     self.prepare_html_internal(html, options)
   }
 
+  /// Prepares an existing DOM tree for repeated painting without reparsing HTML.
+  ///
+  /// This mirrors [`FastRender::prepare_html`] as closely as possible, but skips the HTML parsing
+  /// step so callers can re-style/re-layout/re-paint a mutable DOM (e.g. from a JS runtime).
+  pub fn prepare_dom(&mut self, dom: &DomNode, options: RenderOptions) -> Result<PreparedDocument> {
+    self.prepare_dom_internal(dom, options)
+  }
+
+  /// Convenience helper to render an existing DOM with explicit options.
+  ///
+  /// This is implemented as `prepare_dom` + `PreparedDocument::paint_default`.
+  pub fn render_dom_with_options(
+    &mut self,
+    dom: &DomNode,
+    options: RenderOptions,
+  ) -> Result<Pixmap> {
+    let prepared = self.prepare_dom(dom, options)?;
+    prepared.paint_default()
+  }
+
   /// Prepares HTML for repeated painting while capturing diagnostics.
   pub fn prepare_html_with_diagnostics(
     &mut self,
@@ -5935,6 +5955,313 @@ impl FastRender {
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
       trace.finalize(result)
+    })
+  }
+
+  fn prepare_dom_internal(
+    &mut self,
+    dom: &DomNode,
+    options: RenderOptions,
+  ) -> Result<PreparedDocument> {
+    let toggles = self.resolve_runtime_toggles(&options);
+    let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
+    runtime::with_runtime_toggles(toggles, || {
+      let trace = TraceSession::from_options(Some(&options));
+      let trace_handle = trace.handle();
+      let _root_span = trace_handle.span("prepare", "pipeline");
+
+      let shared_diagnostics = self
+        .diagnostics
+        .as_ref()
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let context = Some(self.build_resource_context(
+        self.document_url_hint(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
+
+      let result = self.prepare_dom_internal_inner(dom, options, trace_handle);
+      self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+      drop(_root_span);
+      trace.finalize(result)
+    })
+  }
+
+  fn prepare_dom_internal_inner(
+    &mut self,
+    dom: &DomNode,
+    options: RenderOptions,
+    trace: &TraceHandle,
+  ) -> Result<PreparedDocument> {
+    let (width, height) = options
+      .viewport
+      .unwrap_or((self.default_width, self.default_height));
+    if width == 0 || height == 0 {
+      return Err(Error::Render(RenderError::InvalidParameters {
+        message: format!("Invalid dimensions: width={}, height={}", width, height),
+      }));
+    }
+
+    let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+    let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+    let timings_enabled = std::env::var_os("FASTR_RENDER_TIMINGS").is_some();
+    let mut stage_start = timings_enabled.then(Instant::now);
+
+    record_stage(StageHeartbeat::DomParse);
+    {
+      let _span = trace.span("dom_parse", "prepare");
+      self.update_base_url_from_dom(dom);
+      if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
+      {
+        let needs_update = self
+          .resource_context
+          .as_ref()
+          .is_some_and(|ctx| ctx.referrer_policy != policy);
+        if needs_update {
+          if let Some(mut ctx) = self.resource_context.clone() {
+            ctx.referrer_policy = policy;
+            // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+            // resource context.
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
+    }
+
+    if let Some(start) = stage_start.as_mut() {
+      let now = Instant::now();
+      eprintln!("timing:parse {:?}", now - *start);
+      *start = now;
+    }
+
+    let requested_viewport = Size::new(width as f32, height as f32);
+    let base_dpr = options
+      .device_pixel_ratio
+      .unwrap_or(self.device_pixel_ratio);
+    let meta_viewport = if self.apply_meta_viewport {
+      crate::html::viewport::extract_viewport_with_deadline(dom)?
+    } else {
+      None
+    };
+    let resolved_viewport = resolve_viewport(requested_viewport, base_dpr, meta_viewport.as_ref());
+    let layout_width = resolved_viewport.layout_viewport.width.max(1.0).round() as u32;
+    let layout_height = resolved_viewport.layout_viewport.height.max(1.0).round() as u32;
+    let paint_parallelism = self.resolve_paint_parallelism(&options);
+    let layout_parallelism = self.resolve_layout_parallelism(&options);
+
+    let previous_dpr = self.device_pixel_ratio;
+    let artifacts_result = (|| -> Result<LayoutArtifacts> {
+      self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
+      self.pending_device_size = Some(resolved_viewport.visual_viewport);
+      self.layout_document_for_media_with_artifacts(
+        dom,
+        layout_width,
+        layout_height,
+        options.media_type,
+        LayoutDocumentOptions {
+          page_stacking: PageStacking::Stacked { gap: 0.0 },
+          animation_time: options.animation_time,
+        },
+        Point::new(options.scroll_x, options.scroll_y),
+        Some(&deadline),
+        options.stage_mem_budget_bytes,
+        trace,
+        layout_parallelism,
+        None,
+      )
+    })();
+
+    self.device_pixel_ratio = previous_dpr;
+    self.pending_device_size = None;
+    let artifacts = artifacts_result?;
+
+    let layout_viewport = artifacts.fragment_tree.viewport_size();
+    if std::env::var("FASTR_LOG_FRAG_BOUNDS")
+      .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+      .unwrap_or(false)
+    {
+      let bbox = artifacts.fragment_tree.content_size();
+      eprintln!(
+              "[frag-bounds] viewport=({}x{}) bbox=({:.1},{:.1})→({:.1},{:.1}) size=({:.1}x{:.1}) fragments={}",
+              layout_viewport.width,
+              layout_viewport.height,
+              bbox.min_x(),
+              bbox.min_y(),
+              bbox.max_x(),
+              bbox.max_y(),
+              bbox.width(),
+              bbox.height(),
+              artifacts.fragment_tree.fragment_count()
+          );
+    }
+
+    if let Ok(v) = std::env::var("FASTR_DUMP_TEXT_FRAGMENTS") {
+      if v != "0" && !v.eq_ignore_ascii_case("false") {
+        let limit: usize = v.parse().unwrap_or(20);
+        let mut total = 0usize;
+        let mut stack = vec![(&artifacts.fragment_tree.root, crate::geometry::Point::ZERO)];
+        while let Some((frag, offset)) = stack.pop() {
+          let abs = crate::geometry::Rect::from_xywh(
+            frag.bounds.x() + offset.x,
+            frag.bounds.y() + offset.y,
+            frag.bounds.width(),
+            frag.bounds.height(),
+          );
+          if let crate::tree::fragment_tree::FragmentContent::Text { text, .. } = &frag.content {
+            if total < limit {
+              eprintln!(
+                "text frag {} @ ({:.1},{:.1},{:.1},{:.1}) {:?}",
+                total,
+                abs.x(),
+                abs.y(),
+                abs.width(),
+                abs.height(),
+                text.chars().take(80).collect::<String>()
+              );
+            }
+            total += 1;
+          }
+          for child in frag.children.iter().rev() {
+            stack.push((child, crate::geometry::Point::new(abs.x(), abs.y())));
+          }
+        }
+        eprintln!("total text fragments: {}", total);
+      }
+    }
+
+    if let Ok(query) = std::env::var("FASTR_TRACE_TEXT") {
+      fn describe_node(node: &crate::tree::fragment_tree::FragmentNode) -> String {
+        let display = node
+          .style
+          .as_ref()
+          .map(|s| format!("{:?}", s.display))
+          .unwrap_or_else(|| "None".to_string());
+        match &node.content {
+          crate::tree::fragment_tree::FragmentContent::Block { box_id } => {
+            format!("Block(box_id={:?}, display={})", box_id, display)
+          }
+          crate::tree::fragment_tree::FragmentContent::Inline {
+            box_id,
+            fragment_index,
+          } => {
+            format!(
+              "Inline(box_id={:?}, fragment_index={}, display={})",
+              box_id, fragment_index, display
+            )
+          }
+          crate::tree::fragment_tree::FragmentContent::Line { baseline } => {
+            format!("Line(baseline={:.3}, display={})", baseline, display)
+          }
+          crate::tree::fragment_tree::FragmentContent::Text {
+            text,
+            box_id,
+            baseline_offset,
+            ..
+          } => {
+            let preview: String = text.chars().take(80).collect();
+            format!(
+              "Text(box_id={:?}, baseline={:.3}, display={}, text=\"{}\")",
+              box_id, baseline_offset, display, preview
+            )
+          }
+          crate::tree::fragment_tree::FragmentContent::Replaced { box_id, .. } => {
+            format!("Replaced(box_id={:?}, display={})", box_id, display)
+          }
+          crate::tree::fragment_tree::FragmentContent::RunningAnchor { name, .. } => {
+            format!("RunningAnchor(name={:?}, display={})", name, display)
+          }
+          crate::tree::fragment_tree::FragmentContent::FootnoteAnchor { .. } => {
+            format!("FootnoteAnchor(display={})", display)
+          }
+        }
+      }
+
+      fn trace_text<'a>(
+        node: &'a crate::tree::fragment_tree::FragmentNode,
+        offset: crate::geometry::Point,
+        query: &str,
+        trail: &mut Vec<String>,
+      ) -> bool {
+        let raw = node.bounds;
+        let abs = crate::geometry::Rect::from_xywh(
+          node.bounds.x() + offset.x,
+          node.bounds.y() + offset.y,
+          node.bounds.width(),
+          node.bounds.height(),
+        );
+        let label = format!(
+          "{} raw=({:.1},{:.1},{:.1},{:.1}) abs=({:.1},{:.1},{:.1},{:.1})",
+          describe_node(node),
+          raw.x(),
+          raw.y(),
+          raw.width(),
+          raw.height(),
+          abs.x(),
+          abs.y(),
+          abs.width(),
+          abs.height()
+        );
+        trail.push(label);
+        if let crate::tree::fragment_tree::FragmentContent::Text { text, .. } = &node.content {
+          if text.contains(query) {
+            eprintln!("trace for {:?}:", query);
+            for (depth, entry) in trail.iter().enumerate() {
+              eprintln!("  {}{}", "  ".repeat(depth), entry);
+            }
+            trail.pop();
+            return true;
+          }
+        }
+        let child_offset = crate::geometry::Point::new(abs.x(), abs.y());
+        for child in node.children.iter() {
+          if trace_text(child, child_offset, query, trail) {
+            trail.pop();
+            return true;
+          }
+        }
+        trail.pop();
+        false
+      }
+      let mut trail = Vec::new();
+      trace_text(
+        &artifacts.fragment_tree.root,
+        crate::geometry::Point::ZERO,
+        &query,
+        &mut trail,
+      );
+    }
+
+    if let Some(start) = stage_start {
+      let now = Instant::now();
+      eprintln!("timing:layout_document {:?}", now - start);
+    }
+
+    Ok(PreparedDocument {
+      dom: artifacts.dom,
+      stylesheet: artifacts.stylesheet,
+      styled_tree: artifacts.styled_tree,
+      box_tree: artifacts.box_tree,
+      fragment_tree: artifacts.fragment_tree,
+      layout_viewport,
+      visual_viewport: resolved_viewport.visual_viewport,
+      device_pixel_ratio: resolved_viewport.device_pixel_ratio,
+      page_zoom: resolved_viewport.zoom,
+      background_color: self.background_color,
+      default_scroll: ScrollState::from_parts(
+        Point::new(options.scroll_x, options.scroll_y),
+        options.element_scroll_offsets.clone(),
+      ),
+      animation_time: options.animation_time,
+      font_context: self.font_context.clone(),
+      image_cache: self.image_cache.clone(),
+      max_iframe_depth: self.max_iframe_depth,
+      paint_parallelism,
+      runtime_toggles: Arc::clone(&self.runtime_toggles),
     })
   }
 
