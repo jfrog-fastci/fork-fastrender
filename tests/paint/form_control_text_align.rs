@@ -25,6 +25,7 @@ fn text_input_fragment(style: ComputedStyle, focused: bool, value: &str) -> Frag
     placeholder_style: None,
     slider_thumb_style: None,
     slider_track_style: None,
+    file_selector_button_style: None,
   };
 
   FragmentNode::new_with_style(
@@ -115,4 +116,3 @@ fn focused_empty_text_input_emits_visible_right_aligned_caret() {
     "expected caret to be clamped inside the control width (right_caret_x={right_caret_x})"
   );
 }
-

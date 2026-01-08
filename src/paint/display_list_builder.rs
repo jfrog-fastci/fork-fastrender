@@ -6890,6 +6890,17 @@ impl DisplayListBuilder {
       return;
     }
 
+    // A border-image can be visible even when the border colors are fully transparent (author
+    // patterns often set `border: <width> solid transparent` to establish the border box).
+    let any_visible = border_image.is_some()
+      || Self::border_side_visible(&sides.0)
+      || Self::border_side_visible(&sides.1)
+      || Self::border_side_visible(&sides.2)
+      || Self::border_side_visible(&sides.3);
+    if !any_visible {
+      return;
+    }
+
     let radii = Self::border_radii(rect, style).clamped(rect.width(), rect.height());
     self.list.push(DisplayItem::Border(Box::new(BorderItem {
       rect,

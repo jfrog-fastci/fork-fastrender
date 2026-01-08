@@ -10037,13 +10037,12 @@ impl DisplayListRenderer {
         let radii = self.ds_radii(item.radii);
         let mask = item.mask.clone();
 
-        // `backdrop-filter` always needs an isolated group surface: we first draw the filtered
-        // backdrop image *into* the current stacking context before painting its own contents.
-        //
-        // The display-list builder already sets `StackingContextItem::is_isolated` for
-        // `backdrop-filter`, but the renderer also enforces this invariant so hand-constructed
-        // display lists (tests) behave correctly.
-        let is_isolated = item.is_isolated || has_backdrop;
+        // `backdrop-filter` and non-normal `mix-blend-mode` both require an isolated group surface
+        // (transparent initial backdrop). The display-list builder already sets
+        // `StackingContextItem::is_isolated` for those cases, but enforce the invariant here so
+        // hand-constructed display lists (tests) behave correctly.
+        let is_isolated =
+          item.is_isolated || has_backdrop || !matches!(item.mix_blend_mode, BlendMode::Normal);
         let manual_blend = if is_manual_blend(item.mix_blend_mode) {
           Some(item.mix_blend_mode)
         } else {
