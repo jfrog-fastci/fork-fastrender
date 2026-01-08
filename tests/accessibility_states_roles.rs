@@ -137,6 +137,50 @@ fn native_single_select_all_disabled_defaults_to_first() {
 }
 
 #[test]
+fn closed_details_only_exposes_first_summary_and_hides_rest() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <details id="details">
+          <summary id="summary-1">Summary</summary>
+          <summary id="summary-2">Extra</summary>
+          <div id="content">Content</div>
+        </details>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let details = find_by_id(&tree, "details").expect("details element");
+  assert_eq!(
+    details.states.expanded,
+    Some(false),
+    "closed <details> should be reported as collapsed"
+  );
+
+  let summary_1 = find_by_id(&tree, "summary-1").expect("first summary should be exposed");
+  assert_eq!(
+    summary_1.states.expanded,
+    Some(false),
+    "summary button should inherit expanded state from its parent <details>"
+  );
+
+  assert!(
+    find_by_id(&tree, "summary-2").is_none(),
+    "only the first <summary> should be exposed when <details> is closed"
+  );
+  assert!(
+    find_by_id(&tree, "content").is_none(),
+    "details contents should be hidden from the accessibility tree when closed"
+  );
+}
+
+#[test]
 fn aria_state_does_not_negate_native_semantics() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"

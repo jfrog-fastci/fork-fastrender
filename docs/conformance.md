@@ -8,6 +8,8 @@ FastRender is spec-first: correctness is defined by the HTML/CSS specifications 
 - **Parsing**: HTML5 parsing via html5ever's spec-mode tree builder (`ParseOpts` in `src/dom.rs`). Parsing currently runs with scripting disabled, but the conformance target is to run in HTML “scripting enabled” mode when JavaScript support is turned on (parser pauses + `<script>` processing model).
 - **Encoding sniffing**: HTML Living Standard BOM/`Content-Type`/`<meta charset>` sniffing (`src/html/encoding.rs`).
 - **Shadow DOM snapshots**: Static `<template shadowroot>` attachment with slot distribution during parse (`attach_shadow_roots` and `distribute_slots` in `src/dom.rs`).
+- **Template inertness**: `<template>` contents are treated as inert for rendering and accessibility (even if author CSS overrides `template { display: block }`).
+- **Details open state**: Closed `<details>` hides its "details contents" subtree (everything except the first `<summary>`), including direct text nodes.
 - **Base URL & viewport**: `<base href>` resolution and `<meta viewport>` handling (`width`/`height`/`initial`/`min`/`max` scale with zoom clamped to 0.1–10).
 - **Accessibility tree**: Static AOM-style export from the styled DOM with HTML/ARIA role/name/state mapping (`src/accessibility.rs`).
 

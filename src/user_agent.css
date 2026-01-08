@@ -529,11 +529,11 @@ summary {
     list-style: disclosure-closed outside;
 }
 
-details[open] > summary {
+details[open] > summary:first-of-type {
     list-style-type: disclosure-open;
 }
 
-details:not([open]) > :not(summary) {
+details:not([open]) > :not(summary:first-of-type) {
     display: none;
 }
 

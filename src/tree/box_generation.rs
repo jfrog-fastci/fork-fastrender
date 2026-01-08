@@ -694,6 +694,13 @@ fn composed_children<'a>(
   styled: &'a StyledNode,
   lookup: &'a StyledLookup<'a>,
 ) -> ComposedChildren<'a> {
+  // `<template>` contents are inert and must not participate in the composed/rendered tree.
+  // Even if author CSS overrides `template { display: block }`, the template's child nodes are not
+  // part of the document and should never generate boxes.
+  if styled.node.template_contents_are_inert() {
+    return ComposedChildren::Slice(&[]);
+  }
+
   if let Some(shadow_root) = styled
     .children
     .iter()
@@ -2756,6 +2763,13 @@ fn generate_boxes_for_styled_into(
         )?;
 
         if let Some(text) = styled.node.text_content() {
+          // Text nodes don't participate in the CSS cascade directly, but internal UA-style
+          // behaviors (e.g. closed `<details>`) may still suppress them by setting their computed
+          // `display` to `none`. Honor that here so hidden text never generates fragments.
+          if styled.styles.display == Display::None {
+            stack.pop();
+            continue;
+          }
           if !text.is_empty() {
             let is_whitespace_only = text.as_bytes().iter().all(|b| b.is_ascii_whitespace());
             if is_whitespace_only

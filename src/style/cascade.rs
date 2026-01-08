@@ -11914,6 +11914,26 @@ fn compute_base_styles<'a>(
       viewport,
       false,
     );
+
+    // Closed <details> elements suppress their "details contents" subtree (everything except the
+    // first <summary> element). This is typically implemented via UA CSS, but direct text nodes
+    // (including whitespace) are not targetable by selectors and still need to be suppressed.
+    //
+    // Only apply this to text nodes: shadow/root/document nodes are internal and should not be
+    // hidden here.
+    if matches!(node.node_type, DomNodeType::Text { .. }) {
+      if let Some(parent) = ancestors.last() {
+        if parent
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("details"))
+          && parent.get_attribute_ref("open").is_none()
+        {
+          ua_styles.display = Display::None;
+          styles.display = Display::None;
+        }
+      }
+    }
+
     return Ok(NodeBaseStyles {
       styles,
       ua_styles,

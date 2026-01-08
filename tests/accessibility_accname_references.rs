@@ -102,3 +102,30 @@ fn aria_hidden_references_are_ignored() {
   assert!(find_json_node(&tree, "blocked-label").is_none());
   assert!(find_json_node(&tree, "blocked-desc-text").is_none());
 }
+
+#[test]
+fn inert_template_contents_are_not_in_accessibility_tree_even_when_template_is_visible() {
+  let html = r#"
+    <html>
+      <head>
+        <style>template { display: block; }</style>
+      </head>
+      <body>
+        <template>
+          <button id="inert">Inert</button>
+        </template>
+        <button id="real">Real</button>
+      </body>
+    </html>
+  "#;
+
+  let tree = render_accessibility_json(html);
+  assert!(
+    find_json_node(&tree, "inert").is_none(),
+    "template contents are inert and must not appear in the accessibility tree"
+  );
+  assert!(
+    find_json_node(&tree, "real").is_some(),
+    "non-template nodes should still be included in the accessibility tree"
+  );
+}

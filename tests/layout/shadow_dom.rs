@@ -63,3 +63,27 @@ fn declarative_shadow_dom_renders_shadow_tree_and_slots() {
     );
   });
 }
+
+#[test]
+fn declarative_shadow_dom_renders_slot_fallback_content() {
+  with_large_stack(|| {
+    // Note: light DOM whitespace text nodes are slotable and would count as assigned nodes for the
+    // default slot, suppressing fallback rendering. Keep the host truly empty here.
+    let html = r#"<x-card><template shadowroot="open"><div>shadow:<slot>Fallback</slot></div></template></x-card>"#;
+
+    let mut renderer = FastRender::new().expect("renderer");
+    let dom = renderer.parse_html(html).expect("dom");
+    let tree = renderer
+      .layout_document(&dom, 400, 200)
+      .expect("layout should succeed");
+
+    let mut texts = Vec::new();
+    collect_text_fragments(&tree.root, &mut texts);
+    let joined = texts.join(" ");
+
+    assert!(
+      joined.contains("Fallback"),
+      "slot fallback content should render when unassigned"
+    );
+  });
+}

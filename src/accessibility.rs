@@ -208,6 +208,12 @@ fn composed_children<'a>(
   styled: &'a StyledNode,
   lookup: &HashMap<usize, &'a StyledNode>,
 ) -> Vec<&'a StyledNode> {
+  // `<template>` contents are inert and must not appear in the composed/accessibility tree even if
+  // author CSS overrides `template { display: block }`.
+  if styled.node.template_contents_are_inert() {
+    return Vec::new();
+  }
+
   if let Some(shadow_root) = styled
     .children
     .iter()
@@ -706,15 +712,16 @@ fn compute_hidden_and_scoped_ids(
     }
   }
 
-  let template_boundary = node
-    .node
-    .tag_name()
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("template"));
+  // `<template>` contents are inert and should not participate in accessibility traversal or
+  // ARIA ID scoping. Do not recurse into template children at all (even if CSS overrides
+  // template display properties).
+  if node.node.template_contents_are_inert() {
+    return;
+  }
 
   for child in node.children.iter() {
     let child_scope = match child.node.node_type {
       DomNodeType::ShadowRoot { .. } => child.node_id,
-      _ if template_boundary => node.node_id,
       _ => scope_id,
     };
 

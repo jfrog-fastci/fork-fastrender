@@ -85,6 +85,8 @@ mod scroll_snap_pagination;
 mod scroll_snap_writing_mode;
 mod scrollbar_gutter;
 mod shadow_dom;
+mod details_open_state;
+mod template_inert;
 mod shape_outside;
 mod sideways_lr_regressions;
 mod sticky_nested;
