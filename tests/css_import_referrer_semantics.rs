@@ -213,3 +213,52 @@ fn css_import_from_inline_style_uses_document_referrer_even_with_base_href() {
     .expect("request for imported stylesheet");
   assert_eq!(import_request.referrer_url.as_deref(), Some(document_url));
 }
+
+#[test]
+fn css_imports_from_inline_style_use_imported_final_url_for_nested_referrer_and_base() {
+  let document_url = "https://example.test/page.html";
+  let base_href = "https://example.test/css/";
+
+  let a_url = "https://example.test/css/a.css";
+  let a_final_url = "https://cdn.example.test/assets/a-final.css";
+  let b_expected = "https://cdn.example.test/assets/b.css";
+  let b_wrong = "https://example.test/css/b.css";
+
+  let fetcher = Arc::new(
+    RecordingFetcher::default()
+      .with_css(a_url, r#"@import "b.css";"#, Some(a_final_url))
+      .with_css(b_expected, "body { background: blue; }", None)
+      .with_css(b_wrong, "body { background: red; }", None),
+  );
+
+  let mut renderer = renderer_for(fetcher.clone());
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+        <base href="{base_href}">
+        <style>@import "a.css";</style>
+      </head><body>Hi</body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(16, 16),
+    )
+    .expect("render");
+
+  let requests = fetcher.requests();
+  let a_request = requests
+    .iter()
+    .find(|r| r.url == a_url && r.destination == FetchDestination::Style)
+    .expect("request for a.css");
+  assert_eq!(a_request.referrer_url.as_deref(), Some(document_url));
+
+  let b_request = requests
+    .iter()
+    .find(|r| r.url == b_expected && r.destination == FetchDestination::Style)
+    .expect("request for b.css");
+  assert_eq!(b_request.referrer_url.as_deref(), Some(a_final_url));
+  assert!(
+    requests.iter().all(|r| r.url != b_wrong),
+    "expected b.css to resolve against final_url, got requests: {requests:?}"
+  );
+}
