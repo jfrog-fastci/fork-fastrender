@@ -2261,6 +2261,12 @@ pub struct FetchedResource {
   pub final_url: Option<String>,
   /// Parsed HTTP caching policy when fetched over HTTP(S).
   pub cache_policy: Option<HttpCachePolicy>,
+  /// Raw list of HTTP response headers when fetched over HTTP(S).
+  ///
+  /// - Stored as a flat list so duplicates (notably `Set-Cookie`) are preserved.
+  /// - Header names are case-insensitive; helpers perform ASCII-insensitive matching.
+  /// - Non-HTTP resources (e.g. `file://`, `data:`) set this to `None`.
+  pub response_headers: Option<Vec<(String, String)>>,
 }
 
 /// Parsed metadata stored alongside cached HTML documents.
@@ -2291,6 +2297,7 @@ impl FetchedResource {
       access_control_allow_credentials: false,
       final_url: None,
       cache_policy: None,
+      response_headers: None,
     }
   }
 
@@ -2315,6 +2322,7 @@ impl FetchedResource {
       access_control_allow_credentials: false,
       final_url,
       cache_policy: None,
+      response_headers: None,
     }
   }
 
@@ -2348,6 +2356,42 @@ impl FetchedResource {
       .as_ref()
       .map(|ct| ct.contains("image/svg"))
       .unwrap_or(false)
+  }
+
+  /// Return all response header values matching `name` (case-insensitive).
+  ///
+  /// Duplicates are preserved (e.g. multiple `Set-Cookie` headers).
+  pub fn header_values<'a>(&'a self, name: &str) -> Vec<&'a str> {
+    let Some(headers) = self.response_headers.as_ref() else {
+      return Vec::new();
+    };
+    headers
+      .iter()
+      .filter(|(h_name, _)| h_name.eq_ignore_ascii_case(name))
+      .map(|(_, value)| value.as_str())
+      .collect()
+  }
+
+  /// Return the first matching response header value (case-insensitive).
+  pub fn header_get(&self, name: &str) -> Option<&str> {
+    self
+      .response_headers
+      .as_ref()?
+      .iter()
+      .find(|(h_name, _)| h_name.eq_ignore_ascii_case(name))
+      .map(|(_, value)| value.as_str())
+  }
+
+  /// Return matching response header values joined with `", "` (case-insensitive).
+  ///
+  /// This matches the historical `header_values_joined` helper for `HeaderMap`.
+  pub fn header_get_joined(&self, name: &str) -> Option<String> {
+    let values = self.header_values(name);
+    match values.as_slice() {
+      [] => None,
+      [value] => Some((*value).to_string()),
+      _ => Some(values.join(", ")),
+    }
   }
 }
 
@@ -4377,6 +4421,7 @@ impl HttpFetcher {
         let cache_policy = parse_http_cache_policy(response.headers());
         let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
+        let response_headers = collect_response_headers(response.headers());
         let allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
 
@@ -4548,6 +4593,7 @@ impl HttpFetcher {
             self.policy.reserve_budget(bytes.len())?;
             let mut resource =
               FetchedResource::with_final_url(bytes, content_type, Some(final_url));
+            resource.response_headers = Some(response_headers);
             if !encodings.is_empty() {
               resource.content_encoding = Some(encodings.join(", "));
             }
@@ -4886,6 +4932,7 @@ impl HttpFetcher {
         let cache_policy = parse_http_cache_policy(response.headers());
         let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();
+        let response_headers = collect_response_headers(response.headers());
         let allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
 
@@ -5056,6 +5103,7 @@ impl HttpFetcher {
             self.policy.reserve_budget(bytes.len())?;
             let mut resource =
               FetchedResource::with_final_url(bytes, content_type, Some(final_url));
+            resource.response_headers = Some(response_headers);
             if !encodings.is_empty() {
               resource.content_encoding = Some(encodings.join(", "));
             }
@@ -5400,6 +5448,7 @@ impl HttpFetcher {
         let cache_policy = parse_http_cache_policy(response.headers());
         let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
+        let response_headers = collect_response_headers(response.headers());
         let allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
         let substitute_captcha_image =
@@ -5642,6 +5691,7 @@ impl HttpFetcher {
             self.policy.reserve_budget(bytes.len())?;
             let mut resource =
               FetchedResource::with_final_url(bytes, content_type, Some(final_url));
+            resource.response_headers = Some(response_headers);
             if !encodings.is_empty() {
               resource.content_encoding = Some(encodings.join(", "));
             }
@@ -5967,6 +6017,7 @@ impl HttpFetcher {
         let cache_policy = parse_http_cache_policy(response.headers());
         let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();
+        let response_headers = collect_response_headers(response.headers());
         let allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
         let substitute_empty_image_body =
@@ -6232,6 +6283,7 @@ impl HttpFetcher {
             self.policy.reserve_budget(bytes.len())?;
             let mut resource =
               FetchedResource::with_final_url(bytes, content_type, Some(final_url));
+            resource.response_headers = Some(response_headers);
             if !encodings.is_empty() {
               resource.content_encoding = Some(encodings.join(", "));
             }
@@ -9121,6 +9173,25 @@ fn header_values_joined(headers: &HeaderMap, name: &str) -> Option<String> {
     [value] => Some((*value).to_string()),
     _ => Some(values.join(", ")),
   }
+}
+
+fn header_value_to_string_lossy(value: &http::HeaderValue) -> String {
+  value
+    .to_str()
+    .map(str::to_string)
+    .unwrap_or_else(|_| String::from_utf8_lossy(value.as_bytes()).into_owned())
+}
+
+fn collect_response_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+  headers
+    .iter()
+    .map(|(name, value)| {
+      (
+        name.as_str().to_string(),
+        header_value_to_string_lossy(value),
+      )
+    })
+    .collect()
 }
 
 fn header_has_nosniff(headers: &HeaderMap) -> bool {

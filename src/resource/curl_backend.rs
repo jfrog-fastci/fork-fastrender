@@ -712,6 +712,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         .or(redirect_referrer_policy);
       let cache_policy = super::parse_http_cache_policy(&response.headers);
       let vary = super::parse_vary_headers(&response.headers);
+      let response_headers = super::collect_response_headers(&response.headers);
 
       let substitute_empty_image_body =
         super::should_substitute_empty_image_body(kind, status_code, &response.headers)
@@ -932,6 +933,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       fetcher.policy.reserve_budget(bytes.len())?;
       let mut resource =
         super::FetchedResource::with_final_url(bytes, content_type, Some(current.clone()));
+      resource.response_headers = Some(response_headers);
       if !encodings.is_empty() {
         resource.content_encoding = Some(encodings.join(", "));
       }
