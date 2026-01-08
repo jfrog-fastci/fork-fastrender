@@ -633,6 +633,60 @@ fn transition_shorthand_rejects_negative_duration() {
 }
 
 #[test]
+fn transition_shorthand_ignores_invalid_property_token() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "transition".into(),
+    value: PropertyValue::Keyword("opacity 1s linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  let invalid_decl = Declaration {
+    property: "transition".into(),
+    value: PropertyValue::Keyword("foo(bar) 2s".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_properties,
+    vec![TransitionProperty::Name("opacity".to_string())].into()
+  );
+  assert_eq!(styles.transition_durations, vec![1000.0].into());
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::Linear].into()
+  );
+}
+
+#[test]
 fn transition_timing_function_ignores_invalid_value() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();

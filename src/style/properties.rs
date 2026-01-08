@@ -3213,11 +3213,32 @@ fn parse_transition_shorthand(
 
       if property.is_none() {
         let trimmed = token.trim();
-        if trimmed.starts_with("--") {
+        if trimmed.is_empty() {
+          invalid = true;
+          break;
+        }
+
+        let mut input = ParserInput::new(trimmed);
+        let mut parser = Parser::new(&mut input);
+        parser.skip_whitespace();
+        let ident = match parser.next_including_whitespace() {
+          Ok(Token::Ident(ident)) => ident.to_string(),
+          _ => {
+            invalid = true;
+            break;
+          }
+        };
+        parser.skip_whitespace();
+        if !parser.is_exhausted() {
+          invalid = true;
+          break;
+        }
+
+        if ident.starts_with("--") {
           // Custom property names are case-sensitive (CSS Variables).
-          property = Some(TransitionProperty::Name(trimmed.to_string()));
+          property = Some(TransitionProperty::Name(ident));
         } else {
-          let lower = trimmed.to_ascii_lowercase();
+          let lower = ident.to_ascii_lowercase();
           if custom_ident_is_excluded_keyword(&lower) {
             invalid = true;
             break;
