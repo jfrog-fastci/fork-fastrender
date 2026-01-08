@@ -3147,7 +3147,14 @@ impl ImageCache {
     let decode_timer = Instant::now();
     let decode_start = profile_enabled.then_some(decode_timer);
     let (img, orientation, resolution, is_vector, intrinsic_ratio, aspect_ratio_none, svg_content) =
-      match self.decode_resource(&resource, resolved_url) {
+      match {
+        // Image decoding can be triggered deep inside nested deadline budgets (e.g. display-list
+        // builder time slices). Those scoped budgets are meant to bound renderer algorithm choice
+        // (e.g. fall back to legacy paint) but should not cause subresource decoding to be dropped
+        // when the overall render deadline still has time remaining.
+        let deadline = render_control::root_deadline();
+        render_control::with_deadline(deadline.as_ref(), || self.decode_resource(&resource, resolved_url))
+      } {
         Ok(decoded) => decoded,
         Err(err) => {
           self.record_image_error(resolved_url, &err);
@@ -3222,8 +3229,11 @@ impl ImageCache {
     let total_start = profile_enabled.then(Instant::now);
     let decode_timer = Instant::now();
     let decode_start = profile_enabled.then_some(decode_timer);
-    let (img, orientation, resolution, is_vector, intrinsic_ratio, aspect_ratio_none, svg_content) =
-      self.decode_resource(resource, resolved_url)?;
+    let (img, orientation, resolution, is_vector, intrinsic_ratio, aspect_ratio_none, svg_content) = {
+      // See `fetch_and_decode` for why we temporarily switch to the root deadline for decoding.
+      let deadline = render_control::root_deadline();
+      render_control::with_deadline(deadline.as_ref(), || self.decode_resource(resource, resolved_url))
+    }?;
     let decode_ms_value = decode_timer.elapsed().as_secs_f64() * 1000.0;
     let decode_ms = decode_start.map(|_| decode_ms_value);
     record_image_decode_ms(decode_ms_value);
@@ -8030,6 +8040,34 @@ mod tests {
       Error::Image(_) | Error::Render(RenderError::Timeout { .. }) => {}
       other => panic!("unexpected error kind: {other:?}"),
     }
+  }
+
+  #[test]
+  fn image_decode_uses_root_deadline_over_nested_budget_deadline() {
+    let mut pixels = RgbaImage::new(1, 1);
+    pixels
+      .pixels_mut()
+      .for_each(|p| *p = image::Rgba([0, 255, 0, 255]));
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png)
+      .write_image(pixels.as_raw(), 1, 1, ColorType::Rgba8.into())
+      .expect("encode png");
+
+    let url = "test://nested-deadline.png".to_string();
+    let resource = FetchedResource::new(png, Some("image/png".to_string()));
+    let fetcher = Arc::new(MapFetcher::with_entries([(url.clone(), resource)]));
+    let cache = ImageCache::with_fetcher(fetcher);
+
+    // Install a root deadline with enough budget, then a nested budget deadline that is already
+    // expired. Image decoding should use the root deadline, so it still succeeds.
+    let root_deadline = RenderDeadline::new(Some(Duration::from_secs(1)), None);
+    render_control::with_deadline(Some(&root_deadline), || {
+      let nested_deadline = RenderDeadline::new(Some(Duration::from_millis(0)), None);
+      let image = render_control::with_deadline(Some(&nested_deadline), || cache.load(&url))
+        .expect("decode should ignore nested deadline budget");
+      assert_eq!(image.width(), 1);
+      assert_eq!(image.height(), 1);
+    });
   }
 
   #[test]
