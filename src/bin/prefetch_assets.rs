@@ -3389,7 +3389,7 @@ mod disk_cache_main {
               let mut res = FetchedResource::with_final_url(
                 br#"@import url("nested.css"); body { background: rgb(0, 0, 0); }"#.to_vec(),
                 Some("text/css".to_string()),
-                Some("https://cdn.example.com/import-final.css".to_string()),
+                Some("https://cdn.example.com/import-final-nested-import.css".to_string()),
               );
               res.status = Some(200);
               res.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
