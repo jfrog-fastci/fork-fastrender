@@ -3176,6 +3176,7 @@ fn generate_boxes_for_styled_into(
               let mut node = BoxNode::new_inline(Arc::new(anchor_style), Vec::new());
               node.starting_style = call_start.clone();
               node.styled_node_id = Some(styled.node_id);
+              node.generated_pseudo = Some(GeneratedPseudoElement::FootnoteCall);
               node
             });
           call_box.footnote_body = Some(Box::new(body_box));
@@ -3346,7 +3347,7 @@ fn create_backdrop_box(styled: &StyledNode) -> Option<BoxNode> {
   Some(box_node)
 }
 
-/// Creates a box for a pseudo-element (::before or ::after)
+/// Creates a box for a pseudo-element (e.g. `::before`, `::after`, `::footnote-call`).
 fn create_pseudo_element_box(
   styled: &StyledNode,
   styles: &Arc<ComputedStyle>,
@@ -3368,6 +3369,8 @@ fn create_pseudo_element_box(
   let generated_pseudo = match pseudo_name {
     "before" => Some(GeneratedPseudoElement::Before),
     "after" => Some(GeneratedPseudoElement::After),
+    "footnote-call" => Some(GeneratedPseudoElement::FootnoteCall),
+    "footnote-marker" => Some(GeneratedPseudoElement::FootnoteMarker),
     _ => None,
   };
 

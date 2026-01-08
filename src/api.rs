@@ -13137,6 +13137,12 @@ fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
     if let Some(marker) = &node.marker_styles {
       out.insert(base | STYLE_KEY_MARKER, style_layout_fingerprint(marker));
     }
+    if let Some(call) = &node.footnote_call_styles {
+      out.insert(base | STYLE_KEY_FOOTNOTE_CALL, style_layout_fingerprint(call));
+    }
+    if let Some(marker) = &node.footnote_marker_styles {
+      out.insert(base | STYLE_KEY_FOOTNOTE_MARKER, style_layout_fingerprint(marker));
+    }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
       out.insert(
         base | STYLE_KEY_BACKDROP,
@@ -13176,19 +13182,27 @@ fn container_query_fingerprint_default_style() -> &'static ComputedStyle {
 
 fn styled_layout_fingerprint_digest(root: &StyledNode) -> u64 {
   fn walk(node: &StyledNode, hasher: &mut DefaultHasher) {
-    let base = node.node_id << 2;
+    let base = node.node_id << STYLE_KEY_SHIFT;
     base.hash(hasher);
     style_layout_fingerprint(&node.styles).hash(hasher);
     if let Some(before) = &node.before_styles {
-      (base | 1).hash(hasher);
+      (base | STYLE_KEY_BEFORE).hash(hasher);
       style_layout_fingerprint(before).hash(hasher);
     }
     if let Some(after) = &node.after_styles {
-      (base | 2).hash(hasher);
+      (base | STYLE_KEY_AFTER).hash(hasher);
       style_layout_fingerprint(after).hash(hasher);
     }
     if let Some(marker) = &node.marker_styles {
-      (base | 3).hash(hasher);
+      (base | STYLE_KEY_MARKER).hash(hasher);
+      style_layout_fingerprint(marker).hash(hasher);
+    }
+    if let Some(call) = &node.footnote_call_styles {
+      (base | STYLE_KEY_FOOTNOTE_CALL).hash(hasher);
+      style_layout_fingerprint(call).hash(hasher);
+    }
+    if let Some(marker) = &node.footnote_marker_styles {
+      (base | STYLE_KEY_FOOTNOTE_MARKER).hash(hasher);
       style_layout_fingerprint(marker).hash(hasher);
     }
     for child in node.children.iter() {
@@ -13411,9 +13425,15 @@ fn collect_fragment_sizes(fragment: &FragmentNode, sizes: &mut HashMap<usize, (f
 }
 
 fn collect_box_nodes<'a>(node: &'a BoxNode, map: &mut HashMap<usize, &'a BoxNode>) {
-  map.insert(node.id, node);
-  for child in node.children.iter() {
-    collect_box_nodes(child, map);
+  let mut stack: Vec<&'a BoxNode> = vec![node];
+  while let Some(node) = stack.pop() {
+    map.insert(node.id, node);
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter() {
+      stack.push(child);
+    }
   }
 }
 
@@ -13429,6 +13449,12 @@ fn styled_style_map(root: &StyledNode) -> HashMap<usize, Arc<ComputedStyle>> {
     }
     if let Some(marker) = &node.marker_styles {
       out.insert(base | STYLE_KEY_MARKER, Arc::clone(marker));
+    }
+    if let Some(call) = &node.footnote_call_styles {
+      out.insert(base | STYLE_KEY_FOOTNOTE_CALL, Arc::clone(call));
+    }
+    if let Some(marker) = &node.footnote_marker_styles {
+      out.insert(base | STYLE_KEY_FOOTNOTE_MARKER, Arc::clone(marker));
     }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
       out.insert(base | STYLE_KEY_BACKDROP, Arc::clone(backdrop));
@@ -13654,6 +13680,8 @@ const STYLE_KEY_BEFORE: usize = 1;
 const STYLE_KEY_AFTER: usize = 2;
 const STYLE_KEY_MARKER: usize = 3;
 const STYLE_KEY_BACKDROP: usize = 4;
+const STYLE_KEY_FOOTNOTE_CALL: usize = 5;
+const STYLE_KEY_FOOTNOTE_MARKER: usize = 6;
 
 fn box_style_key(node: &BoxNode) -> Option<usize> {
   let styled_id = node.styled_node_id?;
@@ -13672,6 +13700,12 @@ fn box_style_key(node: &BoxNode) -> Option<usize> {
     }
     Some(crate::tree::box_tree::GeneratedPseudoElement::Backdrop) => {
       return Some(base | STYLE_KEY_BACKDROP);
+    }
+    Some(crate::tree::box_tree::GeneratedPseudoElement::FootnoteCall) => {
+      return Some(base | STYLE_KEY_FOOTNOTE_CALL);
+    }
+    Some(crate::tree::box_tree::GeneratedPseudoElement::FootnoteMarker) => {
+      return Some(base | STYLE_KEY_FOOTNOTE_MARKER);
     }
     None => {}
   }
@@ -13704,6 +13738,14 @@ fn refresh_fragment_styles(
         }
       }
     }
+  }
+
+  match &mut fragment.content {
+    FragmentContent::RunningAnchor { snapshot, .. }
+    | FragmentContent::FootnoteAnchor { snapshot } => {
+      refresh_fragment_styles(Arc::make_mut(snapshot), boxes, styles);
+    }
+    _ => {}
   }
 
   for child in fragment.children_mut() {
@@ -14477,6 +14519,21 @@ pub(crate) fn render_html_with_shared_resources(
       super::box_style_key(&backdrop),
       Some((7 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_BACKDROP)
     );
+
+    let mut footnote_call = after.clone();
+    footnote_call.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::FootnoteCall);
+    assert_eq!(
+      super::box_style_key(&footnote_call),
+      Some((7 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_FOOTNOTE_CALL)
+    );
+
+    let mut footnote_marker = after;
+    footnote_marker.generated_pseudo =
+      Some(crate::tree::box_tree::GeneratedPseudoElement::FootnoteMarker);
+    assert_eq!(
+      super::box_style_key(&footnote_marker),
+      Some((7 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_FOOTNOTE_MARKER)
+    );
   }
 
   #[test]
@@ -14538,6 +14595,129 @@ pub(crate) fn render_html_with_shared_resources(
       fingerprint_map.get(&backdrop_key).copied(),
       Some(super::style_layout_fingerprint(backdrop_style.as_ref()))
     );
+  }
+
+  #[test]
+  fn styled_style_maps_include_footnote_pseudos() {
+    let call_style = Arc::new(ComputedStyle::default());
+    let marker_style = Arc::new(ComputedStyle::default());
+    let base_style = Arc::new(ComputedStyle::default());
+
+    let styled = StyledNode {
+      node_id: 7,
+      node: DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: Vec::new(),
+      },
+      styles: Arc::clone(&base_style),
+      starting_styles: Default::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: Some(Arc::clone(&call_style)),
+      footnote_marker_styles: Some(Arc::clone(&marker_style)),
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: Vec::new(),
+    };
+
+    let base_key = styled.node_id << super::STYLE_KEY_SHIFT;
+    let call_key = base_key | super::STYLE_KEY_FOOTNOTE_CALL;
+    let marker_key = base_key | super::STYLE_KEY_FOOTNOTE_MARKER;
+
+    let style_map = super::styled_style_map(&styled);
+    assert!(
+      Arc::ptr_eq(
+        style_map.get(&call_key).expect("call style entry"),
+        &call_style
+      ),
+      "expected ::footnote-call style stored under call key"
+    );
+    assert!(
+      Arc::ptr_eq(
+        style_map.get(&marker_key).expect("marker style entry"),
+        &marker_style
+      ),
+      "expected ::footnote-marker style stored under marker key"
+    );
+
+    let fingerprint_map = super::styled_fingerprint_map(&styled);
+    assert_eq!(
+      fingerprint_map.get(&call_key).copied(),
+      Some(super::style_layout_fingerprint(call_style.as_ref()))
+    );
+    assert_eq!(
+      fingerprint_map.get(&marker_key).copied(),
+      Some(super::style_layout_fingerprint(marker_style.as_ref()))
+    );
+  }
+
+  #[test]
+  fn refresh_fragment_styles_traverses_footnote_anchor_snapshots() {
+    let old_style = Arc::new(ComputedStyle::default());
+    let mut new_style = ComputedStyle::default();
+    new_style.font_size = 20.0;
+    let new_style = Arc::new(new_style);
+
+    let mut body = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![]);
+    body.styled_node_id = Some(7);
+
+    let mut call = BoxNode::new_inline(old_style.clone(), vec![]);
+    call.footnote_body = Some(Box::new(body));
+
+    let root = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![call]);
+    let tree = BoxTree::new(root);
+    let body_id = tree
+      .root
+      .children
+      .first()
+      .and_then(|call| call.footnote_body.as_deref())
+      .map(|body| body.id)
+      .expect("expected footnote body id");
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&tree.root, &mut box_map);
+    assert!(
+      box_map.contains_key(&body_id),
+      "expected footnote body nodes to be indexed for style refresh"
+    );
+
+    let mut style_map = HashMap::new();
+    style_map.insert(7 << super::STYLE_KEY_SHIFT, new_style.clone());
+
+    let mut snapshot = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+      body_id,
+      vec![],
+    );
+    snapshot.style = Some(old_style);
+
+    let mut anchor =
+      FragmentNode::new_footnote_anchor(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), snapshot);
+    super::refresh_fragment_styles(&mut anchor, &box_map, &style_map);
+
+    match &anchor.content {
+      FragmentContent::FootnoteAnchor { snapshot } => {
+        assert!(
+          Arc::ptr_eq(
+            snapshot.style.as_ref().expect("snapshot style refreshed"),
+            &new_style
+          ),
+          "expected snapshot fragments to refresh styles when reusing layout"
+        );
+      }
+      other => panic!("expected footnote anchor content, got {other:?}"),
+    }
   }
 
   #[test]
