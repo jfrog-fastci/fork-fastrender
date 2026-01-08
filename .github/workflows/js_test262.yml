@@ -1,0 +1,86 @@
+name: JS test262 semantic
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  TEST262_REPORT: target/js/test262.json
+
+jobs:
+  test262-semantic:
+    name: test262 semantic suite (Linux stable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code (no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init ecma-rs submodule + curated corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The ecma-rs submodule is tracked via an SSH URL; rewrite to https for GitHub Actions.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+          git submodule update --init engines/ecma-rs
+
+          if ! grep -q "test262-semantic/data" engines/ecma-rs/.gitmodules; then
+            echo "::error::Missing test262 semantic corpus submodule entry (engines/ecma-rs/test262-semantic/data). Update the ecma-rs submodule pointer to a revision that includes the curated corpus." >&2
+            exit 1
+          fi
+
+          # Only initialize the curated semantics corpus, not the full upstream test262 or other
+          # heavyweight corpora.
+          git -C engines/ecma-rs submodule update --init test262-semantic/data
+
+          if [ ! -d engines/ecma-rs/test262-semantic/data ]; then
+            echo "::error::test262 semantic corpus directory engines/ecma-rs/test262-semantic/data is missing after submodule init." >&2
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: js-test262-${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: js-test262-${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: js-test262-${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run curated test262 semantics suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${TEST262_REPORT}")"
+          rm -f "${TEST262_REPORT}"
+          cargo xtask js test262 --report "${TEST262_REPORT}"
+          test -s "${TEST262_REPORT}"
+
+      - name: Upload test262 semantic report
+        uses: actions/upload-artifact@v4
+        with:
+          name: test262_semantic_report
+          path: ${{ env.TEST262_REPORT }}
+          if-no-files-found: error
