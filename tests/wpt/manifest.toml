@@ -1254,6 +1254,19 @@ width = 120
 height = 120
 
 [[tests]]
+id = "style/conditional/container-inline-size-or-unknown-001"
+path = "style/conditional/container-inline-size-or-unknown-001.html"
+reference = "style/conditional/container-inline-size-or-unknown-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
 id = "style/conditional/container-inline-size-not-001"
 path = "style/conditional/container-inline-size-not-001.html"
 reference = "style/conditional/container-inline-size-not-001-ref.html"
@@ -1426,6 +1439,45 @@ height = 120
 id = "style/conditional/container-style-name-selection-001"
 path = "style/conditional/container-style-name-selection-001.html"
 reference = "style/conditional/container-style-name-selection-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/container-style-custom-prop-revert-false-001"
+path = "style/conditional/container-style-custom-prop-revert-false-001.html"
+reference = "style/conditional/container-style-custom-prop-revert-false-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/container-style-custom-prop-revert-layer-false-001"
+path = "style/conditional/container-style-custom-prop-revert-layer-false-001.html"
+reference = "style/conditional/container-style-custom-prop-revert-layer-false-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/container-style-custom-prop-url-revert-true-001"
+path = "style/conditional/container-style-custom-prop-url-revert-true-001.html"
+reference = "style/conditional/container-style-custom-prop-url-revert-true-001-ref.html"
 test_type = "reftest"
 expected = "pass"
 timeout_ms = 12000
