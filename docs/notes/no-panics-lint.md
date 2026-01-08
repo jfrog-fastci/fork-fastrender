@@ -14,12 +14,16 @@ cargo xtask lint-no-panics
 This scans `src/` and reports any new occurrences of:
 
 - `panic!(` / `todo!(` / `unimplemented!(`
+- `assert!(` / `assert_eq!(` / `assert_ne!(` / `unreachable!(`
 - `.unwrap(` / `.expect(`
 
 The scan ignores:
 
 - `#[cfg(test)]` items/blocks
 - `tests/` integration test files (not under `src/` anyway)
+
+Note: `debug_assert!` (and friends) are intentionally **not** flagged because they are compiled out
+in release builds.
 
 ## Baseline file (existing violations)
 
@@ -44,4 +48,3 @@ by adding one of these markers on the same line:
 - `// fastrender-allow-unwrap`
 
 Prefer refactoring to avoid the panic site whenever possible.
-

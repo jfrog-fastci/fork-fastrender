@@ -18,6 +18,30 @@
     "count": 1
   },
   {
+    "path": "src/bin/browser.rs",
+    "kind": "expect",
+    "line": ".expect(\"failed to create winit window\");",
+    "count": 1
+  },
+  {
+    "path": "src/bin/diff_snapshots.rs",
+    "kind": "unreachable",
+    "line": "(None, None) => unreachable!(\"stem discovered without any snapshots\"),",
+    "count": 1
+  },
+  {
+    "path": "src/bin/font_coverage.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"clap enforces one input source\")",
+    "count": 1
+  },
+  {
+    "path": "src/bin/inspect_frag.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"validated mutual exclusion above\"),",
+    "count": 1
+  },
+  {
     "path": "src/css/properties.rs",
     "kind": "expect",
     "line": "return Ok(values.pop().expect(\"length checked\"));",
@@ -90,9 +114,15 @@
     "count": 2
   },
   {
-    "path": "src/layout/contexts/block/mod.rs",
-    "kind": "unwrap",
-    "line": "_style_for_width_owned.as_ref().unwrap()",
+    "path": "src/image_output.rs",
+    "kind": "panic",
+    "line": "panic!(",
+    "count": 1
+  },
+  {
+    "path": "src/image_output.rs",
+    "kind": "unreachable",
+    "line": "(None, None) => unreachable!(\"loop bounds ensure at least one pixel is present\"),",
     "count": 1
   },
   {
@@ -110,7 +140,7 @@
   {
     "path": "src/layout/contexts/block/mod.rs",
     "kind": "unwrap",
-    "line": "let keyword = style.width_keyword.unwrap();",
+    "line": "let keyword = inline_keyword.unwrap();",
     "count": 1
   },
   {
@@ -120,15 +150,33 @@
     "count": 1
   },
   {
+    "path": "src/layout/contexts/block/mod.rs",
+    "kind": "unreachable",
+    "line": "Float::None | Float::Footnote => unreachable!(),",
+    "count": 1
+  },
+  {
     "path": "src/layout/contexts/flex.rs",
     "kind": "expect",
     "line": "let mut fragment = fragment.take().expect(\"fragment already normalized\");",
     "count": 1
   },
   {
-    "path": "src/layout/contexts/grid.rs",
-    "kind": "unwrap",
-    "line": "axis.writing_mode = parent_axis.unwrap().writing_mode;",
+    "path": "src/layout/contexts/flex.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/flex.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"width_is_intrinsic_probe guarded avail.width\"),",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/inline/mod.rs",
+    "kind": "unreachable",
+    "line": "crate::style::float::Float::None | crate::style::float::Float::Footnote => unreachable!(),",
     "count": 1
   },
   {
@@ -147,18 +195,36 @@
     "path": "src/layout/table.rs",
     "kind": "unwrap",
     "line": "distribute_spanning_percentage(constraints, start, end, width_decl.unwrap().value);",
-    "count": 1
+    "count": 2
   },
   {
     "path": "src/layout/table.rs",
     "kind": "unwrap",
     "line": "let base = percent_base.unwrap();",
-    "count": 1
+    "count": 2
   },
   {
     "path": "src/layout/table.rs",
     "kind": "unwrap",
     "line": "let row = row.unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/layout/table.rs",
+    "kind": "assert",
+    "line": "assert!(!metrics.has_baseline);",
+    "count": 1
+  },
+  {
+    "path": "src/layout/table.rs",
+    "kind": "assert",
+    "line": "assert!((metrics.baseline_height() - 15.0).abs() < 0.01);",
+    "count": 1
+  },
+  {
+    "path": "src/layout/table.rs",
+    "kind": "assert",
+    "line": "assert!((metrics.baseline_height() - 24.0).abs() < 0.01);",
     "count": 1
   },
   {
@@ -180,15 +246,9 @@
     "count": 2
   },
   {
-    "path": "src/paint/canvas.rs",
-    "kind": "unwrap",
-    "line": ".unwrap_or_else(|| tiny_skia::Rect::from_xywh(0.0, 0.0, 0.0, 0.0).unwrap());",
-    "count": 1
-  },
-  {
     "path": "src/paint/display_list_builder.rs",
     "kind": "unwrap",
-    "line": "(generated.as_deref().unwrap(), base_color)",
+    "line": "fallback.as_ref().unwrap().as_slice()",
     "count": 1
   },
   {
@@ -217,8 +277,8 @@
   },
   {
     "path": "src/paint/display_list_renderer.rs",
-    "kind": "unwrap",
-    "line": "(record.pending_backdrop.take().unwrap(), record.layer_origin)",
+    "kind": "expect",
+    "line": "let sample_rect = sample_rect.expect(\"kernel backdrop filters should produce a rect\");",
     "count": 1
   },
   {
@@ -236,13 +296,13 @@
   {
     "path": "src/paint/display_list_renderer.rs",
     "kind": "unwrap",
-    "line": "let Some(patch_pixmap) = Pixmap::from_vec(patch, IntSize::from_wh(width, height).unwrap())",
+    "line": "let bounds = bounds.unwrap();",
     "count": 1
   },
   {
     "path": "src/paint/display_list_renderer.rs",
     "kind": "unwrap",
-    "line": "let bounds = bounds.unwrap();",
+    "line": "let pending = record.pending_backdrop.take().unwrap();",
     "count": 1
   },
   {
@@ -254,7 +314,7 @@
   {
     "path": "src/paint/display_list_renderer.rs",
     "kind": "unwrap",
-    "line": "src = composite.as_ref().unwrap();",
+    "line": "root_uncomposited.as_ref().unwrap()",
     "count": 1
   },
   {
@@ -273,18 +333,6 @@
     "path": "src/paint/painter.rs",
     "kind": "expect",
     "line": "fallback_layout.as_ref().expect(\"inserted layout\")",
-    "count": 1
-  },
-  {
-    "path": "src/paint/painter.rs",
-    "kind": "unwrap",
-    "line": "(generated.as_deref().unwrap(), base_color)",
-    "count": 1
-  },
-  {
-    "path": "src/paint/painter.rs",
-    "kind": "unwrap",
-    "line": "let Some(patch_pixmap) = Pixmap::from_vec(patch, IntSize::from_wh(width, height).unwrap())",
     "count": 1
   },
   {
@@ -324,9 +372,9 @@
     "count": 1
   },
   {
-    "path": "src/resource/curl_backend.rs",
-    "kind": "expect",
-    "line": ".expect(\"jar should be initialized\")",
+    "path": "src/resource.rs",
+    "kind": "unreachable",
+    "line": "ReferrerPolicy::EmptyString => unreachable!(\"policy resolved above\"),",
     "count": 1
   },
   {
@@ -338,7 +386,7 @@
   {
     "path": "src/resource/curl_backend.rs",
     "kind": "expect",
-    "line": "let mut stderr = child.stderr.take().expect(\"stderr piped\");",
+    "line": "let stderr = child.stderr.take().expect(\"stderr piped\");",
     "count": 1
   },
   {
@@ -462,6 +510,12 @@
     "count": 3
   },
   {
+    "path": "src/style/cascade.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"build_part_index only sorts ::part pseudos\")",
+    "count": 2
+  },
+  {
     "path": "src/style/grid.rs",
     "kind": "unwrap",
     "line": "let (flow_parsed, remainder) = parse_auto_flow_tokens(right.unwrap());",
@@ -486,6 +540,12 @@
     "count": 2
   },
   {
+    "path": "src/style/media.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(),",
+    "count": 3
+  },
+  {
     "path": "src/style/properties.rs",
     "kind": "expect",
     "line": ".expect(\"checked Some above\")",
@@ -506,6 +566,12 @@
   {
     "path": "src/style/properties.rs",
     "kind": "unwrap",
+    "line": "let end = *slice_indices.last().unwrap();",
+    "count": 2
+  },
+  {
+    "path": "src/style/properties.rs",
+    "kind": "unwrap",
     "line": "let end_x = xs[end].unwrap();",
     "count": 1
   },
@@ -519,12 +585,6 @@
     "path": "src/style/properties.rs",
     "kind": "unwrap",
     "line": "let y_comp = ys.get(idx).copied().unwrap_or_else(|| *ys.last().unwrap());",
-    "count": 1
-  },
-  {
-    "path": "src/style/properties.rs",
-    "kind": "unwrap",
-    "line": "rep_tokens.push(items.pop().unwrap());",
     "count": 1
   },
   {
@@ -606,6 +666,12 @@
     "count": 1
   },
   {
+    "path": "src/tree/anonymous.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"split stack always returns from within the loop\");",
+    "count": 1
+  },
+  {
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
     "line": ".expect(\"children state always has composed children\");",
@@ -638,7 +704,55 @@
   {
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
+    "line": "let in_footnote = stack.last().expect(\"frame exists\").in_footnote;",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "expect",
+    "line": "let parent = stack.last().expect(\"frame exists\");",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "expect",
     "line": "let styled = stack.last().expect(\"frame exists\").styled;",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "Display::None => unreachable!(\"display:none pseudo-elements are filtered before counter scope\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "Display::None | Display::Contents => unreachable!(\"handled above\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "Visibility::Collapse => unreachable!(\"collapse is normalized to hidden\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"memchr2 returned non-matching byte\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"memchr3 returned non-matching byte\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"non-empty pseudo-element content values must be ContentValue::Items\");",
     "count": 1
   },
   {
@@ -651,6 +765,12 @@
     "path": "src/tree/fragment_tree.rs",
     "kind": "expect",
     "line": ".expect(\"at least one fragment root required\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/pixmap_texture.rs",
+    "kind": "expect",
+    "line": "u8::try_from(unmultiplied.min(255)).expect(\"value fits in u8\")",
     "count": 1
   }
 ]

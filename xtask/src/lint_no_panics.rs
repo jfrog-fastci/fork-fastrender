@@ -6,7 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-/// Marker for audited `panic!`/`todo!`/`unimplemented!` sites.
+/// Marker for audited panic-producing macro sites (`panic!`, `todo!`, `unimplemented!`, `assert!`,
+/// `assert_eq!`, `assert_ne!`, `unreachable!`).
 pub const ALLOW_PANIC_MARKER: &str = "fastrender-allow-panic";
 /// Marker for audited `.unwrap()`/`.expect()` sites.
 pub const ALLOW_UNWRAP_MARKER: &str = "fastrender-allow-unwrap";
@@ -29,6 +30,10 @@ pub enum ViolationKind {
   Panic,
   Todo,
   Unimplemented,
+  Assert,
+  AssertEq,
+  AssertNe,
+  Unreachable,
   Unwrap,
   Expect,
 }
@@ -36,9 +41,13 @@ pub enum ViolationKind {
 impl ViolationKind {
   fn allow_marker(self) -> &'static str {
     match self {
-      ViolationKind::Panic | ViolationKind::Todo | ViolationKind::Unimplemented => {
-        ALLOW_PANIC_MARKER
-      }
+      ViolationKind::Panic
+      | ViolationKind::Todo
+      | ViolationKind::Unimplemented
+      | ViolationKind::Assert
+      | ViolationKind::AssertEq
+      | ViolationKind::AssertNe
+      | ViolationKind::Unreachable => ALLOW_PANIC_MARKER,
       ViolationKind::Unwrap | ViolationKind::Expect => ALLOW_UNWRAP_MARKER,
     }
   }
@@ -48,6 +57,10 @@ impl ViolationKind {
       ViolationKind::Panic => "panic! macro",
       ViolationKind::Todo => "todo! macro",
       ViolationKind::Unimplemented => "unimplemented! macro",
+      ViolationKind::Assert => "assert! macro",
+      ViolationKind::AssertEq => "assert_eq! macro",
+      ViolationKind::AssertNe => "assert_ne! macro",
+      ViolationKind::Unreachable => "unreachable! macro",
       ViolationKind::Unwrap => ".unwrap()",
       ViolationKind::Expect => ".expect()",
     }
@@ -1051,11 +1064,15 @@ pub fn lint_source(path: &Path, source: &str) -> Vec<Violation> {
       });
     };
 
-    // Macro invocations (panic/todo/unimplemented).
+    // Macro invocations that can panic in production builds (i.e. not `debug_assert!`).
     for (token, kind) in [
       (b"panic" as &[u8], ViolationKind::Panic),
       (b"todo" as &[u8], ViolationKind::Todo),
       (b"unimplemented" as &[u8], ViolationKind::Unimplemented),
+      (b"assert" as &[u8], ViolationKind::Assert),
+      (b"assert_eq" as &[u8], ViolationKind::AssertEq),
+      (b"assert_ne" as &[u8], ViolationKind::AssertNe),
+      (b"unreachable" as &[u8], ViolationKind::Unreachable),
     ] {
       if starts_with_token(bytes, i, token) {
         if i > 0 && is_ident_continue(bytes[i - 1]) {
@@ -1141,6 +1158,65 @@ pub fn demo() {
   panic!("boom"); // fastrender-allow-panic
   todo!("later"); // fastrender-allow-panic
   unimplemented!("later"); // fastrender-allow-panic
+}
+"#;
+
+    let violations = lint_source(Path::new("demo.rs"), src);
+    assert!(violations.is_empty(), "expected allow markers to suppress: {violations:#?}");
+  }
+
+  #[test]
+  fn flags_assert_and_unreachable_macros() {
+    let src = r#"
+pub fn demo() {
+  assert!(1 == 2);
+  assert_eq!(1, 2);
+  assert_ne!(1, 1);
+  unreachable!("boom");
+}
+"#;
+
+    let violations = lint_source(Path::new("demo.rs"), src);
+    assert_eq!(violations.len(), 4, "expected four violations: {violations:#?}");
+    assert_eq!(violations[0].kind, ViolationKind::Assert);
+    assert_eq!(violations[0].line, 3);
+    assert_eq!(violations[1].kind, ViolationKind::AssertEq);
+    assert_eq!(violations[1].line, 4);
+    assert_eq!(violations[2].kind, ViolationKind::AssertNe);
+    assert_eq!(violations[2].line, 5);
+    assert_eq!(violations[3].kind, ViolationKind::Unreachable);
+    assert_eq!(violations[3].line, 6);
+  }
+
+  #[test]
+  fn ignores_cfg_test_blocks_with_asserts_and_unreachable() {
+    let src = r#"
+pub fn demo() {
+  #[cfg(test)]
+  {
+    assert!(1 == 2);
+    assert_eq!(1, 2);
+    assert_ne!(1, 1);
+    unreachable!("boom");
+  }
+}
+"#;
+
+    let violations = lint_source(Path::new("demo.rs"), src);
+    assert!(
+      violations.is_empty(),
+      "expected cfg(test) blocks to be ignored: {violations:#?}"
+    );
+  }
+
+  #[test]
+  fn allows_inline_marker_for_assert_and_unreachable_macros() {
+    let src = r#"
+pub fn demo() {
+  assert!(1 == 2); // fastrender-allow-panic
+  assert_eq!(1, 2); // fastrender-allow-panic
+  assert_ne!(1, 1); // fastrender-allow-panic
+  unreachable!("boom"); // fastrender-allow-panic
 }
 "#;
 
