@@ -1,6 +1,7 @@
 //! HTML-specific helpers (encoding, parsing utilities)
 
 pub mod asset_discovery;
+pub mod base_url_tracker;
 pub mod encoding;
 pub mod image_attrs;
 pub mod image_prefetch;
