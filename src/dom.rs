@@ -6257,11 +6257,11 @@ impl<'a> Element for ElementRef<'a> {
       // browsers.
       PseudoClass::Required => self.is_required(),
       PseudoClass::Optional => self.supports_required() && !self.is_required(),
-      PseudoClass::Valid => {
+      PseudoClass::Valid | PseudoClass::UserValid => {
         (self.supports_validation() && self.is_disabled())
           || (self.supports_validation() && self.is_valid_control())
       }
-      PseudoClass::Invalid => {
+      PseudoClass::Invalid | PseudoClass::UserInvalid => {
         self.supports_validation() && !self.is_disabled() && !self.is_valid_control()
       }
       PseudoClass::InRange => !self.is_disabled() && self.range_state() == Some(true),
@@ -11814,7 +11814,9 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&text_input, &[], &PseudoClass::Valid));
+    assert!(matches(&text_input, &[], &PseudoClass::UserValid));
     assert!(!matches(&text_input, &[], &PseudoClass::Invalid));
+    assert!(!matches(&text_input, &[], &PseudoClass::UserInvalid));
 
     let required_empty = DomNode {
       node_type: DomNodeType::Element {
@@ -11825,7 +11827,9 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&required_empty, &[], &PseudoClass::Invalid));
+    assert!(matches(&required_empty, &[], &PseudoClass::UserInvalid));
     assert!(!matches(&required_empty, &[], &PseudoClass::Valid));
+    assert!(!matches(&required_empty, &[], &PseudoClass::UserValid));
 
     let number_in_range = DomNode {
       node_type: DomNodeType::Element {
@@ -11841,6 +11845,7 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&number_in_range, &[], &PseudoClass::Valid));
+    assert!(matches(&number_in_range, &[], &PseudoClass::UserValid));
     assert!(matches(&number_in_range, &[], &PseudoClass::InRange));
     assert!(!matches(&number_in_range, &[], &PseudoClass::OutOfRange));
 
@@ -11858,6 +11863,7 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&number_out_of_range, &[], &PseudoClass::Invalid));
+    assert!(matches(&number_out_of_range, &[], &PseudoClass::UserInvalid));
     assert!(matches(&number_out_of_range, &[], &PseudoClass::OutOfRange));
     assert!(!matches(&number_out_of_range, &[], &PseudoClass::InRange));
 
@@ -11873,7 +11879,9 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&number_nan, &[], &PseudoClass::Invalid));
+    assert!(matches(&number_nan, &[], &PseudoClass::UserInvalid));
     assert!(!matches(&number_nan, &[], &PseudoClass::Valid));
+    assert!(!matches(&number_nan, &[], &PseudoClass::UserValid));
 
     let disabled_input = DomNode {
       node_type: DomNodeType::Element {
@@ -11887,7 +11895,9 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&disabled_input, &[], &PseudoClass::Valid));
+    assert!(matches(&disabled_input, &[], &PseudoClass::UserValid));
     assert!(!matches(&disabled_input, &[], &PseudoClass::Invalid));
+    assert!(!matches(&disabled_input, &[], &PseudoClass::UserInvalid));
 
     let required_multiple_select = DomNode {
       node_type: DomNodeType::Element {

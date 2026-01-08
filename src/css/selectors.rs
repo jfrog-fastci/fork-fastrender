@@ -299,6 +299,8 @@ pub enum PseudoClass {
   Optional,
   Valid,
   Invalid,
+  UserValid,
+  UserInvalid,
   InRange,
   OutOfRange,
   ReadOnly,
@@ -513,6 +515,8 @@ impl ToCss for PseudoClass {
       PseudoClass::Optional => dest.write_str(":optional"),
       PseudoClass::Valid => dest.write_str(":valid"),
       PseudoClass::Invalid => dest.write_str(":invalid"),
+      PseudoClass::UserValid => dest.write_str(":user-valid"),
+      PseudoClass::UserInvalid => dest.write_str(":user-invalid"),
       PseudoClass::InRange => dest.write_str(":in-range"),
       PseudoClass::OutOfRange => dest.write_str(":out-of-range"),
       PseudoClass::Indeterminate => dest.write_str(":indeterminate"),
@@ -784,6 +788,8 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "optional" => Ok(PseudoClass::Optional),
       "valid" => Ok(PseudoClass::Valid),
       "invalid" => Ok(PseudoClass::Invalid),
+      "user-valid" => Ok(PseudoClass::UserValid),
+      "user-invalid" => Ok(PseudoClass::UserInvalid),
       "in-range" => Ok(PseudoClass::InRange),
       "out-of-range" => Ok(PseudoClass::OutOfRange),
       "indeterminate" => Ok(PseudoClass::Indeterminate),
@@ -1841,6 +1847,8 @@ mod tests {
     assert_eq!(PseudoClass::Optional.to_css_string(), ":optional");
     assert_eq!(PseudoClass::Valid.to_css_string(), ":valid");
     assert_eq!(PseudoClass::Invalid.to_css_string(), ":invalid");
+    assert_eq!(PseudoClass::UserValid.to_css_string(), ":user-valid");
+    assert_eq!(PseudoClass::UserInvalid.to_css_string(), ":user-invalid");
     assert_eq!(PseudoClass::InRange.to_css_string(), ":in-range");
     assert_eq!(PseudoClass::OutOfRange.to_css_string(), ":out-of-range");
     assert_eq!(PseudoClass::Indeterminate.to_css_string(), ":indeterminate");
@@ -1882,6 +1890,23 @@ mod tests {
     );
     let mut parser = Parser::new(&mut input);
     assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
+  }
+
+  #[test]
+  fn parses_user_valid_and_invalid_pseudo_classes() {
+    for selector_text in [
+      "input:user-invalid",
+      "input:user-valid",
+      "input:not(:user-invalid)",
+      "input:focus, input:user-invalid, input:user-valid, input:disabled",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
   }
 
   #[test]
