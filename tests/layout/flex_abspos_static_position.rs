@@ -712,6 +712,33 @@ fn abspos_static_position_ignores_wrap_reverse_for_end_keyword() {
 }
 
 #[test]
+fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_on_align_self() {
+  // Like the two tests above, but with `align-self` overriding `align-items`.
+  for (align_self, expected_y) in [(AlignItems::Start, 0.0), (AlignItems::End, 90.0)] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.flex_wrap = FlexWrap::WrapReverse;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.align_items = AlignItems::FlexStart;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.align_self = Some(align_self);
+
+    let (_, y) = layout_abspos_child(container_style, child_style);
+    assert!(
+      (y - expected_y).abs() < 0.1,
+      "expected y≈{expected_y} for align-self={align_self:?}, got {y}"
+    );
+  }
+}
+
+#[test]
 fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis() {
   // Same as above, but with a horizontal cross axis (`flex-direction: column`).
   let mut container_style = ComputedStyle::default();
@@ -732,6 +759,33 @@ fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis() {
   let (x, y) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
   assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_on_align_self_with_horizontal_cross_axis() {
+  for (align_self, expected_x) in [(AlignItems::Start, 0.0), (AlignItems::End, 90.0)] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.flex_wrap = FlexWrap::WrapReverse;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.align_items = AlignItems::FlexStart;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.align_self = Some(align_self);
+
+    let (x, _) = layout_abspos_child(container_style, child_style);
+    assert!(
+      (x - expected_x).abs() < 0.1,
+      "expected x≈{expected_x} for align-self={align_self:?}, got {x}"
+    );
+  }
 }
 
 #[test]
