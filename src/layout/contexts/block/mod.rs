@@ -987,7 +987,7 @@ impl BlockFormattingContext {
     } else {
       max_width
     };
-    let clamped_content_width =
+    let mut clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
     if clamped_content_width > inline_viewport {
       clamped_content_width = inline_viewport;
@@ -5285,7 +5285,7 @@ impl FormattingContext for BlockFormattingContext {
       max_width
     };
 
-    let clamped_content_width =
+    let mut clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
     if clamped_content_width > inline_viewport {
       clamped_content_width = inline_viewport;
