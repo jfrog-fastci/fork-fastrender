@@ -58,8 +58,8 @@ fn timeline_scope_promotes_named_scroll_timeline_for_siblings() {
           height: 50px;
           background: rgb(255, 0, 0);
           opacity: 0;
-          animation-timeline: --scroller;
           animation: fade auto linear;
+          animation-timeline: --scroller;
         }}
         #scroller {{
           overflow-y: scroll;
@@ -145,8 +145,8 @@ fn timeline_scope_deduplicates_duplicate_names_in_value_list() {
         height: 50px;
         background: rgb(255, 0, 0);
         opacity: 0;
-        animation-timeline: --scroller;
         animation: fade auto linear;
+        animation-timeline: --scroller;
       }
       #scroller {
         overflow-y: scroll;
@@ -222,8 +222,8 @@ fn timeline_scope_blocks_ancestor_timelines_inside_boundary() {
           height: 100px;
           background: rgb(255, 0, 0);
           opacity: 0;
-          animation-timeline: --t;
           animation: fade auto linear;
+          animation-timeline: --t;
         }}
         /* At scroll progress 0, this keyframe would make the element visible if the timeline is
            resolvable. */
@@ -297,8 +297,8 @@ fn scroll_timeline_wins_over_view_timeline_with_same_name_on_element() {
         opacity: 0;
         scroll-timeline: --x block;
         view-timeline: --x block;
-        animation-timeline: --x;
         animation: fade auto linear;
+        animation-timeline: --x;
       }
       @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
     </style>
@@ -348,8 +348,8 @@ fn timeline_scope_all_marks_duplicate_names_inactive() {
         height: 50px;
         background: rgb(255, 0, 0);
         opacity: 0;
-        animation-timeline: --dup;
         animation: fade auto linear;
+        animation-timeline: --dup;
       }
       .scroller {
         overflow-y: scroll;
@@ -416,8 +416,8 @@ fn timeline_scope_all_does_not_block_export_of_own_timeline() {
         height: 50px;
         background: rgb(255, 0, 0);
         opacity: 0;
-        animation-timeline: --scroller;
         animation: fade auto linear;
+        animation-timeline: --scroller;
       }
       #scroller {
         overflow-y: scroll;
@@ -475,8 +475,8 @@ fn timeline_scope_supports_var_resolution() {
         height: 50px;
         background: rgb(255, 0, 0);
         opacity: 0;
-        animation-timeline: --scroller;
         animation: fade auto linear;
+        animation-timeline: --scroller;
       }
       #scroller {
         overflow-y: scroll;
