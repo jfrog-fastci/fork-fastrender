@@ -112,8 +112,19 @@ fn unescape_js_escapes(input: &str) -> Cow<'_, str> {
   Cow::Owned(out)
 }
 
+// HTML/CSS URL-ish values strip leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but do not
+// treat all Unicode whitespace (e.g. NBSP) as ignorable.
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn trim_ascii_whitespace_start(value: &str) -> &str {
+  value
+    .trim_start_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn decode_inline_svg_url(url: &str) -> Option<String> {
-  let trimmed = url.trim_start();
+  let trimmed = trim_ascii_whitespace_start(url);
   if trimmed.is_empty() {
     return None;
   }
@@ -130,7 +141,7 @@ fn decode_inline_svg_url(url: &str) -> Option<String> {
   {
     if let Ok(decoded) = percent_decode_str(trimmed).decode_utf8() {
       let decoded = decoded.into_owned();
-      let decoded_trimmed = decoded.trim_start();
+      let decoded_trimmed = trim_ascii_whitespace_start(&decoded);
       if decoded_trimmed.starts_with('<') {
         return Some(unescape_js_escapes(decoded_trimmed).into_owned());
       }
@@ -593,7 +604,9 @@ fn inline_svg_use_references<'a>(
         break;
       }
     }
-    let href = href.map(str::trim).filter(|v| !v.is_empty());
+    let href = href
+      .map(trim_ascii_whitespace)
+      .filter(|v| !v.is_empty());
 
     let Some(href) = href else {
       continue;
@@ -602,8 +615,8 @@ fn inline_svg_use_references<'a>(
     let Some((href_url_part, fragment)) = href.split_once('#') else {
       continue;
     };
-    let href_url_part = href_url_part.trim();
-    let fragment = fragment.trim();
+    let href_url_part = trim_ascii_whitespace(href_url_part);
+    let fragment = trim_ascii_whitespace(fragment);
 
     // Internal-only references (`#id`) are handled by usvg; we only patch external sprite uses.
     if href_url_part.is_empty() || href_url_part.starts_with('#') || fragment.is_empty() {
@@ -1331,14 +1344,14 @@ impl From<&CachedImage> for CachedImageMetadata {
 }
 
 fn is_about_url(url: &str) -> bool {
-  let trimmed = url.trim_start();
+  let trimmed = trim_ascii_whitespace_start(url);
   trimmed
     .get(..6)
     .is_some_and(|prefix| prefix.eq_ignore_ascii_case("about:"))
 }
 
 fn url_ends_with_svgz(url: &str) -> bool {
-  let trimmed = url.trim();
+  let trimmed = trim_ascii_whitespace(url);
   if trimmed.is_empty() {
     return false;
   }
@@ -2019,7 +2032,8 @@ impl ImageCache {
 
   /// Resolve a potentially relative URL to an absolute URL
   pub fn resolve_url(&self, url: &str) -> String {
-    if url.trim().is_empty() {
+    let url = trim_ascii_whitespace(url);
+    if url.is_empty() {
       return String::new();
     }
 
@@ -2146,7 +2160,7 @@ impl ImageCache {
     crossorigin: CrossOriginAttribute,
     referrer_policy: Option<ReferrerPolicy>,
   ) -> Result<Arc<CachedImage>> {
-    let trimmed = url.trim();
+    let trimmed = trim_ascii_whitespace(url);
     if trimmed.is_empty() {
       return Ok(about_url_placeholder_image());
     }
@@ -2716,7 +2730,7 @@ impl ImageCache {
     crossorigin: CrossOriginAttribute,
     referrer_policy: Option<ReferrerPolicy>,
   ) -> Result<Arc<CachedImageMetadata>> {
-    let trimmed = url.trim();
+    let trimmed = trim_ascii_whitespace(url);
     if trimmed.is_empty() {
       return Ok(about_url_placeholder_metadata());
     }
@@ -2787,8 +2801,8 @@ impl ImageCache {
     crossorigin: CrossOriginAttribute,
     referrer_policy: Option<ReferrerPolicy>,
   ) -> Result<Arc<CachedImageMetadata>> {
-    let resolved_url = resolved_url.trim();
-    let trimmed = resolved_url.trim_start();
+    let resolved_url = trim_ascii_whitespace(resolved_url);
+    let trimmed = trim_ascii_whitespace_start(resolved_url);
     if trimmed.starts_with('<') {
       return self.probe_with_crossorigin(trimmed, crossorigin);
     }
@@ -3100,7 +3114,7 @@ impl ImageCache {
     let mut css_budget_remaining = MAX_CSS_BYTES_SCANNED;
 
     let mut check_url = |raw: &str| -> Result<()> {
-      let href = raw.trim();
+      let href = trim_ascii_whitespace(raw);
       if href.is_empty()
         || href.starts_with('#')
         || crate::resource::is_data_url(href)
@@ -8450,6 +8464,33 @@ mod tests {
     assert_eq!(
       cache.resolve_url("//cdn.example.com/asset.png"),
       "https://cdn.example.com/asset.png".to_string()
+    );
+  }
+
+  #[test]
+  fn load_preserves_non_ascii_whitespace_in_urls() {
+    let nbsp = "\u{00A0}";
+    let expected_url = "https://example.com/base/foo%C2%A0".to_string();
+    let mut resource = FetchedResource::new(
+      encode_single_pixel_png([0, 0, 0, 0]),
+      Some("image/png".to_string()),
+    );
+    resource.status = Some(200);
+
+    let fetcher = Arc::new(MapFetcher::with_entries([(expected_url.clone(), resource)]));
+    let cache = ImageCache::with_base_url_and_fetcher(
+      "https://example.com/base/".to_string(),
+      Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>,
+    );
+
+    cache
+      .load(&format!("foo{nbsp}"))
+      .expect("expected image load");
+
+    let requests = fetcher.requests();
+    assert!(
+      requests.iter().any(|(url, _)| *url == expected_url),
+      "expected fetcher to request {expected_url}, got: {requests:?}"
     );
   }
 
