@@ -22,6 +22,20 @@ pub enum PageSide {
   Right,
 }
 
+/// CSS Page selector specificity, expressed as a 3-component tuple (f, g, h).
+///
+/// See: <https://drafts.csswg.org/css-page-3/#typedef-page-selector>
+///
+/// - `f`: page type selector (named page)
+/// - `g`: `:first` and `:blank` pseudo-class count
+/// - `h`: `:left` and `:right` pseudo-class count
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PageSelectorSpecificity {
+  f: u8,
+  g: u8,
+  h: u8,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PageOrientation {
   Portrait,
@@ -95,9 +109,9 @@ pub fn resolve_page_style(
   let mut margin_styles: BTreeMap<PageMarginArea, ComputedStyle> = BTreeMap::new();
   let mut page_style = default_page_style(root_font_size);
 
-  let mut matching: Vec<(&CollectedPageRule<'_>, u8)> = Vec::new();
+  let mut matching: Vec<(&CollectedPageRule<'_>, PageSelectorSpecificity)> = Vec::new();
   for rule in rules {
-    let mut matched_spec: Option<u8> = None;
+    let mut matched_spec: Option<PageSelectorSpecificity> = None;
     for selector in &rule.rule.selectors {
       if selector_matches(selector, page_index, page_name, side, is_blank) {
         let spec = selector_specificity(selector);
@@ -268,7 +282,7 @@ fn selector_matches(
     }
   }
 
-  if let Some(pseudo) = selector.pseudo {
+  for pseudo in &selector.pseudos {
     match pseudo {
       PagePseudoClass::First => {
         if page_index != 0 {
@@ -296,15 +310,25 @@ fn selector_matches(
   true
 }
 
-fn selector_specificity(selector: &crate::css::types::PageSelector) -> u8 {
-  let mut spec = 0;
-  if selector.name.is_some() {
-    spec += 2;
+fn selector_specificity(selector: &crate::css::types::PageSelector) -> PageSelectorSpecificity {
+  let mut g = 0u8;
+  let mut h = 0u8;
+  for pseudo in &selector.pseudos {
+    match pseudo {
+      PagePseudoClass::First | PagePseudoClass::Blank => {
+        g = g.saturating_add(1);
+      }
+      PagePseudoClass::Left | PagePseudoClass::Right => {
+        h = h.saturating_add(1);
+      }
+    }
   }
-  if selector.pseudo.is_some() {
-    spec += 1;
+
+  PageSelectorSpecificity {
+    f: u8::from(selector.name.is_some()),
+    g,
+    h,
   }
-  spec
 }
 
 fn apply_page_declaration(

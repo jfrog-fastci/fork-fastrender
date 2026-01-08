@@ -2406,38 +2406,64 @@ fn parse_page_selectors<'i, 't>(
 ) -> std::result::Result<Vec<PageSelector>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let selectors = parser.parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |parser| {
     let mut selectors = Vec::new();
+    let mut saw_selector_tokens = false;
     loop {
       parser.skip_whitespace();
       if parser.is_exhausted() {
         break;
       }
+      saw_selector_tokens = true;
 
       let mut name = None;
       if let Ok(ident) = parser.try_parse(|p| p.expect_ident().map(|i| i.to_string())) {
         name = Some(ident);
       }
 
-      let mut pseudo = None;
-      if parser.try_parse(|p| p.expect_colon()).is_ok() {
-        if let Ok(pseudo_ident) = parser.expect_ident() {
-          let pseudo_ident = pseudo_ident.as_ref();
-          pseudo = if pseudo_ident.eq_ignore_ascii_case("first") {
-            Some(PagePseudoClass::First)
-          } else if pseudo_ident.eq_ignore_ascii_case("left") {
-            Some(PagePseudoClass::Left)
-          } else if pseudo_ident.eq_ignore_ascii_case("right") {
-            Some(PagePseudoClass::Right)
-          } else if pseudo_ident.eq_ignore_ascii_case("blank") {
-            Some(PagePseudoClass::Blank)
-          } else {
-            None
-          };
+      let mut pseudos = Vec::new();
+      let mut invalid = false;
+      loop {
+        let state = parser.state();
+        if parser.try_parse(|p| p.expect_colon()).is_err() {
+          break;
         }
+        let Ok(pseudo_ident) = parser.expect_ident() else {
+          parser.reset(&state);
+          break;
+        };
+        let pseudo_ident = pseudo_ident.as_ref();
+        let pseudo = if pseudo_ident.eq_ignore_ascii_case("first") {
+          Some(PagePseudoClass::First)
+        } else if pseudo_ident.eq_ignore_ascii_case("left") {
+          Some(PagePseudoClass::Left)
+        } else if pseudo_ident.eq_ignore_ascii_case("right") {
+          Some(PagePseudoClass::Right)
+        } else if pseudo_ident.eq_ignore_ascii_case("blank") {
+          Some(PagePseudoClass::Blank)
+        } else {
+          None
+        };
+        let Some(pseudo) = pseudo else {
+          invalid = true;
+          break;
+        };
+        pseudos.push(pseudo);
       }
 
-      if name.is_some() || pseudo.is_some() {
-        selectors.push(PageSelector { name, pseudo });
+      // Invalid `@page` selectors should not silently match all pages. Skip invalid selectors and
+      // let callers ignore the rule when no valid selectors remain.
+      if invalid || (name.is_none() && pseudos.is_empty()) {
+        while !parser.is_exhausted() {
+          if parser.try_parse(|p| p.expect_comma()).is_ok() {
+            break;
+          }
+          if parser.next_including_whitespace().is_err() {
+            break;
+          }
+        }
+        continue;
       }
+
+      selectors.push(PageSelector { name, pseudos });
 
       parser.skip_whitespace();
       if parser.try_parse(|p| p.expect_comma()).is_ok() {
@@ -2448,10 +2474,10 @@ fn parse_page_selectors<'i, 't>(
       }
     }
 
-    if selectors.is_empty() {
+    if selectors.is_empty() && !saw_selector_tokens {
       selectors.push(PageSelector {
         name: None,
-        pseudo: None,
+        pseudos: Vec::new(),
       });
     }
 

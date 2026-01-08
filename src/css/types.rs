@@ -356,8 +356,11 @@ pub struct CollectedCssMetadata {
 pub struct PageSelector {
   /// Optional named page identifier.
   pub name: Option<String>,
-  /// Optional page pseudo-class (:first/:left/:right/:blank).
-  pub pseudo: Option<PagePseudoClass>,
+  /// Page pseudo-classes (:first/:left/:right/:blank).
+  ///
+  /// CSS Page 3 allows multiple pseudo-classes (and even repeated occurrences) within a single
+  /// selector, e.g. `@page :blank:right { ... }`.
+  pub pseudos: Vec<PagePseudoClass>,
 }
 
 /// Supported page-side pseudo-classes.

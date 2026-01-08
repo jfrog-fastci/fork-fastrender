@@ -2432,6 +2432,87 @@ fn blank_page_inserted_for_forced_side() {
 }
 
 #[test]
+fn blank_pseudo_outweighs_right_pseudo_in_specificity() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :blank { @top-center { content: "BLANK_HDR"; } }
+          @page :right { @top-center { content: "RIGHT_HDR"; } }
+          body { margin: 0; }
+          .first { height: 80px; }
+          .second { break-before: left; height: 160px; }
+          .third { height: 80px; }
+        </style>
+      </head>
+      <body>
+        <div class="first"></div>
+        <div class="second"></div>
+        <div class="third"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 4);
+
+  // Page 2 is blank and on the right side; `:blank` should beat `:right` even though `:right`
+  // is declared later in the stylesheet.
+  assert!(find_text(page_roots[1], "BLANK_HDR").is_some());
+  assert!(find_text(page_roots[1], "RIGHT_HDR").is_none());
+
+  // The non-blank right page should still use the `:right` rule.
+  assert!(find_in_margin_boxes(page_roots[3], "RIGHT_HDR").is_some());
+  assert!(find_in_margin_boxes(page_roots[3], "BLANK_HDR").is_none());
+}
+
+#[test]
+fn page_selector_requires_all_pseudo_classes_to_match() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :right { @top-center { content: "RIGHT_HDR"; } }
+          @page :blank:right { @top-center { content: "BLANK_RIGHT_HDR"; } }
+          body { margin: 0; }
+          .first { height: 80px; }
+          .second { break-before: left; height: 160px; }
+          .third { height: 80px; }
+        </style>
+      </head>
+      <body>
+        <div class="first"></div>
+        <div class="second"></div>
+        <div class="third"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 4);
+
+  // Page 2 is blank and right; `:blank:right` should match.
+  assert!(find_text_eq(page_roots[1], "BLANK_RIGHT_HDR").is_some());
+  assert!(find_text_eq(page_roots[1], "RIGHT_HDR").is_none());
+
+  // Page 4 is right but not blank; `:blank:right` must not match.
+  assert!(find_text_eq(page_roots[3], "RIGHT_HDR").is_some());
+  assert!(find_text_eq(page_roots[3], "BLANK_RIGHT_HDR").is_none());
+}
+
+#[test]
 fn paginated_trees_compute_scroll_metadata() {
   let html = r#"
     <html>
