@@ -102,3 +102,30 @@ fn text_inside_rows_is_wrapped_in_anonymous_cells() {
   ));
   assert!(extract_text(&row.children[0]).contains("oops"));
 }
+
+#[test]
+fn misparented_table_cells_create_anonymous_table_root() {
+  let mut renderer = FastRender::new().unwrap();
+  let prepared = renderer
+    .prepare_html(
+      r#"<div><div style="display: table-cell">A</div><div style="display: table-cell">B</div></div>"#,
+      RenderOptions::new(),
+    )
+    .unwrap();
+  let box_tree = prepared.box_tree();
+
+  let table = find_table_box(&box_tree.root);
+  assert_eq!(
+    table.formatting_context(),
+    Some(FormattingContextType::Table),
+    "expected an anonymous table formatting context to be generated"
+  );
+
+  let row_group = first_non_caption_child(table).expect("row group created");
+  assert!(TableStructureFixer::is_table_row_group(row_group));
+
+  let row = row_group.children.first().expect("row created");
+  assert!(TableStructureFixer::is_table_row(row));
+  assert_eq!(row.children.len(), 2);
+  assert!(row.children.iter().all(TableStructureFixer::is_table_cell));
+}

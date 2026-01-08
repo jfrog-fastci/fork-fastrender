@@ -855,6 +855,130 @@ impl TableStructureFixer {
     ))
   }
 
+  // ==================== Misparented Table Internals Fixup (Stage 3) ====================
+
+  fn flush_misparented_table_internal_run(
+    result: &mut Vec<BoxNode>,
+    run: &mut Vec<BoxNode>,
+    run_has_table_internals: &mut bool,
+    table_style: &Arc<ComputedStyle>,
+    deadline_counter: &mut usize,
+  ) -> Result<()> {
+    if run.is_empty() {
+      *run_has_table_internals = false;
+      return Ok(());
+    }
+
+    if *run_has_table_internals {
+      let table = BoxNode::new_block(
+        table_style.clone(),
+        FormattingContextType::Table,
+        std::mem::take(run),
+      );
+      let table = Self::fixup_table_internals_with_deadline(table, deadline_counter)?;
+      result.push(table);
+    } else {
+      // Whitespace-only run: keep it as-is.
+      result.append(run);
+    }
+
+    *run_has_table_internals = false;
+    Ok(())
+  }
+
+  /// Wrap contiguous runs of table-internal boxes that are children of a non-table parent in an
+  /// anonymous table root, per CSS 2.1 §17.2.1 (stage 3 anonymous table generation).
+  ///
+  /// This supports common "CSS table" usage such as:
+  /// `<div><div style="display: table-cell">A</div><div style="display: table-cell">B</div></div>`
+  ///
+  /// The algorithm:
+  /// - Scans `node.children` for runs of table internals (+ ignorable whitespace).
+  /// - Out-of-flow passthrough children (`position:absolute|fixed` / running elements) split runs
+  ///   and are never wrapped into the anonymous table.
+  /// - Each run that contains at least one table-internal box is replaced with a new anonymous
+  ///   table root (`display: table`, `FormattingContextType::Table`) whose children are the run's
+  ///   original nodes (including whitespace nodes, which will be dropped by internal fixup).
+  /// - The newly created table root is immediately normalized by `fixup_table_internals_*`.
+  fn wrap_misparented_table_internals_in_children(
+    node: &mut BoxNode,
+    deadline_counter: &mut usize,
+  ) -> Result<()> {
+    if node.children.is_empty() {
+      return Ok(());
+    }
+
+    // Fast path: if there are no table-internal children, there's nothing to do.
+    if !node.children.iter().any(Self::is_table_internal) {
+      return Ok(());
+    }
+
+    let table_style = {
+      let mut style = inherited_style(&node.style);
+      style.display = Display::Table;
+      Arc::new(style)
+    };
+
+    let children = std::mem::take(&mut node.children);
+    let mut result = Vec::with_capacity(children.len());
+
+    let mut run: Vec<BoxNode> = Vec::new();
+    let mut run_has_table_internals = false;
+
+    for child in children {
+      check_active_periodic(
+        deadline_counter,
+        TABLE_FIXUP_DEADLINE_STRIDE,
+        RenderStage::BoxTree,
+      )?;
+
+      if Self::is_passthrough_child(&child) {
+        Self::flush_misparented_table_internal_run(
+          &mut result,
+          &mut run,
+          &mut run_has_table_internals,
+          &table_style,
+          deadline_counter,
+        )?;
+        result.push(child);
+        continue;
+      }
+
+      if Self::is_table_internal(&child) {
+        run.push(child);
+        run_has_table_internals = true;
+        continue;
+      }
+
+      if Self::is_ignorable_table_whitespace(&child) {
+        // Whitespace should not split a run of table internals. Buffer it so it either becomes
+        // part of the anonymous table (if we see table internals later), or is emitted unchanged.
+        run.push(child);
+        continue;
+      }
+
+      Self::flush_misparented_table_internal_run(
+        &mut result,
+        &mut run,
+        &mut run_has_table_internals,
+        &table_style,
+        deadline_counter,
+      )?;
+      result.push(child);
+    }
+
+    Self::flush_misparented_table_internal_run(
+      &mut result,
+      &mut run,
+      &mut run_has_table_internals,
+      &table_style,
+      deadline_counter,
+    )?;
+    node.children = result;
+
+    Ok(())
+  }
+
   // ==================== Utility Methods ====================
 
   /// Recursively fixes up all table boxes in a tree
@@ -934,6 +1058,9 @@ impl TableStructureFixer {
         *node = fix_table(table_node, deadline_counter)?;
         continue;
       }
+
+      // Stage 3: wrap misparented table internals into anonymous table roots before descending.
+      Self::wrap_misparented_table_internals_in_children(node, deadline_counter)?;
 
       for child in node.children.iter_mut().rev() {
         stack.push(child as *mut BoxNode);
@@ -1687,6 +1814,98 @@ mod tests {
 
     // Loose cell should fail validation (before fixup)
     assert!(!TableStructureFixer::validate_table_structure(&table));
+  }
+
+  // ==================== Misparented Table Internals (Stage 3) Tests ====================
+
+  #[test]
+  fn misparented_table_cells_wrapped_in_anonymous_table() {
+    let cell1 = cell_box(vec![]);
+    let cell2 = cell_box(vec![]);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![cell1, cell2],
+    );
+
+    let fixed = TableStructureFixer::fixup_tree_internals(root).unwrap();
+
+    assert_eq!(fixed.children.len(), 1);
+    let table = &fixed.children[0];
+    assert!(TableStructureFixer::is_table_box(table));
+    assert!(TableStructureFixer::validate_table_structure(table));
+
+    let row_group = table.children.first().expect("row group created");
+    assert!(TableStructureFixer::is_table_row_group(row_group));
+
+    let row = row_group.children.first().expect("row created");
+    assert!(TableStructureFixer::is_table_row(row));
+    assert_eq!(row.children.len(), 2);
+    assert!(row.children.iter().all(TableStructureFixer::is_table_cell));
+  }
+
+  #[test]
+  fn misparented_table_internals_split_into_multiple_tables() {
+    let cell1 = cell_box(vec![]);
+    let block = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    let cell2 = cell_box(vec![]);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![cell1, block, cell2],
+    );
+
+    let fixed = TableStructureFixer::fixup_tree_internals(root).unwrap();
+
+    assert_eq!(fixed.children.len(), 3);
+    assert!(TableStructureFixer::is_table_box(&fixed.children[0]));
+    assert!(!TableStructureFixer::is_table_box(&fixed.children[1]));
+    assert!(TableStructureFixer::is_table_box(&fixed.children[2]));
+
+    assert!(TableStructureFixer::validate_table_structure(&fixed.children[0]));
+    assert!(TableStructureFixer::validate_table_structure(&fixed.children[2]));
+  }
+
+  #[test]
+  fn passthrough_children_not_wrapped() {
+    let cell1 = cell_box(vec![]);
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.position = Position::Absolute;
+    let positioned = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    let cell2 = cell_box(vec![]);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![cell1, positioned, cell2],
+    );
+
+    let fixed = TableStructureFixer::fixup_tree_internals(root).unwrap();
+
+    assert_eq!(fixed.children.len(), 3);
+    assert!(TableStructureFixer::is_table_box(&fixed.children[0]));
+    assert!(
+      matches!(fixed.children[1].style.position, Position::Absolute | Position::Fixed)
+        || fixed.children[1].style.running_position.is_some(),
+      "expected passthrough child to remain a direct sibling"
+    );
+    assert!(TableStructureFixer::is_table_box(&fixed.children[2]));
+
+    fn contains_passthrough(node: &BoxNode) -> bool {
+      if TableStructureFixer::is_passthrough_child(node) {
+        return true;
+      }
+      node.children.iter().any(contains_passthrough)
+    }
+
+    assert!(
+      !contains_passthrough(&fixed.children[0]),
+      "passthrough children should not be wrapped into the table root"
+    );
+    assert!(
+      !contains_passthrough(&fixed.children[2]),
+      "passthrough children should not be wrapped into the table root"
+    );
   }
 
   // ==================== Tree Fixup Tests ====================
