@@ -1,4 +1,5 @@
 pub mod cancel;
+pub mod history;
 pub mod messages;
 pub mod worker;
 
@@ -13,3 +14,5 @@ pub mod wgpu_pixmap_texture;
 
 #[cfg(feature = "browser_ui")]
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
+
+pub use history::{HistoryEntry, TabHistory};
