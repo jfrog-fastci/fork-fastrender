@@ -1128,6 +1128,76 @@ fn abspos_static_position_respects_align_self_self_end_with_different_direction(
 }
 
 #[test]
+fn abspos_static_position_respects_align_self_self_start_end_under_wrap_reverse() {
+  // `self-start`/`self-end` align to the physical edge corresponding to the *item's* start/end
+  // side, so they must not flip with `flex-wrap: wrap-reverse` (unlike `flex-start/flex-end`).
+  //
+  // Use an RTL abspos child so `self-start` maps to the physical right edge.
+  for (align_items, align_self, expected_x) in [
+    (AlignItems::FlexEnd, AlignItems::SelfStart, 90.0),
+    (AlignItems::FlexStart, AlignItems::SelfEnd, 0.0),
+  ] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.flex_wrap = FlexWrap::WrapReverse;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.align_items = align_items;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.direction = Direction::Rtl;
+    child_style.align_self = Some(align_self);
+
+    let (x, _) = layout_abspos_child(container_style, child_style);
+    assert!(
+      (x - expected_x).abs() < 0.1,
+      "expected x≈{expected_x} for align-items={align_items:?} align-self={align_self:?}, got {x}"
+    );
+  }
+}
+
+#[test]
+fn abspos_static_position_respects_align_self_self_start_end_in_negative_cross_axis_writing_mode() {
+  // Similar to the previous test, but in vertical writing mode the cross axis is the block axis and
+  // can be negative (vertical-rl). Our flex adapter mirrors cross-axis coordinates in that case for
+  // wrapping containers; ensure self-alignment still resolves against the child's own start/end.
+  for (align_items, align_self, expected_x) in [
+    (AlignItems::FlexStart, AlignItems::SelfStart, 0.0),
+    (AlignItems::FlexEnd, AlignItems::SelfEnd, 90.0),
+  ] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.writing_mode = WritingMode::VerticalRl;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.flex_wrap = FlexWrap::Wrap;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.align_items = align_items;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.direction = Direction::Ltr;
+    child_style.align_self = Some(align_self);
+
+    let (x, _) = layout_abspos_child(container_style, child_style);
+    assert!(
+      (x - expected_x).abs() < 0.1,
+      "expected x≈{expected_x} for align-items={align_items:?} align-self={align_self:?}, got {x}"
+    );
+  }
+}
+
+#[test]
 fn abspos_static_position_respects_align_items_self_start_with_different_direction() {
   // Same as above, but with `align-items: self-start` (so `align-self: auto` on the child inherits
   // a self-alignment value).
