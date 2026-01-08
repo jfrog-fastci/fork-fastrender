@@ -23,6 +23,13 @@ pub fn parse_srcset(attr: &str) -> Vec<SrcsetCandidate> {
 /// This is primarily used by developer tooling (e.g. regex-based HTML asset
 /// discovery) to keep memory bounded when encountering pathological attributes.
 pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetCandidate> {
+  // HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    })
+  }
+
   fn strip_suffix_ignore_ascii_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
     if value.len() < suffix.len() {
       return None;
@@ -397,7 +404,7 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
       idx += 1;
     }
 
-    let url = attr[url_start..idx].trim();
+    let url = trim_ascii_whitespace(&attr[url_start..idx]);
     if url.is_empty() {
       while idx < bytes.len() && bytes[idx] != b',' {
         idx += 1;
@@ -413,15 +420,17 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
     while idx < bytes.len() && bytes[idx] != b',' {
       idx += 1;
     }
-    let desc_str = attr[desc_start..idx].trim();
+    let desc_str = trim_ascii_whitespace(&attr[desc_start..idx]);
 
     let mut density: Option<f32> = None;
     let mut width: Option<u32> = None;
     let mut height: Option<u32> = None;
     let mut unknown = false;
     let mut valid = true;
-    for desc in desc_str.split_whitespace() {
-      let d = desc.trim();
+    for desc in desc_str.split(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    }) {
+      let d = trim_ascii_whitespace(desc);
       if d.is_empty() {
         continue;
       }
@@ -1013,6 +1022,18 @@ mod tests {
     assert!(
       matches!(parsed[2].descriptor, SrcsetDescriptor::Density(d) if (d - 1.5).abs() < f32::EPSILON)
     );
+  }
+
+  #[test]
+  fn parse_srcset_does_not_trim_non_ascii_whitespace_in_url() {
+    // HTML's srcset parser splits on ASCII whitespace; non-ASCII whitespace like NBSP (U+00A0)
+    // should be treated as part of the URL token.
+    let nbsp = "\u{00A0}";
+    let srcset = format!("a.png{nbsp} 1x, b.png 2x");
+    let parsed = parse_srcset(&srcset);
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].url, format!("a.png{nbsp}"));
+    assert!(matches!(parsed[0].descriptor, SrcsetDescriptor::Density(d) if d == 1.0));
   }
 
   #[test]
