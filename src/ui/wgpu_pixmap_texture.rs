@@ -45,6 +45,7 @@ impl WgpuPixmapTexture {
     pixmap: &Pixmap,
   ) {
     let (w, h) = (pixmap.width(), pixmap.height());
+    let src_stride = w.saturating_mul(4);
 
     if self.size_px != (w, h) {
       // If the size changes, the texture has to be recreated.
@@ -58,10 +59,35 @@ impl WgpuPixmapTexture {
       self.view = view;
       self.id = id;
       self.size_px = (w, h);
-      self.padded_bytes_per_row = align_to(w.saturating_mul(4), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+      self.padded_bytes_per_row = align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
       self
         .staging
         .resize(staging_len(self.padded_bytes_per_row, h), 0);
+    }
+
+    // Fast path: if the source row stride is already 256-byte aligned, we can upload directly
+    // from the pixmap's backing bytes (no staging copy).
+    if self.padded_bytes_per_row == src_stride {
+      queue.write_texture(
+        wgpu::ImageCopyTexture {
+          texture: &self.texture,
+          mip_level: 0,
+          origin: wgpu::Origin3d::ZERO,
+          aspect: wgpu::TextureAspect::All,
+        },
+        pixmap.data(),
+        wgpu::ImageDataLayout {
+          offset: 0,
+          bytes_per_row: Some(src_stride),
+          rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+          width: w,
+          height: h,
+          depth_or_array_layers: 1,
+        },
+      );
+      return;
     }
 
     // Ensure staging is correctly sized even if the pixmap dimensions match but the alignment
@@ -132,7 +158,7 @@ fn create_and_register_texture(
 
   let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-  let id = egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear);
+  let id = egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Nearest);
   (texture, view, id)
 }
 
@@ -145,7 +171,7 @@ fn align_to(value: u32, alignment: u32) -> u32 {
   if rem == 0 {
     value
   } else {
-    value + (alignment - rem)
+    value.saturating_add(alignment - rem)
   }
 }
 
