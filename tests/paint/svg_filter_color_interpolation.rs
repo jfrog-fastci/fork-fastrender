@@ -1,7 +1,7 @@
 use fastrender::geometry::Rect;
 use fastrender::paint::svg_filter::{
-  apply_svg_filter, ColorInterpolationFilters, ColorMatrixKind, FilterInput, FilterPrimitive,
-  FilterStep, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
+  apply_svg_filter, ColorInterpolationFilters, ColorMatrixKind, EdgeMode, FilterInput,
+  FilterPrimitive, FilterStep, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
 };
 use tiny_skia::{ColorU8, Pixmap, PremultipliedColorU8};
 
@@ -129,6 +129,7 @@ fn blur_filter(color_space: ColorInterpolationFilters) -> SvgFilter {
       primitive: FilterPrimitive::GaussianBlur {
         input: FilterInput::SourceGraphic,
         std_dev: (5.0, 0.0),
+        edge_mode: EdgeMode::Duplicate,
       },
       region: None,
     }],

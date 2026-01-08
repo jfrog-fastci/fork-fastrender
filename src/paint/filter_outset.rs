@@ -322,7 +322,7 @@ impl FilterOutsetExt for ResolvedFilter {
 mod tests {
   use super::*;
   use crate::paint::svg_filter::{
-    ColorInterpolationFilters, FilterInput, FilterPrimitive, FilterStep, SvgFilter,
+    ColorInterpolationFilters, EdgeMode, FilterInput, FilterPrimitive, FilterStep, SvgFilter,
     SvgFilterRegion, SvgFilterUnits, SvgLength,
   };
   use std::sync::Arc;
@@ -380,6 +380,7 @@ mod tests {
         primitive: FilterPrimitive::GaussianBlur {
           input: FilterInput::SourceGraphic,
           std_dev: (3.0, 3.0),
+          edge_mode: EdgeMode::Duplicate,
         },
         region: None,
       }],

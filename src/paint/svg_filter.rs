@@ -647,6 +647,7 @@ pub enum FilterPrimitive {
   GaussianBlur {
     input: FilterInput,
     std_dev: (f32, f32),
+    edge_mode: EdgeMode,
   },
   Offset {
     input: FilterInput,
@@ -1209,11 +1210,20 @@ fn hash_filter_primitive(prim: &FilterPrimitive, state: &mut impl Hasher) {
       hash_color(color, state);
       hash_f32(*opacity, state);
     }
-    FilterPrimitive::GaussianBlur { input, std_dev } => {
+    FilterPrimitive::GaussianBlur {
+      input,
+      std_dev,
+      edge_mode,
+    } => {
       state.write_u8(1);
       hash_filter_input(input, state);
       hash_f32(std_dev.0, state);
       hash_f32(std_dev.1, state);
+      state.write_u8(match edge_mode {
+        EdgeMode::Duplicate => 0,
+        EdgeMode::Wrap => 1,
+        EdgeMode::None => 2,
+      });
     }
     FilterPrimitive::Offset { input, dx, dy } => {
       state.write_u8(2);
@@ -2422,10 +2432,24 @@ fn parse_fe_diffuse_lighting(node: &roxmltree::Node) -> Option<FilterPrimitive> 
 }
 
 fn parse_fe_gaussian_blur(node: &roxmltree::Node) -> Option<FilterPrimitive> {
-  let input = parse_input(node.attribute("in"));
-  let (sx, sy) = parse_number_pair(node.attribute("stdDeviation"));
+  let input = parse_input(attribute_ci(node, "in"));
+  let (sx, sy) = parse_number_pair(attribute_ci(node, "stdDeviation"));
   let std_dev = (sx.max(0.0), sy.max(0.0));
-  Some(FilterPrimitive::GaussianBlur { input, std_dev })
+  let edge_mode = match attribute_ci(node, "edgeMode")
+    .unwrap_or("duplicate")
+    .trim()
+    .to_ascii_lowercase()
+    .as_str()
+  {
+    "none" => EdgeMode::None,
+    "wrap" => EdgeMode::Wrap,
+    _ => EdgeMode::Duplicate,
+  };
+  Some(FilterPrimitive::GaussianBlur {
+    input,
+    std_dev,
+    edge_mode,
+  })
 }
 
 fn parse_fe_offset(node: &roxmltree::Node) -> Option<FilterPrimitive> {
@@ -3778,6 +3802,129 @@ fn clip_to_region(pixmap: &mut Pixmap, region: Rect) -> RenderResult<()> {
   Ok(())
 }
 
+fn gaussian_blur_pad_px(sigma: f32) -> u32 {
+  if !sigma.is_finite() {
+    return 0;
+  }
+  let sigma = sigma.abs();
+  if sigma == 0.0 {
+    0
+  } else {
+    (sigma * 3.0).ceil() as u32
+  }
+}
+
+fn fill_pixmap_wrap(dst: &mut Pixmap, src: &Pixmap, pad_x: u32, pad_y: u32) -> RenderResult<()> {
+  check_active(RenderStage::Paint)?;
+  let src_w = src.width() as usize;
+  let src_h = src.height() as usize;
+  let dst_w = dst.width() as usize;
+  let dst_h = dst.height() as usize;
+  if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+    return Ok(());
+  }
+
+  let src_stride = src_w * 4;
+  let dst_stride = dst_w * 4;
+  let src_data = src.data();
+  let dst_data = dst.data_mut();
+
+  let start_src_x = {
+    let offset = (pad_x as usize) % src_w;
+    if offset == 0 { 0 } else { src_w - offset }
+  };
+  let start_src_y = {
+    let offset = (pad_y as usize) % src_h;
+    if offset == 0 { 0 } else { src_h - offset }
+  };
+
+  for y in 0..dst_h {
+    if y % FILTER_DEADLINE_STRIDE == 0 {
+      check_active(RenderStage::Paint)?;
+    }
+    let sy = (start_src_y + y) % src_h;
+    let src_row_base = sy * src_stride;
+    let dst_row_base = y * dst_stride;
+    let dst_row = &mut dst_data[dst_row_base..dst_row_base + dst_stride];
+
+    let mut remaining_px = dst_w;
+    let mut dst_px = 0usize;
+    let mut sx = start_src_x;
+    while remaining_px > 0 {
+      let run_px = remaining_px.min(src_w - sx);
+      let src_start = src_row_base + sx * 4;
+      let dst_start = dst_px * 4;
+      let run_bytes = run_px * 4;
+      dst_row[dst_start..dst_start + run_bytes]
+        .copy_from_slice(&src_data[src_start..src_start + run_bytes]);
+      dst_px += run_px;
+      remaining_px -= run_px;
+      sx = 0;
+    }
+  }
+
+  Ok(())
+}
+
+fn apply_gaussian_blur_with_edge_mode(
+  pixmap: &mut Pixmap,
+  sigma_x: f32,
+  sigma_y: f32,
+  edge_mode: EdgeMode,
+  blur_cache: Option<&mut (dyn BlurCacheOps + 'static)>,
+  scale: f32,
+) -> RenderResult<()> {
+  let sigma_x = if sigma_x.is_finite() { sigma_x } else { 0.0 };
+  let sigma_y = if sigma_y.is_finite() { sigma_y } else { 0.0 };
+  if sigma_x == 0.0 && sigma_y == 0.0 {
+    return Ok(());
+  }
+
+  match edge_mode {
+    EdgeMode::Duplicate => with_blur_cache(blur_cache, |cache| {
+      apply_gaussian_blur_cached(pixmap, sigma_x, sigma_y, cache, scale)
+    })?,
+    EdgeMode::Wrap | EdgeMode::None => {
+      let pad_x = gaussian_blur_pad_px(sigma_x);
+      let pad_y = gaussian_blur_pad_px(sigma_y);
+      let src_w = pixmap.width();
+      let src_h = pixmap.height();
+      let padded_w = src_w as u64 + 2u64 * pad_x as u64;
+      let padded_h = src_h as u64 + 2u64 * pad_y as u64;
+
+      let mut padded = if padded_w <= u32::MAX as u64 && padded_h <= u32::MAX as u64 {
+        new_pixmap(padded_w as u32, padded_h as u32)
+      } else {
+        None
+      };
+
+      if let Some(mut padded) = padded.take() {
+        match edge_mode {
+          EdgeMode::None => {
+            // `new_pixmap` allocates zeroed pixel memory, so the padding is already transparent.
+            copy_pixmap_region_with_offset(&mut padded, pixmap, -(pad_x as i32), -(pad_y as i32))?;
+          }
+          EdgeMode::Wrap => fill_pixmap_wrap(&mut padded, pixmap, pad_x, pad_y)?,
+          EdgeMode::Duplicate => unreachable!(),
+        }
+
+        with_blur_cache(blur_cache, |cache| {
+          apply_gaussian_blur_cached(&mut padded, sigma_x, sigma_y, cache, scale)
+        })?;
+        copy_pixmap_region_with_offset(pixmap, &padded, pad_x as i32, pad_y as i32)?;
+      } else {
+        // Avoid failing the filter evaluation on large padding allocations. Falling back to
+        // `duplicate` mirrors existing behaviour (clamping) and is preferable to an empty output.
+        with_blur_cache(blur_cache, |cache| {
+          apply_gaussian_blur_cached(pixmap, sigma_x, sigma_y, cache, scale)
+        })?;
+      }
+    }
+  }
+
+  Ok(())
+}
+
 fn apply_primitive(
   filter: &SvgFilter,
   css_bbox: &Rect,
@@ -3807,7 +3954,11 @@ fn apply_primitive(
       *opacity,
     )
     .map(|pixmap| FilterResult::full_region(pixmap, filter_region)),
-    FilterPrimitive::GaussianBlur { input, std_dev } => {
+    FilterPrimitive::GaussianBlur {
+      input,
+      std_dev,
+      edge_mode,
+    } => {
       let Some(mut img) = resolve_input(
         input,
         source,
@@ -3822,6 +3973,8 @@ fn apply_primitive(
       let (sx, sy) = filter.resolve_primitive_pair(*std_dev, css_bbox);
       let sigma_x = sx * scale_x;
       let sigma_y = sy * scale_y;
+      let sigma_x = if sigma_x.is_finite() { sigma_x } else { 0.0 };
+      let sigma_y = if sigma_y.is_finite() { sigma_y } else { 0.0 };
       if sigma_x != 0.0 || sigma_y != 0.0 {
         let use_linear = matches!(
           color_interpolation_filters,
@@ -3830,14 +3983,24 @@ fn apply_primitive(
         if use_linear {
           reencode_pixmap_to_linear_rgb(&mut img.pixmap)?;
         }
-        with_blur_cache(blur_cache, |cache| {
-          apply_gaussian_blur_cached(&mut img.pixmap, sigma_x, sigma_y, cache, scale_avg)
-        })?;
+        apply_gaussian_blur_with_edge_mode(
+          &mut img.pixmap,
+          sigma_x,
+          sigma_y,
+          *edge_mode,
+          blur_cache,
+          scale_avg,
+        )?;
         if use_linear {
           reencode_pixmap_to_srgb(&mut img.pixmap)?;
         }
-        let expanded = inflate_rect_xy(img.region, sigma_x.abs() * 3.0, sigma_y.abs() * 3.0);
-        img.region = clip_region(expanded, filter_region);
+        img.region = match edge_mode {
+          EdgeMode::Wrap => filter_region,
+          _ => {
+            let expanded = inflate_rect_xy(img.region, sigma_x.abs() * 3.0, sigma_y.abs() * 3.0);
+            clip_region(expanded, filter_region)
+          }
+        };
       }
       Some(img)
     }
@@ -9466,6 +9629,7 @@ mod tests_composite {
           primitive: FilterPrimitive::GaussianBlur {
             input: FilterInput::SourceGraphic,
             std_dev: (4.0, 4.0),
+            edge_mode: EdgeMode::Duplicate,
           },
           region: None,
         },
@@ -9475,6 +9639,7 @@ mod tests_composite {
           primitive: FilterPrimitive::GaussianBlur {
             input: FilterInput::SourceGraphic,
             std_dev: (4.0, 4.0),
+            edge_mode: EdgeMode::Duplicate,
           },
           region: None,
         },

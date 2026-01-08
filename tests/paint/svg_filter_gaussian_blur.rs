@@ -3,8 +3,8 @@ use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::geometry::Rect;
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::svg_filter::{
-  apply_svg_filter, parse_svg_filter_from_svg_document, ColorInterpolationFilters, FilterInput,
-  FilterPrimitive, FilterStep, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
+  apply_svg_filter, parse_svg_filter_from_svg_document, ColorInterpolationFilters, EdgeMode,
+  FilterInput, FilterPrimitive, FilterStep, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -107,6 +107,7 @@ fn gaussian_blur_resolves_single_value_per_axis_in_object_bbox_units() {
       primitive: FilterPrimitive::GaussianBlur {
         input: FilterInput::SourceGraphic,
         std_dev: (0.1, 0.1),
+        edge_mode: EdgeMode::Duplicate,
       },
       region: None,
     }],
@@ -150,5 +151,111 @@ fn gaussian_blur_resolves_single_value_per_axis_in_object_bbox_units() {
   assert!(
     (height as i32 - 36).abs() <= 2,
     "expected vertical spread to reflect bbox height (height={height})",
+  );
+}
+
+#[test]
+fn gaussian_blur_parses_case_insensitive_attributes_and_edge_mode() {
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="f">
+        <feGaussianBlur stddeviation="4" edgemode="wrap" />
+      </filter>
+    </svg>
+  "#;
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("parse filter");
+  match &filter.steps[0].primitive {
+    FilterPrimitive::GaussianBlur {
+      std_dev,
+      edge_mode,
+      ..
+    } => {
+      assert_eq!(*std_dev, (4.0, 4.0));
+      assert!(matches!(edge_mode, EdgeMode::Wrap));
+    }
+    other => panic!("expected gaussian blur primitive, got {:?}", other),
+  }
+}
+
+#[test]
+fn gaussian_blur_edge_mode_none_fades_edges() {
+  let mut pixmap = Pixmap::new(3, 3).unwrap();
+  let opaque = PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("color");
+  for px in pixmap.pixels_mut() {
+    *px = opaque;
+  }
+
+  let mut filter = SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::GaussianBlur {
+        input: FilterInput::SourceGraphic,
+        std_dev: (1.0, 1.0),
+        edge_mode: EdgeMode::None,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(3.0),
+      height: SvgLength::Number(3.0),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    fingerprint: 0,
+  };
+  filter.refresh_fingerprint();
+
+  let bbox = Rect::from_xywh(0.0, 0.0, 3.0, 3.0);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  let corner = pixmap.pixel(0, 0).unwrap();
+  assert!(corner.alpha() < 255, "expected corner alpha to fade, got {}", corner.alpha());
+}
+
+#[test]
+fn gaussian_blur_edge_mode_wrap_wraps_across_edges() {
+  let mut pixmap = Pixmap::new(5, 1).unwrap();
+  pixmap.pixels_mut().fill(PremultipliedColorU8::TRANSPARENT);
+  pixmap.pixels_mut()[0] = PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap();
+
+  let mut filter = SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::GaussianBlur {
+        input: FilterInput::SourceGraphic,
+        std_dev: (1.0, 0.0),
+        edge_mode: EdgeMode::Wrap,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(5.0),
+      height: SvgLength::Number(1.0),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    fingerprint: 0,
+  };
+  filter.refresh_fingerprint();
+
+  let bbox = Rect::from_xywh(0.0, 0.0, 5.0, 1.0);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  let right = pixmap.pixel(4, 0).unwrap();
+  assert!(
+    right.alpha() > 0,
+    "expected wrap to contribute across edge, got alpha {}",
+    right.alpha()
   );
 }
