@@ -223,9 +223,10 @@ impl BundledResource {
     Self { info, bytes }
   }
 
-  fn as_fetched(&self) -> FetchedResource {
+  fn as_fetched(&self) -> Result<FetchedResource> {
+    let bytes = clone_bytes_fallible(&self.bytes, "bundle resource bytes")?;
     let mut res = FetchedResource::with_final_url(
-      (*self.bytes).clone(),
+      bytes,
       self.info.content_type.clone(),
       self.info.final_url.clone(),
     );
@@ -242,7 +243,7 @@ impl BundledResource {
       .as_deref()
       .and_then(ReferrerPolicy::parse_value_list);
     res.access_control_allow_credentials = self.info.access_control_allow_credentials;
-    res
+    Ok(res)
   }
 }
 
@@ -310,6 +311,12 @@ fn read_file_fallible(path: &Path) -> io::Result<Vec<u8>> {
     Err(_) => usize::MAX,
   };
   read_all_with_limit(&mut file, max_bytes, "bundle file")
+}
+
+fn clone_bytes_fallible(bytes: &[u8], context: &'static str) -> Result<Vec<u8>> {
+  let mut writer = FallibleVecWriter::new(bytes.len(), context);
+  writer.write_all(bytes).map_err(Error::Io)?;
+  Ok(writer.into_inner())
 }
 
 impl Bundle {
@@ -538,8 +545,9 @@ impl ResourceFetcher for BundledFetcher {
 
     if doc_matches {
       let (doc_meta, bytes) = self.bundle.document();
+      let bytes = clone_bytes_fallible(&bytes, "bundle document bytes")?;
       let mut res = FetchedResource::with_final_url(
-        (*bytes).clone(),
+        bytes,
         doc_meta.content_type.clone(),
         Some(doc_meta.final_url.clone()),
       );
@@ -586,12 +594,12 @@ impl ResourceFetcher for BundledFetcher {
         )));
       };
       if let Some(resource) = bucket.variants.get(&vary_key) {
-        return Ok(resource.as_fetched());
+        return resource.as_fetched();
       }
       // Back-compat: older bundles may include a single Vary entry without the `vary` field.
       if bucket.vary.is_none() && bucket.variants.len() == 1 {
         if let Some(resource) = bucket.variants.values().next() {
-          return Ok(resource.as_fetched());
+          return resource.as_fetched();
         }
       }
       return Err(Error::Other(format!(
@@ -601,7 +609,7 @@ impl ResourceFetcher for BundledFetcher {
     }
 
     if let Some(resource) = self.bundle.resource_for_url(url) {
-      let res = resource.as_fetched();
+      let res = resource.as_fetched()?;
       let kind: FetchContextKind = super::http_browser_request_profile_for_url(url).into();
       let origin_key = bundle_key_is_request_partitioned(url).then_some("bundled");
       if let Some(vary) = res.vary.as_deref() {
@@ -638,7 +646,7 @@ impl ResourceFetcher for BundledFetcher {
     if let Some(partition_key) = super::cors_cache_partition_key(&req) {
       let key = request_partitioned_resource_key_v2(kind, req.url, &partition_key);
       if let Some(resource) = self.bundle.resource_for_url(&key) {
-        let res = resource.as_fetched();
+        let res = resource.as_fetched()?;
         if let Some(vary) = res.vary.as_deref() {
           if super::vary_contains_star(vary)
             || (!super::allow_unhandled_vary_env()
@@ -668,7 +676,7 @@ impl ResourceFetcher for BundledFetcher {
           req.credentials_mode,
         );
         if let Some(resource) = self.bundle.resource_for_url(&key) {
-          let res = resource.as_fetched();
+          let res = resource.as_fetched()?;
           if let Some(vary) = res.vary.as_deref() {
             if super::vary_contains_star(vary)
               || (!super::allow_unhandled_vary_env()
@@ -686,7 +694,7 @@ impl ResourceFetcher for BundledFetcher {
         if req.credentials_mode != FetchCredentialsMode::Omit {
           let key = request_partitioned_resource_key(kind, req.url, origin);
           if let Some(resource) = self.bundle.resource_for_url(&key) {
-            let res = resource.as_fetched();
+            let res = resource.as_fetched()?;
             if let Some(vary) = res.vary.as_deref() {
               if super::vary_contains_star(vary)
                 || (!super::allow_unhandled_vary_env()
@@ -728,11 +736,11 @@ impl ResourceFetcher for BundledFetcher {
         )));
       };
       if let Some(resource) = bucket.variants.get(&vary_key) {
-        return Ok(resource.as_fetched());
+        return resource.as_fetched();
       }
       if bucket.vary.is_none() && bucket.variants.len() == 1 {
         if let Some(resource) = bucket.variants.values().next() {
-          return Ok(resource.as_fetched());
+          return resource.as_fetched();
         }
       }
       return Err(Error::Other(format!(
