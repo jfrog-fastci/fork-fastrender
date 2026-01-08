@@ -191,3 +191,66 @@ fn grid_baseline_aligned_items_increase_auto_column_size() {
   }
 }
 
+#[test]
+fn grid_baseline_aligned_items_increase_auto_column_size_vertical_rl() {
+  let fc = GridFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.grid_template_columns = vec![GridTrack::Auto];
+  container_style.grid_template_rows = vec![GridTrack::Auto, GridTrack::Auto];
+  container_style.justify_items = AlignItems::Baseline;
+  let container_style = Arc::new(container_style);
+
+  let writing_mode = WritingMode::VerticalRl;
+  let width = 60.0;
+  let line_height = 20.0;
+  let item_large = make_text_item(31, 20.0, line_height, writing_mode, width, 1);
+  let item_small = make_text_item(32, 5.0, line_height, writing_mode, width, 2);
+
+  let grid = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Grid,
+    vec![item_large, item_small],
+  );
+
+  let fragment = fc
+    .layout(
+      &grid,
+      &LayoutConstraints::new(AvailableSpace::Indefinite, AvailableSpace::Definite(200.0)),
+    )
+    .expect("layout succeeds");
+
+  assert_eq!(fragment.children.len(), 2, "grid should have two item fragments");
+  let a = &fragment.children[0];
+  let b = &fragment.children[1];
+
+  let expected_width = expected_baseline_track_size_x([a, b], writing_mode);
+  assert_approx(fragment.bounds.width(), expected_width, "grid column width");
+
+  let max_item_width = a.bounds.width().max(b.bounds.width());
+  assert!(
+    fragment.bounds.width() > max_item_width + 0.5,
+    "expected baseline alignment to increase column width beyond either item (col={:.2}, max_item={:.2})",
+    fragment.bounds.width(),
+    max_item_width
+  );
+
+  let baseline_a = a.bounds.x() + baseline_offset_x_with_fallback(a, writing_mode);
+  let baseline_b = b.bounds.x() + baseline_offset_x_with_fallback(b, writing_mode);
+  assert!(
+    (baseline_a - baseline_b).abs() <= 0.5,
+    "expected baselines to align (a={baseline_a:.2}, b={baseline_b:.2})"
+  );
+
+  for (label, item) in [("a", a), ("b", b)] {
+    let right = item.bounds.x() + item.bounds.width();
+    assert!(
+      item.bounds.x() >= -0.5 && right <= fragment.bounds.width() + 0.5,
+      "expected {label} to fit in column (x={:.2}, right={:.2}, col_width={:.2})",
+      item.bounds.x(),
+      right,
+      fragment.bounds.width()
+    );
+  }
+}
