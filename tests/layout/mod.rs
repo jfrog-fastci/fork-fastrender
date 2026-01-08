@@ -74,6 +74,7 @@ mod ruby;
 mod replaced_writing_mode;
 mod text_emphasis_line_height;
 mod text_emphasis_line_height_vertical;
+mod text_combine_upright;
 mod running_elements;
 mod running_position;
 mod running_position_flex;

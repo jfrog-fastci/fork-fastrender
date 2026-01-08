@@ -3918,11 +3918,18 @@ impl InlineFormattingContext {
             s.word_spacing = 0.0;
             s.direction = crate::style::types::Direction::Ltr;
             s.unicode_bidi = UnicodeBidi::Isolate;
+            // Combined text is treated as a single glyph for layout, so it must never be broken
+            // internally (even as an emergency break from `overflow-wrap` / `word-break`).
+            s.word_break = WordBreak::Normal;
+            s.overflow_wrap = OverflowWrap::Normal;
             Arc::new(s)
           };
           let combine_shape_style = {
             let mut s = (*combine_style).clone();
             s.writing_mode = WritingMode::HorizontalTb;
+            // CSS Writing Modes 4 § “Layout Rules”: compose as if in an inline-block with
+            // `line-height: 1em` regardless of the parent’s line-height.
+            s.line_height = crate::style::types::LineHeight::Number(1.0);
             Arc::new(s)
           };
           let mut item = self.create_text_item_from_normalized(
@@ -3936,10 +3943,6 @@ impl InlineFormattingContext {
           )?;
           item.style = combine_style;
           self.compress_text_combine(&mut item, style.font_size);
-          item.break_opportunities = vec![crate::text::line_break::BreakOpportunity::mandatory(
-            item.text.len(),
-          )];
-          item.forced_break_offsets.clear();
           if !item.text.is_empty() {
             items.push(InlineItem::Text(item));
           }
@@ -4006,6 +4009,11 @@ impl InlineFormattingContext {
       1.0
     };
 
+    // The combined composition is measured as a 1em square, with its baseline centered within that
+    // square. (Extra line box space for emphasis marks is handled separately by adjusting
+    // `item.metrics` after glyph placement.)
+    let square_baseline_offset = em * 0.5;
+
     let scaled_ascent = item.metrics.ascent * factor;
     let scaled_descent = item.metrics.descent * factor;
     let scaled_height = (scaled_ascent + scaled_descent).max(0.0);
@@ -4035,10 +4043,10 @@ impl InlineFormattingContext {
       scaled_width += run.advance.max(0.0);
     }
 
-    // Center horizontally within the 1em cell. For vertical text, `baseline_offset` defines the
-    // cell's block-start edge relative to the baseline.
-    let baseline_offset = item.metrics.baseline_offset;
-    let start_shift_x = -baseline_offset + (em - scaled_width) * 0.5;
+    // Center horizontally within the measured 1em square. In vertical layout the fragment origin
+    // is at the block-start edge of the text cell; glyph offsets are relative to the baseline
+    // position, so use the square’s own baseline offset (`0.5em`) to keep the square centered.
+    let start_shift_x = -square_baseline_offset + (em - scaled_width) * 0.5;
 
     // Map horizontal run advances into the vertical cell's block axis by placing all glyphs at the
     // same inline position (no stacked y advances) and offsetting them along X.
@@ -4058,6 +4066,19 @@ impl InlineFormattingContext {
     // Ensure the combined item participates in layout as a single 1em glyph.
     item.advance = em;
     item.advance_for_layout = em;
+
+    // Override baseline metrics so line box calculations treat the composition as a 1em square.
+    // This must happen *after* glyph placement: glyph offsets are computed relative to
+    // `square_baseline_offset` rather than whatever font baseline would normally be used.
+    let mut metrics = BaselineMetrics::new(
+      square_baseline_offset,
+      em,
+      square_baseline_offset,
+      (em - square_baseline_offset).max(0.0),
+    );
+    TextItem::apply_text_emphasis_metrics(&mut metrics, item.style.as_ref());
+    item.metrics = metrics;
+
     item.recompute_cluster_advances();
   }
 
