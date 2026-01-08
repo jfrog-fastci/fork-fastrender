@@ -5809,10 +5809,9 @@ fn apply_displacement_map(
     let map_sample = map
       .pixel(map_x as u32, map_y as u32)
       .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-    // Chrome interprets displacement-map channel selectors on *unpremultiplied* RGBA values, even
-    // though intermediate filter surfaces are stored premultiplied. In other words, a semi-
-    // transparent white map pixel still yields an `R` channel of 1.0 for displacement purposes
-    // (alpha does not attenuate the RGB channel values).
+    // feDisplacementMap uses the unpremultiplied channel values from its `in2` input when
+    // computing the displacement vector. This matters for semi-transparent displacement maps:
+    // the displacement should still follow the colour channels even when alpha < 1.
     let map_sample = to_unpremultiplied(map_sample);
     let channel_value_x = match x_channel {
       ChannelSelector::R => map_sample.r,

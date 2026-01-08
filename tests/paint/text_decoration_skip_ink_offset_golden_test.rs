@@ -1,5 +1,6 @@
 use crate::r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use fastrender::image_output::{encode_image, OutputFormat};
+use fastrender::text::font_db::FontConfig;
 use fastrender::{FastRender, RenderOptions};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,11 +11,11 @@ const DIFF_DIR: &str = "target/text_decoration_skip_ink_offset_diffs";
 const VIEWPORT: (u32, u32) = (420, 160);
 
 fn render_fixture() -> Vec<u8> {
-  // Make the output deterministic across machines (matches CI defaults).
-  std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-
   let html = fs::read_to_string(HTML_PATH).expect("read html fixture");
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
   let options = RenderOptions::new().with_viewport(VIEWPORT.0, VIEWPORT.1);
   let pixmap = renderer
     .render_html_with_options(&html, options)

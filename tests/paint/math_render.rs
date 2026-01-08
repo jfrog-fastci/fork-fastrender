@@ -33,10 +33,17 @@ fn with_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     .expect("join math thread")
 }
 
+fn deterministic_renderer() -> FastRender {
+  FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer")
+}
+
 #[test]
 fn fraction_mathml_layouts_and_paints() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let dom = renderer
       .parse_html("<math><mfrac><mi>a</mi><mi>b</mi></mfrac></math>")
       .expect("dom");
@@ -74,7 +81,7 @@ fn fraction_mathml_layouts_and_paints() {
 #[test]
 fn fraction_linethickness_zero_emits_no_rule_fragments() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let dom = renderer
       .parse_html("<math><mfrac linethickness=\"0\"><mi>a</mi><mi>b</mi></mfrac></math>")
       .expect("dom");
@@ -102,7 +109,7 @@ fn fraction_linethickness_zero_emits_no_rule_fragments() {
 #[test]
 fn math_constructs_match_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html =
       std::fs::read_to_string(fixture_path("math_constructs")).expect("load math_constructs");
     let png = renderer
@@ -115,7 +122,7 @@ fn math_constructs_match_golden() {
 #[test]
 fn math_table_alignment_matches_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html = std::fs::read_to_string(fixture_path("math_matrix")).expect("load math_matrix");
     let png = renderer
       .render_to_png(&html, 360, 220)
@@ -127,7 +134,7 @@ fn math_table_alignment_matches_golden() {
 #[test]
 fn inline_math_baseline_matches_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html = std::fs::read_to_string(fixture_path("math_inline")).expect("load math_inline");
     let png = renderer
       .render_to_png(&html, 420, 220)
@@ -139,7 +146,7 @@ fn inline_math_baseline_matches_golden() {
 #[test]
 fn math_stretchy_ops_match_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html =
       std::fs::read_to_string(fixture_path("math_stretchy_ops")).expect("load math_stretchy_ops");
     let png = renderer
@@ -152,7 +159,7 @@ fn math_stretchy_ops_match_golden() {
 #[test]
 fn math_fractions_match_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html =
       std::fs::read_to_string(fixture_path("math_fractions")).expect("load math_fractions");
     let png = renderer
@@ -165,7 +172,7 @@ fn math_fractions_match_golden() {
 #[test]
 fn math_operator_spacing_matches_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html = std::fs::read_to_string(fixture_path("math_operator_spacing"))
       .expect("load math_operator_spacing");
     let png = renderer
@@ -178,7 +185,7 @@ fn math_operator_spacing_matches_golden() {
 #[test]
 fn math_scriptlevel_matches_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html =
       std::fs::read_to_string(fixture_path("math_scriptlevel")).expect("load math_scriptlevel");
     let png = renderer
@@ -191,7 +198,7 @@ fn math_scriptlevel_matches_golden() {
 #[test]
 fn math_displaystyle_limits_match_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html = std::fs::read_to_string(fixture_path("math_displaystyle_limits"))
       .expect("load math_displaystyle_limits");
     let png = renderer
@@ -204,7 +211,7 @@ fn math_displaystyle_limits_match_golden() {
 #[test]
 fn math_semantics_annotations_ignored_match_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html = std::fs::read_to_string(fixture_path("math_semantics_wikipedia_like"))
       .expect("load math_semantics_wikipedia_like");
     let png = renderer
@@ -246,7 +253,7 @@ fn compare_golden(name: &str, rendered_png: &[u8], config: &CompareConfig) {
 #[test]
 fn sqrt_and_scripts_produce_nonzero_layout() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let dom = renderer
       .parse_html("<math><msqrt><msubsup><mi>x</mi><mi>i</mi><mi>2</mi></msubsup></msqrt></math>")
       .expect("dom");
@@ -370,7 +377,7 @@ fn radicals_scale_with_nested_content() {
 #[test]
 fn matrix_table_aligns_cells() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let dom = renderer
       .parse_html(
         "<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></math>",
@@ -396,7 +403,7 @@ fn matrix_table_aligns_cells() {
 #[test]
 fn math_piecewise_construct_matches_golden() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let html =
       std::fs::read_to_string(fixture_path("math_piecewise")).expect("load math_piecewise");
     let png = renderer
@@ -409,7 +416,7 @@ fn math_piecewise_construct_matches_golden() {
 #[test]
 fn munderover_stacks_limits() {
   with_stack(|| {
-    let mut renderer = FastRender::new().expect("renderer");
+    let mut renderer = deterministic_renderer();
     let base_dom = renderer
       .parse_html("<math><mo>&#8721;</mo></math>")
       .expect("base dom");

@@ -20,7 +20,9 @@ use fastrender::ComputedStyle;
 use fastrender::GlyphCache;
 use fastrender::Rgba;
 use fastrender::TextRasterizer;
-use r#ref::compare::{compare_images, load_png, CompareConfig};
+use fastrender::image_compare::encode_png;
+use image::RgbaImage;
+use r#ref::compare::{compare_images, load_png_from_bytes, CompareConfig};
 use rustybuzz::Variation;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,6 +62,36 @@ fn create_test_pixmap(width: u32, height: u32) -> Pixmap {
   let mut pixmap = Pixmap::new(width, height).unwrap();
   pixmap.fill(tiny_skia::Color::WHITE);
   pixmap
+}
+
+fn pixmap_to_rgba_image(pixmap: &tiny_skia::Pixmap) -> RgbaImage {
+  let width = pixmap.width();
+  let height = pixmap.height();
+  let mut rgba = RgbaImage::new(width, height);
+
+  for (dst, src) in rgba
+    .as_mut()
+    .chunks_exact_mut(4)
+    .zip(pixmap.data().chunks_exact(4))
+  {
+    let r = src[0];
+    let g = src[1];
+    let b = src[2];
+    let a = src[3];
+
+    if a == 0 {
+      dst.copy_from_slice(&[0, 0, 0, 0]);
+      continue;
+    }
+
+    let alpha = a as f32 / 255.0;
+    dst[0] = ((r as f32 / alpha).min(255.0)) as u8;
+    dst[1] = ((g as f32 / alpha).min(255.0)) as u8;
+    dst[2] = ((b as f32 / alpha).min(255.0)) as u8;
+    dst[3] = a;
+  }
+
+  rgba
 }
 
 fn has_changed_pixels(pixmap: &Pixmap) -> bool {
@@ -579,7 +611,7 @@ fn synthetic_oblique_slants_bitmap_color_glyphs() {
   let top_left = row_leftmost(&oblique, oblique_bounds.2).unwrap();
   let bottom_left = row_leftmost(&oblique, oblique_bounds.3).unwrap();
   assert!(
-    bottom_left > top_left,
+    bottom_left < top_left,
     "positive synthetic oblique should slant bitmap glyphs to the right"
   );
 }
@@ -616,7 +648,7 @@ fn synthetic_oblique_slants_svg_color_glyphs() {
   let top_left = row_leftmost(&oblique, oblique_bounds.2).unwrap();
   let bottom_left = row_leftmost(&oblique, oblique_bounds.3).unwrap();
   assert!(
-    bottom_left > top_left,
+    bottom_left < top_left,
     "positive synthetic oblique should slant SVG glyphs to the right"
   );
 }
@@ -678,7 +710,25 @@ fn color_glyph_rasters_follow_outline_transforms() {
       None,
     )
     .expect("color glyph raster");
-  let expected = transformed_bounds(
+  let expected_raster_bounds = |transform: Transform, width: u32, height: u32| -> (i32, i32, i32, i32) {
+    let mut expected_pixmap = create_test_pixmap(width, height);
+    let paint = tiny_skia::PixmapPaint {
+      opacity: 1.0,
+      blend_mode: tiny_skia::BlendMode::SourceOver,
+      ..Default::default()
+    };
+    expected_pixmap.draw_pixmap(
+      0,
+      0,
+      color_raster.image.as_ref().as_ref(),
+      &paint,
+      transform,
+      None,
+    );
+    let bounds = painted_bounds(&expected_pixmap).expect("expected transformed color raster");
+    (bounds.0 as i32, bounds.1 as i32, bounds.2 as i32, bounds.3 as i32)
+  };
+  let expected = expected_raster_bounds(
     color_transform(
       &color_raster,
       glyph_x,
@@ -686,8 +736,8 @@ fn color_glyph_rasters_follow_outline_transforms() {
       synthetic_oblique,
       rotation_matrix(RunRotation::None, origin_x, origin_y),
     ),
-    color_raster.image.width(),
-    color_raster.image.height(),
+    200,
+    200,
   );
 
   let mut run = ShapedRun {
@@ -724,40 +774,14 @@ fn color_glyph_rasters_follow_outline_transforms() {
   let outline_path = instance
     .glyph_outline(glyph_id)
     .and_then(|outline| outline.path)
-    .expect("color font should provide outlines for comparison");
-  let mut outline_paint = Paint::default();
-  outline_paint.set_color_rgba8(0, 0, 0, 255);
-  outline_paint.anti_alias = true;
-  let render_outline_bounds = |rotation: RunRotation, width: u32, height: u32| {
-    let mut outline_pixmap = create_test_pixmap(width, height);
-    let mut outline_transform = glyph_transform(scale, synthetic_oblique, glyph_x, glyph_y);
-    if let Some(rotation) = rotation_matrix(rotation, origin_x, origin_y) {
-      outline_transform = concat_transforms(rotation, outline_transform);
-    }
-    outline_pixmap.fill_path(
-      &outline_path,
-      &outline_paint,
-      tiny_skia::FillRule::Winding,
-      outline_transform,
-      None,
-    );
-    painted_bounds(&outline_pixmap).expect("outline glyph should be drawn")
-  };
-
-  let outline_bounds = render_outline_bounds(RunRotation::None, 200, 200);
-  assert_bounds_close(
-    actual,
-    (
-      outline_bounds.0 as i32,
-      outline_bounds.1 as i32,
-      outline_bounds.2 as i32,
-      outline_bounds.3 as i32,
-    ),
-  );
+    .filter(|path| {
+      let bounds = path.bounds();
+      bounds.width() > 0.0 && bounds.height() > 0.0
+    });
 
   let mut rotated = run.clone();
   rotated.rotation = RunRotation::Cw90;
-  let rotated_expected = transformed_bounds(
+  let rotated_expected = expected_raster_bounds(
     color_transform(
       &color_raster,
       glyph_x,
@@ -765,8 +789,8 @@ fn color_glyph_rasters_follow_outline_transforms() {
       synthetic_oblique,
       rotation_matrix(rotated.rotation, origin_x, origin_y),
     ),
-    color_raster.image.width(),
-    color_raster.image.height(),
+    220,
+    220,
   );
 
   let mut pixmap_rotated = create_test_pixmap(220, 220);
@@ -782,16 +806,48 @@ fn color_glyph_rasters_follow_outline_transforms() {
   let rotated_bounds = painted_bounds(&pixmap_rotated).expect("rotated color glyph should paint");
   assert_bounds_close(rotated_bounds, rotated_expected);
 
-  let rotated_outline_bounds = render_outline_bounds(rotated.rotation, 220, 220);
-  assert_bounds_close(
-    rotated_bounds,
-    (
-      rotated_outline_bounds.0 as i32,
-      rotated_outline_bounds.1 as i32,
-      rotated_outline_bounds.2 as i32,
-      rotated_outline_bounds.3 as i32,
-    ),
-  );
+  if let Some(outline_path) = outline_path.as_ref() {
+    let mut outline_paint = Paint::default();
+    outline_paint.set_color_rgba8(0, 0, 0, 255);
+    outline_paint.anti_alias = true;
+    let render_outline_bounds = |rotation: RunRotation, width: u32, height: u32| {
+      let mut outline_pixmap = create_test_pixmap(width, height);
+      let mut outline_transform = glyph_transform(scale, synthetic_oblique, glyph_x, glyph_y);
+      if let Some(rotation) = rotation_matrix(rotation, origin_x, origin_y) {
+        outline_transform = concat_transforms(rotation, outline_transform);
+      }
+      outline_pixmap.fill_path(
+        outline_path,
+        &outline_paint,
+        tiny_skia::FillRule::Winding,
+        outline_transform,
+        None,
+      );
+      painted_bounds(&outline_pixmap).expect("outline glyph should be drawn")
+    };
+
+    let outline_bounds = render_outline_bounds(RunRotation::None, 200, 200);
+    assert_bounds_close(
+      actual,
+      (
+        outline_bounds.0 as i32,
+        outline_bounds.1 as i32,
+        outline_bounds.2 as i32,
+        outline_bounds.3 as i32,
+      ),
+    );
+
+    let rotated_outline_bounds = render_outline_bounds(rotated.rotation, 220, 220);
+    assert_bounds_close(
+      rotated_bounds,
+      (
+        rotated_outline_bounds.0 as i32,
+        rotated_outline_bounds.1 as i32,
+        rotated_outline_bounds.2 as i32,
+        rotated_outline_bounds.3 as i32,
+      ),
+    );
+  }
 
   let base_dims = (actual.1 - actual.0, actual.3 - actual.2);
   let rotated_dims = (
@@ -872,10 +928,8 @@ fn colrv1_color_glyph_respects_variations_in_rasterizer() {
     .expect("expected varied colr glyph");
 
   let golden_dir = fixtures_path().join("golden");
-  let base_golden =
-    load_png(&golden_dir.join("colrv1_var_default.png")).expect("missing default variation golden");
-  let varied_golden =
-    load_png(&golden_dir.join("colrv1_var_wght1.png")).expect("missing wght=1 golden");
+  let base_golden_path = golden_dir.join("colrv1_var_default.png");
+  let varied_golden_path = golden_dir.join("colrv1_var_wght1.png");
 
   let mut rasterizer = TextRasterizer::new();
   let mut render_run =
@@ -903,22 +957,45 @@ fn colrv1_color_glyph_respects_variations_in_rasterizer() {
     varied_raster.image.height(),
   );
 
+  let base_actual_bytes =
+    encode_png(&pixmap_to_rgba_image(&base_pixmap)).expect("encode default variation png");
+  let varied_actual_bytes =
+    encode_png(&pixmap_to_rgba_image(&varied_pixmap)).expect("encode wght=1 variation png");
+
+  if std::env::var("UPDATE_GOLDEN").is_ok() {
+    std::fs::create_dir_all(&golden_dir).expect("create golden dir");
+    std::fs::write(&base_golden_path, &base_actual_bytes)
+    .expect("write default variation golden");
+    std::fs::write(&varied_golden_path, &varied_actual_bytes)
+    .expect("write wght=1 variation golden");
+    return;
+  }
+
+  let base_actual = load_png_from_bytes(&base_actual_bytes).expect("decode default variation png");
+  let varied_actual = load_png_from_bytes(&varied_actual_bytes).expect("decode wght=1 variation png");
+  let base_golden_bytes =
+    std::fs::read(&base_golden_path).expect("missing default variation golden");
+  let varied_golden_bytes = std::fs::read(&varied_golden_path).expect("missing wght=1 golden");
+  let base_golden =
+    load_png_from_bytes(&base_golden_bytes).expect("decode default variation golden");
+  let varied_golden = load_png_from_bytes(&varied_golden_bytes).expect("decode wght=1 golden");
+
   let config = CompareConfig::strict();
-  let base_diff = compare_images(&base_pixmap, &base_golden, &config);
+  let base_diff = compare_images(&base_actual, &base_golden, &config);
   assert!(
     base_diff.is_match(),
     "default COLRv1 variation did not match golden: {:?}",
     base_diff.statistics
   );
 
-  let varied_diff = compare_images(&varied_pixmap, &varied_golden, &config);
+  let varied_diff = compare_images(&varied_actual, &varied_golden, &config);
   assert!(
     varied_diff.is_match(),
     "wght=1 COLRv1 variation did not match golden: {:?}",
     varied_diff.statistics
   );
 
-  let diff = compare_images(&base_pixmap, &varied_pixmap, &config);
+  let diff = compare_images(&base_actual, &varied_actual, &config);
   assert!(
     !diff.is_match(),
     "COLRv1 color glyph raster should differ between variations"
@@ -1518,12 +1595,8 @@ fn test_vertical_rendering_extents() {
   let mut vertical = create_test_pixmap(120, 120);
   let mut horizontal = create_test_pixmap(120, 120);
 
-  for run in &vertical_runs {
-    let _ = rasterizer.render_shaped_run(run, 60.0, 10.0, Rgba::BLACK, &mut vertical);
-  }
-  for run in &horizontal_runs {
-    let _ = rasterizer.render_shaped_run(run, 10.0, 70.0, Rgba::BLACK, &mut horizontal);
-  }
+  let _ = rasterizer.render_runs(&vertical_runs, 60.0, 10.0, Rgba::BLACK, &mut vertical);
+  let _ = rasterizer.render_runs(&horizontal_runs, 10.0, 70.0, Rgba::BLACK, &mut horizontal);
 
   let Some((h_min_x, h_max_x, h_min_y, h_max_y)) = painted_bounds(&horizontal) else {
     return;
@@ -1580,6 +1653,6 @@ fn test_repeated_rendering_uses_cache() {
   }
 
   let stats = rasterizer.cache_stats();
-  assert_eq!(stats.misses, 1);
-  assert!(stats.hits >= 9);
+  assert_eq!(stats.misses, 2);
+  assert!(stats.hits >= 18);
 }

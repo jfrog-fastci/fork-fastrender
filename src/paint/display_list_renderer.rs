@@ -8266,7 +8266,7 @@ impl DisplayListRenderer {
     }
 
     let task_capacity = self.parallel_thread_budget(tile_estimate);
-    if task_capacity <= 1 {
+    if task_capacity <= 1 && matches!(self.paint_parallelism.mode, PaintParallelismMode::Auto) {
       let paint_pool = crate::paint::paint_thread_pool::paint_pool();
       let mut message = "parallel paint thread budget is single-threaded".to_string();
       if paint_pool.threads <= 1 {

@@ -1511,6 +1511,14 @@ impl DisplayListBuilder {
     if self.viewport.is_none() {
       let viewport = tree.viewport_size();
       self.viewport = Some((viewport.width, viewport.height));
+      if self.culling_viewport.is_none() && !tree.has_explicit_viewport() {
+        let content_bounds = tree.content_size();
+        let max_x = content_bounds.max_x().max(0.0);
+        let max_y = content_bounds.max_y().max(0.0);
+        if max_x > 0.0 && max_y > 0.0 {
+          self.culling_viewport = Some((max_x, max_y));
+        }
+      }
     }
     self.estimate_from_tree(tree);
     for root in std::iter::once(&tree.root).chain(tree.additional_fragments.iter()) {
@@ -1535,6 +1543,14 @@ impl DisplayListBuilder {
     if self.viewport.is_none() {
       let viewport = tree.viewport_size();
       self.viewport = Some((viewport.width, viewport.height));
+      if self.culling_viewport.is_none() && !tree.has_explicit_viewport() {
+        let content_bounds = tree.content_size();
+        let max_x = content_bounds.max_x().max(0.0);
+        let max_y = content_bounds.max_y().max(0.0);
+        if max_x > 0.0 && max_y > 0.0 {
+          self.culling_viewport = Some((max_x, max_y));
+        }
+      }
     }
 
     self.estimate_from_tree(tree);
@@ -1582,7 +1598,11 @@ impl DisplayListBuilder {
   pub fn build_from_stacking_checked(mut self, stacking: &StackingContext) -> Result<DisplayList> {
     self.skip_stacking_context_children = true;
     if self.viewport.is_none() {
-      self.viewport = Some((stacking.bounds.width(), stacking.bounds.height()));
+      let max_x = stacking.bounds.max_x().max(0.0);
+      let max_y = stacking.bounds.max_y().max(0.0);
+      if max_x > 0.0 && max_y > 0.0 {
+        self.viewport = Some((max_x, max_y));
+      }
     }
     let mut svg_roots = Vec::new();
     Self::collect_stacking_fragments(stacking, &mut svg_roots);
@@ -1703,8 +1723,14 @@ impl DisplayListBuilder {
   ) -> Result<DisplayList> {
     self.skip_stacking_context_children = true;
     if self.viewport.is_none() {
-      if let Some(first) = stackings.first() {
-        self.viewport = Some((first.bounds.width(), first.bounds.height()));
+      let mut max_x: f32 = 0.0;
+      let mut max_y: f32 = 0.0;
+      for stacking in stackings {
+        max_x = max_x.max(stacking.bounds.max_x());
+        max_y = max_y.max(stacking.bounds.max_y());
+      }
+      if max_x > 0.0 && max_y > 0.0 {
+        self.viewport = Some((max_x, max_y));
       }
     }
     let mut svg_roots = Vec::new();
@@ -8599,8 +8625,7 @@ impl DisplayListBuilder {
     }
 
     let text = if let TextEmphasisStyle::String(ref s) = style.text_emphasis_style {
-      use unicode_segmentation::UnicodeSegmentation;
-      let mark_str = s.graphemes(true).next().unwrap_or("");
+      let mark_str = s.as_str();
       if mark_str.is_empty() {
         None
       } else {
@@ -9475,30 +9500,42 @@ impl DisplayListBuilder {
           if control.invalid {
             select_style.color = accent;
           }
-          let arrow_space = if matches!(control.appearance, Appearance::None) {
-            0.0
+          let mut label_rect = content_rect;
+          let arrow_rect = if matches!(control.appearance, Appearance::None) {
+            None
           } else {
-            14.0_f32.min(content_rect.width().max(0.0))
+            let padding_right = (padding_rect.max_x() - content_rect.max_x()).max(0.0);
+            if padding_right > 0.0 {
+              Some(Rect::from_xywh(
+                content_rect.max_x(),
+                content_rect.y(),
+                padding_right,
+                content_rect.height(),
+              ))
+            } else {
+              let arrow_space = 14.0_f32.min(content_rect.width().max(0.0));
+              if arrow_space <= 0.0 {
+                None
+              } else {
+                label_rect = Rect::from_xywh(
+                  content_rect.x(),
+                  content_rect.y(),
+                  (content_rect.width() - arrow_space).max(0.0),
+                  content_rect.height(),
+                );
+                Some(Rect::from_xywh(
+                  content_rect.max_x() - arrow_space,
+                  content_rect.y(),
+                  arrow_space,
+                  content_rect.height(),
+                ))
+              }
+            }
           };
-          let label_rect = if arrow_space > 0.0 {
-            Rect::from_xywh(
-              content_rect.x(),
-              content_rect.y(),
-              (content_rect.width() - arrow_space).max(0.0),
-              content_rect.height(),
-            )
-          } else {
-            content_rect
-          };
+
           let _ = self.emit_text_with_style_raw(label, Some(&select_style), label_rect);
 
-          if arrow_space > 0.0 {
-            let arrow_rect = Rect::from_xywh(
-              content_rect.max_x() - arrow_space,
-              content_rect.y(),
-              arrow_space,
-              content_rect.height(),
-            );
+          if let Some(arrow_rect) = arrow_rect {
             let mut arrow_style = select_style;
             arrow_style.color = muted_accent;
             arrow_style.font_size = (style.font_size * 0.9).max(8.0);

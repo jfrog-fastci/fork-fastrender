@@ -364,6 +364,30 @@ pub struct StackingContext {
 }
 
 impl StackingContext {
+  fn compare_children_for_paint(a: &StackingContext, b: &StackingContext) -> Ordering {
+    match a.z_index.cmp(&b.z_index) {
+      Ordering::Equal => {
+        let a_top_layer = matches!(a.reason, StackingContextReason::TopLayer);
+        let b_top_layer = matches!(b.reason, StackingContextReason::TopLayer);
+        match a_top_layer.cmp(&b_top_layer) {
+          Ordering::Equal => {
+            if a_top_layer {
+              // Top layer elements render above all other stacking contexts. They are ordered
+              // by tree order, but the earliest element should be painted last (on top).
+              b.tree_order.cmp(&a.tree_order)
+            } else {
+              a.tree_order.cmp(&b.tree_order)
+            }
+          }
+          // Ensure top-layer contexts always sort above non-top-layer contexts, even if the
+          // author picked a maximal z-index value.
+          other => other,
+        }
+      }
+      other => other,
+    }
+  }
+
   /// Creates a new stacking context with the given z-index
   pub fn new(z_index: i32) -> Self {
     Self {
@@ -453,10 +477,7 @@ impl StackingContext {
   /// Returns child stacking contexts with negative z-index, sorted (most negative first)
   pub fn negative_z_children(&self) -> Vec<&StackingContext> {
     let mut negative: Vec<_> = self.children.iter().filter(|c| c.z_index < 0).collect();
-    negative.sort_by(|a, b| match a.z_index.cmp(&b.z_index) {
-      Ordering::Equal => a.tree_order.cmp(&b.tree_order),
-      other => other,
-    });
+    negative.sort_by(|a, b| Self::compare_children_for_paint(a, b));
     negative
   }
 
@@ -470,10 +491,7 @@ impl StackingContext {
   /// Returns child stacking contexts with positive z-index, sorted (least positive first)
   pub fn positive_z_children(&self) -> Vec<&StackingContext> {
     let mut positive: Vec<_> = self.children.iter().filter(|c| c.z_index > 0).collect();
-    positive.sort_by(|a, b| match a.z_index.cmp(&b.z_index) {
-      Ordering::Equal => a.tree_order.cmp(&b.tree_order),
-      other => other,
-    });
+    positive.sort_by(|a, b| Self::compare_children_for_paint(a, b));
     positive
   }
 
@@ -488,10 +506,7 @@ impl StackingContext {
     self.layer6_positioned.sort_by_key(|frag| frag.tree_order);
     self
       .children
-      .sort_by(|a, b| match a.z_index.cmp(&b.z_index) {
-        Ordering::Equal => a.tree_order.cmp(&b.tree_order),
-        other => other,
-      });
+      .sort_by(Self::compare_children_for_paint);
 
     // Recursively sort grandchildren
     for child in &mut self.children {

@@ -22,7 +22,7 @@ fn picture_prefers_source_over_img_fallback_for_dpr() {
 
   let html = format!(
     r#"
-    <style>body {{ margin: 0; }}</style>
+    <style>body {{ margin: 0; }} picture, img {{ display: block; }}</style>
     <picture>
       <source srcset="{green} 2x, {red} 1x" type="image/png">
       <img src="{blue}" srcset="{blue} 1x" width="10" height="10">
@@ -36,7 +36,9 @@ fn picture_prefers_source_over_img_fallback_for_dpr() {
     .expect("renderer");
   let pixmap = renderer.render_html(&html, 10, 10).expect("render picture");
 
-  let px = pixmap.pixel(5, 5).expect("center pixel");
+  let px = pixmap
+    .pixel(pixmap.width() / 2, pixmap.height() / 2)
+    .expect("center pixel");
   assert_eq!((px.red(), px.green(), px.blue()), (0, 255, 0));
 }
 
@@ -48,7 +50,7 @@ fn picture_filters_by_media_and_type() {
 
   let html = format!(
     r#"
-    <style>body {{ margin: 0; }}</style>
+    <style>body {{ margin: 0; }} picture, img {{ display: block; }}</style>
     <picture>
       <source srcset="{unsupported} 1x" media="(min-width: 1px)" type="image/unsupported">
       <source srcset="{supported} 1x" media="(min-width: 300px)" type="image/png">

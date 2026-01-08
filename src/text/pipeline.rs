@@ -5154,19 +5154,16 @@ fn map_hb_position(
   scale: f32,
   pos: &rustybuzz::GlyphPosition,
 ) -> (f32, f32, f32, f32) {
-  let mut inline_advance_raw = if vertical {
-    pos.y_advance
-  } else {
-    pos.x_advance
-  };
+  let mut inline_advance_raw = if vertical { pos.y_advance } else { pos.x_advance };
+  let mut cross_advance_raw = if vertical { pos.x_advance } else { pos.y_advance };
+
+  // Some fonts (notably bitmap color fonts) do not provide vertical advances via HarfBuzz and
+  // instead populate `x_advance` even when shaping in vertical mode. When we fall back to using
+  // `x_advance` as the inline advance, ensure we do not also treat it as cross-axis movement.
   if vertical && inline_advance_raw == 0 {
-    inline_advance_raw = pos.x_advance;
+    inline_advance_raw = cross_advance_raw;
+    cross_advance_raw = 0;
   }
-  let cross_advance_raw = if vertical {
-    pos.x_advance
-  } else {
-    pos.y_advance
-  };
   let inline_offset_raw = if vertical { pos.y_offset } else { pos.x_offset };
   let cross_offset_raw = if vertical { pos.x_offset } else { pos.y_offset };
 
@@ -7571,7 +7568,10 @@ mod tests {
       "baseline shift should still apply to x offset in vertical mode"
     );
     assert_eq!(y_offset, 2.0, "inline offset stays on the inline axis");
-    assert_eq!(x_advance, -15.0, "x advance uses the cross axis advance");
+    assert_eq!(
+      x_advance, 0.0,
+      "cross-axis advance should be cleared when falling back to x_advance as inline advance"
+    );
     assert_eq!(
       y_advance, 15.0,
       "inline advance falls back to x_advance and is absolute"

@@ -231,7 +231,7 @@ fn svg_filter_resvg_missing_in2_defaults_to_previous_for_fe_displacement_map() {
         <filter id="f" x="0" y="0" width="5" height="5" filterUnits="userSpaceOnUse"
                 primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
           <feFlood flood-color="white" flood-opacity="0.5" result="map"/>
-          <feDisplacementMap in="SourceGraphic" scale="2" xChannelSelector="R" yChannelSelector="R"/>
+          <feDisplacementMap in="SourceGraphic" scale="2" xChannelSelector="A" yChannelSelector="A"/>
         </filter>
       </defs>
       <g filter="url(#f)">
@@ -252,7 +252,7 @@ fn svg_filter_resvg_empty_in2_treated_as_missing_for_fe_displacement_map() {
         <filter id="f" x="0" y="0" width="5" height="5" filterUnits="userSpaceOnUse"
                 primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
           <feFlood flood-color="white" flood-opacity="0.5" result="map"/>
-          <feDisplacementMap in="SourceGraphic" in2="" scale="2" xChannelSelector="R" yChannelSelector="R"/>
+          <feDisplacementMap in="SourceGraphic" in2="" scale="2" xChannelSelector="A" yChannelSelector="A"/>
         </filter>
       </defs>
       <g filter="url(#f)">

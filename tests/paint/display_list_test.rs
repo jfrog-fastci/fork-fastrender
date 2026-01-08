@@ -2108,28 +2108,15 @@ fn test_display_list_clear() {
 #[test]
 fn svg_filter_url_fragment_applies_in_display_list() {
   let mut renderer = FastRender::new().expect("renderer");
-  let html = r#"
-    <html>
-      <head>
-        <style>body { margin: 0; padding: 0; }</style>
-      </head>
-      <body>
-        <svg width="0" height="0">
-          <filter id="tint">
-            <feFlood flood-color="rgb(255, 0, 0)" flood-opacity="1" result="f"/>
-            <feComposite in="f" in2="SourceAlpha" operator="in"/>
-          </filter>
-        </svg>
-        <div style="width: 2px; height: 2px; background: rgb(0, 0, 255); filter: url(#tint);"></div>
-      </body>
-    </html>
-  "#;
+  let html = r#"<html><head><style>body { margin: 0; padding: 0; }</style></head><body><svg width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden"><filter id="tint"><feFlood flood-color="rgb(255, 0, 0)" flood-opacity="1" result="f"/><feComposite in="f" in2="SourceAlpha" operator="in"/></filter></svg><div style="width:2px;height:2px;background:rgb(0, 0, 255);filter:url(#tint);"></div></body></html>"#;
   let dom = renderer.parse_html(html).expect("parse html");
   let fragments = renderer
     .layout_document(&dom, 2, 2)
     .expect("layout document with svg filter");
 
-  let list = DisplayListBuilder::new().build_with_stacking_tree(&fragments.root);
+  let list = DisplayListBuilder::new()
+    .build_tree_with_stacking_checked(&fragments)
+    .expect("build display list with stacking + svg filter defs");
   let pixmap = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new())
     .unwrap()
     .render(&list)
