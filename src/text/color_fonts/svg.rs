@@ -342,6 +342,15 @@ fn svg_href_value<'a>(node: &'a roxmltree::Node<'a, 'a>) -> Option<&'a str> {
   None
 }
 
+#[inline]
+fn is_ascii_whitespace_css(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
+
 fn contains_disallowed_url_function(value: &str) -> bool {
   let lower = value.to_ascii_lowercase();
   let mut search_start = 0usize;
@@ -351,7 +360,7 @@ fn contains_disallowed_url_function(value: &str) -> bool {
     let after = &value[idx + 4..];
     if let Some(close_idx) = after.find(')') {
       let raw_target = &after[..close_idx];
-      let target = raw_target.trim().trim_matches(|c| matches!(c, '"' | '\''));
+      let target = trim_ascii_whitespace_css(raw_target).trim_matches(|c| matches!(c, '"' | '\''));
       if is_disallowed_svg_reference(target) {
         return true;
       }
@@ -381,7 +390,7 @@ enum SvgReference {
 }
 
 fn classify_svg_reference(target: &str) -> SvgReference {
-  let trimmed = target.trim();
+  let trimmed = trim_ascii_whitespace_css(target);
   if trimmed.is_empty() {
     return SvgReference::Empty;
   }
@@ -468,13 +477,13 @@ fn rewrite_style_attribute(style: &str, inject_color: Option<&str>) -> Option<St
   let mut saw_color = false;
 
   for raw in style.split(';') {
-    let raw = raw.trim();
+    let raw = trim_ascii_whitespace_css(raw);
     if raw.is_empty() {
       continue;
     }
     if let Some((name, value)) = raw.split_once(':') {
-      let name = name.trim();
-      let mut value = value.trim().to_string();
+      let name = trim_ascii_whitespace_css(name);
+      let mut value = trim_ascii_whitespace_css(value).to_string();
       if let Some(replaced) = replace_context_paint(&value) {
         value = replaced;
         changed = true;
@@ -554,7 +563,10 @@ fn concat_transforms(a: Transform, b: Transform) -> Transform {
 #[cfg(test)]
 mod tests {
   use super::super::limits::GlyphRasterLimits;
-  use super::{preprocess_svg_markup, rasterize_svg_with_metrics, sanitize_svg_glyph_for_tests};
+  use super::{
+    classify_svg_reference, contains_disallowed_url_function, preprocess_svg_markup,
+    rasterize_svg_with_metrics, sanitize_svg_glyph_for_tests, SvgReference,
+  };
   use crate::style::color::Rgba;
 
   #[test]
@@ -577,5 +589,16 @@ mod tests {
       preprocess_svg_markup("<svg><", Rgba::rgb(1, 2, 3))
     }));
     assert!(preprocess.is_ok(), "preprocess_svg_markup panicked");
+  }
+
+  #[test]
+  fn non_ascii_whitespace_svg_reference_classification_does_not_trim_nbsp() {
+    assert_eq!(classify_svg_reference(" "), SvgReference::Empty);
+    assert_eq!(classify_svg_reference("\u{00A0}"), SvgReference::External);
+    assert_eq!(classify_svg_reference(" \u{00A0} "), SvgReference::External);
+    assert!(
+      contains_disallowed_url_function("url(\u{00A0})"),
+      "NBSP should not be treated as CSS whitespace when classifying url() targets"
+    );
   }
 }

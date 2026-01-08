@@ -1368,7 +1368,8 @@ fn url_ends_with_svgz(url: &str) -> bool {
 }
 
 fn svg_text_looks_like_markup(text: &str) -> bool {
-  let trimmed = text.strip_prefix('\u{feff}').unwrap_or(text).trim_start();
+  let without_bom = text.strip_prefix('\u{feff}').unwrap_or(text);
+  let trimmed = trim_ascii_whitespace_start(without_bom);
   trimmed
     .get(..4)
     .is_some_and(|prefix| prefix.eq_ignore_ascii_case("<svg"))
@@ -2742,7 +2743,7 @@ impl ImageCache {
       return Ok(about_url_placeholder_metadata());
     }
     if let Some(svg) = decode_inline_svg_url(trimmed) {
-      let cache_key = inline_svg_cache_key(svg.trim_start());
+      let cache_key = inline_svg_cache_key(trim_ascii_whitespace_start(&svg));
       record_image_cache_request();
 
       if let Some(img) = self.get_cached(&cache_key) {
@@ -8133,6 +8134,13 @@ mod tests {
     assert_eq!(image.height(), 5);
     assert_eq!(ratio, Some(2.0));
     assert!(!aspect_none);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_svg_text_looks_like_markup_does_not_trim_nbsp() {
+    assert!(svg_text_looks_like_markup("<svg></svg>"));
+    assert!(svg_text_looks_like_markup("\n\t<svg></svg>"));
+    assert!(!svg_text_looks_like_markup("\u{00A0}<svg></svg>"));
   }
 
   #[test]

@@ -195,6 +195,10 @@ fn trim_ascii_whitespace_html_css(value: &str) -> &str {
   value.trim_matches(is_ascii_whitespace_html_css)
 }
 
+fn trim_ascii_whitespace_start_html_css(value: &str) -> &str {
+  value.trim_start_matches(is_ascii_whitespace_html_css)
+}
+
 /// Main painter that rasterizes a FragmentTree to pixels
 pub struct Painter {
   /// The pixmap being painted to
@@ -1251,7 +1255,7 @@ impl Painter {
         if !needs_intrinsic && !needs_ratio {
           return;
         }
-        let image = if content.svg.trim_start().starts_with('<') {
+        let image = if trim_ascii_whitespace_start_html_css(&content.svg).starts_with('<') {
           self.image_cache.render_svg(&content.svg)
         } else {
           self.image_cache.load(&content.svg)
@@ -1276,7 +1280,7 @@ impl Painter {
         if !needs_intrinsic && !needs_ratio {
           return;
         }
-        let image = if content.trim_start().starts_with('<') {
+        let image = if trim_ascii_whitespace_start_html_css(&content).starts_with('<') {
           self.image_cache.render_svg(&content)
         } else {
           self.image_cache.load(&content)
@@ -7097,7 +7101,7 @@ impl Painter {
 
     // Defensive: allow callers to fall back to the generic SVG paint path if this does not
     // look like inline SVG markup.
-    let trimmed = content.trim_start();
+    let trimmed = trim_ascii_whitespace_start_html_css(content);
     let inline_svg = trimmed.starts_with("<svg") || trimmed.starts_with("<?xml");
     if !inline_svg {
       return self.paint_svg(content, style, x, y, width, height, clip_mask);
@@ -8986,7 +8990,7 @@ impl Painter {
     clip_mask: Option<&Mask>,
     reject_placeholder: bool,
   ) -> bool {
-    let trimmed = src.url.trim_start();
+    let trimmed = trim_ascii_whitespace_start_html_css(src.url);
     if trimmed.is_empty() {
       return false;
     }
@@ -9272,7 +9276,7 @@ impl Painter {
       return false;
     }
 
-    let trimmed = content.trim_start();
+    let trimmed = trim_ascii_whitespace_start_html_css(content);
     let inline_svg = trimmed.starts_with("<svg") || trimmed.starts_with("<?xml");
 
     if inline_svg {
@@ -15663,6 +15667,52 @@ mod tests {
     let style = ComputedStyle::default();
     assert!(painter.measure_alt_text(" ", &style).is_none());
     assert!(painter.measure_alt_text("\u{00A0}", &style).is_some());
+  }
+
+  #[test]
+  fn non_ascii_whitespace_paint_svg_does_not_trim_nbsp_prefix() {
+    #[derive(Clone)]
+    struct CountingFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl crate::resource::ResourceFetcher for CountingFetcher {
+      fn fetch(&self, url: &str) -> crate::error::Result<crate::resource::FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(crate::error::Error::Other(format!(
+          "unexpected fetch attempt for {url}"
+        )))
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CountingFetcher {
+      calls: Arc::clone(&calls),
+    };
+    let image_cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let font_ctx = FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
+    let mut painter = Painter::with_resources_scaled(
+      10,
+      10,
+      Rgba::TRANSPARENT,
+      font_ctx,
+      image_cache,
+      1.0,
+    )
+    .expect("painter");
+
+    let svg = "\u{00A0}<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"></svg>";
+    let painted = painter.paint_svg(svg, None, 0.0, 0.0, 10.0, 10.0, None);
+    assert!(
+      !painted,
+      "expected SVG paint to treat NBSP-prefixed markup as a URL (and fail without a fetch)"
+    );
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "NBSP must not be treated as whitespace when detecting inline SVG markup"
+    );
   }
 
   #[test]
