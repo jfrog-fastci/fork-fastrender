@@ -92,6 +92,9 @@ jobs:
       - name: Lint: no panics in production code
         run: cargo xtask lint-no-panics
 
+      - name: Build browser binary
+        run: cargo build --all-features --bin browser
+
       - name: Run tests
         run: cargo test --all-features --verbose
 
