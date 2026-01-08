@@ -8585,6 +8585,7 @@ impl FlexFormattingContext {
     let cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>> = active_deadline()
       .filter(|deadline| deadline.is_enabled())
       .map(|_| Arc::new(|| check_active(RenderStage::Layout).is_err()) as _);
+    let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
 
     for candidate in positioned {
       check_layout_deadline(&mut deadline_counter)?;
@@ -8596,8 +8597,62 @@ impl FlexFormattingContext {
         Some(&box_node.style),
         auto_unskipped_for_pass,
       )?;
-      style.size.width = Dimension::length(candidate.fragment.bounds.width().max(0.0));
-      style.size.height = Dimension::length(candidate.fragment.bounds.height().max(0.0));
+      // CSS Flexbox §abspos-items uses the abspos child's *used size* when determining the main-axis
+      // edges of the static-position rectangle. For `width/height:auto` abspos boxes this can be
+      // shrink-to-fit, which differs from the hypothetical in-flow fragment size captured earlier
+      // for intrinsic sizing.
+      //
+      // Compute the used border-box size using the absolute positioning algorithm (the static
+      // position itself does not affect used sizes), and feed that into the flex probe.
+      let probe_size = {
+        let actual_horizontal = candidate.positioned_style.padding.left
+          + candidate.positioned_style.padding.right
+          + candidate.positioned_style.border_width.left
+          + candidate.positioned_style.border_width.right;
+        let actual_vertical = candidate.positioned_style.padding.top
+          + candidate.positioned_style.padding.bottom
+          + candidate.positioned_style.border_width.top
+          + candidate.positioned_style.border_width.bottom;
+        let (intrinsic_horizontal, intrinsic_vertical) =
+          crate::layout::absolute_positioning::intrinsic_edge_sizes(
+            &candidate.original_style,
+            self.viewport_size,
+            &self.font_context,
+          );
+        let preferred_min_inline = candidate
+          .preferred_min_inline
+          .map(|v| (v - intrinsic_horizontal).max(0.0));
+        let preferred_inline = candidate
+          .preferred_inline
+          .map(|v| (v - intrinsic_horizontal).max(0.0));
+        let preferred_min_block = candidate
+          .preferred_min_block
+          .map(|v| (v - intrinsic_vertical).max(0.0));
+        let preferred_block = candidate
+          .preferred_block
+          .map(|v| (v - intrinsic_vertical).max(0.0));
+        let intrinsic_size = Size::new(
+          (candidate.fragment.bounds.size.width - actual_horizontal).max(0.0),
+          (candidate.fragment.bounds.size.height - actual_vertical).max(0.0),
+        );
+        let mut input = AbsoluteLayoutInput::new(
+          candidate.positioned_style.clone(),
+          intrinsic_size,
+          Point::ZERO,
+        );
+        input.is_replaced = candidate.is_replaced;
+        input.preferred_min_inline_size = preferred_min_inline;
+        input.preferred_inline_size = preferred_inline;
+        input.preferred_min_block_size = preferred_min_block;
+        input.preferred_block_size = preferred_block;
+        let result = abs.layout_absolute(&input, &candidate.cb)?;
+        Size::new(
+          (result.size.width + actual_horizontal).max(0.0),
+          (result.size.height + actual_vertical).max(0.0),
+        )
+      };
+      style.size.width = Dimension::length(probe_size.width);
+      style.size.height = Dimension::length(probe_size.height);
       style.flex_grow = 0.0;
       style.flex_shrink = 0.0;
       style.flex_basis = Dimension::auto();

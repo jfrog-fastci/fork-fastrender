@@ -1,6 +1,7 @@
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
+use fastrender::geometry::Size;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
@@ -11,6 +12,7 @@ use fastrender::style::types::{
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::fragment_tree::FragmentNode;
 use std::sync::Arc;
 
@@ -292,6 +294,54 @@ fn abspos_static_position_accounts_for_cross_axis_margins() {
   // Margin box height = 20(top) + 10 + 0(bottom) = 30; centered in 100 → margin edge at 35.
   // Border box y = margin edge + margin-top = 35 + 20 = 55.
   assert!((y - 55.0).abs() < 0.1, "expected y≈55, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_uses_used_size_for_auto_main_size() {
+  // Flexbox §abspos-items defines the main-axis edges of the static-position rectangle using the
+  // abspos child's *used size*. For `width:auto` abspos boxes this is shrink-to-fit, which can
+  // differ from the hypothetical in-flow size used to measure intrinsic sizes.
+  //
+  // Regression: if the static-position probe uses the child's in-flow border box size (100px),
+  // `justify-content:center` produces x=0, and the abspos child ends up left-aligned even though
+  // its used size is smaller.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.justify_content = JustifyContent::Center;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.height = Some(Length::px(10.0));
+
+  let replaced_style = ComputedStyle::default();
+  let replaced_child = BoxNode::new_replaced(
+    Arc::new(replaced_style),
+    ReplacedType::Canvas,
+    Some(Size::new(20.0, 10.0)),
+    None,
+  );
+  let abs_child = BoxNode::new_block(
+    Arc::new(abs_style),
+    FormattingContextType::Block,
+    vec![replaced_child],
+  );
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![abs_child],
+  );
+  let constraints = LayoutConstraints::definite(100.0, 100.0);
+  let fc = FlexFormattingContext::new();
+
+  let fragment = fc.layout(&container, &constraints).expect("flex layout");
+  let (x, _) = abs_child_position(&fragment);
+  assert!((x - 40.0).abs() < 0.1, "expected x≈40, got {}", x);
 }
 
 #[test]
