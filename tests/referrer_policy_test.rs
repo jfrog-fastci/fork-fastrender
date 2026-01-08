@@ -125,6 +125,20 @@ impl HeaderCaptureServer {
                 b"<!doctype html><body>frame</body>".to_vec(),
               ),
               "/style.css" => ("200 OK", "text/css; charset=utf-8", b"body { }".to_vec()),
+              "/doc_response_policy.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head>
+    <link rel="stylesheet" href="/style_import.css">
+  </head>
+  <body>
+    <div>hello</div>
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
               "/style_redirect.css" => (
                 "302 Found",
                 "text/plain; charset=utf-8",
@@ -187,6 +201,9 @@ body { font-family: "TestFont"; }"#
               } else {
                 extra_headers.push_str("Access-Control-Allow-Origin: *\r\n");
               }
+            }
+            if path == "/doc_response_policy.html" {
+              extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
             if matches!(path.as_str(), "/style_redirect.css" | "/style_redirect_policy.css") {
               extra_headers.push_str("Location: /style_import.css\r\n");
@@ -985,4 +1002,97 @@ fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_f
     "expected redirect follow-up request Referer to be omitted due to redirect Referrer-Policy: no-referrer; got:\n{}",
     followup_req.headers
   );
+}
+
+#[test]
+fn meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests() {
+  let Some(server) = HeaderCaptureServer::start(
+    "meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta name="referrer" content="no-referrer">
+          <link rel="stylesheet" href="{}/style_import.css">
+        </head>
+        <body><div>hello</div></body>
+      </html>"#,
+    server.base_url
+  );
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert!(
+      header_value(&req.headers, "referer").is_none(),
+      "expected Referer header to be omitted for {path} due to meta Referrer-Policy; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
+fn document_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests(
+) {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_response_policy.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in [
+    "/doc_response_policy.html",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert!(
+      header_value(&req.headers, "referer").is_none(),
+      "expected Referer header to be omitted for {path} due to document response Referrer-Policy; got:\n{}",
+      req.headers
+    );
+  }
 }
