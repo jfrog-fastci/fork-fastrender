@@ -8030,6 +8030,15 @@ impl FormattingContext for TableFormattingContext {
     // Keep transforms/opacity/filters on the wrapper so they apply to both caption and table,
     // but avoid painting an extra background/border around the combined area.
     wrapper_style.reset_background_to_initial();
+    // CSS 2.1 §17.4: The table element's padding/outline/overflow apply to the table grid box,
+    // not the wrapper box. Reset them here so captions are not affected by grid-only properties.
+    wrapper_style.padding_top = crate::style::values::Length::px(0.0);
+    wrapper_style.padding_right = crate::style::values::Length::px(0.0);
+    wrapper_style.padding_bottom = crate::style::values::Length::px(0.0);
+    wrapper_style.padding_left = crate::style::values::Length::px(0.0);
+    wrapper_style.outline_style = crate::style::types::OutlineStyle::None;
+    wrapper_style.overflow_x = crate::style::types::Overflow::Visible;
+    wrapper_style.overflow_y = crate::style::types::Overflow::Visible;
     wrapper_style.border_top_width = crate::style::values::Length::px(0.0);
     wrapper_style.border_right_width = crate::style::values::Length::px(0.0);
     wrapper_style.border_bottom_width = crate::style::values::Length::px(0.0);

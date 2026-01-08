@@ -90,6 +90,7 @@ mod table_caption_percentage_width_resolves_against_wrapper;
 mod table_caption_respects_explicit_width_and_auto_margins;
 mod table_cell_placement;
 mod table_caption_layout;
+mod table_caption_wrapper_resets_grid_only_properties;
 mod table_collapsed_borders;
 mod table_collapsed_border_conflict_resolution;
 mod table_caption_wrapper_baseline_uses_grid_baseline;
