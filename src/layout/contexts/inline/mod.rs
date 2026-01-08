@@ -10883,6 +10883,95 @@ impl InlineFormattingContext {
       }
     }
 
+    // Inline formatting context layout usually runs for block containers, where the caller is
+    // responsible for applying the root box's padding/borders. When the root box itself is an
+    // inline container (e.g. when tests call `InlineFormattingContext::layout` directly on a
+    // `BoxType::Inline` node), we need to account for the padding/borders here so:
+    // - in-flow fragments are positioned inside the padding box, and
+    // - static-position of abspos children starts at the padding edge (CSS 2.1 §10.3.7).
+    let root_inline_container = matches!(
+      &box_node.box_type,
+      BoxType::Inline(_)
+        | BoxType::Anonymous(AnonymousBox {
+          anonymous_type: AnonymousType::Inline,
+          ..
+        })
+    );
+    if root_inline_container {
+      let percentage_base_px = inline_percent_base.unwrap_or(available_inline);
+      let padding_left = resolve_length_for_width(
+        style.padding_left,
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let padding_right = resolve_length_for_width(
+        style.padding_right,
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let padding_top = resolve_length_for_width(
+        style.padding_top,
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let padding_bottom = resolve_length_for_width(
+        style.padding_bottom,
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let border_left = resolve_length_for_width(
+        style.used_border_left_width(),
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let border_right = resolve_length_for_width(
+        style.used_border_right_width(),
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let border_top = resolve_length_for_width(
+        style.used_border_top_width(),
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let border_bottom = resolve_length_for_width(
+        style.used_border_bottom_width(),
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      );
+
+      let offset = Point::new(padding_left + border_left, padding_top + border_top);
+      if offset.x.abs() > f32::EPSILON || offset.y.abs() > f32::EPSILON {
+        for child in &mut merged_children {
+          child.translate_root_in_place(offset);
+        }
+      }
+
+      if constraints.used_border_box_width.is_none() {
+        bounds.size.width = (bounds.size.width + padding_left + padding_right + border_left + border_right).max(0.0);
+      }
+      if constraints.used_border_box_height.is_none() {
+        bounds.size.height =
+          (bounds.size.height + padding_top + padding_bottom + border_top + border_bottom).max(0.0);
+      }
+    }
+
     Ok(FragmentNode::new_block(bounds, merged_children))
   }
 }
