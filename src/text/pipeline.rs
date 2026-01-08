@@ -71,6 +71,7 @@ use crate::style::types::NumericFigure;
 use crate::style::types::NumericFraction;
 use crate::style::types::NumericSpacing;
 use crate::style::ComputedStyle;
+use crate::text::bidi_controls::is_bidi_format_char;
 use crate::text::color_fonts::select_cpal_palette;
 use crate::text::emoji;
 use crate::text::emoji_presentation::font_is_emoji_font;
@@ -1885,8 +1886,8 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
 
     let char_script = Script::detect(ch);
     let level = bidi.level_at(idx);
-    let char_direction = Direction::from_level(level);
-    let char_level = if split_by_level {
+    let mut char_direction = Direction::from_level(level);
+    let mut char_level = if split_by_level {
       level.number()
     } else {
       // When we skip splitting by explicit levels (because the bidi analysis reports no visual
@@ -1901,6 +1902,18 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
         level.number()
       }
     };
+
+    // Bidi format characters (embeddings/isolates/marks) are default-ignorable and should not
+    // break adjacency-sensitive shaping (kerning/ligatures). Treat them as belonging to the
+    // surrounding run so they never introduce direction/level boundaries during itemization.
+    if is_bidi_format_char(ch) {
+      if let Some(dir) = current_direction {
+        char_direction = dir;
+      }
+      if let Some(run_level) = current_level {
+        char_level = run_level;
+      }
+    }
 
     // Resolve neutral scripts based on context
     let resolved_script = if char_script.is_neutral() {
@@ -2561,7 +2574,7 @@ pub fn compute_adjusted_font_size(
 }
 
 fn is_non_rendering_for_coverage(ch: char) -> bool {
-  is_bidi_control_char(ch)
+  is_bidi_format_char(ch)
     || matches!(ch, '\u{200c}' | '\u{200d}')
     || ('\u{fe00}'..='\u{fe0f}').contains(&ch)
     || ('\u{e0100}'..='\u{e01ef}').contains(&ch)
@@ -2623,7 +2636,7 @@ fn required_coverage_chars_for_cluster<'a>(
 fn is_mark_only_cluster(text: &str) -> bool {
   let mut saw_mark = false;
   for ch in text.chars() {
-    if is_bidi_control_char(ch) || is_non_rendering_for_coverage(ch) {
+    if is_non_rendering_for_coverage(ch) {
       continue;
     }
     if is_unicode_mark(ch) {
@@ -3147,7 +3160,7 @@ fn assign_fonts_internal(
         let mut eligible = true;
 
         for ch in run.text.chars() {
-          if ch.is_ascii_control() || is_bidi_control_char(ch) {
+          if ch.is_ascii_control() || is_bidi_format_char(ch) {
             continue;
           }
           // The goal is to quickly prove that a *single* font covers the whole run. Emoji that
@@ -3984,7 +3997,7 @@ fn font_variant_position_synthesis(
   for ch in text.chars() {
     if ch.is_whitespace()
       || ch.is_ascii_control()
-      || is_bidi_control_char(ch)
+      || is_bidi_format_char(ch)
       || is_unicode_mark(ch)
       || is_non_rendering_for_coverage(ch)
     {
@@ -4177,21 +4190,6 @@ fn stretch_order_key(candidate: f32, desired: f32) -> (u8, f32) {
   } else {
     (1, (desired - candidate).abs())
   }
-}
-
-fn is_bidi_control_char(ch: char) -> bool {
-  matches!(
-    ch,
-    '\u{202a}' // LRE
-            | '\u{202b}' // RLE
-            | '\u{202c}' // PDF
-            | '\u{202d}' // LRO
-            | '\u{202e}' // RLO
-            | '\u{2066}' // LRI
-            | '\u{2067}' // RLI
-            | '\u{2068}' // FSI
-            | '\u{2069}' // PDI
-  )
 }
 
 #[cfg(test)]
@@ -5228,7 +5226,7 @@ fn synthesize_notdef_run(run: &FontRun) -> ShapedRun {
   let mut glyphs = Vec::new();
   let mut advance = 0.0_f32;
   for (cluster, ch) in run.text.char_indices() {
-    if is_bidi_control_char(ch) {
+    if is_bidi_format_char(ch) {
       continue;
     }
     let (x_offset, y_offset, x_advance, y_advance) = if run.vertical {
@@ -5322,20 +5320,20 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
   // Create Unicode buffer
   let mut buffer = take_unicode_buffer();
 
-  // Bidi control characters (LRE/RLE/LRO/RLO/LRI/RLI/FSI/PDI) are default-ignorable and must not
-  // affect shaping results (e.g. kerning/ligature formation). Passing them through to HarfBuzz can
-  // disrupt adjacency-dependent features even if we later drop the resulting glyphs, so strip them
-  // from the shaping input and keep a mapping back to the original byte indices.
-  let has_bidi_controls = run.text.chars().any(is_bidi_control_char);
+  // Bidi format characters are default-ignorable and must not affect shaping results (e.g.
+  // kerning/ligature formation). Passing them through to HarfBuzz can disrupt
+  // adjacency-dependent features even if we later drop the resulting glyphs, so strip them from
+  // the shaping input and keep a mapping back to the original byte indices.
+  let has_bidi_formats = run.text.chars().any(is_bidi_format_char);
   let (mut shape_text, mut cluster_map_override) =
     mirror_text_for_direction(&run.text, run.direction);
-  if has_bidi_controls {
+  if has_bidi_formats {
     let original_map = cluster_map_override.as_ref();
     let mut filtered = String::with_capacity(shape_text.len());
     let mut mapping: Vec<(usize, usize)> = Vec::new();
 
     for (idx, ch) in shape_text.char_indices() {
-      if is_bidi_control_char(ch) {
+      if is_bidi_format_char(ch) {
         continue;
       }
       let orig_idx = original_map
@@ -5429,7 +5427,7 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
       let mut saw_unsupported_mark = false;
 
       for ch in cluster_text.chars() {
-        if is_bidi_control_char(ch) || is_non_rendering_for_coverage(ch) {
+        if is_bidi_format_char(ch) || is_non_rendering_for_coverage(ch) {
           continue;
         }
 
@@ -7000,6 +6998,56 @@ mod tests {
       clean_adv,
       iso_adv
     );
+  }
+
+  #[test]
+  fn bidi_format_marks_do_not_break_kerning() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
+
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["sans-serif".to_string()].into();
+    style.font_size = 48.0;
+
+    let pipeline = ShapingPipeline::new();
+
+    let clean_adv = pipeline
+      .measure_width("AV", &style, &ctx)
+      .expect("measure clean advance");
+    let separate_adv = pipeline
+      .measure_width("A", &style, &ctx)
+      .expect("measure A advance")
+      + pipeline
+        .measure_width("V", &style, &ctx)
+        .expect("measure V advance");
+    let kerning_delta = separate_adv - clean_adv;
+    assert!(
+      kerning_delta.abs() > 0.1,
+      "expected kerning for \"AV\" in bundled fonts (A+V={} AV={} delta={})",
+      separate_adv,
+      clean_adv,
+      kerning_delta
+    );
+
+    for (label, text) in [
+      ("LRM", "A\u{200e}V"),
+      ("RLM", "A\u{200f}V"),
+      ("ALM", "A\u{061c}V"),
+    ] {
+      let adv = pipeline
+        .measure_width(text, &style, &ctx)
+        .unwrap_or_else(|_| panic!("measure advance with {label}"));
+      assert!(
+        (adv - clean_adv).abs() < 0.01,
+        "bidi format mark {label} should not change kerning-sensitive advance ({} vs {})",
+        adv,
+        clean_adv
+      );
+    }
   }
 
   #[test]

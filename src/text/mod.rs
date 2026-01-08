@@ -79,6 +79,7 @@ pub(crate) mod script_fallback;
 // Text Shaping Pipeline (Wave 4)
 // ============================================================================
 
+pub(crate) mod bidi_controls;
 pub mod cluster;
 pub mod emoji;
 mod emoji_tables;

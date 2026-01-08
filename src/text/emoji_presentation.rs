@@ -1,4 +1,5 @@
 use crate::style::types::FontVariantEmoji;
+use crate::text::bidi_controls::is_bidi_format_char;
 use crate::text::emoji;
 use crate::text::font_db::{FontDatabase, LoadedFont};
 use crate::text::font_fallback::EmojiPreference;
@@ -158,26 +159,11 @@ pub(crate) fn emoji_preference_for_cluster(
 }
 
 fn is_non_rendering_for_preference(ch: char) -> bool {
-  is_bidi_control_char(ch)
+  is_bidi_format_char(ch)
     || matches!(ch, '\u{200c}' | '\u{200d}')
     || ('\u{fe00}'..='\u{fe0f}').contains(&ch)
     || ('\u{e0100}'..='\u{e01ef}').contains(&ch)
     || ('\u{180b}'..='\u{180d}').contains(&ch)
-}
-
-fn is_bidi_control_char(ch: char) -> bool {
-  matches!(
-    ch,
-    '\u{202a}' // LRE
-        | '\u{202b}' // RLE
-        | '\u{202c}' // PDF
-        | '\u{202d}' // LRO
-        | '\u{202e}' // RLO
-        | '\u{2066}' // LRI
-        | '\u{2067}' // RLI
-        | '\u{2068}' // FSI
-        | '\u{2069}' // PDI
-  )
 }
 
 #[cfg(test)]
