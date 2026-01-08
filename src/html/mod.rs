@@ -7,7 +7,10 @@ pub mod image_prefetch;
 pub mod images;
 pub mod meta_refresh;
 pub mod referrer_policy;
+pub mod title;
 pub mod viewport;
+
+pub use title::find_document_title;
 
 use crate::css::loader::resolve_href;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
