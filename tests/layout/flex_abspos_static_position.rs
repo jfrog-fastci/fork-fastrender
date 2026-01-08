@@ -449,6 +449,30 @@ fn abspos_static_position_accounts_for_cross_axis_margins() {
 }
 
 #[test]
+fn abspos_static_position_accounts_for_main_axis_margins_in_column_flex() {
+  // Same as above, but with a vertical main axis (`flex-direction: column`). The main-axis
+  // static-position rectangle edges are defined using the child's margin edges.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.margin_top = Some(Length::px(20.0));
+  child_style.margin_bottom = Some(Length::px(0.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 20.0).abs() < 0.1, "expected y≈20, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_uses_used_size_for_auto_main_size() {
   // Flexbox §abspos-items defines the main-axis edges of the static-position rectangle using the
   // abspos child's *used size*. For `width:auto` abspos boxes this is shrink-to-fit, which can
