@@ -328,6 +328,29 @@ fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_st
 }
 
 #[test]
+fn abspos_static_position_space_around_negative_free_space_falls_back_to_safe_start_in_row_reverse() {
+  // With negative free space, `space-around` falls back to `safe center`, which becomes physical
+  // start under safe overflow alignment. Ensure this uses physical start even when the main axis is
+  // reversed.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::RowReverse;
+  container_style.justify_content = JustifyContent::SpaceAround;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(120.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+}
+
+#[test]
 fn abspos_static_position_space_between_negative_free_space_falls_back_to_safe_start_in_column_reverse() {
   // Same as `abspos_static_position_space_between_negative_free_space_falls_back_to_safe_start`, but
   // with a vertical (reversed) main axis.
@@ -341,6 +364,29 @@ fn abspos_static_position_space_between_negative_free_space_falls_back_to_safe_s
   container_style.height = Some(Length::px(100.0));
   container_style.flex_direction = FlexDirection::ColumnReverse;
   container_style.justify_content = JustifyContent::SpaceBetween;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(120.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_space_evenly_negative_free_space_falls_back_to_safe_start_in_column_reverse() {
+  // Like the space-between test above, but for the Box Alignment `space-evenly` keyword.
+  // `space-evenly` falls back to `safe center` under negative free space, which becomes physical
+  // start alignment.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::ColumnReverse;
+  container_style.justify_content = JustifyContent::SpaceEvenly;
   container_style.align_items = AlignItems::FlexStart;
 
   let mut child_style = ComputedStyle::default();
