@@ -1619,6 +1619,18 @@ fn placeholder_resource(
       Some("application/octet-stream".to_string()),
       Some(url.to_string()),
     ),
+    FetchDestination::Fetch => {
+      let mut res = FetchedResource::with_final_url(
+        Vec::new(),
+        Some("application/octet-stream".to_string()),
+        Some(url.to_string()),
+      );
+      // `fetch()` requests are made in CORS mode; allow placeholder responses to satisfy CORS
+      // enforcement when enabled.
+      res.access_control_allow_origin = Some(allow_origin.clone());
+      res.access_control_allow_credentials = true;
+      res
+    }
   }
 }
 

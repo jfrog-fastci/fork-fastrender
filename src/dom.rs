@@ -746,15 +746,12 @@ pub fn build_selector_bloom_store(
     "selector bloom summary bits should be normalised: {raw_bits}"
   );
   match bits {
-    256 => Some(SelectorBloomStore::Bits256(
-      build_selector_bloom_store_impl::<4>(root, id_map, quirks_mode),
-    )),
-    512 => Some(SelectorBloomStore::Bits512(
-      build_selector_bloom_store_impl::<8>(root, id_map, quirks_mode),
-    )),
-    _ => Some(SelectorBloomStore::Bits1024(
-      build_selector_bloom_store_impl::<16>(root, id_map, quirks_mode),
-    )),
+    256 => build_selector_bloom_store_impl::<4>(root, id_map, quirks_mode)
+      .map(SelectorBloomStore::Bits256),
+    512 => build_selector_bloom_store_impl::<8>(root, id_map, quirks_mode)
+      .map(SelectorBloomStore::Bits512),
+    _ => build_selector_bloom_store_impl::<16>(root, id_map, quirks_mode)
+      .map(SelectorBloomStore::Bits1024),
   }
 }
 
@@ -762,13 +759,30 @@ fn build_selector_bloom_store_impl<const WORDS: usize>(
   root: &DomNode,
   id_map: &HashMap<*const DomNode, usize>,
   quirks_mode: QuirksMode,
-) -> SelectorBloomStoreImpl<WORDS> {
+) -> Option<SelectorBloomStoreImpl<WORDS>> {
+  fn try_push<T>(vec: &mut Vec<T>, value: T) -> Option<()> {
+    if vec.len() == vec.capacity() {
+      // Grow in bounded exponential steps so we don't over-allocate aggressively, while still
+      // avoiding O(n^2) realloc behaviour for deep DOM stacks.
+      let additional = vec.capacity().max(1);
+      vec.try_reserve(additional).ok()?;
+    }
+    vec.push(value);
+    Some(())
+  }
+
   // Keep index 0 unused so the 1-based `node_id` from `enumerate_dom_ids` can be used directly.
   //
   // We still accept `id_map` to reserve the right size up-front, but we avoid doing a pointer-keyed
   // HashMap lookup per element by assigning ids during a pre-order traversal (the same order as
   // `enumerate_dom_ids`).
-  let mut summaries: Vec<[u64; WORDS]> = Vec::with_capacity(id_map.len().saturating_add(1));
+  let mut summaries: Vec<[u64; WORDS]> = Vec::new();
+  if summaries
+    .try_reserve_exact(id_map.len().saturating_add(1))
+    .is_err()
+  {
+    return None;
+  }
   summaries.push([0u64; WORDS]);
 
   struct Frame<'a, const WORDS: usize> {
@@ -781,10 +795,13 @@ fn build_selector_bloom_store_impl<const WORDS: usize>(
     summary: [u64; WORDS],
   }
 
-  let mut stack: Vec<Frame<'_, WORDS>> = Vec::with_capacity(id_map.len().min(1024));
+  let mut stack: Vec<Frame<'_, WORDS>> = Vec::new();
+  if stack.try_reserve_exact(id_map.len().min(1024)).is_err() {
+    return None;
+  }
 
   let root_id = summaries.len();
-  summaries.push([0u64; WORDS]);
+  try_push(&mut summaries, [0u64; WORDS])?;
   let root_is_element = root.is_element();
   let root_is_template = root.template_contents_are_inert();
   let mut root_summary = [0u64; WORDS];
@@ -793,15 +810,18 @@ fn build_selector_bloom_store_impl<const WORDS: usize>(
       insert_summary_hash(&mut root_summary, hash);
     });
   }
-  stack.push(Frame {
-    node: root,
-    id: root_id,
-    is_element: root_is_element,
-    is_shadow_root: matches!(root.node_type, DomNodeType::ShadowRoot { .. }),
-    is_template: root_is_template,
-    next_child: 0,
-    summary: root_summary,
-  });
+  try_push(
+    &mut stack,
+    Frame {
+      node: root,
+      id: root_id,
+      is_element: root_is_element,
+      is_shadow_root: matches!(root.node_type, DomNodeType::ShadowRoot { .. }),
+      is_template: root_is_template,
+      next_child: 0,
+      summary: root_summary,
+    },
+  )?;
 
   while let Some(mut frame) = stack.pop() {
     // `enumerate_dom_ids` includes template contents as DOM nodes even though they are inert for
@@ -812,10 +832,10 @@ fn build_selector_bloom_store_impl<const WORDS: usize>(
     if frame.next_child < children.len() {
       let child = &children[frame.next_child];
       frame.next_child += 1;
-      stack.push(frame);
+      try_push(&mut stack, frame)?;
 
       let child_id = summaries.len();
-      summaries.push([0u64; WORDS]);
+      try_push(&mut summaries, [0u64; WORDS])?;
 
       let child_is_element = child.is_element();
       let child_is_template = child.template_contents_are_inert();
@@ -826,15 +846,18 @@ fn build_selector_bloom_store_impl<const WORDS: usize>(
         });
       }
 
-      stack.push(Frame {
-        node: child,
-        id: child_id,
-        is_element: child_is_element,
-        is_shadow_root: matches!(child.node_type, DomNodeType::ShadowRoot { .. }),
-        is_template: child_is_template,
-        next_child: 0,
-        summary: child_summary,
-      });
+      try_push(
+        &mut stack,
+        Frame {
+          node: child,
+          id: child_id,
+          is_element: child_is_element,
+          is_shadow_root: matches!(child.node_type, DomNodeType::ShadowRoot { .. }),
+          is_template: child_is_template,
+          next_child: 0,
+          summary: child_summary,
+        },
+      )?;
       continue;
     }
 
@@ -853,7 +876,7 @@ fn build_selector_bloom_store_impl<const WORDS: usize>(
     id_map.len().saturating_add(1),
     "selector bloom store should align with enumerate_dom_ids node ids"
   );
-  SelectorBloomStoreImpl { summaries }
+  Some(SelectorBloomStoreImpl { summaries })
 }
 
 #[cfg(test)]
