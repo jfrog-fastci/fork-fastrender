@@ -3417,7 +3417,7 @@ fn stacking_context_hsl_blend_preserves_backdrop_luminance() {
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: true,
-    has_backdrop_sensitive_descendants: true,
+    has_backdrop_sensitive_descendants: false,
     bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
     mix_blend_mode: BlendMode::Hue,
