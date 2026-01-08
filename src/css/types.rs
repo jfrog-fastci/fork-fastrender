@@ -3,6 +3,7 @@
 //! Core types for representing CSS stylesheets, rules, and values.
 
 use super::selectors::FastRenderSelectorImpl;
+use super::selectors::PseudoElement;
 use super::selectors::PseudoClassParser;
 use super::supports;
 use crate::css::loader::{resolve_href_with_base, FetchedStylesheet};
@@ -2122,13 +2123,23 @@ fn supports_selector_is_valid(selector_list: &str) -> bool {
   for selector in split_selector_list(selector_list) {
     let mut input = ParserInput::new(&selector);
     let mut parser = Parser::new(&mut input);
-    if SelectorList::parse(
+    let Ok(list) = SelectorList::parse(
       &PseudoClassParser,
       &mut parser,
       selectors::parser::ParseRelative::No,
     )
-    .is_ok()
-    {
+    else {
+      continue;
+    };
+
+    // We accept vendor-prefixed pseudo-elements in normal selector parsing to avoid invalidating
+    // entire selector lists, but they should not flip `@supports selector(...)` queries. Treat
+    // selectors that end in an unmodelled vendor pseudo-element (e.g. `::-webkit-scrollbar`) as
+    // unsupported so `@supports not selector(::-webkit-scrollbar)` gates can enable standard
+    // scrollbar styling fallback.
+    if list.slice().iter().any(|selector| {
+      !matches!(selector.pseudo_element(), Some(PseudoElement::Vendor(_)))
+    }) {
       return true;
     }
   }
@@ -2421,6 +2432,27 @@ mod tests {
     assert!(
       supported.matches(),
       "nth-child selector should be supported in selector()"
+    );
+  }
+
+  #[test]
+  fn supports_selector_rejects_unmodelled_vendor_pseudo_elements() {
+    let cond = SupportsCondition::Selector("::-webkit-scrollbar".into());
+    assert!(
+      !cond.matches(),
+      "unmodelled vendor pseudo-elements should not be treated as supported in selector() queries"
+    );
+
+    let mixed = SupportsCondition::Selector("::-webkit-scrollbar, div".into());
+    assert!(
+      mixed.matches(),
+      "selector() queries should still succeed when other selectors in the list are supported"
+    );
+
+    let aliased = SupportsCondition::Selector("::-webkit-file-upload-button".into());
+    assert!(
+      aliased.matches(),
+      "vendor aliases that map to supported pseudo-elements should still count as supported"
     );
   }
 

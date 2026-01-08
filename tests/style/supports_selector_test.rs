@@ -53,6 +53,16 @@ fn supports_selector_false_for_unsupported_selector() {
 }
 
 #[test]
+fn supports_not_selector_true_for_vendor_pseudo_element() {
+  let dom = dom::parse_html(r#"<div></div>"#).unwrap();
+  let css = r#"@supports not selector(::-webkit-scrollbar) { div { display: inline; } }"#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_first(&styled, "div").expect("div");
+  assert_eq!(display(div), "inline");
+}
+
+#[test]
 fn supports_declaration_accepts_valid_text_orientation() {
   let dom = dom::parse_html(r#"<div></div>"#).unwrap();
   let css = r#"@supports (text-orientation: upright) { div { display: inline; } }"#;

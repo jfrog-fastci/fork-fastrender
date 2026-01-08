@@ -70,6 +70,7 @@ mod string_set_test;
 mod styled_node_shallow_dom_clone;
 mod supports_rule_test;
 mod supports_selector_test;
+mod supports_selector_forgiving_list_test;
 mod supports_writing_mode_test;
 mod svg_tag_selector_indexing_test;
 mod tab_size_test;
