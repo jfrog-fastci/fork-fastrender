@@ -917,6 +917,71 @@ fn animation_shorthand_quoted_none_name_is_not_cleared() {
 }
 
 #[test]
+fn transition_property_preserves_custom_property_case() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "transition-property".into(),
+    value: PropertyValue::Keyword("--FOO".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_properties,
+    vec![TransitionProperty::Name("--FOO".to_string())].into()
+  );
+}
+
+#[test]
+fn transition_shorthand_preserves_custom_property_case() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "transition".into(),
+    value: PropertyValue::Keyword("--FOO 1s linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_properties,
+    vec![TransitionProperty::Name("--FOO".to_string())].into()
+  );
+  assert_eq!(styles.transition_durations, vec![1000.0].into());
+  assert_eq!(
+    styles.transition_timing_functions,
+    vec![TransitionTimingFunction::Linear].into()
+  );
+}
+
+#[test]
 fn animation_name_ignores_invalid_value() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();

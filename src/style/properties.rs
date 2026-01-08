@@ -2573,7 +2573,14 @@ fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> 
 
   let mut props = Vec::new();
   for part in parts {
-    let lower = part.trim().to_ascii_lowercase();
+    let trimmed = part.trim();
+    if trimmed.starts_with("--") {
+      // Custom property names are case-sensitive (CSS Variables).
+      props.push(TransitionProperty::Name(trimmed.to_string()));
+      continue;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
     if lower == "none" {
       // `transition-property` is either the single keyword `none` or a comma-separated list of
       // `<single-transition-property>` values that excludes `none`. Reject mixed lists such as
@@ -3107,14 +3114,20 @@ fn parse_transition_shorthand(
       }
 
       if property.is_none() {
-        let lower = token.trim().to_ascii_lowercase();
-        let canonical =
-          crate::css::properties::vendor_prefixed_property_alias(&lower).unwrap_or(lower.as_str());
-        property = Some(match canonical {
-          "all" => TransitionProperty::All,
-          "none" => TransitionProperty::None,
-          _ => TransitionProperty::Name(canonical.to_string()),
-        });
+        let trimmed = token.trim();
+        if trimmed.starts_with("--") {
+          // Custom property names are case-sensitive (CSS Variables).
+          property = Some(TransitionProperty::Name(trimmed.to_string()));
+        } else {
+          let lower = trimmed.to_ascii_lowercase();
+          let canonical =
+            crate::css::properties::vendor_prefixed_property_alias(&lower).unwrap_or(lower.as_str());
+          property = Some(match canonical {
+            "all" => TransitionProperty::All,
+            "none" => TransitionProperty::None,
+            _ => TransitionProperty::Name(canonical.to_string()),
+          });
+        }
       } else {
         invalid = true;
         break;
