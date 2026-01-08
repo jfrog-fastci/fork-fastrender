@@ -401,6 +401,56 @@ fn view_timeline_progress_allows_negative_inset() {
 }
 
 #[test]
+fn view_timeline_progress_resolves_exit_percentage_offsets_against_named_range() {
+  let timeline = ViewTimeline::default();
+  let range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::Exit, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::Exit, Length::percent(100.0)),
+  };
+
+  let progress = view_timeline_progress(&timeline, 80.0, 130.0, 100.0, 105.0, &range).unwrap();
+  assert!((progress - 0.5).abs() < 1e-6, "progress={progress}");
+}
+
+#[test]
+fn view_timeline_progress_resolves_contain_percentages_using_earliest_and_latest_positions() {
+  let timeline = ViewTimeline::default();
+  // An element taller than the viewport covers the visibility range during the contain phase, so
+  // `contain 0%` is defined by the element entering the start edge of the visibility range.
+  let range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::Contain, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::Contain, Length::percent(100.0)),
+  };
+
+  let progress = view_timeline_progress(&timeline, 0.0, 200.0, 100.0, 50.0, &range).unwrap();
+  assert!((progress - 0.5).abs() < 1e-6, "progress={progress}");
+}
+
+#[test]
+fn view_timeline_progress_supports_entry_crossing_named_range() {
+  let timeline = ViewTimeline::default();
+  let range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::EntryCrossing, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::EntryCrossing, Length::percent(100.0)),
+  };
+
+  let progress = view_timeline_progress(&timeline, 80.0, 130.0, 100.0, 5.0, &range).unwrap();
+  assert!((progress - 0.5).abs() < 1e-6, "progress={progress}");
+}
+
+#[test]
+fn view_timeline_progress_supports_exit_crossing_named_range() {
+  let timeline = ViewTimeline::default();
+  let range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::ExitCrossing, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::ExitCrossing, Length::percent(100.0)),
+  };
+
+  let progress = view_timeline_progress(&timeline, 0.0, 200.0, 100.0, 100.0, &range).unwrap();
+  assert!((progress - 0.5).abs() < 1e-6, "progress={progress}");
+}
+
+#[test]
 fn keyframes_sample_interpolates_opacity() {
   let sheet =
     parse_stylesheet("@keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }").unwrap();

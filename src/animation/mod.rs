@@ -3236,12 +3236,19 @@ fn resolve_offset_value(
   .clamp(0.0, scroll_range.max(0.0).max(viewport_size))
 }
 
+#[derive(Clone, Copy)]
+struct ViewTimelineRangeEdges {
+  entry: f32,
+  contain: f32,
+  cover: f32,
+  exit: f32,
+}
+
 fn resolve_progress_offset(
   offset: &RangeOffset,
   base_start: f32,
   base_end: f32,
-  view_size: f32,
-  phases: Option<(f32, f32, f32, f32)>,
+  view_ranges: Option<ViewTimelineRangeEdges>,
 ) -> f32 {
   match offset {
     RangeOffset::Progress(p) => base_start + (base_end - base_start) * *p,
@@ -3251,19 +3258,24 @@ fn resolve_progress_offset(
       base_start + resolved
     }
     RangeOffset::View(phase, adj) => {
-      let Some((entry, contain, cover, exit)) = phases else {
+      let Some(ranges) = view_ranges else {
         return base_start;
       };
-      let base = match phase {
-        ViewTimelinePhase::Entry => entry,
-        ViewTimelinePhase::Contain => contain,
-        ViewTimelinePhase::Cover => cover,
-        ViewTimelinePhase::Exit => exit,
+      let contain_start = ranges.cover.min(ranges.contain);
+      let contain_end = ranges.cover.max(ranges.contain);
+      let (range_start, range_end) = match phase {
+        ViewTimelinePhase::Cover => (ranges.entry, ranges.exit),
+        ViewTimelinePhase::Contain => (contain_start, contain_end),
+        ViewTimelinePhase::Entry => (ranges.entry, contain_start),
+        ViewTimelinePhase::Exit => (contain_end, ranges.exit),
+        ViewTimelinePhase::EntryCrossing => (ranges.entry, ranges.contain),
+        ViewTimelinePhase::ExitCrossing => (ranges.cover, ranges.exit),
       };
+      let range_len = range_end - range_start;
       let adjustment = adj
-        .resolve_against(view_size)
+        .resolve_against(range_len)
         .unwrap_or_else(|| adj.to_px());
-      base + adjustment
+      range_start + adjustment
     }
   }
 }
@@ -3296,8 +3308,8 @@ pub fn scroll_timeline_progress(
   }
   let start_base = resolve_offset_value(&timeline.start, scroll_range, viewport_size, false);
   let end_base = resolve_offset_value(&timeline.end, scroll_range, viewport_size, true);
-  let start = resolve_progress_offset(range.start(), start_base, end_base, viewport_size, None);
-  let end = resolve_progress_offset(range.end(), start_base, end_base, viewport_size, None);
+  let start = resolve_progress_offset(range.start(), start_base, end_base, None);
+  let end = resolve_progress_offset(range.end(), start_base, end_base, None);
   Some(raw_progress(scroll_position, start, end))
 }
 
@@ -3339,12 +3351,16 @@ pub fn view_timeline_progress(
   let contain_edge = target_end - view_size + inset_end;
   let cover_edge = target_start - inset_start;
   let exit_edge = target_end - inset_start;
-  let exit_phase_start = contain_edge.max(cover_edge);
   let start_base = entry_edge;
   let end_base = exit_edge;
-  let phases = Some((entry_edge, contain_edge, cover_edge, exit_phase_start));
-  let start = resolve_progress_offset(range.start(), start_base, end_base, view_size, phases);
-  let end = resolve_progress_offset(range.end(), start_base, end_base, view_size, phases);
+  let phases = Some(ViewTimelineRangeEdges {
+    entry: entry_edge,
+    contain: contain_edge,
+    cover: cover_edge,
+    exit: exit_edge,
+  });
+  let start = resolve_progress_offset(range.start(), start_base, end_base, phases);
+  let end = resolve_progress_offset(range.end(), start_base, end_base, phases);
   Some(raw_progress(scroll_offset, start, end))
 }
 

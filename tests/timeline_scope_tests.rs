@@ -536,15 +536,15 @@ fn view_timeline_inset_auto_uses_scroll_padding() {
         height: 100px;
         width: 100px;
         scroll-padding-bottom: 100px;
-      }
-      .box {
-        width: 100px;
-        height: 50px;
-        background: rgb(255, 0, 0);
-        opacity: 0;
-        animation: fade auto linear;
-        animation-range: contain 0% contain 0%;
-      }
+       }
+       .box {
+         width: 100px;
+         height: 50px;
+         background: rgb(255, 0, 0);
+         opacity: 0;
+         animation: fade auto linear;
+         animation-range: entry 50px entry 50px;
+       }
       #auto {
         view-timeline-name: --auto;
         view-timeline-axis: block;
@@ -577,7 +577,8 @@ fn view_timeline_inset_auto_uses_scroll_padding() {
     .expect("paint");
 
   // `view-timeline-inset: auto` should use the scroll container's scroll-padding (bottom inset),
-  // which shifts the `contain` phase start and keeps the animation inactive at scroll offset 0.
+  // which shifts the view timeline's cover start. With `animation-range: entry 50px`, the `auto`
+  // target hasn't reached its entry point at scroll offset 0, while the `0px` inset target has.
   assert_eq!(pixel(&pixmap, 10, 10), (0, 0, 0, 255));
   // The explicit 0px inset keeps the original behavior (animation applied at scroll offset 0).
   assert_eq!(pixel(&pixmap, 10, 60), (255, 0, 0, 255));
@@ -597,15 +598,15 @@ fn view_timeline_inset_auto_respects_rtl_inline_end_padding() {
         width: 100px;
         direction: rtl;
         scroll-padding-left: 100px;
-      }
-      .box {
-        width: 100px;
-        height: 50px;
-        background: rgb(255, 0, 0);
-        opacity: 0;
-        animation: fade auto linear;
-        animation-range: contain 0% contain 0%;
-      }
+       }
+       .box {
+         width: 100px;
+         height: 50px;
+         background: rgb(255, 0, 0);
+         opacity: 0;
+         animation: fade auto linear;
+         animation-range: contain 100% contain 100%;
+       }
       #auto {
         view-timeline-name: --auto;
         view-timeline-axis: inline;
@@ -638,8 +639,8 @@ fn view_timeline_inset_auto_respects_rtl_inline_end_padding() {
     .expect("paint");
 
   // With `direction: rtl`, inline-end corresponds to the physical left edge. `auto` uses the
-  // scroll container's scroll-padding at the corresponding edge, which shifts the `contain` phase
-  // start and keeps the animation inactive at scroll offset 0.
+  // scroll container's scroll-padding at the corresponding edge, which shifts the `contain` range
+  // and keeps the animation inactive at scroll offset 0.
   assert_eq!(pixel(&pixmap, 10, 10), (0, 0, 0, 255));
   // The explicit 0px inset keeps the original behavior (animation applied at scroll offset 0).
   assert_eq!(pixel(&pixmap, 10, 60), (255, 0, 0, 255));

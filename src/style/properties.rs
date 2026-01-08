@@ -1121,8 +1121,9 @@ fn parse_view_phase(token: &str) -> Option<ViewTimelinePhase> {
     "entry" => Some(ViewTimelinePhase::Entry),
     "contain" => Some(ViewTimelinePhase::Contain),
     "cover" => Some(ViewTimelinePhase::Cover),
-    "cross" => Some(ViewTimelinePhase::Contain),
     "exit" => Some(ViewTimelinePhase::Exit),
+    "entry-crossing" => Some(ViewTimelinePhase::EntryCrossing),
+    "exit-crossing" => Some(ViewTimelinePhase::ExitCrossing),
     _ => None,
   }
 }
@@ -1789,6 +1790,17 @@ mod animation_range_tests {
       vec![AnimationRange {
         start: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(50.0)),
         end: RangeOffset::View(ViewTimelinePhase::Exit, Length::percent(0.0)),
+      }]
+    );
+  }
+
+  #[test]
+  fn parses_animation_range_view_timeline_crossing_offsets() {
+    assert_eq!(
+      parse_animation_range_list("entry-crossing 0% exit-crossing 100%").unwrap(),
+      vec![AnimationRange {
+        start: RangeOffset::View(ViewTimelinePhase::EntryCrossing, Length::percent(0.0)),
+        end: RangeOffset::View(ViewTimelinePhase::ExitCrossing, Length::percent(100.0)),
       }]
     );
   }

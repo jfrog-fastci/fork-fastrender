@@ -1187,6 +1187,8 @@ pub enum ViewTimelinePhase {
   Contain,
   Cover,
   Exit,
+  EntryCrossing,
+  ExitCrossing,
 }
 
 /// Offset for animation-range.
@@ -1198,7 +1200,8 @@ pub enum RangeOffset {
   Length(Length),
   /// Position based on a view-timeline phase plus optional adjustment.
   ///
-  /// The adjustment is a length-percentage resolved against the scrollport size.
+  /// The adjustment is a length-percentage resolved against the length of the named timeline
+  /// range.
   View(ViewTimelinePhase, Length),
 }
 
