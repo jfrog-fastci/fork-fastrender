@@ -34,3 +34,27 @@ fn whatwg_html_strips_inline_markup_in_idl_blocks() {
   );
 }
 
+#[test]
+fn whatwg_html_handles_nested_code_tags_in_idl_blocks() {
+  // The WHATWG HTML source nests `<code>...</code>` tags *inside* `<code class="idl">...</code>`
+  // blocks for formatting (e.g. `static <code>Document</code> parse();`). Ensure the extractor
+  // matches the outer closing tag instead of stopping at the first inner `</code>`.
+  let src = concat!(
+    "<pre><code class=\"idl\">",
+    "partial interface <dfn>Document</dfn> {",
+    " static <code>Document</code> <span>parse</span>();",
+    "};</code></pre>",
+  );
+  let blocks = extract_webidl_blocks(src, WebIdlSourceFormat::WhatwgHtml);
+  assert_eq!(blocks.len(), 1);
+  assert!(
+    blocks[0].contains("partial interface Document"),
+    "expected nested tags to be stripped, got:\n{}",
+    blocks[0]
+  );
+  assert!(
+    blocks[0].contains("static Document parse()"),
+    "expected nested <code> tags not to terminate the block, got:\n{}",
+    blocks[0]
+  );
+}

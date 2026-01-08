@@ -1,0 +1,135 @@
+//! Minimal, spec-shaped WebIDL metadata.
+//!
+//! This module does **not** implement WebIDL semantics. Instead, it provides a deterministic,
+//! queryable snapshot of upstream WHATWG IDL blocks, resolved for `partial interface` and
+//! `includes` so downstream codegen/bindings can build on top.
+//!
+//! The data under [`generated`] is committed to the repository and updated via:
+//! `cargo xtask webidl` (alias for `cargo xtask web-idl-codegen`).
+
+pub mod generated;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlExtendedAttribute {
+  pub name: &'static str,
+  pub value: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlInterfaceMember {
+  pub name: Option<&'static str>,
+  pub ext_attrs: &'static [WebIdlExtendedAttribute],
+  /// Member text without trailing `;`.
+  pub raw: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlInterface {
+  pub name: &'static str,
+  pub inherits: Option<&'static str>,
+  pub ext_attrs: &'static [WebIdlExtendedAttribute],
+  pub members: &'static [WebIdlInterfaceMember],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlInterfaceMixin {
+  pub name: &'static str,
+  pub ext_attrs: &'static [WebIdlExtendedAttribute],
+  pub members: &'static [WebIdlInterfaceMember],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlDictionaryMember {
+  pub name: Option<&'static str>,
+  pub ext_attrs: &'static [WebIdlExtendedAttribute],
+  /// Member text without trailing `;`.
+  pub raw: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlDictionary {
+  pub name: &'static str,
+  pub inherits: Option<&'static str>,
+  pub ext_attrs: &'static [WebIdlExtendedAttribute],
+  pub members: &'static [WebIdlDictionaryMember],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlEnum {
+  pub name: &'static str,
+  pub ext_attrs: &'static [WebIdlExtendedAttribute],
+  pub values: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlTypedef {
+  pub name: &'static str,
+  pub ext_attrs: &'static [WebIdlExtendedAttribute],
+  pub type_: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlCallback {
+  pub name: &'static str,
+  pub ext_attrs: &'static [WebIdlExtendedAttribute],
+  pub type_: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlWorld {
+  pub interfaces: &'static [WebIdlInterface],
+  pub interface_mixins: &'static [WebIdlInterfaceMixin],
+  pub dictionaries: &'static [WebIdlDictionary],
+  pub enums: &'static [WebIdlEnum],
+  pub typedefs: &'static [WebIdlTypedef],
+  pub callbacks: &'static [WebIdlCallback],
+}
+
+impl WebIdlWorld {
+  pub fn interface(&self, name: &str) -> Option<&WebIdlInterface> {
+    self.interfaces.iter().find(|i| i.name == name)
+  }
+
+  pub fn interface_mixin(&self, name: &str) -> Option<&WebIdlInterfaceMixin> {
+    self.interface_mixins.iter().find(|i| i.name == name)
+  }
+
+  pub fn dictionary(&self, name: &str) -> Option<&WebIdlDictionary> {
+    self.dictionaries.iter().find(|d| d.name == name)
+  }
+
+  pub fn enum_(&self, name: &str) -> Option<&WebIdlEnum> {
+    self.enums.iter().find(|e| e.name == name)
+  }
+
+  pub fn typedef_(&self, name: &str) -> Option<&WebIdlTypedef> {
+    self.typedefs.iter().find(|t| t.name == name)
+  }
+
+  pub fn callback(&self, name: &str) -> Option<&WebIdlCallback> {
+    self.callbacks.iter().find(|c| c.name == name)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::generated::WORLD;
+
+  #[test]
+  fn generated_world_includes_document_inheritance_and_html_body() {
+    let doc = WORLD
+      .interface("Document")
+      .expect("generated world should include Document interface");
+    assert_eq!(doc.inherits, Some("Node"));
+
+    let member_names = doc.members.iter().filter_map(|m| m.name).collect::<Vec<_>>();
+    assert!(
+      member_names.contains(&"createElement"),
+      "expected Document to contain createElement (from DOM spec): {member_names:?}"
+    );
+    assert!(
+      member_names.contains(&"body"),
+      "expected Document to contain body (from HTML spec partial): {member_names:?}"
+    );
+  }
+}

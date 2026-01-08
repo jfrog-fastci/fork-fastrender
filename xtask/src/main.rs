@@ -21,6 +21,7 @@ mod sync_progress_accuracy;
 mod update_pageset_guardrails;
 mod update_pageset_guardrails_budgets;
 mod validate_page_fixtures;
+mod webidl_codegen;
 
 fn main() -> Result<()> {
   let cli = Cli::parse();
@@ -62,6 +63,7 @@ fn main() -> Result<()> {
       lint_no_panics::run_lint_no_panics(&repo_root, args)
     }
     Commands::GenerateEmojiTables(args) => generate_emoji_tables::run_generate_emoji_tables(args),
+    Commands::WebIdlCodegen(args) => webidl_codegen::run_webidl_codegen(args),
   }
 }
 
@@ -128,6 +130,9 @@ enum Commands {
   GenerateEmojiTables(generate_emoji_tables::GenerateEmojiTablesArgs),
   /// Fail CI if new panic sites are introduced in production code (`src/`, excluding `#[cfg(test)]`).
   LintNoPanics(lint_no_panics::LintNoPanicsArgs),
+  /// Generate deterministic WebIDL metadata from vendored WHATWG specs.
+  #[command(alias = "webidl")]
+  WebIdlCodegen(webidl_codegen::WebIdlCodegenArgs),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]

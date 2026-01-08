@@ -210,10 +210,9 @@ pub fn extract_webidl_blocks_from_whatwg_html(source: &str) -> Vec<String> {
     }
 
     let content_start = tag_end + 1;
-    let Some(close_rel) = source[content_start..].find("</code>") else {
+    let Some((content_end, close_end)) = find_matching_code_close(source, content_start) else {
       break;
     };
-    let content_end = content_start + close_rel;
     let raw = &source[content_start..content_end];
     let stripped = strip_html_tags_preserve_text(raw);
     let decoded = decode_basic_html_entities(stripped.trim());
@@ -221,10 +220,50 @@ pub fn extract_webidl_blocks_from_whatwg_html(source: &str) -> Vec<String> {
       out.push(decoded);
     }
 
-    i = content_end + "</code>".len();
+    i = close_end;
   }
 
   out
+}
+
+/// Find the outer `</code>` closing tag corresponding to an opening `<code ...>` tag.
+///
+/// WHATWG HTML nests `<code>...</code>` tags *inside* `<code class="idl">...</code>` blocks for
+/// formatting (e.g. `static <code>Document</code> parse();`). A naive search for the first
+/// `</code>` would terminate the IDL block too early.
+///
+/// Returns `(close_start, close_end)`, where `close_start` is the start index of `</code...>` and
+/// `close_end` is the index immediately after the closing `>`.
+fn find_matching_code_close(source: &str, content_start: usize) -> Option<(usize, usize)> {
+  let mut depth = 1u32;
+  let mut scan = content_start;
+
+  while let Some(rel_lt) = source[scan..].find('<') {
+    let start = scan + rel_lt;
+    let tail = &source[start..];
+
+    if tail.starts_with("</code") {
+      let tag_end = find_html_tag_end(source, start)?;
+      depth = depth.saturating_sub(1);
+      if depth == 0 {
+        return Some((start, tag_end + 1));
+      }
+      scan = tag_end + 1;
+      continue;
+    }
+
+    if tail.starts_with("<code") {
+      let tag_end = find_html_tag_end(source, start)?;
+      depth += 1;
+      scan = tag_end + 1;
+      continue;
+    }
+
+    let tag_end = find_html_tag_end(source, start)?;
+    scan = tag_end + 1;
+  }
+
+  None
 }
 
 pub fn parse_webidl(idl: &str) -> Result<ParsedWebIdlWorld> {
