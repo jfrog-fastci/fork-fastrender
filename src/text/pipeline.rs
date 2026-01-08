@@ -3120,9 +3120,6 @@ fn assign_fonts_internal(
             if style.font_size > 0.0 {
               synthetic_bold *= used_font_size / style.font_size;
             }
-            let (position_scale, baseline_shift) =
-              synthetic_position_adjustment(style, font_arc.as_ref(), used_font_size, font_context);
-            let run_font_size = used_font_size * position_scale;
             push_font_run(
               &mut font_runs,
               run,
@@ -3131,8 +3128,8 @@ fn assign_fonts_internal(
               font_arc,
               synthetic_bold,
               synthetic_oblique,
-              run_font_size,
-              baseline_shift,
+              used_font_size,
+              0.0,
               &features,
               &authored_variations,
               style,
@@ -3197,13 +3194,6 @@ fn assign_fonts_internal(
               if style.font_size > 0.0 {
                 synthetic_bold *= used_font_size / style.font_size;
               }
-              let (position_scale, baseline_shift) = synthetic_position_adjustment(
-                style,
-                font_arc.as_ref(),
-                used_font_size,
-                font_context,
-              );
-              let run_font_size = used_font_size * position_scale;
               push_font_run(
                 &mut font_runs,
                 run,
@@ -3212,8 +3202,8 @@ fn assign_fonts_internal(
                 font_arc,
                 synthetic_bold,
                 synthetic_oblique,
-                run_font_size,
-                baseline_shift,
+                used_font_size,
+                0.0,
                 &features,
                 &authored_variations,
                 style,
@@ -3339,17 +3329,14 @@ fn assign_fonts_internal(
             if style.font_size > 0.0 {
               synthetic_bold *= used_font_size / style.font_size;
             }
-            let (position_scale, baseline_shift) =
-              synthetic_position_adjustment(style, font_arc.as_ref(), used_font_size, font_context);
-            let run_font_size = used_font_size * position_scale;
             current = Some(CurrentFontRun {
               font: font_arc,
               is_emoji_font: primary_font.is_emoji_font,
               cached_face: primary_font.cached_face.clone(),
               synthetic_bold,
               synthetic_oblique,
-              font_size: run_font_size,
-              baseline_shift,
+              font_size: used_font_size,
+              baseline_shift: 0.0,
               start: cluster_start,
             });
             last_cluster_end = cluster_end;
@@ -3692,17 +3679,14 @@ fn assign_fonts_internal(
       if style.font_size > 0.0 {
         synthetic_bold *= used_font_size / style.font_size;
       }
-      let (position_scale, baseline_shift) =
-        synthetic_position_adjustment(style, font_arc.as_ref(), used_font_size, font_context);
-      let run_font_size = used_font_size * position_scale;
       current = Some(CurrentFontRun {
         font: font_arc,
         is_emoji_font,
         cached_face: None,
         synthetic_bold,
         synthetic_oblique,
-        font_size: run_font_size,
-        baseline_shift,
+        font_size: used_font_size,
+        baseline_shift: 0.0,
         start: cluster_start,
       });
 
@@ -3950,49 +3934,118 @@ fn font_has_axis(font: &LoadedFont, tag: [u8; 4]) -> bool {
   .unwrap_or(false)
 }
 
-fn synthetic_position_adjustment(
+fn font_variant_position_synthesis(
   style: &ComputedStyle,
   font: &LoadedFont,
   base_font_size: f32,
-  font_context: &FontContext,
-) -> (f32, f32) {
+  text: &str,
+) -> Option<(f32, f32, Option<[u8; 4]>)> {
   if !style.font_synthesis.position {
-    return (1.0, 0.0);
+    return None;
   }
 
   const SYNTHETIC_SCALE: f32 = 0.8;
   const SUPER_SHIFT: f32 = 0.34;
   const SUB_SHIFT: f32 = -0.2;
 
-  match style.font_variant_position {
-    crate::style::types::FontVariantPosition::Normal => (1.0, 0.0),
-    crate::style::types::FontVariantPosition::Super => {
-      if font_context.supports_feature(font, *b"sups") {
-        (1.0, 0.0)
-      } else if let Some((scale, shift)) = os2_position_metrics(
-        font,
-        base_font_size,
-        crate::style::types::FontVariantPosition::Super,
-      ) {
-        (scale, shift)
-      } else {
-        (SYNTHETIC_SCALE, base_font_size * SUPER_SHIFT)
-      }
+  let (position, feature_tag, fallback_shift) = match style.font_variant_position {
+    crate::style::types::FontVariantPosition::Normal => return None,
+    crate::style::types::FontVariantPosition::Super => (
+      crate::style::types::FontVariantPosition::Super,
+      *b"sups",
+      SUPER_SHIFT,
+    ),
+    crate::style::types::FontVariantPosition::Sub => (
+      crate::style::types::FontVariantPosition::Sub,
+      *b"subs",
+      SUB_SHIFT,
+    ),
+  };
+
+  let Some(rb_face) = crate::text::face_cache::get_rustybuzz_face(font).map(|face| face.face())
+  else {
+    // If we can't get a shaping face, fall back to the legacy constants so we still apply
+    // `font-synthesis-position` behavior when requested.
+    return Some((
+      SYNTHETIC_SCALE,
+      base_font_size * fallback_shift,
+      Some(feature_tag),
+    ));
+  };
+
+  let feature = Feature {
+    tag: Tag::from_bytes(&feature_tag),
+    value: 1,
+    start: 0,
+    end: u32::MAX,
+  };
+
+  let mut unique = SeenChars::new();
+  for ch in text.chars() {
+    if ch.is_whitespace()
+      || ch.is_ascii_control()
+      || is_bidi_control_char(ch)
+      || is_unicode_mark(ch)
+      || is_non_rendering_for_coverage(ch)
+    {
+      continue;
     }
-    crate::style::types::FontVariantPosition::Sub => {
-      if font_context.supports_feature(font, *b"subs") {
-        (1.0, 0.0)
-      } else if let Some((scale, shift)) = os2_position_metrics(
-        font,
-        base_font_size,
-        crate::style::types::FontVariantPosition::Sub,
-      ) {
-        (scale, shift)
-      } else {
-        (SYNTHETIC_SCALE, base_font_size * SUB_SHIFT)
-      }
+
+    if unique.contains_or_insert(ch).is_none() {
+      // Too many unique characters; fall back to synthesis instead of doing unbounded per-glyph
+      // shaping probes.
+      let (scale, shift) = os2_position_metrics(font, base_font_size, position)
+        .unwrap_or((SYNTHETIC_SCALE, base_font_size * fallback_shift));
+      return Some((scale, shift, Some(feature_tag)));
+    }
+
+    let mut utf8 = [0u8; 4];
+    let encoded = ch.encode_utf8(&mut utf8);
+
+    let mut base_buf = UnicodeBuffer::new();
+    base_buf.push_str(encoded);
+    let base_shape = rustybuzz::shape(rb_face.as_ref(), &[], base_buf);
+
+    let mut feature_buf = UnicodeBuffer::new();
+    feature_buf.push_str(encoded);
+    let feature_shape = rustybuzz::shape(rb_face.as_ref(), &[feature], feature_buf);
+
+    let base_infos = base_shape.glyph_infos();
+    let feature_infos = feature_shape.glyph_infos();
+    let base_positions = base_shape.glyph_positions();
+    let feature_positions = feature_shape.glyph_positions();
+    if base_infos.is_empty()
+      || feature_infos.is_empty()
+      || base_positions.is_empty()
+      || feature_positions.is_empty()
+      || base_infos.len() != base_positions.len()
+      || feature_infos.len() != feature_positions.len()
+    {
+      let (scale, shift) = os2_position_metrics(font, base_font_size, position)
+        .unwrap_or((SYNTHETIC_SCALE, base_font_size * fallback_shift));
+      return Some((scale, shift, Some(feature_tag)));
+    }
+
+    let affected = base_infos.len() != feature_infos.len()
+      || base_positions.len() != feature_positions.len()
+      || base_infos
+        .iter()
+        .zip(feature_infos)
+        .any(|(base, feature)| base.glyph_id != feature.glyph_id)
+      || base_positions.iter().zip(feature_positions).any(|(base, feature)| {
+        base.x_advance != feature.x_advance
+          || base.y_advance != feature.y_advance
+          || base.x_offset != feature.x_offset
+          || base.y_offset != feature.y_offset
+      });
+    if !affected {
+      let (scale, shift) = os2_position_metrics(font, base_font_size, position)
+        .unwrap_or((SYNTHETIC_SCALE, base_font_size * fallback_shift));
+      return Some((scale, shift, Some(feature_tag)));
     }
   }
+
+  None
 }
 
 fn os2_position_metrics(
@@ -4894,14 +4947,38 @@ fn push_font_run(
   style: &ComputedStyle,
 ) {
   let segment_text = &run.text[start..end];
+  let mut run_font_size = font_size;
+  let mut run_baseline_shift = baseline_shift;
+  let mut run_synthetic_bold = synthetic_bold;
   let language = resolve_opentype_language(style, font.as_ref());
-  let features = merge_font_face_features(style_features, font.as_ref());
+
+  let mut features = merge_font_face_features(style_features, font.as_ref());
+  if let Some((position_scale, position_shift, disable_tag)) =
+    font_variant_position_synthesis(style, font.as_ref(), run_font_size, segment_text)
+  {
+    run_font_size *= position_scale;
+    run_synthetic_bold *= position_scale;
+    run_baseline_shift += position_shift;
+    if let Some(tag_bytes) = disable_tag {
+      let tag = Tag::from_bytes(&tag_bytes);
+      let mut vec = features.to_vec();
+      vec.retain(|f| f.tag != tag);
+      vec.push(Feature {
+        tag,
+        value: 0,
+        start: 0,
+        end: u32::MAX,
+      });
+      features = vec.into_boxed_slice().into();
+    }
+  }
+
   let variations = crate::text::face_cache::with_face(&font, |face| {
     crate::text::variations::collect_variations_for_face(
       face,
       style,
       font.as_ref(),
-      font_size,
+      run_font_size,
       authored_variations,
     )
   })
@@ -4922,13 +4999,13 @@ fn push_font_run(
     start: run.start + start,
     end: run.start + end,
     font,
-    synthetic_bold,
+    synthetic_bold: run_synthetic_bold,
     synthetic_oblique,
     script: run.script,
     direction: run.direction,
     level: run.level,
-    font_size,
-    baseline_shift,
+    font_size: run_font_size,
+    baseline_shift: run_baseline_shift,
     language,
     features,
     variations,
