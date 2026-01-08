@@ -12496,6 +12496,33 @@ fn hash_quotes(quotes: &[(String, String)], hasher: &mut DefaultHasher) {
   }
 }
 
+fn hash_containment(value: &crate::style::types::Containment, hasher: &mut DefaultHasher) {
+  value.size.hash(hasher);
+  value.inline_size.hash(hasher);
+  value.layout.hash(hasher);
+  value.style.hash(hasher);
+  value.paint.hash(hasher);
+}
+
+fn hash_contain_intrinsic_size_axis(
+  value: &crate::style::types::ContainIntrinsicSizeAxis,
+  hasher: &mut DefaultHasher,
+) {
+  value.auto.hash(hasher);
+  hash_option_length(&value.length, hasher);
+}
+
+fn hash_appearance(value: &crate::style::types::Appearance, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::Appearance::Auto => 0u8.hash(hasher),
+    crate::style::types::Appearance::None => 1u8.hash(hasher),
+    crate::style::types::Appearance::Keyword(name) => {
+      2u8.hash(hasher);
+      name.hash(hasher);
+    }
+  }
+}
+
 fn running_element_select_fingerprint(select: crate::style::content::RunningElementSelect) -> u8 {
   match select {
     crate::style::content::RunningElementSelect::First => 0,
@@ -13144,7 +13171,11 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.line_clamp_source, &mut h);
   hash_enum_discriminant(&style.container_type, &mut h);
   hash_string_vec(&style.container_name, &mut h);
-  hash_enum_discriminant(&style.containment, &mut h);
+  style.shrink_to_fit_inline_size.hash(&mut h);
+  hash_containment(&style.containment, &mut h);
+  hash_enum_discriminant(&style.content_visibility, &mut h);
+  hash_contain_intrinsic_size_axis(&style.contain_intrinsic_width, &mut h);
+  hash_contain_intrinsic_size_axis(&style.contain_intrinsic_height, &mut h);
   hash_enum_discriminant(&style.position, &mut h);
   match style.running_position.as_deref() {
     Some(name) => {
@@ -13153,10 +13184,12 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
     }
     None => 0u8.hash(&mut h),
   }
+  hash_appearance(&style.appearance, &mut h);
   hash_position_anchor(&style.position_anchor, &mut h);
   style.anchor_names.hash(&mut h);
   hash_anchor_scope(&style.anchor_scope, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);
+  hash_enum_discriminant(&style.box_decoration_break, &mut h);
   hash_inset_value(&style.top, &mut h);
   hash_inset_value(&style.right, &mut h);
   hash_inset_value(&style.bottom, &mut h);
@@ -15083,6 +15116,65 @@ pub(crate) fn render_html_with_shared_resources(
   }
 
   #[test]
+  fn style_layout_fingerprint_includes_containment() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut contained = base.clone();
+    contained.containment = crate::style::types::Containment::strict();
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&contained),
+      "expected containment to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_content_visibility() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut hidden = base;
+    hidden.content_visibility = crate::style::types::ContentVisibility::Hidden;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&hidden),
+      "expected content-visibility to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_contain_intrinsic_sizes() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut custom = base;
+    custom.contain_intrinsic_width = crate::style::types::ContainIntrinsicSizeAxis {
+      auto: false,
+      length: Some(crate::Length::px(123.0)),
+    };
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&custom),
+      "expected contain-intrinsic-size to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_shrink_to_fit_inline_size() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut shrink = base;
+    shrink.shrink_to_fit_inline_size = true;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&shrink),
+      "expected shrink-to-fit-inline-size to affect layout fingerprints"
+    );
+  }
+
+  #[test]
   fn style_layout_fingerprint_includes_generated_content() {
     let mut a = ComputedStyle::default();
     a.content = "\"a\"".to_string();
@@ -15096,6 +15188,34 @@ pub(crate) fn render_html_with_shared_resources(
       super::style_layout_fingerprint(&a),
       super::style_layout_fingerprint(&b),
       "expected generated content to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_appearance() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut none = base;
+    none.appearance = crate::style::types::Appearance::None;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&none),
+      "expected appearance to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_box_decoration_break() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut cloned = base;
+    cloned.box_decoration_break = crate::style::types::BoxDecorationBreak::Clone;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&cloned),
+      "expected box-decoration-break to affect layout fingerprints"
     );
   }
 
