@@ -621,6 +621,34 @@ fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_verti
 }
 
 #[test]
+fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_vertical_writing_mode_on_align_self() {
+  // Same as above, but with `align-self` overriding the container's `align-items`.
+  for (align_self, expected_x) in [(AlignItems::Start, 90.0), (AlignItems::End, 0.0)] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.writing_mode = WritingMode::VerticalRl;
+    container_style.flex_wrap = FlexWrap::Wrap;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.align_items = AlignItems::FlexStart;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.align_self = Some(align_self);
+
+    let (x, _) = layout_abspos_child(container_style, child_style);
+    assert!(
+      (x - expected_x).abs() < 0.1,
+      "expected x≈{expected_x} for align-self={align_self:?}, got {x}"
+    );
+  }
+}
+
+#[test]
 fn abspos_static_position_respects_wrap_in_negative_cross_axis_writing_mode() {
   // Our flex adapter emulates negative-physical cross axes for wrapping containers (including
   // vertical writing modes) by mirroring after Taffy layout. Abspos static-position probing must
