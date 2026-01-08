@@ -7089,7 +7089,7 @@ impl DisplayListBuilder {
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
       let emphasis = style.and_then(|s| {
-        self.build_emphasis(run, s, block_baseline, run_origin_inline, true, emphasis_offset)
+        self.build_emphasis(run, s, run_origin_inline, block_baseline, true, emphasis_offset)
       });
       let variations: Vec<FontVariation> = run
         .variations
@@ -7254,7 +7254,7 @@ impl DisplayListBuilder {
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
       let emphasis = style.and_then(|s| {
-        self.build_emphasis(run, s, block_baseline, run_origin_inline, true, emphasis_offset)
+        self.build_emphasis(run, s, run_origin_inline, block_baseline, true, emphasis_offset)
       });
       let variations: Vec<FontVariation> = run
         .variations
@@ -7923,10 +7923,20 @@ impl DisplayListBuilder {
           resolved_position,
           TextEmphasisPosition::OverLeft | TextEmphasisPosition::UnderLeft
         );
+        let block_side =
+          crate::style::resolve_text_emphasis_block_side(style.writing_mode, resolved_position);
+        let baseline_to_edge = match block_side {
+          crate::style::BlockSide::Start => ascent,
+          crate::style::BlockSide::End => descent,
+        };
+        let extra_offset = match block_side {
+          crate::style::BlockSide::Start => emphasis_offset.over,
+          crate::style::BlockSide::End => emphasis_offset.under,
+        };
         if mark_on_left {
-          block_baseline - offset - emphasis_offset.under
+          block_baseline - baseline_to_edge - offset - extra_offset
         } else {
-          block_baseline + offset + emphasis_offset.over
+          block_baseline + baseline_to_edge + offset + extra_offset
         }
       } else {
         let mut center = match resolved_position {
