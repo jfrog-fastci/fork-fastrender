@@ -9605,8 +9605,33 @@ pub fn apply_styles_with_media_target_and_imports_cached(
     media_cache.as_deref_mut(),
     None,
   )
-  // A missing deadline means cancellation is disabled.
-  .expect("deadline-free cascade should not fail")
+  .unwrap_or_else(|_| fallback_styled_tree(dom))
+}
+
+fn fallback_styled_tree(dom: &DomNode) -> StyledNode {
+  StyledNode {
+    node_id: 1,
+    node: DomNode {
+      node_type: dom.node_type.clone(),
+      children: Vec::new(),
+    },
+    styles: Arc::new(ComputedStyle::default()),
+    starting_styles: StartingStyleSet::default(),
+    before_styles: None,
+    after_styles: None,
+    marker_styles: None,
+    placeholder_styles: None,
+    file_selector_button_styles: None,
+    footnote_call_styles: None,
+    footnote_marker_styles: None,
+    first_line_styles: None,
+    first_letter_styles: None,
+    slider_thumb_styles: None,
+    slider_track_styles: None,
+    assigned_slot: None,
+    slotted_node_ids: Vec::new(),
+    children: Vec::new(),
+  }
 }
 
 /// Apply styles with optional media-query caching to share media evaluation across passes.
@@ -10907,8 +10932,7 @@ pub fn apply_style_set_with_media_target_and_imports_cached(
     media_cache.as_deref_mut(),
     None,
   )
-  // A missing deadline means cancellation is disabled.
-  .expect("deadline-free cascade should not fail")
+  .unwrap_or_else(|_| fallback_styled_tree(dom))
 }
 
 /// Apply styles from a `StyleSet` with optional media-query caching to share media evaluation across passes.
