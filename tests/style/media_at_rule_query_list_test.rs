@@ -65,6 +65,21 @@ fn media_rule_preserves_range_syntax_tokens() {
 }
 
 #[test]
+fn empty_media_query_list_matches_all() {
+  let css = "@media { #hit { display: inline; } }";
+  let stylesheet = parse_stylesheet(css).unwrap();
+
+  assert_eq!(
+    display_for_hit(&stylesheet, &MediaContext::screen(800.0, 600.0)),
+    "inline"
+  );
+  assert_eq!(
+    display_for_hit(&stylesheet, &MediaContext::print(800.0, 600.0)),
+    "inline"
+  );
+}
+
+#[test]
 fn invalid_media_prelude_does_not_match() {
   let css = "@media (min-width: 50%) { #hit { display: inline; } }";
   let stylesheet = parse_stylesheet(css).unwrap();

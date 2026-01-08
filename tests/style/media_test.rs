@@ -937,6 +937,41 @@ fn test_query_list_or_logic() {
   assert!(ctx.evaluate_list(&queries)); // screen matches
 }
 
+#[test]
+fn media_query_list_empty_is_true() {
+  let queries = MediaQuery::parse_list("").unwrap();
+  assert!(queries.is_empty());
+
+  let ctx = MediaContext::screen(1024.0, 768.0);
+  assert!(
+    ctx.evaluate_list(&queries),
+    "empty media query list should evaluate to true (equivalent to `all`)"
+  );
+
+  let mut cache = MediaQueryCache::default();
+  assert!(
+    ctx.evaluate_list_with_cache(&queries, Some(&mut cache)),
+    "cached evaluation should also treat an empty list as true"
+  );
+  assert_eq!(
+    cache.len(),
+    0,
+    "empty list evaluation should not populate the media query cache"
+  );
+}
+
+#[test]
+fn media_query_list_invalid_queries_become_not_all() {
+  let queries = MediaQuery::parse_list("foo").unwrap();
+  assert_eq!(queries, vec![MediaQuery::not_all()]);
+
+  let ctx = MediaContext::screen(1024.0, 768.0);
+  assert!(
+    !ctx.evaluate_list(&queries),
+    "invalid query lists must not match all"
+  );
+}
+
 /// Tests NOT modifier edge cases
 #[test]
 fn test_not_modifier() {

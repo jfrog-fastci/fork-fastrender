@@ -98,6 +98,18 @@ impl MediaQuery {
     }
   }
 
+  /// Creates a sentinel media query that evaluates to `false` in all contexts.
+  ///
+  /// Per Media Queries Level 4 error-handling, invalid media queries in a list
+  /// are replaced with `not all` rather than being dropped.
+  pub fn not_all() -> Self {
+    Self {
+      media_type: Some(MediaType::All),
+      modifier: Some(MediaModifier::Not),
+      features: Vec::new(),
+    }
+  }
+
   /// Creates a media query with just a media type
   ///
   /// # Examples
@@ -2463,8 +2475,11 @@ impl MediaContext {
 
   /// Evaluates a media query list (OR logic)
   ///
-  /// Returns true if ANY query in the list matches. Empty lists evaluate to
-  /// `false`, which ensures invalid @media preludes do not accidentally match.
+  /// Returns true if ANY query in the list matches.
+  ///
+  /// Per Media Queries Level 4, an empty media query list evaluates to `true`
+  /// (equivalent to `all`). Invalid queries in a list are represented as
+  /// `not all`, which always evaluates to `false`.
   ///
   /// # Examples
   ///
@@ -2476,6 +2491,9 @@ impl MediaContext {
   /// assert!(ctx.evaluate_list(&queries)); // min-width matches
   /// ```
   pub fn evaluate_list(&self, queries: &[MediaQuery]) -> bool {
+    if queries.is_empty() {
+      return true;
+    }
     queries.iter().any(|q| self.evaluate(q))
   }
 
@@ -2484,12 +2502,15 @@ impl MediaContext {
   /// When a cache is provided, media query results are memoized for the
   /// lifetime of the cache, avoiding repeated evaluation of identical queries
   /// (useful when collecting both style rules and @font-face rules). Empty lists
-  /// short-circuit to `false`.
+  /// short-circuit to `true` per MQ4.
   pub fn evaluate_list_with_cache(
     &self,
     queries: &[MediaQuery],
     cache: Option<&mut MediaQueryCache>,
   ) -> bool {
+    if queries.is_empty() {
+      return true;
+    }
     if let Some(cache) = cache {
       for query in queries {
         if self.evaluate_with_cache(query, Some(cache)) {
@@ -3153,6 +3174,12 @@ impl<'a> MediaQueryParser<'a> {
   }
 
   fn parse_query_list(&mut self) -> Result<Vec<MediaQuery>, MediaParseError> {
+    // MQ4: an empty media query list evaluates to true, so preserve the empty
+    // list as a distinct value (don't coerce it to `not all`).
+    if self.input.trim().is_empty() {
+      return Ok(Vec::new());
+    }
+
     // Split on top-level commas. Commas inside parens (e.g., `min()`/`clamp()`) are part of the
     // value and must not terminate a query.
     let mut queries = Vec::new();
@@ -3164,10 +3191,12 @@ impl<'a> MediaQueryParser<'a> {
         ')' => depth = depth.saturating_sub(1),
         ',' if depth == 0 => {
           let slice = self.input[start..idx].trim();
-          if !slice.is_empty() {
-            if let Ok(query) = MediaQueryParser::new(slice).parse_query() {
-              queries.push(query);
-            }
+          if slice.is_empty() {
+            queries.push(MediaQuery::not_all());
+          } else if let Ok(query) = MediaQueryParser::new(slice).parse_query() {
+            queries.push(query);
+          } else {
+            queries.push(MediaQuery::not_all());
           }
           start = idx + ch.len_utf8();
         }
@@ -3176,10 +3205,12 @@ impl<'a> MediaQueryParser<'a> {
     }
 
     let tail = self.input[start..].trim();
-    if !tail.is_empty() {
-      if let Ok(query) = MediaQueryParser::new(tail).parse_query() {
-        queries.push(query);
-      }
+    if tail.is_empty() {
+      queries.push(MediaQuery::not_all());
+    } else if let Ok(query) = MediaQueryParser::new(tail).parse_query() {
+      queries.push(query);
+    } else {
+      queries.push(MediaQuery::not_all());
     }
 
     Ok(queries)
