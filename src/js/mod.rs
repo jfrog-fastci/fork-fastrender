@@ -3,6 +3,9 @@
 //! This module is intentionally small and focused: it provides DOM-to-scheduler bridging helpers
 //! such as `<script>` element extraction. Full JS execution + event loop integration will be built
 //! incrementally on top of these primitives.
+//!
+//! See [`docs/html_script_processing.md`](../../docs/html_script_processing.md) for the
+//! spec-mapped design of HTML `<script>` processing + parser integration (classic scripts first).
 
 pub mod dom_scripts;
 pub mod clock;
