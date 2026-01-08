@@ -18,7 +18,10 @@ use crate::paint::blur::{
   alpha_bounds, apply_gaussian_blur_cached, BlurCache, BlurCacheOps, SharedBlurCache,
 };
 use crate::paint::canvas::Canvas;
-use crate::paint::canvas::{apply_mask_with_offset, crop_mask, draw_pixmap_with_plus_blend, LayerRecord};
+use crate::paint::canvas::{
+  apply_mask_with_offset, composite_layer_into_pixmap, crop_mask, draw_pixmap_with_plus_blend,
+  LayerRecord,
+};
 use crate::paint::depth_sort;
 use crate::paint::display_list::BlendMode;
 use crate::paint::display_list::BorderImageItem;
@@ -3266,6 +3269,7 @@ struct Preserve3dSceneItem {
   backface_visibility: BackfaceVisibility,
   paint_order: usize,
   effects: Vec<SceneEffect>,
+  backdrop_root_chain: Vec<usize>,
   backdrop_filters: Vec<ResolvedFilter>,
   radii: BorderRadii,
   filter_bounds: Rect,
@@ -3568,7 +3572,10 @@ fn collect_scene_items(
   parent_transform: &Transform3D,
   in_preserve_context: bool,
   order_counter: &mut usize,
+  is_scene_root: bool,
   inherited_effects: &[SceneEffect],
+  backdrop_root_chain: &mut Vec<usize>,
+  backdrop_root_counter: &mut usize,
 ) -> Vec<Preserve3dSceneItem> {
   let local_transform = node.context.transform.unwrap_or_else(Transform3D::identity);
   let combined_transform = parent_transform.multiply(&local_transform);
@@ -3581,7 +3588,21 @@ fn collect_scene_items(
   let mut items = Vec::new();
   let transform_style = node.context.transform_style;
 
-  if !in_preserve_context || !matches!(transform_style, TransformStyle::Preserve3d) {
+  let should_flatten = !in_preserve_context || !matches!(transform_style, TransformStyle::Preserve3d);
+
+  let establishes_backdrop_root_layer = !node.context.is_root
+    && node.context.establishes_backdrop_root
+    && node.context.has_backdrop_sensitive_descendants;
+  let pushed_backdrop_root = if !should_flatten && !is_scene_root && establishes_backdrop_root_layer {
+    let id = *backdrop_root_counter;
+    *backdrop_root_counter = backdrop_root_counter.saturating_add(1);
+    backdrop_root_chain.push(id);
+    Some(id)
+  } else {
+    None
+  };
+
+  if should_flatten {
     let computed_bounds = compute_items_bounds(&node.subtree_items).and_then(|bounds| {
       let is_valid = bounds.width() > 0.0
         && bounds.height() > 0.0
@@ -3639,6 +3660,7 @@ fn collect_scene_items(
       backface_visibility: node.context.backface_visibility,
       paint_order: order,
       effects: inherited_effects.to_vec(),
+      backdrop_root_chain: backdrop_root_chain.clone(),
       backdrop_filters: node.context.backdrop_filters.clone(),
       radii: node.context.radii,
       filter_bounds,
@@ -3688,6 +3710,7 @@ fn collect_scene_items(
           backface_visibility: node.context.backface_visibility,
           paint_order: order,
           effects: prefix_effects,
+          backdrop_root_chain: backdrop_root_chain.clone(),
           backdrop_filters: Vec::new(),
           radii: BorderRadii::ZERO,
           filter_bounds: bounds,
@@ -3700,12 +3723,18 @@ fn collect_scene_items(
           &child_transform,
           true,
           order_counter,
+          false,
           &effects,
+          backdrop_root_chain,
+          backdrop_root_counter,
         ));
       }
     }
   }
 
+  if pushed_backdrop_root.is_some() {
+    backdrop_root_chain.pop();
+  }
   items
 }
 
@@ -8504,7 +8533,18 @@ impl DisplayListRenderer {
     let root_is_backdrop_root = root_backdrop_root_layer;
 
     let mut order = 0;
-    let mut scene_items = collect_scene_items(&node, &parent_transform, true, &mut order, &[]);
+    let mut backdrop_root_chain: Vec<usize> = Vec::new();
+    let mut backdrop_root_counter = 0usize;
+    let mut scene_items = collect_scene_items(
+      &node,
+      &parent_transform,
+      true,
+      &mut order,
+      true,
+      &[],
+      &mut backdrop_root_chain,
+      &mut backdrop_root_counter,
+    );
     let before_backface_cull = scene_items.len();
     scene_items.retain(|item| {
       !matches!(item.backface_visibility, BackfaceVisibility::Hidden)
@@ -8549,6 +8589,41 @@ impl DisplayListRenderer {
       self.record_layer_allocation(self.canvas.width(), self.canvas.height());
     }
 
+    // Preserve-3d scenes can contain intermediate Filter Effects Level 2 Backdrop Root boundaries
+    // (e.g. `will-change`) that scope descendant `backdrop-filter` sampling without otherwise
+    // requiring an offscreen compositing surface. We cannot represent these boundaries via the
+    // canvas layer stack without breaking 3D ordering, so maintain per-boundary scratch buffers
+    // that track the composited content *within* each nested backdrop root.
+    //
+    // These buffers are allocated on-demand for the subset of nested backdrop roots that are
+    // actually sampled by a descendant `backdrop-filter`.
+    let mut nested_backdrop_buffers: Vec<Option<Pixmap>> = vec![None; backdrop_root_counter];
+    if backdrop_root_counter > 0 {
+      let mut needs_buffer: Vec<bool> = vec![false; backdrop_root_counter];
+      for item in &scene_items {
+        if !item.backdrop_filters.is_empty() {
+          if let Some(&id) = item.backdrop_root_chain.last() {
+            if id < needs_buffer.len() {
+              needs_buffer[id] = true;
+            }
+          }
+        }
+      }
+
+      if needs_buffer.iter().any(|needed| *needed) {
+        let buffer_w = self.canvas.width();
+        let buffer_h = self.canvas.height();
+        for (id, needed) in needs_buffer.iter().enumerate() {
+          if !*needed {
+            continue;
+          }
+          if let Some(pixmap) = new_pixmap(buffer_w, buffer_h) {
+            nested_backdrop_buffers[id] = Some(pixmap);
+          }
+        }
+      }
+    }
+
     // The preserve-3d scene compositor draws into the current pixmap directly (warps/composites
     // planes), so treat the destination surface as mutated for backdrop-cache invalidation.
     self.mark_current_pixmap_mutated();
@@ -8559,6 +8634,12 @@ impl DisplayListRenderer {
         check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
           .map_err(Error::Render)?;
         let scene_item = &scene_items[idx];
+        let nested_backdrop_needs_update = !nested_backdrop_buffers.is_empty()
+          && scene_item
+            .backdrop_root_chain
+            .iter()
+            .any(|id| nested_backdrop_buffers.get(*id).is_some_and(|buf| buf.is_some()));
+        let sampling_backdrop_root = scene_item.backdrop_root_chain.last().copied();
         let scene_result = (|| -> Result<()> {
           let has_backdrop = !scene_item.backdrop_filters.is_empty();
           let parent_transform = self.canvas.transform();
@@ -8711,6 +8792,9 @@ impl DisplayListRenderer {
                     Some(shared) => shared,
                     None => &mut renderer.backdrop_filter_cache,
                   };
+                let nested_backdrop = sampling_backdrop_root
+                  .and_then(|id| nested_backdrop_buffers.get(id))
+                  .and_then(|buf| buf.as_ref());
                 apply_backdrop_filters_with_region_filler(
                   dest_pixmap,
                   (parent_surface.width(), parent_surface.height()),
@@ -8728,11 +8812,20 @@ impl DisplayListRenderer {
                   Some(blur_cache),
                   Some(backdrop_cache),
                   |region, clamped_x, clamped_y| {
-                    Canvas::fill_backdrop_root_region(
-                      layer_stack,
-                      region,
-                      (clamped_x as i32, clamped_y as i32),
-                    )
+                    if let Some(backdrop) = nested_backdrop {
+                      copy_pixmap_region_with_offset(
+                        region,
+                        backdrop,
+                        clamped_x as i32,
+                        clamped_y as i32,
+                      )
+                    } else {
+                      Canvas::fill_backdrop_root_region(
+                        layer_stack,
+                        region,
+                        (clamped_x as i32, clamped_y as i32),
+                      )
+                    }
                   },
                 )?;
               }
@@ -8777,19 +8870,117 @@ impl DisplayListRenderer {
                   (!matches!(compositing.mix_blend_mode, BlendMode::Normal))
                     .then_some(compositing.mix_blend_mode)
                 });
-                if let Some(mode) = blend {
-                  if is_manual_blend(mode) {
-                    if let Some(warped) = renderer.warp_pixmap_for_manual_blend(
-                      &pixmap,
-                      &adjusted_transform,
-                      clip_override,
-                    )? {
-                      renderer.composite_manual_layer(
-                        warped.pixmap(),
-                        1.0,
-                        mode,
-                        warped.offset(),
-                        None,
+                let mut painted = false;
+                if nested_backdrop_needs_update && !pushed_layer {
+                  if let Some(warped) = renderer.warp_pixmap_for_manual_blend(
+                    &pixmap,
+                    &adjusted_transform,
+                    clip_override,
+                  )? {
+                    painted = true;
+                    match blend {
+                      Some(mode) if is_manual_blend(mode) => {
+                        renderer.composite_manual_layer(
+                          warped.pixmap(),
+                          1.0,
+                          mode,
+                          warped.offset(),
+                          None,
+                        )?;
+                        for &root_id in &scene_item.backdrop_root_chain {
+                          if let Some(buffer) = nested_backdrop_buffers
+                            .get_mut(root_id)
+                            .and_then(|buf| buf.as_mut())
+                          {
+                            composite_manual_layer_pixmap(
+                              buffer,
+                              warped.pixmap(),
+                              1.0,
+                              mode,
+                              warped.offset(),
+                              None,
+                            )?;
+                          }
+                        }
+                      }
+                      Some(mode) => {
+                        let blend_mode = map_blend_mode(mode);
+                        composite_layer_into_pixmap(
+                          renderer.canvas.pixmap_mut(),
+                          warped.pixmap(),
+                          1.0,
+                          blend_mode,
+                          warped.offset(),
+                          None,
+                        );
+                        for &root_id in &scene_item.backdrop_root_chain {
+                          if let Some(buffer) = nested_backdrop_buffers
+                            .get_mut(root_id)
+                            .and_then(|buf| buf.as_mut())
+                          {
+                            composite_layer_into_pixmap(
+                              buffer,
+                              warped.pixmap(),
+                              1.0,
+                              blend_mode,
+                              warped.offset(),
+                              None,
+                            );
+                          }
+                        }
+                      }
+                      None => {
+                        let blend_mode = renderer.canvas.blend_mode();
+                        composite_layer_into_pixmap(
+                          renderer.canvas.pixmap_mut(),
+                          warped.pixmap(),
+                          1.0,
+                          blend_mode,
+                          warped.offset(),
+                          None,
+                        );
+                        for &root_id in &scene_item.backdrop_root_chain {
+                          if let Some(buffer) = nested_backdrop_buffers
+                            .get_mut(root_id)
+                            .and_then(|buf| buf.as_mut())
+                          {
+                            composite_layer_into_pixmap(
+                              buffer,
+                              warped.pixmap(),
+                              1.0,
+                              blend_mode,
+                              warped.offset(),
+                              None,
+                            );
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
+                if !painted {
+                  if let Some(mode) = blend {
+                    if is_manual_blend(mode) {
+                      if let Some(warped) = renderer.warp_pixmap_for_manual_blend(
+                        &pixmap,
+                        &adjusted_transform,
+                        clip_override,
+                      )? {
+                        renderer.composite_manual_layer(
+                          warped.pixmap(),
+                          1.0,
+                          mode,
+                          warped.offset(),
+                          None,
+                        )?;
+                      }
+                    } else {
+                      renderer.warp_pixmap(
+                        &pixmap,
+                        &adjusted_transform,
+                        clip_override,
+                        map_blend_mode(mode),
                       )?;
                     }
                   } else {
@@ -8797,16 +8988,9 @@ impl DisplayListRenderer {
                       &pixmap,
                       &adjusted_transform,
                       clip_override,
-                      map_blend_mode(mode),
+                      renderer.canvas.blend_mode(),
                     )?;
                   }
-                } else {
-                  renderer.warp_pixmap(
-                    &pixmap,
-                    &adjusted_transform,
-                    clip_override,
-                    renderer.canvas.blend_mode(),
-                  )?;
                 }
               }
               Ok(())
@@ -8816,6 +9000,19 @@ impl DisplayListRenderer {
             // If drawing failed, still pop the layer to restore the canvas state before returning.
             if draw_result.is_err() {
               let _ = self.pop_layer_raw_tracked();
+            } else if nested_backdrop_needs_update {
+              let (layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
+              let blend_mode = composite_blend.unwrap_or(self.canvas.blend_mode());
+              let clip = self.canvas.clip_mask();
+              for &root_id in &scene_item.backdrop_root_chain {
+                if let Some(buffer) = nested_backdrop_buffers
+                  .get_mut(root_id)
+                  .and_then(|buf| buf.as_mut())
+                {
+                  composite_layer_into_pixmap(buffer, &layer, opacity, blend_mode, origin, clip);
+                }
+              }
+              self.composite_layer_tracked(&layer, opacity, composite_blend, origin);
             } else {
               self.pop_layer_tracked()?;
             }
