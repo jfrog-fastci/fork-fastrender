@@ -5472,20 +5472,22 @@ impl TableFormattingContext {
         }
 
         if width_is_percent && percent_base.is_some() {
-          if mode == DistributionMode::Fixed {
-            // Column widths (<col>/<colgroup>) take precedence. If any column in the span is
-            // already assigned a width, ignore the spanning cell's percentage width in fixed
-            // layout to avoid overriding those constraints.
-            let any_assigned = constraints
-              .iter()
-              .take(end)
-              .skip(start)
-              .any(|col| col.fixed_width.is_some() || col.percentage.is_some());
-            if !any_assigned {
-              distribute_spanning_percentage(constraints, start, end, width_decl.unwrap().value);
+          if let Some(width_decl) = width_decl {
+            if mode == DistributionMode::Fixed {
+              // Column widths (<col>/<colgroup>) take precedence. If any column in the span is
+              // already assigned a width, ignore the spanning cell's percentage width in fixed
+              // layout to avoid overriding those constraints.
+              let any_assigned = constraints
+                .iter()
+                .take(end)
+                .skip(start)
+                .any(|col| col.fixed_width.is_some() || col.percentage.is_some());
+              if !any_assigned {
+                distribute_spanning_percentage(constraints, start, end, width_decl.value);
+              }
+            } else {
+              distribute_spanning_percentage(constraints, start, end, width_decl.value);
             }
-          } else {
-            distribute_spanning_percentage(constraints, start, end, width_decl.unwrap().value);
           }
         }
         let target_min = span_specified_width.unwrap_or(min_w);
@@ -5520,11 +5522,12 @@ impl TableFormattingContext {
               constraint.max_width = constraint.max_width.max(px);
             }
             SpecifiedWidth::Percent(pct) if percent_base.is_some() => {
-              let base = percent_base.unwrap();
-              let px = (pct / 100.0) * base;
-              constraint.set_percentage(pct);
-              constraint.min_width = constraint.min_width.max(px);
-              constraint.max_width = constraint.max_width.max(px);
+              if let Some(base) = percent_base {
+                let px = (pct / 100.0) * base;
+                constraint.set_percentage(pct);
+                constraint.min_width = constraint.min_width.max(px);
+                constraint.max_width = constraint.max_width.max(px);
+              }
             }
             SpecifiedWidth::Percent(_) => {}
             SpecifiedWidth::Auto => {}

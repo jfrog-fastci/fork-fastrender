@@ -7797,7 +7797,10 @@ impl DisplayListRenderer {
             root_record.source_alpha().map(|alpha| (alpha, (0, 0))),
           )?;
           root_uncomposited = Some(pixmap);
-          root_uncomposited.as_ref().unwrap()
+          let Some(uncomposited) = root_uncomposited.as_ref() else {
+            return Ok(false);
+          };
+          uncomposited
         } else {
           &record.pixmap
         }
@@ -7919,7 +7922,9 @@ impl DisplayListRenderer {
       if matches!(next_item, DisplayItem::PushClip(_)) {
         return Ok(());
       }
-      let pending = record.pending_backdrop.take().unwrap();
+      let Some(pending) = record.pending_backdrop.take() else {
+        return Ok(());
+      };
       let layer_origin = record.layer_origin;
 
       let projective_backdrop = record
@@ -8190,12 +8195,15 @@ impl DisplayListRenderer {
             }
           }
 
-          if has_kernel_backdrop {
-            let sample_rect = sample_rect.expect("kernel backdrop filters should produce a rect");
-            if backdrop_root_stack
-              .last()
-              .is_some_and(|scope| scope.iter().any(|prior| prior.intersects(sample_rect)))
-            {
+           if has_kernel_backdrop {
+             let Some(sample_rect) = sample_rect else {
+               *fallback_reason = Some("backdrop-filter halo rect missing".to_string());
+               return Ok(true);
+             };
+             if backdrop_root_stack
+               .last()
+               .is_some_and(|scope| scope.iter().any(|prior| prior.intersects(sample_rect)))
+             {
               *fallback_reason = Some(
                 "backdrop-filter depends on previously filtered backdrop; requires serial painting"
                   .to_string(),

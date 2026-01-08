@@ -3002,6 +3002,19 @@ impl From<RenderReport> for RenderResult {
   }
 }
 
+impl PreparedDocumentReport {
+  /// Convert into a [`PreparedDocument`], discarding diagnostics.
+  pub fn into_document(self) -> PreparedDocument {
+    self.document
+  }
+}
+
+impl From<PreparedDocumentReport> for PreparedDocument {
+  fn from(report: PreparedDocumentReport) -> Self {
+    report.document
+  }
+}
+
 #[derive(Clone)]
 struct TraceSession {
   handle: TraceHandle,
@@ -5306,6 +5319,67 @@ impl FastRender {
     })
   }
 
+  /// Prepares an already-parsed (and potentially mutated) DOM for repeated painting.
+  ///
+  /// This is the DOM-based equivalent of [`FastRender::prepare_html`]. It skips HTML parsing but
+  /// runs the remaining pipeline stages (style → box tree → layout), producing a
+  /// [`PreparedDocument`] that can be painted repeatedly.
+  ///
+  /// `document_url` is an optional hint used for:
+  /// - Referrer/origin policy (`ResourceContext.document_url`)
+  /// - Deriving the initial base URL used for URL resolution before `<base href>` overrides.
+  pub fn prepare_dom_with_options(
+    &mut self,
+    dom: DomNode,
+    document_url: Option<&str>,
+    options: RenderOptions,
+  ) -> Result<PreparedDocumentReport> {
+    let toggles = self.resolve_runtime_toggles(&options);
+    let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
+    runtime::with_runtime_toggles(toggles, || {
+      let trace = TraceSession::from_options(Some(&options));
+      let trace_handle = trace.handle();
+      let _root_span = trace_handle.span("prepare_dom", "pipeline");
+
+      let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
+      let previous_sink = self.diagnostics.take();
+      self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
+
+      let sanitized_document_url = document_url
+        .map(|url| url.trim())
+        .filter(|url| !url.is_empty());
+      if let Some(url) = sanitized_document_url {
+        self.set_document_url(url);
+      }
+
+      let shared_diagnostics = self.diagnostics.as_ref().map(|diag| SharedRenderDiagnostics {
+        inner: Arc::clone(diag),
+      });
+      let context = Some(self.build_resource_context(
+        sanitized_document_url.or_else(|| self.document_url_hint()),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
+
+      let result = self.prepare_dom_internal_inner(dom, options, trace_handle);
+      self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+
+      let snapshot = diagnostics
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+      self.set_diagnostics_sink(previous_sink);
+      drop(_root_span);
+
+      trace.finalize(result.map(|document| PreparedDocumentReport {
+        document,
+        diagnostics: snapshot,
+      }))
+    })
+  }
+
   fn render_html_internal(
     &mut self,
     html: &str,
@@ -6536,6 +6610,122 @@ impl FastRender {
       ),
       animation_time: options.animation_time,
       font_context: self.font_context.snapshot(),
+      image_cache: self.image_cache.clone(),
+      max_iframe_depth: self.max_iframe_depth,
+      paint_parallelism,
+      runtime_toggles: Arc::clone(&self.runtime_toggles),
+    })
+  }
+
+  fn prepare_dom_internal_inner(
+    &mut self,
+    dom: DomNode,
+    options: RenderOptions,
+    trace: &TraceHandle,
+  ) -> Result<PreparedDocument> {
+    let (width, height) = options
+      .viewport
+      .unwrap_or((self.default_width, self.default_height));
+    if width == 0 || height == 0 {
+      return Err(Error::Render(RenderError::InvalidParameters {
+        message: format!("Invalid dimensions: width={}, height={}", width, height),
+      }));
+    }
+
+    let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+    let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+    let timings_enabled = std::env::var_os("FASTR_RENDER_TIMINGS").is_some();
+    let mut stage_start = timings_enabled.then(Instant::now);
+
+    self.update_base_url_from_dom(&dom);
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)? {
+      let needs_update = self
+        .resource_context
+        .as_ref()
+        .is_some_and(|ctx| ctx.referrer_policy != policy);
+      if needs_update {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          ctx.referrer_policy = policy;
+          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+          // resource context.
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
+
+    if let Some(start) = stage_start.as_mut() {
+      let now = Instant::now();
+      eprintln!("timing:dom_input {:?}", now - *start);
+      *start = now;
+    }
+
+    let requested_viewport = Size::new(width as f32, height as f32);
+    let base_dpr = options
+      .device_pixel_ratio
+      .unwrap_or(self.device_pixel_ratio);
+    let meta_viewport = if self.apply_meta_viewport {
+      crate::html::viewport::extract_viewport_with_deadline(&dom)?
+    } else {
+      None
+    };
+    let resolved_viewport = resolve_viewport(requested_viewport, base_dpr, meta_viewport.as_ref());
+    let layout_width = resolved_viewport.layout_viewport.width.max(1.0).round() as u32;
+    let layout_height = resolved_viewport.layout_viewport.height.max(1.0).round() as u32;
+    let paint_parallelism = self.resolve_paint_parallelism(&options);
+    let layout_parallelism = self.resolve_layout_parallelism(&options);
+
+    let needs_top_layer_state = needs_top_layer_state(&dom)?;
+    let previous_dpr = self.device_pixel_ratio;
+    let artifacts_result = (|| -> Result<LayoutArtifacts> {
+      self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
+      self.pending_device_size = Some(resolved_viewport.visual_viewport);
+      self.layout_document_for_media_with_artifacts_owned(
+        dom,
+        needs_top_layer_state,
+        layout_width,
+        layout_height,
+        options.media_type,
+        LayoutDocumentOptions {
+          page_stacking: PageStacking::Stacked { gap: 0.0 },
+          animation_time: options.animation_time,
+        },
+        Point::new(options.scroll_x, options.scroll_y),
+        Some(&deadline),
+        options.stage_mem_budget_bytes,
+        trace,
+        layout_parallelism,
+        None,
+      )
+    })();
+
+    self.device_pixel_ratio = previous_dpr;
+    self.pending_device_size = None;
+    let artifacts = artifacts_result?;
+
+    let layout_viewport = artifacts.fragment_tree.viewport_size();
+    if let Some(start) = stage_start {
+      let now = Instant::now();
+      eprintln!("timing:layout_document {:?}", now - start);
+    }
+
+    Ok(PreparedDocument {
+      dom: artifacts.dom,
+      stylesheet: artifacts.stylesheet,
+      styled_tree: artifacts.styled_tree,
+      box_tree: artifacts.box_tree,
+      fragment_tree: artifacts.fragment_tree,
+      layout_viewport,
+      visual_viewport: resolved_viewport.visual_viewport,
+      device_pixel_ratio: resolved_viewport.device_pixel_ratio,
+      page_zoom: resolved_viewport.zoom,
+      background_color: self.background_color,
+      default_scroll: ScrollState::from_parts(
+        Point::new(options.scroll_x, options.scroll_y),
+        options.element_scroll_offsets.clone(),
+      ),
+      animation_time: options.animation_time,
+      font_context: self.font_context.clone(),
       image_cache: self.image_cache.clone(),
       max_iframe_depth: self.max_iframe_depth,
       paint_parallelism,

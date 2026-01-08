@@ -7873,7 +7873,10 @@ impl DisplayListBuilder {
         underline_offset: style.text_underline_offset,
         underline_position: style.text_underline_position,
       }]);
-      fallback.as_ref().unwrap().as_slice()
+      match fallback.as_ref() {
+        Some(arr) => arr.as_slice(),
+        None => &[],
+      }
     } else {
       &[]
     };

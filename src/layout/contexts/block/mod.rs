@@ -762,46 +762,47 @@ impl BlockFormattingContext {
     .max(0.0);
     let available_content_for_fit = (available_inline_border_box - inline_edges_for_fit).max(0.0);
     let mut intrinsic_content_sizes = None;
-    if inline_length.is_none() && inline_keyword.is_some() {
-      let keyword = inline_keyword.unwrap();
-      let factory = self.child_factory_for_cb(*nearest_positioned_cb);
-      let fc_type = child
-        .formatting_context()
-        .unwrap_or(FormattingContextType::Block);
-      let (min_content, max_content) =
-        self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?;
-      intrinsic_content_sizes = Some((min_content, max_content));
-      let keyword_content = self.resolve_intrinsic_size_keyword_to_content_width(
-        keyword,
-        min_content,
-        max_content,
-        available_content_for_fit,
-        containing_width,
-        style,
-        inline_edges_for_fit,
-      );
-      let specified_width = match style.box_sizing {
-        crate::style::types::BoxSizing::ContentBox => keyword_content,
-        crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
-      };
-      let mut width_style = style.clone();
-      {
-        let s = Arc::make_mut(&mut width_style);
-        if inline_is_horizontal {
-          s.width = Some(Length::px(specified_width));
-          s.width_keyword = None;
-        } else {
-          s.height = Some(Length::px(specified_width));
-          s.height_keyword = None;
+    if inline_length.is_none() {
+      if let Some(keyword) = inline_keyword {
+        let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+        let fc_type = child
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let (min_content, max_content) =
+          self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?;
+        intrinsic_content_sizes = Some((min_content, max_content));
+        let keyword_content = self.resolve_intrinsic_size_keyword_to_content_width(
+          keyword,
+          min_content,
+          max_content,
+          available_content_for_fit,
+          containing_width,
+          style,
+          inline_edges_for_fit,
+        );
+        let specified_width = match style.box_sizing {
+          crate::style::types::BoxSizing::ContentBox => keyword_content,
+          crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
+        };
+        let mut width_style = style.clone();
+        {
+          let s = Arc::make_mut(&mut width_style);
+          if inline_is_horizontal {
+            s.width = Some(Length::px(specified_width));
+            s.width_keyword = None;
+          } else {
+            s.height = Some(Length::px(specified_width));
+            s.height_keyword = None;
+          }
         }
+        computed_width = compute_block_width(
+          &width_style,
+          containing_width,
+          self.viewport_size,
+          inline_sides,
+          inline_positive,
+        );
       }
-      computed_width = compute_block_width(
-        &width_style,
-        containing_width,
-        self.viewport_size,
-        inline_sides,
-        inline_positive,
-      );
     }
     if toggles.truthy("FASTR_LOG_BLOCK_WIDE")
       && computed_width.total_width() > containing_width + 0.5

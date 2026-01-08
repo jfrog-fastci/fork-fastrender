@@ -2809,13 +2809,15 @@ fn generate_boxes_for_styled_into(
           }
         }
  
-        let in_footnote = stack.last().expect("frame exists").in_footnote;
+        let in_footnote = stack
+          .last()
+          .map(|frame| frame.in_footnote)
+          .unwrap_or(false);
         counters.enter_scope();
         apply_counter_properties_from_style(styled, counters, in_footnote, options.enable_footnote_floats);
-        stack
-          .last_mut()
-          .expect("frame exists")
-          .entered_counter_scope = true;
+        if let Some(frame) = stack.last_mut() {
+          frame.entered_counter_scope = true;
+        }
 
         // Common ad placeholders that hold space even when empty: drop when they have no children/content.
         if site_compat {
@@ -3039,9 +3041,13 @@ fn generate_boxes_for_styled_into(
         }
  
         if let Some(child) = next_child {
-          let parent = stack.last().expect("frame exists");
-          let child_in_footnote = parent.in_footnote
-            || (options.enable_footnote_floats && parent.styled.styles.float == Float::Footnote);
+          let child_in_footnote = stack
+            .last()
+            .map(|parent| {
+              parent.in_footnote
+                || (options.enable_footnote_floats && parent.styled.styles.float == Float::Footnote)
+            })
+            .unwrap_or(false);
           stack.push(Frame::new(child, child_in_footnote));
         }
       }

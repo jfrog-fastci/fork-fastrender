@@ -358,7 +358,14 @@ fn run_curl(
     }
   };
 
-  let stderr = child.stderr.take().expect("stderr piped");
+  let Some(stderr) = child.stderr.take() else {
+    let exit_status = child.wait().ok();
+    return Err(CurlError::Failure(CurlFailure {
+      exit_status,
+      stderr: "curl stderr pipe unavailable".to_string(),
+      spawn_error: None,
+    }));
+  };
   let stderr_handle = thread::spawn(move || {
     const STDERR_MAX_BYTES: u64 = 64 * 1024;
     let mut limited = stderr.take(STDERR_MAX_BYTES);
@@ -367,7 +374,16 @@ fn run_curl(
     String::from_utf8_lossy(&buf.into_inner()).to_string()
   });
 
-  let stdout = child.stdout.take().expect("stdout piped");
+  let Some(stdout) = child.stdout.take() else {
+    let _ = child.kill();
+    let exit_status = child.wait().ok();
+    let stderr = stderr_handle.join().unwrap_or_default();
+    return Err(CurlError::Failure(CurlFailure {
+      exit_status,
+      stderr: format!("{stderr}\ncurl stdout pipe unavailable").trim().to_string(),
+      spawn_error: None,
+    }));
+  };
   let mut reader = BufReader::new(stdout);
 
   let (status_line, status, headers) = match read_curl_headers(&mut reader) {

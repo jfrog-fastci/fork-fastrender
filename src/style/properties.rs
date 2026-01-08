@@ -12511,7 +12511,9 @@ fn apply_declaration_with_base_internal_with_order(
 
         if !slice_indices.is_empty() {
           let start = slice_indices[0];
-          let end = *slice_indices.last().unwrap();
+          let Some(&end) = slice_indices.last() else {
+            return;
+          };
           let mut slice_values = 0usize;
           let mut fill = false;
           for idx in start..=end {
@@ -14312,7 +14314,9 @@ fn parse_border_image_shorthand(value: &PropertyValue) -> Option<BorderImage> {
 
     if !slice_indices.is_empty() {
       let start = slice_indices[0];
-      let end = *slice_indices.last().unwrap();
+      let Some(&end) = slice_indices.last() else {
+        return None;
+      };
       let mut slice_values = 0usize;
       let mut fill = false;
       for idx in start..=end {

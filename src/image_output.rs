@@ -197,10 +197,10 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
 
         fn get_pixel(&self, x: u32, y: u32) -> Self::Pixel {
           if x >= self.width || y >= self.height {
-            panic!(
-              "UnpremultipliedRgbView::get_pixel out of bounds ({x},{y}) for {}x{}",
-              self.width, self.height
-            );
+            // Defensive fallback: the `image` crate's encoders should never request out-of-bounds
+            // pixels when the `dimensions()` implementation is correct, but avoid panicking in
+            // production if a caller does.
+            return Rgb([0, 0, 0]);
           }
 
           let idx = (y as usize * self.width as usize + x as usize) * 4;

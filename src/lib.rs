@@ -212,7 +212,6 @@ pub mod memory;
 pub mod process_limits;
 pub(crate) mod rayon_global;
 pub mod system;
-
 #[cfg(feature = "browser_ui")]
 pub mod ui;
 // ============================================================================
@@ -236,6 +235,7 @@ pub use api::PaintDiagnostics;
 pub use api::PaintedFrame;
 pub use api::Pixmap;
 pub use api::PreparedDocument;
+pub use api::PreparedDocumentReport;
 pub use api::PreparedPaintOptions;
 pub use api::RenderArtifactRequest;
 pub use api::RenderArtifacts;
