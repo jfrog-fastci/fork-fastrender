@@ -22,6 +22,7 @@ use super::{
 };
 use crate::debug::runtime;
 use crate::error::{Error, RenderError, RenderStage, ResourceError};
+use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::render_control;
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -169,16 +170,14 @@ fn read_all_with_deadline<R: Read>(
   stage: RenderStage,
   max_chunk_size: usize,
 ) -> std::result::Result<Vec<u8>, ReadAllWithDeadlineError> {
-  let mut bytes = match capacity_hint {
-    Some(cap) => Vec::with_capacity(cap),
-    None => Vec::new(),
-  };
+  let max_bytes = capacity_hint.unwrap_or(usize::MAX);
+  let mut bytes = FallibleVecWriter::new(max_bytes, "disk cache read");
 
   let desired_chunk_size = capacity_hint
     .unwrap_or(max_chunk_size)
     .clamp(DISK_READ_MIN_CHUNK_SIZE, max_chunk_size);
 
-  DISK_READ_SCRATCH.with(|scratch| {
+  DISK_READ_SCRATCH.with(|scratch| -> std::result::Result<(), ReadAllWithDeadlineError> {
     let mut buf = scratch.borrow_mut();
     if buf.len() < desired_chunk_size {
       buf.resize(desired_chunk_size, 0);
@@ -190,13 +189,14 @@ fn read_all_with_deadline<R: Read>(
       }
       match reader.read(&mut buf[..desired_chunk_size]) {
         Ok(0) => break,
-        Ok(n) => bytes.extend_from_slice(&buf[..n]),
+        Ok(n) => bytes.write_all(&buf[..n])?,
         Err(err) if err.kind() == ErrorKind::Interrupted => continue,
         Err(_err) => return Err(ReadAllWithDeadlineError::Io),
       }
     }
-    Ok(bytes)
-  })
+    Ok(())
+  })?;
+  Ok(bytes.into_inner())
 }
 
 fn read_prefix_with_deadline<R: Read>(
@@ -209,34 +209,38 @@ fn read_prefix_with_deadline<R: Read>(
     return Ok(Vec::new());
   }
 
-  // Keep allocations proportional to the requested prefix (not the full file size).
-  let mut bytes = Vec::with_capacity(max_bytes.min(max_chunk_size));
+  let mut bytes = FallibleVecWriter::new(max_bytes, "disk cache prefix");
   let desired_chunk_size = max_bytes.clamp(DISK_READ_MIN_CHUNK_SIZE, max_chunk_size);
+  let mut written = 0usize;
 
-  DISK_READ_SCRATCH.with(|scratch| {
+  DISK_READ_SCRATCH.with(|scratch| -> std::result::Result<(), ReadAllWithDeadlineError> {
     let mut buf = scratch.borrow_mut();
     if buf.len() < desired_chunk_size {
       buf.resize(desired_chunk_size, 0);
     }
     let mut deadline_counter = 0usize;
     loop {
-      if bytes.len() >= max_bytes {
+      if written >= max_bytes {
         break;
       }
       if let Err(err) = render_control::check_active_periodic(&mut deadline_counter, 1, stage) {
         return Err(ReadAllWithDeadlineError::Timeout(err));
       }
-      let remaining = max_bytes - bytes.len();
+      let remaining = max_bytes - written;
       let to_read = remaining.min(desired_chunk_size);
       match reader.read(&mut buf[..to_read]) {
         Ok(0) => break,
-        Ok(n) => bytes.extend_from_slice(&buf[..n]),
+        Ok(n) => {
+          bytes.write_all(&buf[..n])?;
+          written = written.saturating_add(n);
+        }
         Err(err) if err.kind() == ErrorKind::Interrupted => continue,
         Err(_err) => return Err(ReadAllWithDeadlineError::Io),
       }
     }
-    Ok(bytes)
-  })
+    Ok(())
+  })?;
+  Ok(bytes.into_inner())
 }
 
 fn read_path_with_deadline(
