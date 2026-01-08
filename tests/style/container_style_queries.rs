@@ -1304,6 +1304,58 @@ fn container_style_query_range_feature_matches_row_gap() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_tab_size_number() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; tab-size: 4; }
+      .container-large { container-type: inline-size; tab-size: 8; }
+      .child { color: rgb(0 0 255); }
+      @container style(tab-size > 6) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_tab_size_length() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; tab-size: 10px; }
+      .container-large { container-type: inline-size; tab-size: 20px; }
+      .child { color: rgb(0 0 255); }
+      @container style(tab-size > 15px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_coerces_unitless_zero_to_time() {
   let html = r#"
     <style>

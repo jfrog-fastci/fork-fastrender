@@ -1971,6 +1971,13 @@ fn eval_style_range_value(
       "row-gap" | "grid-row-gap" => length_to_numeric(&styles.grid_row_gap, container, ctx),
       "grid-column-gap" => length_to_numeric(&styles.grid_column_gap, container, ctx),
       "column-rule-width" => length_to_numeric(&styles.column_rule_width, container, ctx),
+      "tab-size" => match styles.tab_size {
+        crate::style::types::TabSize::Number(n) => Some(NumericValue {
+          ty: NumericType::Number,
+          value: n,
+        }),
+        crate::style::types::TabSize::Length(len) => length_to_numeric(&len, container, ctx),
+      },
       "line-height" => match &styles.line_height {
         crate::style::types::LineHeight::Normal => {
           let font_size = styles
