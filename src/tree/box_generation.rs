@@ -89,6 +89,10 @@ pub(crate) fn parse_sizes(attr: &str) -> Option<SizesList> {
   image_attrs::parse_sizes(attr)
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 // ============================================================================
 // StyledNode-based Box Generation (for real DOM/style pipeline)
 // ============================================================================
@@ -1876,7 +1880,10 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
       let BackgroundImage::Url(src) = image else {
         continue;
       };
-      if let Some(id) = src.trim().strip_prefix('#').filter(|id| !id.is_empty()) {
+      if let Some(id) = trim_ascii_whitespace(src)
+        .strip_prefix('#')
+        .filter(|id| !id.is_empty())
+      {
         out.insert(id.to_string());
       }
     }
@@ -1949,7 +1956,7 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         if is_svg {
           for (name, value) in attributes {
             if is_href_attr(name) {
-              let trimmed = value.trim();
+              let trimmed = trim_ascii_whitespace(value);
               if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
                 out.insert(id.to_string());
               }
@@ -4570,7 +4577,7 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
   let data = styled
     .node
     .get_attribute_ref("data")
-    .map(str::trim)
+    .map(trim_ascii_whitespace)
     .unwrap_or("");
   if data.is_empty() {
     return false;
@@ -4619,7 +4626,11 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
     Some(is_supported_object_mime(mediatype))
   };
 
-  let type_attr = styled.node.get_attribute_ref("type").map(str::trim).unwrap_or("");
+  let type_attr = styled
+    .node
+    .get_attribute_ref("type")
+    .map(trim_ascii_whitespace)
+    .unwrap_or("");
   if type_attr.is_empty() {
     return infer_supported_from_data_url().unwrap_or(true);
   }
@@ -4634,7 +4645,7 @@ enum MediaElementKind {
 }
 
 fn media_src_is_unusable(src: &str) -> bool {
-  let trimmed = src.trim();
+  let trimmed = trim_ascii_whitespace(src);
   if trimmed.is_empty() || trimmed.starts_with('#') {
     return true;
   }
@@ -4669,7 +4680,7 @@ fn media_src_from_source_children(styled: &StyledNode, kind: MediaElementKind) -
     let Some(src_attr) = child.node.get_attribute_ref("src") else {
       continue;
     };
-    let src_trimmed = src_attr.trim();
+    let src_trimmed = trim_ascii_whitespace(src_attr);
     if src_trimmed.is_empty() {
       continue;
     }
@@ -4698,7 +4709,7 @@ fn effective_media_src(styled: &StyledNode, kind: MediaElementKind) -> String {
   let src = styled
     .node
     .get_attribute_ref("src")
-    .map(str::trim)
+    .map(trim_ascii_whitespace)
     .unwrap_or("");
   if !media_src_is_unusable(src) {
     return src.to_string();
@@ -4723,7 +4734,7 @@ fn create_replaced_box_from_styled(
     let src = styled
       .node
       .get_attribute_ref("src")
-      .map(str::trim)
+      .map(trim_ascii_whitespace)
       .unwrap_or("")
       .to_string();
     let alt = styled
@@ -4767,14 +4778,14 @@ fn create_replaced_box_from_styled(
     let mut poster = styled
       .node
       .get_attribute_ref("poster")
-      .map(str::trim)
+      .map(trim_ascii_whitespace)
       .filter(|s| !s.is_empty())
       .map(|s| s.to_string());
     if poster.is_none() && site_compat {
       poster = styled
         .node
         .get_attribute_ref("gnt-gl-ps")
-        .map(str::trim)
+        .map(trim_ascii_whitespace)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     }
@@ -4795,7 +4806,7 @@ fn create_replaced_box_from_styled(
     let src = styled
       .node
       .get_attribute_ref("src")
-      .map(str::trim)
+      .map(trim_ascii_whitespace)
       .filter(|s| !s.is_empty())
       .map(|s| s.to_string())
       .unwrap_or_else(|| "about:blank".to_string());
@@ -4816,7 +4827,7 @@ fn create_replaced_box_from_styled(
     let src = styled
       .node
       .get_attribute_ref("src")
-      .map(str::trim)
+      .map(trim_ascii_whitespace)
       .unwrap_or("")
       .to_string();
     ReplacedType::Embed { src }
@@ -4828,7 +4839,7 @@ fn create_replaced_box_from_styled(
     let data = styled
       .node
       .get_attribute_ref("data")
-      .map(str::trim)
+      .map(trim_ascii_whitespace)
       .unwrap_or("")
       .to_string();
     ReplacedType::Object { data }
@@ -4836,7 +4847,7 @@ fn create_replaced_box_from_styled(
     let src = styled
       .node
       .get_attribute_ref("src")
-      .map(str::trim)
+      .map(trim_ascii_whitespace)
       .unwrap_or("")
       .to_string();
     let alt = styled
@@ -5699,6 +5710,21 @@ mod tests {
   }
 
   #[test]
+  fn img_replaced_src_preserves_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let html = format!("<html><body><img src=\"img.png{nbsp}\"></body></html>");
+    let dom = crate::dom::parse_html(&html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      first_image_src(&box_tree.root),
+      Some(format!("img.png{nbsp}")),
+      "img src should not trim non-ASCII whitespace like NBSP"
+    );
+  }
+
+  #[test]
   fn video_src_and_poster_are_trimmed() {
     let html =
       "<html><body><video src=\"  v.mp4  \" poster=\"  poster.png  \"></video></body></html>";
@@ -5713,6 +5739,26 @@ mod tests {
       poster.as_deref(),
       Some("poster.png"),
       "video poster should be whitespace-trimmed"
+    );
+  }
+
+  #[test]
+  fn video_src_and_poster_preserve_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      "<html><body><video src=\"v.mp4{nbsp}\" poster=\"poster.png{nbsp}\"></video></body></html>"
+    );
+    let dom = crate::dom::parse_html(&html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    let (src, poster) =
+      first_video_src_and_poster(&box_tree.root).expect("expected a replaced video");
+    assert_eq!(src, format!("v.mp4{nbsp}"), "video src should preserve NBSP");
+    assert_eq!(
+      poster,
+      Some(format!("poster.png{nbsp}")),
+      "video poster should preserve NBSP"
     );
   }
 

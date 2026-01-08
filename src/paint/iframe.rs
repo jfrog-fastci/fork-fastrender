@@ -26,6 +26,10 @@ const IFRAME_NESTING_LIMIT_MESSAGE: &str = "iframe nesting limit exceeded";
 const IFRAME_RENDER_CACHE_MAX_ENTRIES: usize = 128;
 const IFRAME_RENDER_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 #[inline]
 fn f32_to_canonical_bits(value: f32) -> u32 {
   if value == 0.0 {
@@ -552,7 +556,7 @@ pub(crate) fn render_iframe_src(
       .unwrap_or(false)
   }
 
-  let src = src.trim();
+  let src = trim_ascii_whitespace(src);
   if src.is_empty() {
     return None;
   }
@@ -1751,6 +1755,40 @@ mod diagnostics_tests {
     assert!(
       diag.fetch_errors.is_empty(),
       "expected no diagnostics for trimmed src, got {diag:?}"
+    );
+  }
+
+  #[test]
+  fn iframe_src_does_not_trim_non_ascii_whitespace() {
+    let diagnostics = SharedRenderDiagnostics::new();
+    let nbsp = "\u{00A0}";
+    let fetcher = Arc::new(MockFetcher::new(move |url| {
+      assert_eq!(url, "https://example.com/foo%C2%A0");
+      Ok(FetchedResource::new(
+        b"<html></html>".to_vec(),
+        Some("text/html".to_string()),
+      ))
+    }));
+    let mut cache = test_image_cache(fetcher, diagnostics.clone());
+    cache.set_base_url("https://example.com/".to_string());
+    let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
+
+    let result = render_iframe_src(
+      &format!("foo{nbsp}"),
+      None,
+      rect,
+      None,
+      &cache,
+      &test_font_context(),
+      1.0,
+      1,
+    );
+    assert!(result.is_some());
+
+    let diag = diagnostics.into_inner();
+    assert!(
+      diag.fetch_errors.is_empty(),
+      "expected no diagnostics for NBSP src, got {diag:?}"
     );
   }
 
