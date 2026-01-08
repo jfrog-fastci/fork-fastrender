@@ -12320,7 +12320,18 @@ fn apply_declaration_with_base_internal_with_order(
       let is_outset_value = |token: &PropertyValue| -> bool {
         match token {
           PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
-          PropertyValue::Length(len) => len.value.is_finite() && len.value >= 0.0,
+          PropertyValue::Length(len) => {
+            if !len.value.is_finite() || len.value < 0.0 {
+              return false;
+            }
+            if len.unit.is_percentage() {
+              return false;
+            }
+            if len.calc.is_some_and(|calc| calc.has_percentage()) {
+              return false;
+            }
+            true
+          }
           _ => false,
         }
       };
@@ -13956,7 +13967,9 @@ fn parse_border_image_outset_list(values: &[PropertyValue]) -> Option<BorderImag
   for v in values {
     match v {
       PropertyValue::Number(n) if *n >= 0.0 => outsets.push(BorderImageOutsetValue::Number(*n)),
-      PropertyValue::Length(len) if len.value >= 0.0 => {
+      PropertyValue::Length(len)
+        if len.value >= 0.0 && !len.unit.is_percentage() && !len.calc.is_some_and(|calc| calc.has_percentage()) =>
+      {
         outsets.push(BorderImageOutsetValue::Length(*len))
       }
       _ => return None,
