@@ -8,12 +8,13 @@ Compatibility toggles are **opt-in** across the render CLIs. Pass `--compat-prof
 
 These are optional wrappers for the most common loops:
 
-- Pageset loop (`fetch_pages` → `prefetch_assets` (disk cache only) → `pageset_progress`, defaults to bundled fonts for deterministic timing): `scripts/pageset.sh`
+- Pageset loop (thin wrapper over `cargo xtask pageset`, defaults to bundled fonts for deterministic timing): `scripts/pageset.sh`
   - Defaults to `--features disk_cache`; set `DISK_CACHE=0` or `NO_DISK_CACHE=1` or pass `--no-disk-cache` to opt out; pass `--disk-cache` to force-enable.
   - Fonts: defaults to bundled fixtures; pass `--system-fonts` (alias `--no-bundled-fonts`) to run `pageset_progress` against host system fonts (useful for Chrome accuracy diffs). `--system-fonts` forces `FASTR_USE_BUNDLED_FONTS=0` and `CI=0` for the `pageset_progress` subprocess so the behavior is predictable even when those env vars are set.
   - Supports `--jobs/-j`, `--fetch-timeout`, `--render-timeout`, `--cache-dir`, `--no-fetch`, `--refresh`, `--pages`, `--shard`, `--allow-http-error-status`, `--allow-collisions`, `--timings`, `--bundled-fonts` (default) / `--system-fonts` (alias `--no-bundled-fonts`), `--accuracy` (plus `--accuracy-baseline`, `--accuracy-baseline-dir`, `--accuracy-tolerance`, `--accuracy-max-diff-percent`, and `--accuracy-diff-dir`), and `--capture-missing-failure-fixtures` (plus `--capture-missing-failure-fixtures-out-dir`, `--capture-missing-failure-fixtures-allow-missing-resources`, and `--capture-missing-failure-fixtures-overwrite`).
   - Prefetch toggles like `--prefetch-fonts` / `--prefetch-images` passed after `--` are forwarded to `prefetch_assets` when disk cache is enabled.
   - Pass extra `pageset_progress run` flags after `--` (for example `--accuracy`; consider `--system-fonts` for Chrome diffs so font substitution doesn’t dominate the results).
+  - Use `--dry-run` to print the underlying `cargo xtask pageset ...` command instead of executing it.
 - Cached-pages Chrome-vs-FastRender diff (best-effort; non-deterministic): `scripts/chrome_vs_fastrender.sh [options] [--] [page_stem...]`
   - Wraps `scripts/chrome_baseline.sh`, `render_pages`, and `diff_renders` into one command.
   - Defaults to `viewport=1200x800`, `dpr=1.0`, JavaScript disabled (to match FastRender’s “no JS” model).
@@ -42,7 +43,7 @@ The full pageset workflow is:
 
 `fetch_pages` (HTML) → `prefetch_assets` (CSS/@import/fonts into `fetches/assets/` by default; override with `--cache-dir <dir>`) → `pageset_progress` (render + write `progress/pages/*.json`).
 
-`cargo xtask pageset` runs all three steps (the prefetch step is skipped when disk cache is disabled). `scripts/pageset.sh` is a lighter wrapper that runs `fetch_pages` → `prefetch_assets` (disk cache only) → `pageset_progress`.
+`cargo xtask pageset` runs all three steps (the prefetch step is skipped when disk cache is disabled). `scripts/pageset.sh` is a thin convenience wrapper over `cargo xtask pageset` (kept for backwards-compatible flags/env defaults and muscle memory).
 
 Pageset wrappers enable the disk-backed subresource cache by default, persisting assets under
 `fetches/assets/` (override with `--cache-dir <dir>`) for repeatable/offline runs. Set

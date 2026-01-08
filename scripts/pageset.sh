@@ -1,1363 +1,486 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Always run relative paths from the repository root, even if the script is invoked from a
-# subdirectory.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${SCRIPT_DIR}/.."
-
-# Determine the effective CPU budget for default `JOBS`/Rayon thread budgeting.
+# Convenience wrapper around `cargo xtask pageset`.
 #
-# We prefer `nproc` when available because it respects cpusets/affinity. On Linux, also honor cgroup
-# CPU quotas when possible so the default parallelism doesn't oversubscribe in containers/CI.
-detect_total_cpus() {
-  local cpus
-  if command -v nproc >/dev/null 2>&1; then
-    cpus="$(nproc)"
-  else
-    cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
-  fi
+# This script exists mainly for backwards-compatible env vars/flags and muscle memory.
+# Keep orchestration logic in the Rust `xtask` implementation so the behavior is validated and
+# testable.
 
-  # cgroup v2: `cpu.max` is "<quota> <period>" where quota is "max" when unbounded.
-  #
-  # Quotas are hierarchical: the effective CPU budget is the minimum quota found in the current
-  # cgroup and all its ancestors. Walk upwards so we honor quotas applied at higher-level slices.
-  if [[ -r /sys/fs/cgroup/cpu.max ]]; then
-    local cgroup_path="/"
-    if [[ -r /proc/self/cgroup ]]; then
-      cgroup_path="$(awk -F: '$1=="0" && $2=="" {print $3; exit}' /proc/self/cgroup 2>/dev/null || echo "/")"
-      if [[ -z "${cgroup_path}" ]]; then
-        cgroup_path="/"
-      fi
-    fi
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${REPO_ROOT}"
 
-    local dir="/sys/fs/cgroup${cgroup_path}"
-    if [[ "${dir}" == "/sys/fs/cgroup/" ]]; then
-      dir="/sys/fs/cgroup"
-    fi
+usage() {
+  cat <<'USAGE'
+usage: scripts/pageset.sh [wrapper flags] [--] [pageset_progress flags...]
 
-    local best_quota_cpus=""
-    while true; do
-      if [[ -r "${dir}/cpu.max" ]]; then
-        local quota period
-        read -r quota period < "${dir}/cpu.max" || true
-        if [[ "${quota:-}" != "max" && "${quota:-0}" -gt 0 && "${period:-0}" -gt 0 ]]; then
-          local quota_cpus=$(((quota + period - 1) / period))
-          if [[ "${quota_cpus}" -gt 0 ]]; then
-            if [[ -z "${best_quota_cpus}" || "${quota_cpus}" -lt "${best_quota_cpus}" ]]; then
-              best_quota_cpus="${quota_cpus}"
-            fi
-          fi
-        fi
-      fi
+This is a thin wrapper over:
+  cargo xtask pageset [flags] [-- <extra pageset_progress flags...>]
 
-      if [[ "${dir}" == "/sys/fs/cgroup" ]]; then
-        break
-      fi
-
-      local next_dir="${dir%/*}"
-      if [[ -z "${next_dir}" || "${next_dir}" == "${dir}" ]]; then
-        break
-      fi
-      dir="${next_dir}"
-    done
-
-    if [[ -n "${best_quota_cpus}" && "${best_quota_cpus}" -gt 0 && "${best_quota_cpus}" -lt "${cpus}" ]]; then
-      cpus="${best_quota_cpus}"
-    fi
-  # cgroup v1: `cpu.cfs_quota_us` is -1 when unbounded.
-  #
-  # Like cgroup v2, quotas can be applied on ancestor cgroups. Parse the per-controller cgroup path
-  # from `/proc/self/cgroup` and walk up to the mountpoint, taking the minimum quota observed.
-  elif [[ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us || -r /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us ]]; then
-    local mountpoint=""
-    for candidate in /sys/fs/cgroup/cpu /sys/fs/cgroup/cpu,cpuacct; do
-      if [[ -r "${candidate}/cpu.cfs_quota_us" && -r "${candidate}/cpu.cfs_period_us" ]]; then
-        mountpoint="${candidate}"
-        break
-      fi
-    done
-
-    if [[ -n "${mountpoint}" ]]; then
-      local cgroup_path="/"
-      if [[ -r /proc/self/cgroup ]]; then
-        cgroup_path="$(awk -F: '$2 ~ /(^|,)cpu(,|$)/ {print $3; exit}' /proc/self/cgroup 2>/dev/null || echo "/")"
-        if [[ -z "${cgroup_path}" ]]; then
-          cgroup_path="/"
-        fi
-      fi
-
-      local dir="${mountpoint}${cgroup_path}"
-      if [[ "${dir}" == "${mountpoint}/" ]]; then
-        dir="${mountpoint}"
-      fi
-
-      local best_quota_cpus=""
-      while true; do
-        if [[ -r "${dir}/cpu.cfs_quota_us" && -r "${dir}/cpu.cfs_period_us" ]]; then
-          local quota period
-          quota="$(cat "${dir}/cpu.cfs_quota_us" 2>/dev/null || echo -1)"
-          period="$(cat "${dir}/cpu.cfs_period_us" 2>/dev/null || echo 0)"
-          if [[ "${quota}" -gt 0 && "${period}" -gt 0 ]]; then
-            local quota_cpus=$(((quota + period - 1) / period))
-            if [[ "${quota_cpus}" -gt 0 ]]; then
-              if [[ -z "${best_quota_cpus}" || "${quota_cpus}" -lt "${best_quota_cpus}" ]]; then
-                best_quota_cpus="${quota_cpus}"
-              fi
-            fi
-          fi
-        fi
-
-        if [[ "${dir}" == "${mountpoint}" ]]; then
-          break
-        fi
-
-        local next_dir="${dir%/*}"
-        if [[ -z "${next_dir}" || "${next_dir}" == "${dir}" ]]; then
-          break
-        fi
-        dir="${next_dir}"
-      done
-
-      if [[ -n "${best_quota_cpus}" && "${best_quota_cpus}" -gt 0 && "${best_quota_cpus}" -lt "${cpus}" ]]; then
-        cpus="${best_quota_cpus}"
-      fi
-    fi
-  fi
-
-  if [[ -z "${cpus}" || "${cpus}" -lt 1 ]]; then
-    cpus=1
-  fi
-  echo "${cpus}"
+Wrapper-only flags:
+  --dry-run    Print the `cargo xtask pageset ...` command that would run and exit 0.
+USAGE
 }
 
-# Convenience wrapper for the main planner loop:
-#   fetch_pages -> prefetch_assets -> pageset_progress
-#
-# Environment overrides:
-#   JOBS=8 FETCH_TIMEOUT=30 RENDER_TIMEOUT=5 DISK_CACHE=0 NO_DISK_CACHE=1 DISK_CACHE_AUDIT_CLEAN=1
-#   RAYON_NUM_THREADS=4 FASTR_LAYOUT_PARALLEL=off|on|auto
-#   USER_AGENT=... ACCEPT_LANGUAGE=... VIEWPORT=... DPR=...
-#   FASTR_DISK_CACHE_MAX_BYTES=... FASTR_DISK_CACHE_MAX_AGE_SECS=... (0 = never expire)
-#   FASTR_DISK_CACHE_LOCK_STALE_SECS=... (seconds before `.lock` files are treated as stale)
-#   FASTR_DISK_CACHE_ALLOW_NO_STORE=0|1 (do not override via wrapper defaults when set)
-#
-# Wrapper flags (accepted even if placed after `--`):
-#   --jobs/-j N --fetch-timeout SECS --render-timeout SECS --cache-dir DIR --no-fetch
-#   --disk-cache --no-disk-cache
-#   --disk-cache-audit-clean
-#   --bundled-fonts (default; deterministic timings) --system-fonts/--no-bundled-fonts (match Chrome)
-#   --accuracy
-#   --accuracy-baseline <existing|chrome>
-#   --accuracy-baseline-dir DIR
-#   --accuracy-tolerance <0-255>
-#   --accuracy-max-diff-percent <0-100>
-#   --accuracy-diff-dir DIR
-#   --capture-missing-failure-fixtures
-#   --capture-missing-failure-fixtures-out-dir DIR
-#   --capture-missing-failure-fixtures-allow-missing-resources
-#   --capture-missing-failure-fixtures-overwrite
-#   --capture-worst-accuracy-fixtures
-#   --capture-worst-accuracy-fixtures-out-dir DIR
-#   --capture-worst-accuracy-fixtures-min-diff-percent PERCENT
-#   --capture-worst-accuracy-fixtures-top N
-#   --capture-worst-accuracy-fixtures-allow-missing-resources
-#   --capture-worst-accuracy-fixtures-overwrite
-#
-# Extra arguments are forwarded to `pageset_progress run`. Use `--` to separate them from the
-# wrapper flags, e.g.:
-#   scripts/pageset.sh -- --pages example.com --disk-cache-max-age-secs 0
-#
-# Note: `--pages` and `--shard` are also forwarded to `fetch_pages` and `prefetch_assets` so that
-# one-page debugging runs don't spend time fetching/prefetching the entire pageset.
-#
-# Note: `--allow-http-error-status` is forwarded to `fetch_pages` so pageset runs can cache
-# transient 4xx/5xx pages for debugging without breaking `pageset_progress` arg parsing.
-#
-# Note: `--refresh` is forwarded to `fetch_pages` so pageset runs can re-fetch cached HTML in one
-# command.
-#
-# Note: `--allow-collisions` is forwarded to `fetch_pages` so temporary pageset stem collisions can
-# be investigated without editing the pageset list.
-#
-# Note: `--timings` is forwarded to `fetch_pages` so callers can inspect document fetch durations.
-#
-# Note: when disk cache is enabled (so `prefetch_assets` runs) and `prefetch_assets` supports
-# `--prefetch-fonts` / `--prefetch-images` / `--prefetch-iframes` (alias `--prefetch-documents`) /
-# `--prefetch-embeds` / `--prefetch-icons` / `--prefetch-video-posters` / `--prefetch-css-url-assets` /
-# `--max-discovered-assets-per-page` / `--max-images-per-page` / `--max-image-urls-per-element`,
-# these flags are intercepted by the wrapper and forwarded to `prefetch_assets` (not
-# `pageset_progress`) so users can override the wrapper defaults without breaking `pageset_progress`
-# arg parsing.
+dry_run=0
 
-TOTAL_CPUS="$(detect_total_cpus)"
-JOBS="${JOBS:-${TOTAL_CPUS}}"
-FETCH_TIMEOUT="${FETCH_TIMEOUT:-30}"
-RENDER_TIMEOUT="${RENDER_TIMEOUT:-5}"
-USE_DISK_CACHE="${DISK_CACHE:-1}"
-USE_BUNDLED_FONTS=1
-CACHE_DIR="fetches/assets"
-NO_FETCH=0
-DISK_CACHE_AUDIT_CLEAN="${DISK_CACHE_AUDIT_CLEAN:-0}"
-CAPTURE_MISSING_FAILURE_FIXTURES=0
-CAPTURE_MISSING_FAILURE_FIXTURES_OUT_DIR="target/pageset_failure_fixture_bundles"
-CAPTURE_MISSING_FAILURE_FIXTURES_ALLOW_MISSING_RESOURCES=0
-CAPTURE_MISSING_FAILURE_FIXTURES_OVERWRITE=0
-CAPTURE_WORST_ACCURACY_FIXTURES=0
-CAPTURE_WORST_ACCURACY_FIXTURES_OUT_DIR="target/pageset_accuracy_fixture_bundles"
-CAPTURE_WORST_ACCURACY_FIXTURES_MIN_DIFF_PERCENT="0.5"
-CAPTURE_WORST_ACCURACY_FIXTURES_TOP="10"
-CAPTURE_WORST_ACCURACY_FIXTURES_ALLOW_MISSING_RESOURCES=0
-CAPTURE_WORST_ACCURACY_FIXTURES_OVERWRITE=0
-ACCURACY=0
-ACCURACY_BASELINE="existing"
-ACCURACY_BASELINE_DIR="fetches/chrome_renders"
-ACCURACY_BASELINE_DIR_SET=0
-ACCURACY_TOLERANCE=""
-ACCURACY_TOLERANCE_SET=0
-ACCURACY_MAX_DIFF_PERCENT=""
-ACCURACY_MAX_DIFF_PERCENT_SET=0
-ACCURACY_DIFF_DIR=""
-ACCURACY_DIFF_DIR_SET=0
+# Backwards-compatible env defaults (xtask does not read these env vars directly).
+jobs="${JOBS:-}"
+fetch_timeout="${FETCH_TIMEOUT:-}"
+render_timeout="${RENDER_TIMEOUT:-}"
+user_agent="${USER_AGENT:-}"
+accept_language="${ACCEPT_LANGUAGE:-}"
+viewport="${VIEWPORT:-}"
+dpr="${DPR:-}"
 
-if [[ -n "${NO_DISK_CACHE:-}" ]]; then
-  USE_DISK_CACHE=0
+disk_cache_audit_clean=0
+if [[ -n "${DISK_CACHE_AUDIT_CLEAN:-}" && "${DISK_CACHE_AUDIT_CLEAN}" != "0" ]]; then
+  disk_cache_audit_clean=1
 fi
 
-ARGS=()
-while [[ $# -gt 0 ]]; do
-  arg="$1"
-  # Be forgiving if callers accidentally place wrapper flags after `--` (intended for
-  # pageset_progress args). The underlying binaries do not recognize these flags, so it's always
-  # safe to treat them as wrapper flags.
-  case "${arg}" in
-    --no-disk-cache)
-      USE_DISK_CACHE=0
-      shift
-      continue
-      ;;
-    --disk-cache)
-      USE_DISK_CACHE=1
-      shift
-      continue
-      ;;
-    --no-fetch)
-      NO_FETCH=1
-      shift
-      continue
-      ;;
-    --system-fonts|--no-bundled-fonts)
-      USE_BUNDLED_FONTS=0
-      shift
-      continue
-      ;;
-    --bundled-fonts)
-      USE_BUNDLED_FONTS=1
-      shift
-      continue
-      ;;
-    --disk-cache-audit-clean)
-      DISK_CACHE_AUDIT_CLEAN=1
-      shift
-      continue
-      ;;
-    --jobs|-j)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      JOBS="$2"
-      shift 2
-      continue
-      ;;
-    --jobs=*)
-      JOBS="${arg#--jobs=}"
-      shift
-      continue
-      ;;
-    -j*)
-      JOBS="${arg#-j}"
-      if [[ -z "${JOBS}" ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      shift
-      continue
-      ;;
-    --fetch-timeout)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      FETCH_TIMEOUT="$2"
-      shift 2
-      continue
-      ;;
-    --fetch-timeout=*)
-      FETCH_TIMEOUT="${arg#--fetch-timeout=}"
-      shift
-      continue
-      ;;
-    --render-timeout)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      RENDER_TIMEOUT="$2"
-      shift 2
-      continue
-      ;;
-    --render-timeout=*)
-      RENDER_TIMEOUT="${arg#--render-timeout=}"
-      shift
-      continue
-      ;;
-    --cache-dir)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      CACHE_DIR="$2"
-      shift 2
-      continue
-      ;;
-    --cache-dir=*)
-      CACHE_DIR="${arg#--cache-dir=}"
-      shift
-      continue
-      ;;
-    --capture-missing-failure-fixtures)
-      CAPTURE_MISSING_FAILURE_FIXTURES=1
-      shift
-      continue
-      ;;
-    --capture-missing-failure-fixtures-out-dir)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      CAPTURE_MISSING_FAILURE_FIXTURES_OUT_DIR="$2"
-      shift 2
-      continue
-      ;;
-    --capture-missing-failure-fixtures-out-dir=*)
-      CAPTURE_MISSING_FAILURE_FIXTURES_OUT_DIR="${arg#--capture-missing-failure-fixtures-out-dir=}"
-      shift
-      continue
-      ;;
-    --capture-missing-failure-fixtures-allow-missing-resources)
-      CAPTURE_MISSING_FAILURE_FIXTURES_ALLOW_MISSING_RESOURCES=1
-      shift
-      continue
-      ;;
-    --capture-missing-failure-fixtures-overwrite)
-      CAPTURE_MISSING_FAILURE_FIXTURES_OVERWRITE=1
-      shift
-      continue
-      ;;
-    --accuracy)
-      ACCURACY=1
-      shift
-      continue
-      ;;
-    --accuracy-baseline)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      case "$2" in
-        existing|chrome)
-          ACCURACY_BASELINE="$2"
-          ;;
-        *)
-          echo "${arg} must be one of: existing, chrome" >&2
-          exit 2
-          ;;
-      esac
-      shift 2
-      continue
-      ;;
-    --accuracy-baseline=*)
-      value="${arg#--accuracy-baseline=}"
-      case "${value}" in
-        existing|chrome)
-          ACCURACY_BASELINE="${value}"
-          ;;
-        *)
-          echo "--accuracy-baseline must be one of: existing, chrome" >&2
-          exit 2
-          ;;
-      esac
-      shift
-      continue
-      ;;
-    --accuracy-baseline-dir)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      ACCURACY_BASELINE_DIR="$2"
-      ACCURACY_BASELINE_DIR_SET=1
-      shift 2
-      continue
-      ;;
-    --accuracy-baseline-dir=*)
-      ACCURACY_BASELINE_DIR="${arg#--accuracy-baseline-dir=}"
-      ACCURACY_BASELINE_DIR_SET=1
-      shift
-      continue
-      ;;
-    --accuracy-tolerance)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      ACCURACY_TOLERANCE="$2"
-      ACCURACY_TOLERANCE_SET=1
-      shift 2
-      continue
-      ;;
-    --accuracy-tolerance=*)
-      ACCURACY_TOLERANCE="${arg#--accuracy-tolerance=}"
-      ACCURACY_TOLERANCE_SET=1
-      shift
-      continue
-      ;;
-    --accuracy-max-diff-percent)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      ACCURACY_MAX_DIFF_PERCENT="$2"
-      ACCURACY_MAX_DIFF_PERCENT_SET=1
-      shift 2
-      continue
-      ;;
-    --accuracy-max-diff-percent=*)
-      ACCURACY_MAX_DIFF_PERCENT="${arg#--accuracy-max-diff-percent=}"
-      ACCURACY_MAX_DIFF_PERCENT_SET=1
-      shift
-      continue
-      ;;
-    --accuracy-diff-dir)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      ACCURACY_DIFF_DIR="$2"
-      ACCURACY_DIFF_DIR_SET=1
-      shift 2
-      continue
-      ;;
-    --accuracy-diff-dir=*)
-      ACCURACY_DIFF_DIR="${arg#--accuracy-diff-dir=}"
-      ACCURACY_DIFF_DIR_SET=1
-      shift
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures)
-      CAPTURE_WORST_ACCURACY_FIXTURES=1
-      shift
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures-out-dir)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      CAPTURE_WORST_ACCURACY_FIXTURES_OUT_DIR="$2"
-      shift 2
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures-out-dir=*)
-      CAPTURE_WORST_ACCURACY_FIXTURES_OUT_DIR="${arg#--capture-worst-accuracy-fixtures-out-dir=}"
-      shift
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures-min-diff-percent)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      CAPTURE_WORST_ACCURACY_FIXTURES_MIN_DIFF_PERCENT="$2"
-      shift 2
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures-min-diff-percent=*)
-      CAPTURE_WORST_ACCURACY_FIXTURES_MIN_DIFF_PERCENT="${arg#--capture-worst-accuracy-fixtures-min-diff-percent=}"
-      shift
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures-top)
-      if [[ $# -lt 2 || "$2" == -* ]]; then
-        echo "${arg} requires a value" >&2
-        exit 2
-      fi
-      CAPTURE_WORST_ACCURACY_FIXTURES_TOP="$2"
-      shift 2
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures-top=*)
-      CAPTURE_WORST_ACCURACY_FIXTURES_TOP="${arg#--capture-worst-accuracy-fixtures-top=}"
-      shift
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures-allow-missing-resources)
-      CAPTURE_WORST_ACCURACY_FIXTURES_ALLOW_MISSING_RESOURCES=1
-      shift
-      continue
-      ;;
-    --capture-worst-accuracy-fixtures-overwrite)
-      CAPTURE_WORST_ACCURACY_FIXTURES_OVERWRITE=1
-      shift
-      continue
-      ;;
-    --)
-      shift
-      continue
-      ;;
-  esac
-  ARGS+=("${arg}")
-  shift
-done
+cache_dir=""
+no_fetch=0
+refresh=0
+disk_cache_override=""
+font_mode=""
+pages=""
+shard=""
+allow_http_error_status=0
+allow_collisions=0
+timings=0
+accuracy=0
+accuracy_baseline=""
+accuracy_baseline_dir=""
+accuracy_tolerance=""
+accuracy_max_diff_percent=""
+accuracy_diff_dir=""
+capture_missing_failure_fixtures=0
+capture_missing_failure_fixtures_out_dir=""
+capture_missing_failure_fixtures_allow_missing_resources=0
+capture_missing_failure_fixtures_overwrite=0
+capture_worst_accuracy_fixtures=0
+capture_worst_accuracy_fixtures_out_dir=""
+capture_worst_accuracy_fixtures_min_diff_percent=""
+capture_worst_accuracy_fixtures_top=""
+capture_worst_accuracy_fixtures_allow_missing_resources=0
+capture_worst_accuracy_fixtures_overwrite=0
 
-if ! [[ "${JOBS}" =~ ^[0-9]+$ ]] || [[ "${JOBS}" -lt 1 ]]; then
-  echo "JOBS must be an integer > 0" >&2
-  exit 2
-fi
-if ! [[ "${FETCH_TIMEOUT}" =~ ^[0-9]+$ ]]; then
-  echo "FETCH_TIMEOUT must be an integer >= 0" >&2
-  exit 2
-fi
-if ! [[ "${RENDER_TIMEOUT}" =~ ^[0-9]+$ ]]; then
-  echo "RENDER_TIMEOUT must be an integer >= 0" >&2
-  exit 2
-fi
-if [[ -z "${CACHE_DIR}" ]]; then
-  echo "CACHE_DIR must be non-empty" >&2
-  exit 2
-fi
-if [[ "${ACCURACY_TOLERANCE_SET}" -eq 1 ]]; then
-  if ! [[ "${ACCURACY_TOLERANCE}" =~ ^[0-9]+$ ]] || [[ "${ACCURACY_TOLERANCE}" -lt 0 || "${ACCURACY_TOLERANCE}" -gt 255 ]]; then
-    echo "--accuracy-tolerance must be an integer in the range 0..=255" >&2
+extra_args=()
+
+require_value() {
+  local flag="$1"
+  if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == -* ]]; then
+    echo "error: ${flag} requires a value" >&2
     exit 2
   fi
-fi
-if [[ "${ACCURACY_BASELINE_DIR}" == "" ]]; then
-  echo "--accuracy-baseline-dir must be non-empty" >&2
-  exit 2
-fi
-if [[ "${ACCURACY_DIFF_DIR_SET}" -eq 1 && "${ACCURACY_DIFF_DIR}" == "" ]]; then
-  echo "--accuracy-diff-dir must be non-empty" >&2
-  exit 2
-fi
+}
 
-# pageset_progress runs up to JOBS worker processes in parallel (one per page). The renderer
-# itself can also use Rayon threads (e.g., layout fan-out). Without a cap, enabling layout
-# parallelism by default can oversubscribe CPUs catastrophically (JOBS * total_cpus threads).
-THREADS_PER_WORKER=$((TOTAL_CPUS / JOBS))
-if [[ "${THREADS_PER_WORKER}" -lt 1 ]]; then
-  THREADS_PER_WORKER=1
-fi
-
-if [[ -z "${RAYON_NUM_THREADS:-}" ]]; then
-  export RAYON_NUM_THREADS="${THREADS_PER_WORKER}"
-fi
-if [[ -z "${FASTR_LAYOUT_PARALLEL:-}" ]]; then
-  export FASTR_LAYOUT_PARALLEL=auto
-fi
-
-if [[ "${USE_DISK_CACHE}" != 0 ]]; then
-  export DISK_CACHE=1
-  unset NO_DISK_CACHE || true
-else
-  export DISK_CACHE=0
-  export NO_DISK_CACHE=1
-fi
-
-USER_AGENT_ARG="${USER_AGENT:-}"
-ACCEPT_LANGUAGE_ARG="${ACCEPT_LANGUAGE:-}"
-VIEWPORT_ARG="${VIEWPORT:-}"
-DPR_ARG="${DPR:-}"
-
-USER_AGENT_IN_ARGS=0
-ACCEPT_LANGUAGE_IN_ARGS=0
-VIEWPORT_IN_ARGS=0
-DPR_IN_ARGS=0
-
-for ((i=0; i < ${#ARGS[@]}; i++)); do
-  arg="${ARGS[$i]}"
-  case "${arg}" in
-    --user-agent)
-      USER_AGENT_IN_ARGS=1
-      if [[ $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        USER_AGENT_ARG="${ARGS[$((i + 1))]}"
-        i=$((i + 1))
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --)
+      # Keep parsing wrapper flags even after `--` for backwards compatibility.
+      shift
+      ;;
+    --jobs|-j)
+      require_value "$1" "${2:-}"
+      jobs="$2"
+      shift 2
+      ;;
+    --jobs=*)
+      jobs="${1#--jobs=}"
+      shift
+      ;;
+    -j*)
+      jobs="${1#-j}"
+      jobs="${jobs#=}"
+      if [[ -z "${jobs}" ]]; then
+        echo "error: $1 requires a value" >&2
+        exit 2
       fi
+      shift
+      ;;
+    --fetch-timeout)
+      require_value "$1" "${2:-}"
+      fetch_timeout="$2"
+      shift 2
+      ;;
+    --fetch-timeout=*)
+      fetch_timeout="${1#--fetch-timeout=}"
+      shift
+      ;;
+    --render-timeout)
+      require_value "$1" "${2:-}"
+      render_timeout="$2"
+      shift 2
+      ;;
+    --render-timeout=*)
+      render_timeout="${1#--render-timeout=}"
+      shift
+      ;;
+    --cache-dir)
+      require_value "$1" "${2:-}"
+      cache_dir="$2"
+      shift 2
+      ;;
+    --cache-dir=*)
+      cache_dir="${1#--cache-dir=}"
+      shift
+      ;;
+    --user-agent)
+      require_value "$1" "${2:-}"
+      user_agent="$2"
+      shift 2
       ;;
     --user-agent=*)
-      USER_AGENT_IN_ARGS=1
-      USER_AGENT_ARG="${arg#--user-agent=}"
+      user_agent="${1#--user-agent=}"
+      shift
       ;;
     --accept-language)
-      ACCEPT_LANGUAGE_IN_ARGS=1
-      if [[ $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        ACCEPT_LANGUAGE_ARG="${ARGS[$((i + 1))]}"
-        i=$((i + 1))
-      fi
+      require_value "$1" "${2:-}"
+      accept_language="$2"
+      shift 2
       ;;
     --accept-language=*)
-      ACCEPT_LANGUAGE_IN_ARGS=1
-      ACCEPT_LANGUAGE_ARG="${arg#--accept-language=}"
+      accept_language="${1#--accept-language=}"
+      shift
       ;;
     --viewport)
-      VIEWPORT_IN_ARGS=1
-      if [[ $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        VIEWPORT_ARG="${ARGS[$((i + 1))]}"
-        i=$((i + 1))
-      fi
+      require_value "$1" "${2:-}"
+      viewport="$2"
+      shift 2
       ;;
     --viewport=*)
-      VIEWPORT_IN_ARGS=1
-      VIEWPORT_ARG="${arg#--viewport=}"
+      viewport="${1#--viewport=}"
+      shift
       ;;
     --dpr)
-      DPR_IN_ARGS=1
-      if [[ $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        DPR_ARG="${ARGS[$((i + 1))]}"
-        i=$((i + 1))
-      fi
+      require_value "$1" "${2:-}"
+      dpr="$2"
+      shift 2
       ;;
     --dpr=*)
-      DPR_IN_ARGS=1
-      DPR_ARG="${arg#--dpr=}"
+      dpr="${1#--dpr=}"
+      shift
       ;;
-  esac
-done
-
-FETCH_KNOB_ARGS=()
-PREFETCH_KNOB_ARGS=()
-PAGESET_KNOB_ARGS=()
-FETCH_EXTRA_ARGS=()
-
-if [[ -n "${USER_AGENT_ARG}" ]]; then
-  FETCH_KNOB_ARGS+=(--user-agent "${USER_AGENT_ARG}")
-  PREFETCH_KNOB_ARGS+=(--user-agent "${USER_AGENT_ARG}")
-  if [[ "${USER_AGENT_IN_ARGS}" -eq 0 ]]; then
-    PAGESET_KNOB_ARGS+=(--user-agent "${USER_AGENT_ARG}")
-  fi
-fi
-
-if [[ -n "${ACCEPT_LANGUAGE_ARG}" ]]; then
-  FETCH_KNOB_ARGS+=(--accept-language "${ACCEPT_LANGUAGE_ARG}")
-  PREFETCH_KNOB_ARGS+=(--accept-language "${ACCEPT_LANGUAGE_ARG}")
-  if [[ "${ACCEPT_LANGUAGE_IN_ARGS}" -eq 0 ]]; then
-    PAGESET_KNOB_ARGS+=(--accept-language "${ACCEPT_LANGUAGE_ARG}")
-  fi
-fi
-
-if [[ -n "${VIEWPORT_ARG}" ]]; then
-  PREFETCH_KNOB_ARGS+=(--viewport "${VIEWPORT_ARG}")
-  if [[ "${VIEWPORT_IN_ARGS}" -eq 0 ]]; then
-    PAGESET_KNOB_ARGS+=(--viewport "${VIEWPORT_ARG}")
-  fi
-fi
-
-if [[ -n "${DPR_ARG}" ]]; then
-  PREFETCH_KNOB_ARGS+=(--dpr "${DPR_ARG}")
-  if [[ "${DPR_IN_ARGS}" -eq 0 ]]; then
-    PAGESET_KNOB_ARGS+=(--dpr "${DPR_ARG}")
-  fi
-fi
-
-DISK_CACHE_ARGS=()
-for ((i=0; i < ${#ARGS[@]}; i++)); do
-  arg="${ARGS[$i]}"
-  case "${arg}" in
-    --disk-cache-*=*)
-      DISK_CACHE_ARGS+=("${arg}")
-      ;;
-    --disk-cache-*)
-      DISK_CACHE_ARGS+=("${arg}")
-      if [[ $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        next="${ARGS[$((i + 1))]}"
-        if [[ "${next}" != -* ]]; then
-          DISK_CACHE_ARGS+=("${next}")
-          i=$((i + 1))
-        fi
-      fi
-      ;;
-  esac
-done
-
-SELECTION_ARGS=()
-for ((i=0; i < ${#ARGS[@]}; i++)); do
-  arg="${ARGS[$i]}"
-  case "${arg}" in
-    --pages|--pages=*)
-      SELECTION_ARGS+=("${arg}")
-      if [[ "${arg}" == "--pages" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        next="${ARGS[$((i + 1))]}"
-        if [[ "${next}" != -* ]]; then
-          SELECTION_ARGS+=("${next}")
-          i=$((i + 1))
-        fi
-      fi
-      ;;
-    --shard|--shard=*)
-      SELECTION_ARGS+=("${arg}")
-      if [[ "${arg}" == "--shard" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        next="${ARGS[$((i + 1))]}"
-        if [[ "${next}" != -* ]]; then
-          SELECTION_ARGS+=("${next}")
-          i=$((i + 1))
-        fi
-      fi
-      ;;
-  esac
-done
-
-EXTRA_DISK_CACHE_ARGS=()
-if [[ "${USE_DISK_CACHE}" != 0 ]]; then
-  DISK_CACHE_ALLOW_NO_STORE_IN_ARGS=0
-  for arg in "${DISK_CACHE_ARGS[@]}"; do
-    case "${arg}" in
-      --disk-cache-allow-no-store|--disk-cache-allow-no-store=*)
-        DISK_CACHE_ALLOW_NO_STORE_IN_ARGS=1
-        break
-        ;;
-    esac
-  done
-
-  if [[ -z "${FASTR_DISK_CACHE_ALLOW_NO_STORE:-}" && "${DISK_CACHE_ALLOW_NO_STORE_IN_ARGS}" -eq 0 ]]; then
-    EXTRA_DISK_CACHE_ARGS+=(--disk-cache-allow-no-store)
-  fi
-fi
-
-FEATURE_ARGS=()
-if [[ "${USE_DISK_CACHE}" != 0 ]]; then
-  FEATURE_ARGS=(--features disk_cache)
-fi
-
-PREFETCH_ASSET_ARGS=()
-PAGESET_ARGS=()
-PREFETCH_FONTS_IN_ARGS=0
-PREFETCH_IMAGES_IN_ARGS=0
-PREFETCH_IFRAMES_IN_ARGS=0
-PREFETCH_EMBEDS_IN_ARGS=0
-PREFETCH_ICONS_IN_ARGS=0
-PREFETCH_VIDEO_POSTERS_IN_ARGS=0
-PREFETCH_CSS_URL_ASSETS_IN_ARGS=0
-MAX_DISCOVERED_ASSETS_IN_ARGS=0
-MAX_IMAGES_PER_PAGE_IN_ARGS=0
-MAX_IMAGE_URLS_PER_ELEMENT_IN_ARGS=0
-PREFETCH_ASSETS_SUPPORT_PREFETCH_FONTS=0
-PREFETCH_ASSETS_SUPPORT_PREFETCH_IMAGES=0
-PREFETCH_ASSETS_SUPPORT_PREFETCH_IFRAMES=0
-PREFETCH_ASSETS_SUPPORT_PREFETCH_EMBEDS=0
-PREFETCH_ASSETS_SUPPORT_PREFETCH_ICONS=0
-PREFETCH_ASSETS_SUPPORT_PREFETCH_VIDEO_POSTERS=0
-PREFETCH_ASSETS_SUPPORT_PREFETCH_CSS_URL_ASSETS=0
-PREFETCH_ASSETS_SUPPORT_MAX_DISCOVERED_ASSETS=0
-PREFETCH_ASSETS_SUPPORT_MAX_IMAGES_PER_PAGE=0
-PREFETCH_ASSETS_SUPPORT_MAX_IMAGE_URLS_PER_ELEMENT=0
-
-if [[ "${USE_DISK_CACHE}" != 0 ]]; then
-  PREFETCH_ASSETS_CAPABILITIES_JSON="$(cargo run --release "${FEATURE_ARGS[@]}" --bin prefetch_assets -- --capabilities)"
-  eval "$(
-    python3 - <<'PY' <<<"${PREFETCH_ASSETS_CAPABILITIES_JSON}"
-import json
-import sys
-
-caps = json.load(sys.stdin)
-if caps.get("name") != "prefetch_assets":
-  raise SystemExit(f"unexpected prefetch_assets capabilities name: {caps.get('name')!r}")
-flags = caps.get("flags") or {}
-
-def emit(var, key):
-  value = 1 if flags.get(key) else 0
-  print(f"{var}={value}")
-
-emit("PREFETCH_ASSETS_SUPPORT_PREFETCH_FONTS", "prefetch_fonts")
-emit("PREFETCH_ASSETS_SUPPORT_PREFETCH_IMAGES", "prefetch_images")
-emit("PREFETCH_ASSETS_SUPPORT_PREFETCH_IFRAMES", "prefetch_iframes")
-emit("PREFETCH_ASSETS_SUPPORT_PREFETCH_EMBEDS", "prefetch_embeds")
-emit("PREFETCH_ASSETS_SUPPORT_PREFETCH_ICONS", "prefetch_icons")
-emit("PREFETCH_ASSETS_SUPPORT_PREFETCH_VIDEO_POSTERS", "prefetch_video_posters")
-emit("PREFETCH_ASSETS_SUPPORT_PREFETCH_CSS_URL_ASSETS", "prefetch_css_url_assets")
-emit("PREFETCH_ASSETS_SUPPORT_MAX_DISCOVERED_ASSETS", "max_discovered_assets_per_page")
-emit("PREFETCH_ASSETS_SUPPORT_MAX_IMAGES_PER_PAGE", "max_images_per_page")
-emit("PREFETCH_ASSETS_SUPPORT_MAX_IMAGE_URLS_PER_ELEMENT", "max_image_urls_per_element")
-PY
-  )"
-else
-  # Prefetch knobs do not apply when the disk cache is disabled, but we still intercept them so
-  # pageset_progress arg parsing stays forgiving.
-  PREFETCH_ASSETS_SUPPORT_PREFETCH_FONTS=1
-  PREFETCH_ASSETS_SUPPORT_PREFETCH_IMAGES=1
-  PREFETCH_ASSETS_SUPPORT_PREFETCH_IFRAMES=1
-  PREFETCH_ASSETS_SUPPORT_PREFETCH_EMBEDS=1
-  PREFETCH_ASSETS_SUPPORT_PREFETCH_ICONS=1
-  PREFETCH_ASSETS_SUPPORT_PREFETCH_VIDEO_POSTERS=1
-  PREFETCH_ASSETS_SUPPORT_PREFETCH_CSS_URL_ASSETS=1
-  PREFETCH_ASSETS_SUPPORT_MAX_DISCOVERED_ASSETS=1
-  PREFETCH_ASSETS_SUPPORT_MAX_IMAGES_PER_PAGE=1
-  PREFETCH_ASSETS_SUPPORT_MAX_IMAGE_URLS_PER_ELEMENT=1
-fi
-
-for ((i=0; i < ${#ARGS[@]}; i++)); do
-  arg="${ARGS[$i]}"
-  case "${arg}" in
-    --pages|--pages=*)
-      PAGESET_ARGS+=("${arg}")
-      if [[ "${arg}" == "--pages" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        next="${ARGS[$((i + 1))]}"
-        if [[ "${next}" != -* ]]; then
-          PAGESET_ARGS+=("${next}")
-          i=$((i + 1))
-        fi
-      fi
-      ;;
-    --shard|--shard=*)
-      PAGESET_ARGS+=("${arg}")
-      if [[ "${arg}" == "--shard" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-        next="${ARGS[$((i + 1))]}"
-        if [[ "${next}" != -* ]]; then
-          PAGESET_ARGS+=("${next}")
-          i=$((i + 1))
-        fi
-      fi
-      ;;
-    --prefetch-fonts|--prefetch-fonts=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_FONTS}" -eq 1 ]]; then
-        PREFETCH_FONTS_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--prefetch-fonts" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --prefetch-images|--prefetch-images=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_IMAGES}" -eq 1 ]]; then
-        PREFETCH_IMAGES_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--prefetch-images" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --prefetch-iframes|--prefetch-iframes=*|--prefetch-documents|--prefetch-documents=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_IFRAMES}" -eq 1 ]]; then
-        PREFETCH_IFRAMES_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ ("${arg}" == "--prefetch-iframes" || "${arg}" == "--prefetch-documents") && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --prefetch-embeds|--prefetch-embeds=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_EMBEDS}" -eq 1 ]]; then
-        PREFETCH_EMBEDS_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--prefetch-embeds" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --prefetch-icons|--prefetch-icons=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_ICONS}" -eq 1 ]]; then
-        PREFETCH_ICONS_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--prefetch-icons" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --prefetch-video-posters|--prefetch-video-posters=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_VIDEO_POSTERS}" -eq 1 ]]; then
-        PREFETCH_VIDEO_POSTERS_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--prefetch-video-posters" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --max-images-per-page|--max-images-per-page=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_MAX_IMAGES_PER_PAGE}" -eq 1 ]]; then
-        MAX_IMAGES_PER_PAGE_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--max-images-per-page" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --max-image-urls-per-element|--max-image-urls-per-element=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_MAX_IMAGE_URLS_PER_ELEMENT}" -eq 1 ]]; then
-        MAX_IMAGE_URLS_PER_ELEMENT_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--max-image-urls-per-element" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --max-discovered-assets-per-page|--max-discovered-assets-per-page=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_MAX_DISCOVERED_ASSETS}" -eq 1 ]]; then
-        MAX_DISCOVERED_ASSETS_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--max-discovered-assets-per-page" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --prefetch-css-url-assets|--prefetch-css-url-assets=*)
-      if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_CSS_URL_ASSETS}" -eq 1 ]]; then
-        PREFETCH_CSS_URL_ASSETS_IN_ARGS=1
-        PREFETCH_ASSET_ARGS+=("${arg}")
-        if [[ "${arg}" == "--prefetch-css-url-assets" && $((i + 1)) -lt ${#ARGS[@]} ]]; then
-          next="${ARGS[$((i + 1))]}"
-          if [[ "${next}" != -* ]]; then
-            PREFETCH_ASSET_ARGS+=("${next}")
-            i=$((i + 1))
-          fi
-        fi
-      else
-        PAGESET_ARGS+=("${arg}")
-      fi
-      ;;
-    --allow-http-error-status|--allow-http-error-status=*)
-      FETCH_EXTRA_ARGS+=("${arg}")
-      ;;
-    --allow-collisions)
-      FETCH_EXTRA_ARGS+=("${arg}")
+    --no-fetch)
+      no_fetch=1
+      shift
       ;;
     --refresh)
-      FETCH_EXTRA_ARGS+=("${arg}")
+      refresh=1
+      shift
+      ;;
+    --disk-cache)
+      disk_cache_override="1"
+      shift
+      ;;
+    --no-disk-cache)
+      disk_cache_override="0"
+      shift
+      ;;
+    --disk-cache-audit-clean)
+      disk_cache_audit_clean=1
+      shift
+      ;;
+    --bundled-fonts)
+      font_mode="bundled"
+      shift
+      ;;
+    --system-fonts|--no-bundled-fonts)
+      font_mode="system"
+      shift
+      ;;
+    --pages)
+      require_value "$1" "${2:-}"
+      pages="$2"
+      shift 2
+      ;;
+    --pages=*)
+      pages="${1#--pages=}"
+      shift
+      ;;
+    --shard)
+      require_value "$1" "${2:-}"
+      shard="$2"
+      shift 2
+      ;;
+    --shard=*)
+      shard="${1#--shard=}"
+      shift
+      ;;
+    --allow-http-error-status)
+      allow_http_error_status=1
+      shift
+      ;;
+    --allow-collisions)
+      allow_collisions=1
+      shift
       ;;
     --timings)
-      FETCH_EXTRA_ARGS+=("${arg}")
+      timings=1
+      shift
+      ;;
+    --accuracy)
+      accuracy=1
+      shift
+      ;;
+    --accuracy-baseline)
+      require_value "$1" "${2:-}"
+      accuracy_baseline="$2"
+      shift 2
+      ;;
+    --accuracy-baseline=*)
+      accuracy_baseline="${1#--accuracy-baseline=}"
+      shift
+      ;;
+    --accuracy-baseline-dir)
+      require_value "$1" "${2:-}"
+      accuracy_baseline_dir="$2"
+      shift 2
+      ;;
+    --accuracy-baseline-dir=*)
+      accuracy_baseline_dir="${1#--accuracy-baseline-dir=}"
+      shift
+      ;;
+    --accuracy-tolerance)
+      require_value "$1" "${2:-}"
+      accuracy_tolerance="$2"
+      shift 2
+      ;;
+    --accuracy-tolerance=*)
+      accuracy_tolerance="${1#--accuracy-tolerance=}"
+      shift
+      ;;
+    --accuracy-max-diff-percent)
+      require_value "$1" "${2:-}"
+      accuracy_max_diff_percent="$2"
+      shift 2
+      ;;
+    --accuracy-max-diff-percent=*)
+      accuracy_max_diff_percent="${1#--accuracy-max-diff-percent=}"
+      shift
+      ;;
+    --accuracy-diff-dir)
+      require_value "$1" "${2:-}"
+      accuracy_diff_dir="$2"
+      shift 2
+      ;;
+    --accuracy-diff-dir=*)
+      accuracy_diff_dir="${1#--accuracy-diff-dir=}"
+      shift
+      ;;
+    --capture-missing-failure-fixtures)
+      capture_missing_failure_fixtures=1
+      shift
+      ;;
+    --capture-missing-failure-fixtures-out-dir)
+      require_value "$1" "${2:-}"
+      capture_missing_failure_fixtures_out_dir="$2"
+      shift 2
+      ;;
+    --capture-missing-failure-fixtures-out-dir=*)
+      capture_missing_failure_fixtures_out_dir="${1#--capture-missing-failure-fixtures-out-dir=}"
+      shift
+      ;;
+    --capture-missing-failure-fixtures-allow-missing-resources)
+      capture_missing_failure_fixtures_allow_missing_resources=1
+      shift
+      ;;
+    --capture-missing-failure-fixtures-overwrite)
+      capture_missing_failure_fixtures_overwrite=1
+      shift
+      ;;
+    --capture-worst-accuracy-fixtures)
+      capture_worst_accuracy_fixtures=1
+      shift
+      ;;
+    --capture-worst-accuracy-fixtures-out-dir)
+      require_value "$1" "${2:-}"
+      capture_worst_accuracy_fixtures_out_dir="$2"
+      shift 2
+      ;;
+    --capture-worst-accuracy-fixtures-out-dir=*)
+      capture_worst_accuracy_fixtures_out_dir="${1#--capture-worst-accuracy-fixtures-out-dir=}"
+      shift
+      ;;
+    --capture-worst-accuracy-fixtures-min-diff-percent)
+      require_value "$1" "${2:-}"
+      capture_worst_accuracy_fixtures_min_diff_percent="$2"
+      shift 2
+      ;;
+    --capture-worst-accuracy-fixtures-min-diff-percent=*)
+      capture_worst_accuracy_fixtures_min_diff_percent="${1#--capture-worst-accuracy-fixtures-min-diff-percent=}"
+      shift
+      ;;
+    --capture-worst-accuracy-fixtures-top)
+      require_value "$1" "${2:-}"
+      capture_worst_accuracy_fixtures_top="$2"
+      shift 2
+      ;;
+    --capture-worst-accuracy-fixtures-top=*)
+      capture_worst_accuracy_fixtures_top="${1#--capture-worst-accuracy-fixtures-top=}"
+      shift
+      ;;
+    --capture-worst-accuracy-fixtures-allow-missing-resources)
+      capture_worst_accuracy_fixtures_allow_missing_resources=1
+      shift
+      ;;
+    --capture-worst-accuracy-fixtures-overwrite)
+      capture_worst_accuracy_fixtures_overwrite=1
+      shift
       ;;
     *)
-      PAGESET_ARGS+=("${arg}")
+      extra_args+=("$1")
+      shift
       ;;
   esac
 done
 
-if [[ "${NO_FETCH}" -ne 0 ]]; then
-  for arg in "${FETCH_EXTRA_ARGS[@]}"; do
-    if [[ "${arg}" == "--refresh" ]]; then
-      echo "--refresh cannot be used with --no-fetch" >&2
-      exit 2
-    fi
-  done
+cmd=(cargo xtask pageset)
+
+if [[ -n "${jobs}" ]]; then
+  cmd+=(--jobs "${jobs}")
 fi
-
-if [[ "${NO_FETCH}" -eq 0 ]]; then
-  echo "Fetching pages (jobs=${JOBS}, timeout=${FETCH_TIMEOUT}s, disk_cache=${USE_DISK_CACHE})..."
-  cargo run --release "${FEATURE_ARGS[@]}" --bin fetch_pages -- --jobs "${JOBS}" --timeout "${FETCH_TIMEOUT}" "${SELECTION_ARGS[@]}" "${FETCH_KNOB_ARGS[@]}" "${FETCH_EXTRA_ARGS[@]}"
-else
-  echo "Skipping fetch_pages (--no-fetch); using existing cached HTML."
+if [[ -n "${fetch_timeout}" ]]; then
+  cmd+=(--fetch-timeout "${fetch_timeout}")
 fi
-
-if [[ "${USE_DISK_CACHE}" != 0 ]]; then
-  echo "Prefetching assets (jobs=${JOBS}, timeout=${FETCH_TIMEOUT}s, cache_dir=${CACHE_DIR})..."
-  if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_IMAGES}" -eq 1 && "${PREFETCH_IMAGES_IN_ARGS}" -eq 0 ]]; then
-    PREFETCH_ASSET_ARGS+=(--prefetch-images)
-  fi
-  if [[ "${PREFETCH_ASSETS_SUPPORT_PREFETCH_CSS_URL_ASSETS}" -eq 1 && "${PREFETCH_CSS_URL_ASSETS_IN_ARGS}" -eq 0 ]]; then
-    PREFETCH_ASSET_ARGS+=(--prefetch-css-url-assets)
-  fi
-  cargo run --release "${FEATURE_ARGS[@]}" --bin prefetch_assets -- --jobs "${JOBS}" --timeout "${FETCH_TIMEOUT}" --cache-dir "${CACHE_DIR}" "${SELECTION_ARGS[@]}" "${PREFETCH_KNOB_ARGS[@]}" "${PREFETCH_ASSET_ARGS[@]}" "${DISK_CACHE_ARGS[@]}" "${EXTRA_DISK_CACHE_ARGS[@]}"
+if [[ -n "${render_timeout}" ]]; then
+  cmd+=(--render-timeout "${render_timeout}")
 fi
-
-if [[ "${USE_DISK_CACHE}" != 0 ]]; then
-  mkdir -p target/pageset
-  DISK_CACHE_AUDIT_PATH="target/pageset/disk_cache_audit.json"
-
-  DISK_CACHE_AUDIT_ARGS=(--cache-dir "${CACHE_DIR}" --json --top 0)
-
-  # If the caller overrides the disk cache lock staleness threshold via `--disk-cache-lock-stale-secs`,
-  # mirror it in the audit so stale-lock diagnostics match the cache's own behaviour.
-  DISK_CACHE_LOCK_STALE_SECS=""
-  for ((i=0; i < ${#DISK_CACHE_ARGS[@]}; i++)); do
-    arg="${DISK_CACHE_ARGS[$i]}"
-    case "${arg}" in
-      --disk-cache-lock-stale-secs=*)
-        DISK_CACHE_LOCK_STALE_SECS="${arg#--disk-cache-lock-stale-secs=}"
-        ;;
-      --disk-cache-lock-stale-secs)
-        if [[ $((i + 1)) -lt ${#DISK_CACHE_ARGS[@]} ]]; then
-          DISK_CACHE_LOCK_STALE_SECS="${DISK_CACHE_ARGS[$((i + 1))]}"
-          i=$((i + 1))
-        fi
-        ;;
-    esac
-  done
-  if [[ -n "${DISK_CACHE_LOCK_STALE_SECS}" ]]; then
-    DISK_CACHE_AUDIT_ARGS+=(--lock-stale-after-secs "${DISK_CACHE_LOCK_STALE_SECS}")
-  fi
-
-  if [[ "${DISK_CACHE_AUDIT_CLEAN}" != 0 ]]; then
-    DISK_CACHE_AUDIT_ARGS+=(
-      --delete-stale-locks
-      --delete-tmp-files
-      --delete-http-errors
-      --delete-html-subresources
-      --delete-error-entries
-    )
-  fi
-
-  echo "Auditing disk cache health (cache_dir=${CACHE_DIR})..."
-  if ! cargo run --release "${FEATURE_ARGS[@]}" --bin disk_cache_audit -- "${DISK_CACHE_AUDIT_ARGS[@]}" > "${DISK_CACHE_AUDIT_PATH}"; then
-    echo "Warning: disk_cache_audit failed; continuing pageset run." >&2
-    python3 - <<'PY' "${CACHE_DIR}" > "${DISK_CACHE_AUDIT_PATH}"
-import json
-import sys
-print(json.dumps({"cache_dir": sys.argv[1], "error": "disk_cache_audit_failed"}))
-PY
-  fi
-
-  python3 - <<'PY' "${DISK_CACHE_AUDIT_PATH}"
-import json
-import sys
-
-path = sys.argv[1]
-try:
-  with open(path, "r", encoding="utf-8") as f:
-    data = json.load(f)
-except Exception as e:
-  print(f"Disk cache audit: failed to read {path}: {e}", file=sys.stderr)
-  raise SystemExit(0)
-
-def get_int(key):
-  value = data.get(key)
-  if isinstance(value, bool):
-    return int(value)
-  if isinstance(value, int):
-    return value
-  if isinstance(value, float):
-    return int(value)
-  return 0
-
-print(
-  "Disk cache audit summary: "
-  f"http_errors={get_int('http_error_count')} "
-  f"html_subresources={get_int('html_subresource_count')} "
-  f"error_entries={get_int('error_field_count')} "
-  f"stale_locks={get_int('stale_lock_count')} "
-  f"tmp={get_int('tmp_count')}"
-)
-PY
+if [[ -n "${cache_dir}" ]]; then
+  cmd+=(--cache-dir "${cache_dir}")
 fi
-
-PAGESET_ACCURACY_ARGS=()
-if [[ "${ACCURACY}" -eq 1 ]]; then
-  BASELINE_DIR_IN_ARGS=0
-  BASELINE_IN_ARGS=0
-  TOLERANCE_IN_ARGS=0
-  MAX_DIFF_PERCENT_IN_ARGS=0
-  DIFF_DIR_IN_ARGS=0
-  for ((i=0; i < ${#PAGESET_ARGS[@]}; i++)); do
-    arg="${PAGESET_ARGS[$i]}"
-    case "${arg}" in
-      --baseline-dir|--baseline-dir=*)
-        BASELINE_DIR_IN_ARGS=1
-        ;;
-      --baseline|--baseline=*)
-        BASELINE_IN_ARGS=1
-        ;;
-      --tolerance|--tolerance=*)
-        TOLERANCE_IN_ARGS=1
-        ;;
-      --max-diff-percent|--max-diff-percent=*)
-        MAX_DIFF_PERCENT_IN_ARGS=1
-        ;;
-      --diff-dir|--diff-dir=*)
-        DIFF_DIR_IN_ARGS=1
-        ;;
-    esac
-  done
-
-  PAGESET_ACCURACY_ARGS+=(--accuracy)
-  case "${ACCURACY_BASELINE}" in
-    chrome)
-      if [[ "${BASELINE_IN_ARGS}" -eq 0 ]]; then
-        PAGESET_ACCURACY_ARGS+=(--baseline=chrome)
-      fi
-      if [[ "${ACCURACY_BASELINE_DIR_SET}" -eq 1 && "${BASELINE_DIR_IN_ARGS}" -eq 0 ]]; then
-        PAGESET_ACCURACY_ARGS+=(--baseline-dir "${ACCURACY_BASELINE_DIR}")
-      fi
-      ;;
-    existing)
-      # `pageset_progress run --accuracy` requires `--baseline-dir <dir>` unless a renderer
-      # baseline (e.g. `--baseline=chrome`) is provided. Default to the Chrome baseline directory
-      # so callers can simply pass `--accuracy` when reusing existing baselines.
-      if [[ "${BASELINE_DIR_IN_ARGS}" -eq 0 && "${BASELINE_IN_ARGS}" -eq 0 ]]; then
-        PAGESET_ACCURACY_ARGS+=(--baseline-dir "${ACCURACY_BASELINE_DIR}")
-      elif [[ "${ACCURACY_BASELINE_DIR_SET}" -eq 1 && "${BASELINE_DIR_IN_ARGS}" -eq 0 ]]; then
-        PAGESET_ACCURACY_ARGS+=(--baseline-dir "${ACCURACY_BASELINE_DIR}")
-      fi
-      ;;
-    *)
-      echo "Unexpected --accuracy-baseline value: ${ACCURACY_BASELINE}" >&2
-      exit 2
-      ;;
-  esac
-
-  if [[ "${ACCURACY_TOLERANCE_SET}" -eq 1 && "${TOLERANCE_IN_ARGS}" -eq 0 ]]; then
-    PAGESET_ACCURACY_ARGS+=(--tolerance "${ACCURACY_TOLERANCE}")
-  fi
-  if [[ "${ACCURACY_MAX_DIFF_PERCENT_SET}" -eq 1 && "${MAX_DIFF_PERCENT_IN_ARGS}" -eq 0 ]]; then
-    PAGESET_ACCURACY_ARGS+=(--max-diff-percent "${ACCURACY_MAX_DIFF_PERCENT}")
-  fi
-  if [[ "${ACCURACY_DIFF_DIR_SET}" -eq 1 && "${DIFF_DIR_IN_ARGS}" -eq 0 ]]; then
-    PAGESET_ACCURACY_ARGS+=(--diff-dir "${ACCURACY_DIFF_DIR}")
-  fi
+if [[ -n "${user_agent}" ]]; then
+  cmd+=(--user-agent "${user_agent}")
 fi
-
-PAGESET_FONT_ARGS=()
-FONT_MODE="system"
-if [[ "${USE_BUNDLED_FONTS}" != 0 ]]; then
-  PAGESET_FONT_ARGS+=(--bundled-fonts)
-  FONT_MODE="bundled"
+if [[ -n "${accept_language}" ]]; then
+  cmd+=(--accept-language "${accept_language}")
 fi
-
-echo "Updating progress/pages (jobs=${JOBS}, hard timeout=${RENDER_TIMEOUT}s, disk_cache=${USE_DISK_CACHE}, cache_dir=${CACHE_DIR}, fonts=${FONT_MODE}, rayon_threads=${RAYON_NUM_THREADS}, layout_parallel=${FASTR_LAYOUT_PARALLEL})..."
-PAGESET_PROGRESS_CMD=(
-  cargo run --release "${FEATURE_ARGS[@]}" --bin pageset_progress -- run --jobs "${JOBS}" --timeout "${RENDER_TIMEOUT}" "${PAGESET_FONT_ARGS[@]}" --cache-dir "${CACHE_DIR}" "${PAGESET_KNOB_ARGS[@]}" "${PAGESET_ACCURACY_ARGS[@]}" "${PAGESET_ARGS[@]}" "${EXTRA_DISK_CACHE_ARGS[@]}"
-)
-if [[ "${USE_BUNDLED_FONTS}" != 0 ]]; then
-  "${PAGESET_PROGRESS_CMD[@]}"
-else
-  FASTR_USE_BUNDLED_FONTS=0 CI=0 "${PAGESET_PROGRESS_CMD[@]}"
+if [[ -n "${viewport}" ]]; then
+  cmd+=(--viewport "${viewport}")
 fi
-
-if [[ "${CAPTURE_MISSING_FAILURE_FIXTURES}" -eq 1 ]]; then
-  if [[ "${USE_DISK_CACHE}" == 0 ]]; then
-    echo "Warning: --capture-missing-failure-fixtures requested, but the pageset disk cache is disabled. Skipping because bundle_page cache requires cached subresources." >&2
-    exit 0
-  fi
-
-  echo ""
-  echo "Capturing missing failure fixtures from warmed disk cache..."
-
-  if ! [[ -d "progress/pages" ]]; then
-    echo "progress/pages directory is missing; run pageset first" >&2
-    exit 1
-  fi
-
-  mkdir -p "${CAPTURE_MISSING_FAILURE_FIXTURES_OUT_DIR}"
-
-  failing_pages_total=0
-  fixtures_already_present=0
-  bundles_captured=0
-  fixtures_imported=0
-  failures=()
-
-  if command -v python3 >/dev/null 2>&1; then
-    mapfile -t failing_lines < <(
-      python3 - <<'PY'
-import glob
-import json
-import os
-
-for path in sorted(glob.glob("progress/pages/*.json")):
-  stem = os.path.splitext(os.path.basename(path))[0]
-  try:
-    with open(path, "r", encoding="utf-8") as f:
-      data = json.load(f)
-  except Exception:
-    continue
-  status = data.get("status", "ok")
-  if status != "ok":
-    print(f"{stem}\t{status}")
-PY
-    )
+if [[ -n "${dpr}" ]]; then
+  cmd+=(--dpr "${dpr}")
+fi
+if [[ "${no_fetch}" -eq 1 ]]; then
+  cmd+=(--no-fetch)
+fi
+if [[ "${refresh}" -eq 1 ]]; then
+  cmd+=(--refresh)
+fi
+if [[ -n "${disk_cache_override}" ]]; then
+  if [[ "${disk_cache_override}" == "1" ]]; then
+    cmd+=(--disk-cache)
   else
-    # Best-effort fallback: parse the status string with grep/sed.
-    failing_lines=()
-    while IFS= read -r path; do
-      stem="$(basename "${path}")"
-      stem="${stem%.json}"
-      status="$(grep -Eo '"status"[[:space:]]*:[[:space:]]*"[^"]+"' "${path}" | head -n 1 | sed -E 's/.*"status"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
-      if [[ -z "${status}" ]]; then
-        status="ok"
-      fi
-      if [[ "${status}" != "ok" ]]; then
-        failing_lines+=("${stem}"$'\t'"${status}")
-      fi
-    done < <(ls progress/pages/*.json 2>/dev/null || true)
-  fi
-
-  failing_pages_total="${#failing_lines[@]}"
-  echo "Failing pages discovered: ${failing_pages_total}"
-
-  for line in "${failing_lines[@]}"; do
-    IFS=$'\t' read -r stem status <<<"${line}"
-    fixture_index="tests/pages/fixtures/${stem}/index.html"
-    if [[ -f "${fixture_index}" ]]; then
-      fixtures_already_present=$((fixtures_already_present + 1))
-      continue
-    fi
-
-    bundle_path="${CAPTURE_MISSING_FAILURE_FIXTURES_OUT_DIR}/${stem}.tar"
-    rm -rf "${bundle_path}"
-
-    echo "Capturing ${stem} (status=${status})..."
-
-    bundle_cmd=(cargo run --release --features disk_cache --bin bundle_page -- cache "${stem}" --out "${bundle_path}" --asset-cache-dir "${CACHE_DIR}")
-    if [[ "${CAPTURE_MISSING_FAILURE_FIXTURES_ALLOW_MISSING_RESOURCES}" -eq 1 ]]; then
-      bundle_cmd+=(--allow-missing)
-    fi
-    if [[ -n "${USER_AGENT_ARG}" ]]; then
-      bundle_cmd+=(--user-agent "${USER_AGENT_ARG}")
-    fi
-    if [[ -n "${ACCEPT_LANGUAGE_ARG}" ]]; then
-      bundle_cmd+=(--accept-language "${ACCEPT_LANGUAGE_ARG}")
-    fi
-    if [[ -n "${VIEWPORT_ARG}" ]]; then
-      bundle_cmd+=(--viewport "${VIEWPORT_ARG}")
-    fi
-    if [[ -n "${DPR_ARG}" ]]; then
-      bundle_cmd+=(--dpr "${DPR_ARG}")
-    fi
-
-    if ! "${bundle_cmd[@]}"; then
-      failures+=("${stem}: capture failed")
-      continue
-    fi
-    bundles_captured=$((bundles_captured + 1))
-
-    import_cmd=(cargo xtask import-page-fixture "${bundle_path}" "${stem}" --output-root tests/pages/fixtures)
-    if [[ "${CAPTURE_MISSING_FAILURE_FIXTURES_OVERWRITE}" -eq 1 ]]; then
-      import_cmd+=(--overwrite)
-    fi
-    if [[ "${CAPTURE_MISSING_FAILURE_FIXTURES_ALLOW_MISSING_RESOURCES}" -eq 1 ]]; then
-      import_cmd+=(--allow-missing)
-    fi
-
-    if ! "${import_cmd[@]}"; then
-      failures+=("${stem}: import failed")
-      continue
-    fi
-    fixtures_imported=$((fixtures_imported + 1))
-  done
-
-  echo ""
-  echo "capture-missing-failure-fixtures summary:"
-  echo "  failing pages discovered   ${failing_pages_total}"
-  echo "  fixtures already present   ${fixtures_already_present}"
-  echo "  bundles captured           ${bundles_captured}"
-  echo "  fixtures imported          ${fixtures_imported}"
-  echo "  failures                   ${#failures[@]}"
-
-  if [[ "${#failures[@]}" -ne 0 ]]; then
-    echo ""
-    echo "Failures:"
-    for failure in "${failures[@]}"; do
-      echo "  - ${failure}"
-    done
-    exit 1
+    cmd+=(--no-disk-cache)
   fi
 fi
-
-if [[ "${CAPTURE_WORST_ACCURACY_FIXTURES}" -eq 1 ]]; then
-  if [[ "${USE_DISK_CACHE}" == 0 ]]; then
-    echo "Warning: --capture-worst-accuracy-fixtures requested, but the pageset disk cache is disabled. Skipping because bundle_page cache requires cached subresources." >&2
-    exit 0
-  fi
-
-  echo ""
-  echo "Capturing worst accuracy fixtures from warmed disk cache..."
-
-  if ! [[ -d "progress/pages" ]]; then
-    echo "progress/pages directory is missing; run pageset first" >&2
-    exit 1
-  fi
-
-  mkdir -p "${CAPTURE_WORST_ACCURACY_FIXTURES_OUT_DIR}"
-
-  cmd=(
-    cargo xtask capture-accuracy-fixtures
-    --progress-dir progress/pages
-    --fixtures-root tests/pages/fixtures
-    --asset-cache-dir "${CACHE_DIR}"
-    --bundle-out-dir "${CAPTURE_WORST_ACCURACY_FIXTURES_OUT_DIR}"
-    --min-diff-percent "${CAPTURE_WORST_ACCURACY_FIXTURES_MIN_DIFF_PERCENT}"
-    --top "${CAPTURE_WORST_ACCURACY_FIXTURES_TOP}"
+if [[ "${disk_cache_audit_clean}" -eq 1 ]]; then
+  cmd+=(--disk-cache-audit-clean)
+fi
+if [[ "${font_mode}" == "bundled" ]]; then
+  cmd+=(--bundled-fonts)
+elif [[ "${font_mode}" == "system" ]]; then
+  cmd+=(--system-fonts)
+fi
+if [[ -n "${pages}" ]]; then
+  cmd+=(--pages "${pages}")
+fi
+if [[ -n "${shard}" ]]; then
+  cmd+=(--shard "${shard}")
+fi
+if [[ "${allow_http_error_status}" -eq 1 ]]; then
+  cmd+=(--allow-http-error-status)
+fi
+if [[ "${allow_collisions}" -eq 1 ]]; then
+  cmd+=(--allow-collisions)
+fi
+if [[ "${timings}" -eq 1 ]]; then
+  cmd+=(--timings)
+fi
+if [[ "${accuracy}" -eq 1 ]]; then
+  cmd+=(--accuracy)
+fi
+if [[ -n "${accuracy_baseline}" ]]; then
+  cmd+=(--accuracy-baseline "${accuracy_baseline}")
+fi
+if [[ -n "${accuracy_baseline_dir}" ]]; then
+  cmd+=(--accuracy-baseline-dir "${accuracy_baseline_dir}")
+fi
+if [[ -n "${accuracy_tolerance}" ]]; then
+  cmd+=(--accuracy-tolerance "${accuracy_tolerance}")
+fi
+if [[ -n "${accuracy_max_diff_percent}" ]]; then
+  cmd+=(--accuracy-max-diff-percent "${accuracy_max_diff_percent}")
+fi
+if [[ -n "${accuracy_diff_dir}" ]]; then
+  cmd+=(--accuracy-diff-dir "${accuracy_diff_dir}")
+fi
+if [[ "${capture_missing_failure_fixtures}" -eq 1 ]]; then
+  cmd+=(--capture-missing-failure-fixtures)
+fi
+if [[ -n "${capture_missing_failure_fixtures_out_dir}" ]]; then
+  cmd+=(
+    --capture-missing-failure-fixtures-out-dir
+    "${capture_missing_failure_fixtures_out_dir}"
   )
-
-  if [[ "${CAPTURE_WORST_ACCURACY_FIXTURES_ALLOW_MISSING_RESOURCES}" -eq 1 ]]; then
-    cmd+=(--allow-missing-resources)
-  fi
-  if [[ "${CAPTURE_WORST_ACCURACY_FIXTURES_OVERWRITE}" -eq 1 ]]; then
-    cmd+=(--overwrite)
-  fi
-  if [[ -n "${USER_AGENT_ARG}" ]]; then
-    cmd+=(--user-agent "${USER_AGENT_ARG}")
-  fi
-  if [[ -n "${ACCEPT_LANGUAGE_ARG}" ]]; then
-    cmd+=(--accept-language "${ACCEPT_LANGUAGE_ARG}")
-  fi
-  if [[ -n "${VIEWPORT_ARG}" ]]; then
-    cmd+=(--viewport "${VIEWPORT_ARG}")
-  fi
-  if [[ -n "${DPR_ARG}" ]]; then
-    cmd+=(--dpr "${DPR_ARG}")
-  fi
-
-  "${cmd[@]}"
 fi
+if [[ "${capture_missing_failure_fixtures_allow_missing_resources}" -eq 1 ]]; then
+  cmd+=(--capture-missing-failure-fixtures-allow-missing-resources)
+fi
+if [[ "${capture_missing_failure_fixtures_overwrite}" -eq 1 ]]; then
+  cmd+=(--capture-missing-failure-fixtures-overwrite)
+fi
+if [[ "${capture_worst_accuracy_fixtures}" -eq 1 ]]; then
+  cmd+=(--capture-worst-accuracy-fixtures)
+fi
+if [[ -n "${capture_worst_accuracy_fixtures_out_dir}" ]]; then
+  cmd+=(--capture-worst-accuracy-fixtures-out-dir "${capture_worst_accuracy_fixtures_out_dir}")
+fi
+if [[ -n "${capture_worst_accuracy_fixtures_min_diff_percent}" ]]; then
+  cmd+=(
+    --capture-worst-accuracy-fixtures-min-diff-percent
+    "${capture_worst_accuracy_fixtures_min_diff_percent}"
+  )
+fi
+if [[ -n "${capture_worst_accuracy_fixtures_top}" ]]; then
+  cmd+=(--capture-worst-accuracy-fixtures-top "${capture_worst_accuracy_fixtures_top}")
+fi
+if [[ "${capture_worst_accuracy_fixtures_allow_missing_resources}" -eq 1 ]]; then
+  cmd+=(--capture-worst-accuracy-fixtures-allow-missing-resources)
+fi
+if [[ "${capture_worst_accuracy_fixtures_overwrite}" -eq 1 ]]; then
+  cmd+=(--capture-worst-accuracy-fixtures-overwrite)
+fi
+
+if [[ ${#extra_args[@]} -gt 0 ]]; then
+  cmd+=(-- "${extra_args[@]}")
+fi
+
+print_cmd() {
+  local first=1
+  for arg in "$@"; do
+    if [[ "${first}" -eq 1 ]]; then
+      printf '%q' "${arg}"
+      first=0
+    else
+      printf ' %q' "${arg}"
+    fi
+  done
+  printf '\n'
+}
+
+if [[ "${dry_run}" -eq 1 ]]; then
+  print_cmd "${cmd[@]}"
+  exit 0
+fi
+
+exec "${cmd[@]}"
