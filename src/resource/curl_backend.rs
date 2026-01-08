@@ -24,6 +24,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
 
+const CURL_STATUS_LINE_MAX_BYTES: usize = 8 * 1024;
+const CURL_HEADER_LINE_MAX_BYTES: usize = 32 * 1024;
+const CURL_HEADER_BLOCK_MAX_BYTES: usize = 256 * 1024;
+const CURL_MAX_HEADER_LINES: usize = 1024;
+const CURL_MAX_HEADER_BLOCKS: usize = 8;
+
 pub(super) fn curl_available() -> bool {
   static AVAILABLE: OnceLock<bool> = OnceLock::new();
   *AVAILABLE.get_or_init(|| {
@@ -153,36 +159,92 @@ fn parse_status_line(line: &str) -> Option<u16> {
   code.parse::<u16>().ok()
 }
 
-fn parse_header_line(line: &str, headers: &mut HeaderMap) {
-  let trimmed = line.trim_end_matches(['\r', '\n']);
-  if let Some((name, value)) = trimmed.split_once(':') {
-    let name = name.trim();
-    let value = value.trim();
-    if name.is_empty() {
-      return;
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+  let mut start = 0usize;
+  let mut end = bytes.len();
+  while start < end && bytes[start].is_ascii_whitespace() {
+    start += 1;
+  }
+  while end > start && bytes[end - 1].is_ascii_whitespace() {
+    end -= 1;
+  }
+  &bytes[start..end]
+}
+
+fn trim_crlf(bytes: &[u8]) -> &[u8] {
+  let mut end = bytes.len();
+  while end > 0 && matches!(bytes[end - 1], b'\r' | b'\n') {
+    end -= 1;
+  }
+  &bytes[..end]
+}
+
+fn parse_header_line(line: &[u8], headers: &mut HeaderMap) {
+  let trimmed = trim_crlf(line);
+  let Some(pos) = trimmed.iter().position(|b| *b == b':') else {
+    return;
+  };
+  let name = trim_ascii(&trimmed[..pos]);
+  let value = trim_ascii(&trimmed[pos + 1..]);
+  if name.is_empty() {
+    return;
+  }
+  let Ok(name) = http::header::HeaderName::from_bytes(name) else {
+    return;
+  };
+  let Ok(value) = http::HeaderValue::from_bytes(value) else {
+    return;
+  };
+  headers.append(name, value);
+}
+
+fn read_bounded_line<R: BufRead>(
+  reader: &mut R,
+  max_bytes: usize,
+  context: &'static str,
+) -> io::Result<Option<Vec<u8>>> {
+  let mut out = FallibleVecWriter::new(max_bytes, context);
+  let mut read_any = false;
+  loop {
+    let buf = reader.fill_buf()?;
+    if buf.is_empty() {
+      let bytes = out.into_inner();
+      return Ok(read_any.then_some(bytes));
     }
-    let Ok(name) = http::header::HeaderName::from_bytes(name.as_bytes()) else {
-      return;
-    };
-    let Ok(value) = http::HeaderValue::from_bytes(value.as_bytes()) else {
-      return;
-    };
-    headers.append(name, value);
+    read_any = true;
+    if let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+      out.write_all(&buf[..=pos])?;
+      reader.consume(pos + 1);
+      return Ok(Some(out.into_inner()));
+    }
+    out.write_all(buf)?;
+    let len = buf.len();
+    reader.consume(len);
   }
 }
 
 fn read_curl_headers<R: BufRead>(reader: &mut R) -> io::Result<(String, u16, HeaderMap)> {
   // curl may emit multiple header blocks (e.g. 100 Continue, proxy CONNECT). We read blocks until
   // we hit the final response head.
+  let mut blocks = 0usize;
   loop {
-    let mut status_line = String::new();
-    let read = reader.read_line(&mut status_line)?;
-    if read == 0 {
+    if blocks >= CURL_MAX_HEADER_BLOCKS {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "too many HTTP header blocks from curl",
+      ));
+    }
+    blocks += 1;
+
+    let status_bytes = read_bounded_line(reader, CURL_STATUS_LINE_MAX_BYTES, "curl status line")?;
+    let Some(status_bytes) = status_bytes else {
       return Err(io::Error::new(
         io::ErrorKind::UnexpectedEof,
         "curl produced no HTTP headers",
       ));
-    }
+    };
+
+    let status_line = String::from_utf8_lossy(&status_bytes).to_string();
 
     let status = parse_status_line(&status_line).ok_or_else(|| {
       io::Error::new(
@@ -192,16 +254,31 @@ fn read_curl_headers<R: BufRead>(reader: &mut R) -> io::Result<(String, u16, Hea
     })?;
 
     let mut headers = HeaderMap::new();
+    let mut header_bytes = status_bytes.len();
+    let mut header_lines = 0usize;
     loop {
-      let mut line = String::new();
-      let read = reader.read_line(&mut line)?;
-      if read == 0 {
-        break;
+      if header_lines >= CURL_MAX_HEADER_LINES {
+        return Err(io::Error::new(
+          io::ErrorKind::InvalidData,
+          "too many HTTP header lines from curl",
+        ));
       }
-      if line.trim_end_matches(['\r', '\n']).is_empty() {
+      let line = match read_bounded_line(reader, CURL_HEADER_LINE_MAX_BYTES, "curl header line")? {
+        Some(line) => line,
+        None => break,
+      };
+      header_bytes = header_bytes.saturating_add(line.len());
+      if header_bytes > CURL_HEADER_BLOCK_MAX_BYTES {
+        return Err(io::Error::new(
+          io::ErrorKind::InvalidData,
+          format!("curl headers exceed {} bytes", CURL_HEADER_BLOCK_MAX_BYTES),
+        ));
+      }
+      if trim_crlf(&line).is_empty() {
         break;
       }
       parse_header_line(&line, &mut headers);
+      header_lines += 1;
     }
 
     let status_lower = status_line.to_ascii_lowercase();
@@ -916,6 +993,22 @@ mod tests {
         .and_then(|h| h.to_str().ok())
         .unwrap(),
       "text/html"
+    );
+  }
+
+  #[test]
+  fn header_parsing_rejects_oversized_header_lines() {
+    let mut input = Vec::new();
+    input.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    input.extend_from_slice(b"X-Test: ");
+    input.extend(std::iter::repeat(b'a').take(CURL_HEADER_LINE_MAX_BYTES));
+    input.extend_from_slice(b"\r\n\r\n");
+
+    let mut reader = BufReader::new(&input[..]);
+    let err = read_curl_headers(&mut reader).expect_err("expected oversized header error");
+    assert!(
+      err.to_string().contains("curl header line"),
+      "unexpected error: {err}"
     );
   }
 
