@@ -12890,9 +12890,10 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "isolation" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.isolation = match kw.as_str() {
-          "isolate" => Isolation::Isolate,
-          _ => Isolation::Auto,
+        styles.isolation = if kw.eq_ignore_ascii_case("isolate") {
+          Isolation::Isolate
+        } else {
+          Isolation::Auto
         };
       }
     }
