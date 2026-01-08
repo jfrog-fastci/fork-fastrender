@@ -5351,32 +5351,59 @@ impl TableFormattingContext {
             // divided over those columns. Treat this as a fixed width contribution so the
             // remaining columns share the remaining table space instead of forcing an
             // over-constrained expansion.
-            let any_assigned = constraints
-              .iter()
-              .take(end)
-              .skip(start)
-              .any(|col| col.fixed_width.is_some() || col.percentage.is_some());
-            if !any_assigned {
-              let span = (end - start) as f32;
-              if span > 0.0 {
-                let internal_spacing = match structure.border_collapse {
-                  BorderCollapse::Separate => {
-                    structure.border_spacing.0 * (span - 1.0).max(0.0)
+            let span = (end - start) as f32;
+            if span > 0.0 {
+              let internal_spacing = match structure.border_collapse {
+                BorderCollapse::Separate => structure.border_spacing.0 * (span - 1.0).max(0.0),
+                BorderCollapse::Collapse => 0.0,
+              };
+              let required_sum = (span_width - internal_spacing).max(0.0);
+
+              let mut assigned_sum = 0.0;
+              let mut unassigned: Vec<usize> = Vec::new();
+              let mut needs_percent_base = false;
+
+              for (idx, col) in constraints.iter().enumerate().take(end).skip(start) {
+                if let Some(fixed) = col.fixed_width {
+                  assigned_sum += fixed;
+                  continue;
+                }
+                if let Some(pct) = col.percentage {
+                  let Some(base) = percent_base else {
+                    needs_percent_base = true;
+                    continue;
+                  };
+                  let raw = (pct / 100.0) * base;
+                  let mut width = raw.max(col.min_width).max(0.0);
+                  if col.has_max_cap && col.max_width.is_finite() {
+                    width = width.min(col.max_width.max(col.min_width));
                   }
-                  BorderCollapse::Collapse => 0.0,
-                };
-                let available_for_cols = (span_width - internal_spacing).max(0.0);
-                let per = available_for_cols / span;
-                for col in constraints.iter_mut().take(end).skip(start) {
-                  col.fixed_width = Some(col.fixed_width.unwrap_or(0.0).max(per));
-                  col.is_flexible = false;
-                  if !(col.has_max_cap && col.max_width.is_finite()) {
-                    col.min_width = col.min_width.max(per);
-                    col.max_width = col.max_width.max(per);
+                  assigned_sum += width;
+                  continue;
+                }
+                unassigned.push(idx);
+              }
+
+              if !needs_percent_base && assigned_sum.is_finite() && !unassigned.is_empty() {
+                let remaining = required_sum - assigned_sum;
+                if remaining > 0.0 && remaining.is_finite() {
+                  let per = remaining / unassigned.len() as f32;
+                  if per.is_finite() {
+                    for idx in unassigned {
+                      let Some(col) = constraints.get_mut(idx) else {
+                        continue;
+                      };
+                      col.fixed_width = Some(col.fixed_width.unwrap_or(0.0).max(per));
+                      col.is_flexible = false;
+                      if !(col.has_max_cap && col.max_width.is_finite()) {
+                        col.min_width = col.min_width.max(per);
+                        col.max_width = col.max_width.max(per);
+                      }
+                    }
+                    continue;
                   }
                 }
               }
-              continue;
             }
           }
         }
