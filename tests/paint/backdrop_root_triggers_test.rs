@@ -674,6 +674,39 @@ fn mix_blend_mode_triggers_backdrop_root_with_offset() {
 }
 
 #[test]
+fn mix_blend_mode_triggers_backdrop_root_with_offset_and_negative_overlay_origin() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 40px;
+        height: 40px;
+        mix-blend-mode: multiply;
+      }
+      #overlay {
+        position: relative;
+        left: -10px;
+        top: -10px;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // Exercises Backdrop Root sampling when `backdrop-filter` extends outside the Backdrop Root
+  // element (negative sampling origin) while the Backdrop Root surface itself is offset.
+  assert_eq!(pixel(&pixmap, 15, 15), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 5, 5), (255, 0, 0, 255));
+}
+
+#[test]
 fn clip_path_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
