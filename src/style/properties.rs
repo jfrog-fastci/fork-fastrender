@@ -349,8 +349,19 @@ fn strip_suffix_ignore_ascii_case<'a>(haystack: &'a str, suffix: &str) -> Option
   }
 }
 
+#[inline]
+fn is_ascii_whitespace_html_css(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
 fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
+fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
+  value
+    .split(is_ascii_whitespace_html_css)
+    .filter(|part| !part.is_empty())
 }
 
 fn parse_background_image_value(value: &PropertyValue) -> Option<BackgroundImage> {
@@ -485,7 +496,7 @@ fn resolve_light_dark_in_border_image_source(source: &mut BorderImageSource, is_
 }
 
 fn parse_image_set_resolution(token: &str) -> Option<f32> {
-  let token = token.trim();
+  let token = trim_ascii_whitespace(token);
   strip_suffix_ignore_ascii_case(token, "x")
     .and_then(|rest| rest.parse::<f32>().ok())
     .filter(|v| *v > 0.0)
@@ -562,8 +573,8 @@ fn split_image_set_candidates(inner: &str) -> Vec<String> {
         current.push(ch);
       }
       ',' if paren == 0 && bracket == 0 && brace == 0 => {
-        if !current.trim().is_empty() {
-          parts.push(current.trim().to_string());
+        if !trim_ascii_whitespace(&current).is_empty() {
+          parts.push(trim_ascii_whitespace(&current).to_string());
         }
         current.clear();
       }
@@ -571,15 +582,15 @@ fn split_image_set_candidates(inner: &str) -> Vec<String> {
     }
   }
 
-  if !current.trim().is_empty() {
-    parts.push(current.trim().to_string());
+  if !trim_ascii_whitespace(&current).is_empty() {
+    parts.push(trim_ascii_whitespace(&current).to_string());
   }
 
   parts
 }
 
 pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
-  let trimmed = text.trim();
+  let trimmed = trim_ascii_whitespace(text);
   if !starts_with_ignore_ascii_case(trimmed, "image-set(") {
     return None;
   }
@@ -604,10 +615,10 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
   }
 
   let end_idx = end?;
-  if !trimmed[end_idx + 1..].trim().is_empty() {
+  if !trim_ascii_whitespace(&trimmed[end_idx + 1..]).is_empty() {
     return None;
   }
-  let inner = trimmed.get(start + 1..end_idx)?.trim();
+  let inner = trim_ascii_whitespace(trimmed.get(start + 1..end_idx)?);
   let mut candidates = Vec::new();
 
   for candidate in split_image_set_candidates(inner) {
@@ -616,17 +627,18 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
       continue;
     }
     let image_token = &tokens[0];
-    let image_token = image_token.trim();
+    let image_token = trim_ascii_whitespace(image_token);
     let image = if starts_with_ignore_ascii_case(image_token, "url(") && image_token.ends_with(')')
     {
       let open = image_token.find('(').unwrap_or(0);
-      let inner = image_token
-        .get(open + 1..image_token.len() - 1)
-        .unwrap_or("")
-        .trim()
-        .trim_matches(|c| c == '"' || c == '\'')
-        .to_string();
-      if inner.trim().is_empty() {
+      let inner = trim_ascii_whitespace(
+        image_token
+          .get(open + 1..image_token.len() - 1)
+          .unwrap_or(""),
+      )
+      .trim_matches(|c| c == '"' || c == '\'')
+      .to_string();
+      if trim_ascii_whitespace(&inner).is_empty() {
         None
       } else {
         Some(BackgroundImage::Url(inner))
@@ -737,9 +749,9 @@ fn tokenize_image_set_candidate(value_str: &str) -> Vec<String> {
         brace = brace.saturating_sub(1);
         current.push(ch);
       }
-      ch if ch.is_whitespace() && paren == 0 && bracket == 0 && brace == 0 => {
-        if !current.trim().is_empty() {
-          tokens.push(current.trim().to_string());
+      ch if is_ascii_whitespace_html_css(ch) && paren == 0 && bracket == 0 && brace == 0 => {
+        if !trim_ascii_whitespace(&current).is_empty() {
+          tokens.push(trim_ascii_whitespace(&current).to_string());
         }
         current.clear();
       }
@@ -747,8 +759,8 @@ fn tokenize_image_set_candidate(value_str: &str) -> Vec<String> {
     }
   }
 
-  if !current.trim().is_empty() {
-    tokens.push(current.trim().to_string());
+  if !trim_ascii_whitespace(&current).is_empty() {
+    tokens.push(trim_ascii_whitespace(&current).to_string());
   }
   tokens
 }
@@ -911,11 +923,7 @@ fn parse_cursor(value: &PropertyValue) -> Option<(Vec<CursorImage>, CursorKeywor
 
 fn parse_color_scheme(value: &PropertyValue) -> Option<ColorSchemePreference> {
   let tokens: Vec<String> = match value {
-    PropertyValue::Keyword(kw) => kw
-      .split_whitespace()
-      .filter(|t| !t.is_empty())
-      .map(|t| t.to_string())
-      .collect(),
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw).map(|t| t.to_string()).collect(),
     PropertyValue::Multiple(values) => {
       let mut out = Vec::new();
       for v in values {
@@ -1118,9 +1126,9 @@ fn parse_timeline_axis(token: &str) -> Option<TimelineAxis> {
 }
 
 fn parse_percentage(token: &str) -> Option<f32> {
-  let trimmed = token.trim();
+  let trimmed = trim_ascii_whitespace(token);
   let pct = trimmed.strip_suffix('%')?;
-  pct.trim().parse::<f32>().ok()
+  trim_ascii_whitespace(pct).parse::<f32>().ok()
 }
 
 fn parse_view_phase(token: &str) -> Option<ViewTimelinePhase> {
@@ -1159,7 +1167,7 @@ fn parse_timeline_offset_token(token: &str) -> Option<TimelineOffset> {
 }
 
 fn parse_scroll_timeline_list(raw: &str) -> Option<Vec<ScrollTimeline>> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -1242,7 +1250,7 @@ fn parse_named_timeline_name_list(raw: &str) -> Option<Vec<Option<String>>> {
   let parts = split_top_level_commas_strict(raw)?;
   let mut names = Vec::with_capacity(parts.len());
   for part in parts {
-    let trimmed = part.trim();
+    let trimmed = trim_ascii_whitespace(&part);
     if trimmed.is_empty() {
       return None;
     }
@@ -1282,7 +1290,7 @@ fn parse_timeline_axis_list(raw: &str) -> Option<Vec<TimelineAxis>> {
   let parts = split_top_level_commas_strict(raw)?;
   let mut axes = Vec::with_capacity(parts.len());
   for part in parts {
-    let trimmed = part.trim();
+    let trimmed = trim_ascii_whitespace(&part);
     if trimmed.is_empty() {
       return None;
     }
@@ -1307,7 +1315,7 @@ fn parse_timeline_axis_list(raw: &str) -> Option<Vec<TimelineAxis>> {
 }
 
 fn parse_view_timeline_list(raw: &str) -> Option<Vec<ViewTimeline>> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -1428,7 +1436,7 @@ fn parse_view_timeline_inset_list(raw: &str) -> Option<Vec<Option<ViewTimelineIn
 }
 
 fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -1505,7 +1513,7 @@ mod timeline_scope_apply_tests {
 }
 
 pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTimeline>> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -1573,7 +1581,7 @@ fn parse_animation_names(raw: &str) -> Option<Vec<Option<String>>> {
 
   let mut names = Vec::with_capacity(parts.len());
   for part in parts {
-    let trimmed = part.trim();
+    let trimmed = trim_ascii_whitespace(&part);
     if trimmed.is_empty() {
       return None;
     }
@@ -1940,16 +1948,16 @@ pub(crate) fn split_top_level_commas(raw: &str) -> Vec<String> {
         current.push(ch);
       }
       ',' if depth == 0 && bracket == 0 && brace == 0 => {
-        if !current.trim().is_empty() {
-          parts.push(current.trim().to_string());
+        if !trim_ascii_whitespace(&current).is_empty() {
+          parts.push(trim_ascii_whitespace(&current).to_string());
         }
         current.clear();
       }
       _ => current.push(ch),
     }
   }
-  if !current.trim().is_empty() {
-    parts.push(current.trim().to_string());
+  if !trim_ascii_whitespace(&current).is_empty() {
+    parts.push(trim_ascii_whitespace(&current).to_string());
   }
   parts
 }
@@ -2029,13 +2037,13 @@ fn split_top_level_commas_strict(raw: &str) -> Option<Vec<String>> {
         current.push(ch);
       }
       ',' if depth == 0 && bracket == 0 && brace == 0 => {
-        parts.push(current.trim().to_string());
+        parts.push(trim_ascii_whitespace(&current).to_string());
         current.clear();
       }
       _ => current.push(ch),
     }
   }
-  parts.push(current.trim().to_string());
+  parts.push(trim_ascii_whitespace(&current).to_string());
   if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
     None
   } else {
@@ -2085,8 +2093,8 @@ fn split_top_level_whitespace(raw: &str) -> Vec<String> {
         saw_star = inner == '*';
       }
       if depth == 0 && bracket == 0 && brace == 0 {
-        if !current.trim().is_empty() {
-          parts.push(current.trim().to_string());
+        if !trim_ascii_whitespace(&current).is_empty() {
+          parts.push(trim_ascii_whitespace(&current).to_string());
         }
         current.clear();
       } else {
@@ -2124,9 +2132,9 @@ fn split_top_level_whitespace(raw: &str) -> Vec<String> {
         in_string = Some(ch);
         current.push(ch);
       }
-      ch if ch.is_ascii_whitespace() && depth == 0 && bracket == 0 && brace == 0 => {
-        if !current.trim().is_empty() {
-          parts.push(current.trim().to_string());
+      ch if is_ascii_whitespace_html_css(ch) && depth == 0 && bracket == 0 && brace == 0 => {
+        if !trim_ascii_whitespace(&current).is_empty() {
+          parts.push(trim_ascii_whitespace(&current).to_string());
         }
         current.clear();
       }
@@ -2134,8 +2142,8 @@ fn split_top_level_whitespace(raw: &str) -> Vec<String> {
     }
   }
 
-  if !current.trim().is_empty() {
-    parts.push(current.trim().to_string());
+  if !trim_ascii_whitespace(&current).is_empty() {
+    parts.push(trim_ascii_whitespace(&current).to_string());
   }
 
   parts
@@ -2268,15 +2276,18 @@ fn parse_view_function_timeline<'i, 't>(
 }
 
 pub(crate) fn parse_time_ms(raw: &str) -> Option<f32> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
   if let Some(num) = strip_suffix_ignore_ascii_case(trimmed, "ms") {
-    return num.trim().parse::<f32>().ok();
+    return trim_ascii_whitespace(num).parse::<f32>().ok();
   }
   if let Some(num) = strip_suffix_ignore_ascii_case(trimmed, "s") {
-    return num.trim().parse::<f32>().ok().map(|v| v * 1000.0);
+    return trim_ascii_whitespace(num)
+      .parse::<f32>()
+      .ok()
+      .map(|v| v * 1000.0);
   }
   // CSS allows unitless zeros for time values.
   if trimmed.parse::<f32>().ok().is_some_and(|v| v == 0.0) {
@@ -2596,7 +2607,7 @@ fn parse_math_time_ms(raw: &str) -> Option<f32> {
 }
 
 fn parse_number_or_calc(raw: &str) -> Option<f32> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -2692,7 +2703,7 @@ fn parse_animation_duration_list(raw: &str) -> Option<Vec<f32>> {
 
   let mut times = Vec::with_capacity(parts.len());
   for part in parts {
-    if part.trim().eq_ignore_ascii_case("auto") {
+    if trim_ascii_whitespace(&part).eq_ignore_ascii_case("auto") {
       times.push(ANIMATION_DURATION_AUTO_SENTINEL_MS);
       continue;
     }
@@ -2711,7 +2722,7 @@ fn parse_animation_delay_list(raw: &str) -> Option<Vec<f32>> {
 }
 
 fn parse_animation_iteration_count(raw: &str) -> Option<AnimationIterationCount> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -2736,7 +2747,7 @@ fn parse_animation_iteration_count_list(raw: &str) -> Option<Vec<AnimationIterat
 }
 
 fn parse_animation_direction(raw: &str) -> Option<AnimationDirection> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  match trim_ascii_whitespace(raw).to_ascii_lowercase().as_str() {
     "normal" => Some(AnimationDirection::Normal),
     "reverse" => Some(AnimationDirection::Reverse),
     "alternate" => Some(AnimationDirection::Alternate),
@@ -2755,7 +2766,7 @@ fn parse_animation_direction_list(raw: &str) -> Option<Vec<AnimationDirection>> 
 }
 
 fn parse_animation_fill_mode(raw: &str) -> Option<AnimationFillMode> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  match trim_ascii_whitespace(raw).to_ascii_lowercase().as_str() {
     "none" => Some(AnimationFillMode::None),
     "forwards" => Some(AnimationFillMode::Forwards),
     "backwards" => Some(AnimationFillMode::Backwards),
@@ -2774,7 +2785,7 @@ fn parse_animation_fill_mode_list(raw: &str) -> Option<Vec<AnimationFillMode>> {
 }
 
 fn parse_animation_composition(raw: &str) -> Option<AnimationComposition> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  match trim_ascii_whitespace(raw).to_ascii_lowercase().as_str() {
     "replace" => Some(AnimationComposition::Replace),
     "add" => Some(AnimationComposition::Add),
     "accumulate" => Some(AnimationComposition::Accumulate),
@@ -2792,7 +2803,7 @@ fn parse_animation_composition_list(raw: &str) -> Option<Vec<AnimationCompositio
 }
 
 fn parse_animation_play_state(raw: &str) -> Option<AnimationPlayState> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  match trim_ascii_whitespace(raw).to_ascii_lowercase().as_str() {
     "running" => Some(AnimationPlayState::Running),
     "paused" => Some(AnimationPlayState::Paused),
     _ => None,
@@ -2810,13 +2821,13 @@ fn parse_animation_play_state_list(raw: &str) -> Option<Vec<AnimationPlayState>>
 
 fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> {
   let parts = split_top_level_commas_strict(raw)?;
-  if parts.len() == 1 && parts[0].trim().eq_ignore_ascii_case("none") {
+  if parts.len() == 1 && trim_ascii_whitespace(&parts[0]).eq_ignore_ascii_case("none") {
     return Some(vec![TransitionProperty::None]);
   }
 
   let mut props = Vec::new();
   for part in parts {
-    let trimmed = part.trim();
+    let trimmed = trim_ascii_whitespace(&part);
     if trimmed.is_empty() {
       return None;
     }
@@ -2884,7 +2895,7 @@ fn parse_transition_delay_list(raw: &str) -> Option<Vec<f32>> {
 }
 
 fn parse_transition_behavior(raw: &str) -> Option<TransitionBehavior> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -2915,7 +2926,7 @@ fn parse_transition_behavior_list(raw: &str) -> Option<Vec<TransitionBehavior>> 
 }
 
 pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTimingFunction> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -2946,7 +2957,7 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
     let args = &trimmed["linear(".len()..trimmed.len() - 1];
     let mut raw_stops: Vec<(Option<f32>, f32)> = Vec::new();
     for stop in split_top_level_commas_strict(args)? {
-      let pieces: Vec<&str> = stop.split_whitespace().collect();
+      let pieces: Vec<&str> = split_ascii_whitespace(&stop).collect();
       if pieces.is_empty() {
         return None;
       }
@@ -2955,7 +2966,7 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
       let mut xs: Vec<f32> = Vec::new();
       for piece in &pieces {
         if y.is_none() {
-          if let Ok(value) = piece.trim().parse::<f32>() {
+          if let Ok(value) = trim_ascii_whitespace(piece).parse::<f32>() {
             if !value.is_finite() {
               return None;
             }
@@ -3056,7 +3067,7 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
     }
     let mut nums = [0.0f32; 4];
     for (idx, part) in parts.into_iter().enumerate() {
-      let num = part.trim().parse::<f32>().ok()?;
+      let num = trim_ascii_whitespace(&part).parse::<f32>().ok()?;
       if !num.is_finite() {
         return None;
       }
@@ -3077,13 +3088,13 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
     if parts.len() > 2 {
       return None;
     }
-    let count_raw = parts[0].trim().parse::<i64>().ok()?;
+    let count_raw = trim_ascii_whitespace(&parts[0]).parse::<i64>().ok()?;
     let count = u32::try_from(count_raw).ok()?;
     if count == 0 {
       return None;
     }
     let position = if parts.len() == 2 {
-      let pos = parts[1].trim();
+      let pos = trim_ascii_whitespace(&parts[1]);
       if pos.eq_ignore_ascii_case("start") || pos.eq_ignore_ascii_case("jump-start") {
         StepPosition::Start
       } else if pos.eq_ignore_ascii_case("end") || pos.eq_ignore_ascii_case("jump-end") {
@@ -3176,7 +3187,7 @@ fn parse_animation_shorthand(
         continue;
       }
 
-      if token.trim().eq_ignore_ascii_case("auto") {
+      if trim_ascii_whitespace(&token).eq_ignore_ascii_case("auto") {
         if duration.is_none() {
           duration = Some(ANIMATION_DURATION_AUTO_SENTINEL_MS);
           continue;
@@ -3239,7 +3250,7 @@ fn parse_animation_shorthand(
       }
 
       if name.is_none() {
-        let trimmed = token.trim();
+        let trimmed = trim_ascii_whitespace(&token);
         if trimmed.is_empty() {
           invalid = true;
           break;
@@ -3386,7 +3397,7 @@ fn parse_transition_shorthand(
       }
 
       if property.is_none() {
-        let trimmed = token.trim();
+        let trimmed = trim_ascii_whitespace(&token);
         if trimmed.is_empty() {
           invalid = true;
           break;
@@ -3839,7 +3850,7 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   let PropertyValue::Keyword(raw) = value else {
     return None;
   };
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -3878,7 +3889,7 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   //
   // Accept vendor-prefixed names as well (`-webkit-fit-content(...)`, `-moz-fit-content(...)`).
   let open = trimmed.find('(')?;
-  let head = trimmed.get(..open)?.trim();
+  let head = trim_ascii_whitespace(trimmed.get(..open)?);
   if !head.eq_ignore_ascii_case("fit-content")
     && !head.eq_ignore_ascii_case("-webkit-fit-content")
     && !head.eq_ignore_ascii_case("-moz-fit-content")
@@ -3889,10 +3900,10 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   if close <= open {
     return None;
   }
-  if !trimmed.get(close + 1..)?.trim().is_empty() {
+  if !trim_ascii_whitespace(trimmed.get(close + 1..)?).is_empty() {
     return None;
   }
-  let inner = trimmed.get(open + 1..close)?.trim();
+  let inner = trim_ascii_whitespace(trimmed.get(open + 1..close)?);
   let limit = match crate::css::properties::parse_property_value("", inner)? {
     PropertyValue::Length(l) => Some(l),
     PropertyValue::Percentage(p) => Some(Length::percent(p)),
@@ -3925,7 +3936,7 @@ fn extract_sizing_value(
       keyword: None,
     }),
     PropertyValue::Keyword(kw) => {
-      let trimmed = kw.trim();
+      let trimmed = trim_ascii_whitespace(kw);
       if trimmed.eq_ignore_ascii_case("auto")
         || (allow_none_keyword && trimmed.eq_ignore_ascii_case("none"))
       {
@@ -4249,7 +4260,7 @@ fn global_keyword_text(value: &str) -> Option<GlobalKeyword> {
     None
   }
 
-  let value = value.trim();
+  let value = trim_ascii_whitespace(value);
   let bytes = value.as_bytes();
   if !bytes.contains(&b'\\')
     && (!bytes.contains(&b'/') || !bytes.windows(2).any(|pair| pair == b"/*"))
@@ -7072,7 +7083,12 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
   let mut seen_ornaments = false;
   let mut seen_annotation = false;
 
-  let parse_num = |s: &str| s.trim().parse::<u8>().ok().filter(|n| *n > 0 && *n <= 99);
+  let parse_num = |s: &str| {
+    trim_ascii_whitespace(s)
+      .parse::<u8>()
+      .ok()
+      .filter(|n| *n > 0 && *n <= 99)
+  };
 
   fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     let prefix_len = prefix.len();
@@ -7104,15 +7120,15 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       return None;
     }
 
-    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "styleset(")
-      .and_then(|s| s.strip_suffix(')'))
-    {
-      for part in inner
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|s| !s.is_empty())
+      if let Some(inner) = strip_prefix_ignore_ascii_case(token, "styleset(")
+        .and_then(|s| s.strip_suffix(')'))
       {
-        if let Some(n) = parse_num(part) {
-          alt.stylesets.push(n);
+        for part in inner
+          .split(|c: char| c == ',' || is_ascii_whitespace_html_css(c))
+          .filter(|s| !s.is_empty())
+        {
+          if let Some(n) = parse_num(part) {
+            alt.stylesets.push(n);
         } else {
           return None;
         }
@@ -7120,15 +7136,15 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       continue;
     }
 
-    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "character-variant(")
-      .and_then(|s| s.strip_suffix(')'))
-    {
-      for part in inner
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|s| !s.is_empty())
+      if let Some(inner) = strip_prefix_ignore_ascii_case(token, "character-variant(")
+        .and_then(|s| s.strip_suffix(')'))
       {
-        if let Some(n) = parse_num(part) {
-          alt.character_variants.push(n);
+        for part in inner
+          .split(|c: char| c == ',' || is_ascii_whitespace_html_css(c))
+          .filter(|s| !s.is_empty())
+        {
+          if let Some(n) = parse_num(part) {
+            alt.character_variants.push(n);
         } else {
           return None;
         }
@@ -7169,8 +7185,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       if seen_annotation {
         return None;
       }
-      if !inner.trim().is_empty() {
-        alt.annotation = Some(inner.trim().to_string());
+      let inner = trim_ascii_whitespace(inner);
+      if !inner.is_empty() {
+        alt.annotation = Some(inner.to_string());
         seen_annotation = true;
         continue;
       }
@@ -7211,7 +7228,7 @@ fn split_font_variant_tokens(input: &str) -> Vec<String> {
   let mut paren_depth = 0usize;
 
   for ch in input.chars() {
-    if ch.is_whitespace() && paren_depth == 0 {
+    if is_ascii_whitespace_html_css(ch) && paren_depth == 0 {
       if !current.is_empty() {
         tokens.push(current.clone());
         current.clear();
@@ -7236,11 +7253,11 @@ fn split_font_variant_tokens(input: &str) -> Vec<String> {
 }
 
 fn parse_running_position(value: &str) -> Option<String> {
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   let Some(open_paren) = trimmed.find('(') else {
     return None;
   };
-  if !trimmed[..open_paren].trim().eq_ignore_ascii_case("running") {
+  if !trim_ascii_whitespace(&trimmed[..open_paren]).eq_ignore_ascii_case("running") {
     return None;
   }
 
@@ -7250,11 +7267,11 @@ fn parse_running_position(value: &str) -> Option<String> {
   if close_paren <= open_paren {
     return None;
   }
-  if !trimmed[close_paren + 1..].trim().is_empty() {
+  if !trim_ascii_whitespace(&trimmed[close_paren + 1..]).is_empty() {
     return None;
   }
 
-  let ident = trimmed[open_paren + 1..close_paren].trim();
+  let ident = trim_ascii_whitespace(&trimmed[open_paren + 1..close_paren]);
   let mut chars = ident.chars();
   let first = chars.next()?;
   if !(first.is_ascii_alphabetic() || first == '_') {
@@ -7620,7 +7637,7 @@ fn apply_custom_property_declaration(
     return false;
   };
   let raw_text = decl_raw_text(decl);
-  let raw_trimmed = raw_text.trim();
+  let raw_trimmed = trim_ascii_whitespace(&raw_text);
   let registration = styles.custom_property_registry.get(decl.property.as_str());
 
   // Unregistered custom properties behave like token streams: keep the authored value verbatim and
@@ -7672,7 +7689,7 @@ fn apply_custom_property_declaration(
       return true;
     }
 
-    let Some(typed) = rule.syntax.parse_value(resolved.trim()) else {
+    let Some(typed) = rule.syntax.parse_value(trim_ascii_whitespace(&resolved)) else {
       return false;
     };
     styles.custom_properties.insert(
@@ -8045,9 +8062,9 @@ fn apply_declaration_with_base_internal_with_order(
       }
     };
 
-    match value {
+      match value {
       PropertyValue::Keyword(kw) => {
-        let trimmed = kw.trim();
+        let trimmed = trim_ascii_whitespace(kw);
         if trimmed.is_empty() {
           return None;
         }
@@ -8460,11 +8477,11 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "position-anchor" => {
       let token = match resolved_value {
-        PropertyValue::Keyword(kw) => Some(kw.trim()),
+        PropertyValue::Keyword(kw) => Some(trim_ascii_whitespace(kw)),
         PropertyValue::Multiple(parts) => {
           if parts.len() == 1 {
             if let PropertyValue::Keyword(kw) = &parts[0] {
-              Some(kw.trim())
+              Some(trim_ascii_whitespace(kw))
             } else {
               None
             }
@@ -8486,7 +8503,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "anchor-scope" => {
       let token = match resolved_value {
-        PropertyValue::Keyword(kw) => Some(kw.trim()),
+        PropertyValue::Keyword(kw) => Some(trim_ascii_whitespace(kw)),
         _ => None,
       };
       if let Some(token) = token {
@@ -9651,15 +9668,13 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "flex-flow" => {
       let tokens: Vec<String> = match resolved_value {
-        PropertyValue::Keyword(kw) => kw
-          .split_whitespace()
+        PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
           .map(|s| s.to_ascii_lowercase())
           .collect(),
         PropertyValue::Multiple(values) => values
           .iter()
           .flat_map(|v| match v {
-            PropertyValue::Keyword(kw) => kw
-              .split_whitespace()
+            PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
               .map(|s| s.to_ascii_lowercase())
               .collect(),
             _ => Vec::new(),
@@ -10211,7 +10226,7 @@ fn apply_declaration_with_base_internal_with_order(
       let mut width: Option<Length> = None;
 
       let parse_token = |tok: &str, count_ref: &mut Option<u32>, width_ref: &mut Option<Length>| {
-        let lower = tok.trim();
+        let lower = trim_ascii_whitespace(tok);
         if lower.is_empty() || lower.eq_ignore_ascii_case("auto") {
           return;
         }
@@ -10238,7 +10253,7 @@ fn apply_declaration_with_base_internal_with_order(
           }
         }
         PropertyValue::Keyword(kw) => {
-          for tok in kw.split_whitespace() {
+          for tok in split_ascii_whitespace(kw) {
             parse_token(tok, &mut count, &mut width);
           }
         }
@@ -10298,62 +10313,62 @@ fn apply_declaration_with_base_internal_with_order(
           styles.grid_column_start = n;
         } else {
           // Store in grid_column_raw for deferred resolution
-          let current_end = styles
-            .grid_column_raw
-            .as_ref()
-            .and_then(|s| s.split_once('/').map(|(_, e)| e.trim()))
-            .unwrap_or("auto");
-          styles.grid_column_raw = Some(format!("{} / {}", kw, current_end));
-        }
-      }
+           let current_end = styles
+             .grid_column_raw
+             .as_ref()
+             .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
+             .unwrap_or("auto");
+           styles.grid_column_raw = Some(format!("{} / {}", kw, current_end));
+         }
+       }
     }
     "grid-column-end" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Ok(n) = kw.parse::<i32>() {
           styles.grid_column_end = n;
         } else {
-          let current_start = styles
-            .grid_column_raw
-            .as_ref()
-            .and_then(|s| s.split_once('/').map(|(s, _)| s.trim()))
-            .unwrap_or("auto");
-          styles.grid_column_raw = Some(format!("{} / {}", current_start, kw));
-        }
-      }
+           let current_start = styles
+             .grid_column_raw
+             .as_ref()
+             .and_then(|s| s.split_once('/').map(|(s, _)| trim_ascii_whitespace(s)))
+             .unwrap_or("auto");
+           styles.grid_column_raw = Some(format!("{} / {}", current_start, kw));
+         }
+       }
     }
     "grid-row-start" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Ok(n) = kw.parse::<i32>() {
           styles.grid_row_start = n;
         } else {
-          let current_end = styles
-            .grid_row_raw
-            .as_ref()
-            .and_then(|s| s.split_once('/').map(|(_, e)| e.trim()))
-            .unwrap_or("auto");
-          styles.grid_row_raw = Some(format!("{} / {}", kw, current_end));
-        }
-      }
+           let current_end = styles
+             .grid_row_raw
+             .as_ref()
+             .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
+             .unwrap_or("auto");
+           styles.grid_row_raw = Some(format!("{} / {}", kw, current_end));
+         }
+       }
     }
     "grid-row-end" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Ok(n) = kw.parse::<i32>() {
           styles.grid_row_end = n;
         } else {
-          let current_start = styles
-            .grid_row_raw
-            .as_ref()
-            .and_then(|s| s.split_once('/').map(|(s, _)| s.trim()))
-            .unwrap_or("auto");
-          styles.grid_row_raw = Some(format!("{} / {}", current_start, kw));
-        }
-      }
+           let current_start = styles
+             .grid_row_raw
+             .as_ref()
+             .and_then(|s| s.split_once('/').map(|(s, _)| trim_ascii_whitespace(s)))
+             .unwrap_or("auto");
+           styles.grid_row_raw = Some(format!("{} / {}", current_start, kw));
+         }
+       }
     }
     "grid-area" => {
       if let PropertyValue::Keyword(kw) | PropertyValue::String(kw) = resolved_value {
         let parts: Vec<&str> = kw
           .split('/')
-          .map(|s| s.trim())
+          .map(trim_ascii_whitespace)
           .filter(|s| !s.is_empty())
           .collect();
         if parts.is_empty() {
@@ -10461,7 +10476,7 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
       PropertyValue::Keyword(raw) => {
-        let tokens: Vec<&str> = raw.split_whitespace().collect();
+        let tokens: Vec<&str> = split_ascii_whitespace(raw).collect();
         let parsed = match tokens.as_slice() {
           [] => None,
           [single] => {
@@ -10531,7 +10546,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "font-variant" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        let trimmed = kw.trim();
+        let trimmed = trim_ascii_whitespace(kw);
         // CSS Fonts shorthand for font-variant subproperties.
         if trimmed.eq_ignore_ascii_case("normal") {
           styles.font_variant = FontVariant::Normal;
@@ -10704,7 +10719,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "font-variant-east-asian" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        let tokens: Vec<&str> = kw.split_whitespace().collect();
+        let tokens: Vec<&str> = split_ascii_whitespace(kw).collect();
         if let Some(east) = parse_font_variant_east_asian_tokens(&tokens) {
           styles.font_variant_east_asian = east;
         }
@@ -10712,7 +10727,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "font-variant-numeric" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        let tokens: Vec<&str> = kw.split_whitespace().collect();
+        let tokens: Vec<&str> = split_ascii_whitespace(kw).collect();
         if let Some(numeric) = parse_font_variant_numeric_tokens(&tokens) {
           styles.font_variant_numeric = numeric;
         }
@@ -10720,7 +10735,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "font-variant-ligatures" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        let tokens: Vec<&str> = kw.split_whitespace().collect();
+        let tokens: Vec<&str> = split_ascii_whitespace(kw).collect();
         if let Some(ligatures) = parse_font_variant_ligatures_tokens(&tokens) {
           styles.font_variant_ligatures = ligatures;
         }
@@ -10728,7 +10743,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "font-feature-settings" => {
       if let PropertyValue::Keyword(raw) = resolved_value {
-        let trimmed = raw.trim();
+        let trimmed = trim_ascii_whitespace(raw);
         if trimmed.eq_ignore_ascii_case("normal") {
           styles.font_feature_settings = default_computed_style().font_feature_settings.clone();
         } else {
@@ -10756,7 +10771,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.font_language_override = FontLanguageOverride::Normal;
       }
       PropertyValue::Keyword(raw) | PropertyValue::String(raw) => {
-        let tag = raw.trim_matches('"').trim();
+        let tag = trim_ascii_whitespace(raw.trim_matches('"'));
         if (1..=4).contains(&tag.len()) && tag.is_ascii() {
           styles.font_language_override = FontLanguageOverride::Override(tag.to_string());
         }
@@ -10780,7 +10795,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "font-variation-settings" => {
       if let PropertyValue::Keyword(raw) = resolved_value {
-        let trimmed = raw.trim();
+        let trimmed = trim_ascii_whitespace(raw);
         if trimmed.eq_ignore_ascii_case("normal") {
           styles.font_variation_settings = default_computed_style().font_variation_settings.clone();
         } else {
@@ -10819,7 +10834,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "font-palette" => {
       if let PropertyValue::Keyword(raw) = resolved_value {
-        let trimmed = raw.trim();
+        let trimmed = trim_ascii_whitespace(raw);
         if !trimmed.is_empty() {
           styles.font_palette = if trimmed.eq_ignore_ascii_case("normal") {
             FontPalette::Normal
@@ -10837,12 +10852,12 @@ fn apply_declaration_with_base_internal_with_order(
       let mut tokens: Vec<&str> = Vec::new();
       match resolved_value {
         PropertyValue::Keyword(raw) => {
-          tokens.extend(raw.split_whitespace());
+          tokens.extend(split_ascii_whitespace(raw));
         }
         PropertyValue::Multiple(values) => {
           for token in values {
             if let PropertyValue::Keyword(raw) = token {
-              tokens.extend(raw.split_whitespace());
+              tokens.extend(split_ascii_whitespace(raw));
             }
           }
         }
@@ -12027,7 +12042,7 @@ fn apply_declaration_with_base_internal_with_order(
     "scroll-snap-type" => {
       let mut parts: Vec<&str> = Vec::new();
       match resolved_value {
-        PropertyValue::Keyword(kw) => parts.extend(kw.split_whitespace()),
+        PropertyValue::Keyword(kw) => parts.extend(split_ascii_whitespace(kw)),
         PropertyValue::Multiple(tokens) => {
           for token in tokens {
             if let PropertyValue::Keyword(k) = token {
@@ -12047,7 +12062,7 @@ fn apply_declaration_with_base_internal_with_order(
     "scroll-snap-align" => {
       let mut parts: Vec<&str> = Vec::new();
       match resolved_value {
-        PropertyValue::Keyword(kw) => parts.extend(kw.split_whitespace()),
+        PropertyValue::Keyword(kw) => parts.extend(split_ascii_whitespace(kw)),
         PropertyValue::Multiple(tokens) => {
           for token in tokens {
             if let PropertyValue::Keyword(k) = token {
@@ -12338,8 +12353,7 @@ fn apply_declaration_with_base_internal_with_order(
       let mut both_edges = false;
       let mut seen = false;
       let tokens: Vec<String> = match resolved_value {
-        PropertyValue::Keyword(kw) => kw
-          .split_whitespace()
+        PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
           .map(|s| s.to_ascii_lowercase())
           .collect(),
         PropertyValue::Multiple(values) => values
@@ -13773,9 +13787,9 @@ fn parse_anchor_side(token: &str) -> Option<AnchorSide> {
     t if t.eq_ignore_ascii_case("block-end") => Some(AnchorSide::BlockEnd),
     t if t.eq_ignore_ascii_case("center") => Some(AnchorSide::Center),
     t => {
-      let t = t.trim();
+      let t = trim_ascii_whitespace(t);
       if let Some(raw) = t.strip_suffix('%') {
-        let raw = raw.trim();
+        let raw = trim_ascii_whitespace(raw);
         if raw.is_empty() {
           return None;
         }
@@ -13791,7 +13805,7 @@ fn parse_anchor_side(token: &str) -> Option<AnchorSide> {
 }
 
 fn parse_anchor_function_str(input: &str) -> Option<AnchorFunction> {
-  let trimmed = input.trim();
+  let trimmed = trim_ascii_whitespace(input);
   if trimmed.is_empty() {
     return None;
   }
@@ -13821,9 +13835,12 @@ fn parse_anchor_function_str(input: &str) -> Option<AnchorFunction> {
   let (args_part, fallback_part) = match comma_idx {
     Some(idx) => {
       let (before, after) = tail.split_at(idx);
-      (before.trim(), after.get(1..)?.trim())
+      (
+        trim_ascii_whitespace(before),
+        trim_ascii_whitespace(after.get(1..)?),
+      )
     }
-    None => (tail.trim(), ""),
+    None => (trim_ascii_whitespace(tail), ""),
   };
 
   let fallback = if fallback_part.is_empty() {
@@ -13832,7 +13849,7 @@ fn parse_anchor_function_str(input: &str) -> Option<AnchorFunction> {
     Some(parse_length(fallback_part)?)
   };
 
-  let tokens: Vec<&str> = args_part.split_whitespace().collect();
+  let tokens: Vec<&str> = split_ascii_whitespace(args_part).collect();
   if tokens.is_empty() {
     return None;
   }
@@ -13920,12 +13937,12 @@ fn apply_inset_values(
 
 fn extract_dashed_ident_list(value: &PropertyValue) -> Option<Vec<String>> {
   let tokens: Vec<&str> = match value {
-    PropertyValue::Keyword(kw) => kw.split_whitespace().collect(),
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw).collect(),
     PropertyValue::Multiple(parts) => {
       let mut tokens = Vec::with_capacity(parts.len());
       for part in parts {
         match part {
-          PropertyValue::Keyword(kw) => tokens.push(kw.trim()),
+          PropertyValue::Keyword(kw) => tokens.push(trim_ascii_whitespace(kw)),
           _ => return None,
         }
       }
@@ -14006,7 +14023,7 @@ impl GapValue {
 }
 
 fn parse_gap_token(token: &str) -> Option<GapValue> {
-  let t = token.trim();
+  let t = trim_ascii_whitespace(token);
   if t.is_empty() {
     return None;
   }
@@ -14126,7 +14143,7 @@ fn parse_gap_lengths(value: &PropertyValue) -> Option<(GapValue, GapValue)> {
       }
     }
     PropertyValue::Keyword(kw) => {
-      let tokens: Vec<&str> = kw.split_whitespace().filter(|s| !s.is_empty()).collect();
+      let tokens: Vec<&str> = split_ascii_whitespace(kw).collect();
       if tokens.is_empty() {
         return None;
       }
@@ -14187,7 +14204,7 @@ fn parse_place_pair(value: &PropertyValue) -> Option<(AlignItems, AlignItems)> {
         _ => None,
       })
       .collect(),
-    PropertyValue::Keyword(kw) => kw.split_whitespace().map(|s| s.to_string()).collect(),
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw).map(|s| s.to_string()).collect(),
     _ => Vec::new(),
   };
   if tokens.is_empty() {
@@ -14244,7 +14261,7 @@ fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, Just
         _ => None,
       })
       .collect(),
-    PropertyValue::Keyword(kw) => kw.split_whitespace().map(|s| s.to_string()).collect(),
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw).map(|s| s.to_string()).collect(),
     _ => Vec::new(),
   };
   if tokens.is_empty() {
@@ -14405,25 +14422,25 @@ fn parse_image_orientation(value: &PropertyValue) -> Option<ImageOrientation> {
 }
 
 fn parse_resolution_token(token: &str) -> Option<f32> {
-  let lower = token.trim().to_ascii_lowercase();
-  if let Some(rest) = lower.strip_suffix("dppx") {
+  let token = trim_ascii_whitespace(token);
+  if let Some(rest) = token.strip_suffix("dppx") {
     return rest.parse::<f32>().ok().filter(|v| *v > 0.0);
   }
-  if let Some(rest) = lower.strip_suffix("dpi") {
+  if let Some(rest) = token.strip_suffix("dpi") {
     return rest
       .parse::<f32>()
       .ok()
       .filter(|v| *v > 0.0)
       .map(|dpi| dpi / 96.0);
   }
-  if let Some(rest) = lower.strip_suffix("dpcm") {
+  if let Some(rest) = token.strip_suffix("dpcm") {
     return rest
       .parse::<f32>()
       .ok()
       .filter(|v| *v > 0.0)
       .map(|dpcm| (dpcm * 2.54) / 96.0);
   }
-  if let Some(rest) = lower.strip_suffix('x') {
+  if let Some(rest) = token.strip_suffix('x') {
     return rest.parse::<f32>().ok().filter(|v| *v > 0.0);
   }
   None
@@ -14666,7 +14683,7 @@ fn parse_border_image_repeat(
       }
       out
     }
-    PropertyValue::Keyword(kw) => kw.split_whitespace().map(|s| s.to_string()).collect(),
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw).map(|s| s.to_string()).collect(),
     _ => Vec::new(),
   };
   if tokens.is_empty() {
@@ -14981,7 +14998,7 @@ fn parse_aspect_ratio(value: &PropertyValue) -> Option<AspectRatio> {
     match token {
       Tok::Number(n) => (n.is_finite() && n > 0.0).then_some(n),
       Tok::Ident(s) => {
-        let parsed = s.trim().parse::<f32>().ok()?;
+        let parsed = trim_ascii_whitespace(s).parse::<f32>().ok()?;
         (parsed.is_finite() && parsed > 0.0).then_some(parsed)
       }
     }
@@ -15041,7 +15058,7 @@ fn parse_aspect_ratio(value: &PropertyValue) -> Option<AspectRatio> {
 
   match value {
     PropertyValue::Keyword(kw) => {
-      let parts: Vec<_> = kw.split_whitespace().collect();
+      let parts: Vec<_> = split_ascii_whitespace(kw).collect();
       let tokens: Vec<_> = parts.into_iter().map(Tok::Ident).collect();
       parse_tokens(&tokens)
     }
@@ -15062,7 +15079,7 @@ fn parse_aspect_ratio(value: &PropertyValue) -> Option<AspectRatio> {
 }
 
 fn parse_ratio_string(raw: &str) -> Option<f32> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
     return None;
   }
@@ -15070,8 +15087,8 @@ fn parse_ratio_string(raw: &str) -> Option<f32> {
     return (val.is_finite() && val > 0.0).then_some(val);
   }
   if let Some((num_str, denom_str)) = trimmed.split_once('/') {
-    let num = num_str.trim().parse::<f32>().ok()?;
-    let denom = denom_str.trim().parse::<f32>().ok()?;
+    let num = trim_ascii_whitespace(num_str).parse::<f32>().ok()?;
+    let denom = trim_ascii_whitespace(denom_str).parse::<f32>().ok()?;
     if num.is_finite() && denom.is_finite() && num > 0.0 && denom > 0.0 {
       return Some(num / denom);
     }
@@ -15751,14 +15768,14 @@ fn parse_offset_path_value(value: &PropertyValue) -> Option<OffsetPath> {
         }
         combined.push_str(part);
       }
-      parse_offset_path_str(combined.trim())
+      parse_offset_path_str(trim_ascii_whitespace(&combined))
     }
     _ => None,
   }
 }
 
 fn parse_offset_path_str(input: &str) -> Option<OffsetPath> {
-  let trimmed = input.trim();
+  let trimmed = trim_ascii_whitespace(input);
   if trimmed.eq_ignore_ascii_case("none") {
     return Some(OffsetPath::None);
   }
@@ -15770,7 +15787,7 @@ fn parse_offset_path_str(input: &str) -> Option<OffsetPath> {
     else {
       return None;
     };
-    let inner = path_data.trim().trim_matches(&['"', '\''][..]);
+    let inner = trim_ascii_whitespace(path_data).trim_matches(&['"', '\''][..]);
     if let Some(commands) = parse_svg_motion_path(inner) {
       return Some(OffsetPath::Path(commands));
     }
@@ -16143,7 +16160,7 @@ fn property_value_to_string(value: &PropertyValue) -> Option<String> {
           _ => return None,
         }
       }
-      let trimmed = out.trim();
+      let trimmed = trim_ascii_whitespace(&out);
       if trimmed.is_empty() {
         None
       } else {
@@ -16431,7 +16448,7 @@ fn parse_containment(value: &PropertyValue) -> Option<Containment> {
     _ => None,
   }?;
 
-  let trimmed = text.trim();
+  let trimmed = trim_ascii_whitespace(&text);
   if trimmed.is_empty() {
     return None;
   }
@@ -16636,7 +16653,7 @@ fn will_change_value_as_string(value: &PropertyValue) -> Option<String> {
           _ => return None,
         }
       }
-      let trimmed = out.trim();
+      let trimmed = trim_ascii_whitespace(&out);
       if trimmed.is_empty() {
         None
       } else {
@@ -16648,7 +16665,7 @@ fn will_change_value_as_string(value: &PropertyValue) -> Option<String> {
 }
 
 fn parse_will_change_from_str(text: &str) -> Option<WillChange> {
-  let trimmed = text.trim();
+  let trimmed = trim_ascii_whitespace(text);
   if trimmed.is_empty() {
     return None;
   }
@@ -16751,7 +16768,7 @@ fn parse_filter_list(value: &PropertyValue) -> Option<Vec<FilterFunction>> {
     _ => return None,
   };
 
-  let trimmed = text.trim();
+  let trimmed = trim_ascii_whitespace(text);
   if trimmed.eq_ignore_ascii_case("none") {
     return Some(Vec::new());
   }
@@ -16938,7 +16955,7 @@ fn validate_oblique_angle(angle: f32) -> Option<f32> {
 }
 
 fn parse_font_style_keyword(raw: &str) -> Option<FontStyle> {
-  let raw = raw.trim();
+  let raw = trim_ascii_whitespace(raw);
   if raw.is_empty() {
     return None;
   }
@@ -16979,7 +16996,7 @@ fn parse_font_style_keyword(raw: &str) -> Option<FontStyle> {
 }
 
 fn parse_angle_from_str(s: &str) -> Option<f32> {
-  let mut input = ParserInput::new(s.trim());
+  let mut input = ParserInput::new(trim_ascii_whitespace(s));
   let mut parser = Parser::new(&mut input);
   parse_angle_degrees(&mut parser)
     .ok()
@@ -17016,7 +17033,7 @@ fn parse_font_shorthand(
   LineHeight,
   Arc<[String]>,
 )> {
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   if trimmed.is_empty() {
     return None;
   }
@@ -18460,10 +18477,10 @@ fn parse_path_shape<'i, 't>(
           let token = nested.next_including_whitespace()?;
           raw.push_str(&token.to_css_string());
         }
-        raw.trim().to_string()
+        trim_ascii_whitespace(&raw).to_string()
       };
 
-    if data.trim().is_empty() {
+    if trim_ascii_whitespace(&data).is_empty() {
       return Err(cssparser::ParseError {
         kind: cssparser::ParseErrorKind::Custom(()),
         location: nested.current_source_location(),
@@ -18719,8 +18736,7 @@ fn length_unit_from_str(unit: &str) -> Option<LengthUnit> {
 
 fn parse_text_decoration_line(value: &PropertyValue) -> Option<TextDecorationLine> {
   let mut tokens: Vec<String> = match value {
-    PropertyValue::Keyword(kw) => kw
-      .split_whitespace()
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
       .map(|s| s.to_ascii_lowercase())
       .collect(),
     PropertyValue::Multiple(values) if !values.is_empty() => {
@@ -18729,7 +18745,7 @@ fn parse_text_decoration_line(value: &PropertyValue) -> Option<TextDecorationLin
         let PropertyValue::Keyword(kw) = v else {
           return None;
         };
-        out.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+        out.extend(split_ascii_whitespace(kw).map(|s| s.to_ascii_lowercase()));
       }
       out
     }
@@ -18900,15 +18916,14 @@ fn parse_text_underline_position(value: &PropertyValue) -> Option<TextUnderlineP
       let mut kws = Vec::new();
       for v in values {
         if let PropertyValue::Keyword(kw) = v {
-          kws.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+          kws.extend(split_ascii_whitespace(kw).map(|s| s.to_ascii_lowercase()));
         } else {
           return None;
         }
       }
       kws
     }
-    PropertyValue::Keyword(kw) => kw
-      .split_whitespace()
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
       .map(|s| s.to_ascii_lowercase())
       .collect(),
     _ => return None,
@@ -19013,8 +19028,7 @@ fn parse_text_emphasis_style(value: &PropertyValue) -> Option<TextEmphasisStyle>
   match value {
     PropertyValue::String(s) if !s.is_empty() => Some(TextEmphasisStyle::String(s.clone())),
     PropertyValue::Keyword(kw) => {
-      let tokens: Vec<String> = kw
-        .split_whitespace()
+      let tokens: Vec<String> = split_ascii_whitespace(kw)
         .map(|s| s.to_ascii_lowercase())
         .collect();
       parse_keyword_tokens(&tokens)
@@ -19025,7 +19039,7 @@ fn parse_text_emphasis_style(value: &PropertyValue) -> Option<TextEmphasisStyle>
       for v in values {
         match v {
           PropertyValue::Keyword(kw) => {
-            tokens.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+            tokens.extend(split_ascii_whitespace(kw).map(|s| s.to_ascii_lowercase()));
           }
           PropertyValue::String(s) if !s.is_empty() => {
             if string.is_some() {
@@ -19077,8 +19091,7 @@ fn parse_text_emphasis_position(value: &PropertyValue) -> Option<TextEmphasisPos
   // specified keywords (so we represent the "only over/under specified" case explicitly).
 
   let tokens: Vec<String> = match value {
-    PropertyValue::Keyword(kw) => kw
-      .split_whitespace()
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
       .map(|s| s.to_ascii_lowercase())
       .collect(),
     PropertyValue::Multiple(values) => {
@@ -19087,7 +19100,7 @@ fn parse_text_emphasis_position(value: &PropertyValue) -> Option<TextEmphasisPos
         let PropertyValue::Keyword(kw) = v else {
           return None;
         };
-        out.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+        out.extend(split_ascii_whitespace(kw).map(|s| s.to_ascii_lowercase()));
       }
       out
     }
@@ -19145,8 +19158,7 @@ fn parse_text_emphasis_skip(value: &PropertyValue) -> Option<TextEmphasisSkip> {
   //
   // The computed value preserves the specified keywords, so we represent it as a bitset.
   let tokens: Vec<String> = match value {
-    PropertyValue::Keyword(kw) => kw
-      .split_whitespace()
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
       .map(|s| s.to_ascii_lowercase())
       .collect(),
     PropertyValue::Multiple(values) => {
@@ -19155,7 +19167,7 @@ fn parse_text_emphasis_skip(value: &PropertyValue) -> Option<TextEmphasisSkip> {
         let PropertyValue::Keyword(kw) = v else {
           return None;
         };
-        out.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+        out.extend(split_ascii_whitespace(kw).map(|s| s.to_ascii_lowercase()));
       }
       out
     }
@@ -19208,8 +19220,7 @@ fn parse_text_emphasis_shorthand(
 ) -> Option<(Option<TextEmphasisStyle>, Option<Option<Rgba>>)> {
   let tokens: Vec<PropertyValue> = match value {
     PropertyValue::Multiple(vals) => vals.clone(),
-    PropertyValue::Keyword(kw) => kw
-      .split_whitespace()
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
       .map(|s| PropertyValue::Keyword(s.to_string()))
       .collect(),
     other => vec![other.clone()],
@@ -19440,7 +19451,7 @@ fn parse_text_combine_upright(value: &PropertyValue) -> Option<TextCombineUprigh
       if !prefix.eq_ignore_ascii_case("digits") {
         return None;
       }
-      let tail = kw.get("digits".len()..)?.trim();
+      let tail = trim_ascii_whitespace(kw.get("digits".len()..)?);
       if tail.is_empty() {
         return Some(TextCombineUpright::Digits(2));
       }
@@ -19491,8 +19502,7 @@ fn parse_text_transform(value: &PropertyValue) -> Option<TextTransform> {
   use crate::style::types::CaseTransform;
 
   let mut tokens: Vec<String> = match value {
-    PropertyValue::Keyword(kw) => kw
-      .split_whitespace()
+    PropertyValue::Keyword(kw) => split_ascii_whitespace(kw)
       .map(|s| s.to_ascii_lowercase())
       .collect(),
     PropertyValue::Multiple(list) if !list.is_empty() => {
@@ -19501,7 +19511,7 @@ fn parse_text_transform(value: &PropertyValue) -> Option<TextTransform> {
         let PropertyValue::Keyword(kw) = part else {
           return None;
         };
-        out.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+        out.extend(split_ascii_whitespace(kw).map(|s| s.to_ascii_lowercase()));
       }
       out
     }
@@ -19567,7 +19577,7 @@ fn parse_text_transform(value: &PropertyValue) -> Option<TextTransform> {
 fn parse_list_style_type(value: &PropertyValue) -> Option<ListStyleType> {
   match value {
     PropertyValue::Keyword(kw) => {
-      let raw = kw.trim();
+      let raw = trim_ascii_whitespace(kw);
       if raw.is_empty() {
         return None;
       }
@@ -19682,7 +19692,7 @@ fn parse_counter_property(value: &PropertyValue, kind: CounterPropertyKind) -> O
 
 fn counter_value_to_string(value: &PropertyValue) -> Option<String> {
   match value {
-    PropertyValue::Keyword(kw) => Some(kw.trim().to_string()),
+    PropertyValue::Keyword(kw) => Some(trim_ascii_whitespace(kw).to_string()),
     PropertyValue::Multiple(parts) => {
       let mut tokens = Vec::new();
       for part in parts {
@@ -20237,6 +20247,34 @@ mod tests {
       BackgroundImage::Url(url) => assert_eq!(url, nbsp),
       other => panic!("expected URL background image, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_text_decoration_line_does_not_split_nbsp() {
+    let nbsp = "\u{00A0}";
+    let value = PropertyValue::Keyword(format!("underline{nbsp}overline"));
+    assert!(
+      parse_text_decoration_line(&value).is_none(),
+      "NBSP should not act as a CSS whitespace separator"
+    );
+
+    let value = PropertyValue::Keyword("underline overline".to_string());
+    let parsed = parse_text_decoration_line(&value).expect("expected valid decoration line");
+    assert!(parsed.contains(TextDecorationLine::UNDERLINE));
+    assert!(parsed.contains(TextDecorationLine::OVERLINE));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_transition_timing_function_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      parse_transition_timing_function(&format!("{nbsp}linear")).is_none(),
+      "NBSP should not be trimmed as CSS whitespace"
+    );
+    assert!(matches!(
+      parse_transition_timing_function(" linear"),
+      Some(TransitionTimingFunction::Linear)
+    ));
   }
 
   #[test]
