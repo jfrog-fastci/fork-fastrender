@@ -14,6 +14,7 @@ use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::tree::fragment_tree::FragmentTree;
 use selectors::context::QuirksMode;
 use std::sync::Arc;
+use url::Url;
 
 fn doc(children: Vec<DomNode>) -> DomNode {
   DomNode {
@@ -298,6 +299,113 @@ fn link_click_emits_navigation_with_resolved_url() {
       href: "https://example.com/base/foo".to_string()
     }
   );
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("a", vec![("id", "link"), ("href", " \u{00A0} ")], vec![])],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let mut link_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box],
+  ));
+
+  let link_box_id = find_box_id_for_styled_node(&box_tree, link_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      link_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(10.0, 10.0),
+    "https://example.com/base/",
+  );
+
+  let expected = Url::parse("https://example.com/base/")
+    .unwrap()
+    .join("\u{00A0}")
+    .unwrap()
+    .to_string();
+  assert_eq!(action, InteractionAction::Navigate { href: expected });
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn link_click_with_non_ascii_href_does_not_panic() {
+  let href = "\u{00E9}\u{00E9}\u{00E9}\u{00E9}\u{00E9}\u{00E9}";
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("a", vec![("id", "link"), ("href", href)], vec![])],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let mut link_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box],
+  ));
+
+  let link_box_id = find_box_id_for_styled_node(&box_tree, link_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      link_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(10.0, 10.0),
+    "https://example.com/base/",
+  );
+
+  let expected = Url::parse("https://example.com/base/")
+    .unwrap()
+    .join(href)
+    .unwrap()
+    .to_string();
+  assert_eq!(action, InteractionAction::Navigate { href: expected });
   assert_eq!(
     attr_value(&dom, "link", "data-fastr-visited").as_deref(),
     Some("true")

@@ -237,13 +237,20 @@ fn diff_flag_chain(
   changed
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  // HTML URL-ish attributes strip leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but do not
+  // treat all Unicode whitespace as ignorable. Use an explicit trim to avoid incorrectly dropping
+  // characters like NBSP (U+00A0).
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn is_anchor_with_href(node: &DomNode) -> bool {
   node
     .tag_name()
     .is_some_and(|tag| tag.eq_ignore_ascii_case("a"))
     && node
       .get_attribute_ref("href")
-      .is_some_and(|href| !href.trim().is_empty())
+      .is_some_and(|href| !trim_ascii_whitespace(href).is_empty())
 }
 
 fn is_label(node: &DomNode) -> bool {
@@ -327,11 +334,15 @@ fn is_ancestor_or_self(index: &DomIndexMut, ancestor: usize, mut node: usize) ->
 }
 
 fn resolve_url(base_url: &str, href: &str) -> Option<String> {
-  let href = href.trim();
+  let href = trim_ascii_whitespace(href);
   if href.is_empty() {
     return None;
   }
-  if href.len() >= 11 && href[..11].eq_ignore_ascii_case("javascript:") {
+  if href
+    .as_bytes()
+    .get(.."javascript:".len())
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+  {
     return None;
   }
 
@@ -372,7 +383,7 @@ fn find_label_associated_control(index: &DomIndexMut, label_id: usize) -> Option
 
   if let Some(for_attr) = label
     .get_attribute_ref("for")
-    .map(str::trim)
+    .map(trim_ascii_whitespace)
     .filter(|v| !v.is_empty())
   {
     // Spec-ish: `for` matches element IDs in the same tree.
