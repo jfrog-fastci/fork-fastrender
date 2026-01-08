@@ -3380,6 +3380,7 @@ pub struct DisplayListRenderer {
   preserve_3d_disabled: bool,
   preserve_3d_scene_depth: usize,
   projective_warp_enabled: bool,
+  projective_warp_depth: usize,
   preserve_3d_debug: bool,
   background: Rgba,
   paint_parallelism: PaintParallelism,
@@ -3425,8 +3426,19 @@ struct StackingRecord {
   manual_blend: Option<BlendMode>,
   layer_bounds: Option<Rect>,
   layer_origin: (i32, i32),
+  global_transform_3d: Transform3D,
   projective_transform: Option<Transform3D>,
+  /// When using the projective-warp path, the CSS-space rect that the affine pre-transform was
+  /// chosen to cover. Used to avoid clipping nested transforms that map content outside the
+  /// original stacking-context bounds.
+  projective_warp_bounds: Option<Rect>,
   parent_transform: Transform,
+  /// Affine transform used when painting this stacking context into its layer.
+  ///
+  /// For projective stacking contexts we may apply an affine approximation to the canvas before
+  /// warping at pop time; the warp source quad must use the same transform to avoid
+  /// double-applying or dropping the pre-warp transform.
+  warp_source_transform: Transform,
   clip: Option<TransformedClipRect>,
   culled: bool,
   pending_backdrop: Option<PendingBackdrop>,
@@ -4024,6 +4036,102 @@ impl DisplayListRenderer {
     )
   }
 
+  fn projective_warp_pre_transform(
+    &self,
+    projective: &Transform3D,
+    parent_transform: Transform,
+  ) -> Option<(Transform, Rect)> {
+    let visible_device = self.canvas.clip_bounds().unwrap_or_else(|| self.canvas.bounds());
+    if visible_device.width() <= 0.0 || visible_device.height() <= 0.0 {
+      return None;
+    }
+    let inv_parent = invert_transform(parent_transform)?;
+    let visible_parent_device = transform_rect(visible_device, &inv_parent);
+    if visible_parent_device.width() <= 0.0
+      || visible_parent_device.height() <= 0.0
+      || !visible_parent_device.x().is_finite()
+      || !visible_parent_device.y().is_finite()
+      || !visible_parent_device.width().is_finite()
+      || !visible_parent_device.height().is_finite()
+    {
+      return None;
+    }
+    if self.scale <= 0.0 || !self.scale.is_finite() {
+      return None;
+    }
+    let visible_parent_css = Rect::from_xywh(
+      visible_parent_device.x() / self.scale,
+      visible_parent_device.y() / self.scale,
+      visible_parent_device.width() / self.scale,
+      visible_parent_device.height() / self.scale,
+    );
+    if visible_parent_css.width() <= 0.0
+      || visible_parent_css.height() <= 0.0
+      || !visible_parent_css.x().is_finite()
+      || !visible_parent_css.y().is_finite()
+      || !visible_parent_css.width().is_finite()
+      || !visible_parent_css.height().is_finite()
+    {
+      return None;
+    }
+
+    let inv_h = Homography::from_transform3d_z0(projective).inverse()?;
+    let corners = [
+      Point::new(visible_parent_css.min_x(), visible_parent_css.min_y()),
+      Point::new(visible_parent_css.max_x(), visible_parent_css.min_y()),
+      Point::new(visible_parent_css.max_x(), visible_parent_css.max_y()),
+      Point::new(visible_parent_css.min_x(), visible_parent_css.max_y()),
+    ];
+
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for corner in corners {
+      let mapped = inv_h.map_point(corner)?;
+      min_x = min_x.min(mapped.x);
+      min_y = min_y.min(mapped.y);
+      max_x = max_x.max(mapped.x);
+      max_y = max_y.max(mapped.y);
+    }
+
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+      return None;
+    }
+    let local_bounds_css = Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y);
+    if local_bounds_css.width() <= 0.0
+      || local_bounds_css.height() <= 0.0
+      || !local_bounds_css.width().is_finite()
+      || !local_bounds_css.height().is_finite()
+    {
+      return None;
+    }
+
+    let local_bounds_device_w = local_bounds_css.width() * self.scale;
+    let local_bounds_device_h = local_bounds_css.height() * self.scale;
+    if local_bounds_device_w <= 0.0
+      || local_bounds_device_h <= 0.0
+      || !local_bounds_device_w.is_finite()
+      || !local_bounds_device_h.is_finite()
+    {
+      return None;
+    }
+
+    let sx = visible_parent_device.width() / local_bounds_device_w;
+    let sy = visible_parent_device.height() / local_bounds_device_h;
+    if sx <= 0.0 || sy <= 0.0 || !sx.is_finite() || !sy.is_finite() {
+      return None;
+    }
+
+    let tx = visible_parent_device.min_x() - sx * local_bounds_css.min_x() * self.scale;
+    let ty = visible_parent_device.min_y() - sy * local_bounds_css.min_y() * self.scale;
+    if !tx.is_finite() || !ty.is_finite() {
+      return None;
+    }
+
+    Some((Transform::from_row(sx, 0.0, 0.0, sy, tx, ty), local_bounds_css))
+  }
+
   #[inline]
   fn ds_point(&self, p: Point) -> Point {
     Point::new(p.x * self.scale, p.y * self.scale)
@@ -4423,6 +4531,7 @@ impl DisplayListRenderer {
       preserve_3d_disabled: runtime_flag("FASTR_PRESERVE3D_DISABLE_SCENE"),
       preserve_3d_scene_depth: 0,
       projective_warp_enabled: projective_warp_enabled(),
+      projective_warp_depth: 0,
       preserve_3d_debug: runtime_flag("FASTR_PRESERVE3D_DEBUG"),
       background,
       paint_parallelism: PaintParallelism::default(),
@@ -10435,7 +10544,22 @@ impl DisplayListRenderer {
           return Ok(());
         }
 
-        let warp_candidate = parent_perspective.multiply(&local_transform);
+        let mut warp_candidate = parent_perspective.multiply(&local_transform);
+        if self.projective_warp_depth > 0 {
+          let parent_global = self
+            .stacking_layers
+            .last()
+            .map(|record| record.global_transform_3d)
+            .unwrap_or_else(Transform3D::identity);
+          let parent_h = Homography::from_transform3d_z0(&parent_global);
+          if let Some(inv) = parent_h.inverse() {
+            let child_h = Homography::from_transform3d_z0(&painting_transform_3d);
+            let relative = inv.multiply(&child_h);
+            if relative.is_finite() {
+              warp_candidate = relative.to_transform3d_z0();
+            }
+          }
+        }
         let warp_candidate_is_projective =
           !Homography::from_transform3d_z0(&warp_candidate).is_affine();
         let projective_transform =
@@ -10488,16 +10612,30 @@ impl DisplayListRenderer {
         let mut combined_transform = parent_transform;
         let mut applied_perspective = false;
         let mut perspective_residual: Option<Transform3D> = None;
-        if projective_transform.is_none()
-          && (item.transform.is_some()
-            || (!self.projective_warp_enabled && warp_candidate_is_projective))
+        let mut projective_warp_bounds = None;
+        if projective_transform.is_some() {
+          if let Some((t, bounds)) =
+            self.projective_warp_pre_transform(&warp_candidate, parent_transform)
+          {
+            local_skia_transform = Some(t);
+            combined_transform = concat_transforms(combined_transform, t);
+            projective_warp_bounds = Some(bounds);
+          } else {
+            let (t, valid) = self.to_skia_transform_checked(&warp_candidate);
+            if valid {
+              local_skia_transform = Some(t);
+              combined_transform = concat_transforms(combined_transform, t);
+            }
+          }
+        } else if item.transform.is_some() || (!self.projective_warp_enabled && warp_candidate_is_projective)
         {
           let mut uses_warp_candidate = false;
-          let transform_for_canvas = if !self.projective_warp_enabled && warp_candidate_is_projective
-          {
+          let transform_for_canvas = if !self.projective_warp_enabled && warp_candidate_is_projective {
             uses_warp_candidate = true;
             &warp_candidate
-          } else if !parent_perspective.is_identity() && item.transform.is_some() {
+          } else if item.transform.is_some()
+            && (self.projective_warp_depth > 0 || !parent_perspective.is_identity())
+          {
             // Even when the combined transform is affine on the z=0 plane (e.g. `perspective` +
             // `translateZ`), we must apply the ancestor perspective to get the correct projected
             // scale/translation for this stacking context.
@@ -10512,13 +10650,10 @@ impl DisplayListRenderer {
             combined_transform = concat_transforms(combined_transform, t);
             applied_perspective = !self.projective_warp_enabled && warp_candidate_is_projective;
 
-            if uses_warp_candidate && !warp_candidate_is_projective && !parent_perspective.is_identity()
-            {
-              // We applied an affine projection of the ancestor perspective to the canvas. Carry
-              // forward the remaining 3D components so descendants compose transforms correctly.
-              //
-              // Without this, nested 3D transforms would apply the pending perspective *again*
-              // without accounting for the affine portion already baked into the canvas.
+            if uses_warp_candidate && !parent_perspective.is_identity() {
+              // We applied an affine approximation of a transform that still has 3D components
+              // (e.g. ancestor `perspective`). Carry forward the remaining 3D residual so
+              // descendants compose transforms correctly.
               let affine = warp_candidate
                 .to_2d()
                 .unwrap_or_else(|| warp_candidate.approximate_2d_with_validity().0);
@@ -10531,10 +10666,12 @@ impl DisplayListRenderer {
         }
 
         self.transform_stack.push(child_base_transform);
-        let perspective_base = if projective_transform.is_some() || applied_perspective {
+        let perspective_base = if applied_perspective {
           Transform3D::identity()
         } else if let Some(residual) = perspective_residual {
           residual
+        } else if projective_transform.is_some() {
+          Transform3D::identity()
         } else {
           parent_perspective
         };
@@ -10563,11 +10700,7 @@ impl DisplayListRenderer {
         } else {
           None
         };
-        let mask_bounds = if projective_transform.is_some() {
-          transform_rect(bounds, &parent_transform)
-        } else {
-          transform_rect(bounds, &combined_transform)
-        };
+        let mask_bounds = transform_rect(bounds, &combined_transform);
 
         // Tracks whether this stacking context should be treated as a Backdrop Root for sampling
         // the Backdrop Root Image (Filter Effects Level 2).
@@ -10600,11 +10733,7 @@ impl DisplayListRenderer {
           || establishes_backdrop_root_layer;
         let mut layer_bounds = needs_layer
           .then(|| {
-            let bounds_transform = if projective_transform.is_some() {
-              parent_transform
-            } else {
-              combined_transform
-            };
+            let bounds_transform = combined_transform;
             self.stacking_layer_bounds(
               bounds,
               css_bounds,
@@ -10614,6 +10743,9 @@ impl DisplayListRenderer {
             )
           })
           .flatten();
+        if projective_transform.is_some() {
+          layer_bounds = None;
+        }
 
         let mut allocation_bounds = layer_bounds;
         if needs_layer && has_backdrop {
@@ -10716,12 +10848,18 @@ impl DisplayListRenderer {
           manual_blend,
           layer_bounds,
           layer_origin,
+          global_transform_3d: painting_transform_3d,
           projective_transform,
+          projective_warp_bounds,
           parent_transform,
+          warp_source_transform: combined_transform,
           clip,
           culled: false,
           pending_backdrop,
         });
+        if projective_transform.is_some() {
+          self.projective_warp_depth = self.projective_warp_depth.saturating_add(1);
+        }
 
         if let Some(layer_transform) = layer_transform_for_canvas {
           self.canvas.set_transform(layer_transform);
@@ -10763,19 +10901,25 @@ impl DisplayListRenderer {
             bounds: Rect::ZERO,
             mask_bounds: Rect::ZERO,
             mask: None,
-            css_bounds: Rect::ZERO,
-            manual_blend: None,
-            layer_bounds: None,
+             css_bounds: Rect::ZERO,
+             manual_blend: None,
+             layer_bounds: None,
             layer_origin: (0, 0),
+            global_transform_3d: Transform3D::identity(),
             projective_transform: None,
+            projective_warp_bounds: None,
             parent_transform: Transform::identity(),
+            warp_source_transform: Transform::identity(),
             clip: None,
             culled: false,
             pending_backdrop: None,
-          });
+           });
 
         let _ = self.transform_stack.pop();
         let _ = self.perspective_stack.pop();
+        if record.projective_transform.is_some() {
+          self.projective_warp_depth = self.projective_warp_depth.saturating_sub(1);
+        }
         if record.culled {
           if self.culled_depth > 0 {
             self.culled_depth -= 1;
@@ -10952,21 +11096,22 @@ impl DisplayListRenderer {
           }
 
           if let Some(projective_transform) = record.projective_transform {
+            let base_bounds = record.projective_warp_bounds.unwrap_or(record.css_bounds);
             let warp_bounds = if record.filters.is_empty() {
-              record.css_bounds
+              base_bounds
             } else {
               let (out_l, out_t, out_r, out_b) =
                 filter_outset_with_bounds(&record.filters, 1.0, Some(record.css_bounds)).as_tuple();
               let expanded = Rect::from_xywh(
-                record.css_bounds.x() - out_l,
-                record.css_bounds.y() - out_t,
-                record.css_bounds.width() + out_l + out_r,
-                record.css_bounds.height() + out_t + out_b,
+                base_bounds.x() - out_l,
+                base_bounds.y() - out_t,
+                base_bounds.width() + out_l + out_r,
+                base_bounds.height() + out_t + out_b,
               );
               if expanded.width() > 0.0 && expanded.height() > 0.0 {
                 expanded
               } else {
-                record.css_bounds
+                base_bounds
               }
             };
 
@@ -10984,12 +11129,12 @@ impl DisplayListRenderer {
             for (i, (x, y)) in corners.iter().enumerate() {
               let sx = *x * self.scale;
               let sy = *y * self.scale;
-              let src_x = sx * record.parent_transform.sx
-                + sy * record.parent_transform.kx
-                + record.parent_transform.tx;
-              let src_y = sx * record.parent_transform.ky
-                + sy * record.parent_transform.sy
-                + record.parent_transform.ty;
+              let src_x = sx * record.warp_source_transform.sx
+                + sy * record.warp_source_transform.kx
+                + record.warp_source_transform.tx;
+              let src_y = sx * record.warp_source_transform.ky
+                + sy * record.warp_source_transform.sy
+                + record.warp_source_transform.ty;
               src_quad[i] = Point::new(src_x - origin.0 as f32, src_y - origin.1 as f32);
 
               let (tx, ty, _tz, tw) = projective_transform.transform_point(*x, *y, 0.0);
@@ -11008,7 +11153,6 @@ impl DisplayListRenderer {
               dst_quad[i] = (dst_x, dst_y);
               dst_quad_points[i] = Point::new(dst_x, dst_y);
             }
-
             let warped = if valid {
               Homography::from_quad_to_quad(src_quad, dst_quad_points)
                 .map(|homography| self.projective_warp(&layer, &homography, &dst_quad, None, true))
@@ -12569,7 +12713,7 @@ impl DisplayListRenderer {
     self.canvas.save();
     let (matrix, valid) = self.to_skia_transform_checked(&transform.transform);
     if valid {
-      let combined = self.canvas.transform().post_concat(matrix);
+      let combined = concat_transforms(self.canvas.transform(), matrix);
       self.canvas.set_transform(combined);
     }
   }
@@ -16975,6 +17119,92 @@ mod tests {
     combined.push(DisplayItem::PushStackingContext(parent.clone()));
     combined.push(DisplayItem::PushStackingContext(StackingContextItem {
       transform: Some(translate_z.multiply(&rotate_y)),
+      child_perspective: None,
+      ..parent.clone()
+    }));
+    combined.push(DisplayItem::FillRect(FillRectItem {
+      rect,
+      color: Rgba::RED,
+    }));
+    combined.push(DisplayItem::PopStackingContext);
+    combined.push(DisplayItem::PopStackingContext);
+
+    let render = |list: &DisplayList| {
+      DisplayListRenderer::new(size, size, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .render(list)
+        .unwrap()
+    };
+
+    let nested_pixmap = render(&nested);
+    let combined_pixmap = render(&combined);
+    let bg = (255, 255, 255, 255);
+    let nested_bounds = non_background_bounds(&nested_pixmap, bg).expect("nested draws pixels");
+    let combined_bounds = non_background_bounds(&combined_pixmap, bg).expect("combined draws pixels");
+
+    assert_eq!(
+      nested_bounds,
+      combined_bounds,
+      "expected nested stacking-context composition to match combined transform composition"
+    );
+  }
+
+  #[test]
+  fn perspective_projective_transform_composes_with_nested_translate_z() {
+    let size = 128u32;
+    let viewport = Rect::from_xywh(0.0, 0.0, size as f32, size as f32);
+    let perspective = Transform3D::perspective(100.0);
+    let rotate_y = Transform3D::rotate_y(30_f32.to_radians());
+    let translate_z = Transform3D::translate(0.0, 0.0, 50.0);
+
+    let rect = Rect::from_xywh(40.0, 40.0, 20.0, 20.0);
+
+    let parent = StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      is_root: false,
+      establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
+      bounds: viewport,
+      plane_rect: viewport,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: Some(perspective),
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    };
+
+    let mut nested = DisplayList::new();
+    nested.push(DisplayItem::PushStackingContext(parent.clone()));
+    nested.push(DisplayItem::PushStackingContext(StackingContextItem {
+      transform: Some(rotate_y),
+      child_perspective: None,
+      ..parent.clone()
+    }));
+    nested.push(DisplayItem::PushStackingContext(StackingContextItem {
+      transform: Some(translate_z),
+      child_perspective: None,
+      ..parent.clone()
+    }));
+    nested.push(DisplayItem::FillRect(FillRectItem {
+      rect,
+      color: Rgba::RED,
+    }));
+    nested.push(DisplayItem::PopStackingContext);
+    nested.push(DisplayItem::PopStackingContext);
+    nested.push(DisplayItem::PopStackingContext);
+
+    let mut combined = DisplayList::new();
+    combined.push(DisplayItem::PushStackingContext(parent.clone()));
+    combined.push(DisplayItem::PushStackingContext(StackingContextItem {
+      transform: Some(rotate_y.multiply(&translate_z)),
       child_perspective: None,
       ..parent.clone()
     }));

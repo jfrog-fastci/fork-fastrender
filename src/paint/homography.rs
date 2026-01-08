@@ -116,6 +116,25 @@ impl Homography {
     }
   }
 
+  /// Embeds this homography into a 3D matrix such that projecting points on the
+  /// z=0 plane via [`Transform3D::transform_point`] yields identical `(x, y, w)`
+  /// components.
+  ///
+  /// The returned transform is not intended to represent a full 3D transform; it
+  /// simply provides a convenient carrier for projective warps in code paths
+  /// that operate on [`Transform3D`].
+  pub fn to_transform3d_z0(&self) -> Transform3D {
+    let [m0, m1, m2, m3, m4, m5, m6, m7, m8] = self.m;
+    Transform3D {
+      m: [
+        m0, m3, 0.0, m6, // column 1
+        m1, m4, 0.0, m7, // column 2
+        0.0, 0.0, 1.0, 0.0, // column 3 (preserve z)
+        m2, m5, 0.0, m8, // column 4
+      ],
+    }
+  }
+
   /// Converts a 2D affine transform into a homography.
   pub fn from_affine(t: &Transform2D) -> Self {
     Self {
