@@ -349,13 +349,17 @@ fn strip_suffix_ignore_ascii_case<'a>(haystack: &'a str, suffix: &str) -> Option
   }
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn parse_background_image_value(value: &PropertyValue) -> Option<BackgroundImage> {
   match value {
     PropertyValue::Keyword(kw) if starts_with_ignore_ascii_case(kw, "image-set(") => {
       parse_image_set(kw)
     }
     PropertyValue::Url(url) => {
-      if url.trim().is_empty() {
+      if trim_ascii_whitespace(url).is_empty() {
         Some(BackgroundImage::None)
       } else {
         Some(BackgroundImage::Url(url.clone()))
@@ -859,7 +863,7 @@ fn parse_cursor(value: &PropertyValue) -> Option<(Vec<CursorImage>, CursorKeywor
         continue;
       }
       PropertyValue::Url(url) => {
-        if url.trim().is_empty() {
+        if trim_ascii_whitespace(url).is_empty() {
           idx += 1;
           continue;
         }
@@ -873,7 +877,7 @@ fn parse_cursor(value: &PropertyValue) -> Option<(Vec<CursorImage>, CursorKeywor
             idx += 2;
           }
         }
-        if !url.trim().is_empty() {
+        if !trim_ascii_whitespace(url).is_empty() {
           images.push(CursorImage {
             url: url.clone(),
             hotspot,
@@ -882,7 +886,7 @@ fn parse_cursor(value: &PropertyValue) -> Option<(Vec<CursorImage>, CursorKeywor
       }
       PropertyValue::Keyword(kw) if starts_with_ignore_ascii_case(kw, "image-set(") => {
         if let Some(BackgroundImage::Url(url)) = parse_image_set(kw) {
-          if !url.trim().is_empty() {
+          if !trim_ascii_whitespace(&url).is_empty() {
             images.push(CursorImage { url, hotspot: None });
           }
         }
@@ -16720,14 +16724,14 @@ fn parse_will_change_from_str(text: &str) -> Option<WillChange> {
 fn parse_filter_list(value: &PropertyValue) -> Option<Vec<FilterFunction>> {
   match value {
     PropertyValue::Url(url) => {
-      if url.trim().is_empty() {
+      if trim_ascii_whitespace(url).is_empty() {
         return None;
       }
       return Some(vec![FilterFunction::Url(url.clone())]);
     }
     PropertyValue::Multiple(values) if values.len() == 1 => {
       if let PropertyValue::Url(url) = &values[0] {
-        if url.trim().is_empty() {
+        if trim_ascii_whitespace(url).is_empty() {
           return None;
         }
         return Some(vec![FilterFunction::Url(url.clone())]);
@@ -19637,7 +19641,7 @@ fn parse_list_style_image(value: &PropertyValue) -> Option<ListStyleImage> {
     PropertyValue::Keyword(kw) if starts_with_ignore_ascii_case(kw, "image-set(") => {
       parse_image_set(kw).and_then(|img| match img {
         BackgroundImage::Url(url) => {
-          if url.trim().is_empty() {
+          if trim_ascii_whitespace(&url).is_empty() {
             Some(ListStyleImage::None)
           } else {
             Some(ListStyleImage::Url(url))
@@ -19648,7 +19652,7 @@ fn parse_list_style_image(value: &PropertyValue) -> Option<ListStyleImage> {
       })
     }
     PropertyValue::Url(url) => {
-      if url.trim().is_empty() {
+      if trim_ascii_whitespace(url).is_empty() {
         Some(ListStyleImage::None)
       } else {
         Some(ListStyleImage::Url(url.clone()))
@@ -20222,6 +20226,17 @@ mod tests {
     let (h, v) = extract_length_pair(&num_zero).expect("number zero should be accepted");
     assert_eq!(h, Length::px(0.0));
     assert_eq!(v, Length::px(0.0));
+  }
+
+  #[test]
+  fn background_image_url_does_not_treat_nbsp_as_empty() {
+    let nbsp = "\u{00A0}";
+    let image = parse_background_image_value(&PropertyValue::Url(nbsp.to_string()))
+      .expect("expected background image");
+    match image {
+      BackgroundImage::Url(url) => assert_eq!(url, nbsp),
+      other => panic!("expected URL background image, got {other:?}"),
+    }
   }
 
   #[test]
