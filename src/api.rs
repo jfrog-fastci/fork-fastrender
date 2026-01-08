@@ -6878,14 +6878,14 @@ impl FastRender {
             let mut sheet =
               parse_stylesheet_with_media(&css, media_ctx, Some(&mut local_media_cache))?;
             // Inline stylesheets don't have their own URL; use the owning document URL as the
-            // referrer source for CORS-mode CSS subresource fetches (e.g. web fonts). This must
-            // remain distinct from the base URL used for resolving relative `url(...)` references,
-            // which can be overridden via `<base href>`.
-            let font_face_referrer_url = resource_context
+            // referrer source for CSS subresource fetches (e.g. `@import` and web fonts). This
+            // must remain distinct from the base URL used for resolving relative `url(...)`
+            // references, which can be overridden via `<base href>`.
+            let stylesheet_referrer_url = resource_context
               .as_ref()
               .and_then(|ctx| ctx.document_url.as_deref())
               .or_else(|| document_base_url.as_deref());
-            if let Some(url) = font_face_referrer_url {
+            if let Some(url) = stylesheet_referrer_url {
               sheet.set_font_face_source_stylesheet_url(url);
             }
             let resolved = if sheet.contains_imports() {
@@ -6901,9 +6901,10 @@ impl FastRender {
                 stylesheet_fetch_counter.clone(),
                 referrer_policy,
               );
-              sheet.resolve_imports_owned_with_cache(
+              sheet.resolve_imports_owned_with_cache_with_importer_url(
                 &loader,
                 document_base_url.as_deref(),
+                stylesheet_referrer_url,
                 media_ctx,
                 Some(&mut local_media_cache),
               )?
@@ -7245,14 +7246,15 @@ impl FastRender {
 
           let mut sheet =
             parse_stylesheet_with_media(&inline.css, media_ctx, Some(media_query_cache))?;
-          let font_face_referrer_url = self.document_url().or(self.base_url.as_deref());
-          if let Some(url) = font_face_referrer_url {
+          let stylesheet_referrer_url = self.document_url().or(self.base_url.as_deref());
+          if let Some(url) = stylesheet_referrer_url {
             sheet.set_font_face_source_stylesheet_url(url);
           }
           if sheet.contains_imports() {
-            let resolved = sheet.resolve_imports_owned_with_cache(
+            let resolved = sheet.resolve_imports_owned_with_cache_with_importer_url(
               &inline_loader,
               self.base_url.as_deref(),
+              stylesheet_referrer_url,
               media_ctx,
               Some(media_query_cache),
             )?;

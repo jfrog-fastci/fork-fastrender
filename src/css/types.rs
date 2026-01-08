@@ -754,6 +754,29 @@ impl StyleSheet {
     media_ctx: &MediaContext,
     cache: Option<&mut MediaQueryCache>,
   ) -> std::result::Result<Self, RenderError> {
+    self.resolve_imports_owned_with_cache_with_importer_url(
+      loader,
+      base_url,
+      base_url,
+      media_ctx,
+      cache,
+    )
+  }
+
+  /// Resolve `@import` rules while supplying a distinct importer URL for referrer purposes.
+  ///
+  /// `base_url` controls how relative `@import` URLs are resolved, while `importer_url` is passed
+  /// to [`CssImportLoader::load_with_importer`] so network fetches can construct the correct
+  /// `Referer` header. This distinction matters for inline stylesheets in HTML: `<base href>`
+  /// affects resolution of relative URLs, but the request referrer should remain the document URL.
+  pub(crate) fn resolve_imports_owned_with_cache_with_importer_url<L: CssImportLoader + ?Sized>(
+    self,
+    loader: &L,
+    base_url: Option<&str>,
+    importer_url: Option<&str>,
+    media_ctx: &MediaContext,
+    cache: Option<&mut MediaQueryCache>,
+  ) -> std::result::Result<Self, RenderError> {
     check_active(RenderStage::Css)?;
     let mut resolved = Vec::new();
     let mut state = ImportResolveState::default();
@@ -765,6 +788,7 @@ impl StyleSheet {
       self.rules,
       loader,
       base_url,
+      importer_url,
       media_ctx,
       cache,
       &mut state,
@@ -3585,6 +3609,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
   rules: Vec<CssRule>,
   loader: &L,
   base_url: Option<&str>,
+  importer_url: Option<&str>,
   media_ctx: &MediaContext,
   cache: Option<&mut MediaQueryCache>,
   state: &mut ImportResolveState,
@@ -3638,6 +3663,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           rules,
           loader,
           base_url,
+          importer_url,
           media_ctx,
           cache.as_deref_mut(),
           state,
@@ -3670,6 +3696,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           nested_rules,
           loader,
           base_url,
+          importer_url,
           media_ctx,
           cache.as_deref_mut(),
           state,
@@ -3699,6 +3726,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           rules,
           loader,
           base_url,
+          importer_url,
           media_ctx,
           cache.as_deref_mut(),
           state,
@@ -3719,6 +3747,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           rules,
           loader,
           base_url,
+          importer_url,
           media_ctx,
           cache.as_deref_mut(),
           state,
@@ -3738,6 +3767,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           rules,
           loader,
           base_url,
+          importer_url,
           media_ctx,
           cache.as_deref_mut(),
           state,
@@ -3763,6 +3793,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           rules,
           loader,
           base_url,
+          importer_url,
           media_ctx,
           cache.as_deref_mut(),
           state,
@@ -3784,6 +3815,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           rules,
           loader,
           base_url,
+          importer_url,
           media_ctx,
           cache.as_deref_mut(),
           state,
@@ -3858,7 +3890,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           state.stack.push(canonical_href.clone());
 
           let resolved_children =
-            match loader.load_with_importer(&canonical_href, base_url) {
+            match loader.load_with_importer(&canonical_href, importer_url) {
               Ok(fetched) => {
                 let sheet_url = fetched
                   .final_url
@@ -3929,6 +3961,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
                       resolve_rules_owned(
                         rules,
                         loader,
+                        Some(&canonical_sheet_url),
                         Some(&canonical_sheet_url),
                         media_ctx,
                         cache.as_deref_mut(),

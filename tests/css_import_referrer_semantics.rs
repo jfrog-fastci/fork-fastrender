@@ -1,4 +1,4 @@
-use fastrender::api::{FastRender, FastRenderConfig, RenderDiagnostics, ResourceContext};
+use fastrender::api::{FastRender, FastRenderConfig, RenderDiagnostics, RenderOptions, ResourceContext};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::error::{Error, Result};
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
@@ -178,4 +178,38 @@ fn css_imports_use_stylesheet_final_url_for_base_and_referrer() {
     requests.iter().all(|r| r.url != b_wrong),
     "expected b.css to resolve against final_url, got requests: {requests:?}"
   );
+}
+
+#[test]
+fn css_import_from_inline_style_uses_document_referrer_even_with_base_href() {
+  let document_url = "https://example.test/page.html";
+  let base_href = "https://cdn.example.test/assets/";
+  let imported_url = "https://cdn.example.test/assets/import.css";
+
+  let fetcher = Arc::new(RecordingFetcher::default().with_css(
+    imported_url,
+    "body { color: rgb(1, 2, 3); }",
+    None,
+  ));
+
+  let mut renderer = renderer_for(fetcher.clone());
+  renderer
+    .render_html_with_stylesheets(
+      &format!(
+        r#"<!doctype html><html><head>
+        <base href="{base_href}">
+        <style>@import "import.css";</style>
+      </head><body>Hi</body></html>"#
+      ),
+      document_url,
+      RenderOptions::new().with_viewport(16, 16),
+    )
+    .expect("render");
+
+  let requests = fetcher.requests();
+  let import_request = requests
+    .iter()
+    .find(|r| r.url == imported_url && r.destination == FetchDestination::Style)
+    .expect("request for imported stylesheet");
+  assert_eq!(import_request.referrer_url.as_deref(), Some(document_url));
 }
