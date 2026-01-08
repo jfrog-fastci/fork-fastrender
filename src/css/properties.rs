@@ -2373,6 +2373,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     return true;
   }
 
+  #[deny(unreachable_patterns)]
   match property {
     "font-size" => {
       // Real-world pages (e.g. the `nbcnews.com` pageset fixture) gate fluid typography behind
