@@ -1833,6 +1833,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "border-image-outset"
       | "border-image-repeat"
       | "mask"
+      | "mask-border"
       | "mask-image"
       | "mask-position"
       | "mask-size"

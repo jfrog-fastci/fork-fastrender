@@ -394,7 +394,7 @@ fn mask_border_url_triggers_backdrop_root_even_when_unresolved() {
         margin: 20px;
         /* The mask border cannot be resolved, but per filter-effects-2 the property presence still
            establishes a Backdrop Root boundary. */
-        mask-border: url(#missing);
+        mask-border: url(#missing) 30;
       }
       #overlay {
         width: 40px;
