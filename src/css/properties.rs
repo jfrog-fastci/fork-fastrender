@@ -592,6 +592,12 @@ fn is_known_page_property(property: &str) -> bool {
 /// Safety: Only aliases prefixes where the semantics match the unprefixed property as implemented
 /// by the engine. Unknown prefixed properties remain unsupported and will continue to be ignored.
 pub(crate) fn vendor_prefixed_property_alias(property: &str) -> Option<&'static str> {
+  // Safari/legacy WebKit expose `mask-border` as `-webkit-mask-box-image`. Treat it as an alias so
+  // common real-world stylesheets still establish the correct stacking contexts / backdrop roots.
+  if property == "-webkit-mask-box-image" {
+    return Some("mask-border");
+  }
+
   let stripped = strip_vendor_prefix(property)?;
   known_style_property_set().get(stripped).copied()
 }

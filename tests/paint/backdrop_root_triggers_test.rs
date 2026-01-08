@@ -420,6 +420,67 @@ fn mask_border_url_triggers_backdrop_root_even_when_unresolved() {
 }
 
 #[test]
+fn webkit_mask_box_image_url_triggers_backdrop_root_even_when_unresolved() {
+  let html_without_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+  let pixmap = render(html_without_backdrop_root, 64, 64);
+  assert_eq!(
+    pixel(&pixmap, 15, 15),
+    (0, 255, 255, 255),
+    "sanity: without a backdrop-root boundary, the overlay should invert the body background"
+  );
+
+  let html_with_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        /* Legacy alias for `mask-border` used by WebKit/Safari. Even if the URL cannot be resolved,
+           the property presence still establishes a Backdrop Root boundary. */
+        -webkit-mask-box-image: url(#missing) 30;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html_with_backdrop_root, 64, 64);
+
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 15), (255, 0, 0, 255));
+}
+
+#[test]
 fn mask_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
