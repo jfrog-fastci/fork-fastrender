@@ -193,6 +193,7 @@ pub mod tree;
 pub mod css;
 pub mod debug;
 pub mod dom;
+pub mod interaction;
 pub(crate) mod fallible_vec_writer;
 pub mod html;
 pub mod image_compare;
