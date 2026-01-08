@@ -3753,6 +3753,9 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   {
     return Some(IntrinsicSizeKeyword::FitContent { limit: None });
   }
+  if trimmed.eq_ignore_ascii_case("stretch") {
+    return Some(IntrinsicSizeKeyword::FillAvailable);
+  }
   if trimmed.eq_ignore_ascii_case("fill-available")
     || trimmed.eq_ignore_ascii_case("-webkit-fill-available")
     || trimmed.eq_ignore_ascii_case("-moz-available")
