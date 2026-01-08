@@ -579,6 +579,12 @@ fn collect_subgrid_virtual_items_recursive<
   // Convert placements from subgrid coordinates to ancestor coordinates, clamping in any axis
   // where the subgrid chain is broken.
   for (index, mut sub_item) in subgrid_items.into_iter().enumerate() {
+    // CSS Grid subgrids with different gaps apply an "extra layer of margin" to their items.
+    // The spec says this extra margin accumulates through multiple levels of subgrids, so when we
+    // synthesise virtual items for descendants we need to include any extra margin already applied
+    // to the subgrid container item.
+    sub_item.extra_margin = sub_item.extra_margin + container_item.extra_margin;
+
     // Recurse into nested subgrids before we mutate the placement coordinates into ancestor space.
     if depth + 1 < MAX_SUBGRID_VIRTUAL_ITEM_DEPTH {
       let child_style_owned = tree.clone_grid_container_style(sub_item.node);

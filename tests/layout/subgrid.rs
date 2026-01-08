@@ -633,6 +633,99 @@ fn subgrid_row_gap_can_differ_from_parent_gap() {
 }
 
 #[test]
+fn nested_subgrid_gap_difference_accumulates() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(100.0)),
+    GridTrack::Auto,
+    GridTrack::Auto,
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Auto, GridTrack::Auto];
+  parent_style.grid_column_gap = Length::px(50.0);
+  parent_style.width = Some(Length::px(500.0));
+  parent_style.height = Some(Length::px(50.0));
+  parent_style.align_items = AlignItems::Stretch;
+  parent_style.justify_items = AlignItems::Stretch;
+
+  // Outer subgrid spans all columns and requests a smaller gap than the parent.
+  let mut outer_style = ComputedStyle::default();
+  outer_style.display = Display::Grid;
+  outer_style.grid_column_subgrid = true;
+  outer_style.grid_column_start = 1;
+  outer_style.grid_column_end = 4;
+  outer_style.grid_row_start = 1;
+  outer_style.grid_row_end = 2;
+  outer_style.grid_column_gap = Length::px(0.0);
+  outer_style.grid_column_gap_is_normal = false;
+
+  // Inner subgrid sits away from the outer subgrid's inline-start edge, so it receives the
+  // half-difference margin adjustment. That adjustment must propagate to its descendant virtual
+  // items when they contribute to the parent track sizing algorithm.
+  let mut inner_style = ComputedStyle::default();
+  inner_style.display = Display::Grid;
+  inner_style.grid_column_subgrid = true;
+  inner_style.grid_column_start = 2;
+  inner_style.grid_column_end = 4;
+  inner_style.grid_row_start = 1;
+  inner_style.grid_row_end = 2;
+  // Ensure the inner subgrid element itself doesn't dominate track sizing; we're asserting about
+  // descendant virtual items.
+  inner_style.width = Some(Length::px(0.0));
+  inner_style.justify_self = Some(AlignItems::Start);
+
+  let mut leaf_style = ComputedStyle::default();
+  leaf_style.display = Display::Block;
+  leaf_style.width = Some(Length::px(100.0));
+  leaf_style.height = Some(Length::px(10.0));
+  leaf_style.grid_column_start = 1;
+  leaf_style.grid_column_end = 2;
+
+  let leaf = BoxNode::new_block(Arc::new(leaf_style), FormattingContextType::Block, vec![]);
+  let inner_subgrid = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Grid,
+    vec![leaf],
+  );
+  let outer_subgrid = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Grid,
+    vec![inner_subgrid],
+  );
+
+  // Place a probe item in the second row/third column so we can observe the computed column track
+  // offsets. If the leaf item's accumulated -25px margin is ignored, column 2 will be sized to
+  // 100px and the probe will start at x=300. With the accumulated margin it starts at x=275.
+  let mut probe_style = ComputedStyle::default();
+  probe_style.display = Display::Block;
+  probe_style.width = Some(Length::px(1.0));
+  probe_style.height = Some(Length::px(1.0));
+  probe_style.grid_column_start = 3;
+  probe_style.grid_column_end = 4;
+  probe_style.grid_row_start = 2;
+  probe_style.grid_row_end = 3;
+  let probe = BoxNode::new_block(Arc::new(probe_style), FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![outer_subgrid, probe],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(500.0, 50.0))
+    .expect("layout succeeds");
+
+  let probe_fragment = &fragment.children[1];
+  assert_approx(
+    probe_fragment.bounds.x(),
+    275.0,
+    "nested subgrid margins accumulate into virtual item contributions",
+  );
+}
+
+#[test]
 fn column_subgrid_with_mismatched_writing_mode_inherits_gaps() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
