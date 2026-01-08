@@ -334,6 +334,52 @@ fn view_timeline_progress_respects_entry_and_exit() {
 }
 
 #[test]
+fn view_timeline_progress_entry_keyword_uses_contain_boundary_for_small_targets() {
+  let timeline = ViewTimeline::default();
+  let range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(100.0)),
+  };
+
+  let target_start = 150.0;
+  let target_end = 200.0;
+  let view_size = 100.0;
+
+  let progress0 = view_timeline_progress(&timeline, target_start, target_end, view_size, 50.0, &range)
+    .unwrap();
+  let progress_mid =
+    view_timeline_progress(&timeline, target_start, target_end, view_size, 75.0, &range).unwrap();
+  let progress_end =
+    view_timeline_progress(&timeline, target_start, target_end, view_size, 100.0, &range).unwrap();
+
+  assert!((progress0 - 0.0).abs() < 1e-6, "progress0={progress0}");
+  assert!(
+    (progress_mid - 0.5).abs() < 1e-6,
+    "progress_mid={progress_mid}"
+  );
+  assert!((progress_end - 1.0).abs() < 1e-6, "progress_end={progress_end}");
+}
+
+#[test]
+fn view_timeline_progress_exit_100_percent_maps_to_cover_end() {
+  let timeline = ViewTimeline::default();
+  let range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::Exit, Length::percent(100.0)),
+  };
+
+  let target_start = 150.0;
+  let target_end = 200.0;
+  let view_size = 100.0;
+  let exit_edge = 200.0;
+
+  let progress_end =
+    view_timeline_progress(&timeline, target_start, target_end, view_size, exit_edge, &range)
+      .unwrap();
+  assert!((progress_end - 1.0).abs() < 1e-6, "progress_end={progress_end}");
+}
+
+#[test]
 fn view_timeline_progress_supports_entry_length_offsets() {
   let timeline = ViewTimeline::default();
   let range = AnimationRange {

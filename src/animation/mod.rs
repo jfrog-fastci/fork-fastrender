@@ -3370,8 +3370,8 @@ pub fn view_timeline_progress(
   let inset_end = resolve_inset_value(inset_end_len)?;
 
   let entry_edge = target_start - view_size + inset_end;
-  let contain_edge = target_end - view_size + inset_end;
   let cover_edge = target_start - inset_start;
+  let contain_edge = target_end - view_size + inset_end;
   let exit_edge = target_end - inset_start;
   let start_base = entry_edge;
   let end_base = exit_edge;
