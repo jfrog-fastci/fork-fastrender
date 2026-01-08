@@ -242,3 +242,103 @@ fn inline_table_fixed_layout_with_specified_width_stays_fixed_rtl() {
     "expected fixed layout to keep the first column near 100px in RTL (got {long_width:.2})"
   );
 }
+
+#[test]
+fn block_table_fixed_layout_width_auto_uses_auto_algorithm() {
+  let long = "W".repeat(40);
+  let html = format!(
+    r#"
+      <html>
+        <head>
+          <style>
+            body {{ margin: 0; }}
+            .container {{ width: 200px; }}
+            table {{ table-layout: fixed; border-collapse: separate; border-spacing: 0; }}
+            td {{ padding: 0; border: 0; white-space: nowrap; }}
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <table>
+              <tr><td>A</td><td>B</td></tr>
+              <tr><td>{}</td><td>C</td></tr>
+            </table>
+          </div>
+        </body>
+      </html>
+    "#,
+    long
+  );
+
+  let cells = layout_cells(&html);
+  let a = cells.get("A").expect("A cell present");
+  let b = cells.get("B").expect("B cell present");
+  let long_width = cells.get(&long).expect("long word cell present").width();
+  let b_width = b.width();
+
+  assert!(
+    a.x() < b.x(),
+    "expected LTR column order A (left) < B, got A.x={:.2} B.x={:.2}",
+    a.x(),
+    b.x()
+  );
+
+  assert!(
+    long_width > 200.0,
+    "expected long-word column to contribute to block table min width (got {long_width:.2})"
+  );
+  assert!(
+    long_width > b_width * 2.0,
+    "expected first column to be substantially wider than the second (got long={long_width:.2}, B={b_width:.2})"
+  );
+}
+
+#[test]
+fn block_table_fixed_layout_width_auto_uses_auto_algorithm_rtl() {
+  let long = "W".repeat(40);
+  let html = format!(
+    r#"
+      <html>
+        <head>
+          <style>
+            body {{ margin: 0; }}
+            .container {{ width: 200px; }}
+            table {{ table-layout: fixed; border-collapse: separate; border-spacing: 0; direction: rtl; }}
+            td {{ padding: 0; border: 0; white-space: nowrap; }}
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <table>
+              <tr><td>A</td><td>B</td></tr>
+              <tr><td>{}</td><td>C</td></tr>
+            </table>
+          </div>
+        </body>
+      </html>
+    "#,
+    long
+  );
+
+  let cells = layout_cells(&html);
+  let a = cells.get("A").expect("A cell present");
+  let b = cells.get("B").expect("B cell present");
+  let long_width = cells.get(&long).expect("long word cell present").width();
+  let b_width = b.width();
+
+  assert!(
+    a.x() > b.x(),
+    "expected RTL column order A (right) > B, got A.x={:.2} B.x={:.2}",
+    a.x(),
+    b.x()
+  );
+
+  assert!(
+    long_width > 200.0,
+    "expected long-word column to contribute to block table min width in RTL (got {long_width:.2})"
+  );
+  assert!(
+    long_width > b_width * 2.0,
+    "expected first column to be substantially wider than the second in RTL (got long={long_width:.2}, B={b_width:.2})"
+  );
+}
