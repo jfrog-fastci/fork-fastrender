@@ -215,6 +215,9 @@ pub use crate::layout::pagination::PageStacking;
 pub use crate::text::font_db::FontCacheConfig;
 pub use tiny_skia::Pixmap;
 
+mod browser_document;
+pub use browser_document::BrowserDocument;
+
 #[derive(Default, Debug, Clone)]
 struct ReplacedIntrinsicProfileState {
   start: Option<Instant>,

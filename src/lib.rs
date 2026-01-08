@@ -222,6 +222,7 @@ pub mod ui;
 // Main entry point
 pub use api::CascadeDiagnostics;
 pub use api::DiagnosticsLevel;
+pub use api::BrowserDocument;
 pub use api::FastRender;
 pub use api::FastRenderBuilder;
 pub use api::FastRenderConfig;
