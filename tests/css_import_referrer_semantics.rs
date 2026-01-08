@@ -33,6 +33,14 @@ impl RecordingFetcher {
     self
   }
 
+  fn clear_requests(&self) {
+    self
+      .requests
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clear();
+  }
+
   fn requests(&self) -> Vec<RecordedRequest> {
     self
       .requests
@@ -205,6 +213,50 @@ fn css_import_from_inline_style_uses_document_referrer_even_with_base_href() {
       RenderOptions::new().with_viewport(16, 16),
     )
     .expect("render");
+
+  let requests = fetcher.requests();
+  let import_request = requests
+    .iter()
+    .find(|r| r.url == imported_url && r.destination == FetchDestination::Style)
+    .expect("request for imported stylesheet");
+  assert_eq!(import_request.referrer_url.as_deref(), Some(document_url));
+}
+
+#[test]
+fn collect_document_stylesheet_inline_import_uses_document_referrer_even_with_base_href() {
+  let document_url = "https://example.test/page.html";
+  let base_href = "https://cdn.example.test/assets/";
+  let imported_url = "https://cdn.example.test/assets/import.css";
+
+  let fetcher = Arc::new(RecordingFetcher::default().with_css(
+    imported_url,
+    "body { color: rgb(1, 2, 3); }",
+    None,
+  ));
+
+  let mut renderer = renderer_for(fetcher.clone());
+
+  // Ensure `FastRender::document_url` is populated (it's distinct from the base URL, which may be
+  // overridden via `<base href>`).
+  renderer
+    .render_html_with_stylesheets(
+      "<!doctype html><html><body>init</body></html>",
+      document_url,
+      RenderOptions::new().with_viewport(1, 1),
+    )
+    .expect("render init document");
+  fetcher.clear_requests();
+
+  renderer.set_base_url(base_href);
+
+  let dom = renderer
+    .parse_html(r#"<!doctype html><html><head><style>@import "import.css";</style></head><body></body></html>"#)
+    .expect("parse HTML");
+  let media_ctx = fastrender::style::media::MediaContext::screen(16.0, 16.0);
+  let mut media_query_cache = fastrender::style::media::MediaQueryCache::default();
+  renderer
+    .collect_document_stylesheet(&dom, &media_ctx, &mut media_query_cache, None)
+    .expect("collect stylesheet");
 
   let requests = fetcher.requests();
   let import_request = requests
