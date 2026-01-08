@@ -106,6 +106,14 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use width::compute_block_width;
 
+fn is_ascii_whitespace_char(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_char)
+}
+
 #[derive(Clone)]
 struct PositionedCandidate {
   node: BoxNode,
@@ -2498,7 +2506,7 @@ impl BlockFormattingContext {
 
     let is_ignorable_whitespace = |child: &BoxNode| -> bool {
       matches!(&child.box_type, BoxType::Text(text_box)
-        if text_box.text.trim().is_empty()
+        if trim_ascii_whitespace(&text_box.text).is_empty()
           && !matches!(
             child.style.white_space,
             crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
@@ -3004,7 +3012,7 @@ impl BlockFormattingContext {
       // mixed block content or empty lines.
       let has_block = buffer.iter().any(|b| b.is_block_level());
       let all_whitespace = buffer.iter().all(|b| match &b.box_type {
-        BoxType::Text(text) => text.text.trim().is_empty(),
+        BoxType::Text(text) => trim_ascii_whitespace(&text.text).is_empty(),
         _ => false,
       });
       if has_block || all_whitespace {
@@ -3181,7 +3189,7 @@ impl BlockFormattingContext {
       }
       // Skip collapsible whitespace text in block formatting contexts (CSS 2.1 §16.6).
       if let BoxType::Text(text_box) = &child.box_type {
-        if text_box.text.trim().is_empty()
+        if trim_ascii_whitespace(&text_box.text).is_empty()
           && !matches!(
             child.style.white_space,
             crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
@@ -7823,6 +7831,15 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.display = Display::Block;
     Arc::new(style)
+  }
+
+  #[test]
+  fn non_ascii_whitespace_block_trim_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      !trim_ascii_whitespace(nbsp).is_empty(),
+      "NBSP must not be treated as collapsible ASCII whitespace"
+    );
   }
 
   fn block_style_with_height(height: f32) -> Arc<ComputedStyle> {

@@ -100,6 +100,10 @@ impl Drop for FixupCounterGuard {
 const TABLE_FIXUP_DEADLINE_STRIDE: usize = 256;
 
 impl TableStructureFixer {
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+  }
+
   fn is_passthrough_child(box_node: &BoxNode) -> bool {
     box_node.style.running_position.is_some()
       || matches!(
@@ -182,7 +186,7 @@ impl TableStructureFixer {
 
   fn is_ignorable_table_whitespace(box_node: &BoxNode) -> bool {
     match &box_node.box_type {
-      BoxType::Text(text) => text.text.trim().is_empty(),
+      BoxType::Text(text) => Self::trim_ascii_whitespace(&text.text).is_empty(),
       // Anonymous block/inline wrappers can be introduced by block/inline fixups when a table
       // element mixes table internals with pretty-printed whitespace text nodes. If the wrapper
       // contains only whitespace, treat it as ignorable so we don't generate anonymous table cells.
@@ -1129,6 +1133,16 @@ mod tests {
   // Helper to create a default style
   fn default_style() -> Arc<ComputedStyle> {
     Arc::new(ComputedStyle::default())
+  }
+
+  #[test]
+  fn non_ascii_whitespace_table_fixup_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let text = BoxNode::new_text(default_style(), nbsp.to_string());
+    assert!(
+      !TableStructureFixer::is_ignorable_table_whitespace(&text),
+      "NBSP must not be treated as ignorable table whitespace"
+    );
   }
 
   // Helper to create a table-row style

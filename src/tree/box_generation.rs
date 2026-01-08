@@ -93,6 +93,10 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn trim_ascii_whitespace_end(value: &str) -> &str {
+  value.trim_end_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 // ============================================================================
 // StyledNode-based Box Generation (for real DOM/style pipeline)
 // ============================================================================
@@ -752,7 +756,7 @@ fn composed_children<'a>(
 }
 
 fn normalize_mime_type(value: &str) -> Option<String> {
-  let base = value.split(';').next().unwrap_or("").trim();
+  let base = trim_ascii_whitespace(value.split(';').next().unwrap_or(""));
   if base.is_empty() {
     None
   } else {
@@ -1082,14 +1086,14 @@ pub fn serialize_styled_subtree_plain(styled: &StyledNode) -> String {
 }
 
 fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
-  if extra.trim().is_empty() {
+  if trim_ascii_whitespace(extra).is_empty() {
     return;
   }
   if let Some((_, value)) = attrs
     .iter_mut()
     .find(|(name, _)| name.eq_ignore_ascii_case("style"))
   {
-    if !value.trim_end().ends_with(';') && !value.trim().is_empty() {
+    if !trim_ascii_whitespace_end(value).ends_with(';') && !trim_ascii_whitespace(value).is_empty() {
       value.push(';');
     }
     value.push_str(extra);
@@ -2310,8 +2314,9 @@ fn serialize_svg_subtree(
       }
       if text_content.is_none() {
         if let Some(text) = child.node.text_content() {
-          if !text.trim().is_empty() {
-            text_content = Some(text.trim().to_string());
+          let trimmed = trim_ascii_whitespace(text);
+          if !trimmed.is_empty() {
+            text_content = Some(trimmed.to_string());
           }
         }
       }
@@ -3055,7 +3060,7 @@ fn generate_boxes_for_styled_into(
                         let next = composed_children.get(idx);
                         // Skip over whitespace/text nodes between the overlay and drawer.
                         if let crate::dom::DomNodeType::Text { content } = &next.node.node_type {
-                          if content.trim().is_empty() {
+                          if trim_ascii_whitespace(content).is_empty() {
                             idx += 1;
                             continue;
                           }
@@ -4251,7 +4256,7 @@ fn input_label(node: &DomNode, input_type: &str) -> String {
 
 fn button_label(node: &StyledNode) -> String {
   let text = collect_text_content(node);
-  let trimmed = text.trim();
+  let trimmed = trim_ascii_whitespace(&text);
   if !trimmed.is_empty() {
     return trimmed.to_string();
   }
@@ -4509,7 +4514,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     let placeholder = styled
       .node
       .get_attribute_ref("placeholder")
-      .map(|p| p.trim())
+      .map(trim_ascii_whitespace)
       .filter(|p| !p.is_empty())
       .map(|p| p.to_string());
     Some(FormControl {
@@ -4609,12 +4614,7 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
   // FastRender supports rendering `<object>` external resources when they are images, or when the
   // resource is an HTML document that can be rendered as an embedded iframe.
   fn is_supported_object_mime(mime: &str) -> bool {
-    let normalized = mime
-      .split(';')
-      .next()
-      .unwrap_or("")
-      .trim()
-      .to_ascii_lowercase();
+    let normalized = trim_ascii_whitespace(mime.split(';').next().unwrap_or("")).to_ascii_lowercase();
     if normalized.is_empty() {
       return false;
     }
@@ -4640,7 +4640,7 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
       Some(split) => split,
       None => return Some(false),
     };
-    let mediatype = metadata.split(';').next().unwrap_or("").trim();
+    let mediatype = trim_ascii_whitespace(metadata.split(';').next().unwrap_or(""));
     let mediatype = if mediatype.is_empty() {
       "text/plain"
     } else {
@@ -4715,7 +4715,7 @@ fn media_src_from_source_children(styled: &StyledNode, kind: MediaElementKind) -
     // Prefer sources whose type hints match the parent element. This preserves some semantics from
     // HTML media selection without needing full codec/`media` evaluation.
     if let Some(type_attr) = child.node.get_attribute_ref("type") {
-      let type_trimmed = type_attr.trim();
+      let type_trimmed = trim_ascii_whitespace(type_attr);
       if type_trimmed
         .get(..preferred_prefix.len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(preferred_prefix))
@@ -4768,7 +4768,7 @@ fn create_replaced_box_from_styled(
     let crossorigin = match styled.node.get_attribute_ref("crossorigin") {
       None => CrossOriginAttribute::None,
       Some(value) => {
-        let value = value.trim();
+        let value = trim_ascii_whitespace(value);
         if value.eq_ignore_ascii_case("use-credentials") {
           CrossOriginAttribute::UseCredentials
         } else {
@@ -5383,6 +5383,41 @@ mod tests {
   }
 
   #[test]
+  fn non_ascii_whitespace_img_crossorigin_does_not_trim_nbsp() {
+    fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
+      match &mut node.node.node_type {
+        DomNodeType::Element { attributes, .. } => {
+          attributes.push((name.to_string(), value.to_string()));
+        }
+        _ => panic!("expected element node"),
+      }
+    }
+
+    let nbsp = "\u{00A0}";
+    let crossorigin = format!("{nbsp}use-credentials");
+
+    let mut img = styled_element("img");
+    img.node_id = 1;
+    set_attr(&mut img, "src", "/a.png");
+    set_attr(&mut img, "crossorigin", &crossorigin);
+
+    let mut root = styled_element("div");
+    root.children = vec![img];
+
+    let tree = generate_box_tree(&root);
+    let node = &tree.root.children[0];
+    match &node.box_type {
+      BoxType::Replaced(replaced) => match &replaced.replaced_type {
+        ReplacedType::Image { crossorigin, .. } => {
+          assert_eq!(*crossorigin, CrossOriginAttribute::Anonymous)
+        }
+        other => panic!("expected image replaced type, got {other:?}"),
+      },
+      other => panic!("expected replaced box, got {other:?}"),
+    }
+  }
+
+  #[test]
   fn box_generation_reuses_computed_style_arcs() {
     let root_style = Arc::new(ComputedStyle::default());
     let text_style = Arc::new(ComputedStyle::default());
@@ -5804,6 +5839,30 @@ mod tests {
     assert!(
       !texts.iter().any(|t| t.contains("hi")),
       "fallback text should not be present when object is replaced"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_object_type_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      "<html><body><object data=\"doc.html\" type=\"{nbsp}text/html\"><p>fallback</p></object></body></html>"
+    );
+    let dom = crate::dom::parse_html(&html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      count_object_replacements(&box_tree.root),
+      0,
+      "NBSP must not be treated as whitespace when checking object type hints"
+    );
+
+    let mut texts = Vec::new();
+    collect_text(&box_tree.root, &mut texts);
+    assert!(
+      texts.iter().any(|t| t.contains("fallback")),
+      "fallback text should be present when object is not replaced"
     );
   }
 

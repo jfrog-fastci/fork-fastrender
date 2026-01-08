@@ -4940,7 +4940,20 @@ impl InlineFormattingContext {
   }
 
   fn is_whitespace_cluster(cluster: &str) -> bool {
-    cluster.chars().all(|c| c.is_whitespace())
+    cluster.chars().all(|c| {
+      matches!(
+        c,
+        '\u{0009}'
+          | '\u{000A}'
+          | '\u{000B}'
+          | '\u{000C}'
+          | '\u{000D}'
+          | '\u{0020}'
+          | '\u{0085}'
+          | '\u{2028}'
+          | '\u{2029}'
+      )
+    })
   }
 
   fn is_punctuation_or_symbol(cluster: &str) -> bool {
@@ -11248,6 +11261,14 @@ fn strut_sample_style_matches(text_style: &ComputedStyle, strut_style: &Computed
     && text_style.font_variation_settings == strut_style.font_variation_settings
 }
 
+fn is_ascii_whitespace_char(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_char)
+}
+
 fn first_non_whitespace_shaped_run_in_segments<'a>(
   segments: &'a [InlineFlowSegment],
   strut_style: &ComputedStyle,
@@ -11281,11 +11302,14 @@ fn first_non_whitespace_shaped_run_in_item<'a>(
       if text.is_marker
         || text.runs.is_empty()
         || !strut_sample_style_matches(text.style.as_ref(), strut_style)
-        || text.text.trim().is_empty()
+        || trim_ascii_whitespace(&text.text).is_empty()
       {
         return None;
       }
-      text.runs.iter().find(|run| !run.text.trim().is_empty())
+      text
+        .runs
+        .iter()
+        .find(|run| !trim_ascii_whitespace(&run.text).is_empty())
     }
     InlineItem::InlineBox(b) => first_non_whitespace_shaped_run_in_items(&b.children, strut_style),
     InlineItem::Ruby(ruby) => {
@@ -12510,6 +12534,27 @@ mod tests {
       strut_sample_style_matches(&text_style, &strut_style),
       "expected -0.0 font_size to match 0.0"
     );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_inline_trim_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      !trim_ascii_whitespace(nbsp).is_empty(),
+      "NBSP must not be treated as collapsible ASCII whitespace"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_split_first_letter_does_not_skip_nbsp() {
+    let nbsp = "\u{00A0}";
+    let input = format!("{nbsp}A");
+
+    let (before, letter, after) =
+      InlineFormattingContext::split_first_letter(&input, Direction::Ltr).expect("split");
+    assert_eq!(before, "");
+    assert_eq!(letter, nbsp);
+    assert_eq!(after, "A");
   }
 
   fn make_text_box(text: &str) -> BoxNode {

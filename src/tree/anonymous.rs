@@ -77,6 +77,10 @@ enum InlineSplitOutcome {
 }
 
 impl AnonymousBoxCreator {
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+  }
+
   /// Fixes up a box tree by inserting anonymous boxes
   ///
   /// This is a post-processing step after initial box generation. It traverses
@@ -675,7 +679,7 @@ impl AnonymousBoxCreator {
   fn is_collapsible_whitespace_text_node(node: &BoxNode) -> bool {
     match &node.box_type {
       BoxType::Text(text_box) => {
-        text_box.text.trim().is_empty()
+        Self::trim_ascii_whitespace(&text_box.text).is_empty()
           && matches!(
             node.style.white_space,
             WhiteSpace::Normal | WhiteSpace::Nowrap
@@ -965,6 +969,16 @@ mod tests {
 
   fn fixup_tree(node: BoxNode) -> BoxNode {
     super::AnonymousBoxCreator::fixup_tree(node).expect("anonymous fixup")
+  }
+
+  #[test]
+  fn non_ascii_whitespace_collapsible_whitespace_text_node_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let text = BoxNode::new_text(default_style(), nbsp.to_string());
+    assert!(
+      !AnonymousBoxCreator::is_collapsible_whitespace_text_node(&text),
+      "NBSP must not be treated as collapsible whitespace"
+    );
   }
 
   #[test]

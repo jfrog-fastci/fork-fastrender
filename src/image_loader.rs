@@ -880,7 +880,7 @@ fn inline_svg_use_references<'a>(
 }
 
 fn svg_parse_fill_color(value: &str) -> Option<Rgba> {
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   if trimmed.is_empty() {
     return None;
   }
@@ -967,7 +967,7 @@ fn try_render_simple_svg_pixmap(
       }
       if node
         .attribute("stroke")
-        .is_some_and(|v| !v.trim().eq_ignore_ascii_case("none"))
+        .is_some_and(|v| !trim_ascii_whitespace(v).eq_ignore_ascii_case("none"))
       {
         return Ok(None);
       }
@@ -1061,17 +1061,17 @@ fn try_render_simple_svg_pixmap(
     }
 
     if let Some(opacity_raw) = node.attribute("opacity") {
-      if let Ok(alpha) = opacity_raw.trim().parse::<f32>() {
+      if let Ok(alpha) = trim_ascii_whitespace(opacity_raw).parse::<f32>() {
         color = multiply_alpha(color, alpha);
       }
     }
     if let Some(opacity_raw) = node.attribute("fill-opacity") {
-      if let Ok(alpha) = opacity_raw.trim().parse::<f32>() {
+      if let Ok(alpha) = trim_ascii_whitespace(opacity_raw).parse::<f32>() {
         color = multiply_alpha(color, alpha);
       }
     }
 
-    let fill_rule = match node.attribute("fill-rule").map(|v| v.trim()) {
+    let fill_rule = match node.attribute("fill-rule").map(trim_ascii_whitespace) {
       None => FillRule::Winding,
       Some(v) if v.eq_ignore_ascii_case("nonzero") => FillRule::Winding,
       Some(v) if v.eq_ignore_ascii_case("evenodd") => FillRule::EvenOdd,
@@ -8509,6 +8509,21 @@ mod tests {
     assert_eq!(
       ImageCache::format_from_content_type(Some("image/png")),
       Some(ImageFormat::Png)
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_svg_parse_fill_color_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(
+      svg_parse_fill_color(&format!("{nbsp}none")),
+      None,
+      "NBSP must not be treated as whitespace when parsing SVG fill colors"
+    );
+    assert_eq!(
+      svg_parse_fill_color("none"),
+      Some(Rgba::new(0, 0, 0, 0.0)),
+      "baseline: none should parse to a transparent color sentinel"
     );
   }
 

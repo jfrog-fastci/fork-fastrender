@@ -1106,11 +1106,19 @@ fn with_cell_emptiness_cache<R>(
   })
 }
 
+fn is_ascii_whitespace_char(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_char)
+}
+
 fn whitespace_has_visible_glyphs(text: &str, white_space: WhiteSpace) -> bool {
   if text.is_empty() {
     return false;
   }
-  if !text.trim().is_empty() {
+  if !trim_ascii_whitespace(text).is_empty() {
     return true;
   }
   match white_space {
@@ -8643,6 +8651,15 @@ mod tests {
     );
 
     assert!((resolve_border_spacing_length(&Length::rem(1.5), font_size, root_font_size) - 30.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_whitespace_has_visible_glyphs_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      whitespace_has_visible_glyphs(nbsp, crate::style::types::WhiteSpace::Normal),
+      "NBSP must not be treated as collapsible whitespace for cell emptiness heuristics"
+    );
   }
 
   fn create_table_cell(content: &str) -> BoxNode {
