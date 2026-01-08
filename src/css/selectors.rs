@@ -266,6 +266,7 @@ pub enum PseudoClass {
   Host(Option<SelectorList<FastRenderSelectorImpl>>),
   HostContext(SelectorList<FastRenderSelectorImpl>),
   Root,
+  Defined,
   FirstChild,
   LastChild,
   NthChild(i32, i32, Option<SelectorList<FastRenderSelectorImpl>>), // an + b
@@ -467,6 +468,7 @@ impl ToCss for PseudoClass {
         dest.write_str(")")
       }
       PseudoClass::Root => dest.write_str(":root"),
+      PseudoClass::Defined => dest.write_str(":defined"),
       PseudoClass::FirstChild => dest.write_str(":first-child"),
       PseudoClass::LastChild => dest.write_str(":last-child"),
       PseudoClass::NthChild(a, b, of) => write_nth_pseudo(dest, ":nth-child", *a, *b, of),
@@ -756,6 +758,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     match lowered.as_str() {
       "host" => Ok(PseudoClass::Host(None)),
       "root" => Ok(PseudoClass::Root),
+      "defined" => Ok(PseudoClass::Defined),
       "first-child" => Ok(PseudoClass::FirstChild),
       "last-child" => Ok(PseudoClass::LastChild),
       "only-child" => Ok(PseudoClass::OnlyChild),
@@ -1357,6 +1360,11 @@ mod tests {
       .expect("root pseudo should parse");
     assert_eq!(root, PseudoClass::Root);
 
+    let defined = parser
+      .parse_non_ts_pseudo_class(loc, cssparser::CowRcStr::from("DeFiNeD"))
+      .expect("defined pseudo should parse");
+    assert_eq!(defined, PseudoClass::Defined);
+
     let target_within = parser
       .parse_non_ts_pseudo_class(loc, cssparser::CowRcStr::from("TARGET-WITHIN"))
       .expect("target-within pseudo should parse");
@@ -1806,6 +1814,7 @@ mod tests {
     assert_eq!(PseudoClass::LastOfType.to_css_string(), ":last-of-type");
     assert_eq!(PseudoClass::OnlyOfType.to_css_string(), ":only-of-type");
     assert_eq!(PseudoClass::Empty.to_css_string(), ":empty");
+    assert_eq!(PseudoClass::Defined.to_css_string(), ":defined");
     assert_eq!(
       PseudoClass::NthOfType(2, 1).to_css_string(),
       ":nth-of-type(2n+1)"
@@ -1934,6 +1943,7 @@ mod tests {
       "dialog:modal",
       "body:has(>dialog:modal[open])",
       "details:open > summary",
+      "details-dialog:defined, details-dialog:not(:defined)",
     ] {
       let mut input = ParserInput::new(selector_text);
       let mut parser = Parser::new(&mut input);

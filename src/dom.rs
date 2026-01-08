@@ -6155,6 +6155,7 @@ impl<'a> Element for ElementRef<'a> {
             .map(|t| t.eq_ignore_ascii_case("html"))
             .unwrap_or(false)
       }
+      PseudoClass::Defined => true,
       PseudoClass::FirstChild => self.element_index(_context) == Some(0),
       PseudoClass::LastChild => self
         .element_index_and_len(_context)
@@ -9688,6 +9689,18 @@ mod tests {
     let non_modal_ref = ElementRef::with_ancestors(&non_modal, &[]);
     assert!(selector_matches(&modal_ref, &selector));
     assert!(!selector_matches(&non_modal_ref, &selector));
+  }
+
+  #[test]
+  fn defined_pseudo_class_matches_custom_elements() {
+    let node = element("details-dialog", vec![]);
+    let node_ref = ElementRef::with_ancestors(&node, &[]);
+
+    let selector = parse_selector("details-dialog:defined");
+    assert!(selector_matches(&node_ref, &selector));
+
+    let selector = parse_selector("details-dialog:not(:defined)");
+    assert!(!selector_matches(&node_ref, &selector));
   }
 
   #[test]
