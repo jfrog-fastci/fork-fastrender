@@ -606,7 +606,17 @@ pub enum LogicalProperty {
     start: Option<Option<Length>>,
     end: Option<Option<Length>>,
   },
+  ScrollMargin {
+    axis: LogicalAxis,
+    start: Option<Length>,
+    end: Option<Length>,
+  },
   Padding {
+    axis: LogicalAxis,
+    start: Option<Length>,
+    end: Option<Length>,
+  },
+  ScrollPadding {
     axis: LogicalAxis,
     start: Option<Length>,
     end: Option<Length>,
@@ -673,7 +683,9 @@ pub struct PendingLogical {
 pub struct LogicalState {
   pub pending: Vec<PendingLogical>,
   pub margin_orders: SideOrders,
+  pub scroll_margin_orders: SideOrders,
   pub padding_orders: SideOrders,
+  pub scroll_padding_orders: SideOrders,
   pub border_width_orders: SideOrders,
   pub border_style_orders: SideOrders,
   pub border_color_orders: SideOrders,
@@ -696,6 +708,8 @@ impl Default for LogicalState {
       pending: Vec::new(),
       margin_orders: SideOrders::default(),
       padding_orders: SideOrders::default(),
+      scroll_margin_orders: SideOrders::default(),
+      scroll_padding_orders: SideOrders::default(),
       border_width_orders: SideOrders::default(),
       border_style_orders: SideOrders::default(),
       border_color_orders: SideOrders::default(),

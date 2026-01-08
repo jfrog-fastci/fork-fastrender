@@ -3650,6 +3650,43 @@ fn set_padding_side(
   *side_order_mut(&mut styles.logical.padding_orders, side) = order;
 }
 
+fn set_scroll_padding_side(
+  styles: &mut ComputedStyle,
+  side: crate::style::PhysicalSide,
+  value: Length,
+  order: i32,
+) {
+  if order < side_order(&styles.logical.scroll_padding_orders, side) {
+    return;
+  }
+  let value = sanitize_non_negative_length(value);
+  match side {
+    crate::style::PhysicalSide::Top => styles.scroll_padding_top = value,
+    crate::style::PhysicalSide::Right => styles.scroll_padding_right = value,
+    crate::style::PhysicalSide::Bottom => styles.scroll_padding_bottom = value,
+    crate::style::PhysicalSide::Left => styles.scroll_padding_left = value,
+  }
+  *side_order_mut(&mut styles.logical.scroll_padding_orders, side) = order;
+}
+
+fn set_scroll_margin_side(
+  styles: &mut ComputedStyle,
+  side: crate::style::PhysicalSide,
+  value: Length,
+  order: i32,
+) {
+  if order < side_order(&styles.logical.scroll_margin_orders, side) {
+    return;
+  }
+  match side {
+    crate::style::PhysicalSide::Top => styles.scroll_margin_top = value,
+    crate::style::PhysicalSide::Right => styles.scroll_margin_right = value,
+    crate::style::PhysicalSide::Bottom => styles.scroll_margin_bottom = value,
+    crate::style::PhysicalSide::Left => styles.scroll_margin_left = value,
+  }
+  *side_order_mut(&mut styles.logical.scroll_margin_orders, side) = order;
+}
+
 fn set_border_width_side(
   styles: &mut ComputedStyle,
   side: crate::style::PhysicalSide,
@@ -4442,6 +4479,24 @@ fn padding_for_side(style: &ComputedStyle, side: crate::style::PhysicalSide) -> 
     crate::style::PhysicalSide::Right => style.padding_right,
     crate::style::PhysicalSide::Bottom => style.padding_bottom,
     crate::style::PhysicalSide::Left => style.padding_left,
+  }
+}
+
+fn scroll_padding_for_side(style: &ComputedStyle, side: crate::style::PhysicalSide) -> Length {
+  match side {
+    crate::style::PhysicalSide::Top => style.scroll_padding_top,
+    crate::style::PhysicalSide::Right => style.scroll_padding_right,
+    crate::style::PhysicalSide::Bottom => style.scroll_padding_bottom,
+    crate::style::PhysicalSide::Left => style.scroll_padding_left,
+  }
+}
+
+fn scroll_margin_for_side(style: &ComputedStyle, side: crate::style::PhysicalSide) -> Length {
+  match side {
+    crate::style::PhysicalSide::Top => style.scroll_margin_top,
+    crate::style::PhysicalSide::Right => style.scroll_margin_right,
+    crate::style::PhysicalSide::Bottom => style.scroll_margin_bottom,
+    crate::style::PhysicalSide::Left => style.scroll_margin_left,
   }
 }
 
@@ -6020,25 +6075,245 @@ pub(crate) fn apply_property_from_source(
       styles.transition_behaviors = source.transition_behaviors.clone();
     }
     "scroll-padding" => {
-      styles.scroll_padding_top = source.scroll_padding_top;
-      styles.scroll_padding_right = source.scroll_padding_right;
-      styles.scroll_padding_bottom = source.scroll_padding_bottom;
-      styles.scroll_padding_left = source.scroll_padding_left;
+      set_scroll_padding_side(
+        styles,
+        crate::style::PhysicalSide::Top,
+        source.scroll_padding_top,
+        order,
+      );
+      set_scroll_padding_side(
+        styles,
+        crate::style::PhysicalSide::Right,
+        source.scroll_padding_right,
+        order,
+      );
+      set_scroll_padding_side(
+        styles,
+        crate::style::PhysicalSide::Bottom,
+        source.scroll_padding_bottom,
+        order,
+      );
+      set_scroll_padding_side(
+        styles,
+        crate::style::PhysicalSide::Left,
+        source.scroll_padding_left,
+        order,
+      );
     }
-    "scroll-padding-top" => styles.scroll_padding_top = source.scroll_padding_top,
-    "scroll-padding-right" => styles.scroll_padding_right = source.scroll_padding_right,
-    "scroll-padding-bottom" => styles.scroll_padding_bottom = source.scroll_padding_bottom,
-    "scroll-padding-left" => styles.scroll_padding_left = source.scroll_padding_left,
+    "scroll-padding-top" => set_scroll_padding_side(
+      styles,
+      crate::style::PhysicalSide::Top,
+      source.scroll_padding_top,
+      order,
+    ),
+    "scroll-padding-right" => set_scroll_padding_side(
+      styles,
+      crate::style::PhysicalSide::Right,
+      source.scroll_padding_right,
+      order,
+    ),
+    "scroll-padding-bottom" => set_scroll_padding_side(
+      styles,
+      crate::style::PhysicalSide::Bottom,
+      source.scroll_padding_bottom,
+      order,
+    ),
+    "scroll-padding-left" => set_scroll_padding_side(
+      styles,
+      crate::style::PhysicalSide::Left,
+      source.scroll_padding_left,
+      order,
+    ),
+    "scroll-padding-inline-start" => {
+      let value = scroll_padding_for_side(source, inline_sides.0);
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollPadding {
+          axis: crate::style::LogicalAxis::Inline,
+          start: Some(value),
+          end: None,
+        },
+        order,
+      );
+    }
+    "scroll-padding-inline-end" => {
+      let value = scroll_padding_for_side(source, inline_sides.1);
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollPadding {
+          axis: crate::style::LogicalAxis::Inline,
+          start: None,
+          end: Some(value),
+        },
+        order,
+      );
+    }
+    "scroll-padding-block-start" => {
+      let value = scroll_padding_for_side(source, block_sides.0);
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollPadding {
+          axis: crate::style::LogicalAxis::Block,
+          start: Some(value),
+          end: None,
+        },
+        order,
+      );
+    }
+    "scroll-padding-block-end" => {
+      let value = scroll_padding_for_side(source, block_sides.1);
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollPadding {
+          axis: crate::style::LogicalAxis::Block,
+          start: None,
+          end: Some(value),
+        },
+        order,
+      );
+    }
+    "scroll-padding-inline" => {
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollPadding {
+          axis: crate::style::LogicalAxis::Inline,
+          start: Some(scroll_padding_for_side(source, inline_sides.0)),
+          end: Some(scroll_padding_for_side(source, inline_sides.1)),
+        },
+        order,
+      );
+    }
+    "scroll-padding-block" => {
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollPadding {
+          axis: crate::style::LogicalAxis::Block,
+          start: Some(scroll_padding_for_side(source, block_sides.0)),
+          end: Some(scroll_padding_for_side(source, block_sides.1)),
+        },
+        order,
+      );
+    }
     "scroll-margin" => {
-      styles.scroll_margin_top = source.scroll_margin_top;
-      styles.scroll_margin_right = source.scroll_margin_right;
-      styles.scroll_margin_bottom = source.scroll_margin_bottom;
-      styles.scroll_margin_left = source.scroll_margin_left;
+      set_scroll_margin_side(
+        styles,
+        crate::style::PhysicalSide::Top,
+        source.scroll_margin_top,
+        order,
+      );
+      set_scroll_margin_side(
+        styles,
+        crate::style::PhysicalSide::Right,
+        source.scroll_margin_right,
+        order,
+      );
+      set_scroll_margin_side(
+        styles,
+        crate::style::PhysicalSide::Bottom,
+        source.scroll_margin_bottom,
+        order,
+      );
+      set_scroll_margin_side(
+        styles,
+        crate::style::PhysicalSide::Left,
+        source.scroll_margin_left,
+        order,
+      );
     }
-    "scroll-margin-top" => styles.scroll_margin_top = source.scroll_margin_top,
-    "scroll-margin-right" => styles.scroll_margin_right = source.scroll_margin_right,
-    "scroll-margin-bottom" => styles.scroll_margin_bottom = source.scroll_margin_bottom,
-    "scroll-margin-left" => styles.scroll_margin_left = source.scroll_margin_left,
+    "scroll-margin-top" => set_scroll_margin_side(
+      styles,
+      crate::style::PhysicalSide::Top,
+      source.scroll_margin_top,
+      order,
+    ),
+    "scroll-margin-right" => set_scroll_margin_side(
+      styles,
+      crate::style::PhysicalSide::Right,
+      source.scroll_margin_right,
+      order,
+    ),
+    "scroll-margin-bottom" => set_scroll_margin_side(
+      styles,
+      crate::style::PhysicalSide::Bottom,
+      source.scroll_margin_bottom,
+      order,
+    ),
+    "scroll-margin-left" => set_scroll_margin_side(
+      styles,
+      crate::style::PhysicalSide::Left,
+      source.scroll_margin_left,
+      order,
+    ),
+    "scroll-margin-inline-start" => {
+      let value = scroll_margin_for_side(source, inline_sides.0);
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollMargin {
+          axis: crate::style::LogicalAxis::Inline,
+          start: Some(value),
+          end: None,
+        },
+        order,
+      );
+    }
+    "scroll-margin-inline-end" => {
+      let value = scroll_margin_for_side(source, inline_sides.1);
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollMargin {
+          axis: crate::style::LogicalAxis::Inline,
+          start: None,
+          end: Some(value),
+        },
+        order,
+      );
+    }
+    "scroll-margin-block-start" => {
+      let value = scroll_margin_for_side(source, block_sides.0);
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollMargin {
+          axis: crate::style::LogicalAxis::Block,
+          start: Some(value),
+          end: None,
+        },
+        order,
+      );
+    }
+    "scroll-margin-block-end" => {
+      let value = scroll_margin_for_side(source, block_sides.1);
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollMargin {
+          axis: crate::style::LogicalAxis::Block,
+          start: None,
+          end: Some(value),
+        },
+        order,
+      );
+    }
+    "scroll-margin-inline" => {
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollMargin {
+          axis: crate::style::LogicalAxis::Inline,
+          start: Some(scroll_margin_for_side(source, inline_sides.0)),
+          end: Some(scroll_margin_for_side(source, inline_sides.1)),
+        },
+        order,
+      );
+    }
+    "scroll-margin-block" => {
+      push_logical(
+        styles,
+        crate::style::LogicalProperty::ScrollMargin {
+          axis: crate::style::LogicalAxis::Block,
+          start: Some(scroll_margin_for_side(source, block_sides.0)),
+          end: Some(scroll_margin_for_side(source, block_sides.1)),
+        },
+        order,
+      );
+    }
     "scrollbar-gutter" => styles.scrollbar_gutter = source.scrollbar_gutter,
     "overflow-anchor" => styles.overflow_anchor = source.overflow_anchor,
     "pointer-events" => styles.pointer_events = source.pointer_events,
@@ -11526,30 +11801,112 @@ fn apply_declaration_with_base_internal_with_order(
         let mut bottom = styles.scroll_padding_bottom;
         let mut left = styles.scroll_padding_left;
         apply_box_values(&mut top, &mut right, &mut bottom, &mut left, values);
-        styles.scroll_padding_top = top;
-        styles.scroll_padding_right = right;
-        styles.scroll_padding_bottom = bottom;
-        styles.scroll_padding_left = left;
+        set_scroll_padding_side(styles, crate::style::PhysicalSide::Top, top, order);
+        set_scroll_padding_side(styles, crate::style::PhysicalSide::Right, right, order);
+        set_scroll_padding_side(styles, crate::style::PhysicalSide::Bottom, bottom, order);
+        set_scroll_padding_side(styles, crate::style::PhysicalSide::Left, left, order);
       }
     }
     "scroll-padding-top" => {
       if let Some(len) = extract_scroll_padding_length(resolved_value) {
-        styles.scroll_padding_top = len;
+        set_scroll_padding_side(styles, crate::style::PhysicalSide::Top, len, order);
       }
     }
     "scroll-padding-right" => {
       if let Some(len) = extract_scroll_padding_length(resolved_value) {
-        styles.scroll_padding_right = len;
+        set_scroll_padding_side(styles, crate::style::PhysicalSide::Right, len, order);
       }
     }
     "scroll-padding-bottom" => {
       if let Some(len) = extract_scroll_padding_length(resolved_value) {
-        styles.scroll_padding_bottom = len;
+        set_scroll_padding_side(styles, crate::style::PhysicalSide::Bottom, len, order);
       }
     }
     "scroll-padding-left" => {
       if let Some(len) = extract_scroll_padding_length(resolved_value) {
-        styles.scroll_padding_left = len;
+        set_scroll_padding_side(styles, crate::style::PhysicalSide::Left, len, order);
+      }
+    }
+    "scroll-padding-inline-start" => {
+      if let Some(len) = extract_scroll_padding_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollPadding {
+            axis: crate::style::LogicalAxis::Inline,
+            start: Some(len),
+            end: None,
+          },
+          order,
+        );
+      }
+    }
+    "scroll-padding-inline-end" => {
+      if let Some(len) = extract_scroll_padding_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollPadding {
+            axis: crate::style::LogicalAxis::Inline,
+            start: None,
+            end: Some(len),
+          },
+          order,
+        );
+      }
+    }
+    "scroll-padding-block-start" => {
+      if let Some(len) = extract_scroll_padding_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollPadding {
+            axis: crate::style::LogicalAxis::Block,
+            start: Some(len),
+            end: None,
+          },
+          order,
+        );
+      }
+    }
+    "scroll-padding-block-end" => {
+      if let Some(len) = extract_scroll_padding_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollPadding {
+            axis: crate::style::LogicalAxis::Block,
+            start: None,
+            end: Some(len),
+          },
+          order,
+        );
+      }
+    }
+    "scroll-padding-inline" => {
+      if let Some(values) = extract_scroll_padding_values(resolved_value) {
+        let start = values.first().copied();
+        let end = values.get(1).copied().or(start);
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollPadding {
+            axis: crate::style::LogicalAxis::Inline,
+            start,
+            end,
+          },
+          order,
+        );
+      }
+    }
+    "scroll-padding-block" => {
+      if let Some(values) = extract_scroll_padding_values(resolved_value) {
+        let start = values.first().copied();
+        let end = values.get(1).copied().or(start);
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollPadding {
+            axis: crate::style::LogicalAxis::Block,
+            start,
+            end,
+          },
+          order,
+        );
       }
     }
     "scroll-margin" => {
@@ -11559,30 +11916,108 @@ fn apply_declaration_with_base_internal_with_order(
         let mut bottom = styles.scroll_margin_bottom;
         let mut left = styles.scroll_margin_left;
         apply_box_values(&mut top, &mut right, &mut bottom, &mut left, values);
-        styles.scroll_margin_top = top;
-        styles.scroll_margin_right = right;
-        styles.scroll_margin_bottom = bottom;
-        styles.scroll_margin_left = left;
+        set_scroll_margin_side(styles, crate::style::PhysicalSide::Top, top, order);
+        set_scroll_margin_side(styles, crate::style::PhysicalSide::Right, right, order);
+        set_scroll_margin_side(styles, crate::style::PhysicalSide::Bottom, bottom, order);
+        set_scroll_margin_side(styles, crate::style::PhysicalSide::Left, left, order);
       }
     }
     "scroll-margin-top" => {
       if let Some(len) = extract_length(resolved_value) {
-        styles.scroll_margin_top = len;
+        set_scroll_margin_side(styles, crate::style::PhysicalSide::Top, len, order);
       }
     }
     "scroll-margin-right" => {
       if let Some(len) = extract_length(resolved_value) {
-        styles.scroll_margin_right = len;
+        set_scroll_margin_side(styles, crate::style::PhysicalSide::Right, len, order);
       }
     }
     "scroll-margin-bottom" => {
       if let Some(len) = extract_length(resolved_value) {
-        styles.scroll_margin_bottom = len;
+        set_scroll_margin_side(styles, crate::style::PhysicalSide::Bottom, len, order);
       }
     }
     "scroll-margin-left" => {
       if let Some(len) = extract_length(resolved_value) {
-        styles.scroll_margin_left = len;
+        set_scroll_margin_side(styles, crate::style::PhysicalSide::Left, len, order);
+      }
+    }
+    "scroll-margin-inline-start" => {
+      if let Some(len) = extract_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollMargin {
+            axis: crate::style::LogicalAxis::Inline,
+            start: Some(len),
+            end: None,
+          },
+          order,
+        );
+      }
+    }
+    "scroll-margin-inline-end" => {
+      if let Some(len) = extract_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollMargin {
+            axis: crate::style::LogicalAxis::Inline,
+            start: None,
+            end: Some(len),
+          },
+          order,
+        );
+      }
+    }
+    "scroll-margin-block-start" => {
+      if let Some(len) = extract_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollMargin {
+            axis: crate::style::LogicalAxis::Block,
+            start: Some(len),
+            end: None,
+          },
+          order,
+        );
+      }
+    }
+    "scroll-margin-block-end" => {
+      if let Some(len) = extract_length(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollMargin {
+            axis: crate::style::LogicalAxis::Block,
+            start: None,
+            end: Some(len),
+          },
+          order,
+        );
+      }
+    }
+    "scroll-margin-inline" => {
+      if let Some((start, end)) = extract_length_pair(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollMargin {
+            axis: crate::style::LogicalAxis::Inline,
+            start: Some(start),
+            end: Some(end),
+          },
+          order,
+        );
+      }
+    }
+    "scroll-margin-block" => {
+      if let Some((start, end)) = extract_length_pair(resolved_value) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::ScrollMargin {
+            axis: crate::style::LogicalAxis::Block,
+            start: Some(start),
+            end: Some(end),
+          },
+          order,
+        );
       }
     }
     "scroll-snap-type" => {
@@ -19958,6 +20393,67 @@ mod tests {
       vertical.width_keyword,
       Some(IntrinsicSizeKeyword::MinContent)
     );
+  }
+
+  #[test]
+  fn logical_scroll_padding_properties_map_to_physical_sides() {
+    let parent = ComputedStyle::default();
+    let decls = parse_declarations(
+      "scroll-padding-inline-start: 10px;\
+       scroll-padding-inline-end: 20px;\
+       scroll-padding-block-start: 30px;\
+       scroll-padding-block-end: 40px;",
+    );
+
+    let mut styles = ComputedStyle::default();
+    styles.writing_mode = WritingMode::HorizontalTb;
+    styles.direction = crate::style::types::Direction::Ltr;
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+    resolve_pending_logical_properties(&mut styles);
+
+    assert_eq!(styles.scroll_padding_left, Length::px(10.0));
+    assert_eq!(styles.scroll_padding_right, Length::px(20.0));
+    assert_eq!(styles.scroll_padding_top, Length::px(30.0));
+    assert_eq!(styles.scroll_padding_bottom, Length::px(40.0));
+  }
+
+  #[test]
+  fn logical_scroll_padding_and_margin_respect_source_order() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("scroll-padding-inline-start: 10px; scroll-padding-left: 20px;");
+    let mut styles = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+    resolve_pending_logical_properties(&mut styles);
+    assert_eq!(styles.scroll_padding_left, Length::px(20.0));
+
+    let decls = parse_declarations("scroll-padding-left: 20px; scroll-padding-inline-start: 10px;");
+    let mut styles = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+    resolve_pending_logical_properties(&mut styles);
+    assert_eq!(styles.scroll_padding_left, Length::px(10.0));
+
+    let decls = parse_declarations("scroll-margin-inline-start: 10px; scroll-margin-left: 20px;");
+    let mut styles = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+    resolve_pending_logical_properties(&mut styles);
+    assert_eq!(styles.scroll_margin_left, Length::px(20.0));
+
+    let decls = parse_declarations("scroll-margin-left: 20px; scroll-margin-inline-start: 10px;");
+    let mut styles = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+    resolve_pending_logical_properties(&mut styles);
+    assert_eq!(styles.scroll_margin_left, Length::px(10.0));
   }
 
   #[test]
@@ -32486,32 +32982,50 @@ pub fn resolve_pending_logical_properties(styles: &mut ComputedStyle) {
   let inline_sides = inline_physical_sides(styles);
   let block_sides = block_physical_sides(styles);
 
-  let pending = std::mem::take(&mut styles.logical.pending);
-  for pending_prop in pending {
-    match pending_prop.property {
-      crate::style::LogicalProperty::Margin { axis, start, end } => {
-        let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
-        if let Some(v) = start {
-          set_margin_side(styles, start_side, v, pending_prop.order);
+    let pending = std::mem::take(&mut styles.logical.pending);
+    for pending_prop in pending {
+      match pending_prop.property {
+        crate::style::LogicalProperty::Margin { axis, start, end } => {
+          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+          if let Some(v) = start {
+            set_margin_side(styles, start_side, v, pending_prop.order);
+          }
+          if let Some(v) = end {
+            set_margin_side(styles, end_side, v, pending_prop.order);
+          }
         }
-        if let Some(v) = end {
-          set_margin_side(styles, end_side, v, pending_prop.order);
+        crate::style::LogicalProperty::ScrollMargin { axis, start, end } => {
+          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+          if let Some(v) = start {
+            set_scroll_margin_side(styles, start_side, v, pending_prop.order);
+          }
+          if let Some(v) = end {
+            set_scroll_margin_side(styles, end_side, v, pending_prop.order);
+          }
         }
-      }
-      crate::style::LogicalProperty::Padding { axis, start, end } => {
-        let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
-        if let Some(v) = start {
-          set_padding_side(styles, start_side, v, pending_prop.order);
+        crate::style::LogicalProperty::Padding { axis, start, end } => {
+          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+          if let Some(v) = start {
+            set_padding_side(styles, start_side, v, pending_prop.order);
+          }
+          if let Some(v) = end {
+            set_padding_side(styles, end_side, v, pending_prop.order);
+          }
         }
-        if let Some(v) = end {
-          set_padding_side(styles, end_side, v, pending_prop.order);
+        crate::style::LogicalProperty::ScrollPadding { axis, start, end } => {
+          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+          if let Some(v) = start {
+            set_scroll_padding_side(styles, start_side, v, pending_prop.order);
+          }
+          if let Some(v) = end {
+            set_scroll_padding_side(styles, end_side, v, pending_prop.order);
+          }
         }
-      }
-      crate::style::LogicalProperty::BorderWidth { axis, start, end } => {
-        let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
-        if let Some(v) = start {
-          set_border_width_side(styles, start_side, v, pending_prop.order);
-        }
+        crate::style::LogicalProperty::BorderWidth { axis, start, end } => {
+          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+          if let Some(v) = start {
+            set_border_width_side(styles, start_side, v, pending_prop.order);
+          }
         if let Some(v) = end {
           set_border_width_side(styles, end_side, v, pending_prop.order);
         }
