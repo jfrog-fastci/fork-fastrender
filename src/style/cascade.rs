@@ -4352,7 +4352,12 @@ impl DomMaps {
     let mut selector_keys = DomSelectorKeyCache::new(node_count)?;
 
     // (node, parent_id, containing_shadow_root_id)
-    let mut stack: Vec<(&DomNode, Option<usize>, usize)> = Vec::with_capacity(node_count.min(1024));
+    let mut stack: Vec<(&DomNode, Option<usize>, usize)> = Vec::new();
+    stack
+      .try_reserve(node_count.min(1024))
+      .map_err(|_| RenderError::PaintFailed {
+        operation: "DOM map allocation failed".to_string(),
+      })?;
     stack.push((root, None, 0));
     let mut next_id = 1usize;
 
@@ -4382,6 +4387,11 @@ impl DomMaps {
           *slot = p;
         }
         if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
+          shadow_root_ids
+            .try_reserve(1)
+            .map_err(|_| RenderError::PaintFailed {
+              operation: "DOM map allocation failed".to_string(),
+            })?;
           shadow_root_ids.push(id);
           if let Some(slot) = shadow_host_by_root.get_mut(id) {
             *slot = p;
@@ -4408,6 +4418,13 @@ impl DomMaps {
 
         let class_start = selector_keys.class_keys.len();
         if let Some(class_attr) = node.get_attribute_ref("class") {
+          let class_count = class_attr.split_ascii_whitespace().count();
+          selector_keys
+            .class_keys
+            .try_reserve(class_count)
+            .map_err(|_| RenderError::PaintFailed {
+              operation: "selector key cache allocation failed".to_string(),
+            })?;
           for cls in class_attr.split_ascii_whitespace() {
             selector_keys
               .class_keys
@@ -4420,6 +4437,26 @@ impl DomMaps {
 
         let attr_start = selector_keys.attr_keys.len();
         let attr_value_start = selector_keys.attr_value_keys.len();
+        let mut attr_count = 0usize;
+        let mut attr_value_count = 0usize;
+        for (_name, value) in node.attributes_iter() {
+          attr_count += 1;
+          if value.len() <= ATTR_VALUE_INDEX_MAX_LEN {
+            attr_value_count += 1;
+          }
+        }
+        selector_keys
+          .attr_keys
+          .try_reserve(attr_count)
+          .map_err(|_| RenderError::PaintFailed {
+            operation: "selector key cache allocation failed".to_string(),
+          })?;
+        selector_keys
+          .attr_value_keys
+          .try_reserve(attr_value_count)
+          .map_err(|_| RenderError::PaintFailed {
+            operation: "selector key cache allocation failed".to_string(),
+          })?;
         for (name, value) in node.attributes_iter() {
           selector_keys.attr_keys.push(selector_bucket_attr(name));
           if value.len() <= ATTR_VALUE_INDEX_MAX_LEN {
@@ -4435,18 +4472,23 @@ impl DomMaps {
         let attr_len = attr_end - attr_start;
         let attr_value_len = attr_value_end - attr_value_start;
 
+        let to_u32 = |value: usize| {
+          u32::try_from(value).map_err(|_| RenderError::PaintFailed {
+            operation: "selector key cache overflow".to_string(),
+          })
+        };
         selector_keys.set_node_keys(
           id,
           DomSelectorKeyEntry {
             tag_key,
             id_key,
             has_id,
-            class_start: u32::try_from(class_start).expect("selector key cache overflow"),
-            class_len: u32::try_from(class_len).expect("selector key cache overflow"),
-            attr_start: u32::try_from(attr_start).expect("selector key cache overflow"),
-            attr_len: u32::try_from(attr_len).expect("selector key cache overflow"),
-            attr_value_start: u32::try_from(attr_value_start).expect("selector key cache overflow"),
-            attr_value_len: u32::try_from(attr_value_len).expect("selector key cache overflow"),
+            class_start: to_u32(class_start)?,
+            class_len: to_u32(class_len)?,
+            attr_start: to_u32(attr_start)?,
+            attr_len: to_u32(attr_len)?,
+            attr_value_start: to_u32(attr_value_start)?,
+            attr_value_len: to_u32(attr_value_len)?,
           },
         );
       }
@@ -4456,6 +4498,11 @@ impl DomMaps {
       } else {
         containing_shadow_root
       };
+      stack
+        .try_reserve(node.children.len())
+        .map_err(|_| RenderError::PaintFailed {
+          operation: "DOM map allocation failed".to_string(),
+        })?;
       for child in node.children.iter().rev() {
         stack.push((child, Some(id), child_shadow_root));
       }
