@@ -25,6 +25,7 @@ fn text_control(kind: TextControlKind, appearance: Appearance, value: &str) -> F
     placeholder_style: None,
     slider_thumb_style: None,
     slider_track_style: None,
+    file_selector_button_style: None,
   }
 }
 

@@ -37,6 +37,7 @@ fn placeholder_style_from_form_control_kind_is_used() {
     placeholder_style: None,
     slider_thumb_style: None,
     slider_track_style: None,
+    file_selector_button_style: None,
   };
 
   let fragment = FragmentNode::new_with_style(
@@ -69,4 +70,3 @@ fn placeholder_style_from_form_control_kind_is_used() {
     text_items.iter().map(|text| text.color).collect::<Vec<_>>()
   );
 }
-

@@ -552,6 +552,8 @@ pub enum PseudoElement {
   Backdrop,
   /// Placeholder text for form controls (input/textarea).
   Placeholder,
+  /// File upload button pseudo-element for `<input type="file">` (vendor aliases mapped here).
+  FileSelectorButton,
   Selection,
   MozFocusInner,
   MozFocusOuter,
@@ -632,6 +634,7 @@ impl ToCss for PseudoElement {
       PseudoElement::FootnoteMarker => dest.write_str("::footnote-marker"),
       PseudoElement::Backdrop => dest.write_str("::backdrop"),
       PseudoElement::Placeholder => dest.write_str("::placeholder"),
+      PseudoElement::FileSelectorButton => dest.write_str("::file-selector-button"),
       PseudoElement::Selection => dest.write_str("::selection"),
       PseudoElement::MozFocusInner => dest.write_str("::-moz-focus-inner"),
       PseudoElement::MozFocusOuter => dest.write_str("::-moz-focus-outer"),
@@ -734,6 +737,8 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
       | "-ms-input-placeholder" => true,
+      // File input upload button.
+      "file-selector-button" | "-webkit-file-upload-button" => true,
       "-moz-focus-inner" => true,
       "-moz-focus-outer" => true,
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
@@ -983,6 +988,10 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
       | "-ms-input-placeholder" => Ok(PseudoElement::Placeholder),
+      // `::file-selector-button` is the standards-track spelling; accept the WebKit vendor alias
+      // and canonicalize to the standard name so selector lists containing vendor variants do not
+      // invalidate the rule.
+      "file-selector-button" | "-webkit-file-upload-button" => Ok(PseudoElement::FileSelectorButton),
       "-moz-focus-inner" => Ok(PseudoElement::MozFocusInner),
       "-moz-focus-outer" => Ok(PseudoElement::MozFocusOuter),
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
@@ -1576,6 +1585,16 @@ mod tests {
       );
     }
 
+    for name in ["file-selector-button", "-webkit-file-upload-button"] {
+      assert_eq!(
+        parser
+          .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
+          .unwrap(),
+        PseudoElement::FileSelectorButton,
+        "{name} should map to ::file-selector-button"
+      );
+    }
+
     assert_eq!(
       parser
         .parse_pseudo_element(loc, cssparser::CowRcStr::from("-moz-focus-inner"))
@@ -1673,6 +1692,15 @@ mod tests {
       PseudoElement::SliderTrack
     );
     assert_eq!(pseudo_for("input::-ms-track"), PseudoElement::SliderTrack);
+
+    assert_eq!(
+      pseudo_for("input::file-selector-button"),
+      PseudoElement::FileSelectorButton
+    );
+    assert_eq!(
+      pseudo_for("input::-webkit-file-upload-button"),
+      PseudoElement::FileSelectorButton
+    );
   }
 
   #[test]
@@ -2183,6 +2211,10 @@ mod tests {
     assert_eq!(part.to_css_string(), "::part(name)");
 
     assert_eq!(PseudoElement::Placeholder.to_css_string(), "::placeholder");
+    assert_eq!(
+      PseudoElement::FileSelectorButton.to_css_string(),
+      "::file-selector-button"
+    );
     assert_eq!(PseudoElement::Selection.to_css_string(), "::selection");
     assert_eq!(PseudoElement::SliderThumb.to_css_string(), "::-webkit-slider-thumb");
     assert_eq!(
@@ -2218,6 +2250,16 @@ mod tests {
       .expect("parse moz range track selector");
     let selector = list.slice().first().expect("one selector");
     assert_eq!(selector.pseudo_element(), Some(&PseudoElement::SliderTrack));
+
+    let mut input = ParserInput::new("input::file-selector-button");
+    let mut parser = Parser::new(&mut input);
+    let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+      .expect("parse file-selector-button selector");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(
+      selector.pseudo_element(),
+      Some(&PseudoElement::FileSelectorButton)
+    );
   }
 
   #[test]
@@ -2271,6 +2313,19 @@ mod tests {
         selector.pseudo_element(),
         Some(&PseudoElement::SliderTrack),
         "{selector_text} should parse as slider track"
+      );
+    }
+
+    for selector_text in ["input:file-selector-button", "input:-webkit-file-upload-button"] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+        .expect("parse file selector button selector");
+      let selector = list.slice().first().expect("one selector");
+      assert_eq!(
+        selector.pseudo_element(),
+        Some(&PseudoElement::FileSelectorButton),
+        "{selector_text} should parse as ::file-selector-button"
       );
     }
 
@@ -2373,6 +2428,17 @@ mod tests {
     let selector = list.slice().first().expect("one selector");
     assert_eq!(selector.pseudo_element(), Some(&PseudoElement::Placeholder));
     assert_eq!(selector.to_css_string(), "input::placeholder");
+  }
+
+  #[test]
+  fn parses_file_selector_button_pseudo_element_aliases() {
+    let list = parse_selector_list("input::-webkit-file-upload-button");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(
+      selector.pseudo_element(),
+      Some(&PseudoElement::FileSelectorButton)
+    );
+    assert_eq!(selector.to_css_string(), "input::file-selector-button");
   }
 
   #[test]

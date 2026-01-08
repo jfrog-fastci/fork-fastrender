@@ -12442,6 +12442,7 @@ mod tests {
         placeholder_style: None,
         slider_thumb_style: None,
         slider_track_style: None,
+        file_selector_button_style: None,
         disabled: false,
         focused: false,
         focus_visible: false,

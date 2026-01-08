@@ -7890,6 +7890,8 @@ pub struct StyledNode {
   pub marker_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::placeholder pseudo-element (form controls only)
   pub placeholder_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for ::file-selector-button pseudo-element (file inputs only)
+  pub file_selector_button_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::footnote-call pseudo-element (GCPM footnotes)
   pub footnote_call_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::footnote-marker pseudo-element (GCPM footnotes)
@@ -7921,6 +7923,7 @@ impl Clone for StyledNode {
         after_styles: node.after_styles.clone(),
         marker_styles: node.marker_styles.clone(),
         placeholder_styles: node.placeholder_styles.clone(),
+        file_selector_button_styles: node.file_selector_button_styles.clone(),
         footnote_call_styles: node.footnote_call_styles.clone(),
         footnote_marker_styles: node.footnote_marker_styles.clone(),
         first_line_styles: node.first_line_styles.clone(),
@@ -11388,6 +11391,20 @@ fn is_input_type_range(node: &DomNode) -> bool {
   )
 }
 
+fn is_input_type_file(node: &DomNode) -> bool {
+  let Some(tag) = node.tag_name() else {
+    return false;
+  };
+  if !tag.eq_ignore_ascii_case("input") {
+    return false;
+  }
+
+  matches!(
+    node.get_attribute_ref("type"),
+    Some(t) if t.eq_ignore_ascii_case("file")
+  )
+}
+
 fn placeholder_is_shown(node: &DomNode) -> bool {
   let Some(tag) = node.tag_name() else {
     return false;
@@ -11499,9 +11516,10 @@ fn compute_form_control_pseudo_styles(
   Option<Arc<ComputedStyle>>,
   Option<Arc<ComputedStyle>>,
   Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
 ) {
   if !node.is_element() {
-    return (None, None, None);
+    return (None, None, None, None);
   }
   let container_query_ancestor_ids =
     container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
@@ -11589,7 +11607,41 @@ fn compute_form_control_pseudo_styles(
     (None, None)
   };
 
-  (placeholder_styles, slider_thumb_styles, slider_track_styles)
+  let file_selector_button_styles = if is_input_type_file(node) {
+    compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      container_query_ancestor_ids.as_ref(),
+      node_id,
+      container_ctx,
+      dom_maps,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::FileSelectorButton,
+      false,
+    )
+    .map(Arc::new)
+  } else {
+    None
+  };
+
+  (
+    placeholder_styles,
+    slider_thumb_styles,
+    slider_track_styles,
+    file_selector_button_styles,
+  )
 }
 
 #[inline(never)]
@@ -12015,7 +12067,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         color_scheme_pref,
         false,
       );
-    let (placeholder_styles, slider_thumb_styles, slider_track_styles) =
+    let (placeholder_styles, slider_thumb_styles, slider_track_styles, file_selector_button_styles) =
       compute_form_control_pseudo_styles(
         frame.node,
         rule_scopes,
@@ -12119,6 +12171,7 @@ fn apply_styles_internal_with_ancestors<'a>(
       after_styles,
       marker_styles,
       placeholder_styles,
+      file_selector_button_styles,
       footnote_call_styles,
       footnote_marker_styles,
       first_line_styles,
@@ -14567,6 +14620,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -14588,6 +14642,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -14658,6 +14713,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -14681,6 +14737,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -30753,6 +30810,9 @@ fn compute_pseudo_element_styles(
       }
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
         styles.display = Display::Block;
+      }
+      PseudoElement::FileSelectorButton => {
+        styles.display = Display::InlineBlock;
       }
       PseudoElement::Placeholder => {
         styles.display = Display::Inline;

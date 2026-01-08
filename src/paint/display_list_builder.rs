@@ -9319,6 +9319,146 @@ impl DisplayListBuilder {
         let _ = emit_text_aligned(self, &label, &text_style, rect, true, true);
         true
       }
+      FormControlKind::File { value } => {
+        let appearance_none = matches!(control.appearance, Appearance::None);
+        let button_pseudo_style = control.file_selector_button_style.as_deref();
+
+        let button_label = "Choose File";
+        let file_label = value
+          .as_deref()
+          .filter(|v| !v.is_empty())
+          .map(|v| {
+            let name = v
+              .rsplit(|c| c == '/' || c == '\\')
+              .next()
+              .unwrap_or(v);
+            if name.is_empty() { v } else { name }
+          })
+          .unwrap_or("No file chosen");
+
+        let base_color = if control.invalid { accent } else { style.color };
+        let mut file_style = style.clone();
+        file_style.color = if control.disabled {
+          base_color.with_alpha(0.5)
+        } else {
+          base_color
+        };
+
+        let mut button_text_style = button_pseudo_style
+          .map(|s| (*s).clone())
+          .unwrap_or_else(|| style.clone());
+        if button_pseudo_style.is_none() {
+          button_text_style.color = if control.disabled {
+            base_color.with_alpha(0.5)
+          } else {
+            base_color
+          };
+        }
+
+        let rect = inset_rect(content_rect, 2.0);
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+          return true;
+        }
+
+        let viewport = self.viewport;
+        let resolve_px = |style: &ComputedStyle, len: Length, percentage_base: f32| -> f32 {
+          Self::resolve_length_for_paint(
+            &len,
+            style.font_size,
+            style.root_font_size,
+            percentage_base,
+            viewport,
+          )
+        };
+
+        let measured_button_text_w =
+          measure_shaped_advance(self, button_label, &button_text_style);
+        let default_button_w = (measured_button_text_w + button_text_style.font_size * 1.4)
+          .max(button_text_style.font_size * 3.0)
+          .min(rect.width());
+        let button_w = button_pseudo_style
+          .and_then(|style| {
+            style
+              .width
+              .map(|len| resolve_px(style, len, rect.width()))
+              .filter(|px| px.is_finite() && *px > 0.0)
+          })
+          .unwrap_or(default_button_w)
+          .min(rect.width());
+
+        let button_h = button_pseudo_style
+          .and_then(|style| {
+            style
+              .height
+              .map(|len| resolve_px(style, len, rect.height()))
+              .filter(|px| px.is_finite() && *px > 0.0)
+          })
+          .unwrap_or(rect.height())
+          .min(rect.height());
+
+        let button_rect = Rect::from_xywh(
+          rect.x(),
+          rect.y() + (rect.height() - button_h) / 2.0,
+          button_w,
+          button_h,
+        );
+        let gap = 6.0_f32.min(rect.width().max(0.0));
+        let file_rect = Rect::from_xywh(
+          (button_rect.max_x() + gap).min(rect.max_x()),
+          rect.y(),
+          (rect.max_x() - (button_rect.max_x() + gap)).max(0.0),
+          rect.height(),
+        );
+
+        if let Some(clip) = content_clip.as_ref() {
+          self.list.push(DisplayItem::PushClip(clip.clone()));
+        }
+
+        if let Some(button_style) = button_pseudo_style {
+          self.emit_box_shadows_from_style(button_rect, button_style, false);
+          self.emit_background_from_style(button_rect, button_style);
+          self.emit_box_shadows_from_style(button_rect, button_style, true);
+          self.emit_border_from_style(button_rect, button_style);
+        } else if !appearance_none {
+          let button_bg = if control.disabled {
+            Rgba::rgb(235, 235, 235)
+          } else {
+            Rgba::rgb(245, 245, 245)
+          };
+          let border = Rgba::rgb(180, 180, 180);
+          let radius = BorderRadii::uniform((button_rect.height() / 6.0).max(2.0));
+          self
+            .list
+            .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+              rect: button_rect,
+              color: button_bg,
+              radii: radius,
+            }));
+          self
+            .list
+            .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
+              rect: button_rect,
+              color: border,
+              width: 1.0,
+              radii: radius,
+            }));
+        }
+
+        if button_rect.width() > 0.0 && button_rect.height() > 0.0 {
+          let _ = emit_text_aligned(self, button_label, &button_text_style, button_rect, true, true);
+        }
+
+        if file_rect.width() > 0.0 && file_rect.height() > 0.0 {
+          let text_rect = inset_rect(file_rect, 2.0);
+          let _ = emit_text_aligned(self, file_label, &file_style, text_rect, false, true);
+        }
+
+        if content_clip.is_some() {
+          self.list.push(DisplayItem::PopClip);
+        }
+
+        true
+      }
       FormControlKind::Unknown { label } => {
         if let Some(text) = label {
           let rect = content_rect;

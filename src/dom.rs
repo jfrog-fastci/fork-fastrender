@@ -6343,6 +6343,20 @@ impl<'a> Element for ElementRef<'a> {
           _ => false,
         }
       }
+      PseudoElement::FileSelectorButton => {
+        if !self.is_html_element() {
+          return false;
+        }
+
+        match self.node.tag_name() {
+          Some(tag) if tag.eq_ignore_ascii_case("input") => self
+            .node
+            .get_attribute_ref("type")
+            .unwrap_or("text")
+            .eq_ignore_ascii_case("file"),
+          _ => false,
+        }
+      }
       // These pseudo-elements are supported for all elements; filtering
       // based on box generation happens later in the pipeline.
       PseudoElement::Before

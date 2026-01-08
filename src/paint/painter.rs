@@ -1149,6 +1149,7 @@ impl Painter {
               (line_height * 2.0).max(char_width * 6.0),
               line_height.max(16.0_f32.min(line_height * 1.2)),
             ),
+            FormControlKind::File { .. } => Size::new(char_width * 24.0, line_height.max(16.0)),
             FormControlKind::Unknown { .. } => Size::new(char_width * 12.0, line_height),
           };
           replaced_box.intrinsic_size = Some(size);
@@ -8404,6 +8405,203 @@ impl Painter {
           rect
         };
         let _ = self.paint_alt_text(&label, &text_style, label_rect, clip_mask);
+        true
+      }
+      FormControlKind::File { value } => {
+        let appearance_none = matches!(control.appearance, Appearance::None);
+        let button_pseudo_style = control.file_selector_button_style.as_deref();
+
+        let button_label = "Choose File";
+        let file_label = value
+          .as_deref()
+          .filter(|v| !v.is_empty())
+          .map(|v| {
+            let name = v
+              .rsplit(|c| c == '/' || c == '\\')
+              .next()
+              .unwrap_or(v);
+            if name.is_empty() { v } else { name }
+          })
+          .unwrap_or("No file chosen");
+
+        let base_color = if control.invalid { accent } else { style.color };
+        let mut file_style = style.clone();
+        file_style.color = if control.disabled {
+          base_color.with_alpha(0.5)
+        } else {
+          base_color
+        };
+
+        let mut button_text_style = button_pseudo_style
+          .map(|s| (*s).clone())
+          .unwrap_or_else(|| style.clone());
+        if button_pseudo_style.is_none() {
+          button_text_style.color = file_style.color;
+        }
+
+        let rect = inset_rect(content_rect, 2.0);
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+          return true;
+        }
+
+        let resolve_px = |style: &ComputedStyle, len: Length, percentage_base: f32| -> f32 {
+          resolve_length_for_paint(&len, style.font_size, style.root_font_size, percentage_base, viewport)
+        };
+
+        let measured_button_text_w = measure_shaped_advance(self, button_label, &button_text_style);
+        let default_button_w = (measured_button_text_w + button_text_style.font_size * 1.4)
+          .max(button_text_style.font_size * 3.0)
+          .min(rect.width());
+        let button_w = button_pseudo_style
+          .and_then(|style| {
+            style
+              .width
+              .map(|len| resolve_px(style, len, rect.width()))
+              .filter(|px| px.is_finite() && *px > 0.0)
+          })
+          .unwrap_or(default_button_w)
+          .min(rect.width());
+
+        let button_h = button_pseudo_style
+          .and_then(|style| {
+            style
+              .height
+              .map(|len| resolve_px(style, len, rect.height()))
+              .filter(|px| px.is_finite() && *px > 0.0)
+          })
+          .unwrap_or(rect.height())
+          .min(rect.height());
+
+        let button_rect = Rect::from_xywh(
+          rect.x(),
+          rect.y() + (rect.height() - button_h) / 2.0,
+          button_w,
+          button_h,
+        );
+        let gap = 6.0_f32.min(rect.width().max(0.0));
+        let file_rect = Rect::from_xywh(
+          (button_rect.max_x() + gap).min(rect.max_x()),
+          rect.y(),
+          (rect.max_x() - (button_rect.max_x() + gap)).max(0.0),
+          rect.height(),
+        );
+
+        if let Some(button_style) = button_pseudo_style {
+          let button_radii = resolve_border_radii(Some(button_style), button_rect);
+          let device_button_rect = self.device_rect(button_rect);
+          let device_radii = self.device_radii(button_radii);
+          fill_rounded_rect_masked(
+            &mut self.pixmap,
+            device_button_rect,
+            device_radii,
+            button_style.background_color,
+            clip_mask,
+          );
+
+          let border_width = resolve_length_for_paint(
+            &button_style.used_border_top_width(),
+            button_style.font_size,
+            button_style.root_font_size,
+            button_rect.width().max(0.0),
+            viewport,
+          )
+          .max(0.0);
+          let border_style = button_style.border_top_style;
+          let border_color = button_style.border_top_color;
+          if border_width > 0.0
+            && !matches!(
+              border_style,
+              crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden
+            )
+            && !border_color.is_transparent()
+          {
+            if let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+              device_button_rect.x(),
+              device_button_rect.y(),
+              device_button_rect.width(),
+              device_button_rect.height(),
+              &device_radii,
+            ) {
+              let mut paint = Paint::default();
+              paint.set_color(tiny_skia::Color::from_rgba8(
+                border_color.r,
+                border_color.g,
+                border_color.b,
+                border_color.alpha_u8(),
+              ));
+              paint.anti_alias = true;
+              let stroke = tiny_skia::Stroke {
+                width: border_width * self.scale,
+                ..Default::default()
+              };
+              self
+                .pixmap
+                .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+            }
+          }
+        } else if !appearance_none {
+          let button_bg = if control.disabled {
+            Rgba::rgb(235, 235, 235)
+          } else {
+            Rgba::rgb(245, 245, 245)
+          };
+          let border_color = Rgba::rgb(180, 180, 180);
+          let radii = BorderRadii::uniform((button_rect.height() / 6.0).max(2.0));
+          let device_rect = self.device_rect(button_rect);
+          let device_radii = self.device_radii(radii);
+          fill_rounded_rect_masked(
+            &mut self.pixmap,
+            device_rect,
+            device_radii,
+            button_bg,
+            clip_mask,
+          );
+
+          if let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+            device_rect.x(),
+            device_rect.y(),
+            device_rect.width(),
+            device_rect.height(),
+            &device_radii,
+          ) {
+            let mut paint = Paint::default();
+            paint.set_color(tiny_skia::Color::from_rgba8(
+              border_color.r,
+              border_color.g,
+              border_color.b,
+              border_color.alpha_u8(),
+            ));
+            paint.anti_alias = true;
+            let stroke = tiny_skia::Stroke {
+              width: 1.0 * self.scale,
+              ..Default::default()
+            };
+            self
+              .pixmap
+              .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+          }
+        }
+
+        if button_rect.width() > 0.0 && button_rect.height() > 0.0 {
+          let label_rect = if let Some(size) = self.measure_alt_text(button_label, &button_text_style) {
+            let start_x = button_rect.x() + ((button_rect.width() - size.width).max(0.0) / 2.0);
+            Rect::from_xywh(
+              start_x,
+              button_rect.y(),
+              size.width.min(button_rect.width()),
+              button_rect.height(),
+            )
+          } else {
+            button_rect
+          };
+          let _ = self.paint_alt_text(button_label, &button_text_style, label_rect, clip_mask);
+        }
+
+        if file_rect.width() > 0.0 && file_rect.height() > 0.0 {
+          let text_rect = inset_rect(file_rect, 2.0);
+          let _ = self.paint_alt_text(file_label, &file_style, text_rect, clip_mask);
+        }
+
         true
       }
       FormControlKind::Unknown { label } => {
@@ -16854,6 +17052,7 @@ mod tests {
       placeholder_style: None,
       slider_thumb_style: Some(Arc::new(thumb_style)),
       slider_track_style: Some(Arc::new(track_style)),
+      file_selector_button_style: None,
     };
 
     let mut painter = Painter::new(100, 30, Rgba::WHITE).expect("painter");

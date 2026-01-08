@@ -11049,6 +11049,7 @@ impl FastRender {
               (line_height * 2.0).max(char_width * 6.0),
               line_height.max(16.0_f32.min(line_height * 1.2)),
             ),
+            FormControlKind::File { .. } => Size::new(char_width * 24.0, line_height.max(16.0)),
             FormControlKind::Unknown { .. } => Size::new(char_width * 12.0, line_height),
           };
 
@@ -14050,6 +14051,7 @@ pub(crate) fn render_html_with_shared_resources(
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -18534,6 +18536,7 @@ pub(crate) fn render_html_with_shared_resources(
       placeholder_style: None,
       slider_thumb_style: None,
       slider_track_style: None,
+      file_selector_button_style: None,
       disabled: false,
       focused: false,
       focus_visible: false,

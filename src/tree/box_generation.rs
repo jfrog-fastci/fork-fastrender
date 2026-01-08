@@ -4307,6 +4307,13 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         value: color_value,
         raw: raw_value.map(|v| v.to_string()),
       }
+    } else if input_type.eq_ignore_ascii_case("file") {
+      let value = styled
+        .node
+        .get_attribute_ref("value")
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string());
+      FormControlKind::File { value }
     } else {
       let size_attr = styled
         .node
@@ -4361,6 +4368,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
           placeholder_style: None,
           slider_thumb_style: None,
           slider_track_style: None,
+          file_selector_button_style: None,
           disabled,
           focused,
           focus_visible,
@@ -4378,14 +4386,17 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       }
     };
 
-    let (placeholder_style, slider_thumb_style, slider_track_style) = match &control {
-      FormControlKind::Text { .. } => (styled.placeholder_styles.clone(), None, None),
-      FormControlKind::Range { .. } => (
-        None,
-        styled.slider_thumb_styles.clone(),
-        styled.slider_track_styles.clone(),
-      ),
-      _ => (None, None, None),
+    let (placeholder_style, slider_thumb_style, slider_track_style, file_selector_button_style) =
+      match &control {
+        FormControlKind::Text { .. } => (styled.placeholder_styles.clone(), None, None, None),
+        FormControlKind::Range { .. } => (
+          None,
+          styled.slider_thumb_styles.clone(),
+          styled.slider_track_styles.clone(),
+          None,
+        ),
+        FormControlKind::File { .. } => (None, None, None, styled.file_selector_button_styles.clone()),
+        _ => (None, None, None, None),
     };
 
     Some(FormControl {
@@ -4394,6 +4405,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       placeholder_style,
       slider_thumb_style,
       slider_track_style,
+      file_selector_button_style,
       disabled,
       focused,
       focus_visible,
@@ -4425,6 +4437,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       placeholder_style: styled.placeholder_styles.clone(),
       slider_thumb_style: None,
       slider_track_style: None,
+      file_selector_button_style: None,
       disabled,
       focused,
       focus_visible,
@@ -4439,6 +4452,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       placeholder_style: None,
       slider_thumb_style: None,
       slider_track_style: None,
+      file_selector_button_style: None,
       disabled,
       focused,
       focus_visible,
@@ -4454,6 +4468,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       placeholder_style: None,
       slider_thumb_style: None,
       slider_track_style: None,
+      file_selector_button_style: None,
       disabled,
       focused,
       focus_visible,
@@ -4915,6 +4930,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -5293,6 +5309,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -5321,6 +5338,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -5383,6 +5401,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -5412,6 +5431,7 @@ mod tests {
       after_styles: None,
       marker_styles: Some(Arc::new(marker_style)),
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -5772,6 +5792,39 @@ mod tests {
       .expect("track pseudo styles should be captured");
     assert_eq!(track_style.height, Some(Length::px(6.0)));
     assert_eq!(track_style.background_color, Rgba::new(1, 2, 3, 1.0));
+  }
+
+  #[test]
+  fn file_form_controls_capture_file_selector_button_pseudo_styles() {
+    use crate::css::parser::parse_stylesheet;
+    use crate::style::color::Rgba;
+
+    let html = "<html><body><input class=\"file\" type=\"file\"></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let stylesheet = parse_stylesheet(
+      ".file::-webkit-file-upload-button { background-color: rgb(11, 22, 33); }",
+    )
+    .expect("parse css");
+    let styled = crate::style::cascade::apply_styles(&dom, &stylesheet);
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_file_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          if matches!(control.control, FormControlKind::File { .. }) {
+            return Some(control);
+          }
+        }
+      }
+      node.children.iter().find_map(find_file_control)
+    }
+
+    let control = find_file_control(&box_tree.root).expect("file input control");
+    let button_style = control
+      .file_selector_button_style
+      .as_ref()
+      .expect("file-selector-button pseudo styles should be captured");
+    assert_eq!(button_style.background_color, Rgba::new(11, 22, 33, 1.0));
   }
 
   #[test]
@@ -6258,6 +6311,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -6323,6 +6377,7 @@ mod tests {
       <input type=\"time\">
       <input type=\"number\" size=\"7\" placeholder=\"sized number\">
       <input type=\"checkbox\" indeterminate=\"true\">
+      <input type=\"file\" value=\"C:\\\\fakepath\\\\hello.txt\">
       <input type=\"foo\" placeholder=\"mystery\" data-fastr-focus-visible=\"true\">
       <input size=\"5\" value=\"sized\">
       <textarea rows=\"4\" cols=\"10\">hi</textarea>
@@ -6446,6 +6501,13 @@ mod tests {
         }
       )),
       "indeterminate checkbox should be captured"
+    );
+    assert!(
+      controls
+        .iter()
+        .any(|c| matches!(&c.control, FormControlKind::File { value }
+        if value.as_deref() == Some("C:\\\\fakepath\\\\hello.txt"))),
+      "file inputs should be captured as file form controls"
     );
     assert!(
       controls
@@ -7106,6 +7168,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -7180,6 +7243,7 @@ mod tests {
       after_styles: None,
       marker_styles: Some(Arc::new(marker_styles)),
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -7247,6 +7311,7 @@ mod tests {
       after_styles: None,
       marker_styles: Some(Arc::new(marker_styles)),
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -7297,6 +7362,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -7367,6 +7433,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -7587,6 +7654,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7614,6 +7682,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7641,6 +7710,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7695,6 +7765,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7722,6 +7793,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7749,6 +7821,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7804,6 +7877,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7831,6 +7905,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7858,6 +7933,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7918,6 +7994,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7945,6 +8022,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -7972,6 +8050,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8033,6 +8112,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8060,6 +8140,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8087,6 +8168,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8138,6 +8220,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8169,6 +8252,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8196,6 +8280,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8223,6 +8308,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8278,6 +8364,7 @@ mod tests {
       after_styles: None,
       marker_styles: Some(Arc::new(marker_style)),
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -8325,6 +8412,7 @@ mod tests {
       styles: style.clone(),
       marker_styles: Some(style.clone()),
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       starting_styles: StartingStyleSet::default(),
@@ -8382,6 +8470,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8434,6 +8523,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8483,6 +8573,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8536,6 +8627,7 @@ mod tests {
       styles: style.clone(),
       marker_styles: Some(style.clone()),
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       starting_styles: StartingStyleSet::default(),
@@ -8591,6 +8683,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8651,6 +8744,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8716,6 +8810,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8778,6 +8873,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8832,6 +8928,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8859,6 +8956,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -8927,6 +9025,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -8949,6 +9048,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -8970,6 +9070,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -9041,6 +9142,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -9063,6 +9165,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -9084,6 +9187,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -9142,6 +9246,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9169,6 +9274,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9196,6 +9302,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9259,6 +9366,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9286,6 +9394,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9313,6 +9422,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9394,6 +9504,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9425,6 +9536,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9452,6 +9564,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9527,6 +9640,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -9549,6 +9663,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -9570,6 +9685,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -9632,6 +9748,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9663,6 +9780,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9690,6 +9808,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9760,6 +9879,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9787,6 +9907,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9814,6 +9935,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9841,6 +9963,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9868,6 +9991,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,
@@ -9938,6 +10062,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -9960,6 +10085,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -9981,6 +10107,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10058,6 +10185,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10080,6 +10208,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -10101,6 +10230,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10162,6 +10292,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10191,6 +10322,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -10213,6 +10345,7 @@ mod tests {
           after_styles: None,
           marker_styles: None,
           placeholder_styles: None,
+          file_selector_button_styles: None,
           footnote_call_styles: None,
           footnote_marker_styles: None,
           first_line_styles: None,
@@ -10251,6 +10384,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10271,6 +10405,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10294,6 +10429,7 @@ mod tests {
           after_styles: None,
           marker_styles: None,
           placeholder_styles: None,
+          file_selector_button_styles: None,
           footnote_call_styles: None,
           footnote_marker_styles: None,
           first_line_styles: None,
@@ -10358,6 +10494,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10385,6 +10522,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10412,6 +10550,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10439,6 +10578,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10498,6 +10638,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10525,6 +10666,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10552,6 +10694,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10579,6 +10722,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10606,6 +10750,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10704,6 +10849,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10732,6 +10878,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -10777,6 +10924,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10805,6 +10953,7 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        file_selector_button_styles: None,
         footnote_call_styles: None,
         footnote_marker_styles: None,
         first_line_styles: None,
@@ -10833,6 +10982,7 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       first_line_styles: None,
@@ -10938,6 +11088,7 @@ mod tests {
       first_line_styles: None,
       first_letter_styles: None,
       placeholder_styles: None,
+      file_selector_button_styles: None,
       footnote_call_styles: None,
       footnote_marker_styles: None,
       slider_thumb_styles: None,

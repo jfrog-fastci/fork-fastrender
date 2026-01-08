@@ -66,6 +66,7 @@ fn baseline_and_control_bottom(
       placeholder_style: None,
       slider_thumb_style: None,
       slider_track_style: None,
+      file_selector_button_style: None,
     }),
     Some(intrinsic_size),
     None,

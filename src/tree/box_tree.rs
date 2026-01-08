@@ -126,6 +126,8 @@ pub struct FormControl {
   pub slider_thumb_style: Option<Arc<ComputedStyle>>,
   /// Computed style for the range track pseudo-element, when relevant.
   pub slider_track_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the `::file-selector-button` pseudo-element, when relevant.
+  pub file_selector_button_style: Option<Arc<ComputedStyle>>,
   /// Whether the control is disabled
   pub disabled: bool,
   /// Whether the control is focused (data-fastr-focus hint)
@@ -207,6 +209,11 @@ pub enum FormControlKind {
     value: crate::style::color::Rgba,
     /// Raw value attribute for fallback text
     raw: Option<String>,
+  },
+  /// File input (<input type=file>)
+  File {
+    /// Raw value attribute (if present); used as a best-effort "selected file" hint.
+    value: Option<String>,
   },
   /// Fallback for unknown input types
   Unknown { label: Option<String> },
