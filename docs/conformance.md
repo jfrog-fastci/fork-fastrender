@@ -5,7 +5,7 @@ FastRender is spec-first: correctness is defined by the HTML/CSS specifications 
 ## Targeted specifications
 
 ### HTML
-- **Parsing**: HTML5 parsing via html5ever's spec-mode tree builder with scripting disabled (`ParseOpts` in `src/dom.rs`).
+- **Parsing**: HTML5 parsing via html5ever's spec-mode tree builder (`ParseOpts` in `src/dom.rs`). Parsing currently runs with scripting disabled, but the conformance target is to run in HTML “scripting enabled” mode when JavaScript support is turned on (parser pauses + `<script>` processing model).
 - **Encoding sniffing**: HTML Living Standard BOM/`Content-Type`/`<meta charset>` sniffing (`src/html/encoding.rs`).
 - **Shadow DOM snapshots**: Static `<template shadowroot>` attachment with slot distribution during parse (`attach_shadow_roots` and `distribute_slots` in `src/dom.rs`).
 - **Base URL & viewport**: `<base href>` resolution and `<meta viewport>` handling (`width`/`height`/`initial`/`min`/`max` scale with zoom clamped to 0.1–10).
@@ -23,17 +23,34 @@ FastRender is spec-first: correctness is defined by the HTML/CSS specifications 
 - **Box decorations**: CSS Backgrounds & Borders 3 (border-radius, border-image, gradients), CSS Masking 1 (mask-*/clip-path), CSS Filters/Backdrop Filters, CSS Transforms (2D/3D + perspective), outline/appearance/cursors.
 - **Typography**: CSS Fonts 4 (feature/variation settings, font-synthesis, font-size-adjust), CSS Text 3/4 (line-breaking, word-break/overflow-wrap, hyphenation, text-decoration, text-combine-upright), counter styles/list markers.
 
+### JavaScript + Web APIs
+
+FastRender is actively moving toward full browser execution as described in [`instructions/javascript_support.md`](../instructions/javascript_support.md). Conformance targets for the JS/web layer are spec-shaped even when still 🚫/⚠️:
+
+- **`<script>` processing model**: HTML script processing model for **classic scripts** first (parser-inserted, `async`/`defer`, ordering, microtask checkpoints). **Module scripts** follow once host hooks exist.
+- **Event loop + microtasks**: HTML event loop semantics (task queues) plus a microtask queue with microtask checkpoints at the HTML-defined points.
+- **Web IDL exposure**: DOM and web APIs exposed to JS via Web IDL rules, ideally via generated bindings from WHATWG IDL sources (see `specs/whatwg-webidl/`).
+- **Timers + Promise job queue**: `setTimeout`/`setInterval` tasks plus Promise job queue / `queueMicrotask` integration.
+- **URL + fetch (incremental)**: WHATWG URL parsing/serialization and an incremental Fetch surface (`fetch()`, `Request`, `Response`, `Headers`) layered on top of the existing network/resource loader.
+
 ## Support matrix (repo reality)
 
 Status legend: ✅ Supported, ⚠️ Partial/targeted, 🚫 Not supported.
 
 | Stage  | Feature area | Status | Implementation | Tests | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Parse | HTML5 tree builder | ✅ | [src/dom.rs](../src/dom.rs) | [tests/dom_compatibility_test.rs](../tests/dom_compatibility_test.rs) | html5ever spec mode, scripting disabled; optional DOM compatibility toggles for legacy class flips (`DomCompatibilityMode`). |
+| Parse | HTML5 tree builder | ✅ | [src/dom.rs](../src/dom.rs) | [tests/dom_compatibility_test.rs](../tests/dom_compatibility_test.rs) | html5ever spec mode; currently parsed with scripting disabled, but will run in HTML “scripting enabled” mode once JS support is enabled. Optional DOM compatibility toggles for legacy class flips (`DomCompatibilityMode`). |
 | Parse | Encoding sniffing | ✅ | [src/html/encoding.rs](../src/html/encoding.rs) | Module tests in [src/html/encoding.rs](../src/html/encoding.rs) | BOM → `Content-Type` → `<meta charset>` scan with Windows-1252 fallback. |
 | Parse | Base URL & meta viewport | ✅ | [src/html/mod.rs](../src/html/mod.rs)<br>[src/html/viewport.rs](../src/html/viewport.rs) | [tests/integration_test.rs](../tests/integration_test.rs) | `<base href>` resolution drives URL absolutization; `<meta name="viewport">` parsed/applied when enabled via `FastRenderConfig::with_meta_viewport`. |
 | Parse | Shadow DOM snapshots | ⚠️ | [src/dom.rs](../src/dom.rs) | [tests/tree/shadow_dom.rs](../tests/tree/shadow_dom.rs) | `<template shadowroot>` is attached eagerly and slots distributed; no runtime attach/detach or JS-driven shadow roots. |
 | Parse | Target fragments | ✅ | [src/dom.rs](../src/dom.rs) | Target pseudo tests in [src/dom.rs](../src/dom.rs) | `with_target_fragment` drives :target/:target-within matching. |
+| JS | ECMAScript execution (engine embed) | 🚫 | — | — | Planned: embed `engines/ecma-rs/` as the JS engine/VM boundary (see [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)). |
+| JS | `<script>` classic scripts | 🚫 | — | — | Planned: HTML classic script processing model (parser-inserted, `async`/`defer`, ordering) with microtask checkpoints. |
+| JS | `<script>` module scripts | 🚫 | — | — | Planned: module scripts after host hooks + module graph caching exist. |
+| JS | Event loop + microtasks | 🚫 | — | — | Planned: HTML event loop task queues plus microtask queue integration (Promise jobs / `queueMicrotask`). |
+| JS/Web | Web IDL bindings (DOM + APIs exposure) | 🚫 | — | — | Planned: generate bindings from IDL sources (`specs/whatwg-webidl/`, DOM/HTML IDL) and expose `Window`/`Document`/`Node`/`Element`/events. |
+| JS/Web | Timers + Promise jobs | 🚫 | — | — | Planned: `setTimeout`/`setInterval` task scheduling + Promise job queue integration. |
+| JS/Web | URL + fetch | ⚠️ | — | — | URL parsing and resource fetching exist for the renderer pipeline; JS-visible `URL`/`URLSearchParams` and `fetch()` are planned and will be layered on top. |
 | Style | Stylesheet parsing | ✅ | [src/css/parser.rs](../src/css/parser.rs) | [tests/css_loader_tests.rs](../tests/css_loader_tests.rs) | `@import`, @media/@supports/@container/@scope/@layer/@page/@font-face/@counter-style/@keyframes; error recovery keeps valid rules. |
 | Style | Selectors level 4 | ✅ | [src/css/selectors.rs](../src/css/selectors.rs) | [tests/style/has_selector_test.rs](../tests/style/has_selector_test.rs) | :is/:where/:has, relative selectors, structural nth-* pseudos, :lang/:dir, :any-link/:target-within, form-state pseudos, ::before/::after/::marker/::backdrop. Hover/focus/visited require `data-fastr-*` hints. |
 | Style | Cascade & inheritance | ✅ | [src/style/cascade.rs](../src/style/cascade.rs) | [tests/style/layer_important_test.rs](../tests/style/layer_important_test.rs) | UA stylesheet + author cascade, custom properties with fallback, cascade layers, scoped styles, counter styles, color-scheme propagation. |
@@ -64,7 +81,7 @@ Status legend: ✅ Supported, ⚠️ Partial/targeted, 🚫 Not supported.
 
 ## Non-goals (reiterated)
 
-- **No JavaScript execution**: FastRender is a static renderer; author scripts are not run. JS-driven DOM/class changes must be mirrored explicitly (e.g., compatibility mode class flips in `docs/notes/dom-compatibility.md`).
+- **No unbounded JavaScript execution**: When JS execution is enabled, it must be interruptible and subject to budgets so hostile scripts cannot hang the process (see [`instructions/javascript_support.md`](../instructions/javascript_support.md)).
 - **No page-specific hacks by default**: Site compatibility shims are opt-in (`CompatProfile::SiteCompatibility`), and the pipeline stays spec-faithful otherwise (`docs/notes/site-compat-hacks.md`).
 - **No “table as flex/grid” shortcuts**: Tables use the native algorithms; flex/grid substitutions are invalid (`docs/research/table-layout-spec.md`).
 - **No pixel-nudging after layout**: The pipeline is staged (parse → style → box → layout → paint). Paint should not override layout decisions.
