@@ -4,8 +4,13 @@ use fastrender::style::cascade::{
   apply_styles_with_media_target_and_imports, ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
 use fastrender::style::media::MediaContext;
+use fastrender::style::custom_properties::CustomPropertyRegistry;
+use fastrender::style::custom_properties::PropertyRule;
 use fastrender::style::types::{ContainerType, LineHeight, WritingMode};
 use fastrender::style::values::CustomPropertyValue;
+use fastrender::style::values::CustomPropertySyntax;
+use fastrender::style::values::CustomPropertyTypedValue;
+use fastrender::style::values::Length;
 use fastrender::style::values::LengthUnit;
 use fastrender::style::ComputedStyle;
 use std::collections::HashMap;
@@ -824,6 +829,110 @@ fn not_container_style_query_plain_with_unknown_block_size_does_not_match() {
 
   let mut style = ComputedStyle::default();
   style.container_type = ContainerType::Size;
+  let styles = Arc::new(style);
+
+  let styled = cascade_with_containers(
+    HTML,
+    css,
+    vec![(
+      "c",
+      ContainerQueryInfo {
+        width: 500.0,
+        height: f32::NAN,
+        inline_size: 500.0,
+        block_size: f32::NAN,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: styles.font_size,
+        styles,
+      },
+    )],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
+fn container_style_query_custom_property_container_units_with_unknown_block_size_do_not_match() {
+  let css = r#"
+    .target { display: block; }
+    @container style(--x: 1cqb) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.container_type = ContainerType::Size;
+  let mut registry = CustomPropertyRegistry::new();
+  registry.register(PropertyRule {
+    name: "--x".to_string(),
+    syntax: CustomPropertySyntax::Length,
+    inherits: false,
+    initial_value: Some(CustomPropertyValue::new(
+      "0px",
+      Some(CustomPropertyTypedValue::Length(Length::px(0.0))),
+    )),
+  });
+  style.custom_property_registry = Arc::new(registry);
+  style.custom_properties.insert(
+    Arc::from("--x"),
+    CustomPropertyValue::new(
+      "1cqb",
+      Some(CustomPropertyTypedValue::Length(Length::new(1.0, LengthUnit::Cqb))),
+    ),
+  );
+  let styles = Arc::new(style);
+
+  let styled = cascade_with_containers(
+    HTML,
+    css,
+    vec![(
+      "c",
+      ContainerQueryInfo {
+        width: 500.0,
+        height: f32::NAN,
+        inline_size: 500.0,
+        block_size: f32::NAN,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: styles.font_size,
+        styles,
+      },
+    )],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
+fn not_container_style_query_custom_property_with_unknown_block_size_does_not_match() {
+  let css = r#"
+    .target { display: block; }
+    @container not style(--x: 1cqb) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.container_type = ContainerType::Size;
+  let mut registry = CustomPropertyRegistry::new();
+  registry.register(PropertyRule {
+    name: "--x".to_string(),
+    syntax: CustomPropertySyntax::Length,
+    inherits: false,
+    initial_value: Some(CustomPropertyValue::new(
+      "0px",
+      Some(CustomPropertyTypedValue::Length(Length::px(0.0))),
+    )),
+  });
+  style.custom_property_registry = Arc::new(registry);
+  style.custom_properties.insert(
+    Arc::from("--x"),
+    CustomPropertyValue::new(
+      "2cqb",
+      Some(CustomPropertyTypedValue::Length(Length::new(2.0, LengthUnit::Cqb))),
+    ),
+  );
   let styles = Arc::new(style);
 
   let styled = cascade_with_containers(

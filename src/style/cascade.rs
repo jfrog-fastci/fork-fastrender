@@ -1454,6 +1454,39 @@ fn cq_required_bases_from_value(value: &str) -> u8 {
   scan(&mut parser)
 }
 
+fn cq_required_bases_from_length(length: &Length) -> u8 {
+  let mut mask = 0u8;
+  if let Some(calc) = length.calc {
+    for term in calc.terms() {
+      if term.value == 0.0 {
+        continue;
+      }
+      mask |= match term.unit {
+        LengthUnit::Cqw => CQ_VALUE_BASE_CQW,
+        LengthUnit::Cqh => CQ_VALUE_BASE_CQH,
+        LengthUnit::Cqi => CQ_VALUE_BASE_CQI,
+        LengthUnit::Cqb => CQ_VALUE_BASE_CQB,
+        LengthUnit::Cqmin | LengthUnit::Cqmax => CQ_VALUE_BASE_CQI | CQ_VALUE_BASE_CQB,
+        _ => 0,
+      };
+    }
+    return mask;
+  }
+
+  if length.value == 0.0 {
+    return 0;
+  }
+
+  match length.unit {
+    LengthUnit::Cqw => CQ_VALUE_BASE_CQW,
+    LengthUnit::Cqh => CQ_VALUE_BASE_CQH,
+    LengthUnit::Cqi => CQ_VALUE_BASE_CQI,
+    LengthUnit::Cqb => CQ_VALUE_BASE_CQB,
+    LengthUnit::Cqmin | LengthUnit::Cqmax => CQ_VALUE_BASE_CQI | CQ_VALUE_BASE_CQB,
+    _ => 0,
+  }
+}
+
 fn parse_overflow_keyword(value: &str) -> Option<Overflow> {
   if value.eq_ignore_ascii_case("visible") {
     Some(Overflow::Visible)
@@ -1533,6 +1566,25 @@ fn eval_plain_style_feature(
     // Prefer typed comparisons for registered properties when possible.
     if let Some(rule) = registry_entry {
       if let Some(expected_typed) = rule.syntax.parse_value(expected_resolved.trim()) {
+        if let crate::style::values::CustomPropertyTypedValue::Length(expected_len) = &expected_typed
+        {
+          let mut required = cq_required_bases_from_length(expected_len);
+          if let Some(crate::style::values::CustomPropertyTypedValue::Length(actual_len)) =
+            actual.typed.as_ref()
+          {
+            required |= cq_required_bases_from_length(actual_len);
+          }
+          if required != 0 {
+            let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
+            if (required & CQ_VALUE_BASE_CQW) != 0 && !cqw.is_finite()
+              || (required & CQ_VALUE_BASE_CQH) != 0 && !cqh.is_finite()
+              || (required & CQ_VALUE_BASE_CQI) != 0 && !cqi.is_finite()
+              || (required & CQ_VALUE_BASE_CQB) != 0 && !cqb.is_finite()
+            {
+              return QueryResult::Unknown;
+            }
+          }
+        }
         if let Some(actual_typed) = actual.typed.as_ref() {
           return QueryResult::from_bool(actual_typed == &expected_typed);
         }
