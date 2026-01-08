@@ -6576,6 +6576,15 @@ mod tests {
   use unicode_bidi::Level;
   use url::Url;
 
+  fn dejavu_sans_fixture_context() -> FontContext {
+    let mut db = FontDatabase::empty();
+    db
+      .load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
+      .expect("fixture font should load");
+    db.refresh_generic_fallbacks();
+    FontContext::with_database(Arc::new(db))
+  }
+
   fn system_font_for_char(ch: char) -> Option<(Vec<u8>, String)> {
     let db = FontDatabase::new();
     let id = db
@@ -8012,13 +8021,7 @@ mod tests {
 
   #[test]
   fn small_caps_shapes_lowercase_with_scaled_size() {
-    let mut db = FontDatabase::empty();
-    db
-      .load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
-      .expect("fixture font should load");
-    db.refresh_generic_fallbacks();
-    let ctx = FontContext::with_database(Arc::new(db));
-
+    let ctx = dejavu_sans_fixture_context();
     let mut style = ComputedStyle::default();
     style.font_family = vec!["DejaVu Sans".to_string()].into();
     style.font_variant = FontVariant::SmallCaps;
@@ -8030,13 +8033,7 @@ mod tests {
 
   #[test]
   fn small_caps_keeps_combining_marks_in_scaled_run() {
-    let mut db = FontDatabase::empty();
-    db
-      .load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
-      .expect("fixture font should load");
-    db.refresh_generic_fallbacks();
-    let ctx = FontContext::with_database(Arc::new(db));
-
+    let ctx = dejavu_sans_fixture_context();
     let mut style = ComputedStyle::default();
     style.font_family = vec!["DejaVu Sans".to_string()].into();
     style.font_variant = FontVariant::SmallCaps;
@@ -8057,10 +8054,11 @@ mod tests {
   #[test]
   fn font_synthesis_none_disables_synthetic_small_caps() {
     let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
     style.font_variant_caps = FontVariantCaps::SmallCaps;
     style.font_size = 18.0;
     style.font_synthesis.small_caps = false;
-    let ctx = FontContext::new();
+    let ctx = dejavu_sans_fixture_context();
     let shaped = ShapingPipeline::new().shape("Abc", &style, &ctx).unwrap();
     assert_eq!(
       shaped.len(),
@@ -8074,26 +8072,14 @@ mod tests {
   fn synthetic_super_position_applies_without_feature() {
     let pipeline = ShapingPipeline::new();
     let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
     style.font_variant_position = FontVariantPosition::Super;
     style.font_size = 20.0;
 
-    let ctx = FontContext::new();
-    if !ctx.has_fonts() {
-      return;
-    }
-
-    let runs = match pipeline.shape("x", &style, &ctx) {
-      Ok(r) => r,
-      Err(_) => return,
-    };
-    if runs.is_empty() {
-      return;
-    }
+    let ctx = dejavu_sans_fixture_context();
+    let runs = pipeline.shape("x", &style, &ctx).expect("shape superscript");
+    assert!(!runs.is_empty(), "expected at least one shaped run");
     let run = &runs[0];
-    if ctx.supports_feature(&run.font, *b"sups") {
-      // Genuine superscript support means no synthesis needed.
-      return;
-    }
 
     assert!(
       run.font_size < style.font_size,
@@ -8109,26 +8095,15 @@ mod tests {
   fn font_synthesis_position_none_disables_synthetic_shift() {
     let pipeline = ShapingPipeline::new();
     let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
+    style.font_size = 20.0;
     style.font_variant_position = FontVariantPosition::Super;
     style.font_synthesis.position = false;
 
-    let ctx = FontContext::new();
-    if !ctx.has_fonts() {
-      return;
-    }
-
-    let runs = match pipeline.shape("x", &style, &ctx) {
-      Ok(r) => r,
-      Err(_) => return,
-    };
-    if runs.is_empty() {
-      return;
-    }
+    let ctx = dejavu_sans_fixture_context();
+    let runs = pipeline.shape("x", &style, &ctx).expect("shape superscript");
+    assert!(!runs.is_empty(), "expected at least one shaped run");
     let run = &runs[0];
-    if ctx.supports_feature(&run.font, *b"sups") {
-      // Real superscript glyphs remain allowed.
-      return;
-    }
 
     assert!((run.font_size - style.font_size).abs() < 0.01);
     assert!(
