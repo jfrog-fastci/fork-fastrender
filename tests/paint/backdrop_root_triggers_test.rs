@@ -322,6 +322,75 @@ fn isolation_isolate_does_not_trigger_backdrop_root() {
 }
 
 #[test]
+fn transform_does_not_trigger_backdrop_root() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        /* `transform` creates a stacking context but is not a Filter Effects Level 2 Backdrop Root
+           trigger. */
+        transform: translateX(0px);
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // Sanity-check that the overlay border landed where expected.
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  // The overlay extends outside `#parent`. Since `transform` is NOT a Backdrop Root trigger, the
+  // overlay's backdrop-filter should still invert the body background outside the parent.
+  assert_eq!(pixel(&pixmap, 15, 15), (0, 255, 255, 255));
+}
+
+#[test]
+fn z_index_stacking_context_does_not_trigger_backdrop_root() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        /* Positioned z-index creates a stacking context but is not a Backdrop Root trigger. */
+        position: relative;
+        z-index: 0;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 15), (0, 255, 255, 255));
+}
+
+#[test]
 fn mask_image_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
