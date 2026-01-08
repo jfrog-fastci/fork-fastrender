@@ -5043,17 +5043,106 @@ impl<'a> ElementRef<'a> {
     matches!(selected, Some(opt) if ptr::eq(opt, self.node))
   }
 
+  fn radio_group_name(&self) -> Option<&'a str> {
+    self
+      .node
+      .get_attribute_ref("name")
+      .filter(|name| !name.is_empty())
+  }
+
+  fn radio_group_root(&self) -> &'a DomNode {
+    // Radio group membership is scoped to the nearest ancestor <form> within the current tree
+    // root. Shadow roots act as tree-root boundaries, so radios inside shadow trees never group
+    // with light-DOM radios, even if the shadow host is itself inside a <form>.
+    for ancestor in self.all_ancestors.iter().rev().copied() {
+      if ancestor
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+      {
+        return ancestor;
+      }
+      if matches!(
+        ancestor.node_type,
+        DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }
+      ) {
+        return ancestor;
+      }
+    }
+
+    // Fallback for incomplete ancestor chains (e.g. unit tests constructing partial DOM trees).
+    self.all_ancestors.first().copied().unwrap_or(self.node)
+  }
+
+  fn last_checked_radio_in_group(root: &'a DomNode, group_name: &str) -> Option<&'a DomNode> {
+    let mut last: Option<&'a DomNode> = None;
+    let mut stack: Vec<&'a DomNode> = Vec::new();
+    stack.push(root);
+
+    while let Some(node) = stack.pop() {
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+      {
+        let input_type = node.get_attribute_ref("type").unwrap_or("text");
+        if input_type.eq_ignore_ascii_case("radio")
+          && node.get_attribute_ref("checked").is_some()
+          && node.get_attribute_ref("name") == Some(group_name)
+        {
+          last = Some(node);
+        }
+      }
+
+      // Forms and shadow roots are group boundaries:
+      // - Controls in different <form> elements are never in the same group.
+      // - Shadow roots define independent trees; do not traverse into shadow DOM when scanning a
+      //   light DOM radio group (or vice-versa).
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+        && !ptr::eq(node, root)
+      {
+        continue;
+      }
+
+      for child in node.traversal_children().iter().rev() {
+        if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
+          continue;
+        }
+        stack.push(child);
+      }
+    }
+
+    last
+  }
+
   fn is_checked(&self) -> bool {
     let Some(tag) = self.node.tag_name() else {
       return false;
     };
 
     if tag.eq_ignore_ascii_case("input") {
-      let input_type = self.node.get_attribute_ref("type");
-      if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio"))
-      {
+      let input_type = self.node.get_attribute_ref("type").unwrap_or("text");
+
+      if input_type.eq_ignore_ascii_case("checkbox") {
         return self.node.get_attribute_ref("checked").is_some();
       }
+
+      if input_type.eq_ignore_ascii_case("radio") {
+        if self.node.get_attribute_ref("checked").is_none() {
+          return false;
+        }
+
+        // Unnamed radios are not mutually exclusive, so the presence of the `checked` attribute is
+        // sufficient for :checked.
+        let Some(name) = self.radio_group_name() else {
+          return true;
+        };
+
+        let root = self.radio_group_root();
+        let last = Self::last_checked_radio_in_group(root, name);
+        return last.is_some_and(|node| ptr::eq(node, self.node));
+      }
+
       return false;
     }
 
@@ -5276,7 +5365,17 @@ impl<'a> ElementRef<'a> {
 
       if input_type.eq_ignore_ascii_case("checkbox") {
         if required {
-          return self.node.get_attribute_ref("checked").is_some();
+          if input_type.eq_ignore_ascii_case("checkbox") {
+            return self.node.get_attribute_ref("checked").is_some();
+          }
+
+          // For required radio buttons, group semantics apply: validity is satisfied if *any* radio
+          // button in the same group is effectively checked.
+          let Some(name) = self.radio_group_name() else {
+            return self.node.get_attribute_ref("checked").is_some();
+          };
+          let root = self.radio_group_root();
+          return Self::last_checked_radio_in_group(root, name).is_some();
         }
         return true;
       }
@@ -11902,6 +12001,87 @@ mod tests {
     ));
     let ancestors: Vec<&DomNode> = vec![&select_hidden_optgroup];
     assert!(matches(visible_option, &ancestors, &PseudoClass::Checked));
+  }
+
+  #[test]
+  fn radio_group_checked_only_matches_last_checked_in_tree_order() {
+    let form = element(
+      "form",
+      vec![
+        element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "group"), ("checked", "")],
+          vec![],
+        ),
+        element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "group"), ("checked", "")],
+          vec![],
+        ),
+      ],
+    );
+    let first = &form.children[0];
+    let second = &form.children[1];
+    let ancestors: Vec<&DomNode> = vec![&form];
+
+    assert!(!matches(first, &ancestors, &PseudoClass::Checked));
+    assert!(matches(second, &ancestors, &PseudoClass::Checked));
+  }
+
+  #[test]
+  fn radio_without_name_is_not_mutually_exclusive_for_checkedness() {
+    let form = element(
+      "form",
+      vec![
+        element_with_attrs("input", vec![("type", "radio"), ("checked", "")], vec![]),
+        element_with_attrs("input", vec![("type", "radio"), ("checked", "")], vec![]),
+      ],
+    );
+    let first = &form.children[0];
+    let second = &form.children[1];
+    let ancestors: Vec<&DomNode> = vec![&form];
+
+    assert!(matches(first, &ancestors, &PseudoClass::Checked));
+    assert!(matches(second, &ancestors, &PseudoClass::Checked));
+  }
+
+  #[test]
+  fn required_radio_validity_is_satisfied_by_any_checked_radio_in_group() {
+    let form_checked = element(
+      "form",
+      vec![
+        element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "group"), ("required", "")],
+          vec![],
+        ),
+        element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "group"), ("checked", "")],
+          vec![],
+        ),
+      ],
+    );
+    let required_radio = &form_checked.children[0];
+    let ancestors: Vec<&DomNode> = vec![&form_checked];
+    assert!(matches(required_radio, &ancestors, &PseudoClass::Valid));
+    assert!(!matches(required_radio, &ancestors, &PseudoClass::Invalid));
+
+    let form_unchecked = element(
+      "form",
+      vec![
+        element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "group"), ("required", "")],
+          vec![],
+        ),
+        element_with_attrs("input", vec![("type", "radio"), ("name", "group")], vec![]),
+      ],
+    );
+    let required_radio = &form_unchecked.children[0];
+    let ancestors: Vec<&DomNode> = vec![&form_unchecked];
+    assert!(matches(required_radio, &ancestors, &PseudoClass::Invalid));
+    assert!(!matches(required_radio, &ancestors, &PseudoClass::Valid));
   }
 
   #[test]
