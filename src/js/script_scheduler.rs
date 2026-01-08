@@ -1,7 +1,7 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::fmt::Debug;
+use std::hash::Hash;
 
 use super::{EventLoop, ScriptElementSpec, ScriptType, TaskSource};
 
@@ -209,6 +209,279 @@ where
   }
 }
 
+/// A deterministic, event-driven scheduler for classic, parser-inserted `<script>` elements.
+///
+/// This models a subset of the HTML Standard script processing model:
+/// - Inline classic scripts execute immediately and block parsing.
+/// - External classic scripts:
+///   - no `async`/`defer`: parsing-blocking (execute immediately on fetch completion).
+///   - `defer`: execute after parsing completes, in document order.
+///   - `async`: execute ASAP on fetch completion, not ordered.
+/// - A microtask checkpoint after each script execution (performed by the orchestrator).
+///
+/// Out of scope (intentionally not modeled here):
+/// - Module scripts (`type="module"`) and import maps.
+/// - CSP, `nomodule`, stylesheet-blocking scripts, `document.write`, and dynamic insertion.
+///
+/// ## Orchestrator contract
+///
+/// The scheduler does not execute scripts itself. Callers drive it with explicit events and perform
+/// returned actions:
+/// - For [`ScriptSchedulerAction::ExecuteNow`], execute the script synchronously and then call
+///   [`EventLoop::perform_microtask_checkpoint`] (HTML microtask checkpoint after script execution).
+/// - For [`ScriptSchedulerAction::QueueTask`], enqueue a task with [`TaskSource::Script`]; the event
+///   loop's "microtasks after tasks" rule provides the checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScriptId(u64);
+
+impl ScriptId {
+  pub fn as_u64(self) -> u64 {
+    self.0
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredScript {
+  pub id: ScriptId,
+  pub actions: Vec<ScriptSchedulerAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptSchedulerAction {
+  /// Begin fetching an external script.
+  StartFetch { script_id: ScriptId, url: String },
+  /// Block the HTML parser until the referenced script has executed.
+  ///
+  /// This is emitted for parsing-blocking external scripts (no `async`/`defer`).
+  BlockParserUntilExecuted { script_id: ScriptId },
+  /// Execute a script immediately (synchronously in the caller's stack).
+  ///
+  /// The orchestrator must perform a microtask checkpoint immediately after executing the script.
+  ExecuteNow {
+    script_id: ScriptId,
+    source_text: String,
+  },
+  /// Queue script execution as an event-loop task.
+  ///
+  /// The event loop performs a microtask checkpoint after each task, which satisfies the HTML
+  /// microtask checkpoint requirement after script execution.
+  QueueTask {
+    script_id: ScriptId,
+    source_text: String,
+  },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalMode {
+  Blocking,
+  Defer,
+  Async,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalScriptEntry<NodeId> {
+  #[allow(dead_code)]
+  node_id: NodeId,
+  #[allow(dead_code)]
+  base_url_at_discovery: Option<String>,
+  #[allow(dead_code)]
+  url: String,
+  mode: ExternalMode,
+  fetch_completed: bool,
+  source_text: Option<String>,
+  queued_for_execution: bool,
+}
+
+pub struct ScriptScheduler<NodeId> {
+  next_script_id: u64,
+  scripts: HashMap<ScriptId, ExternalScriptEntry<NodeId>>,
+  defer_queue: Vec<ScriptId>,
+  next_defer_to_queue: usize,
+  parsing_completed: bool,
+}
+
+impl<NodeId: Copy> Default for ScriptScheduler<NodeId> {
+  fn default() -> Self {
+    Self {
+      next_script_id: 1,
+      scripts: HashMap::new(),
+      defer_queue: Vec::new(),
+      next_defer_to_queue: 0,
+      parsing_completed: false,
+    }
+  }
+}
+
+impl<NodeId: Copy> ScriptScheduler<NodeId> {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  fn alloc_script_id(&mut self) -> ScriptId {
+    let id = ScriptId(self.next_script_id);
+    self.next_script_id += 1;
+    id
+  }
+
+  /// Notify the scheduler that the HTML parser has discovered a parser-inserted `<script>`.
+  pub fn discovered_parser_script(
+    &mut self,
+    element: ScriptElementSpec,
+    node_id: NodeId,
+    base_url_at_discovery: Option<String>,
+  ) -> Result<DiscoveredScript> {
+    let id = self.alloc_script_id();
+
+    if element.script_type != ScriptType::Classic {
+      // Non-classic scripts are out-of-scope for this scheduler.
+      return Ok(DiscoveredScript {
+        id,
+        actions: Vec::new(),
+      });
+    }
+
+    let mut actions: Vec<ScriptSchedulerAction> = Vec::new();
+
+    let src = element.src.filter(|s| !s.is_empty());
+    if let Some(url) = src {
+      let mode = if element.async_attr {
+        ExternalMode::Async
+      } else if element.defer_attr {
+        ExternalMode::Defer
+      } else {
+        ExternalMode::Blocking
+      };
+
+      if mode == ExternalMode::Defer {
+        self.defer_queue.push(id);
+      }
+
+      self.scripts.insert(
+        id,
+        ExternalScriptEntry {
+          node_id,
+          base_url_at_discovery,
+          url: url.clone(),
+          mode,
+          fetch_completed: false,
+          source_text: None,
+          queued_for_execution: false,
+        },
+      );
+
+      actions.push(ScriptSchedulerAction::StartFetch { script_id: id, url });
+
+      if mode == ExternalMode::Blocking {
+        actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id });
+      }
+    } else {
+      // Inline classic scripts execute immediately and block parsing.
+      actions.push(ScriptSchedulerAction::ExecuteNow {
+        script_id: id,
+        source_text: element.inline_text,
+      });
+    }
+
+    Ok(DiscoveredScript { id, actions })
+  }
+
+  /// Notify the scheduler that a previously requested external script fetch completed.
+  pub fn fetch_completed(&mut self, script_id: ScriptId, source_text: String) -> Result<Vec<ScriptSchedulerAction>> {
+    let Some(entry) = self.scripts.get_mut(&script_id) else {
+      return Err(Error::Other(format!(
+        "fetch_completed called for unknown script_id={}",
+        script_id.as_u64()
+      )));
+    };
+
+    if entry.fetch_completed {
+      return Err(Error::Other(format!(
+        "fetch_completed called more than once for script_id={}",
+        script_id.as_u64()
+      )));
+    }
+    entry.fetch_completed = true;
+    entry.source_text = Some(source_text);
+
+    match entry.mode {
+      ExternalMode::Blocking => {
+        if entry.queued_for_execution {
+          return Ok(Vec::new());
+        }
+        entry.queued_for_execution = true;
+        let source_text = entry
+          .source_text
+          .take()
+          .expect("source text must be present after fetch_completed");
+        Ok(vec![ScriptSchedulerAction::ExecuteNow {
+          script_id,
+          source_text,
+        }])
+      }
+      ExternalMode::Async => {
+        if entry.queued_for_execution {
+          return Ok(Vec::new());
+        }
+        entry.queued_for_execution = true;
+        let source_text = entry
+          .source_text
+          .take()
+          .expect("source text must be present after fetch_completed");
+        Ok(vec![ScriptSchedulerAction::QueueTask {
+          script_id,
+          source_text,
+        }])
+      }
+      ExternalMode::Defer => self.queue_defer_scripts_if_ready(),
+    }
+  }
+
+  /// Notify the scheduler that HTML parsing has completed.
+  pub fn parsing_completed(&mut self) -> Result<Vec<ScriptSchedulerAction>> {
+    self.parsing_completed = true;
+    self.queue_defer_scripts_if_ready()
+  }
+
+  fn queue_defer_scripts_if_ready(&mut self) -> Result<Vec<ScriptSchedulerAction>> {
+    if !self.parsing_completed {
+      return Ok(Vec::new());
+    }
+
+    let mut actions: Vec<ScriptSchedulerAction> = Vec::new();
+    while self.next_defer_to_queue < self.defer_queue.len() {
+      let script_id = self.defer_queue[self.next_defer_to_queue];
+      let Some(entry) = self.scripts.get_mut(&script_id) else {
+        return Err(Error::Other(format!(
+          "internal error: defer_queue references missing script_id={}",
+          script_id.as_u64()
+        )));
+      };
+
+      if entry.queued_for_execution {
+        self.next_defer_to_queue += 1;
+        continue;
+      }
+
+      if entry.source_text.is_none() {
+        break;
+      }
+
+      entry.queued_for_execution = true;
+      let source_text = entry
+        .source_text
+        .take()
+        .expect("source text must be present when queueing defer scripts");
+      actions.push(ScriptSchedulerAction::QueueTask {
+        script_id,
+        source_text,
+      });
+      self.next_defer_to_queue += 1;
+    }
+
+    Ok(actions)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -403,6 +676,249 @@ mod tests {
         "microtask-after-a1".to_string(),
         "a2".to_string(),
         "microtask-after-a2".to_string(),
+      ]
+    );
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod state_machine_tests {
+  use super::*;
+  use crate::js::{EventLoop, RunLimits, TaskSource};
+
+  #[derive(Default)]
+  struct Host {
+    log: Vec<String>,
+  }
+
+  fn execute_fake_script(host: &mut Host, event_loop: &mut EventLoop<Host>, source_text: &str) -> Result<()> {
+    host.log.push(format!("script:{source_text}"));
+    let micro = format!("microtask:{source_text}");
+    event_loop.queue_microtask(move |host, _| {
+      host.log.push(micro);
+      Ok(())
+    })?;
+    Ok(())
+  }
+
+  fn classic_inline(text: &str) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: None,
+      inline_text: text.to_string(),
+      async_attr: false,
+      defer_attr: false,
+      parser_inserted: true,
+      script_type: ScriptType::Classic,
+    }
+  }
+
+  fn classic_external(src: &str, async_attr: bool, defer_attr: bool) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: Some(src.to_string()),
+      inline_text: String::new(),
+      async_attr,
+      defer_attr,
+      parser_inserted: true,
+      script_type: ScriptType::Classic,
+    }
+  }
+
+  struct Harness {
+    scheduler: ScriptScheduler<u32>,
+    event_loop: EventLoop<Host>,
+    host: Host,
+    started_fetches: Vec<(ScriptId, String)>,
+    blocked_parser_on: Option<ScriptId>,
+  }
+
+  impl Harness {
+    fn new() -> Self {
+      Self {
+        scheduler: ScriptScheduler::new(),
+        event_loop: EventLoop::new(),
+        host: Host::default(),
+        started_fetches: Vec::new(),
+        blocked_parser_on: None,
+      }
+    }
+
+    fn apply_actions(&mut self, actions: Vec<ScriptSchedulerAction>) -> Result<()> {
+      for action in actions {
+        match action {
+          ScriptSchedulerAction::StartFetch { script_id, url } => {
+            self.started_fetches.push((script_id, url));
+          }
+          ScriptSchedulerAction::BlockParserUntilExecuted { script_id } => {
+            self.blocked_parser_on = Some(script_id);
+          }
+          ScriptSchedulerAction::ExecuteNow {
+            script_id,
+            source_text,
+          } => {
+            execute_fake_script(&mut self.host, &mut self.event_loop, &source_text)?;
+            self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
+            if self.blocked_parser_on == Some(script_id) {
+              self.blocked_parser_on = None;
+            }
+          }
+          ScriptSchedulerAction::QueueTask {
+            script_id: _,
+            source_text,
+          } => {
+            self.event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+              execute_fake_script(host, event_loop, &source_text)
+            })?;
+          }
+        }
+      }
+      Ok(())
+    }
+
+    fn discover(&mut self, element: ScriptElementSpec) -> Result<ScriptId> {
+      let discovered = self.scheduler.discovered_parser_script(
+        element,
+        /* node_id */ 1,
+        /* base_url_at_discovery */ None,
+      )?;
+      let id = discovered.id;
+      self.apply_actions(discovered.actions)?;
+      Ok(id)
+    }
+
+    fn fetch_complete(&mut self, script_id: ScriptId, source_text: &str) -> Result<()> {
+      let actions = self
+        .scheduler
+        .fetch_completed(script_id, source_text.to_string())?;
+      self.apply_actions(actions)
+    }
+
+    fn parsing_completed(&mut self) -> Result<()> {
+      let actions = self.scheduler.parsing_completed()?;
+      self.apply_actions(actions)
+    }
+
+    fn run_event_loop(&mut self) -> Result<()> {
+      self
+        .event_loop
+        .run_until_idle(&mut self.host, RunLimits::unbounded())?;
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn inline_scripts_execute_in_order_and_flush_microtasks_between() -> Result<()> {
+    let mut h = Harness::new();
+
+    h.discover(classic_inline("a"))?;
+    h.discover(classic_inline("b"))?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:a".to_string(),
+        "microtask:a".to_string(),
+        "script:b".to_string(),
+        "microtask:b".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn blocking_external_script_delays_later_inline_script_until_fetch_and_execute() -> Result<()> {
+    let mut h = Harness::new();
+
+    let blocking_id = h.discover(classic_external("https://example.com/a.js", false, false))?;
+    assert_eq!(h.blocked_parser_on, Some(blocking_id));
+    assert_eq!(
+      h.started_fetches,
+      vec![(blocking_id, "https://example.com/a.js".to_string())]
+    );
+
+    // Parser cannot progress to the next `<script>` until the blocking script fetch completes and
+    // executes.
+    h.fetch_complete(blocking_id, "ext-a")?;
+    assert_eq!(h.blocked_parser_on, None);
+
+    h.discover(classic_inline("b"))?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:ext-a".to_string(),
+        "microtask:ext-a".to_string(),
+        "script:b".to_string(),
+        "microtask:b".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn defer_scripts_run_after_parsing_completed_in_document_order() -> Result<()> {
+    let mut h = Harness::new();
+
+    let d1 = h.discover(classic_external("https://example.com/d1.js", false, true))?;
+    let d2 = h.discover(classic_external("https://example.com/d2.js", false, true))?;
+
+    // Fetch completion order is irrelevant for `defer`.
+    h.fetch_complete(d2, "d2")?;
+    h.parsing_completed()?;
+    // D1 isn't ready yet, so nothing should have run.
+    h.run_event_loop()?;
+    assert_eq!(h.host.log, Vec::<String>::new());
+
+    h.fetch_complete(d1, "d1")?;
+    h.run_event_loop()?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:d1".to_string(),
+        "microtask:d1".to_string(),
+        "script:d2".to_string(),
+        "microtask:d2".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn async_scripts_run_in_completion_order_and_can_interleave_with_defer() -> Result<()> {
+    let mut h = Harness::new();
+
+    let d1 = h.discover(classic_external("https://example.com/d1.js", false, true))?;
+    let a1 = h.discover(classic_external("https://example.com/a1.js", true, false))?;
+    let d2 = h.discover(classic_external("https://example.com/d2.js", false, true))?;
+    let a2 = h.discover(classic_external("https://example.com/a2.js", true, false))?;
+
+    // D1 becomes ready before parsing completes, but defer scripts cannot run yet.
+    h.fetch_complete(d1, "d1")?;
+
+    // Once parsing completes, the first defer script is queued.
+    h.parsing_completed()?;
+
+    // Async scripts execute in completion order, and can run between defer scripts.
+    h.fetch_complete(a2, "a2")?;
+    h.fetch_complete(d2, "d2")?;
+    h.fetch_complete(a1, "a1")?;
+
+    h.run_event_loop()?;
+
+    assert_eq!(
+      h.host.log,
+      vec![
+        "script:d1".to_string(),
+        "microtask:d1".to_string(),
+        "script:a2".to_string(),
+        "microtask:a2".to_string(),
+        "script:d2".to_string(),
+        "microtask:d2".to_string(),
+        "script:a1".to_string(),
+        "microtask:a1".to_string(),
       ]
     );
     Ok(())

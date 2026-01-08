@@ -20,7 +20,10 @@ pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, Task, TaskSource,
   TimerId,
 };
-pub use script_scheduler::{ClassicScriptScheduler, ScriptExecutor, ScriptLoader};
+pub use script_scheduler::{
+  ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler,
+  ScriptSchedulerAction,
+};
 pub use window_timers::{
   clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
 };
