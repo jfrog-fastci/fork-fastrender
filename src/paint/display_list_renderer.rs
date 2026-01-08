@@ -10283,9 +10283,11 @@ impl DisplayListRenderer {
         if self.trace_backdrop_stack {
           let depth_after = self.canvas.layer_stack_len();
           eprintln!(
-            "backdrop_stack push_sc backdrop_root={} needs_layer={} canvas_layers={} -> {} stacking_depth={} -> {}",
+            "backdrop_stack push_sc backdrop_root={} needs_layer={} mix_blend_mode={:?} init_from_backdrop={} canvas_layers={} -> {} stacking_depth={} -> {}",
             is_backdrop_root,
             needs_layer,
+            item.mix_blend_mode,
+            init_from_backdrop,
             canvas_layer_depth_before,
             depth_after,
             stacking_depth_before,
@@ -10332,9 +10334,11 @@ impl DisplayListRenderer {
         if self.trace_backdrop_stack {
           let depth_after = canvas_layer_depth_before.saturating_sub(record.needs_layer as usize);
           eprintln!(
-            "backdrop_stack pop_sc backdrop_root={} needs_layer={} canvas_layers={} -> {} stacking_depth={} -> {}",
+            "backdrop_stack pop_sc backdrop_root={} needs_layer={} mix_blend_mode={:?} init_from_backdrop={} canvas_layers={} -> {} stacking_depth={} -> {}",
             record.establishes_backdrop_root,
             record.needs_layer,
+            record.mix_blend_mode,
+            record.init_from_backdrop,
             canvas_layer_depth_before,
             depth_after,
             stacking_depth_before,
