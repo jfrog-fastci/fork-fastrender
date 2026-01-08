@@ -2020,6 +2020,18 @@ fn eval_style_range_value(
         }),
         _ => None,
       },
+      "animation-iteration-count" | "-webkit-animation-iteration-count" => {
+        match styles.animation_iteration_counts.as_ref() {
+          [count] => {
+            let value = count.as_f32();
+            (!value.is_nan()).then_some(NumericValue {
+              ty: NumericType::Number,
+              value,
+            })
+          }
+          _ => None,
+        }
+      },
       "font-weight" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.font_weight.to_u16() as f32,

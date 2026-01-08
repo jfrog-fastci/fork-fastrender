@@ -1030,6 +1030,38 @@ fn container_style_query_range_feature_matches_animation_delay() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_animation_iteration_count() {
+  let html = r#"
+    <style>
+      .container-few { container-type: inline-size; animation-iteration-count: 2; }
+      .container-many { container-type: inline-size; animation-iteration-count: 4; }
+      .container-infinite { container-type: inline-size; animation-iteration-count: infinite; }
+      .child { color: rgb(0 0 255); }
+      @container style(animation-iteration-count > 3) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-few">
+      <div id="few" class="child">hello</div>
+    </div>
+    <div class="container-many">
+      <div id="many" class="child">hello</div>
+    </div>
+    <div class="container-infinite">
+      <div id="infinite" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let few = find_by_id(&styled, "few").expect("few element");
+  let many = find_by_id(&styled, "many").expect("many element");
+  let infinite = find_by_id(&styled, "infinite").expect("infinite element");
+  assert_eq!(few.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(many.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(infinite.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_letter_spacing() {
   let html = r#"
     <style>
