@@ -15051,6 +15051,9 @@ fn parse_will_change_from_str(text: &str) -> Option<WillChange> {
     let ident_lower = ident.as_ref().to_ascii_lowercase();
     match ident_lower.as_str() {
       "auto" => return None,
+      // These keywords are excluded from <<custom-ident>> in css-will-change-1 and are not valid
+      // <<animateable-feature>> keywords either, so treat the whole declaration as invalid.
+      "all" | "none" | "will-change" => return None,
       "scroll-position" => hints.push(WillChangeHint::ScrollPosition),
       "contents" => hints.push(WillChangeHint::Contents),
       other => {
