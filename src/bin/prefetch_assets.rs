@@ -2645,6 +2645,125 @@ mod disk_cache_main {
     }
 
     #[test]
+    fn stylesheet_referrer_policy_header_applies_to_nested_import_requests() {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("expected prefetch to use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push((
+            req.url.to_string(),
+            req.destination,
+            req.referrer_policy,
+          ));
+
+          match req.url {
+            "https://example.com/style.css" => {
+              let mut res = FetchedResource::with_final_url(
+                br#"@import url("import.css"); body { color: rgb(1, 2, 3); }"#
+                  .to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              res.response_referrer_policy = Some(ReferrerPolicy::Origin);
+              Ok(res)
+            }
+            "https://example.com/import.css" => {
+              let mut res = FetchedResource::with_final_url(
+                br#"@import url("nested.css"); body { background: rgb(0, 0, 0); }"#
+                  .to_vec(),
+                Some("text/css".to_string()),
+                Some("https://cdn.example.com/import-final.css".to_string()),
+              );
+              res.status = Some(200);
+              res.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+              Ok(res)
+            }
+            "https://cdn.example.com/nested.css" => {
+              let mut res = FetchedResource::with_final_url(
+                b"body { background: rgb(4, 5, 6); }".to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            "https://example.com/nested.css" => {
+              let mut res = FetchedResource::with_final_url(
+                b"body { background: rgb(255, 0, 0); }".to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            other => Err(fastrender::Error::Other(format!("unexpected fetch: {other}"))),
+          }
+        }
+      }
+
+      let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="https://example.com/style.css">
+      </head><body></body></html>"#;
+      let document_url = "https://example.com/page.html";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        html,
+        document_url,
+        "https://example.com/",
+        ReferrerPolicy::Origin,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      assert_eq!(summary.fetched_css, 1);
+      assert_eq!(summary.fetched_imports, 2);
+
+      let calls = fetcher_impl.calls.lock().unwrap();
+      assert!(
+        calls.iter().any(|(url, dest, policy)| {
+          url == "https://cdn.example.com/nested.css"
+            && *dest == FetchDestination::Style
+            && *policy == ReferrerPolicy::NoReferrer
+        }),
+        "expected nested import request to inherit imported stylesheet response Referrer-Policy header, got: {calls:?}"
+      );
+      assert!(
+        calls.iter().all(|(url, _, _)| url != "https://example.com/nested.css"),
+        "expected nested import to resolve against imported stylesheet final URL, got: {calls:?}"
+      );
+    }
+
+    #[test]
     fn poster_is_still_fetched_when_image_cap_is_exceeded() {
       use fastrender::resource::FetchContextKind;
       use std::sync::Mutex;
