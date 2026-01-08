@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::css::types::{
-  BoxShadow, Keyframe, KeyframesRule, PropertyValue, RotateValue, ScaleValue, TextShadow,
-  TranslateValue,
+  BoxShadow, Keyframe, KeyframeSelector, KeyframesRule, PropertyValue, RotateValue, ScaleValue,
+  TextShadow, TranslateValue,
 };
 use crate::debug::runtime;
 use crate::geometry::{Point, Rect, Size};
@@ -3340,26 +3340,18 @@ pub fn scroll_timeline_progress(
   Some(raw_progress(scroll_position, start, end))
 }
 
-/// Computes view timeline progress using the target position relative to the
-/// containing scroll port.
-///
-/// Inputs are measured along the timeline axis in a coordinate system whose origin is the scroll
-/// origin. For writing modes where the scroll origin is reversed, callers should flip the inputs
-/// accordingly.
-pub fn view_timeline_progress(
+fn view_timeline_attachment_range(
   timeline: &ViewTimeline,
   target_start: f32,
   target_end: f32,
   view_size: f32,
-  scroll_offset: f32,
   range: &AnimationRange,
-) -> Option<f32> {
+) -> Option<(f32, f32, ViewTimelineRangeEdges)> {
   // Degenerate geometries produce an inactive timeline.
   if !view_size.is_finite()
     || view_size <= f32::EPSILON
     || !target_start.is_finite()
     || !target_end.is_finite()
-    || !scroll_offset.is_finite()
     || (target_end - target_start).abs() <= f32::EPSILON
   {
     return None;
@@ -3384,14 +3376,36 @@ pub fn view_timeline_progress(
   let exit_edge = target_end - inset_start;
   let start_base = entry_edge;
   let end_base = exit_edge;
-  let phases = Some(ViewTimelineRangeEdges {
+  let phases = ViewTimelineRangeEdges {
     entry: entry_edge,
     contain: contain_edge,
     cover: cover_edge,
     exit: exit_edge,
-  });
-  let start = resolve_progress_offset(range.start(), start_base, end_base, phases);
-  let end = resolve_progress_offset(range.end(), start_base, end_base, phases);
+  };
+  let start = resolve_progress_offset(range.start(), start_base, end_base, Some(phases));
+  let end = resolve_progress_offset(range.end(), start_base, end_base, Some(phases));
+  Some((start, end, phases))
+}
+
+/// Computes view timeline progress using the target position relative to the
+/// containing scroll port.
+///
+/// Inputs are measured along the timeline axis in a coordinate system whose origin is the scroll
+/// origin. For writing modes where the scroll origin is reversed, callers should flip the inputs
+/// accordingly.
+pub fn view_timeline_progress(
+  timeline: &ViewTimeline,
+  target_start: f32,
+  target_end: f32,
+  view_size: f32,
+  scroll_offset: f32,
+  range: &AnimationRange,
+) -> Option<f32> {
+  if !scroll_offset.is_finite() {
+    return None;
+  }
+  let (start, end, _) =
+    view_timeline_attachment_range(timeline, target_start, target_end, view_size, range)?;
   Some(raw_progress(scroll_offset, start, end))
 }
 
@@ -3483,7 +3497,6 @@ fn axis_view_state(
   let content_size = sanitize_non_negative(content_size);
   let scroll_pos = sanitize_non_negative(scroll_pos);
   let range = (content_size - view_size).max(0.0);
-  let scroll_pos = scroll_pos.min(range);
 
   if axis_positive {
     (target_start, target_end, view_size, scroll_pos)
@@ -3491,7 +3504,7 @@ fn axis_view_state(
     let flipped_scroll = range - scroll_pos;
     let flipped_start = content_size - target_end;
     let flipped_end = content_size - target_start;
-    (flipped_start, flipped_end, view_size, flipped_scroll.clamp(0.0, range))
+    (flipped_start, flipped_end, view_size, flipped_scroll)
   }
 }
 
@@ -3512,6 +3525,7 @@ pub fn sample_keyframes(
     viewport,
     element_size,
     &default_timing,
+    None,
   )
   .animated
 }
@@ -3527,6 +3541,55 @@ struct SampledKeyframes {
   custom_properties: Vec<(Arc<str>, Option<CustomPropertyValue>)>,
 }
 
+#[derive(Clone, Copy)]
+struct ViewTimelineKeyframeResolver {
+  attachment_start: f32,
+  attachment_end: f32,
+  view_ranges: ViewTimelineRangeEdges,
+}
+
+fn view_timeline_phase_for_named_range(name: &str) -> Option<ViewTimelinePhase> {
+  if name.eq_ignore_ascii_case("cover") {
+    Some(ViewTimelinePhase::Cover)
+  } else if name.eq_ignore_ascii_case("contain") {
+    Some(ViewTimelinePhase::Contain)
+  } else if name.eq_ignore_ascii_case("entry") {
+    Some(ViewTimelinePhase::Entry)
+  } else if name.eq_ignore_ascii_case("exit") {
+    Some(ViewTimelinePhase::Exit)
+  } else if name.eq_ignore_ascii_case("entry-crossing") {
+    Some(ViewTimelinePhase::EntryCrossing)
+  } else if name.eq_ignore_ascii_case("exit-crossing") {
+    Some(ViewTimelinePhase::ExitCrossing)
+  } else {
+    None
+  }
+}
+
+fn resolve_view_timeline_keyframe_offset(
+  resolver: ViewTimelineKeyframeResolver,
+  range_name: &str,
+  range_progress: f32,
+) -> Option<f32> {
+  let phase = view_timeline_phase_for_named_range(range_name)?;
+  if !range_progress.is_finite() {
+    return None;
+  }
+  let range_progress = range_progress.clamp(0.0, 1.0);
+  let keyframe_position = resolve_progress_offset(
+    &RangeOffset::View(phase, Length::percent(range_progress * 100.0)),
+    resolver.view_ranges.entry,
+    resolver.view_ranges.exit,
+    Some(resolver.view_ranges),
+  );
+  let offset = raw_progress(
+    keyframe_position,
+    resolver.attachment_start,
+    resolver.attachment_end,
+  );
+  offset.is_finite().then_some(offset)
+}
+
 fn sample_keyframes_with_default_timing(
   rule: &KeyframesRule,
   progress: f32,
@@ -3534,23 +3597,36 @@ fn sample_keyframes_with_default_timing(
   viewport: Size,
   element_size: Size,
   default_timing_function: &TransitionTimingFunction,
+  view_timeline_keyframe_resolver: Option<ViewTimelineKeyframeResolver>,
 ) -> SampledKeyframes {
   if rule.keyframes.is_empty() {
     return SampledKeyframes::default();
   }
-  let mut frames: Vec<&Keyframe> = rule.keyframes.iter().collect();
-  frames.sort_by(|a, b| {
-    a.offset
-      .partial_cmp(&b.offset)
-      .unwrap_or(std::cmp::Ordering::Equal)
-  });
+  let mut frames: Vec<(f32, &Keyframe)> = Vec::new();
+  for frame in &rule.keyframes {
+    let offset = match &frame.selector {
+      KeyframeSelector::Offset(offset) => Some(*offset),
+      KeyframeSelector::TimelineRange { name, progress } => view_timeline_keyframe_resolver
+        .and_then(|resolver| resolve_view_timeline_keyframe_offset(resolver, name, *progress)),
+    };
+    if let Some(offset) = offset.filter(|offset| offset.is_finite()) {
+      frames.push((offset, frame));
+    }
+  }
+  if frames.is_empty() {
+    return SampledKeyframes::default();
+  }
+
+  frames.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
   let progress = clamp_progress(progress);
   let defaults = ComputedStyle::default();
   let mut groups: Vec<(f32, Vec<&Keyframe>)> = Vec::new();
-  for frame in frames.iter().copied() {
+  for (offset, frame) in frames.iter().copied() {
     match groups.last_mut() {
-      Some((offset, list)) if (*offset - frame.offset).abs() <= f32::EPSILON => list.push(frame),
-      _ => groups.push((frame.offset, vec![frame])),
+      Some((group_offset, list)) if (*group_offset - offset).abs() <= f32::EPSILON => {
+        list.push(frame)
+      }
+      _ => groups.push((offset, vec![frame])),
     }
   }
 
@@ -3637,7 +3713,7 @@ fn sample_keyframes_with_default_timing(
 
   let ctx = AnimationResolveContext::new(viewport, element_size);
   let mut properties: FxHashSet<&str> = FxHashSet::default();
-  for frame in &frames {
+  for (_, frame) in &frames {
     for decl in &frame.declarations {
       properties.insert(decl.property.as_str());
     }
@@ -5179,7 +5255,7 @@ fn view_progress_for_function(
   ancestor_scroll_containers: &[ScrollContainerContext],
   scroll_state: &ScrollState,
   range: &AnimationRange,
-) -> Option<f32> {
+) -> Option<(f32, ViewTimelineKeyframeResolver)> {
   let scroll_container = match func.scroller {
     ScrollTimelineScroller::Root => root,
     ScrollTimelineScroller::Nearest => ancestor_scroll_containers.last().copied().unwrap_or(root),
@@ -5241,14 +5317,17 @@ fn view_progress_for_function(
     )),
   };
 
-  view_timeline_progress(
-    &timeline,
-    target_start,
-    target_end,
-    view_size,
-    scroll_offset,
-    range,
-  )
+  if !scroll_offset.is_finite() {
+    return None;
+  }
+  let (start, end, view_ranges) =
+    view_timeline_attachment_range(&timeline, target_start, target_end, view_size, range)?;
+  let resolver = ViewTimelineKeyframeResolver {
+    attachment_start: start,
+    attachment_end: end,
+    view_ranges,
+  };
+  Some((raw_progress(scroll_offset, start, end), resolver))
 }
 
 fn apply_animations_to_node_scoped(
@@ -5416,6 +5495,7 @@ fn apply_animations_to_node_scoped(
           AnimationComposition::default(),
         );
 
+        let mut view_timeline_keyframe_resolver: Option<ViewTimelineKeyframeResolver> = None;
         let progress = match timeline_ref {
           AnimationTimeline::Auto => match animation_time_ms {
             Some(time_ms) => time_based_animation_state_impl(&*style_arc, idx, time_ms, true),
@@ -5424,29 +5504,40 @@ fn apply_animations_to_node_scoped(
           AnimationTimeline::None => None,
           AnimationTimeline::Named(ref timeline_name) => {
             if matches!(play_state, AnimationPlayState::Paused) {
-              timeline_scope_resolve(scope, timeline_name).and_then(|state| {
-                let active = match state {
-                  TimelineState::Scroll { scroll_range, .. } => scroll_range.abs() >= f32::EPSILON,
+              timeline_scope_resolve(scope, timeline_name)
+                .and_then(|state| match state {
+                  TimelineState::Scroll { scroll_range, .. } => {
+                    (scroll_range.abs() >= f32::EPSILON).then_some(0.0)
+                  }
                   TimelineState::View {
+                    timeline,
                     target_start,
                     target_end,
                     view_size,
                     scroll_offset,
-                    ..
                   } => {
-                    view_size.is_finite()
-                      && *view_size > f32::EPSILON
-                      && target_start.is_finite()
-                      && target_end.is_finite()
-                      && scroll_offset.is_finite()
-                      && (target_end - target_start).abs() > f32::EPSILON
+                    if !scroll_offset.is_finite() {
+                      None
+                    } else if let Some((start, end, view_ranges)) = view_timeline_attachment_range(
+                      timeline,
+                      *target_start,
+                      *target_end,
+                      *view_size,
+                      &range,
+                    ) {
+                      view_timeline_keyframe_resolver = Some(ViewTimelineKeyframeResolver {
+                        attachment_start: start,
+                        attachment_end: end,
+                        view_ranges,
+                      });
+                      Some(0.0)
+                    } else {
+                      None
+                    }
                   }
-                  TimelineState::Inactive => false,
-                };
-                active
-                  .then_some(0.0)
-                  .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
-              })
+                  TimelineState::Inactive => None,
+                })
+                .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
             } else {
               let raw =
                 timeline_scope_resolve(scope, timeline_name).and_then(|state| match state {
@@ -5468,14 +5559,26 @@ fn apply_animations_to_node_scoped(
                     target_end,
                     view_size,
                     scroll_offset,
-                  } => view_timeline_progress(
-                    timeline,
-                    *target_start,
-                    *target_end,
-                    *view_size,
-                    *scroll_offset,
-                    &range,
-                  ),
+                  } => {
+                    if !scroll_offset.is_finite() {
+                      None
+                    } else if let Some((start, end, view_ranges)) = view_timeline_attachment_range(
+                      timeline,
+                      *target_start,
+                      *target_end,
+                      *view_size,
+                      &range,
+                    ) {
+                      view_timeline_keyframe_resolver = Some(ViewTimelineKeyframeResolver {
+                        attachment_start: start,
+                        attachment_end: end,
+                        view_ranges,
+                      });
+                      Some(raw_progress(*scroll_offset, start, end))
+                    } else {
+                      None
+                    }
+                  }
                   TimelineState::Inactive => None,
                 });
               let fill = pick(
@@ -5540,45 +5643,21 @@ fn apply_animations_to_node_scoped(
           }
           AnimationTimeline::View(ref func) => {
             if matches!(play_state, AnimationPlayState::Paused) {
-              match func.scroller {
-                ScrollTimelineScroller::Root => Some(root_context),
-                ScrollTimelineScroller::Nearest => Some(
-                  ancestor_scroll_containers
-                    .last()
-                    .copied()
-                    .unwrap_or(root_context),
-                ),
-                ScrollTimelineScroller::SelfElement => {
-                  scroll_container_context_for_node(node, origin, scroll_state)
+              match view_progress_for_function(
+                func,
+                node,
+                origin,
+                root_context,
+                ancestor_scroll_containers,
+                scroll_state,
+                &range,
+              ) {
+                Some((_, resolver)) => {
+                  view_timeline_keyframe_resolver = Some(resolver);
+                  progress_based_animation_state(&*style_arc, idx, 0.0)
                 }
+                None => None,
               }
-              .and_then(|scroll_container| {
-                let horizontal = axis_is_horizontal(func.axis, scroll_container.writing_mode);
-                let target_start = if horizontal {
-                  abs.x() - scroll_container.origin.x
-                } else {
-                  abs.y() - scroll_container.origin.y
-                };
-                let target_end = if horizontal {
-                  target_start + abs.width()
-                } else {
-                  target_start + abs.height()
-                };
-                let view_size = if horizontal {
-                  scroll_container.viewport.width
-                } else {
-                  scroll_container.viewport.height
-                };
-
-                let active = view_size.is_finite()
-                  && view_size > f32::EPSILON
-                  && target_start.is_finite()
-                  && target_end.is_finite()
-                  && (target_end - target_start).abs() > f32::EPSILON;
-                active
-                  .then_some(0.0)
-                  .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
-              })
             } else {
               let raw = view_progress_for_function(
                 func,
@@ -5594,9 +5673,14 @@ fn apply_animations_to_node_scoped(
                 idx,
                 AnimationFillMode::default(),
               );
-              raw
-                .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-                .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
+              match raw {
+                Some((raw, resolver)) => {
+                  view_timeline_keyframe_resolver = Some(resolver);
+                  scroll_driven_fill_progress(raw, fill)
+                    .and_then(|overall| progress_based_animation_state(&*style_arc, idx, overall))
+                }
+                None => None,
+              }
             }
           }
         };
@@ -5611,6 +5695,7 @@ fn apply_animations_to_node_scoped(
             viewport_size,
             element_size,
             &timing,
+            view_timeline_keyframe_resolver,
           );
           if matches!(composition, AnimationComposition::Accumulate)
             && progress.iteration > 0
@@ -5628,6 +5713,7 @@ fn apply_animations_to_node_scoped(
               viewport_size,
               element_size,
               &timing,
+              view_timeline_keyframe_resolver,
             );
             let end = sample_keyframes_with_default_timing(
               rule,
@@ -5636,6 +5722,7 @@ fn apply_animations_to_node_scoped(
               viewport_size,
               element_size,
               &timing,
+              view_timeline_keyframe_resolver,
             );
             apply_iteration_accumulation(
               &mut sample.animated,
@@ -5957,7 +6044,7 @@ fn transition_value_for_property(
   let Some(to_val) = (interpolator.extract)(style, ctx) else {
     return None;
   };
- 
+
   let value = if allow_discrete {
     (interpolator.interpolate)(&from_val, &to_val, progress).or_else(|| {
       if progress >= 0.5 {
@@ -6363,6 +6450,7 @@ mod tests {
       Size::new(800.0, 600.0),
       Size::new(100.0, 100.0),
       timing,
+      None,
     )
     .animated;
     match values.get("opacity") {
@@ -6580,10 +6668,8 @@ mod tests {
 
   #[test]
   fn animation_name_none_keyword_does_not_match_quoted_keyframes_name() {
-    let sheet = parse_stylesheet(
-      "@keyframes \"None\" { 0% { opacity: 0; } 100% { opacity: 0; } }",
-    )
-    .unwrap();
+    let sheet =
+      parse_stylesheet("@keyframes \"None\" { 0% { opacity: 0; } 100% { opacity: 0; } }").unwrap();
     let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
     assert_eq!(keyframes.len(), 1);
     let rule = keyframes[0].clone();

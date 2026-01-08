@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use fastrender::animation::apply_scroll_driven_animations;
-use fastrender::css::types::{Declaration, Keyframe, KeyframesRule, PropertyValue};
+use fastrender::css::types::{
+  Declaration, Keyframe, KeyframeSelector, KeyframesRule, PropertyValue,
+};
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::ScrollState;
 use fastrender::style::types::{
@@ -16,7 +18,7 @@ fn fade_keyframes(name: &str) -> KeyframesRule {
     name: name.to_string(),
     keyframes: vec![
       Keyframe {
-        offset: 0.0,
+        selector: KeyframeSelector::Offset(0.0),
         declarations: vec![Declaration {
           property: "opacity".into(),
           value: PropertyValue::Number(0.0),
@@ -27,7 +29,7 @@ fn fade_keyframes(name: &str) -> KeyframesRule {
         timing_functions: Vec::new(),
       },
       Keyframe {
-        offset: 1.0,
+        selector: KeyframeSelector::Offset(1.0),
         declarations: vec![Declaration {
           property: "opacity".into(),
           value: PropertyValue::Number(1.0),

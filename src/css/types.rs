@@ -3459,11 +3459,22 @@ impl Default for FontFaceRule {
   }
 }
 
+/// Selector for a single keyframe entry inside a `@keyframes` rule.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyframeSelector {
+  /// A `from` / `to` / percentage selector mapped to a normalized offset in the 0-1 range.
+  Offset(f32),
+  /// A named timeline range selector like `entry 0%`.
+  ///
+  /// The percentage is normalized to the 0-1 range.
+  TimelineRange { name: String, progress: f32 },
+}
+
 /// A keyframe selector with declarations at a specific offset.
 #[derive(Debug, Clone)]
 pub struct Keyframe {
-  /// Normalized offset in the 0-1 range.
-  pub offset: f32,
+  /// Keyframe selector describing where this keyframe is attached.
+  pub selector: KeyframeSelector,
   /// Declarations that apply at this offset.
   pub declarations: Vec<Declaration>,
   /// `animation-timing-function` declarations inside the keyframe selector.

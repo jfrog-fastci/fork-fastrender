@@ -259,6 +259,84 @@ fn view_timeline_animation_range_exit_length_offsets_map_to_scroll_positions() -
 }
 
 #[test]
+fn view_timeline_named_range_keyframe_selectors_attach_to_named_ranges() -> Result<()> {
+  let viewport_width = 200;
+  let viewport_height = 200;
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      .spacer { height: 300px; }
+      .target {
+        width: 200px;
+        height: 100px;
+        background: rgb(255, 255, 255);
+        view-timeline: --t block;
+        animation-timeline: --t;
+        animation-timing-function: linear;
+        animation-name: inout;
+      }
+      @keyframes inout {
+        entry 0% { opacity: 0; }
+        entry 100% { opacity: 1; }
+        exit 0% { opacity: 1; }
+        exit 100% { opacity: 0; }
+      }
+    </style>
+    <div class="spacer"></div>
+    <div class="target"></div>
+    <div class="spacer"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(
+    html,
+    RenderOptions::new().with_viewport(viewport_width, viewport_height),
+  )?;
+  let target_rect = find_view_timeline_rect(prepared.fragment_tree(), "--t")
+    .expect("target fragment with view-timeline");
+
+  let entry = target_rect.y() - viewport_height as f32;
+  let contain = target_rect.y() + target_rect.height() - viewport_height as f32;
+  let cover = target_rect.y();
+  let exit = target_rect.y() + target_rect.height();
+  let contain_start = contain.min(cover);
+  let contain_end = contain.max(cover);
+
+  let samples = [
+    ((entry + contain_start) * 0.5, 0.5_f32),
+    ((contain_start + contain_end) * 0.5, 1.0_f32),
+    ((contain_end + exit) * 0.5, 0.5_f32),
+  ];
+
+  for (scroll_y, expected_opacity) in samples {
+    let pixmap = prepared.paint_with_options(
+      PreparedPaintOptions::new()
+        .with_scroll(0.0, scroll_y)
+        .with_background(Rgba::new(0, 0, 0, 1.0)),
+    )?;
+    let (sx, sy) =
+      sample_point_in_rect(target_rect, 0.0, scroll_y, viewport_width, viewport_height);
+    let (r, g, b, a) = pixel(&pixmap, sx, sy);
+    assert_eq!(a, 255, "expected fully opaque output pixel");
+
+    let expected = (expected_opacity.clamp(0.0, 1.0) * 255.0).round() as i32;
+    let tol = match expected_opacity {
+      p if (p - 0.0).abs() < f32::EPSILON || (p - 1.0).abs() < f32::EPSILON => 5,
+      _ => 18,
+    };
+    for (chan, name) in [(r, "r"), (g, "g"), (b, "b")] {
+      let diff = (chan as i32 - expected).abs();
+      assert!(
+        diff <= tol,
+        "expected {name}≈{expected}±{tol} at scroll_y={scroll_y} (got {chan})"
+      );
+    }
+  }
+
+  Ok(())
+}
+
+#[test]
 fn view_timeline_progress_includes_sticky_offsets() -> Result<()> {
   let viewport_width = 200;
   let viewport_height = 200;

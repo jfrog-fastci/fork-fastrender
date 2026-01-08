@@ -33,6 +33,7 @@ use super::types::FontSourceFormat;
 use super::types::ImportLayer;
 use super::types::ImportRule;
 use super::types::Keyframe;
+use super::types::KeyframeSelector;
 use super::types::KeyframesRule;
 use super::types::LayerRule;
 use super::types::MediaRule;
@@ -3555,38 +3556,44 @@ fn parse_keyframe_list<'i, 't>(
     }
   }
 
-  frames.sort_by(|a, b| {
-    a.offset
-      .partial_cmp(&b.offset)
-      .unwrap_or(std::cmp::Ordering::Equal)
-  });
   Ok(frames)
 }
 
 fn parse_single_keyframe<'i, 't>(
   parser: &mut Parser<'i, 't>,
 ) -> std::result::Result<Option<Vec<Keyframe>>, ParseError<'i, SelectorParseErrorKind<'i>>> {
-  let mut offsets: Vec<f32> = Vec::new();
+  let mut selectors: Vec<KeyframeSelector> = Vec::new();
 
   loop {
     if !css_deadline_allows_progress() {
       break Ok(None);
     }
     match parser.next_including_whitespace() {
-      Ok(Token::Percentage { unit_value, .. }) => offsets.push(unit_value.clamp(0.0, 1.0)),
+      Ok(Token::Percentage { unit_value, .. }) => {
+        selectors.push(KeyframeSelector::Offset(unit_value.clamp(0.0, 1.0)))
+      }
       Ok(Token::Ident(id)) => {
-        let id = id.as_ref();
         if id.eq_ignore_ascii_case("from") {
-          offsets.push(0.0);
+          selectors.push(KeyframeSelector::Offset(0.0));
         } else if id.eq_ignore_ascii_case("to") {
-          offsets.push(1.0);
+          selectors.push(KeyframeSelector::Offset(1.0));
+        } else {
+          let name = id.to_ascii_lowercase();
+          let state = parser.state();
+          parser.skip_whitespace();
+          match parser.next_including_whitespace() {
+            Ok(Token::Percentage { unit_value, .. }) => {
+              selectors.push(KeyframeSelector::TimelineRange {
+                name,
+                progress: unit_value.clamp(0.0, 1.0),
+              });
+            }
+            _ => parser.reset(&state),
+          };
         }
       }
       Ok(Token::Comma) => {}
       Ok(Token::CurlyBracketBlock) => {
-        if offsets.is_empty() {
-          return Ok(None);
-        }
         let declarations = parser.parse_nested_block(|nested| {
           parse_declaration_list(nested, DeclarationContext::Style).map_err(|_| {
             nested.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
@@ -3609,9 +3616,9 @@ fn parse_single_keyframe<'i, 't>(
           }
         }
         let mut frames = Vec::new();
-        for offset in offsets {
+        for selector in selectors {
           frames.push(Keyframe {
-            offset,
+            selector,
             declarations: filtered_declarations.clone(),
             timing_functions: timing_functions.clone(),
           });
@@ -6963,5 +6970,31 @@ mod tests {
     let collected = sheet.collect_keyframes(&media_ctx);
     let names: Vec<&str> = collected.iter().map(|rule| rule.name.as_str()).collect();
     assert_eq!(names, vec!["None", "initial", "foo"]);
+  }
+
+  #[test]
+  fn keyframes_named_range_selectors_parse_as_timeline_ranges() {
+    let css = r#"
+      @keyframes inout {
+        entry 0% { opacity: 0; }
+        entry 100% { opacity: 1; }
+      }
+    "#;
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    let media_ctx = crate::style::media::MediaContext::screen(800.0, 600.0);
+    let collected = sheet.collect_keyframes(&media_ctx);
+    assert_eq!(collected.len(), 1);
+    let rule = &collected[0];
+    assert_eq!(rule.keyframes.len(), 2);
+    assert!(
+      matches!(&rule.keyframes[0].selector, KeyframeSelector::TimelineRange { name, progress } if name == "entry" && (*progress - 0.0).abs() <= f32::EPSILON),
+      "expected first keyframe to be `entry 0%`, got {:?}",
+      rule.keyframes[0].selector
+    );
+    assert!(
+      matches!(&rule.keyframes[1].selector, KeyframeSelector::TimelineRange { name, progress } if name == "entry" && (*progress - 1.0).abs() <= f32::EPSILON),
+      "expected second keyframe to be `entry 100%`, got {:?}",
+      rule.keyframes[1].selector
+    );
   }
 }
