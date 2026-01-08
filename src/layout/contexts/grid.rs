@@ -4422,22 +4422,46 @@ impl GridFormattingContext {
     for &child_ptr in positioned_children {
       let child = unsafe { &*child_ptr };
       let mut pos = Point::ZERO;
-      let (x_start, x_end, x_ctx) = if axes_swapped {
+      let (x_start, x_end, x_raw, x_ctx, x_line_count) = if axes_swapped {
         (
           child.style.grid_row_start,
           child.style.grid_row_end,
+          child.style.grid_row_raw.as_deref(),
           row_subgrid_ctx.as_ref(),
+          col_offsets
+            .as_ref()
+            .and_then(|offsets| grid_line_count_from_offsets(offsets))
+            .or_else(|| {
+              // Subgrid fallback: line numbers are local to the subgrid, which inherits the number
+              // of tracks it spans in the parent axis.
+              let start = box_node.style.grid_row_start;
+              let end = box_node.style.grid_row_end;
+              (start > 0 && end > start)
+                .then(|| u16::try_from((end - start + 1).max(0)).ok())
+                .flatten()
+            }),
         )
       } else {
         (
           child.style.grid_column_start,
           child.style.grid_column_end,
+          child.style.grid_column_raw.as_deref(),
           col_subgrid_ctx.as_ref(),
+          col_offsets
+            .as_ref()
+            .and_then(|offsets| grid_line_count_from_offsets(offsets))
+            .or_else(|| {
+              let start = box_node.style.grid_column_start;
+              let end = box_node.style.grid_column_end;
+              (start > 0 && end > start)
+                .then(|| u16::try_from((end - start + 1).max(0)).ok())
+                .flatten()
+            }),
         )
       };
-      if x_start > 0 && x_end > 0 && x_end == x_start + 1 {
-        let start_line = x_start as u16;
-        let end_line = x_end as u16;
+      if let Some((start_line, end_line)) =
+        resolve_grid_line_range_from_style(x_start, x_end, x_raw, x_line_count)
+      {
         if let Some(col_offsets) = col_offsets.as_ref() {
           if let Some((start, _)) = grid_area_for_item(col_offsets, start_line, end_line) {
             pos.x = start - padding_origin.x;
@@ -4451,22 +4475,44 @@ impl GridFormattingContext {
         }
       }
 
-      let (y_start, y_end, y_ctx) = if axes_swapped {
+      let (y_start, y_end, y_raw, y_ctx, y_line_count) = if axes_swapped {
         (
           child.style.grid_column_start,
           child.style.grid_column_end,
+          child.style.grid_column_raw.as_deref(),
           col_subgrid_ctx.as_ref(),
+          row_offsets
+            .as_ref()
+            .and_then(|offsets| grid_line_count_from_offsets(offsets))
+            .or_else(|| {
+              let start = box_node.style.grid_column_start;
+              let end = box_node.style.grid_column_end;
+              (start > 0 && end > start)
+                .then(|| u16::try_from((end - start + 1).max(0)).ok())
+                .flatten()
+            }),
         )
       } else {
         (
           child.style.grid_row_start,
           child.style.grid_row_end,
+          child.style.grid_row_raw.as_deref(),
           row_subgrid_ctx.as_ref(),
+          row_offsets
+            .as_ref()
+            .and_then(|offsets| grid_line_count_from_offsets(offsets))
+            .or_else(|| {
+              let start = box_node.style.grid_row_start;
+              let end = box_node.style.grid_row_end;
+              (start > 0 && end > start)
+                .then(|| u16::try_from((end - start + 1).max(0)).ok())
+                .flatten()
+            }),
         )
       };
-      if y_start > 0 && y_end > 0 && y_end == y_start + 1 {
-        let start_line = y_start as u16;
-        let end_line = y_end as u16;
+      if let Some((start_line, end_line)) =
+        resolve_grid_line_range_from_style(y_start, y_end, y_raw, y_line_count)
+      {
         if let Some(row_offsets) = row_offsets.as_ref() {
           if let Some((start, _)) = grid_area_for_item(row_offsets, start_line, end_line) {
             pos.y = start - padding_origin.y;
@@ -7376,6 +7422,113 @@ fn grid_area_for_item(offsets: &[f32], start_line: u16, end_line: u16) -> Option
   Some((offsets[start_idx + 1], offsets[end_idx]))
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ResolvedGridPlacementComponent {
+  Auto,
+  Line(i32),
+  Span(u16),
+  Unsupported,
+}
+
+fn grid_placement_component_from_taffy(
+  placement: &TaffyGridPlacement<String>,
+) -> ResolvedGridPlacementComponent {
+  match placement {
+    TaffyGridPlacement::Auto => ResolvedGridPlacementComponent::Auto,
+    TaffyGridPlacement::Line(line) => ResolvedGridPlacementComponent::Line(line.as_i16() as i32),
+    TaffyGridPlacement::Span(span) => ResolvedGridPlacementComponent::Span(*span),
+    // Named line resolution is handled by Taffy for in-flow items. For static positioning of
+    // out-of-flow abspos/fixed items, fall back to the axis default (0) when named resolution
+    // would be required.
+    TaffyGridPlacement::NamedLine(..) | TaffyGridPlacement::NamedSpan(..) => {
+      ResolvedGridPlacementComponent::Unsupported
+    }
+  }
+}
+
+fn grid_line_count_from_offsets(offsets: &[f32]) -> Option<u16> {
+  // Offsets is (track_count * 2 + 1) entries: [gutter, track, gutter, track, ... gutter].
+  if offsets.len() < 3 || offsets.len() % 2 == 0 {
+    return None;
+  }
+  let track_count = (offsets.len() - 1) / 2;
+  u16::try_from(track_count.saturating_add(1)).ok()
+}
+
+fn resolve_css_grid_line_to_u16(line: i32, line_count: Option<u16>) -> Option<u16> {
+  match line.cmp(&0) {
+    std::cmp::Ordering::Equal => None,
+    std::cmp::Ordering::Greater => u16::try_from(line).ok(),
+    std::cmp::Ordering::Less => {
+      let line_count = line_count? as i32;
+      let resolved = line_count + line + 1;
+      if resolved >= 1 && resolved <= line_count {
+        Some(resolved as u16)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+fn resolve_grid_line_range_from_style(
+  start: i32,
+  end: i32,
+  raw: Option<&str>,
+  line_count: Option<u16>,
+) -> Option<(u16, u16)> {
+  let parsed = raw
+    .filter(|_| start == 0 || end == 0)
+    .map(parse_grid_line_placement_raw);
+
+  let start_component = if start != 0 {
+    ResolvedGridPlacementComponent::Line(start)
+  } else {
+    parsed
+      .as_ref()
+      .map(|line| grid_placement_component_from_taffy(&line.start))
+      .unwrap_or(ResolvedGridPlacementComponent::Auto)
+  };
+  let end_component = if end != 0 {
+    ResolvedGridPlacementComponent::Line(end)
+  } else {
+    parsed
+      .as_ref()
+      .map(|line| grid_placement_component_from_taffy(&line.end))
+      .unwrap_or(ResolvedGridPlacementComponent::Auto)
+  };
+
+  use ResolvedGridPlacementComponent as Comp;
+  match (start_component, end_component) {
+    (Comp::Line(start), Comp::Line(end)) => {
+      let start = resolve_css_grid_line_to_u16(start, line_count)?;
+      let end = resolve_css_grid_line_to_u16(end, line_count)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::Line(start), Comp::Span(span)) => {
+      let start = resolve_css_grid_line_to_u16(start, line_count)?;
+      let end = start.checked_add(span)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::Span(span), Comp::Line(end)) => {
+      let end = resolve_css_grid_line_to_u16(end, line_count)?;
+      let start = end.checked_sub(span)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::Line(start), Comp::Auto) => {
+      let start = resolve_css_grid_line_to_u16(start, line_count)?;
+      let end = start.checked_add(1)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::Auto, Comp::Line(end)) => {
+      let end = resolve_css_grid_line_to_u16(end, line_count)?;
+      let start = end.checked_sub(1)?;
+      (end > start).then_some((start, end))
+    }
+    _ => None,
+  }
+}
+
 #[derive(Clone, Copy)]
 struct BaselineItem {
   idx: usize,
@@ -8415,30 +8568,49 @@ impl FormattingContext for GridFormattingContext {
               .unwrap_or(taffy::style::AlignContent::Stretch),
           );
 
+          let col_line_count = grid_line_count_from_offsets(&col_offsets);
+          let row_line_count = grid_line_count_from_offsets(&row_offsets);
+
           for child in &positioned_children {
             let mut pos = Point::ZERO;
-            let (x_start, x_end) = if axes_swapped {
-              (child.style.grid_row_start, child.style.grid_row_end)
+            let (x_start, x_end, x_raw) = if axes_swapped {
+              (
+                child.style.grid_row_start,
+                child.style.grid_row_end,
+                child.style.grid_row_raw.as_deref(),
+              )
             } else {
-              (child.style.grid_column_start, child.style.grid_column_end)
+              (
+                child.style.grid_column_start,
+                child.style.grid_column_end,
+                child.style.grid_column_raw.as_deref(),
+              )
             };
-            if x_start > 0 && x_end > 0 && x_end == x_start + 1 {
-              if let Some((start, _)) =
-                grid_area_for_item(&col_offsets, x_start as u16, x_end as u16)
-              {
+            if let Some((start_line, end_line)) =
+              resolve_grid_line_range_from_style(x_start, x_end, x_raw, col_line_count)
+            {
+              if let Some((start, _)) = grid_area_for_item(&col_offsets, start_line, end_line) {
                 pos.x = start - padding_origin.x;
               }
             }
 
-            let (y_start, y_end) = if axes_swapped {
-              (child.style.grid_column_start, child.style.grid_column_end)
+            let (y_start, y_end, y_raw) = if axes_swapped {
+              (
+                child.style.grid_column_start,
+                child.style.grid_column_end,
+                child.style.grid_column_raw.as_deref(),
+              )
             } else {
-              (child.style.grid_row_start, child.style.grid_row_end)
+              (
+                child.style.grid_row_start,
+                child.style.grid_row_end,
+                child.style.grid_row_raw.as_deref(),
+              )
             };
-            if y_start > 0 && y_end > 0 && y_end == y_start + 1 {
-              if let Some((start, _)) =
-                grid_area_for_item(&row_offsets, y_start as u16, y_end as u16)
-              {
+            if let Some((start_line, end_line)) =
+              resolve_grid_line_range_from_style(y_start, y_end, y_raw, row_line_count)
+            {
+              if let Some((start, _)) = grid_area_for_item(&row_offsets, start_line, end_line) {
                 pos.y = start - padding_origin.y;
               }
             }
