@@ -58,6 +58,7 @@ mod grid_percent_tracks_indefinite_shrinkwrap;
 mod grid_parallel_flow_fragmentation;
 mod grid_writing_mode_in_block;
 mod inline_float_min_width;
+mod inline_replaced_in_block;
 mod inline_shaping_fallback;
 mod intrinsic_sizing_keywords;
 mod legend_shrink_to_fit;

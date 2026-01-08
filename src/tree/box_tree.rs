@@ -1343,6 +1343,10 @@ impl BoxNode {
   ///
   /// Block-level boxes participate in block formatting context.
   pub fn is_block_level(&self) -> bool {
+    if matches!(self.box_type, BoxType::Replaced(_)) {
+      return !self.style.display.is_inline_level();
+    }
+
     self.box_type.is_block_level()
   }
 
@@ -1350,6 +1354,10 @@ impl BoxNode {
   ///
   /// Inline-level boxes participate in inline formatting context.
   pub fn is_inline_level(&self) -> bool {
+    if matches!(self.box_type, BoxType::Replaced(_)) {
+      return self.style.display.is_inline_level();
+    }
+
     self.box_type.is_inline_level()
   }
 
@@ -1626,7 +1634,27 @@ mod tests {
     );
 
     assert!(box_node.is_replaced());
-    assert!(box_node.is_block_level());
+    assert!(box_node.is_inline_level());
+    assert!(!box_node.is_block_level());
+
+    let mut block_style = ComputedStyle::default();
+    block_style.display = crate::Display::Block;
+    let block_node = BoxNode::new_replaced(
+      Arc::new(block_style),
+      ReplacedType::Image {
+        src: "image.png".to_string(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      Some(Size::new(100.0, 50.0)),
+      Some(2.0),
+    );
+    assert!(block_node.is_block_level());
+    assert!(!block_node.is_inline_level());
   }
 
   #[test]

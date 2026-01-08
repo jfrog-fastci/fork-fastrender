@@ -7625,7 +7625,7 @@ impl FormattingContext for GridFormattingContext {
     if let CrateAvailableSpace::Definite(outer_width) = constraints.available_width {
       if outer_width.is_finite()
         && physical_width_is_auto(style)
-        && box_node.box_type.is_block_level()
+        && box_node.is_block_level()
         && crate::style::inline_axis_is_horizontal(style.writing_mode)
       {
         if let Ok(existing) = taffy.style(root_id) {

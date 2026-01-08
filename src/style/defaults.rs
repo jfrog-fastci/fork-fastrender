@@ -94,6 +94,9 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
 
     // Force minimal spacing for table elements (consistent with user-agent.css)
     match tag {
+      "center" => {
+        styles.text_align = crate::style::types::TextAlign::Center;
+      }
       "body" => {
         // UA default margins: 8px on all sides
         let default_margin = Some(Length::px(8.0));
@@ -252,6 +255,8 @@ pub fn parse_color_attribute(color_str: &str) -> Option<Rgba> {
 mod tests {
   use super::*;
   use crate::debug::runtime::{set_runtime_toggles, RuntimeToggles};
+  use crate::dom::HTML_NAMESPACE;
+  use crate::style::types::TextAlign;
   use crate::tree::box_tree::ReplacedType;
   use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
   use std::collections::HashMap;
@@ -301,6 +306,22 @@ mod tests {
     let mut objects = Vec::new();
     collect_embed_object_widths(&fragment_tree.root, &mut embeds, &mut objects);
     (embeds, objects)
+  }
+
+  #[test]
+  fn center_element_defaults_to_text_align_center() {
+    let node = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "center".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: Vec::new(),
+      },
+      children: Vec::new(),
+    };
+
+    let styles = get_default_styles_for_element(&node);
+    assert_eq!(styles.display, Display::Block);
+    assert_eq!(styles.text_align, TextAlign::Center);
   }
 
   #[test]
