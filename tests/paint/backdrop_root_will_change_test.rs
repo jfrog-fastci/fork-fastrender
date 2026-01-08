@@ -6,6 +6,16 @@ use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{FastRender, FontConfig, Point, Rgba};
+use std::sync::{Mutex, MutexGuard};
+
+// The Rust test harness runs tests in parallel by default. These paint regressions build full
+// render/layout pipelines and can exceed memory limits when too many execute concurrently under
+// `scripts/run_limited.sh`.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_tests() -> MutexGuard<'static, ()> {
+  TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner())
+}
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
@@ -77,6 +87,7 @@ fn render_backdrop_invert_with_parent_will_change(value: &str) -> tiny_skia::Pix
 
 #[test]
 fn will_change_filter_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // Per Filter Effects Level 2, `will-change` hints for properties that would establish a
   // Backdrop Root (e.g. `filter`) must do so immediately.
   let html = r#"<!doctype html>
@@ -111,6 +122,7 @@ fn will_change_filter_establishes_backdrop_root() {
 
 #[test]
 fn will_change_transform_does_not_establish_backdrop_root() {
+  let _guard = lock_tests();
   // `transform` is not a Backdrop Root trigger; `will-change: transform` must not clip the
   // backdrop that descendant `backdrop-filter` elements can see.
   let html = r#"<!doctype html>
@@ -144,6 +156,7 @@ fn will_change_transform_does_not_establish_backdrop_root() {
 
 #[test]
 fn will_change_webkit_transform_does_not_establish_backdrop_root() {
+  let _guard = lock_tests();
   // `-webkit-transform` should be treated as `transform` for `will-change` purposes, which means it
   // must *not* establish a Backdrop Root.
   let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-transform");
@@ -153,6 +166,7 @@ fn will_change_webkit_transform_does_not_establish_backdrop_root() {
 
 #[test]
 fn will_change_mix_blend_mode_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `mix-blend-mode` is a Backdrop Root trigger; `will-change` hints for it must do so immediately.
   let html = r#"<!doctype html>
     <style>
@@ -186,6 +200,7 @@ fn will_change_mix_blend_mode_establishes_backdrop_root() {
 
 #[test]
 fn will_change_clip_path_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `clip-path` is a Backdrop Root trigger; `will-change` hints for it must do so immediately,
   // even before the element has a non-`none` clip-path applied.
   let html = r#"<!doctype html>
@@ -218,6 +233,7 @@ fn will_change_clip_path_establishes_backdrop_root() {
 
 #[test]
 fn will_change_opacity_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // Per Filter Effects Level 2, `opacity < 1` establishes a Backdrop Root, so `will-change: opacity`
   // must establish the boundary immediately even before the opacity value changes.
   let html = r#"<!doctype html>
@@ -252,6 +268,7 @@ fn will_change_opacity_establishes_backdrop_root() {
 
 #[test]
 fn will_change_backdrop_filter_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `backdrop-filter` itself is a Backdrop Root trigger; `will-change` hints must establish the
   // boundary even when the element currently has no backdrop-filter applied.
   let html = r#"<!doctype html>
@@ -284,6 +301,7 @@ fn will_change_backdrop_filter_establishes_backdrop_root() {
 
 #[test]
 fn will_change_webkit_backdrop_filter_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `-webkit-backdrop-filter` aliases `backdrop-filter`; will-change hints should behave
   // equivalently for Backdrop Root semantics.
   let html = r#"<!doctype html>
@@ -316,6 +334,7 @@ fn will_change_webkit_backdrop_filter_establishes_backdrop_root() {
 
 #[test]
 fn will_change_webkit_filter_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `-webkit-filter` is a common legacy alias for `filter`; will-change hints should behave
   // equivalently for Backdrop Root semantics.
   let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-filter");
@@ -334,6 +353,7 @@ fn will_change_ms_filter_is_not_aliased_to_filter() {
 
 #[test]
 fn will_change_webkit_mask_image_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // WebKit mask properties are widely used on the web; will-change should treat vendor-prefixed
   // property names as aliases of their unprefixed forms for Backdrop Root semantics.
   let html = r#"<!doctype html>
@@ -384,6 +404,7 @@ fn will_change_webkit_clip_path_establishes_backdrop_root() {
 
 #[test]
 fn will_change_multiple_properties_establishes_backdrop_root_if_any_hint_does() {
+  let _guard = lock_tests();
   // `will-change` accepts a comma-separated list. If any hinted property is a Backdrop Root trigger,
   // the element must establish a Backdrop Root immediately.
   //
@@ -420,6 +441,7 @@ fn will_change_multiple_properties_establishes_backdrop_root_if_any_hint_does() 
 
 #[test]
 fn will_change_mask_image_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `mask-image` is a Backdrop Root trigger; `will-change: mask-image` must establish the boundary
   // proactively even before the element has a non-`none` mask-image applied.
   let html = r#"<!doctype html>
@@ -454,6 +476,7 @@ fn will_change_mask_image_establishes_backdrop_root() {
 
 #[test]
 fn will_change_mask_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `mask` is also a Backdrop Root trigger; `will-change: mask` should establish the same boundary.
   let html = r#"<!doctype html>
     <style>
@@ -487,6 +510,7 @@ fn will_change_mask_establishes_backdrop_root() {
 
 #[test]
 fn will_change_mask_border_establishes_backdrop_root() {
+  let _guard = lock_tests();
   // `mask-border` is a Backdrop Root trigger; `will-change` hints for it must establish the
   // boundary proactively.
   let html = r#"<!doctype html>
@@ -521,6 +545,7 @@ fn will_change_mask_border_establishes_backdrop_root() {
 
 #[test]
 fn will_change_perspective_does_not_establish_backdrop_root() {
+  let _guard = lock_tests();
   // `perspective` is not a Backdrop Root trigger; `will-change: perspective` must not clip the
   // backdrop that descendant `backdrop-filter` elements can see.
   let html = r#"<!doctype html>
@@ -554,6 +579,7 @@ fn will_change_perspective_does_not_establish_backdrop_root() {
 
 #[test]
 fn will_change_other_stacking_context_hints_do_not_establish_backdrop_root() {
+  let _guard = lock_tests();
   // `will-change` can proactively create stacking contexts for performance (e.g. transforms),
   // but only hints for Backdrop Root triggers should stop backdrop-filter sampling.
   for value in [
@@ -582,6 +608,7 @@ fn will_change_other_stacking_context_hints_do_not_establish_backdrop_root() {
 
 #[test]
 fn will_change_auto_does_not_establish_backdrop_root() {
+  let _guard = lock_tests();
   let pixmap = render_backdrop_invert_with_parent_will_change("auto");
   // Red backdrop inverted to cyan.
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
@@ -590,6 +617,7 @@ fn will_change_auto_does_not_establish_backdrop_root() {
 
 #[test]
 fn will_change_unknown_property_does_not_establish_backdrop_root() {
+  let _guard = lock_tests();
   // Unknown properties should not become Backdrop Root triggers just because they are mentioned in
   // `will-change`.
   let pixmap = render_backdrop_invert_with_parent_will_change("background-color");
@@ -600,6 +628,7 @@ fn will_change_unknown_property_does_not_establish_backdrop_root() {
 
 #[test]
 fn will_change_filter_is_case_insensitive() {
+  let _guard = lock_tests();
   let pixmap = render_backdrop_invert_with_parent_will_change("FILTER");
   // Backdrop sampling stops at the will-change backdrop root.
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
@@ -608,6 +637,7 @@ fn will_change_filter_is_case_insensitive() {
 
 #[test]
 fn will_change_multiple_hints_establishes_backdrop_root_if_any_hint_triggers() {
+  let _guard = lock_tests();
   // Per the will-change spec, any hint that would establish a Backdrop Root must do so immediately.
   let pixmap = render_backdrop_invert_with_parent_will_change("transform, filter");
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
@@ -616,6 +646,7 @@ fn will_change_multiple_hints_establishes_backdrop_root_if_any_hint_triggers() {
 
 #[test]
 fn will_change_with_auto_mixed_in_is_invalid_and_ignored() {
+  let _guard = lock_tests();
   // `auto` cannot appear in a comma-separated list; the whole declaration is invalid and should be
   // ignored.
   let pixmap = render_backdrop_invert_with_parent_will_change("auto, filter");
@@ -626,6 +657,7 @@ fn will_change_with_auto_mixed_in_is_invalid_and_ignored() {
 
 #[test]
 fn will_change_with_inherit_mixed_in_is_invalid_and_ignored() {
+  let _guard = lock_tests();
   // CSS-wide keywords are not valid <<custom-ident>>s, so this value is invalid.
   let pixmap = render_backdrop_invert_with_parent_will_change("filter, inherit");
   // Red backdrop inverted to cyan.
@@ -635,6 +667,7 @@ fn will_change_with_inherit_mixed_in_is_invalid_and_ignored() {
 
 #[test]
 fn will_change_with_default_mixed_in_is_invalid_and_ignored() {
+  let _guard = lock_tests();
   // css-values-4 reserves `default` so it is not a valid <<custom-ident>>.
   let pixmap = render_backdrop_invert_with_parent_will_change("filter, default");
   // Red backdrop inverted to cyan.
@@ -644,6 +677,7 @@ fn will_change_with_default_mixed_in_is_invalid_and_ignored() {
 
 #[test]
 fn will_change_trailing_comma_is_invalid_and_ignored() {
+  let _guard = lock_tests();
   // Trailing commas are not allowed in comma-separated lists.
   let pixmap = render_backdrop_invert_with_parent_will_change("filter,");
   // Red backdrop inverted to cyan.
@@ -653,6 +687,7 @@ fn will_change_trailing_comma_is_invalid_and_ignored() {
 
 #[test]
 fn will_change_none_is_invalid_and_does_not_override() {
+  let _guard = lock_tests();
   // css-will-change-1 excludes `none` from <<custom-ident>>, so it is invalid here and should not
   // override the earlier Backdrop Root-triggering value.
   let html = r#"<!doctype html>
@@ -686,6 +721,7 @@ fn will_change_none_is_invalid_and_does_not_override() {
 
 #[test]
 fn will_change_all_is_invalid_and_does_not_override() {
+  let _guard = lock_tests();
   // css-will-change-1 excludes `all` from <<custom-ident>>, so it is invalid here and should not
   // override the earlier Backdrop Root-triggering value.
   let html = r#"<!doctype html>
@@ -752,6 +788,7 @@ fn will_change_will_change_is_invalid_and_does_not_override() {
 
 #[test]
 fn will_change_auto_is_case_insensitive_and_overrides_hints() {
+  let _guard = lock_tests();
   // `auto` is a keyword (not a custom-ident) and should match ASCII case-insensitively.
   // It should also override earlier valid `will-change` declarations via the normal cascade.
   let html = r#"<!doctype html>
@@ -787,6 +824,7 @@ fn will_change_auto_is_case_insensitive_and_overrides_hints() {
 
 #[test]
 fn will_change_default_is_invalid_and_does_not_override() {
+  let _guard = lock_tests();
   // css-values-3 reserves `default` (not a valid <<custom-ident>>), so it is invalid here and
   // should not override the earlier Backdrop Root-triggering value.
   let html = r#"<!doctype html>
