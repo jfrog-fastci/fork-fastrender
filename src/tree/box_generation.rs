@@ -392,7 +392,7 @@ fn collect_box_generation_prepass<'a>(
     }
   }
 
-  let css_trimmed = out.document_css.trim();
+  let css_trimmed = trim_ascii_whitespace(&out.document_css);
   let css_size_ok = !css_trimmed.is_empty() && out.document_css.len() <= MAX_EMBEDDED_SVG_CSS_BYTES;
   let allow_embed = if !css_size_ok {
     false
@@ -3815,7 +3815,7 @@ pub(crate) fn marker_content_from_style(
 fn effective_content_value(style: &ComputedStyle) -> ContentValue {
   match &style.content_value {
     ContentValue::Normal => {
-      let raw = style.content.trim();
+      let raw = trim_ascii_whitespace(&style.content);
       if raw.is_empty() || raw.eq_ignore_ascii_case("normal") {
         ContentValue::Normal
       } else if raw.eq_ignore_ascii_case("none") {
@@ -7149,6 +7149,19 @@ mod tests {
     assert!(
       tree.root.children[0].is_text(),
       "whitespace text should produce a text box"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_effective_content_value_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let mut style = ComputedStyle::default();
+    style.content_value = ContentValue::Normal;
+    style.content = format!("{nbsp}none");
+    assert_eq!(
+      effective_content_value(&style),
+      ContentValue::Items(vec![ContentItem::String(format!("{nbsp}none"))]),
+      "NBSP must not be treated as CSS whitespace when interpreting legacy content strings"
     );
   }
 
