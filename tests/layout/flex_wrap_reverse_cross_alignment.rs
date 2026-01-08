@@ -621,6 +621,89 @@ fn flex_wrap_reverse_vertical_rl_align_content_start_packs_lines_to_block_start(
 }
 
 #[test]
+fn flex_wrap_reverse_vertical_lr_align_content_start_packs_lines_to_block_start() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::VerticalLr;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_content = AlignContent::Start;
+  container_style.align_items = AlignItems::FlexStart;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  container_style.height = Some(Length::px(40.0));
+  container_style.height_keyword = None;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.width_keyword = None;
+  child_style.height = Some(Length::px(20.0));
+  child_style.height_keyword = None;
+  child_style.flex_shrink = 0.0;
+
+  let mut children = Vec::new();
+  for id in 1..=3 {
+    let mut child = BoxNode::new_block(
+      Arc::new(child_style.clone()),
+      FormattingContextType::Block,
+      vec![],
+    );
+    child.id = id;
+    children.push(child);
+  }
+
+  let first_id = children[0].id;
+  let last_id = children[2].id;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    children,
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 40.0))
+    .expect("layout succeeds");
+
+  let mut first_x = None;
+  let mut last_x = None;
+  let mut debug_children = Vec::new();
+
+  for child in fragment.children.iter() {
+    let id = fragment_box_id(&child.content);
+    debug_children.push((
+      id,
+      child.bounds.x(),
+      child.bounds.y(),
+      child.bounds.width(),
+      child.bounds.height(),
+    ));
+    match id {
+      Some(id) if id == first_id => first_x = Some(child.bounds.x()),
+      Some(id) if id == last_id => last_x = Some(child.bounds.x()),
+      _ => {}
+    }
+  }
+
+  let first_x = first_x.unwrap_or_else(|| panic!("missing first child: {:?}", debug_children));
+  let last_x = last_x.unwrap_or_else(|| panic!("missing last child: {:?}", debug_children));
+
+  assert!(
+    (first_x - 10.0).abs() < 1e-3,
+    "first column should start at x=10 under vertical-lr + wrap-reverse + align-content:start: {:?}",
+    debug_children
+  );
+  assert!(
+    (last_x - 0.0).abs() < 1e-3,
+    "second column should start at x=0 under vertical-lr + wrap-reverse + align-content:start: {:?}",
+    debug_children
+  );
+}
+
+#[test]
 fn flex_wrap_reverse_vertical_rl_align_content_flex_start_packs_lines_to_cross_start() {
   let fc = FlexFormattingContext::new();
 
@@ -699,6 +782,89 @@ fn flex_wrap_reverse_vertical_rl_align_content_flex_start_packs_lines_to_cross_s
   assert!(
     (last_x - 10.0).abs() < 1e-3,
     "second column should start at x=10 under vertical-rl + wrap-reverse + align-content:flex-start: {:?}",
+    debug_children
+  );
+}
+
+#[test]
+fn flex_wrap_reverse_vertical_lr_align_content_flex_start_packs_lines_to_cross_start() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::VerticalLr;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_content = AlignContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  container_style.height = Some(Length::px(40.0));
+  container_style.height_keyword = None;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.width_keyword = None;
+  child_style.height = Some(Length::px(20.0));
+  child_style.height_keyword = None;
+  child_style.flex_shrink = 0.0;
+
+  let mut children = Vec::new();
+  for id in 1..=3 {
+    let mut child = BoxNode::new_block(
+      Arc::new(child_style.clone()),
+      FormattingContextType::Block,
+      vec![],
+    );
+    child.id = id;
+    children.push(child);
+  }
+
+  let first_id = children[0].id;
+  let last_id = children[2].id;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    children,
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 40.0))
+    .expect("layout succeeds");
+
+  let mut first_x = None;
+  let mut last_x = None;
+  let mut debug_children = Vec::new();
+
+  for child in fragment.children.iter() {
+    let id = fragment_box_id(&child.content);
+    debug_children.push((
+      id,
+      child.bounds.x(),
+      child.bounds.y(),
+      child.bounds.width(),
+      child.bounds.height(),
+    ));
+    match id {
+      Some(id) if id == first_id => first_x = Some(child.bounds.x()),
+      Some(id) if id == last_id => last_x = Some(child.bounds.x()),
+      _ => {}
+    }
+  }
+
+  let first_x = first_x.unwrap_or_else(|| panic!("missing first child: {:?}", debug_children));
+  let last_x = last_x.unwrap_or_else(|| panic!("missing last child: {:?}", debug_children));
+
+  assert!(
+    (first_x - 90.0).abs() < 1e-3,
+    "first column should start at x=90 under vertical-lr + wrap-reverse + align-content:flex-start: {:?}",
+    debug_children
+  );
+  assert!(
+    (last_x - 80.0).abs() < 1e-3,
+    "second column should start at x=80 under vertical-lr + wrap-reverse + align-content:flex-start: {:?}",
     debug_children
   );
 }
@@ -790,6 +956,92 @@ fn flex_wrap_reverse_vertical_rl_align_items_start_uses_block_start_within_line(
 }
 
 #[test]
+fn flex_wrap_reverse_vertical_lr_align_items_start_uses_block_start_within_line() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::VerticalLr;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_content = AlignContent::FlexStart;
+  container_style.align_items = AlignItems::Start;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  container_style.height = Some(Length::px(100.0));
+  container_style.height_keyword = None;
+
+  let mut wide_style = ComputedStyle::default();
+  wide_style.display = Display::Block;
+  wide_style.width = Some(Length::px(20.0));
+  wide_style.width_keyword = None;
+  wide_style.height = Some(Length::px(10.0));
+  wide_style.height_keyword = None;
+  wide_style.flex_shrink = 0.0;
+  let mut wide_child =
+    BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
+  wide_child.id = 1;
+
+  let mut narrow_style = ComputedStyle::default();
+  narrow_style.display = Display::Block;
+  narrow_style.width = Some(Length::px(10.0));
+  narrow_style.width_keyword = None;
+  narrow_style.height = Some(Length::px(10.0));
+  narrow_style.height_keyword = None;
+  narrow_style.flex_shrink = 0.0;
+  let mut narrow_child =
+    BoxNode::new_block(Arc::new(narrow_style), FormattingContextType::Block, vec![]);
+  narrow_child.id = 2;
+
+  let wide_id = wide_child.id;
+  let narrow_id = narrow_child.id;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![wide_child, narrow_child],
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 100.0))
+    .expect("layout succeeds");
+
+  let mut wide_x = None;
+  let mut narrow_x = None;
+  let mut debug_children = Vec::new();
+
+  for child in fragment.children.iter() {
+    let id = fragment_box_id(&child.content);
+    debug_children.push((
+      id,
+      child.bounds.x(),
+      child.bounds.y(),
+      child.bounds.width(),
+      child.bounds.height(),
+    ));
+    match id {
+      Some(id) if id == wide_id => wide_x = Some(child.bounds.x()),
+      Some(id) if id == narrow_id => narrow_x = Some(child.bounds.x()),
+      _ => {}
+    }
+  }
+
+  let wide_x = wide_x.unwrap_or_else(|| panic!("missing wide child: {:?}", debug_children));
+  let narrow_x = narrow_x.unwrap_or_else(|| panic!("missing narrow child: {:?}", debug_children));
+
+  assert!(
+    (wide_x - 80.0).abs() < 1e-3,
+    "wide child should start at the line's left edge (fills line width): {:?}",
+    debug_children
+  );
+  assert!(
+    (narrow_x - 80.0).abs() < 1e-3,
+    "narrow child should align to the line's block-start edge (left) under vertical-lr: {:?}",
+    debug_children
+  );
+}
+
+#[test]
 fn flex_wrap_reverse_vertical_rl_align_items_flex_start_uses_cross_start_within_line() {
   let fc = FlexFormattingContext::new();
 
@@ -871,6 +1123,92 @@ fn flex_wrap_reverse_vertical_rl_align_items_flex_start_uses_cross_start_within_
   assert!(
     (narrow_x - 0.0).abs() < 1e-3,
     "narrow child should align to the flex cross-start edge (left) under vertical-rl + wrap-reverse: {:?}",
+    debug_children
+  );
+}
+
+#[test]
+fn flex_wrap_reverse_vertical_lr_align_items_flex_start_uses_cross_start_within_line() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::VerticalLr;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_content = AlignContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  container_style.height = Some(Length::px(100.0));
+  container_style.height_keyword = None;
+
+  let mut wide_style = ComputedStyle::default();
+  wide_style.display = Display::Block;
+  wide_style.width = Some(Length::px(20.0));
+  wide_style.width_keyword = None;
+  wide_style.height = Some(Length::px(10.0));
+  wide_style.height_keyword = None;
+  wide_style.flex_shrink = 0.0;
+  let mut wide_child =
+    BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
+  wide_child.id = 1;
+
+  let mut narrow_style = ComputedStyle::default();
+  narrow_style.display = Display::Block;
+  narrow_style.width = Some(Length::px(10.0));
+  narrow_style.width_keyword = None;
+  narrow_style.height = Some(Length::px(10.0));
+  narrow_style.height_keyword = None;
+  narrow_style.flex_shrink = 0.0;
+  let mut narrow_child =
+    BoxNode::new_block(Arc::new(narrow_style), FormattingContextType::Block, vec![]);
+  narrow_child.id = 2;
+
+  let wide_id = wide_child.id;
+  let narrow_id = narrow_child.id;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![wide_child, narrow_child],
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 100.0))
+    .expect("layout succeeds");
+
+  let mut wide_x = None;
+  let mut narrow_x = None;
+  let mut debug_children = Vec::new();
+
+  for child in fragment.children.iter() {
+    let id = fragment_box_id(&child.content);
+    debug_children.push((
+      id,
+      child.bounds.x(),
+      child.bounds.y(),
+      child.bounds.width(),
+      child.bounds.height(),
+    ));
+    match id {
+      Some(id) if id == wide_id => wide_x = Some(child.bounds.x()),
+      Some(id) if id == narrow_id => narrow_x = Some(child.bounds.x()),
+      _ => {}
+    }
+  }
+
+  let wide_x = wide_x.unwrap_or_else(|| panic!("missing wide child: {:?}", debug_children));
+  let narrow_x = narrow_x.unwrap_or_else(|| panic!("missing narrow child: {:?}", debug_children));
+
+  assert!(
+    (wide_x - 80.0).abs() < 1e-3,
+    "wide child should start at the line's left edge: {:?}",
+    debug_children
+  );
+  assert!(
+    (narrow_x - 90.0).abs() < 1e-3,
+    "narrow child should align to the flex cross-start edge (right) under vertical-lr + wrap-reverse: {:?}",
     debug_children
   );
 }
