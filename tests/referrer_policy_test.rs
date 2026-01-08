@@ -202,6 +202,20 @@ impl HeaderCaptureServer {
 </html>"#
                   .to_vec(),
               ),
+              "/doc_response_policy_img_meta_invalid.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head>
+    <meta name="referrer" content="bogus-policy">
+  </head>
+  <body>
+    <img src="/img.png" style="width: 10px; height: 10px">
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
               "/doc_response_policy_img_attr_override.html" => (
                 "200 OK",
                 "text/html; charset=utf-8",
@@ -530,6 +544,7 @@ body { font-family: "TestFont"; }"#
                 | "/doc_response_policy_meta_override.html"
                 | "/doc_response_policy_img.html"
                 | "/doc_response_policy_img_meta_override.html"
+                | "/doc_response_policy_img_meta_invalid.html"
                 | "/doc_response_policy_img_attr_override.html"
                 | "/doc_response_policy_iframe.html"
                 | "/doc_response_policy_iframe_meta_override.html"
@@ -1966,6 +1981,51 @@ fn meta_invalid_referrer_policy_is_ignored_and_default_policy_applies_for_images
 }
 
 #[test]
+fn meta_referrer_policy_inside_template_is_ignored() {
+  let Some(server) =
+    HeaderCaptureServer::start("meta_referrer_policy_inside_template_is_ignored")
+  else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <template>
+          <meta name="referrer" content="no-referrer">
+        </template>
+      </head>
+      <body>
+        <img src="/img.png" style="width: 10px; height: 10px">
+      </body>
+    </html>"#;
+  let document_url = format!("{}/page.html#section", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(&html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  server.wait_for_request(
+    |req| req.path == "/img.png",
+    "expected image request to be issued for the test fixture",
+  );
+
+  let expected_referer = format!("{}/page.html", server.base_url);
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert_eq!(
+    header_value(&img_req.headers, "referer").as_deref(),
+    Some(expected_referer.as_str()),
+    "expected referrer policy meta inside <template> to be ignored and default strict-origin-when-cross-origin policy to apply; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
 fn meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images() {
   let Some(server) = HeaderCaptureServer::start(
     "meta_referrer_policy_no_referrer_allows_referrerpolicy_override_for_images",
@@ -2486,6 +2546,40 @@ fn document_response_referrer_policy_no_referrer_allows_meta_override_for_images
     header_value(&img_req.headers, "referer").as_deref(),
     Some(expected_referer.as_str()),
     "expected meta Referrer-Policy override to win over document response Referrer-Policy for /img.png; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
+fn document_response_referrer_policy_no_referrer_ignores_invalid_meta_for_images() {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_response_referrer_policy_no_referrer_ignores_invalid_meta_for_images",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_response_policy_img_meta_invalid.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in ["/doc_response_policy_img_meta_invalid.html", "/img.png"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert!(
+    header_value(&img_req.headers, "referer").is_none(),
+    "expected invalid meta Referrer-Policy to be ignored and document response Referrer-Policy to suppress Referer for /img.png; got:\n{}",
     img_req.headers
   );
 }
