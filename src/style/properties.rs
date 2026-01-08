@@ -11757,6 +11757,8 @@ fn apply_declaration_with_base_internal_with_order(
         styles.animation_fill_modes = fills.into();
         styles.animation_play_states = play_states.into();
         styles.animation_compositions = compositions.into();
+        styles.animation_timelines.clear();
+        styles.animation_ranges.clear();
       }
     }
     "transition-property" => {
