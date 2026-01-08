@@ -12935,6 +12935,24 @@ fn hash_content_value(value: &crate::style::content::ContentValue, hasher: &mut 
   }
 }
 
+fn hash_string_set_value(value: &crate::style::content::StringSetValue, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::content::StringSetValue::Content => 0u8.hash(hasher),
+    crate::style::content::StringSetValue::Literal(s) => {
+      1u8.hash(hasher);
+      s.hash(hasher);
+    }
+  }
+}
+
+fn hash_string_set(assignments: &[crate::style::content::StringSetAssignment], hasher: &mut DefaultHasher) {
+  assignments.len().hash(hasher);
+  for assignment in assignments {
+    assignment.name.hash(hasher);
+    hash_string_set_value(&assignment.value, hasher);
+  }
+}
+
 fn hash_effective_content(style: &ComputedStyle, hasher: &mut DefaultHasher) {
   use crate::style::content::ContentValue;
 
@@ -13743,6 +13761,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_length(&style.perspective_origin.y, &mut h);
   hash_enum_discriminant(&style.backface_visibility, &mut h);
   hash_quotes(&style.quotes, &mut h);
+  hash_string_set(&style.string_set, &mut h);
   hash_effective_content(style, &mut h);
   h.finish()
 }
@@ -15558,6 +15577,23 @@ pub(crate) fn render_html_with_shared_resources(
       super::style_layout_fingerprint(&a),
       super::style_layout_fingerprint(&b),
       "expected text-combine-upright digit count to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_string_set() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut assigned = base;
+    assigned.string_set = vec![crate::style::content::StringSetAssignment {
+      name: "chapter".to_string(),
+      value: crate::style::content::StringSetValue::Literal("Intro".to_string()),
+    }];
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&assigned),
+      "expected string-set assignments to affect layout fingerprints"
     );
   }
 
