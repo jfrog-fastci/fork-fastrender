@@ -717,6 +717,8 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "selection" | "-moz-selection" => true,
       // `::marker`-like vendor pseudo-elements.
       "-moz-list-bullet" | "-moz-list-number" | "-webkit-details-marker" => true,
+      // `::backdrop` vendor aliases are commonly used in single-colon form.
+      "-webkit-backdrop" | "-ms-backdrop" => true,
       "placeholder"
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
@@ -2235,6 +2237,23 @@ mod tests {
         selector.pseudo_element(),
         Some(&PseudoElement::Marker),
         "{selector_text} should parse as ::marker"
+      );
+      assert_eq!(selector.to_css_string(), canonical);
+    }
+
+    for (selector_text, canonical) in [
+      ("dialog:-webkit-backdrop", "dialog::backdrop"),
+      ("dialog:-ms-backdrop", "dialog::backdrop"),
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+        .expect("parse backdrop selector");
+      let selector = list.slice().first().expect("one selector");
+      assert_eq!(
+        selector.pseudo_element(),
+        Some(&PseudoElement::Backdrop),
+        "{selector_text} should parse as ::backdrop"
       );
       assert_eq!(selector.to_css_string(), canonical);
     }
