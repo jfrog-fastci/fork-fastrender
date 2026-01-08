@@ -3621,6 +3621,11 @@ impl HttpFetcher {
   fn build_agent(policy: &ResourcePolicy) -> Arc<ureq::Agent> {
     let config = ureq::Agent::config_builder()
       .http_status_as_error(false)
+      // Disable ureq's internal redirect following so we can:
+      // - enforce `ResourcePolicy::max_redirects` consistently across backends
+      // - observe redirect response headers (e.g. `Referrer-Policy`) for subsequent requests
+      // - keep request header behaviour stable regardless of the selected HTTP backend
+      .max_redirects(0)
       .timeout_global(Some(policy.request_timeout))
       .build();
     Arc::new(config.into())
@@ -4124,6 +4129,7 @@ impl HttpFetcher {
     let mut current = url.to_string();
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
+    let mut effective_referrer_policy = referrer_policy;
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -4183,7 +4189,7 @@ impl HttpFetcher {
           destination,
           client_origin,
           referrer_url,
-          referrer_policy,
+          effective_referrer_policy,
         );
         if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
           if let Some(value) = self.cookie_header_value(&current) {
@@ -4287,6 +4293,12 @@ impl HttpFetcher {
             .get("location")
             .and_then(|h| h.to_str().ok())
           {
+            if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
+              .as_deref()
+              .and_then(ReferrerPolicy::parse_value_list)
+            {
+              effective_referrer_policy = policy;
+            }
             let next = Url::parse(&current)
               .ok()
               .and_then(|base| base.join(loc).ok())
@@ -4630,6 +4642,7 @@ impl HttpFetcher {
     let mut current = url.to_string();
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
+    let mut effective_referrer_policy = referrer_policy;
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -4686,7 +4699,7 @@ impl HttpFetcher {
           destination,
           client_origin,
           referrer_url,
-          referrer_policy,
+          effective_referrer_policy,
         );
         if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
           if let Some(value) = self.cookie_header_value(&current) {
@@ -4786,6 +4799,12 @@ impl HttpFetcher {
             .get("location")
             .and_then(|h| h.to_str().ok())
           {
+            if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
+              .as_deref()
+              .and_then(ReferrerPolicy::parse_value_list)
+            {
+              effective_referrer_policy = policy;
+            }
             let next = Url::parse(&current)
               .ok()
               .and_then(|base| base.join(loc).ok())
@@ -5131,6 +5150,7 @@ impl HttpFetcher {
     let mut validators = validators;
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
+    let mut effective_referrer_policy = referrer_policy;
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -5202,7 +5222,7 @@ impl HttpFetcher {
           destination,
           client_origin,
           referrer_url,
-          referrer_policy,
+          effective_referrer_policy,
         );
         if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
           if let Some(value) = self.cookie_header_value(&current) {
@@ -5304,6 +5324,12 @@ impl HttpFetcher {
             .get("location")
             .and_then(|h| h.to_str().ok())
           {
+            if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
+              .as_deref()
+              .and_then(ReferrerPolicy::parse_value_list)
+            {
+              effective_referrer_policy = policy;
+            }
             let next = Url::parse(&current)
               .ok()
               .and_then(|base| base.join(loc).ok())
@@ -5707,6 +5733,7 @@ impl HttpFetcher {
     let mut validators = validators;
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
+    let mut effective_referrer_policy = referrer_policy;
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -5765,7 +5792,7 @@ impl HttpFetcher {
           destination,
           client_origin,
           referrer_url,
-          referrer_policy,
+          effective_referrer_policy,
         );
         if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
           if let Some(value) = self.cookie_header_value(&current) {
@@ -5861,6 +5888,12 @@ impl HttpFetcher {
             .get("location")
             .and_then(|h| h.to_str().ok())
           {
+            if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
+              .as_deref()
+              .and_then(ReferrerPolicy::parse_value_list)
+            {
+              effective_referrer_policy = policy;
+            }
             let next = Url::parse(&current)
               .ok()
               .and_then(|base| base.join(loc).ok())

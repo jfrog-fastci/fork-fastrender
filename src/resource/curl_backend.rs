@@ -453,6 +453,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
 ) -> Result<super::FetchedResource> {
   let mut current = url.to_string();
   let mut validators = validators;
+  let mut effective_referrer_policy = referrer_policy;
 
   let timeout_budget = fetcher.timeout_budget(deadline);
   let max_attempts = if deadline
@@ -519,7 +520,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         destination,
         client_origin,
         referrer_url,
-        referrer_policy,
+        effective_referrer_policy,
       );
       if super::cookies_allowed_for_request(credentials_mode, &current, client_origin) {
         if let Some(value) = fetcher.cookie_header_value(&current) {
@@ -656,6 +657,12 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           .get("location")
           .and_then(|h| h.to_str().ok())
         {
+          if let Some(policy) = super::header_values_joined(&response.headers, "referrer-policy")
+            .as_deref()
+            .and_then(super::ReferrerPolicy::parse_value_list)
+          {
+            effective_referrer_policy = policy;
+          }
           let next = Url::parse(&current)
             .ok()
             .and_then(|base| base.join(loc).ok())

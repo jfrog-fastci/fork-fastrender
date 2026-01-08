@@ -130,6 +130,11 @@ impl HeaderCaptureServer {
                 "text/plain; charset=utf-8",
                 b"redirecting".to_vec(),
               ),
+              "/style_redirect_policy.css" => (
+                "302 Found",
+                "text/plain; charset=utf-8",
+                b"redirecting".to_vec(),
+              ),
               "/style_import_nested_policy.css" => (
                 "200 OK",
                 "text/css; charset=utf-8",
@@ -183,8 +188,11 @@ body { font-family: "TestFont"; }"#
                 extra_headers.push_str("Access-Control-Allow-Origin: *\r\n");
               }
             }
-            if path == "/style_redirect.css" {
+            if matches!(path.as_str(), "/style_redirect.css" | "/style_redirect_policy.css") {
               extra_headers.push_str("Location: /style_import.css\r\n");
+            }
+            if path == "/style_redirect_policy.css" {
+              extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
             if matches!(path.as_str(), "/style_import_policy.css" | "/import_policy.css") {
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
@@ -932,4 +940,49 @@ fn stylesheet_redirect_uses_final_url_as_referrer_for_nested_requests() {
       req.headers
     );
   }
+}
+
+#[test]
+fn stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_followup_request(
+) {
+  let Some(server) = HeaderCaptureServer::start(
+    "stylesheet_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_followup_request",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"
+      <link rel="stylesheet" href="{}/style_redirect_policy.css">
+      <div>hello</div>
+    "#,
+    server.base_url
+  );
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      "http://doc.test/page.html",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_redirect_policy.css", "/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let followup_req = requests
+    .iter()
+    .find(|req| req.path == "/style_import.css")
+    .expect("expected redirect follow-up request to /style_import.css");
+  assert!(
+    header_value(&followup_req.headers, "referer").is_none(),
+    "expected redirect follow-up request Referer to be omitted due to redirect Referrer-Policy: no-referrer; got:\n{}",
+    followup_req.headers
+  );
 }
