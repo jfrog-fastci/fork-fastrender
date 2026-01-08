@@ -12504,6 +12504,33 @@ fn hash_containment(value: &crate::style::types::Containment, hasher: &mut Defau
   value.paint.hash(hasher);
 }
 
+fn hash_image_resolution(value: &crate::style::types::ImageResolution, hasher: &mut DefaultHasher) {
+  value.from_image.hash(hasher);
+  match value.specified {
+    Some(v) => {
+      1u8.hash(hasher);
+      hash_f32(v, hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+  value.snap.hash(hasher);
+}
+
+fn hash_image_orientation(value: &crate::style::types::ImageOrientation, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::ImageOrientation::FromImage => 0u8.hash(hasher),
+    crate::style::types::ImageOrientation::None => 1u8.hash(hasher),
+    crate::style::types::ImageOrientation::Angle {
+      quarter_turns,
+      flip,
+    } => {
+      2u8.hash(hasher);
+      quarter_turns.hash(hasher);
+      flip.hash(hasher);
+    }
+  }
+}
+
 fn hash_contain_intrinsic_size_axis(
   value: &crate::style::types::ContainIntrinsicSizeAxis,
   hasher: &mut DefaultHasher,
@@ -12519,6 +12546,262 @@ fn hash_appearance(value: &crate::style::types::Appearance, hasher: &mut Default
     crate::style::types::Appearance::Keyword(name) => {
       2u8.hash(hasher);
       name.hash(hasher);
+    }
+  }
+}
+
+fn hash_reference_box(value: &crate::style::types::ReferenceBox, hasher: &mut DefaultHasher) {
+  hash_enum_discriminant(value, hasher);
+}
+
+fn hash_background_position_component(
+  value: &crate::style::types::BackgroundPositionComponent,
+  hasher: &mut DefaultHasher,
+) {
+  hash_f32(value.alignment, hasher);
+  hash_length(&value.offset, hasher);
+}
+
+fn hash_background_position(value: &crate::style::types::BackgroundPosition, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::BackgroundPosition::Position { x, y } => {
+      0u8.hash(hasher);
+      hash_background_position_component(x, hasher);
+      hash_background_position_component(y, hasher);
+    }
+  }
+}
+
+fn hash_shape_radius(value: &crate::style::types::ShapeRadius, hasher: &mut DefaultHasher) {
+  match value {
+    crate::style::types::ShapeRadius::Length(len) => {
+      0u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+    crate::style::types::ShapeRadius::ClosestSide => 1u8.hash(hasher),
+    crate::style::types::ShapeRadius::FarthestSide => 2u8.hash(hasher),
+  }
+}
+
+fn hash_border_corner_radius(value: &crate::style::types::BorderCornerRadius, hasher: &mut DefaultHasher) {
+  hash_length(&value.x, hasher);
+  hash_length(&value.y, hasher);
+}
+
+fn hash_clip_radii(value: &crate::style::types::ClipRadii, hasher: &mut DefaultHasher) {
+  hash_border_corner_radius(&value.top_left, hasher);
+  hash_border_corner_radius(&value.top_right, hasher);
+  hash_border_corner_radius(&value.bottom_right, hasher);
+  hash_border_corner_radius(&value.bottom_left, hasher);
+}
+
+fn hash_basic_shape(value: &crate::style::types::BasicShape, hasher: &mut DefaultHasher) {
+  use crate::style::types::BasicShape;
+
+  match value {
+    BasicShape::Inset {
+      top,
+      right,
+      bottom,
+      left,
+      border_radius,
+    } => {
+      0u8.hash(hasher);
+      hash_length(top, hasher);
+      hash_length(right, hasher);
+      hash_length(bottom, hasher);
+      hash_length(left, hasher);
+      match border_radius.as_ref() {
+        Some(radii) => {
+          1u8.hash(hasher);
+          hash_clip_radii(radii, hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+    BasicShape::Circle { radius, position } => {
+      1u8.hash(hasher);
+      hash_shape_radius(radius, hasher);
+      hash_background_position(position, hasher);
+    }
+    BasicShape::Ellipse {
+      radius_x,
+      radius_y,
+      position,
+    } => {
+      2u8.hash(hasher);
+      hash_shape_radius(radius_x, hasher);
+      hash_shape_radius(radius_y, hasher);
+      hash_background_position(position, hasher);
+    }
+    BasicShape::Polygon { fill, points } => {
+      3u8.hash(hasher);
+      hash_enum_discriminant(fill, hasher);
+      points.len().hash(hasher);
+      for (x, y) in points {
+        hash_length(x, hasher);
+        hash_length(y, hasher);
+      }
+    }
+    BasicShape::Path { fill, data } => {
+      4u8.hash(hasher);
+      hash_enum_discriminant(fill, hasher);
+      data.hash(hasher);
+    }
+  }
+}
+
+fn hash_radial_gradient_size(value: &crate::css::types::RadialGradientSize, hasher: &mut DefaultHasher) {
+  use crate::css::types::RadialGradientSize;
+
+  match value {
+    RadialGradientSize::ClosestSide => 0u8.hash(hasher),
+    RadialGradientSize::FarthestSide => 1u8.hash(hasher),
+    RadialGradientSize::ClosestCorner => 2u8.hash(hasher),
+    RadialGradientSize::FarthestCorner => 3u8.hash(hasher),
+    RadialGradientSize::Explicit { x, y } => {
+      4u8.hash(hasher);
+      hash_length(x, hasher);
+      match y {
+        Some(v) => {
+          1u8.hash(hasher);
+          hash_length(v, hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+  }
+}
+
+fn hash_color_stop_alpha(
+  stop: &crate::css::types::ColorStop,
+  current_color: crate::style::color::Rgba,
+  is_dark: bool,
+  hasher: &mut DefaultHasher,
+) {
+  let rgba = stop.color.to_rgba_with_scheme(current_color, is_dark);
+  hash_f32(rgba.a, hasher);
+  match stop.position {
+    Some(v) => {
+      1u8.hash(hasher);
+      hash_f32(v, hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+}
+
+fn hash_shape_outside_image(
+  image: &crate::style::types::BackgroundImage,
+  current_color: crate::style::color::Rgba,
+  is_dark: bool,
+  hasher: &mut DefaultHasher,
+) {
+  use crate::style::types::BackgroundImage;
+
+  match image {
+    BackgroundImage::None => 0u8.hash(hasher),
+    BackgroundImage::Url(url) => {
+      1u8.hash(hasher);
+      url.hash(hasher);
+    }
+    BackgroundImage::LinearGradient { angle, stops } => {
+      2u8.hash(hasher);
+      hash_f32(*angle, hasher);
+      stops.len().hash(hasher);
+      for stop in stops {
+        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+      }
+    }
+    BackgroundImage::RepeatingLinearGradient { angle, stops } => {
+      3u8.hash(hasher);
+      hash_f32(*angle, hasher);
+      stops.len().hash(hasher);
+      for stop in stops {
+        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+      }
+    }
+    BackgroundImage::RadialGradient {
+      shape,
+      size,
+      position,
+      stops,
+    } => {
+      4u8.hash(hasher);
+      hash_enum_discriminant(shape, hasher);
+      hash_radial_gradient_size(size, hasher);
+      hash_background_position(position, hasher);
+      stops.len().hash(hasher);
+      for stop in stops {
+        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+      }
+    }
+    BackgroundImage::RepeatingRadialGradient {
+      shape,
+      size,
+      position,
+      stops,
+    } => {
+      5u8.hash(hasher);
+      hash_enum_discriminant(shape, hasher);
+      hash_radial_gradient_size(size, hasher);
+      hash_background_position(position, hasher);
+      stops.len().hash(hasher);
+      for stop in stops {
+        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+      }
+    }
+    BackgroundImage::ConicGradient {
+      from_angle,
+      position,
+      stops,
+    } => {
+      6u8.hash(hasher);
+      hash_f32(*from_angle, hasher);
+      hash_background_position(position, hasher);
+      stops.len().hash(hasher);
+      for stop in stops {
+        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+      }
+    }
+    BackgroundImage::RepeatingConicGradient {
+      from_angle,
+      position,
+      stops,
+    } => {
+      7u8.hash(hasher);
+      hash_f32(*from_angle, hasher);
+      hash_background_position(position, hasher);
+      stops.len().hash(hasher);
+      for stop in stops {
+        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+      }
+    }
+  }
+}
+
+fn hash_shape_outside(value: &crate::style::types::ShapeOutside, style: &ComputedStyle, hasher: &mut DefaultHasher) {
+  use crate::style::types::ShapeOutside;
+
+  match value {
+    ShapeOutside::None => 0u8.hash(hasher),
+    ShapeOutside::Box(reference) => {
+      1u8.hash(hasher);
+      hash_reference_box(reference, hasher);
+    }
+    ShapeOutside::BasicShape(shape, reference_override) => {
+      2u8.hash(hasher);
+      hash_basic_shape(shape, hasher);
+      match reference_override {
+        Some(reference) => {
+          1u8.hash(hasher);
+          hash_reference_box(reference, hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+    ShapeOutside::Image(image) => {
+      3u8.hash(hasher);
+      hash_shape_outside_image(image, style.color, style.used_dark_color_scheme, hasher);
     }
   }
 }
@@ -13196,6 +13479,15 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_inset_value(&style.left, &mut h);
   hash_enum_discriminant(&style.float, &mut h);
   hash_enum_discriminant(&style.clear, &mut h);
+  if style.float.is_floating() {
+    hash_shape_outside(&style.shape_outside, style, &mut h);
+    if !matches!(style.shape_outside, crate::style::types::ShapeOutside::None) {
+      hash_length(&style.shape_margin, &mut h);
+      if matches!(style.shape_outside, crate::style::types::ShapeOutside::Image(_)) {
+        hash_f32(style.shape_image_threshold, &mut h);
+      }
+    }
+  }
   hash_enum_discriminant(&style.break_before, &mut h);
   hash_enum_discriminant(&style.break_after, &mut h);
   hash_enum_discriminant(&style.break_inside, &mut h);
@@ -13354,6 +13646,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   style.text_emphasis_skip.0.hash(&mut h);
   hash_tab_size(&style.tab_size, &mut h);
   hash_vertical_align(&style.vertical_align, &mut h);
+  style.vertical_align_specified.hash(&mut h);
   hash_enum_discriminant(&style.ruby_position, &mut h);
   hash_enum_discriminant(&style.ruby_align, &mut h);
   hash_enum_discriminant(&style.ruby_merge, &mut h);
@@ -13398,6 +13691,8 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_overflow(&style.overflow_y, &mut h);
   hash_enum_discriminant(&style.object_fit, &mut h);
   hash_object_position(&style.object_position, &mut h);
+  hash_image_resolution(&style.image_resolution, &mut h);
+  hash_image_orientation(&style.image_orientation, &mut h);
   hash_enum_discriminant(&style.translate, &mut h);
   if let crate::css::types::TranslateValue::Values { x, y, z } = style.translate {
     hash_length(&x, &mut h);
@@ -15216,6 +15511,67 @@ pub(crate) fn render_html_with_shared_resources(
       base_fp,
       super::style_layout_fingerprint(&cloned),
       "expected box-decoration-break to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_vertical_align_specified() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut specified = base;
+    specified.vertical_align_specified = true;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&specified),
+      "expected vertical-align specified flag to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_shape_outside() {
+    let mut base = ComputedStyle::default();
+    base.float = crate::Float::Left;
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut shaped = base;
+    shaped.shape_outside = crate::style::types::ShapeOutside::Box(crate::style::types::ReferenceBox::MarginBox);
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&shaped),
+      "expected shape-outside to affect layout fingerprints for floats"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_image_resolution() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut hi = base;
+    hi.image_resolution = crate::style::types::ImageResolution {
+      from_image: false,
+      specified: Some(2.0),
+      snap: false,
+    };
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&hi),
+      "expected image-resolution to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_image_orientation() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut rotated = base;
+    rotated.image_orientation = crate::style::types::ImageOrientation::None;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&rotated),
+      "expected image-orientation to affect layout fingerprints"
     );
   }
 
