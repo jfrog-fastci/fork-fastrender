@@ -2637,7 +2637,8 @@ impl GridFormattingContext {
       } else {
         taffy_style.grid_template_columns =
           self.convert_grid_template(&style.grid_template_columns, style);
-        taffy_style.grid_template_rows = self.convert_grid_template(&style.grid_template_rows, style);
+        taffy_style.grid_template_rows =
+          self.convert_grid_template(&style.grid_template_rows, style);
       }
 
       // Subgrid flags + extra line names.
@@ -2726,9 +2727,19 @@ impl GridFormattingContext {
           let mut areas = Vec::with_capacity(entries.len());
           for (name, (top, bottom, left, right)) in entries {
             let (row_start, row_end, column_start, column_end) = if swap_grid_axes {
-              ((left as u16) + 1, (right as u16) + 2, (top as u16) + 1, (bottom as u16) + 2)
+              (
+                (left as u16) + 1,
+                (right as u16) + 2,
+                (top as u16) + 1,
+                (bottom as u16) + 2,
+              )
             } else {
-              ((top as u16) + 1, (bottom as u16) + 2, (left as u16) + 1, (right as u16) + 2)
+              (
+                (top as u16) + 1,
+                (bottom as u16) + 2,
+                (left as u16) + 1,
+                (right as u16) + 2,
+              )
             };
             areas.push(GridTemplateArea {
               name,
@@ -2823,21 +2834,29 @@ impl GridFormattingContext {
     if let Some(containing_grid) = containing_grid {
       if inline_is_horizontal_item {
         if taffy_style.justify_self.is_none() {
-          taffy_style.justify_self =
-            Some(convert_item_alignment(containing_grid.justify_items, PhysicalAxis::X));
+          taffy_style.justify_self = Some(convert_item_alignment(
+            containing_grid.justify_items,
+            PhysicalAxis::X,
+          ));
         }
         if taffy_style.align_self.is_none() {
-          taffy_style.align_self =
-            Some(convert_item_alignment(containing_grid.align_items, PhysicalAxis::Y));
+          taffy_style.align_self = Some(convert_item_alignment(
+            containing_grid.align_items,
+            PhysicalAxis::Y,
+          ));
         }
       } else {
         if taffy_style.align_self.is_none() {
-          taffy_style.align_self =
-            Some(convert_item_alignment(containing_grid.justify_items, PhysicalAxis::Y));
+          taffy_style.align_self = Some(convert_item_alignment(
+            containing_grid.justify_items,
+            PhysicalAxis::Y,
+          ));
         }
         if taffy_style.justify_self.is_none() {
-          taffy_style.justify_self =
-            Some(convert_item_alignment(containing_grid.align_items, PhysicalAxis::X));
+          taffy_style.justify_self = Some(convert_item_alignment(
+            containing_grid.align_items,
+            PhysicalAxis::X,
+          ));
         }
       }
     }
@@ -3747,7 +3766,10 @@ impl GridFormattingContext {
     let has_in_flow_children = !fragment.children.is_empty();
 
     let container_style = taffy.style(root_id).ok();
-    let is_grid_style = matches!(container_style.map(|style| style.display), Some(Display::Grid));
+    let is_grid_style = matches!(
+      container_style.map(|style| style.display),
+      Some(Display::Grid)
+    );
     if is_grid_style {
       let axis_style = GridAxisStyle::from_style(&box_node.style);
       if let Err(err) = self.apply_grid_baseline_alignment(
@@ -4367,7 +4389,11 @@ impl GridFormattingContext {
 
             // Taffy stores tracks in physical axes (columns=x, rows=y). Pick the appropriate track
             // vector for the physical axis that this CSS grid axis maps onto.
-            let axis_tracks = if axis_is_physical_x { &info.columns } else { &info.rows };
+            let axis_tracks = if axis_is_physical_x {
+              &info.columns
+            } else {
+              &info.rows
+            };
             let offsets = if axis_is_physical_x {
               compute_track_offsets(
                 axis_tracks,
@@ -4463,8 +4489,13 @@ impl GridFormattingContext {
             }),
         )
       };
+      let x_line_names: &[Vec<String>] = if axes_swapped {
+        box_node.style.grid_row_line_names.as_slice()
+      } else {
+        box_node.style.grid_column_line_names.as_slice()
+      };
       if let Some((start_line, end_line)) =
-        resolve_grid_line_range_from_style(x_start, x_end, x_raw, x_line_count)
+        resolve_grid_line_range_from_style(x_start, x_end, x_raw, x_line_count, Some(x_line_names))
       {
         if let Some(col_offsets) = col_offsets.as_ref() {
           if let Some((start, _)) = grid_area_for_item(col_offsets, start_line, end_line) {
@@ -4514,8 +4545,13 @@ impl GridFormattingContext {
             }),
         )
       };
+      let y_line_names: &[Vec<String>] = if axes_swapped {
+        box_node.style.grid_column_line_names.as_slice()
+      } else {
+        box_node.style.grid_row_line_names.as_slice()
+      };
       if let Some((start_line, end_line)) =
-        resolve_grid_line_range_from_style(y_start, y_end, y_raw, y_line_count)
+        resolve_grid_line_range_from_style(y_start, y_end, y_raw, y_line_count, Some(y_line_names))
       {
         if let Some(row_offsets) = row_offsets.as_ref() {
           if let Some((start, _)) = grid_area_for_item(row_offsets, start_line, end_line) {
@@ -5552,7 +5588,12 @@ impl GridFormattingContext {
                 let width = child.bounds.width();
                 let old_start = child.bounds.x();
                 let new_start = span_start + (span_end - (old_start + width));
-                translate_along_axis(child, Axis::Horizontal, new_start - old_start, deadline_counter)?;
+                translate_along_axis(
+                  child,
+                  Axis::Horizontal,
+                  new_start - old_start,
+                  deadline_counter,
+                )?;
               }
             }
             block_mirrored_x = true;
@@ -5663,7 +5704,12 @@ impl GridFormattingContext {
                 let height = child.bounds.height();
                 let old_start = child.bounds.y();
                 let new_start = span_start + (span_end - (old_start + height));
-                translate_along_axis(child, Axis::Vertical, new_start - old_start, deadline_counter)?;
+                translate_along_axis(
+                  child,
+                  Axis::Vertical,
+                  new_start - old_start,
+                  deadline_counter,
+                )?;
               }
             }
             rtl_mirrored_y = true;
@@ -5763,16 +5809,16 @@ impl GridFormattingContext {
                     let mut translated = false;
                     if let Some(&child_ptr) = taffy.get_node_context(child_id) {
                       let child_node = unsafe { &*child_ptr };
-                      if child_node.style.grid_column_start > 0 && child_node.style.grid_column_end > 0 {
+                      if child_node.style.grid_column_start > 0
+                        && child_node.style.grid_column_end > 0
+                      {
                         let child_start = child_node.style.grid_column_start as u16;
                         let child_end = child_node.style.grid_column_end as u16;
                         let mapped_child_start = ctx.line_offset.saturating_add(child_start);
                         let mapped_child_end = ctx.line_offset.saturating_add(child_end);
-                        if let Some((area_start, area_end)) = grid_area_for_item(
-                          &ctx.offsets,
-                          mapped_child_start,
-                          mapped_child_end,
-                        ) {
+                        if let Some((area_start, area_end)) =
+                          grid_area_for_item(&ctx.offsets, mapped_child_start, mapped_child_end)
+                        {
                           let area_start = area_start - ctx.node_offset;
                           let area_end = area_end - ctx.node_offset;
                           apply_translation(
@@ -6365,8 +6411,11 @@ impl GridFormattingContext {
         None
       };
       let baseline_x = if wants_baseline_x {
-        match first_baseline_offset_x(&fragment, style.writing_mode, &mut baseline_deadline_counter)
-        {
+        match first_baseline_offset_x(
+          &fragment,
+          style.writing_mode,
+          &mut baseline_deadline_counter,
+        ) {
           Ok(baseline) => baseline,
           Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
           Err(_) => None,
@@ -6957,7 +7006,11 @@ impl GridFormattingContext {
       None
     };
     let baseline_x = if wants_baseline_x {
-      match first_baseline_offset_x(&fragment, style.writing_mode, &mut baseline_deadline_counter) {
+      match first_baseline_offset_x(
+        &fragment,
+        style.writing_mode,
+        &mut baseline_deadline_counter,
+      ) {
         Ok(baseline) => baseline,
         Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
         Err(_) => None,
@@ -7427,25 +7480,27 @@ fn grid_area_for_item(offsets: &[f32], start_line: u16, end_line: u16) -> Option
 }
 
 #[derive(Clone, Copy, Debug)]
-enum ResolvedGridPlacementComponent {
+enum ResolvedGridPlacementComponent<'a> {
   Auto,
   Line(i32),
   Span(u16),
+  NamedLine(&'a str, i16),
+  NamedSpan(&'a str, u16),
   Unsupported,
 }
 
-fn grid_placement_component_from_taffy(
-  placement: &TaffyGridPlacement<String>,
-) -> ResolvedGridPlacementComponent {
+fn grid_placement_component_from_taffy<'a>(
+  placement: &'a TaffyGridPlacement<String>,
+) -> ResolvedGridPlacementComponent<'a> {
   match placement {
     TaffyGridPlacement::Auto => ResolvedGridPlacementComponent::Auto,
     TaffyGridPlacement::Line(line) => ResolvedGridPlacementComponent::Line(line.as_i16() as i32),
     TaffyGridPlacement::Span(span) => ResolvedGridPlacementComponent::Span(*span),
-    // Named line resolution is handled by Taffy for in-flow items. For static positioning of
-    // out-of-flow abspos/fixed items, fall back to the axis default (0) when named resolution
-    // would be required.
-    TaffyGridPlacement::NamedLine(..) | TaffyGridPlacement::NamedSpan(..) => {
-      ResolvedGridPlacementComponent::Unsupported
+    TaffyGridPlacement::NamedLine(name, idx) => {
+      ResolvedGridPlacementComponent::NamedLine(name, *idx)
+    }
+    TaffyGridPlacement::NamedSpan(name, span) => {
+      ResolvedGridPlacementComponent::NamedSpan(name, *span)
     }
   }
 }
@@ -7475,17 +7530,93 @@ fn resolve_css_grid_line_to_u16(line: i32, line_count: Option<u16>) -> Option<u1
   }
 }
 
+fn resolve_named_line_to_u16(line_names: &[Vec<String>], name: &str, idx: i16) -> Option<u16> {
+  if idx == 0 {
+    return None;
+  }
+  if idx > 0 {
+    let mut count = 0i16;
+    for (line_idx, names) in line_names.iter().enumerate() {
+      if names.iter().any(|n| n == name) {
+        count = count.saturating_add(1);
+        if count == idx {
+          return u16::try_from(line_idx.saturating_add(1)).ok();
+        }
+      }
+    }
+    None
+  } else {
+    // `idx` counts from the end.
+    let target = (idx as i32).saturating_abs() as i16;
+    let mut count = 0i16;
+    for (line_idx, names) in line_names.iter().enumerate().rev() {
+      if names.iter().any(|n| n == name) {
+        count = count.saturating_add(1);
+        if count == target {
+          return u16::try_from(line_idx.saturating_add(1)).ok();
+        }
+      }
+    }
+    None
+  }
+}
+
+fn resolve_named_span_forward(
+  line_names: &[Vec<String>],
+  name: &str,
+  span: u16,
+  start_line: u16,
+) -> Option<u16> {
+  let mut seen = 0u16;
+  for (line_idx, names) in line_names.iter().enumerate() {
+    let line = u16::try_from(line_idx.saturating_add(1)).ok()?;
+    if line <= start_line {
+      continue;
+    }
+    if names.iter().any(|n| n == name) {
+      seen = seen.saturating_add(1);
+      if seen == span {
+        return Some(line);
+      }
+    }
+  }
+  None
+}
+
+fn resolve_named_span_backward(
+  line_names: &[Vec<String>],
+  name: &str,
+  span: u16,
+  end_line: u16,
+) -> Option<u16> {
+  let mut seen = 0u16;
+  for (line_idx, names) in line_names.iter().enumerate().rev() {
+    let line = u16::try_from(line_idx.saturating_add(1)).ok()?;
+    if line >= end_line {
+      continue;
+    }
+    if names.iter().any(|n| n == name) {
+      seen = seen.saturating_add(1);
+      if seen == span {
+        return Some(line);
+      }
+    }
+  }
+  None
+}
+
 fn resolve_grid_line_range_from_style(
   start: i32,
   end: i32,
   raw: Option<&str>,
   line_count: Option<u16>,
+  line_names: Option<&[Vec<String>]>,
 ) -> Option<(u16, u16)> {
   let parsed = raw
     .filter(|_| start == 0 || end == 0)
     .map(parse_grid_line_placement_raw);
 
-  let start_component = if start != 0 {
+  let start_component: ResolvedGridPlacementComponent<'_> = if start != 0 {
     ResolvedGridPlacementComponent::Line(start)
   } else {
     parsed
@@ -7493,7 +7624,7 @@ fn resolve_grid_line_range_from_style(
       .map(|line| grid_placement_component_from_taffy(&line.start))
       .unwrap_or(ResolvedGridPlacementComponent::Auto)
   };
-  let end_component = if end != 0 {
+  let end_component: ResolvedGridPlacementComponent<'_> = if end != 0 {
     ResolvedGridPlacementComponent::Line(end)
   } else {
     parsed
@@ -7519,6 +7650,57 @@ fn resolve_grid_line_range_from_style(
       let start = end.checked_sub(span)?;
       (end > start).then_some((start, end))
     }
+    (Comp::NamedLine(start_name, start_idx), Comp::Line(end)) => {
+      let start = resolve_named_line_to_u16(line_names?, start_name, start_idx)?;
+      let end = resolve_css_grid_line_to_u16(end, line_count)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::Line(start), Comp::NamedLine(end_name, end_idx)) => {
+      let start = resolve_css_grid_line_to_u16(start, line_count)?;
+      let end = resolve_named_line_to_u16(line_names?, end_name, end_idx)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::NamedLine(start_name, start_idx), Comp::NamedLine(end_name, end_idx)) => {
+      let start = resolve_named_line_to_u16(line_names?, start_name, start_idx)?;
+      let end = resolve_named_line_to_u16(line_names?, end_name, end_idx)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::NamedLine(start_name, start_idx), Comp::Span(span)) => {
+      let start = resolve_named_line_to_u16(line_names?, start_name, start_idx)?;
+      let end = start.checked_add(span)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::Span(span), Comp::NamedLine(end_name, end_idx)) => {
+      let end = resolve_named_line_to_u16(line_names?, end_name, end_idx)?;
+      let start = end.checked_sub(span)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::Line(start), Comp::NamedSpan(name, span)) => {
+      let start = resolve_css_grid_line_to_u16(start, line_count)?;
+      let end = line_names
+        .and_then(|names| resolve_named_span_forward(names, name, span, start))
+        .or_else(|| start.checked_add(span))?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::NamedSpan(name, span), Comp::Line(end)) => {
+      let end = resolve_css_grid_line_to_u16(end, line_count)?;
+      let start = line_names
+        .and_then(|names| resolve_named_span_backward(names, name, span, end))
+        .or_else(|| end.checked_sub(span))?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::NamedLine(start_name, start_idx), Comp::NamedSpan(name, span)) => {
+      let start = resolve_named_line_to_u16(line_names?, start_name, start_idx)?;
+      let end = resolve_named_span_forward(line_names?, name, span, start)
+        .or_else(|| start.checked_add(span))?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::NamedSpan(name, span), Comp::NamedLine(end_name, end_idx)) => {
+      let end = resolve_named_line_to_u16(line_names?, end_name, end_idx)?;
+      let start = resolve_named_span_backward(line_names?, name, span, end)
+        .or_else(|| end.checked_sub(span))?;
+      (end > start).then_some((start, end))
+    }
     (Comp::Line(start), Comp::Auto) => {
       let start = resolve_css_grid_line_to_u16(start, line_count)?;
       let end = start.checked_add(1)?;
@@ -7526,6 +7708,16 @@ fn resolve_grid_line_range_from_style(
     }
     (Comp::Auto, Comp::Line(end)) => {
       let end = resolve_css_grid_line_to_u16(end, line_count)?;
+      let start = end.checked_sub(1)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::NamedLine(start_name, start_idx), Comp::Auto) => {
+      let start = resolve_named_line_to_u16(line_names?, start_name, start_idx)?;
+      let end = start.checked_add(1)?;
+      (end > start).then_some((start, end))
+    }
+    (Comp::Auto, Comp::NamedLine(end_name, end_idx)) => {
+      let end = resolve_named_line_to_u16(line_names?, end_name, end_idx)?;
       let start = end.checked_sub(1)?;
       (end > start).then_some((start, end))
     }
@@ -7602,7 +7794,10 @@ fn parse_grid_line_component(token: &str) -> TaffyGridPlacement<String> {
     let mut name: Option<String> = None;
     let mut count: Option<u16> = None;
 
-    for part in parts.iter().filter(|part| !part.eq_ignore_ascii_case("span")) {
+    for part in parts
+      .iter()
+      .filter(|part| !part.eq_ignore_ascii_case("span"))
+    {
       if let Ok(n) = part.parse::<i32>() {
         if n > 0 && count.is_none() {
           count = Some(n as u16);
@@ -8622,9 +8817,18 @@ impl FormattingContext for GridFormattingContext {
                 child.style.grid_column_raw.as_deref(),
               )
             };
-            if let Some((start_line, end_line)) =
-              resolve_grid_line_range_from_style(x_start, x_end, x_raw, col_line_count)
-            {
+            let x_line_names: &[Vec<String>] = if axes_swapped {
+              box_node.style.grid_row_line_names.as_slice()
+            } else {
+              box_node.style.grid_column_line_names.as_slice()
+            };
+            if let Some((start_line, end_line)) = resolve_grid_line_range_from_style(
+              x_start,
+              x_end,
+              x_raw,
+              col_line_count,
+              Some(x_line_names),
+            ) {
               if let Some((start, _)) = grid_area_for_item(&col_offsets, start_line, end_line) {
                 pos.x = start - padding_origin.x;
               }
@@ -8643,9 +8847,18 @@ impl FormattingContext for GridFormattingContext {
                 child.style.grid_row_raw.as_deref(),
               )
             };
-            if let Some((start_line, end_line)) =
-              resolve_grid_line_range_from_style(y_start, y_end, y_raw, row_line_count)
-            {
+            let y_line_names: &[Vec<String>] = if axes_swapped {
+              box_node.style.grid_column_line_names.as_slice()
+            } else {
+              box_node.style.grid_row_line_names.as_slice()
+            };
+            if let Some((start_line, end_line)) = resolve_grid_line_range_from_style(
+              y_start,
+              y_end,
+              y_raw,
+              row_line_count,
+              Some(y_line_names),
+            ) {
               if let Some((start, _)) = grid_area_for_item(&row_offsets, start_line, end_line) {
                 pos.y = start - padding_origin.y;
               }
@@ -8679,14 +8892,15 @@ impl FormattingContext for GridFormattingContext {
         );
 
         let anchors_for_cb = Some(&anchor_index);
-        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
-          &child.style,
-          &cb,
-          ctx.viewport_size,
-          &ctx.font_context,
-          anchors_for_cb,
-          Some(root_box_id),
-        );
+        let positioned_style =
+          crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
+            &child.style,
+            &cb,
+            ctx.viewport_size,
+            &ctx.font_context,
+            anchors_for_cb,
+            Some(root_box_id),
+          );
         // Static position resolves to where the element would be in flow, relative to the containing
         // block origin (padding edge).
         let static_pos = static_positions
@@ -11676,7 +11890,13 @@ mod tests {
         available_width: MeasureAvailKey::Indefinite,
         available_height: MeasureAvailKey::Indefinite,
       };
-      grid_measure_size_cache_store_with_policy(&mut cache, key, output, max_entries, eviction_batch);
+      grid_measure_size_cache_store_with_policy(
+        &mut cache,
+        key,
+        output,
+        max_entries,
+        eviction_batch,
+      );
     }
     assert_eq!(cache.len(), max_entries);
 
@@ -12289,14 +12509,14 @@ mod tests {
           .compute_layout_with_measure(
             root_id,
             available_space,
-              move |known_dimensions,
-                    available_space,
-                    node_id,
-                    node_context,
-                    _style: &taffy::style::Style| {
-                if node_id == root_id {
-                  let fallback_size =
-                    |known: Option<f32>, avail_dim: taffy::style::AvailableSpace| {
+            move |known_dimensions,
+                  available_space,
+                  node_id,
+                  node_context,
+                  _style: &taffy::style::Style| {
+              if node_id == root_id {
+                let fallback_size =
+                  |known: Option<f32>, avail_dim: taffy::style::AvailableSpace| {
                     known.unwrap_or(match avail_dim {
                       taffy::style::AvailableSpace::Definite(v) => v,
                       _ => 0.0,
