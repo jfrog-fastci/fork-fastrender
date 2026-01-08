@@ -404,6 +404,7 @@ pub struct FontContext {
   scaled_metrics_cache:
     Arc<ParkingMutex<LruCache<ScaledMetricsCacheKey, ScaledMetrics, ScaledMetricsCacheHasher>>>,
   fetcher: Arc<dyn FontFetcher>,
+  resource_fetcher: Option<Arc<dyn ResourceFetcher>>,
   resource_context_shared: Option<Arc<RwLock<Option<ResourceContext>>>>,
   pending_async: Arc<(Mutex<usize>, Condvar)>,
   web_used_codepoints: Arc<RwLock<Vec<u32>>>,
@@ -416,6 +417,7 @@ pub struct FontContext {
 
 #[derive(Clone)]
 struct MathTableCacheEntry {
+  _data: Arc<Vec<u8>>,
   table: ttf_parser::math::Table<'static>,
 }
 
@@ -604,11 +606,12 @@ impl FontContext {
   pub fn with_resource_fetcher(fetcher: Arc<dyn ResourceFetcher>) -> Self {
     let shared = Arc::new(RwLock::new(None));
     let font_fetcher: Arc<dyn FontFetcher> = Arc::new(ResourceFontFetcher {
-      fetcher,
+      fetcher: Arc::clone(&fetcher),
       resource_context: Arc::clone(&shared),
     });
     let mut ctx =
       Self::with_database_and_fetcher(Self::build_database(&FontConfig::default()), font_fetcher);
+    ctx.resource_fetcher = Some(fetcher);
     ctx.resource_context_shared = Some(shared);
     ctx
   }
@@ -620,10 +623,11 @@ impl FontContext {
   ) -> Self {
     let shared = Arc::new(RwLock::new(None));
     let font_fetcher: Arc<dyn FontFetcher> = Arc::new(ResourceFontFetcher {
-      fetcher,
+      fetcher: Arc::clone(&fetcher),
       resource_context: Arc::clone(&shared),
     });
     let mut ctx = Self::with_database_and_fetcher(Self::build_database(&font_config), font_fetcher);
+    ctx.resource_fetcher = Some(fetcher);
     ctx.resource_context_shared = Some(shared);
     ctx
   }
@@ -662,13 +666,14 @@ impl FontContext {
   ) -> Self {
     let shared = Arc::new(RwLock::new(None));
     let font_fetcher: Arc<dyn FontFetcher> = Arc::new(ResourceFontFetcher {
-      fetcher,
+      fetcher: Arc::clone(&fetcher),
       resource_context: Arc::clone(&shared),
     });
     let mut ctx = Self::with_database_and_fetcher(
       Arc::new(FontDatabase::with_shared_db_and_cache(db, cache)),
       font_fetcher,
     );
+    ctx.resource_fetcher = Some(fetcher);
     ctx.resource_context_shared = Some(shared);
     ctx
   }
@@ -685,6 +690,7 @@ impl FontContext {
         ScaledMetricsCacheHasher::default(),
       ))),
       fetcher,
+      resource_fetcher: None,
       resource_context_shared: None,
       pending_async: Arc::new((Mutex::new(0), Condvar::new())),
       web_used_codepoints: Arc::new(RwLock::new(Vec::new())),
@@ -747,6 +753,73 @@ impl FontContext {
   /// Get the current resource context.
   pub fn resource_context(&self) -> Option<ResourceContext> {
     self.resource_context.clone()
+  }
+
+  /// Creates a detached clone of the current font context suitable for persisting inside a
+  /// prepared document.
+  ///
+  /// The returned context shares the underlying [`FontDatabase`] (system + bundled font metadata)
+  /// but snapshots document-specific state—web fonts, feature caches, and the current
+  /// [`ResourceContext`]—into fresh `Arc` containers so later renders on the originating renderer
+  /// cannot mutate it via [`FontContext::clear_web_fonts`] / [`FontContext::set_resource_context`].
+  ///
+  /// Remote font fetching continues to work when the context was constructed via
+  /// [`FontContext::with_resource_fetcher`] (or related helpers). When the context uses a custom
+  /// [`FontFetcher`], the fetcher is shared because it cannot be rebuilt with an independent
+  /// resource-context lock.
+  pub fn snapshot(&self) -> Self {
+    let web_fonts = self
+      .web_fonts
+      .read()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    let web_families = self
+      .web_families
+      .read()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    let feature_support = self
+      .feature_support
+      .read()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    let web_used_codepoints = self
+      .web_used_codepoints
+      .read()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    let generation = self.generation.load(Ordering::Relaxed);
+    let active_web_font_generation = self.active_web_font_generation.load(Ordering::Relaxed);
+    let resource_context = self.resource_context.clone();
+
+    let (fetcher, resource_fetcher, resource_context_shared) =
+      if let Some(resource_fetcher) = self.resource_fetcher.as_ref() {
+        let shared = Arc::new(RwLock::new(resource_context.clone()));
+        let font_fetcher: Arc<dyn FontFetcher> = Arc::new(ResourceFontFetcher {
+          fetcher: Arc::clone(resource_fetcher),
+          resource_context: Arc::clone(&shared),
+        });
+        (font_fetcher, Some(Arc::clone(resource_fetcher)), Some(shared))
+      } else {
+        (Arc::clone(&self.fetcher), None, None)
+      };
+
+    Self {
+      db: Arc::clone(&self.db),
+      web_fonts: Arc::new(RwLock::new(web_fonts)),
+      web_families: Arc::new(RwLock::new(web_families)),
+      feature_support: Arc::new(RwLock::new(feature_support)),
+      scaled_metrics_cache: Arc::clone(&self.scaled_metrics_cache),
+      fetcher,
+      resource_fetcher,
+      resource_context_shared,
+      pending_async: Arc::new((Mutex::new(0), Condvar::new())),
+      web_used_codepoints: Arc::new(RwLock::new(web_used_codepoints)),
+      math_tables: Arc::clone(&self.math_tables),
+      generation: Arc::new(AtomicU64::new(generation)),
+      active_web_font_generation: Arc::new(AtomicU64::new(active_web_font_generation)),
+      resource_context,
+    }
   }
 
   fn record_font_error(&self, url: &str, error: &Error) {
@@ -1076,11 +1149,22 @@ impl FontContext {
   /// from disk on next access.
   pub fn clear_cache(&self) {
     self.db.clear_cache();
+    self.scaled_metrics_cache.lock().clear();
+    if let Ok(mut cache) = self.math_tables.write() {
+      cache.clear();
+    }
+    if let Ok(mut support) = self.feature_support.write() {
+      support.clear();
+    }
   }
 
   /// Clears any previously loaded @font-face entries.
   pub fn clear_web_fonts(&self) {
+    let mut cleared_font_ptrs: std::collections::HashSet<usize> = std::collections::HashSet::new();
     if let Ok(mut faces) = self.web_fonts.write() {
+      for face in faces.iter() {
+        cleared_font_ptrs.insert(Arc::as_ptr(&face.data) as usize);
+      }
       faces.clear();
     }
     if let Ok(mut families) = self.web_families.write() {
@@ -1091,6 +1175,23 @@ impl FontContext {
     }
     if let Ok(mut used) = self.web_used_codepoints.write() {
       used.clear();
+    }
+    if !cleared_font_ptrs.is_empty() {
+      // Purge any cached entries tied to cleared web font bytes. Both caches are keyed by
+      // `Arc::as_ptr(&font.data)` and do not otherwise retain the font data, so leaving stale
+      // entries behind could lead to incorrect cache hits if the allocator later reuses the same
+      // address for a different font.
+      if let Ok(mut cache) = self.math_tables.write() {
+        cache.retain(|(ptr, _), _| !cleared_font_ptrs.contains(ptr));
+      }
+      let mut cache = self.scaled_metrics_cache.lock();
+      let keys: Vec<ScaledMetricsCacheKey> = cache
+        .iter()
+        .filter_map(|(key, _)| cleared_font_ptrs.contains(&key.font_ptr).then_some(*key))
+        .collect();
+      for key in keys {
+        let _ = cache.pop(&key);
+      }
     }
     let gen = self.bump_generation();
     self
@@ -2316,16 +2417,17 @@ impl FontContext {
       }
     }
 
+    let data = Arc::clone(&font.data);
     let table = {
-      // SAFETY: the Arc on LoadedFont holds the data for the life of the FontContext, so
-      // extending the lifetime to 'static for caching is sound.
+      // SAFETY: `MathTableCacheEntry` retains an `Arc<Vec<u8>>` for the font bytes, so extending
+      // the parsed table lifetime to `'static` is sound as long as the cache entry is alive.
       let static_data: &'static [u8] =
-        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(&*font.data) };
+        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(&*data) };
       let face = ttf_parser::Face::parse(static_data, font.index).ok()?;
       face.tables().math
     };
 
-    let entry = table.map(|table| Arc::new(MathTableCacheEntry { table }));
+    let entry = table.map(|table| Arc::new(MathTableCacheEntry { _data: data, table }));
     if let Ok(mut cache) = self.math_tables.write() {
       cache.insert(key, entry.clone());
     }

@@ -6204,7 +6204,7 @@ impl FastRender {
         options.element_scroll_offsets.clone(),
       ),
       animation_time: options.animation_time,
-      font_context: self.font_context.clone(),
+      font_context: self.font_context.snapshot(),
       image_cache: self.image_cache.clone(),
       max_iframe_depth: self.max_iframe_depth,
       paint_parallelism,
