@@ -4361,6 +4361,7 @@ impl InlineFormattingContext {
     available_height: Option<f32>,
   ) -> Result<ReplacedItem, LayoutError> {
     let style = &box_node.style;
+    let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let metrics = self.resolve_scaled_metrics(style);
     let line_height =
       compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(self.viewport_size));
@@ -4468,6 +4469,11 @@ impl InlineFormattingContext {
 
     let box_width = size.width + padding_left + padding_right + border_left + border_right;
     let box_height = size.height + padding_top + padding_bottom + border_top + border_bottom;
+    let (box_inline_size, box_block_size) = if inline_vertical {
+      (box_height, box_width)
+    } else {
+      (box_width, box_height)
+    };
     let percentage_base = if available_width.is_finite() {
       available_width
     } else {
@@ -4509,7 +4515,7 @@ impl InlineFormattingContext {
 
     let mut item = ReplacedItem::new(
       box_node.id,
-      Size::new(box_width, box_height),
+      Size::new(box_inline_size, box_block_size),
       replaced_box.replaced_type.clone(),
       box_node.style.clone(),
       margin_left,

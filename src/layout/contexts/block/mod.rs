@@ -2194,6 +2194,7 @@ impl BlockFormattingContext {
     let style = &child.style;
     let toggles = crate::debug::runtime::runtime_toggles();
     let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
+    let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
 
     // Percentages on replaced elements resolve against the containing block size (width/height
     // when available). Even if the block height is indefinite, we still have a valid width
@@ -2203,7 +2204,17 @@ impl BlockFormattingContext {
       constraints.height().unwrap_or(f32::NAN),
     ));
     let used_size = compute_replaced_size(style, replaced_box, percentage_base, self.viewport_size);
-    if log_wide_flex && used_size.width > containing_width + 0.5 {
+    let used_inline = if inline_is_horizontal {
+      used_size.width
+    } else {
+      used_size.height
+    };
+    let used_block = if inline_is_horizontal {
+      used_size.height
+    } else {
+      used_size.width
+    };
+    if log_wide_flex && used_inline > containing_width + 0.5 {
       let resolved_max_w = style.max_width.as_ref().map(|l| {
         resolve_length_for_width(
           *l,
@@ -2239,71 +2250,19 @@ impl BlockFormattingContext {
             );
     }
 
-    // Vertical margins collapse as normal blocks
-    let margin_top = style
-      .margin_top
-      .as_ref()
-      .map(|len| {
-        resolve_length_for_width(
-          *len,
-          containing_width,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_bottom = style
-      .margin_bottom
-      .as_ref()
-      .map(|len| {
-        resolve_length_for_width(
-          *len,
-          containing_width,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-
-    // Resolve padding and borders
-    let mut padding_top = resolve_length_for_width(
-      style.padding_top,
-      containing_width,
+    // Block-axis margins (used for fragmentation adjustments).
+    let block_sides = block_axis_sides(style);
+    let margin_top = resolve_margin_side(
       style,
+      block_sides.0,
+      containing_width,
       &self.font_context,
       self.viewport_size,
     );
-    let mut padding_bottom = resolve_length_for_width(
-      style.padding_bottom,
-      containing_width,
+    let margin_bottom = resolve_margin_side(
       style,
-      &self.font_context,
-      self.viewport_size,
-    );
-    let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
-      || (style.scrollbar_gutter.stable
-        && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
-    if reserve_horizontal_gutter {
-      let gutter = resolve_scrollbar_width(style);
-      if style.scrollbar_gutter.both_edges {
-        padding_top += gutter;
-      }
-      padding_bottom += gutter;
-    }
-
-    let border_top = resolve_length_for_width(
-      style.used_border_top_width(),
+      block_sides.1,
       containing_width,
-      style,
-      &self.font_context,
-      self.viewport_size,
-    );
-    let border_bottom = resolve_length_for_width(
-      style.used_border_bottom_width(),
-      containing_width,
-      style,
       &self.font_context,
       self.viewport_size,
     );
@@ -2312,8 +2271,13 @@ impl BlockFormattingContext {
     let mut width_style = style.clone();
     {
       let s = Arc::make_mut(&mut width_style);
-      s.width = Some(Length::px(used_size.width));
-      s.width_keyword = None;
+      if inline_is_horizontal {
+        s.width = Some(Length::px(used_inline));
+        s.width_keyword = None;
+      } else {
+        s.height = Some(Length::px(used_inline));
+        s.height_keyword = None;
+      }
       s.box_sizing = crate::style::types::BoxSizing::ContentBox;
     }
     let inline_sides = inline_axis_sides(style);
@@ -2327,7 +2291,12 @@ impl BlockFormattingContext {
     );
 
     let box_width = computed_width.border_box_width();
-    let box_height = border_top + padding_top + used_size.height + padding_bottom + border_bottom;
+    let block_edges = if inline_is_horizontal {
+      vertical_padding_and_borders(style, containing_width, self.viewport_size, &self.font_context)
+    } else {
+      horizontal_padding_and_borders(style, containing_width, self.viewport_size, &self.font_context)
+    };
+    let box_height = (used_block + block_edges).max(0.0);
     let bounds = Rect::from_xywh(computed_width.margin_left, box_y, box_width, box_height);
 
     let mut fragment = FragmentNode::new_with_style(
@@ -4954,11 +4923,21 @@ impl FormattingContext for BlockFormattingContext {
         )
       };
 
+      let used_inline = if inline_is_horizontal {
+        used_size.width
+      } else {
+        used_size.height
+      };
+      let used_block = if inline_is_horizontal {
+        used_size.height
+      } else {
+        used_size.width
+      };
       let bounds = Rect::new(
         Point::new(0.0, 0.0),
         Size::new(
-          (used_size.width + inline_edges).max(0.0),
-          (used_size.height + block_edges).max(0.0),
+          (used_inline + inline_edges).max(0.0),
+          (used_block + block_edges).max(0.0),
         ),
       );
       let fragment = FragmentNode::new_with_style(

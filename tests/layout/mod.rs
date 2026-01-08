@@ -69,6 +69,7 @@ mod paged_media;
 mod parallel_layout;
 mod render_wrap;
 mod ruby;
+mod replaced_writing_mode;
 mod text_emphasis_line_height;
 mod text_emphasis_line_height_vertical;
 mod running_elements;
