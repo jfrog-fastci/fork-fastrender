@@ -2009,12 +2009,12 @@ pub fn extract_css_links(
   base_url: &str,
   media_type: crate::style::media::MediaType,
 ) -> std::result::Result<Vec<String>, RenderError> {
-  Ok(
+  Ok(dedupe_links_preserving_order(
     extract_css_links_with_meta(html, base_url, media_type)?
       .into_iter()
       .map(|candidate| candidate.url)
       .collect(),
-  )
+  ))
 }
 
 pub fn extract_css_links_with_meta(
@@ -4081,6 +4081,17 @@ mod tests {
         },
       ]
     );
+  }
+
+  #[test]
+  fn extract_css_links_dedupes_by_url_even_when_crossorigin_differs() {
+    let html = r#"
+      <link rel="stylesheet" href="/a.css">
+      <link rel="stylesheet" crossorigin="anonymous" href="/a.css">
+    "#;
+
+    let urls = extract_css_links(html, "https://example.com/", MediaType::Screen).unwrap();
+    assert_eq!(urls, vec!["https://example.com/a.css".to_string()]);
   }
 
   #[test]
