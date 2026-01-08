@@ -760,6 +760,35 @@ fn abspos_static_position_respects_start_end_keywords_in_vertical_writing_mode_r
 }
 
 #[test]
+fn abspos_static_position_respects_start_end_keywords_in_vertical_writing_mode_column_reverse() {
+  // In vertical writing mode, `flex-direction: column-reverse` reverses the main axis (block axis),
+  // but `justify-content: start/end` should still align to the block-start/block-end edges.
+  for (justify, expected_x) in [(JustifyContent::Start, 90.0), (JustifyContent::End, 0.0)] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.writing_mode = WritingMode::VerticalRl;
+    container_style.flex_direction = FlexDirection::ColumnReverse;
+    container_style.justify_content = justify;
+    container_style.align_items = AlignItems::FlexStart;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+
+    let (x, y) = layout_abspos_child(container_style, child_style);
+    assert!(
+      (x - expected_x).abs() < 0.1,
+      "expected x≈{expected_x} for justify-content={justify:?}, got {x}"
+    );
+    assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+  }
+}
+
+#[test]
 fn abspos_static_position_ignores_wrap_mirroring_for_start_end_keywords_in_vertical_writing_mode() {
   // Wrapping containers in vertical-rl have a negative physical cross axis, so the flex adapter
   // mirrors after Taffy layout. `start`/`end` are physical keywords and must *not* mirror with that
