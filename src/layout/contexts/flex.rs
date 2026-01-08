@@ -8950,13 +8950,7 @@ impl FlexFormattingContext {
   }
 
   fn inline_axis_positive(&self, style: &ComputedStyle) -> bool {
-    match style.writing_mode {
-      WritingMode::HorizontalTb => style.direction != Direction::Rtl,
-      WritingMode::VerticalRl
-      | WritingMode::VerticalLr
-      | WritingMode::SidewaysRl
-      | WritingMode::SidewaysLr => true,
-    }
+    style.direction != Direction::Rtl
   }
 
   fn block_axis_positive(&self, style: &ComputedStyle) -> bool {
