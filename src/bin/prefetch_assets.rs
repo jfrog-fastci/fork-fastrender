@@ -1358,6 +1358,15 @@ mod disk_cache_main {
       importer_url: Option<&str>,
     ) -> fastrender::Result<FetchedStylesheet> {
       if let Some(cached) = self.css_cache.borrow().get(url).cloned() {
+        // `resolve_imports_*` may call us with multiple URL spellings for the same stylesheet
+        // (e.g. redirect targets). Report these as successful "fetches" so dry-run and non-dry-run
+        // discovery results stay consistent, even when the bytes are already available in-memory.
+        self
+          .summary
+          .borrow_mut()
+          .report
+          .imports
+          .record_fetch_result(url.to_string(), true);
         return Ok(cached);
       }
 
@@ -1790,6 +1799,7 @@ mod disk_cache_main {
         .as_deref()
         .unwrap_or(css_base_url);
       let effective_referrer_policy = face.source_referrer_policy.unwrap_or(referrer_policy);
+      let mut candidates: Vec<String> = Vec::new();
       for url_source in ordered_remote_font_face_sources(&face.sources) {
         let Some(resolved) = resolve_href(base_url, &url_source.url) else {
           continue;
@@ -1797,17 +1807,19 @@ mod disk_cache_main {
         if is_data_url(&resolved) {
           continue;
         }
+        summary.report.fonts.record_discovered(resolved.clone());
+        candidates.push(resolved);
+      }
 
+      if dry_run {
+        continue;
+      }
+
+      for resolved in candidates {
         match seen_fonts.get(&resolved).copied() {
           Some(true) => break,
           Some(false) => continue,
           None => {}
-        }
-
-        if dry_run {
-          seen_fonts.insert(resolved.clone(), false);
-          summary.report.fonts.record_discovered(resolved);
-          continue;
         }
 
         let mut request = FetchRequest::new(&resolved, FetchDestination::Font)
