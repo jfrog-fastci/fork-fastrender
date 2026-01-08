@@ -13481,9 +13481,6 @@ fn build_container_query_context(
   let mut sizes: HashMap<usize, (f32, f32)> = HashMap::new();
   collect_fragment_sizes(&fragments.root, &mut sizes);
 
-  let mut boxes: HashMap<usize, &BoxNode> = HashMap::new();
-  collect_box_nodes(&box_tree.root, &mut boxes);
-
   fn collect_main_styles(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
     out.insert(node.node_id, Arc::clone(&node.styles));
     for child in node.children.iter() {
@@ -13495,6 +13492,46 @@ fn build_container_query_context(
   collect_main_styles(styled_tree, &mut styles);
 
   let mut containers: HashMap<usize, ContainerQueryInfo> = HashMap::new();
+
+  let viewport = Size::new(media_ctx.viewport_width, media_ctx.viewport_height);
+
+  fn safe_font_size(style: &ComputedStyle) -> (f32, f32) {
+    let font_size = style
+      .font_size
+      .is_finite()
+      .then_some(style.font_size)
+      .filter(|v| *v >= 0.0)
+      .unwrap_or(16.0);
+    let root_font_size = style
+      .root_font_size
+      .is_finite()
+      .then_some(style.root_font_size)
+      .filter(|v| *v >= 0.0)
+      .unwrap_or(font_size);
+    (font_size, root_font_size)
+  }
+
+  fn resolve_padding(
+    length: Length,
+    percentage_base: f32,
+    style: &ComputedStyle,
+    viewport: Size,
+  ) -> f32 {
+    let (font_size, root_font_size) = safe_font_size(style);
+    let percentage_base = percentage_base
+      .is_finite()
+      .then_some(percentage_base.max(0.0))
+      .or_else(|| viewport.width.is_finite().then_some(viewport.width.max(0.0)));
+    length
+      .resolve_with_context(
+        percentage_base,
+        viewport.width,
+        viewport.height,
+        font_size,
+        root_font_size,
+      )
+      .unwrap_or(0.0)
+  }
 
   if include_style_containers {
     // Style queries treat every element as a query container (including `container-type: normal`),
@@ -13517,79 +13554,122 @@ fn build_container_query_context(
     }
   }
 
-  for (box_id, node) in boxes {
-    let styled_id = match node.styled_node_id {
-      Some(id) => id,
-      None => continue,
+  fn walk_containers(
+    node: &BoxNode,
+    sizes: &HashMap<usize, (f32, f32)>,
+    styles: &HashMap<usize, Arc<ComputedStyle>>,
+    containers: &mut HashMap<usize, ContainerQueryInfo>,
+    parent_content_width: f32,
+    viewport: Size,
+  ) {
+    let (border_box_width, border_box_height) = sizes.get(&node.id).copied().unwrap_or((0.0, 0.0));
+    let has_layout_size = sizes.contains_key(&node.id);
+
+    let styled_id = node.styled_node_id;
+    let style_arc = styled_id
+      .and_then(|id| styles.get(&id).cloned())
+      .unwrap_or_else(|| Arc::clone(&node.style));
+    let style = style_arc.as_ref();
+
+    // Percentages for padding resolve against the containing block *width* (CSS2.1 §10.5), even
+    // for the block-axis padding sides. We approximate the containing block width with the
+    // parent's resolved content width, falling back to the viewport when unavailable.
+    let percentage_base = if parent_content_width.is_finite() {
+      parent_content_width.max(0.0)
+    } else if viewport.width.is_finite() {
+      viewport.width.max(0.0)
+    } else {
+      0.0
     };
-    let style = styles.get(&styled_id).unwrap_or(&node.style);
-    match style.container_type {
-      ContainerType::Size | ContainerType::InlineSize => {
-        if let Some((width, height)) = sizes.get(&box_id) {
-          let mut content_width = *width;
-          let mut content_height = *height;
 
-          let hp = style.padding_left.to_px()
-            + style.padding_right.to_px()
-            + style.used_border_left_width().to_px()
-            + style.used_border_right_width().to_px();
-          let vp = style.padding_top.to_px()
-            + style.padding_bottom.to_px()
-            + style.used_border_top_width().to_px()
-            + style.used_border_bottom_width().to_px();
+    let padding_left = resolve_padding(style.padding_left, percentage_base, style, viewport);
+    let padding_right = resolve_padding(style.padding_right, percentage_base, style, viewport);
+    let padding_top = resolve_padding(style.padding_top, percentage_base, style, viewport);
+    let padding_bottom = resolve_padding(style.padding_bottom, percentage_base, style, viewport);
 
-          if hp.is_finite() {
-            content_width = (content_width - hp).max(0.0);
-          }
-          if vp.is_finite() {
-            content_height = (content_height - vp).max(0.0);
-          }
+    let border_left = style.used_border_left_width().to_px();
+    let border_right = style.used_border_right_width().to_px();
+    let border_top = style.used_border_top_width().to_px();
+    let border_bottom = style.used_border_bottom_width().to_px();
 
-          let (content_inline, content_block) = match style.writing_mode {
-            WritingMode::HorizontalTb => (content_width, content_height),
-            _ => (content_height, content_width),
-          };
-          if runtime::runtime_toggles().truthy("FASTR_LOG_CONTAINER_QUERY") {
-            eprintln!(
-              "[cq] box_id={} styled_id={} type={:?} width={:.2} height={:.2} content_width={:.2} content_height={:.2} content_inline={:.2} content_block={:.2}",
-              box_id,
-              styled_id,
-              style.container_type,
-              width,
-              height,
-              content_width,
-              content_height,
-              content_inline,
-              content_block
-            );
-          }
-          containers
-            .entry(styled_id)
-            .and_modify(|entry| {
-              entry.width = entry.width.max(content_width);
-              entry.height = entry.height.max(content_height);
-              entry.inline_size = entry.inline_size.max(content_inline);
-              entry.block_size = entry.block_size.max(content_block);
-              entry.font_size = entry.font_size.max(style.font_size);
-              entry.container_type = style.container_type;
-              entry.names = style.container_name.clone();
-              entry.styles = Arc::clone(style);
-            })
-            .or_insert_with(|| ContainerQueryInfo {
-              width: content_width,
-              height: content_height,
-              inline_size: content_inline,
-              block_size: content_block,
-              container_type: style.container_type,
-              names: style.container_name.clone(),
-              font_size: style.font_size,
-              styles: Arc::clone(style),
-            });
+    let horiz_edges = padding_left + padding_right + border_left + border_right;
+    let vert_edges = padding_top + padding_bottom + border_top + border_bottom;
+
+    let mut content_width = border_box_width;
+    let mut content_height = border_box_height;
+    if horiz_edges.is_finite() {
+      content_width = (content_width - horiz_edges).max(0.0);
+    }
+    if vert_edges.is_finite() {
+      content_height = (content_height - vert_edges).max(0.0);
+    }
+
+    let child_base = if content_width > 0.0 {
+      content_width
+    } else {
+      percentage_base
+    };
+
+    if has_layout_size && matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize) {
+      if let Some(styled_id) = styled_id {
+        let (content_inline, content_block) = match style.writing_mode {
+          WritingMode::HorizontalTb => (content_width, content_height),
+          _ => (content_height, content_width),
+        };
+
+        if runtime::runtime_toggles().truthy("FASTR_LOG_CONTAINER_QUERY") {
+          eprintln!(
+            "[cq] box_id={} styled_id={} type={:?} width={:.2} height={:.2} content_width={:.2} content_height={:.2} content_inline={:.2} content_block={:.2}",
+            node.id,
+            styled_id,
+            style.container_type,
+            border_box_width,
+            border_box_height,
+            content_width,
+            content_height,
+            content_inline,
+            content_block
+          );
         }
+
+        containers
+          .entry(styled_id)
+          .and_modify(|entry| {
+            entry.width = entry.width.max(content_width);
+            entry.height = entry.height.max(content_height);
+            entry.inline_size = entry.inline_size.max(content_inline);
+            entry.block_size = entry.block_size.max(content_block);
+            entry.font_size = entry.font_size.max(style.font_size);
+            entry.container_type = style.container_type;
+            entry.names = style.container_name.clone();
+            entry.styles = Arc::clone(&style_arc);
+          })
+          .or_insert_with(|| ContainerQueryInfo {
+            width: content_width,
+            height: content_height,
+            inline_size: content_inline,
+            block_size: content_block,
+            container_type: style.container_type,
+            names: style.container_name.clone(),
+            font_size: style.font_size,
+            styles: Arc::clone(&style_arc),
+          });
       }
-      ContainerType::Normal => {}
+    }
+
+    for child in node.children.iter() {
+      walk_containers(child, sizes, styles, containers, child_base, viewport);
     }
   }
+
+  walk_containers(
+    &box_tree.root,
+    &sizes,
+    &styles,
+    &mut containers,
+    viewport.width,
+    viewport,
+  );
 
   ContainerQueryContext {
     base_media: media_ctx.clone(),

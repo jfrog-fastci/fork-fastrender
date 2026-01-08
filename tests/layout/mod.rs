@@ -11,6 +11,7 @@ mod br_linebreak;
 mod block_margin_collapse;
 mod block_constraints_viewport_clamp;
 mod content_visibility_auto_skip;
+mod container_query_percentage_padding;
 mod first_line_first_letter_integration_test;
 mod flex_alignment_order_test;
 mod flex_align_content_gaps;
