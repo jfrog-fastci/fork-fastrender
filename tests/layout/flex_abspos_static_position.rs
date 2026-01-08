@@ -852,6 +852,8 @@ fn abspos_static_position_respects_sideways_rl_writing_mode_axes() {
 
 #[test]
 fn abspos_static_position_respects_sideways_lr_writing_mode_axes() {
+  // Sideways-lr differs from vertical-lr: for the default `direction:ltr` the inline axis runs
+  // bottom→top, so `justify-content:flex-end` aligns to the physical top edge.
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
   container_style.position = Position::Relative;
@@ -869,7 +871,7 @@ fn abspos_static_position_respects_sideways_lr_writing_mode_axes() {
 
   let (x, y) = layout_abspos_child(container_style, child_style);
   assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
-  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
 }
 
 #[test]
