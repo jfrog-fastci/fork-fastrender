@@ -1161,6 +1161,10 @@ mod disk_cache_main {
       self.load_with_importer(url, None).map(|fetched| fetched.css)
     }
 
+    fn referrer_policy_for_stylesheet(&self, url: &str) -> Option<ReferrerPolicy> {
+      self.stylesheet_policies.borrow().get(url).copied()
+    }
+
     fn load_with_importer(
       &self,
       url: &str,
@@ -1535,6 +1539,7 @@ mod disk_cache_main {
     for face in sheet.collect_font_face_rules_with_cache(media_ctx, Some(media_query_cache)) {
       let stylesheet_url = face.source_stylesheet_url.as_deref().unwrap_or(referrer_url);
       let base_url = face.source_stylesheet_url.as_deref().unwrap_or(css_base_url);
+      let effective_referrer_policy = face.source_referrer_policy.unwrap_or(referrer_policy);
       for url_source in ordered_remote_font_face_sources(&face.sources) {
         let Some(resolved) = resolve_href(base_url, &url_source.url) else {
           continue;
@@ -1551,7 +1556,7 @@ mod disk_cache_main {
 
         let mut request = FetchRequest::new(&resolved, FetchDestination::Font)
           .with_referrer_url(stylesheet_url)
-          .with_referrer_policy(referrer_policy)
+          .with_referrer_policy(effective_referrer_policy)
           .with_credentials_mode(FetchCredentialsMode::Omit);
         if let Some(origin) = client_origin {
           request = request.with_client_origin(origin);
@@ -2021,14 +2026,15 @@ mod disk_cache_main {
                   }
                 }
 
+                let stylesheet_referrer_policy =
+                  res.response_referrer_policy.unwrap_or(effective_referrer_policy);
+
                 let sheet: StyleSheet = match parse_stylesheet(&css_text) {
                   Ok(sheet) => sheet,
                   Err(_) => continue,
                 };
 
                 let resolved = if sheet.contains_imports() {
-                  let import_referrer_policy =
-                    res.response_referrer_policy.unwrap_or(effective_referrer_policy);
                   let import_loader = PrefetchImportLoader::new(
                     fetcher.as_ref(),
                     base_hint,
@@ -2036,7 +2042,7 @@ mod disk_cache_main {
                     document_origin.as_ref(),
                     destination,
                     credentials_mode,
-                    import_referrer_policy,
+                    stylesheet_referrer_policy,
                     &summary,
                     &all_asset_urls,
                     css_asset_urls_ref,
@@ -2065,7 +2071,7 @@ mod disk_cache_main {
                     sheet_base,
                     sheet_base,
                     document_origin.as_ref(),
-                    referrer_policy,
+                    stylesheet_referrer_policy,
                     &resolved,
                     media_ctx,
                     &mut media_query_cache,
@@ -2846,6 +2852,211 @@ mod disk_cache_main {
       assert!(
         calls.iter().all(|(url, _, _)| url != "https://example.com/nested.css"),
         "expected nested import to resolve against imported stylesheet final URL, got: {calls:?}"
+      );
+    }
+
+    #[test]
+    fn stylesheet_referrer_policy_header_applies_to_font_requests() {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("expected prefetch to use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push((
+            req.url.to_string(),
+            req.destination,
+            req.referrer_policy,
+          ));
+
+          match req.url {
+            "https://example.com/style.css" => {
+              let mut res = FetchedResource::with_final_url(
+                br#"@font-face{font-family:X;src:url("https://example.com/font.woff2");}"#.to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              res.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+              Ok(res)
+            }
+            "https://example.com/font.woff2" => {
+              let mut res = FetchedResource::with_final_url(
+                b"font".to_vec(),
+                Some("font/woff2".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            other => Err(fastrender::Error::Other(format!("unexpected fetch: {other}"))),
+          }
+        }
+      }
+
+      let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="https://example.com/style.css">
+      </head><body></body></html>"#;
+      let document_url = "https://example.com/page.html";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: true,
+        prefetch_images: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        html,
+        document_url,
+        "https://example.com/",
+        ReferrerPolicy::Origin,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      assert_eq!(summary.fetched_css, 1);
+      assert_eq!(summary.fetched_fonts, 1);
+
+      let calls = fetcher_impl.calls.lock().unwrap();
+      assert!(
+        calls.iter().any(|(url, dest, policy)| {
+          url == "https://example.com/font.woff2"
+            && *dest == FetchDestination::Font
+            && *policy == ReferrerPolicy::NoReferrer
+        }),
+        "expected font request to inherit stylesheet response Referrer-Policy header, got: {calls:?}"
+      );
+    }
+
+    #[test]
+    fn stylesheet_referrer_policy_header_applies_to_nested_font_requests() {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("expected prefetch to use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push((
+            req.url.to_string(),
+            req.destination,
+            req.referrer_policy,
+          ));
+
+          match req.url {
+            "https://example.com/style.css" => {
+              let mut res = FetchedResource::with_final_url(
+                br#"@import url("import.css"); body { color: rgb(1, 2, 3); }"#.to_vec(),
+                Some("text/css".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              res.response_referrer_policy = Some(ReferrerPolicy::Origin);
+              Ok(res)
+            }
+            "https://example.com/import.css" => {
+              let mut res = FetchedResource::with_final_url(
+                br#"@font-face{font-family:X;src:url("nested.woff2");}"#.to_vec(),
+                Some("text/css".to_string()),
+                Some("https://cdn.example.com/import-final.css".to_string()),
+              );
+              res.status = Some(200);
+              res.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+              Ok(res)
+            }
+            "https://cdn.example.com/nested.woff2" | "https://example.com/nested.woff2" => {
+              let mut res = FetchedResource::with_final_url(
+                b"font".to_vec(),
+                Some("font/woff2".to_string()),
+                Some(req.url.to_string()),
+              );
+              res.status = Some(200);
+              Ok(res)
+            }
+            other => Err(fastrender::Error::Other(format!("unexpected fetch: {other}"))),
+          }
+        }
+      }
+
+      let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="https://example.com/style.css">
+      </head><body></body></html>"#;
+      let document_url = "https://example.com/page.html";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: true,
+        prefetch_images: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        html,
+        document_url,
+        "https://example.com/",
+        ReferrerPolicy::Origin,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      assert_eq!(summary.fetched_css, 1);
+      assert_eq!(summary.fetched_imports, 1);
+      assert_eq!(summary.fetched_fonts, 1);
+
+      let calls = fetcher_impl.calls.lock().unwrap();
+      assert!(
+        calls.iter().any(|(url, dest, policy)| {
+          url == "https://cdn.example.com/nested.woff2"
+            && *dest == FetchDestination::Font
+            && *policy == ReferrerPolicy::NoReferrer
+        }),
+        "expected nested font request to inherit imported stylesheet response Referrer-Policy header, got: {calls:?}"
+      );
+      assert!(
+        calls.iter().all(|(url, dest, _)| {
+          !(url == "https://example.com/nested.woff2" && *dest == FetchDestination::Font)
+        }),
+        "expected nested font URL to resolve against imported stylesheet final URL, got: {calls:?}"
       );
     }
 
