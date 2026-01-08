@@ -715,10 +715,15 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       // Real-world stylesheets (and some engines) still use single-colon forms for these
       // vendor pseudo-elements.
       "selection" | "-moz-selection" => true,
+      // Non-vendor pseudo-elements that are frequently written with a single colon in
+      // older stylesheets.
+      "marker" | "backdrop" => true,
       // `::marker`-like vendor pseudo-elements.
       "-moz-list-bullet" | "-moz-list-number" | "-webkit-details-marker" => true,
       // `::backdrop` vendor aliases are commonly used in single-colon form.
       "-webkit-backdrop" | "-ms-backdrop" => true,
+      // Functional pseudo-elements.
+      "part" | "slotted" => true,
       "placeholder"
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
@@ -2257,6 +2262,42 @@ mod tests {
       );
       assert_eq!(selector.to_css_string(), canonical);
     }
+
+    for (selector_text, canonical, pseudo) in [
+      ("li:marker", "li::marker", PseudoElement::Marker),
+      ("dialog:backdrop", "dialog::backdrop", PseudoElement::Backdrop),
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      let list =
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).expect("parse");
+      let selector = list.slice().first().expect("one selector");
+      assert_eq!(
+        selector.pseudo_element(),
+        Some(&pseudo),
+        "{selector_text} should parse as pseudo-element"
+      );
+      assert_eq!(selector.to_css_string(), canonical);
+    }
+
+    let mut input = ParserInput::new("div:part(foo)");
+    let mut parser = Parser::new(&mut input);
+    let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+      .expect("parse part selector");
+    let selector = list.slice().first().expect("one selector");
+    assert!(matches!(selector.pseudo_element(), Some(PseudoElement::Part(_))));
+    assert_eq!(selector.to_css_string(), "div::part(foo)");
+
+    let mut input = ParserInput::new("slot:slotted(span)");
+    let mut parser = Parser::new(&mut input);
+    let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+      .expect("parse slotted selector");
+    let selector = list.slice().first().expect("one selector");
+    assert!(matches!(
+      selector.pseudo_element(),
+      Some(PseudoElement::Slotted(_))
+    ));
+    assert_eq!(selector.to_css_string(), "slot::slotted(span)");
   }
 
   #[test]
