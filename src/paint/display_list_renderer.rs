@@ -13196,14 +13196,35 @@ fn image_data_to_pixmap_inner(image: &ImageData) -> RenderResult<Option<Pixmap>>
   let Some(size) = tiny_skia::IntSize::from_wh(image.width, image.height) else {
     return Ok(None);
   };
+
+  let Some(bytes) = u64::from(image.width)
+    .checked_mul(u64::from(image.height))
+    .and_then(|px| px.checked_mul(4))
+  else {
+    return Ok(None);
+  };
+  let Ok(expected_len) = usize::try_from(bytes) else {
+    return Ok(None);
+  };
+
+  let src_pixels = image.pixels.as_ref().as_slice();
+  if src_pixels.len() != expected_len {
+    return Ok(None);
+  }
+
+  let mut data = match reserve_buffer(bytes, "image pixmap") {
+    Ok(buf) => buf,
+    Err(_) => return Ok(None),
+  };
+
   if image.premultiplied {
-    return Ok(Pixmap::from_vec((*image.pixels).clone(), size));
+    data.extend_from_slice(src_pixels);
+    return Ok(Pixmap::from_vec(data, size));
   }
 
   check_active(RenderStage::Paint)?;
-  let mut data = Vec::with_capacity((image.width * image.height * 4) as usize);
   let mut pixel_counter = 0usize;
-  for chunk in image.pixels.chunks_exact(4) {
+  for chunk in src_pixels.chunks_exact(4) {
     if (pixel_counter & 4095) == 0 {
       check_active(RenderStage::Paint)?;
     }
@@ -13260,7 +13281,16 @@ fn image_data_to_scaled_pixmap_inner(
 
   check_active(RenderStage::Paint)?;
   let src_pixels = image.pixels.as_ref().as_slice();
-  if src_pixels.len() != (src_w as usize * src_h as usize * 4) {
+  let Some(expected_src_bytes) = u64::from(src_w)
+    .checked_mul(u64::from(src_h))
+    .and_then(|px| px.checked_mul(4))
+  else {
+    return Ok(None);
+  };
+  let Ok(expected_src_len) = usize::try_from(expected_src_bytes) else {
+    return Ok(None);
+  };
+  if src_pixels.len() != expected_src_len {
     return Ok(None);
   }
 
@@ -13279,7 +13309,13 @@ fn image_data_to_scaled_pixmap_inner(
   let max_x = src_w as f32 - 1.0;
   let max_y = src_h as f32 - 1.0;
 
-  let mut xs = Vec::with_capacity(target_width as usize);
+  let mut xs = Vec::new();
+  if xs
+    .try_reserve_exact(target_width as usize)
+    .is_err()
+  {
+    return Ok(None);
+  }
   for x in 0..target_width {
     let mut sx = (x as f32 + 0.5) * scale_x - 0.5;
     if !sx.is_finite() {
@@ -13295,7 +13331,13 @@ fn image_data_to_scaled_pixmap_inner(
     });
   }
 
-  let mut ys = Vec::with_capacity(target_height as usize);
+  let mut ys = Vec::new();
+  if ys
+    .try_reserve_exact(target_height as usize)
+    .is_err()
+  {
+    return Ok(None);
+  }
   for y in 0..target_height {
     let mut sy = (y as f32 + 0.5) * scale_y - 0.5;
     if !sy.is_finite() {
@@ -17615,6 +17657,31 @@ mod tests {
       ),
       "expected premultiplication to abort with a paint timeout, got {:?}",
       result.err()
+    );
+  }
+
+  #[test]
+  fn image_premultiply_rejects_overflowing_byte_sizes() {
+    let width = 50_000u32;
+    let height = 30_000u32;
+    assert!(
+      tiny_skia::IntSize::from_wh(width, height).is_some(),
+      "test requires tiny-skia to accept the dimensions"
+    );
+
+    let image = ImageData {
+      width,
+      height,
+      css_width: width as f32,
+      css_height: height as f32,
+      has_intrinsic_ratio: true,
+      premultiplied: false,
+      pixels: Arc::new(Vec::new()),
+    };
+    let result = image_data_to_pixmap_inner(&image);
+    assert!(
+      matches!(result, Ok(None)),
+      "expected overflowed image sizes to be rejected, got {result:?}"
     );
   }
 
