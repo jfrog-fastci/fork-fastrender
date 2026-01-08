@@ -82,6 +82,7 @@ mod text_orientation_case_insensitive_test;
 mod text_orientation_inheritance_top_test;
 mod text_orientation_properties;
 mod text_size_adjust_test;
+mod top_layer_closed_hidden_test;
 mod user_agent_test;
 mod var_dependent_recompute_test;
 mod var_resolution_test;

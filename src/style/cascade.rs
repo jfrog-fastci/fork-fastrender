@@ -11453,6 +11453,14 @@ fn compute_base_styles<'a>(
     styles.pointer_events = PointerEvents::None;
   }
   styles.top_layer = top_layer_kind(node);
+  if styles.top_layer.is_none()
+    && (node.get_attribute_ref("popover").is_some()
+      || node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("dialog")))
+  {
+    styles.display = Display::None;
+  }
 
   Ok(NodeBaseStyles {
     styles,
