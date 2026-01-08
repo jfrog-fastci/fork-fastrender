@@ -2165,6 +2165,13 @@ fn eval_style_range_value(
       "border-right-width" => length_to_numeric(&styles.border_right_width, container, ctx),
       "border-bottom-width" => length_to_numeric(&styles.border_bottom_width, container, ctx),
       "border-left-width" => length_to_numeric(&styles.border_left_width, container, ctx),
+      "border-spacing" => {
+        if styles.border_spacing_horizontal == styles.border_spacing_vertical {
+          length_to_numeric(&styles.border_spacing_horizontal, container, ctx)
+        } else {
+          None
+        }
+      }
       "outline-width" => length_to_numeric(&styles.outline_width, container, ctx),
       "outline-offset" => length_to_numeric(&styles.outline_offset, container, ctx),
       "column-count" => styles.column_count.map(|count| NumericValue {
