@@ -200,18 +200,34 @@ fn foreign_object_transform_scale(
   transform_scale_factor(combined).max(1.0)
 }
 
-fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacement: &str) {
+fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacement: &str) -> Option<()> {
   if let Some(pos) = svg.find(placeholder) {
     let end = pos + placeholder.len();
+    if replacement.len() > placeholder.len() {
+      svg
+        .try_reserve(replacement.len().saturating_sub(placeholder.len()))
+        .ok()?;
+    }
     svg.replace_range(pos..end, replacement);
   } else if let Some(close_pos) = svg.rfind("</svg>") {
+    svg.try_reserve(replacement.len()).ok()?;
     svg.insert_str(close_pos, replacement);
   } else if let Some(close_pos) = find_self_closing_root_svg_end(svg) {
-    let suffix = format!(">{replacement}</svg>");
+    let mut suffix = String::new();
+    suffix
+      .try_reserve_exact(replacement.len().saturating_add("</svg>".len() + 1))
+      .ok()?;
+    suffix.push('>');
+    suffix.push_str(replacement);
+    suffix.push_str("</svg>");
+
+    svg.try_reserve(suffix.len().saturating_sub(2)).ok()?;
     svg.replace_range(close_pos..close_pos + 2, &suffix);
   } else {
+    svg.try_reserve(replacement.len()).ok()?;
     svg.push_str(replacement);
   }
+  Some(())
 }
 
 fn find_self_closing_root_svg_end(svg: &str) -> Option<usize> {
@@ -258,7 +274,9 @@ pub(crate) fn inline_svg_with_foreign_objects(
   let svg_doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(svg)))
     .ok()
     .and_then(|doc| doc.ok());
-  let mut out_svg = svg.to_string();
+  let mut out_svg = String::new();
+  out_svg.try_reserve_exact(svg.len()).ok()?;
+  out_svg.push_str(svg);
   for (idx, foreign) in foreign_objects.iter().enumerate() {
     let placeholder = if foreign.placeholder.is_empty() {
       format!("<!--FASTRENDER_FOREIGN_OBJECT_{}-->", idx)
@@ -276,7 +294,7 @@ pub(crate) fn inline_svg_with_foreign_objects(
     )?;
     let replacement = foreign_object_image_tag(foreign, &data_url, idx, image_bounds);
 
-    replace_placeholder_or_insert(&mut out_svg, &placeholder, &replacement);
+    replace_placeholder_or_insert(&mut out_svg, &placeholder, &replacement)?;
   }
 
   Some(out_svg)
@@ -696,28 +714,28 @@ mod tests {
   #[test]
   fn replaces_placeholder_when_present() {
     let mut svg = "<svg><!--P--></svg>".to_string();
-    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>").expect("replace");
     assert_eq!(svg, "<svg><image/></svg>");
   }
 
   #[test]
   fn inserts_before_closing_tag_when_placeholder_missing() {
     let mut svg = "<svg></svg>".to_string();
-    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>").expect("replace");
     assert_eq!(svg, "<svg><image/></svg>");
   }
 
   #[test]
   fn appends_when_svg_has_no_closing_tag() {
     let mut svg = "<svg>".to_string();
-    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>").expect("replace");
     assert_eq!(svg, "<svg><image/>");
   }
 
   #[test]
   fn expands_self_closing_root_svg_when_placeholder_missing() {
     let mut svg = "<svg/>".to_string();
-    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>");
+    replace_placeholder_or_insert(&mut svg, "<!--P-->", "<image/>").expect("replace");
     assert_eq!(svg, "<svg><image/></svg>");
   }
 
