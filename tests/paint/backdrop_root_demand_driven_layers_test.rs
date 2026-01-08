@@ -48,6 +48,32 @@ fn build_html(will_change: bool) -> String {
   html
 }
 
+fn build_html_with_backdrop_sensitive_descendant(will_change: bool) -> String {
+  let will_change = if will_change {
+    "will-change: filter;"
+  } else {
+    ""
+  };
+  format!(
+    r#"<!doctype html>
+      <style>
+        html, body {{ margin: 0; padding: 0; background: rgb(255 0 0); }}
+        #wrapper {{ position: absolute; inset: 0; {will_change} }}
+        #child {{
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 40px;
+          height: 40px;
+          backdrop-filter: invert(1);
+          background: transparent;
+        }}
+      </style>
+      <div id="wrapper"><div id="child"></div></div>
+    "#
+  )
+}
+
 fn run_case(backend: &str) {
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
@@ -97,4 +123,47 @@ fn run_case(backend: &str) {
 fn will_change_backdrop_root_only_forces_layers_when_needed() {
   run_case("display_list");
   run_case("legacy");
+}
+
+fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
+  let p = pixmap.pixel(x, y).unwrap();
+  (p.red(), p.green(), p.blue(), p.alpha())
+}
+
+fn run_sampling_case(backend: &str) {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    backend.to_string(),
+  )]));
+  let options = RenderOptions::new()
+    .with_viewport(64, 64)
+    .with_diagnostics_level(DiagnosticsLevel::Basic)
+    .with_paint_parallelism(PaintParallelism::disabled())
+    .with_runtime_toggles(toggles);
+
+  let mut renderer = FastRender::new().expect("renderer");
+
+  let baseline = renderer
+    .render_html_with_diagnostics(&build_html_with_backdrop_sensitive_descendant(false), options.clone())
+    .expect("baseline render");
+  let will_change = renderer
+    .render_html_with_diagnostics(&build_html_with_backdrop_sensitive_descendant(true), options)
+    .expect("will-change render");
+
+  // Without `will-change`, the child backdrop-filter should sample and invert the red page
+  // background to cyan.
+  assert_eq!(pixel(&baseline.pixmap, 20, 20), (0, 255, 255, 255));
+  // With `will-change: filter`, the wrapper establishes a Backdrop Root, so the child backdrop-filter
+  // samples an empty backdrop-root image and yields transparent, letting the page background show
+  // through unchanged (red).
+  assert_eq!(pixel(&will_change.pixmap, 20, 20), (255, 0, 0, 255));
+  // Control pixel outside the filtered region is always the page background.
+  assert_eq!(pixel(&baseline.pixmap, 50, 50), (255, 0, 0, 255));
+  assert_eq!(pixel(&will_change.pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_backdrop_root_affects_sampling() {
+  run_sampling_case("display_list");
+  run_sampling_case("legacy");
 }
