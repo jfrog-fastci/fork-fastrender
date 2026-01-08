@@ -60,11 +60,14 @@
 use crate::error::{Error, RenderStage, Result};
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::paint::display_list::ResolvedFilter;
 use crate::paint::display_list::Transform3D;
+use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::paint_bounds;
 use crate::render_control::check_active_periodic;
 use crate::style::display::Display;
 use crate::style::position::Position;
+use crate::style::types::{FilterColor, FilterFunction};
 use crate::style::types::Overflow;
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::FragmentContent;
@@ -74,6 +77,67 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 const DEADLINE_STRIDE: usize = 256;
+
+fn resolve_filter_outset_for_bounds(
+  style: &ComputedStyle,
+  bbox: Rect,
+  viewport: Option<(f32, f32)>,
+) -> Option<crate::paint::filter_outset::FilterOutset> {
+  if style.filter.is_empty() {
+    return None;
+  }
+
+  let base_x = bbox.width().abs();
+  let base_y = bbox.height().abs();
+  let base = base_x.max(base_y);
+
+  let resolve_length = |len: &crate::style::values::Length, percentage_base: f32| -> f32 {
+    paint_bounds::resolve_length_for_paint(
+      len,
+      style.font_size,
+      style.root_font_size,
+      percentage_base,
+      viewport,
+    )
+  };
+
+  let resolved_filters: Vec<ResolvedFilter> = style
+    .filter
+    .iter()
+    .filter_map(|filter| match filter {
+      FilterFunction::Blur(radius) => Some(ResolvedFilter::Blur(resolve_length(radius, base).max(0.0))),
+      FilterFunction::Brightness(v) => Some(ResolvedFilter::Brightness(*v)),
+      FilterFunction::Contrast(v) => Some(ResolvedFilter::Contrast(*v)),
+      FilterFunction::Grayscale(v) => Some(ResolvedFilter::Grayscale(*v)),
+      FilterFunction::Sepia(v) => Some(ResolvedFilter::Sepia(*v)),
+      FilterFunction::Saturate(v) => Some(ResolvedFilter::Saturate(*v)),
+      FilterFunction::HueRotate(v) => Some(ResolvedFilter::HueRotate(*v)),
+      FilterFunction::Invert(v) => Some(ResolvedFilter::Invert(*v)),
+      FilterFunction::Opacity(v) => Some(ResolvedFilter::Opacity(*v)),
+      FilterFunction::DropShadow(shadow) => {
+        let shadow = shadow.as_ref();
+        let color = match shadow.color {
+          FilterColor::CurrentColor => style.color,
+          FilterColor::Color(c) => c,
+        };
+        Some(ResolvedFilter::DropShadow {
+          offset_x: resolve_length(&shadow.offset_x, base_x),
+          offset_y: resolve_length(&shadow.offset_y, base_y),
+          blur_radius: resolve_length(&shadow.blur_radius, base).max(0.0),
+          spread: resolve_length(&shadow.spread, base),
+          color,
+        })
+      }
+      FilterFunction::Url(_) => None,
+    })
+    .collect();
+
+  if resolved_filters.is_empty() {
+    return None;
+  }
+
+  Some(filter_outset_with_bounds(&resolved_filters, 1.0, Some(bbox)))
+}
 
 /// A reference to a fragment with associated style information
 ///
@@ -585,6 +649,11 @@ impl StackingContext {
     // Union child stacking context bounds
     for child in &self.children {
       let mut rect = child.bounds;
+      let child_filter_outset = child
+        .fragments
+        .first()
+        .and_then(|fragment| fragment.style.as_deref())
+        .and_then(|style| resolve_filter_outset_for_bounds(style, rect, viewport));
       let child_transform = resolve_self_transform(child);
       match (child_perspective.as_ref(), child_transform.as_ref()) {
         (None, None) => {}
@@ -598,6 +667,15 @@ impl StackingContext {
           let combined = perspective.multiply(self_transform);
           rect = map_with_transform(rect, &combined);
         }
+      }
+
+      if let Some(outset) = child_filter_outset {
+        rect = Rect::from_xywh(
+          rect.x() - outset.left,
+          rect.y() - outset.top,
+          rect.width() + outset.left + outset.right,
+          rect.height() + outset.top + outset.bottom,
+        );
       }
 
       accumulate(translate(rect), &mut bounds);
