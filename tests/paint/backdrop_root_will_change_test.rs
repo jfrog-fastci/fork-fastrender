@@ -143,6 +143,15 @@ fn will_change_transform_does_not_establish_backdrop_root() {
 }
 
 #[test]
+fn will_change_webkit_transform_does_not_establish_backdrop_root() {
+  // `-webkit-transform` should be treated as `transform` for `will-change` purposes, which means it
+  // must *not* establish a Backdrop Root.
+  let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-transform");
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_mix_blend_mode_establishes_backdrop_root() {
   // `mix-blend-mode` is a Backdrop Root trigger; `will-change` hints for it must do so immediately.
   let html = r#"<!doctype html>
@@ -301,6 +310,15 @@ fn will_change_webkit_backdrop_filter_establishes_backdrop_root() {
     .render(&list)
     .expect("render");
 
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_webkit_filter_establishes_backdrop_root() {
+  // `-webkit-filter` is a common legacy alias for `filter`; will-change hints should behave
+  // equivalently for Backdrop Root semantics.
+  let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-filter");
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
