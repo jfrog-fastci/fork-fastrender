@@ -181,8 +181,10 @@ impl<Host> EventLoop<Host> {
       source: task.source,
       is_microtask: false,
     });
-    task.run(host, self)?;
+    let task_result = task.run(host, self);
+    // Always clear running-task state so errors don't leave the event loop in a "running" state.
     self.currently_running_task = None;
+    task_result?;
 
     self.perform_microtask_checkpoint_inner(host, run_state.as_deref_mut())?;
     Ok(true)
@@ -352,5 +354,67 @@ mod tests {
     );
     assert!(result.is_err(), "expected run_until_idle to hit microtask limit");
     assert_eq!(host.count, 5);
+  }
+
+  #[test]
+  fn exposes_currently_running_task_inside_tasks_and_microtasks() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      observed: Vec<RunningTask>,
+    }
+
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      host.observed.push(
+        event_loop
+          .currently_running_task()
+          .expect("task should be marked as running"),
+      );
+      event_loop.queue_microtask(|host, event_loop| {
+        host.observed.push(
+          event_loop
+            .currently_running_task()
+            .expect("microtask should be marked as running"),
+        );
+        Ok(())
+      });
+      Ok(())
+    });
+
+    let mut host = Host::default();
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      host.observed,
+      vec![
+        RunningTask {
+          source: TaskSource::Script,
+          is_microtask: false,
+        },
+        RunningTask {
+          source: TaskSource::Microtask,
+          is_microtask: true,
+        },
+      ]
+    );
+    assert_eq!(event_loop.currently_running_task(), None);
+    Ok(())
+  }
+
+  #[test]
+  fn clears_currently_running_task_on_task_error() {
+    struct Host;
+
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::Script, |_host, _event_loop| {
+      Err(Error::Other("boom".to_string()))
+    });
+
+    let mut host = Host;
+    let err = event_loop
+      .run_next_task(&mut host)
+      .expect_err("task should fail");
+    assert!(matches!(err, Error::Other(msg) if msg == "boom"));
+    assert_eq!(event_loop.currently_running_task(), None);
   }
 }
