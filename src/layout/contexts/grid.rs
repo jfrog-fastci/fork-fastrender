@@ -689,8 +689,10 @@ fn constraints_from_taffy(
   }
 
   let sanitize_definite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
-  let width = match (known.width, available.width) {
-    (Some(w), _) => CrateAvailableSpace::Definite(sanitize_definite(w)),
+  let known_width = known.width.map(sanitize_definite);
+  let known_height = known.height.map(sanitize_definite);
+  let width = match (known_width, available.width) {
+    (Some(w), _) => CrateAvailableSpace::Definite(w),
     (_, taffy::style::AvailableSpace::Definite(w)) => {
       if w <= 1.0 {
         CrateAvailableSpace::Indefinite
@@ -701,8 +703,8 @@ fn constraints_from_taffy(
     (_, taffy::style::AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
     (_, taffy::style::AvailableSpace::MaxContent) => CrateAvailableSpace::MaxContent,
   };
-  let height = match (known.height, available.height) {
-    (Some(h), _) => CrateAvailableSpace::Definite(sanitize_definite(h)),
+  let height = match (known_height, available.height) {
+    (Some(h), _) => CrateAvailableSpace::Definite(h),
     (_, taffy::style::AvailableSpace::Definite(h)) => {
       if h <= 1.0 {
         CrateAvailableSpace::Indefinite
@@ -715,6 +717,8 @@ fn constraints_from_taffy(
   };
 
   let mut constraints = LayoutConstraints::new(width, height);
+  constraints.used_border_box_width = known_width;
+  constraints.used_border_box_height = known_height;
   constraints.inline_percentage_base = constraints
     .inline_percentage_base
     .or(inline_percentage_base)
@@ -3476,6 +3480,7 @@ impl GridFormattingContext {
               | FormattingContextType::Flex
               | FormattingContextType::Grid
               | FormattingContextType::Inline
+              | FormattingContextType::Table
           );
 
           let force_height = continuation_available
@@ -3919,6 +3924,7 @@ impl GridFormattingContext {
           | FormattingContextType::Flex
           | FormattingContextType::Grid
           | FormattingContextType::Inline
+          | FormattingContextType::Table
       );
 
       let mut laid_out = if supports_used_border_box {
@@ -4611,6 +4617,7 @@ impl GridFormattingContext {
             | FormattingContextType::Flex
             | FormattingContextType::Grid
             | FormattingContextType::Inline
+            | FormattingContextType::Table
         );
         let relayout_constraints = child_constraints
           .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
@@ -6027,6 +6034,28 @@ impl GridFormattingContext {
       available_space,
       parent_inline_base,
     );
+    if constraints.used_border_box_width.is_none()
+      && known_dimensions.width.is_none()
+      && physical_width_is_auto(style)
+      && taffy_style.justify_self == Some(taffy::style::AlignItems::Stretch)
+    {
+      if let taffy::style::AvailableSpace::Definite(w) = available_space.width {
+        if w.is_finite() && w > 1.0 {
+          constraints.used_border_box_width = Some(w.max(0.0));
+        }
+      }
+    }
+    if constraints.used_border_box_height.is_none()
+      && known_dimensions.height.is_none()
+      && physical_height_is_auto(style)
+      && taffy_style.align_self == Some(taffy::style::AlignItems::Stretch)
+    {
+      if let taffy::style::AvailableSpace::Definite(h) = available_space.height {
+        if h.is_finite() && h > 1.0 {
+          constraints.used_border_box_height = Some(h.max(0.0));
+        }
+      }
+    }
 
     // Taffy frequently probes min/max-content sizes during track sizing.
     // Avoid running full layout for these probes; use intrinsic sizing APIs instead.
@@ -8439,6 +8468,7 @@ impl FormattingContext for GridFormattingContext {
               | FormattingContextType::Flex
               | FormattingContextType::Grid
               | FormattingContextType::Inline
+              | FormattingContextType::Table
           );
           let relayout_constraints = child_constraints
             .with_used_border_box_size(Some(border_size.width), Some(border_size.height));

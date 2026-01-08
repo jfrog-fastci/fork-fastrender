@@ -3758,6 +3758,7 @@ impl FormattingContext for FlexFormattingContext {
               | FormattingContextType::Flex
               | FormattingContextType::Grid
               | FormattingContextType::Inline
+              | FormattingContextType::Table
           );
           let relayout_constraints = child_constraints
             .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
@@ -6816,6 +6817,7 @@ impl FlexFormattingContext {
           | FormattingContextType::Flex
           | FormattingContextType::Grid
           | FormattingContextType::Inline
+          | FormattingContextType::Table
       );
 
       // Preserve the flex-resolved size. When the child formatting context can honor
@@ -7053,6 +7055,7 @@ impl FlexFormattingContext {
                 | FormattingContextType::Flex
                 | FormattingContextType::Grid
                 | FormattingContextType::Inline
+                | FormattingContextType::Table
             ) {
             mc_constraints
               .with_used_border_box_size(work.used_border_box_width, work.used_border_box_height)
@@ -8248,8 +8251,10 @@ impl FlexFormattingContext {
     }
 
     let sanitize_definite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
-    let width = match (known.width, available.width) {
-      (Some(w), _) => CrateAvailableSpace::Definite(sanitize_definite(w)),
+    let known_width = known.width.map(sanitize_definite);
+    let known_height = known.height.map(sanitize_definite);
+    let width = match (known_width, available.width) {
+      (Some(w), _) => CrateAvailableSpace::Definite(w),
       (_, AvailableSpace::Definite(w)) => {
         if w <= 1.0 {
           CrateAvailableSpace::Indefinite
@@ -8260,8 +8265,8 @@ impl FlexFormattingContext {
       (_, AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
       (_, AvailableSpace::MaxContent) => CrateAvailableSpace::MaxContent,
     };
-    let height = match (known.height, available.height) {
-      (Some(h), _) => CrateAvailableSpace::Definite(sanitize_definite(h)),
+    let height = match (known_height, available.height) {
+      (Some(h), _) => CrateAvailableSpace::Definite(h),
       (_, AvailableSpace::Definite(h)) => {
         if h <= 1.0 {
           CrateAvailableSpace::Indefinite
@@ -8274,6 +8279,8 @@ impl FlexFormattingContext {
     };
 
     let mut constraints = LayoutConstraints::new(width, height);
+    constraints.used_border_box_width = known_width;
+    constraints.used_border_box_height = known_height;
     constraints.inline_percentage_base = constraints
       .inline_percentage_base
       .or(inline_percentage_base)
