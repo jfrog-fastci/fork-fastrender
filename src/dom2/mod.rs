@@ -1,7 +1,11 @@
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use selectors::context::QuirksMode;
 
+pub mod error;
 pub mod import;
+mod attrs;
+
+pub use error::DomError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -196,5 +200,28 @@ impl Document {
 
     root
   }
+
+  pub fn text_data(&self, node: NodeId) -> Result<&str, DomError> {
+    match &self.node(node).kind {
+      NodeKind::Text { content } => Ok(content.as_str()),
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
+
+  pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
+    match &mut self.node_mut(node).kind {
+      NodeKind::Text { content } => {
+        if content == data {
+          return Ok(false);
+        }
+        content.clear();
+        content.push_str(data);
+        Ok(true)
+      }
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
 }
 
+#[cfg(test)]
+mod attrs_tests;
