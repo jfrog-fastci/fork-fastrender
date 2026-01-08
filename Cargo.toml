@@ -7,7 +7,7 @@ rust-version = "1.70"
 publish = false
 
 [workspace]
-members = ["xtask"]
+members = ["xtask", "crates/webidl-ir"]
 resolver = "2"
 
 [features]
