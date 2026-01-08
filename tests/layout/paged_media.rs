@@ -2635,6 +2635,57 @@ fn footnote_counter_increment_can_override_implicit_footnote_numbering() {
 }
 
 #[test]
+fn footnote_counter_set_can_override_implicit_footnote_numbering() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; counter-set: footnote 5; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">Footnote body</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+  let page1 = page_roots[0];
+  assert_eq!(page1.children.len(), 2);
+
+  let content = page1.children.first().expect("page content");
+  let footnote_area = page1.children.get(1).expect("footnote area");
+
+  assert!(find_text(content, "Main").is_some());
+  assert!(
+    find_text(content, "Footnote body").is_none(),
+    "footnote body should be removed from main flow"
+  );
+  assert!(
+    find_text(content, "5").is_some(),
+    "authored `counter-set: footnote 5` should override implicit footnote numbering at the call site"
+  );
+  assert!(find_text(content, "1").is_none());
+
+  assert!(find_text(footnote_area, "Footnote body").is_some());
+  assert!(
+    find_text(footnote_area, "5").is_some(),
+    "authored `counter-set: footnote 5` should be reflected in the footnote marker"
+  );
+  assert!(find_text(footnote_area, "1").is_none());
+}
+
+#[test]
 fn footnote_body_images_resolve_intrinsic_sizes() {
   let html = r#"
     <html>

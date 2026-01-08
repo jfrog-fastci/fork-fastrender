@@ -3885,6 +3885,12 @@ fn apply_counter_properties_from_style(
     .is_some_and(|increment| increment.items.iter().any(|item| item.name == "list-item"));
   let increment_mentions_footnote = css_increment
     .is_some_and(|increment| increment.items.iter().any(|item| item.name == "footnote"));
+  let set_mentions_footnote = styled
+    .styles
+    .counters
+    .counter_set
+    .as_ref()
+    .is_some_and(|set| set.items.iter().any(|item| item.name == "footnote"));
 
   let list_item_step = counters.list_item_increment();
   if let Some(increment) = css_increment {
@@ -3913,6 +3919,7 @@ fn apply_counter_properties_from_style(
     && styled.styles.display != Display::None
     && styled.styles.float == Float::Footnote
     && !increment_mentions_footnote
+    && !set_mentions_footnote
   {
     counters.apply_increment(&CounterSet::single("footnote", 1));
   }
