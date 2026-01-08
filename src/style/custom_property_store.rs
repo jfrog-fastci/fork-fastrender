@@ -9,6 +9,15 @@ use std::sync::Arc;
 
 type CustomPropertyMap = HashMap<Arc<str>, CustomPropertyValue, BuildHasherDefault<FxHasher>>;
 
+#[inline]
+fn is_ascii_whitespace_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
+
 #[cfg(test)]
 thread_local! {
   static TEST_HAMT_INSERTS: Cell<u64> = const { Cell::new(0) };
@@ -132,7 +141,7 @@ pub(crate) fn contains_revert_layer_token(haystack: &str) -> bool {
   let has_backslash = bytes.contains(&b'\\');
   // Extremely common case: the value *is* the keyword (possibly with surrounding whitespace).
   // Avoid the tokenizer walk for this hot path.
-  if !has_backslash && haystack.trim().eq_ignore_ascii_case("revert-layer") {
+  if !has_backslash && trim_ascii_whitespace_css(haystack).eq_ignore_ascii_case("revert-layer") {
     return true;
   }
 
@@ -209,5 +218,14 @@ mod tests {
     // Must not match inside string/url tokens (they can't become the CSS-wide keyword).
     assert!(!contains_revert_layer_token("\"revert-layer\""));
     assert!(!contains_revert_layer_token("url(revert-layer.png)"));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_contains_revert_layer_token_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      !contains_revert_layer_token(&format!("{nbsp}revert-layer")),
+      "NBSP must not be treated as CSS whitespace"
+    );
   }
 }

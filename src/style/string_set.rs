@@ -4,6 +4,18 @@ use cssparser::Parser;
 use cssparser::ParserInput;
 use cssparser::Token;
 
+// CSS values use the CSS Syntax "whitespace" production (TAB/LF/FF/CR/SPACE). Avoid Rust's
+// Unicode whitespace helpers (`str::trim`, `char::is_whitespace`, etc.) so non-ASCII whitespace
+// like NBSP (U+00A0) is preserved.
+#[inline]
+fn is_ascii_whitespace_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
+
 fn value_to_css_text(value: &PropertyValue) -> Option<String> {
   match value {
     PropertyValue::Keyword(kw) => Some(kw.clone()),
@@ -33,7 +45,7 @@ pub fn parse_string_set_value(value: &PropertyValue) -> Option<Vec<StringSetAssi
 
 /// Parse a `string-set` value from its CSS text representation.
 pub fn parse_string_set(input: &str) -> Option<Vec<StringSetAssignment>> {
-  let trimmed = input.trim();
+  let trimmed = trim_ascii_whitespace_css(input);
   if trimmed.eq_ignore_ascii_case("none") {
     return Some(Vec::new());
   }
@@ -113,6 +125,15 @@ mod tests {
     assert_eq!(parse_string_set("none"), Some(Vec::new()));
     assert_eq!(parse_string_set("NONE"), Some(Vec::new()));
     assert_eq!(parse_string_set(" none "), Some(Vec::new()));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_parse_string_set_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      parse_string_set(&format!("{nbsp}none")).is_none(),
+      "NBSP must not be treated as CSS whitespace"
+    );
   }
 
   #[test]

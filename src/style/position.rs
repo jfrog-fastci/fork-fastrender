@@ -28,6 +28,15 @@
 
 use std::fmt;
 
+#[inline]
+fn is_ascii_whitespace_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
+
 /// CSS position property value
 ///
 /// Represents how an element is positioned in the document.
@@ -317,7 +326,7 @@ impl Position {
   /// assert!(Position::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, PositionParseError> {
-    let s = s.trim().to_ascii_lowercase();
+    let s = trim_ascii_whitespace_css(s).to_ascii_lowercase();
     match s.as_str() {
       "static" => Ok(Position::Static),
       "relative" => Ok(Position::Relative),
@@ -401,6 +410,15 @@ mod tests {
   fn test_parse_with_whitespace() {
     assert_eq!(Position::parse("  static  ").unwrap(), Position::Static);
     assert_eq!(Position::parse("\trelative\n").unwrap(), Position::Relative);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_position_parse_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      Position::parse(&format!("{nbsp}static")).is_err(),
+      "NBSP must not be treated as CSS whitespace"
+    );
   }
 
   #[test]

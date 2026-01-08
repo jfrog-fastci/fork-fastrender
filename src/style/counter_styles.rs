@@ -8,6 +8,15 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use unicode_segmentation::UnicodeSegmentation;
 
+#[inline]
+fn is_ascii_whitespace_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
+
 /// Reference to a counter style, either built-in or custom.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CounterStyleName {
@@ -21,7 +30,7 @@ impl CounterStyleName {
     if let Some(builtin) = CounterStyle::parse(name) {
       CounterStyleName::Builtin(builtin)
     } else {
-      CounterStyleName::Custom(name.trim().to_ascii_lowercase())
+      CounterStyleName::Custom(trim_ascii_whitespace_css(name).to_ascii_lowercase())
     }
   }
 
@@ -843,4 +852,18 @@ fn roman_symbols(lowercase: bool) -> Vec<(i32, String)> {
     }
   }
   symbols
+}
+
+#[cfg(test)]
+mod tests {
+  use super::CounterStyleName;
+
+  #[test]
+  fn non_ascii_whitespace_counter_style_name_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    match CounterStyleName::parse(&format!("{nbsp}Foo")) {
+      CounterStyleName::Custom(name) => assert_eq!(name, format!("{nbsp}foo")),
+      other => panic!("expected custom style name, got {other:?}"),
+    }
+  }
 }

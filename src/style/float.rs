@@ -23,6 +23,15 @@
 
 use std::fmt;
 
+#[inline]
+fn is_ascii_whitespace_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
+
 /// CSS float property value
 ///
 /// Specifies whether a box should float and to which side.
@@ -96,7 +105,7 @@ impl Float {
   /// assert!(Float::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, FloatParseError> {
-    let s = s.trim().to_ascii_lowercase();
+    let s = trim_ascii_whitespace_css(s).to_ascii_lowercase();
     match s.as_str() {
       "none" => Ok(Float::None),
       "left" => Ok(Float::Left),
@@ -220,7 +229,7 @@ impl Clear {
   /// assert!(Clear::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, ClearParseError> {
-    let s = s.trim().to_ascii_lowercase();
+    let s = trim_ascii_whitespace_css(s).to_ascii_lowercase();
     match s.as_str() {
       "none" => Ok(Clear::None),
       "left" => Ok(Clear::Left),
@@ -317,6 +326,27 @@ mod tests {
   fn test_parse_float_with_whitespace() {
     assert_eq!(Float::parse("  left  ").unwrap(), Float::Left);
     assert_eq!(Float::parse("\tright\n").unwrap(), Float::Right);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_float_parse_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      Float::parse(&format!("{nbsp}left")).is_err(),
+      "NBSP must not be treated as CSS whitespace"
+    );
+    assert!(
+      Float::parse(&format!("left{nbsp}")).is_err(),
+      "NBSP must not be treated as CSS whitespace"
+    );
+    assert!(
+      Clear::parse(&format!("{nbsp}both")).is_err(),
+      "NBSP must not be treated as CSS whitespace"
+    );
+    assert!(
+      Clear::parse(&format!("both{nbsp}")).is_err(),
+      "NBSP must not be treated as CSS whitespace"
+    );
   }
 
   #[test]
