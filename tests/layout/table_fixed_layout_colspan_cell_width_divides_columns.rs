@@ -165,3 +165,91 @@ fn table_fixed_layout_colspan_cell_width_divides_columns_rtl() {
     "expected cells to be adjacent after width division in RTL (gap={gap})"
   );
 }
+
+#[test]
+fn table_fixed_layout_colspan_cell_width_divides_columns_border_spacing_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            table-layout: fixed;
+            width: 400px;
+            border-collapse: separate;
+            border-spacing: 10px 0;
+            padding: 0;
+            border: 0;
+            direction: rtl;
+          }
+          td { padding: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr>
+            <td colspan="2" style="width: 250px">A</td>
+            <td>B</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 600, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let table_width = table.bounds.width();
+  let table_left = table.bounds.x();
+  assert!(
+    (table_width - 400.0).abs() < 0.1,
+    "expected table width ~400px, got {table_width}"
+  );
+
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  let a = cells.get(&'A').expect("cell A present");
+  let b = cells.get(&'B').expect("cell B present");
+
+  assert!(
+    a.x() > b.x(),
+    "expected RTL order A (right) > B (left), got A.x={} B.x={}",
+    a.x(),
+    b.x()
+  );
+  assert!(
+    (b.x() - table_left - 10.0).abs() < 0.1,
+    "expected left edge border-spacing applied in RTL (B.x={} table.x={})",
+    b.x(),
+    table_left
+  );
+
+  // For a cell spanning 2 columns, its width includes one internal border-spacing gap in the
+  // separated border model. To compute per-column widths, fixed layout must subtract this
+  // internal spacing before dividing.
+  assert!(
+    (a.width() - 250.0).abs() < 0.1,
+    "expected spanning cell width to include internal border-spacing in RTL (A width {})",
+    a.width()
+  );
+  assert!(
+    (b.width() - 120.0).abs() < 0.1,
+    "expected remaining column to take the leftover width in RTL (B width {})",
+    b.width()
+  );
+
+  let gap = a.x() - (b.x() + b.width());
+  assert!(
+    (gap - 10.0).abs() < 0.1,
+    "expected border-spacing gap between B and A in RTL (gap={gap})"
+  );
+
+  let a_right = a.x() + a.width();
+  assert!(
+    (a_right - table_left - 390.0).abs() < 0.1,
+    "expected right edge border-spacing applied in RTL (A right={a_right} table.x={table_left})"
+  );
+}
