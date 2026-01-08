@@ -69,6 +69,22 @@ jobs:
           path: target
           key: fixture-chrome-diff-${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
+
       - name: Install Chrome
         id: setup_chrome
         uses: browser-actions/setup-chrome@v1

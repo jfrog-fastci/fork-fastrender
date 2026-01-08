@@ -11,7 +11,7 @@ Common repo-wide rules (resource limits, no hacks, regression discipline) live i
 
 ### JS engine source
 
-- `engines/ecma-rs/` — git submodule (`git@github.com:wilsonzlin/ecma-rs.git`)
+- `engines/ecma-rs/` — git submodule (`https://github.com/wilsonzlin/ecma-rs.git`)
   - Submodule workflow is documented in `instructions/ecma_rs.md`.
 
 ### Specs (offline references)

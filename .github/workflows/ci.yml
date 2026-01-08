@@ -38,6 +38,22 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
+
       - name: Validate lockfile with Cargo
         run: cargo metadata --locked --format-version 1 > /dev/null
 
@@ -85,6 +101,22 @@ jobs:
         with:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
 
       - name: Validate generated emoji tables
         run: cargo xtask generate-emoji-tables --check
@@ -349,6 +381,22 @@ jobs:
           path: target
           key: ${{ runner.os }}-msrv-cargo-build-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
+
       - name: Build with MSRV
         run: cargo build --all-features
 
@@ -388,6 +436,22 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
+
       - name: Run clippy
         run: cargo clippy --all-targets --all-features --no-deps -- -D clippy::correctness
 
@@ -405,6 +469,22 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -440,6 +520,22 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
+
       - name: Build documentation
         run: cargo doc --no-deps --all-features
         env:
@@ -457,6 +553,22 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -506,6 +618,22 @@ jobs:
         with:
           path: fuzz/target
           key: ${{ runner.os }}-fuzz-target-${{ steps.nightly_toolchain.outputs.rustc_hash }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.toml') }}
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
 
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@cargo-fuzz
@@ -589,6 +717,22 @@ jobs:
           path: target
           key: ${{ runner.os }}-coverage-cargo-build-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
@@ -628,6 +772,22 @@ jobs:
         with:
           path: target
           key: ${{ runner.os }}-bench-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
 
       - name: Run benchmarks
         run: cargo bench --no-run

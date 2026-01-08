@@ -6,7 +6,7 @@
 	url = https://github.com/w3c/csswg-drafts.git
 [submodule "engines/ecma-rs"]
 	path = engines/ecma-rs
-	url = git@github.com:wilsonzlin/ecma-rs.git
+	url = https://github.com/wilsonzlin/ecma-rs.git
 [submodule "specs/tc39-ecma262"]
 	path = specs/tc39-ecma262
 	url = https://github.com/tc39/ecma262.git

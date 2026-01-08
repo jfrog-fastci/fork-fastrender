@@ -5,7 +5,20 @@ browser-grade JavaScript execution.
 
 `ecma-rs` is a **git submodule** at:
 
-- `engines/ecma-rs/` (`git@github.com:wilsonzlin/ecma-rs.git`)
+- `engines/ecma-rs/` (`https://github.com/wilsonzlin/ecma-rs.git`)
+
+CI uses HTTPS so it can fetch the submodule without SSH credentials. If you prefer SSH locally, use
+a Git URL rewrite:
+
+```bash
+git config --global url."git@github.com:".insteadOf "https://github.com/"
+```
+
+If you already initialized the submodule before the HTTPS switch, sync the stored URL:
+
+```bash
+git submodule sync -- engines/ecma-rs
+```
 
 Common repo-wide safety rules (resource limits, no hacks, regressions) live in `AGENTS.md`.
 
