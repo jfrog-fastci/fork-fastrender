@@ -1,7 +1,10 @@
 [alias]
 xtask = "run -p xtask --"
 
-# Work around sporadic `rust-lld` crashes (SIGBUS) observed during large test
-# links in constrained environments by forcing single-threaded linking.
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-Wl,--threads=1"]
+# Use the mold linker on Linux for much faster links (and to avoid sporadic `rust-lld` SIGBUS
+# incidents observed under heavy concurrency).
+#
+# `clang` is used as the linker driver because it consistently supports `-fuse-ld=...`.
+[target.'cfg(target_os = "linux")']
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
