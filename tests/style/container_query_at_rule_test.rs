@@ -1059,6 +1059,110 @@ fn not_container_style_query_custom_property_with_unknown_block_size_does_not_ma
 }
 
 #[test]
+fn container_style_query_custom_property_cqmin_with_unknown_block_size_do_not_match() {
+  let css = r#"
+    .target { display: block; }
+    @container style(--x: 1cqmin) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.container_type = ContainerType::Size;
+  let mut registry = CustomPropertyRegistry::new();
+  registry.register(PropertyRule {
+    name: "--x".to_string(),
+    syntax: CustomPropertySyntax::Length,
+    inherits: false,
+    initial_value: Some(CustomPropertyValue::new(
+      "0px",
+      Some(CustomPropertyTypedValue::Length(Length::px(0.0))),
+    )),
+  });
+  style.custom_property_registry = Arc::new(registry);
+  style.custom_properties.insert(
+    Arc::from("--x"),
+    CustomPropertyValue::new(
+      "1cqmin",
+      Some(CustomPropertyTypedValue::Length(Length::new(1.0, LengthUnit::Cqmin))),
+    ),
+  );
+  let styles = Arc::new(style);
+
+  let styled = cascade_with_containers(
+    HTML,
+    css,
+    vec![(
+      "c",
+      ContainerQueryInfo {
+        width: 500.0,
+        height: f32::NAN,
+        inline_size: 500.0,
+        block_size: f32::NAN,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: styles.font_size,
+        styles,
+      },
+    )],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
+fn container_style_query_custom_property_zero_cqmax_with_unknown_block_size_matches() {
+  let css = r#"
+    .target { display: block; }
+    @container style(--x: 0cqmax) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.container_type = ContainerType::Size;
+  let mut registry = CustomPropertyRegistry::new();
+  registry.register(PropertyRule {
+    name: "--x".to_string(),
+    syntax: CustomPropertySyntax::Length,
+    inherits: false,
+    initial_value: Some(CustomPropertyValue::new(
+      "0px",
+      Some(CustomPropertyTypedValue::Length(Length::px(0.0))),
+    )),
+  });
+  style.custom_property_registry = Arc::new(registry);
+  style.custom_properties.insert(
+    Arc::from("--x"),
+    CustomPropertyValue::new(
+      "0cqmax",
+      Some(CustomPropertyTypedValue::Length(Length::new(0.0, LengthUnit::Cqmax))),
+    ),
+  );
+  let styles = Arc::new(style);
+
+  let styled = cascade_with_containers(
+    HTML,
+    css,
+    vec![(
+      "c",
+      ContainerQueryInfo {
+        width: 500.0,
+        height: f32::NAN,
+        inline_size: 500.0,
+        block_size: f32::NAN,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: styles.font_size,
+        styles,
+      },
+    )],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
 fn container_query_cqmin_with_unknown_block_size_do_not_match() {
   let css = r#"
     .target { display: block; }
