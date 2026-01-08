@@ -1,5 +1,6 @@
 use fastrender::{FastRender, FastRenderConfig, InspectQuery, ResourceFetcher};
 use fastrender::resource::FetchedResource;
+use fastrender::style::media::MediaType;
 use std::sync::Arc;
 
 #[test]
@@ -147,6 +148,60 @@ fn inspect_respects_resource_policy_for_stylesheets() {
         )
         .expect("inspect");
       assert_eq!(results.len(), 1);
+    })
+    .expect("spawn test thread")
+    .join()
+    .expect("join test thread");
+}
+
+#[test]
+fn inspect_includes_fragments_from_running_element_snapshots() {
+  std::thread::Builder::new()
+    .stack_size(8 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+        <!doctype html>
+        <html>
+          <head>
+            <style>
+              @page { size: 200px 100px; margin: 0; }
+              body { margin: 0; font-size: 10px; line-height: 10px; }
+              #run { position: running(header); }
+            </style>
+          </head>
+          <body>
+            <div id="run">Run</div>
+            <div>Body</div>
+          </body>
+        </html>
+      "#;
+
+      let dom = renderer.parse_html(html).expect("parse");
+      let intermediates = renderer
+        .layout_document_for_media_intermediates(&dom, 200, 100, MediaType::Print)
+        .expect("layout intermediates");
+
+      let results = fastrender::debug::inspect::inspect(
+        &intermediates.dom,
+        &intermediates.styled_tree,
+        &intermediates.box_tree.root,
+        &intermediates.fragment_tree,
+        InspectQuery::Id("run".to_string()),
+      )
+      .expect("inspect");
+      assert_eq!(results.len(), 1);
+      let snapshot = &results[0];
+      assert_eq!(snapshot.node.id.as_deref(), Some("run"));
+      let box_id = snapshot
+        .boxes
+        .first()
+        .map(|b| b.box_id)
+        .expect("expected at least one box snapshot");
+      assert!(
+        snapshot.fragments.iter().any(|f| f.box_id == Some(box_id)),
+        "expected inspect to traverse running-element snapshots so fragments exist for the running element's boxes"
+      );
     })
     .expect("spawn test thread")
     .join()
