@@ -1786,7 +1786,7 @@ id = "transforms/perspective-property-001"
 path = "transforms/perspective-property-001.html"
 reference = "transforms/perspective-property-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 20000
 dpr = 1.0
 

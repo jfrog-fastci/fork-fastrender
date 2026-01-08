@@ -1156,9 +1156,10 @@ fn adjust_end_for_footnotes(
       end = end.min(start + footnotes[included].pos);
     }
     end
-  };
+  }
+  .min(end_candidate);
 
-  end.min(end_candidate)
+  end
 }
 
 fn build_footnote_area_fragment(
@@ -2011,5 +2012,40 @@ mod tests {
 
       assert_eq!(actual_text, expected_text);
     }
+  }
+
+  fn footnote_occurrence(pos: f32, block_size: f32) -> FootnoteOccurrence {
+    FootnoteOccurrence {
+      pos,
+      snapshot: FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, block_size), vec![]),
+    }
+  }
+
+  #[test]
+  fn adjust_end_for_footnotes_reserves_space_for_included_footnotes() {
+    let axis = FragmentAxis {
+      block_is_horizontal: false,
+      block_positive: true,
+    };
+    let footnotes = vec![footnote_occurrence(50.0, 10.0)];
+    let end = adjust_end_for_footnotes(0.0, 100.0, 100.0, &footnotes, &axis);
+    assert!(
+      (end - 89.0).abs() < 0.01,
+      "expected end=89 after reserving separator+body, got {end}"
+    );
+  }
+
+  #[test]
+  fn adjust_end_for_footnotes_defers_first_call_when_it_does_not_fit() {
+    let axis = FragmentAxis {
+      block_is_horizontal: false,
+      block_positive: true,
+    };
+    let footnotes = vec![footnote_occurrence(95.0, 10.0)];
+    let end = adjust_end_for_footnotes(0.0, 100.0, 100.0, &footnotes, &axis);
+    assert!(
+      (end - 95.0).abs() < 0.01,
+      "expected end=95 so the call moves to the next page, got {end}"
+    );
   }
 }

@@ -30,6 +30,15 @@ scripts/run_limited.sh --as 64G -- \
 If `cargo` itself fails early with an `out of memory` message, bump `--as` (the Rust toolchain can
 reserve a surprisingly large amount of virtual address space even when RSS is low).
 
+If `cargo test` OOMs during the final link step under a tight `--as` cap, try disabling debug info
+for the test profile (debug symbols can make large test binaries significantly more expensive to
+link):
+
+```bash
+CARGO_PROFILE_TEST_DEBUG=0 scripts/run_limited.sh --as 12G --cpu 60 -- \
+  cargo test -j 1 --quiet --lib
+```
+
 You can also set defaults via environment variables:
 
 ```bash
