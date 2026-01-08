@@ -1610,7 +1610,10 @@ fn parse_animation_names(raw: &str) -> Option<Vec<Option<String>>> {
   }
 }
 
-fn parse_range_offset(tokens: &[String]) -> Option<(RangeOffset, usize)> {
+fn parse_range_offset(
+  tokens: &[String],
+  default_view_offset: Length,
+) -> Option<(RangeOffset, usize)> {
   if tokens.is_empty() {
     return None;
   }
@@ -1627,7 +1630,7 @@ fn parse_range_offset(tokens: &[String]) -> Option<(RangeOffset, usize)> {
         ));
       }
     }
-    return Some((RangeOffset::View(phase, Length::px(0.0)), 1));
+    return Some((RangeOffset::View(phase, default_view_offset), 1));
   }
   if let Some(progress) = parse_progress_value(&tokens[0]) {
     return Some((RangeOffset::Progress(progress), 1));
@@ -1635,44 +1638,77 @@ fn parse_range_offset(tokens: &[String]) -> Option<(RangeOffset, usize)> {
   None
 }
 
-fn parse_animation_range_list(raw: &str) -> Vec<AnimationRange> {
-  let mut ranges = Vec::new();
-  for part in split_top_level_commas(raw) {
-    let tokens = split_top_level_whitespace(&part);
-    if tokens.is_empty() {
-      continue;
-    }
-    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("none") {
-      return Vec::new();
-    }
-    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
-      ranges.push(AnimationRange::default());
-      continue;
-    }
-    let (start, consumed_start) =
-      parse_range_offset(&tokens).unwrap_or((RangeOffset::Progress(0.0), 0));
-    let (end, consumed_end) =
-      parse_range_offset(&tokens[consumed_start..]).unwrap_or((RangeOffset::Progress(1.0), 0));
-    let consumed_total = consumed_start + consumed_end;
-    if consumed_total == 0 || consumed_total < tokens.len() {
-      continue;
-    }
-    ranges.push(AnimationRange { start, end });
+fn parse_animation_range_offset(
+  tokens: &[String],
+  default: RangeOffset,
+  default_view_offset: Length,
+) -> Option<(RangeOffset, usize)> {
+  if tokens.is_empty() {
+    return None;
   }
-  ranges
+  if tokens[0].eq_ignore_ascii_case("normal") {
+    return Some((default, 1));
+  }
+  parse_range_offset(tokens, default_view_offset)
 }
 
-fn parse_animation_range_offset_list(raw: &str, default: RangeOffset) -> Vec<RangeOffset> {
-  let parts = split_top_level_commas(raw);
-  if parts.len() == 1 && parts[0].trim().eq_ignore_ascii_case("none") {
-    return Vec::new();
-  }
+fn parse_animation_range_list(raw: &str) -> Option<Vec<AnimationRange>> {
+  let parts = split_top_level_commas_strict(raw)?;
+  let mut ranges = Vec::with_capacity(parts.len());
 
-  let mut offsets = Vec::new();
   for part in parts {
     let tokens = split_top_level_whitespace(&part);
     if tokens.is_empty() {
-      continue;
+      return None;
+    }
+    if tokens.iter().any(|tok| tok.eq_ignore_ascii_case("none")) {
+      return None;
+    }
+
+    let (start, consumed_start) = parse_animation_range_offset(
+      &tokens,
+      RangeOffset::Progress(0.0),
+      Length::px(0.0),
+    )?;
+    let remaining = &tokens[consumed_start..];
+    let (end, consumed_end) = if remaining.is_empty() {
+      match start {
+        RangeOffset::View(phase, _) => (RangeOffset::View(phase, Length::percent(100.0)), 0),
+        RangeOffset::Progress(_) => (RangeOffset::Progress(1.0), 0),
+      }
+    } else {
+      parse_animation_range_offset(
+        remaining,
+        RangeOffset::Progress(1.0),
+        Length::percent(100.0),
+      )?
+    };
+
+    let consumed_total = consumed_start + consumed_end;
+    if consumed_total != tokens.len() {
+      return None;
+    }
+    ranges.push(AnimationRange { start, end });
+  }
+  if ranges.is_empty() { None } else { Some(ranges) }
+}
+
+fn parse_animation_range_offset_list(raw: &str, default: RangeOffset) -> Option<Vec<RangeOffset>> {
+  let parts = split_top_level_commas_strict(raw)?;
+  let default_view_offset = match default {
+    RangeOffset::Progress(v) if v >= 1.0 - f32::EPSILON => Length::percent(100.0),
+    _ => Length::px(0.0),
+  };
+
+  let mut offsets = Vec::with_capacity(parts.len());
+  for part in parts {
+    let tokens = split_top_level_whitespace(&part);
+    if tokens.is_empty() {
+      return None;
+    }
+
+    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("none") {
+      return None;
     }
 
     if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
@@ -1680,18 +1716,14 @@ fn parse_animation_range_offset_list(raw: &str, default: RangeOffset) -> Vec<Ran
       continue;
     }
 
-    if let Some((offset, consumed)) = parse_range_offset(&tokens) {
-      if consumed == tokens.len() {
-        offsets.push(offset);
-      }
+    let (offset, consumed) = parse_range_offset(&tokens, default_view_offset)?;
+    if consumed != tokens.len() {
+      return None;
     }
+    offsets.push(offset);
   }
 
-  if offsets.is_empty() {
-    vec![default]
-  } else {
-    offsets
-  }
+  if offsets.is_empty() { None } else { Some(offsets) }
 }
 
 fn pick_or_last<T: Clone>(list: &[T], idx: usize, default: T) -> T {
@@ -1751,7 +1783,7 @@ mod animation_range_tests {
   #[test]
   fn parses_animation_range_view_timeline_px_offsets() {
     assert_eq!(
-      parse_animation_range_list("entry 100px entry 500px"),
+      parse_animation_range_list("entry 100px entry 500px").unwrap(),
       vec![AnimationRange {
         start: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(100.0)),
         end: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(500.0)),
@@ -1762,7 +1794,7 @@ mod animation_range_tests {
   #[test]
   fn parses_animation_range_view_timeline_percent_offsets() {
     assert_eq!(
-      parse_animation_range_list("entry 50% exit 0%"),
+      parse_animation_range_list("entry 50% exit 0%").unwrap(),
       vec![AnimationRange {
         start: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(50.0)),
         end: RangeOffset::View(ViewTimelinePhase::Exit, Length::percent(0.0)),
@@ -1773,7 +1805,7 @@ mod animation_range_tests {
   #[test]
   fn parses_animation_range_start_offset_list() {
     assert_eq!(
-      parse_animation_range_offset_list("entry 50px, normal", RangeOffset::Progress(0.0)),
+      parse_animation_range_offset_list("entry 50px, normal", RangeOffset::Progress(0.0)).unwrap(),
       vec![
         RangeOffset::View(ViewTimelinePhase::Entry, Length::px(50.0)),
         RangeOffset::Progress(0.0)
@@ -1784,11 +1816,40 @@ mod animation_range_tests {
   #[test]
   fn parses_animation_range_end_offset_list() {
     assert_eq!(
-      parse_animation_range_offset_list("exit 0px, normal", RangeOffset::Progress(1.0)),
+      parse_animation_range_offset_list("exit 0px, normal", RangeOffset::Progress(1.0)).unwrap(),
       vec![
         RangeOffset::View(ViewTimelinePhase::Exit, Length::px(0.0)),
         RangeOffset::Progress(1.0)
       ]
+    );
+  }
+
+  #[test]
+  fn animation_range_defaults_end_to_same_phase_when_omitted() {
+    assert_eq!(
+      parse_animation_range_list("entry").unwrap(),
+      vec![AnimationRange {
+        start: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(0.0)),
+        end: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(100.0)),
+      }]
+    );
+  }
+
+  #[test]
+  fn animation_range_allows_normal_start_and_end_tokens() {
+    assert_eq!(
+      parse_animation_range_list("normal 50%").unwrap(),
+      vec![AnimationRange {
+        start: RangeOffset::Progress(0.0),
+        end: RangeOffset::Progress(0.5),
+      }]
+    );
+    assert_eq!(
+      parse_animation_range_list("50% normal").unwrap(),
+      vec![AnimationRange {
+        start: RangeOffset::Progress(0.5),
+        end: RangeOffset::Progress(1.0),
+      }]
     );
   }
 }
@@ -11596,17 +11657,26 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "animation-range" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_ranges = parse_animation_range_list(css_text);
+      if let Some(val) = parse_animation_range_list(css_text) {
+        styles.animation_ranges = val;
+      }
     }
     "animation-range-start" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let start_offsets = parse_animation_range_offset_list(css_text, RangeOffset::Progress(0.0));
+      let Some(start_offsets) =
+        parse_animation_range_offset_list(css_text, RangeOffset::Progress(0.0))
+      else {
+        return;
+      };
       let existing = std::mem::take(&mut styles.animation_ranges);
       styles.animation_ranges = animation_ranges_with_updated_start(&existing, &start_offsets);
     }
     "animation-range-end" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let end_offsets = parse_animation_range_offset_list(css_text, RangeOffset::Progress(1.0));
+      let Some(end_offsets) = parse_animation_range_offset_list(css_text, RangeOffset::Progress(1.0))
+      else {
+        return;
+      };
       let existing = std::mem::take(&mut styles.animation_ranges);
       styles.animation_ranges = animation_ranges_with_updated_end(&existing, &end_offsets);
     }
