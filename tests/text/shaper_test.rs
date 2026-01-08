@@ -2,29 +2,25 @@
 
 use fastrender::style::ComputedStyle;
 use fastrender::text::pipeline::{Direction, ShapedRun, ShapingPipeline};
+use fastrender::FontConfig;
 use fastrender::FontContext;
 
-fn shape(text: &str) -> Option<Vec<ShapedRun>> {
+fn shape(text: &str) -> Vec<ShapedRun> {
   let pipeline = ShapingPipeline::new();
-  let font_ctx = FontContext::new();
-  if !font_ctx.has_fonts() {
-    return None;
-  }
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
   let style = ComputedStyle::default();
-  pipeline.shape(text, &style, &font_ctx).ok()
+  pipeline.shape(text, &style, &font_ctx).expect("shape text")
 }
 
 #[test]
 fn shaping_empty_string_returns_no_runs() {
-  let runs = shape("").unwrap_or_default();
+  let runs = shape("");
   assert!(runs.is_empty());
 }
 
 #[test]
 fn shaping_basic_latin_text_produces_glyphs() {
-  let Some(runs) = shape("Hello") else {
-    return;
-  };
+  let runs = shape("Hello");
   assert!(!runs.is_empty());
   assert_eq!(runs[0].text, "Hello");
   assert!(runs[0].glyphs.len() >= 1);
@@ -34,9 +30,7 @@ fn shaping_basic_latin_text_produces_glyphs() {
 
 #[test]
 fn shaping_rtl_text_sets_direction() {
-  let Some(runs) = shape("שלום") else {
-    return;
-  };
+  let runs = shape("שלום");
   assert!(!runs.is_empty());
   assert_eq!(runs[0].direction, Direction::RightToLeft);
   assert!(runs[0].advance > 0.0);

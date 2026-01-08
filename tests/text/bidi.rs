@@ -5,6 +5,7 @@ use fastrender::text::pipeline::BidiAnalysis;
 use fastrender::text::pipeline::BidiRun;
 use fastrender::text::pipeline::Direction;
 use fastrender::text::pipeline::ShapingPipeline;
+use fastrender::FontConfig;
 use fastrender::FontContext;
 
 fn analyze(text: &str, base: Direction) -> BidiAnalysis {
@@ -67,10 +68,7 @@ fn paragraph_boundaries_split_runs() {
 #[test]
 fn inline_bidi_runs_position_in_visual_order() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
-  if !font_context.has_fonts() {
-    return;
-  }
+  let font_context = FontContext::with_config(FontConfig::bundled_only());
   let style = ComputedStyle::default();
   let text = "Hello שלום world";
   let analysis = analyze(text, Direction::LeftToRight);
@@ -78,10 +76,9 @@ fn inline_bidi_runs_position_in_visual_order() {
   let mut cursor = 0.0f32;
 
   for run in runs {
-    let shaped = match pipeline.shape(run.text_slice(text), &style, &font_context) {
-      Ok(r) => r,
-      Err(_) => return,
-    };
+    let shaped = pipeline
+      .shape(run.text_slice(text), &style, &font_context)
+      .expect("shape run");
 
     for shaped_run in shaped {
       for glyph in shaped_run.glyphs.iter() {

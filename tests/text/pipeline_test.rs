@@ -7,7 +7,7 @@
 //! - Text shaping
 //! - Mixed script handling
 //!
-//! Note: Many tests require system fonts. Tests will be skipped if fonts are unavailable.
+//! Note: Tests prefer bundled fixture fonts for deterministic results.
 
 use fastrender::style::types::TextOrientation;
 use fastrender::style::types::UnicodeBidi;
@@ -26,24 +26,16 @@ use fastrender::FontConfig;
 use fastrender::FontContext;
 use unicode_bidi::Level;
 
-/// Helper macro to skip test if font shaping fails due to missing fonts
+fn bundled_font_context() -> FontContext {
+  FontContext::with_config(FontConfig::bundled_only())
+}
+
+/// Helper macro to unwrap shaping results from the bundled font context.
 macro_rules! require_fonts {
   ($result:expr) => {
     match $result {
       Ok(v) => v,
-      Err(e) => {
-        // Skip test if fonts are unavailable
-        let err_str = format!("{}", e);
-        if err_str.contains("NoFontsAvailable")
-          || err_str.contains("Font")
-          || err_str.contains("font")
-          || err_str.contains("shaping failed")
-        {
-          eprintln!("Skipping test: fonts unavailable - {}", err_str);
-          return;
-        }
-        panic!("Unexpected error: {}", e);
-      }
+      Err(e) => panic!("Unexpected shaping error: {e}"),
     }
   };
 }
@@ -76,7 +68,7 @@ fn test_direction_is_rtl() {
 #[test]
 fn sideways_writing_mode_shapes_with_rotation() {
   let pipeline = ShapingPipeline::new();
-  let font_ctx = FontContext::new();
+  let font_ctx = bundled_font_context();
   let mut style = ComputedStyle::default();
   style.writing_mode = WritingMode::SidewaysLr;
 
@@ -92,7 +84,7 @@ fn sideways_writing_mode_shapes_with_rotation() {
 fn vertical_mixed_orientation_splits_runs() {
   let _guard = super::text_diagnostics_guard();
   let pipeline = ShapingPipeline::new();
-  let font_ctx = FontContext::new();
+  let font_ctx = bundled_font_context();
   let mut style = ComputedStyle::default();
   style.writing_mode = WritingMode::VerticalRl;
   style.text_orientation = TextOrientation::Mixed;
@@ -126,7 +118,7 @@ fn vertical_mixed_orientation_splits_runs() {
 #[test]
 fn vertical_sideways_orientation_rotates_all() {
   let pipeline = ShapingPipeline::new();
-  let font_ctx = FontContext::new();
+  let font_ctx = bundled_font_context();
   let mut style = ComputedStyle::default();
   style.writing_mode = WritingMode::VerticalRl;
   style.text_orientation = TextOrientation::Sideways;
@@ -142,7 +134,7 @@ fn vertical_sideways_orientation_rotates_all() {
 #[test]
 fn vertical_sideways_left_orientation_rotates_counter_clockwise() {
   let pipeline = ShapingPipeline::new();
-  let font_ctx = FontContext::new();
+  let font_ctx = bundled_font_context();
   let mut style = ComputedStyle::default();
   style.writing_mode = WritingMode::VerticalRl;
   style.text_orientation = TextOrientation::SidewaysLeft;
@@ -159,21 +151,14 @@ fn vertical_sideways_left_orientation_rotates_counter_clockwise() {
 fn vertical_shaping_uses_vertical_advances() {
   let _guard = super::text_diagnostics_guard();
   let pipeline = ShapingPipeline::new();
-  let font_ctx = FontContext::new();
+  let font_ctx = bundled_font_context();
 
   let mut vertical_style = ComputedStyle::default();
   vertical_style.writing_mode = WritingMode::VerticalRl;
   vertical_style.text_orientation = TextOrientation::Upright;
 
-  let vertical_runs = match pipeline.shape("日本語", &vertical_style, &font_ctx) {
-    Ok(runs) => runs,
-    Err(_) => return, // Skip if font fallback is unavailable in the test environment.
-  };
-
-  let horizontal_runs = match pipeline.shape("日本語", &ComputedStyle::default(), &font_ctx) {
-    Ok(runs) => runs,
-    Err(_) => return,
-  };
+  let vertical_runs = require_fonts!(pipeline.shape("日本語", &vertical_style, &font_ctx));
+  let horizontal_runs = require_fonts!(pipeline.shape("日本語", &ComputedStyle::default(), &font_ctx));
 
   let vertical_y_advance: f32 = vertical_runs
     .iter()
@@ -867,7 +852,7 @@ fn test_pipeline_default() {
 #[test]
 fn test_pipeline_shape_empty() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
 
   let result = pipeline.shape("", &style, &font_context);
@@ -878,13 +863,8 @@ fn test_pipeline_shape_empty() {
 #[test]
 fn test_pipeline_shape_simple_ltr() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  // Skip if no fonts available
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.shape("Hello", &style, &font_context);
   let runs = require_fonts!(result);
@@ -901,12 +881,8 @@ fn test_pipeline_shape_simple_ltr() {
 #[test]
 fn test_pipeline_shape_with_spaces() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.shape("Hello World", &style, &font_context);
   let runs = require_fonts!(result);
@@ -916,12 +892,8 @@ fn test_pipeline_shape_with_spaces() {
 #[test]
 fn test_pipeline_shape_numbers() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.shape("12345", &style, &font_context);
   let runs = require_fonts!(result);
@@ -931,12 +903,8 @@ fn test_pipeline_shape_numbers() {
 #[test]
 fn test_pipeline_shape_punctuation() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.shape("Hello, world!", &style, &font_context);
   let runs = require_fonts!(result);
@@ -946,12 +914,8 @@ fn test_pipeline_shape_punctuation() {
 #[test]
 fn test_pipeline_shape_unicode_latin() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   // Latin extended characters
   let result = pipeline.shape("café résumé naïve", &style, &font_context);
@@ -962,12 +926,8 @@ fn test_pipeline_shape_unicode_latin() {
 #[test]
 fn test_pipeline_measure_width() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.measure_width("Hello", &style, &font_context);
   let width = require_fonts!(result);
@@ -977,7 +937,7 @@ fn test_pipeline_measure_width() {
 #[test]
 fn test_pipeline_measure_width_empty() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
 
   let result = pipeline.measure_width("", &style, &font_context);
@@ -988,12 +948,8 @@ fn test_pipeline_measure_width_empty() {
 #[test]
 fn test_pipeline_measure_width_longer_text() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let short_width = require_fonts!(pipeline.measure_width("Hi", &style, &font_context));
   let long_width = require_fonts!(pipeline.measure_width("Hello, world!", &style, &font_context));
@@ -1004,12 +960,8 @@ fn test_pipeline_measure_width_longer_text() {
 #[test]
 fn zwj_sequences_stay_in_a_single_run() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let text = "👨\u{200d}👩\u{200d}👧";
   let runs = require_fonts!(pipeline.shape(text, &style, &font_context));
@@ -1035,12 +987,8 @@ fn zwj_sequences_stay_in_a_single_run() {
 #[test]
 fn test_glyph_positions_ordering() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.shape("ABC", &style, &font_context);
   let runs = require_fonts!(result);
@@ -1061,12 +1009,8 @@ fn test_glyph_positions_ordering() {
 #[test]
 fn test_glyph_advances_positive() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.shape("Hello", &style, &font_context);
   let runs = require_fonts!(result);
@@ -1085,12 +1029,8 @@ fn test_glyph_advances_positive() {
 #[test]
 fn test_shaped_run_glyph_count() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.shape("Hello", &style, &font_context);
   let runs = require_fonts!(result);
@@ -1105,12 +1045,8 @@ fn test_shaped_run_glyph_count() {
 #[test]
 fn test_shaped_run_is_empty() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
+  let font_context = bundled_font_context();
   let style = ComputedStyle::default();
-
-  if !font_context.has_fonts() {
-    return;
-  }
 
   let result = pipeline.shape("A", &style, &font_context);
   let runs = require_fonts!(result);
@@ -1126,11 +1062,7 @@ fn test_shaped_run_is_empty() {
 #[test]
 fn test_pipeline_respects_font_size() {
   let pipeline = ShapingPipeline::new();
-  let font_context = FontContext::new();
-
-  if !font_context.has_fonts() {
-    return;
-  }
+  let font_context = bundled_font_context();
 
   let mut style_16 = ComputedStyle::default();
   style_16.font_size = 16.0;
