@@ -222,6 +222,60 @@ fn transition_property_rejects_none_in_comma_list() {
 }
 
 #[test]
+fn transition_property_ignores_whitespace_separated_values() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let valid_decl = Declaration {
+    property: "transition-property".into(),
+    value: PropertyValue::Keyword("opacity".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &valid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+  assert_eq!(
+    styles.transition_properties,
+    vec![TransitionProperty::Name("opacity".to_string())].into()
+  );
+
+  // Commas are required; whitespace-separated lists are invalid and must be ignored.
+  let invalid_decl = Declaration {
+    property: "transition-property".into(),
+    value: PropertyValue::Keyword("opacity transform".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &invalid_decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_properties,
+    vec![TransitionProperty::Name("opacity".to_string())].into()
+  );
+}
+
+#[test]
 fn transition_property_accepts_none_as_single_value() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();

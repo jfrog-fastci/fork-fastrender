@@ -2574,13 +2574,28 @@ fn parse_transition_property_list(raw: &str) -> Option<Vec<TransitionProperty>> 
   let mut props = Vec::new();
   for part in parts {
     let trimmed = part.trim();
-    if trimmed.starts_with("--") {
+    if trimmed.is_empty() {
+      return None;
+    }
+    let mut input = ParserInput::new(trimmed);
+    let mut parser = Parser::new(&mut input);
+    parser.skip_whitespace();
+    let ident = match parser.next_including_whitespace() {
+      Ok(Token::Ident(ident)) => ident.to_string(),
+      _ => return None,
+    };
+    parser.skip_whitespace();
+    if !parser.is_exhausted() {
+      return None;
+    }
+
+    if ident.starts_with("--") {
       // Custom property names are case-sensitive (CSS Variables).
-      props.push(TransitionProperty::Name(trimmed.to_string()));
+      props.push(TransitionProperty::Name(ident));
       continue;
     }
 
-    let lower = trimmed.to_ascii_lowercase();
+    let lower = ident.to_ascii_lowercase();
     if lower == "none" {
       // `transition-property` is either the single keyword `none` or a comma-separated list of
       // `<single-transition-property>` values that excludes `none`. Reject mixed lists such as
