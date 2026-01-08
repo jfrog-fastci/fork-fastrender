@@ -158,6 +158,44 @@ fn mix_blend_mode_backdrop_root_ignores_non_isolated_group_backdrop_init() {
 }
 
 #[test]
+fn mix_blend_mode_backdrop_root_cached_composite_strips_init_backdrop() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 255 255); }
+      #group { position: absolute; inset: 0; mix-blend-mode: multiply; }
+      /* Insert an intermediate offscreen surface without creating a new Backdrop Root. */
+      #isolate { position: absolute; inset: 0; isolation: isolate; }
+      #overlay {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="group">
+      <div id="isolate">
+        <div id="overlay"></div>
+      </div>
+    </div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // `backdrop-filter` sampling uses a cached composite when the Backdrop Root and the element's
+  // parent surface differ. Ensure that composite strips any non-isolated `mix-blend-mode` group
+  // surface initialization backdrop, so the Backdrop Root Image remains empty/transparent.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 255, 255, 255));
+}
+
+#[test]
 fn clip_path_establishes_a_backdrop_root() {
   let html = r#"<!doctype html>
     <style>

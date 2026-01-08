@@ -196,6 +196,11 @@ impl LayerRecord {
   pub(crate) fn effective_blend_mode(&self) -> SkiaBlendMode {
     self.composite_blend.unwrap_or(self.parent_blend_mode)
   }
+
+  #[inline]
+  pub(crate) fn is_initialized_from_backdrop(&self) -> bool {
+    self.init_from_backdrop
+  }
 }
 
 #[derive(Clone, Copy)]

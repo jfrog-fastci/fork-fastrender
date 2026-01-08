@@ -7588,6 +7588,13 @@ impl DisplayListRenderer {
     // Build missing composites. To avoid borrowing the cache mutably while we hold references to
     // its pixmaps, we stage insertions and commit them after the compositing loop completes.
     let build_result: RenderResult<bool> = (|| {
+      // `Canvas::fill_backdrop_root_region` strips the initialization backdrop when the nearest
+      // Backdrop Root layer surface was initialized from the already-painted backdrop (e.g. for a
+      // non-isolated mix-blend-mode group). Mirror that behavior here so cached composites don't
+      // accidentally include pixels from above the Backdrop Root boundary.
+      let root_initialized_from_backdrop =
+        root_depth > 0 && layer_stack[root_depth - 1].is_initialized_from_backdrop();
+      let root_uncomposited: Option<Pixmap>;
       let start_src: &Pixmap = if let Some(key) = start_key.as_ref() {
         let Some(entry) = self.backdrop_composite_cache.peek(key) else {
           return Ok(false);
@@ -7597,7 +7604,21 @@ impl DisplayListRenderer {
         let Some(record) = layer_stack.get(root_depth) else {
           return Ok(false);
         };
-        &record.pixmap
+        if root_initialized_from_backdrop {
+          let Some(root_record) = layer_stack.get(root_depth - 1) else {
+            return Ok(false);
+          };
+          let mut pixmap = record.pixmap.clone();
+          crate::paint::canvas::uncomposite_layer_source_over_backdrop(
+            &mut pixmap,
+            &root_record.pixmap,
+            root_record.origin,
+          )?;
+          root_uncomposited = Some(pixmap);
+          root_uncomposited.as_ref().unwrap()
+        } else {
+          &record.pixmap
+        }
       };
 
       let mut current: Option<(BackdropCompositeCacheKey, u64, Pixmap)> = None;
