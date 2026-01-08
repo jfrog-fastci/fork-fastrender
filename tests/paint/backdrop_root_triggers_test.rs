@@ -484,6 +484,36 @@ fn mix_blend_mode_triggers_backdrop_root() {
 }
 
 #[test]
+fn mix_blend_mode_triggers_backdrop_root_with_offset() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 40px;
+        height: 40px;
+        mix-blend-mode: multiply;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // Same as `mix_blend_mode_triggers_backdrop_root`, but exercises non-zero layer origins (bounded
+  // group surfaces initialized from backdrop).
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 5, 5), (255, 0, 0, 255));
+}
+
+#[test]
 fn clip_path_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
