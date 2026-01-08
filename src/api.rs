@@ -13055,6 +13055,18 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_inset_value(&style.left, &mut h);
   hash_enum_discriminant(&style.float, &mut h);
   hash_enum_discriminant(&style.clear, &mut h);
+  hash_enum_discriminant(&style.break_before, &mut h);
+  hash_enum_discriminant(&style.break_after, &mut h);
+  hash_enum_discriminant(&style.break_inside, &mut h);
+  match style.page.as_deref() {
+    Some(name) => {
+      1u8.hash(&mut h);
+      name.hash(&mut h);
+    }
+    None => 0u8.hash(&mut h),
+  }
+  style.widows.hash(&mut h);
+  style.orphans.hash(&mut h);
   hash_option_length(&style.width, &mut h);
   style.width_keyword.hash(&mut h);
   hash_option_length(&style.height, &mut h);
@@ -14681,6 +14693,44 @@ pub(crate) fn render_html_with_shared_resources(
       super::style_layout_fingerprint(&a),
       super::style_layout_fingerprint(&b),
       "expected generated content to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_fragmentation_controls() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut break_before = base.clone();
+    break_before.break_before = crate::style::types::BreakBetween::Page;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&break_before),
+      "expected break-before to affect layout fingerprints"
+    );
+
+    let mut page = base.clone();
+    page.page = Some("chapter".to_string());
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&page),
+      "expected named page assignments to affect layout fingerprints"
+    );
+
+    let mut widows = base.clone();
+    widows.widows = base.widows + 1;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&widows),
+      "expected widows to affect layout fingerprints"
+    );
+
+    let mut orphans = base.clone();
+    orphans.orphans = base.orphans + 1;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&orphans),
+      "expected orphans to affect layout fingerprints"
     );
   }
 
