@@ -633,6 +633,23 @@ mod tests {
     assert!(constraints.has_constraints());
   }
 
+  #[test]
+  fn test_sticky_constraints_percentages_use_physical_axes_in_vertical_writing_mode() {
+    let mut style = default_style();
+    style.position = Position::Sticky;
+    style.writing_mode = crate::style::types::WritingMode::VerticalRl;
+    style.top = LengthOrAuto::percent(10.0);
+    style.left = LengthOrAuto::percent(10.0);
+
+    let cb = create_containing_block(800.0, 600.0);
+    let constraints = StickyConstraints::from_style(&style, &cb, &FontContext::new());
+
+    // Percentages for physical inset properties resolve against physical axes
+    // (CSS 2.1 §10.5/10.6), independent of writing mode.
+    assert_eq!(constraints.top, Some(60.0)); // 10% of 600 (height)
+    assert_eq!(constraints.left, Some(80.0)); // 10% of 800 (width)
+  }
+
   // ========== Relative positioning tests ==========
 
   #[test]
