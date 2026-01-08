@@ -43,7 +43,9 @@ pub enum ParsedDefinition {
   /// A `callback Foo = ...;` definition.
   Callback(ParsedCallback),
   /// Unrecognized/unsupported top-level definition. Stored so callers can decide whether to warn.
-  Other { raw: String },
+  Other {
+    raw: String,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,18 +113,20 @@ pub struct ParsedMember {
   pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WebIdlSourceFormat {
-  Bikeshed,
-  WhatwgHtml,
-}
-
-/// Extract WebIDL blocks from a spec source, based on the expected source format.
-pub fn extract_webidl_blocks(source: &str, format: WebIdlSourceFormat) -> Vec<String> {
-  match format {
-    WebIdlSourceFormat::Bikeshed => extract_webidl_blocks_from_bikeshed(source),
-    WebIdlSourceFormat::WhatwgHtml => extract_webidl_blocks_from_whatwg_html(source),
-  }
+/// Extract WebIDL blocks from a spec source file.
+///
+/// Supports:
+/// - Bikeshed sources: `<pre class=idl> ... </pre>`
+/// - WHATWG HTML sources: `<code class=idl> ... </code>` (typically nested in `<pre>`)
+///
+/// Returned blocks are plain WebIDL text with basic HTML entities decoded (`&lt;`, `&gt;`, `&amp;`,
+/// `&quot;`, `&#39;`, `&nbsp;`). For HTML `<code class=idl>` blocks, inline HTML tags (e.g. `<span>`,
+/// `<dfn>`, `<var>`) are stripped while preserving inner text.
+pub fn extract_webidl_blocks(source: &str) -> Vec<String> {
+  let mut out = Vec::new();
+  out.extend(extract_webidl_blocks_from_bikeshed(source));
+  out.extend(extract_webidl_blocks_from_whatwg_html(source));
+  out
 }
 
 /// Extract WebIDL `<pre class=idl> ... </pre>` blocks from a Bikeshed source file (`*.bs`).
@@ -137,7 +141,8 @@ pub fn extract_webidl_blocks_from_bikeshed(source: &str) -> Vec<String> {
     if !in_idl {
       if let Some(idx) = line.find("<pre") {
         let tag = &line[idx..];
-        if tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\"") {
+        if tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\"")
+        {
           // Everything after the first '>' is IDL content (some blocks place it on the same line).
           //
           // Bikeshed sources occasionally omit the closing `>` when the IDL begins immediately
@@ -194,6 +199,18 @@ pub fn extract_webidl_blocks_from_whatwg_html(source: &str) -> Vec<String> {
 
   while let Some(rel_start) = source[i..].find("<code") {
     let start = i + rel_start;
+
+    // Avoid matching tags like `<codec>`.
+    let after_name = start + "<code".len();
+    if source
+      .get(after_name..)
+      .and_then(|s| s.chars().next())
+      .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+      i = after_name;
+      continue;
+    }
+
     // Skip closing tags.
     if source[start..].starts_with("</code") {
       i = start + "</code".len();
@@ -345,7 +362,12 @@ fn parse_definition(stmt: &str) -> Option<ParsedDefinition> {
   })
 }
 
-fn parse_interface(header_and_body: &str, partial: bool, callback: bool, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedDefinition> {
+fn parse_interface(
+  header_and_body: &str,
+  partial: bool,
+  callback: bool,
+  ext_attrs: Vec<ExtendedAttribute>,
+) -> Option<ParsedDefinition> {
   let (header, body) = extract_curly_body(header_and_body)?;
 
   let (name, inherits) = parse_name_and_inherits(header)?;
@@ -361,7 +383,11 @@ fn parse_interface(header_and_body: &str, partial: bool, callback: bool, ext_att
   }))
 }
 
-fn parse_interface_mixin(header_and_body: &str, partial: bool, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedDefinition> {
+fn parse_interface_mixin(
+  header_and_body: &str,
+  partial: bool,
+  ext_attrs: Vec<ExtendedAttribute>,
+) -> Option<ParsedDefinition> {
   let (header, body) = extract_curly_body(header_and_body)?;
   let (name, _inherits) = parse_name_and_inherits(header)?;
   let members = parse_members(body);
@@ -373,7 +399,11 @@ fn parse_interface_mixin(header_and_body: &str, partial: bool, ext_attrs: Vec<Ex
   }))
 }
 
-fn parse_dictionary(header_and_body: &str, partial: bool, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedDefinition> {
+fn parse_dictionary(
+  header_and_body: &str,
+  partial: bool,
+  ext_attrs: Vec<ExtendedAttribute>,
+) -> Option<ParsedDefinition> {
   let (header, body) = extract_curly_body(header_and_body)?;
   let (name, inherits) = parse_name_and_inherits(header)?;
   let members = parse_members(body);
@@ -386,7 +416,10 @@ fn parse_dictionary(header_and_body: &str, partial: bool, ext_attrs: Vec<Extende
   }))
 }
 
-fn parse_enum(header_and_body: &str, ext_attrs: Vec<ExtendedAttribute>) -> Option<ParsedDefinition> {
+fn parse_enum(
+  header_and_body: &str,
+  ext_attrs: Vec<ExtendedAttribute>,
+) -> Option<ParsedDefinition> {
   let (header, body) = extract_curly_body(header_and_body)?;
   let (name, _inherits) = parse_name_and_inherits(header)?;
   let values = parse_enum_values(body);
@@ -1190,7 +1223,10 @@ fn extract_member_name(raw: &str) -> Option<String> {
   }
 
   // Attributes: take the last identifier (e.g. `readonly attribute DOMString type` → `type`).
-  if raw.contains(" attribute ") || raw.starts_with("attribute ") || raw.starts_with("readonly attribute ") {
+  if raw.contains(" attribute ")
+    || raw.starts_with("attribute ")
+    || raw.starts_with("readonly attribute ")
+  {
     return split_trailing_identifier(raw).map(|(name, _)| name.to_string());
   }
 

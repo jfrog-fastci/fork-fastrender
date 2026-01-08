@@ -1,9 +1,7 @@
 use std::path::Path;
 
-use xtask::webidl::{
-  extract_webidl_blocks_from_bikeshed, extract_webidl_blocks_from_whatwg_html, parse_webidl,
-};
 use xtask::webidl::resolve::{resolve_webidl_world, ExposureTarget};
+use xtask::webidl::{extract_webidl_blocks, parse_webidl};
 
 #[test]
 fn merges_partials_and_includes_with_deterministic_ordering() {
@@ -63,11 +61,14 @@ fn smoke_resolve_dom_url_fetch() {
   for (rel, label) in inputs {
     let path = repo_root.join(rel);
     if !path.exists() {
-      eprintln!("skipping WebIDL smoke test: missing {label} submodule at {}", path.display());
+      eprintln!(
+        "skipping WebIDL smoke test: missing {label} submodule at {}",
+        path.display()
+      );
       return;
     }
     let src = std::fs::read_to_string(&path).expect("read spec source");
-    for block in extract_webidl_blocks_from_bikeshed(&src) {
+    for block in extract_webidl_blocks(&src) {
       combined_idl.push_str(&block);
       combined_idl.push('\n');
     }
@@ -98,7 +99,7 @@ fn smoke_resolve_whatwg_html() {
 
   let src = std::fs::read_to_string(&path).expect("read spec source");
   let mut combined_idl = String::new();
-  for block in extract_webidl_blocks_from_whatwg_html(&src) {
+  for block in extract_webidl_blocks(&src) {
     combined_idl.push_str(&block);
     combined_idl.push('\n');
   }

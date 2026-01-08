@@ -1,5 +1,5 @@
 use xtask::webidl::{
-  extract_webidl_blocks, extract_webidl_blocks_from_bikeshed, WebIdlSourceFormat,
+  extract_webidl_blocks, extract_webidl_blocks_from_bikeshed, extract_webidl_blocks_from_whatwg_html,
 };
 
 #[test]
@@ -25,7 +25,7 @@ interface Response {
 #[test]
 fn whatwg_html_strips_inline_markup_in_idl_blocks() {
   let src = r#"<pre><code class="idl">interface <dfn>Foo</dfn> { attribute <span>DOMString</span> <span>bar</span>; };</code></pre>"#;
-  let blocks = extract_webidl_blocks(src, WebIdlSourceFormat::WhatwgHtml);
+  let blocks = extract_webidl_blocks_from_whatwg_html(src);
   assert_eq!(blocks.len(), 1);
   assert!(
     blocks[0].contains("interface Foo { attribute DOMString bar; };"),
@@ -45,7 +45,7 @@ fn whatwg_html_handles_nested_code_tags_in_idl_blocks() {
     " static <code>Document</code> <span>parse</span>();",
     "};</code></pre>",
   );
-  let blocks = extract_webidl_blocks(src, WebIdlSourceFormat::WhatwgHtml);
+  let blocks = extract_webidl_blocks_from_whatwg_html(src);
   assert_eq!(blocks.len(), 1);
   assert!(
     blocks[0].contains("partial interface Document"),
@@ -55,6 +55,21 @@ fn whatwg_html_handles_nested_code_tags_in_idl_blocks() {
   assert!(
     blocks[0].contains("static Document parse()"),
     "expected nested <code> tags not to terminate the block, got:\n{}",
+    blocks[0]
+  );
+}
+
+#[test]
+fn whatwg_html_extracts_timer_handler_typedef() {
+  let src = r#"
+    <pre><code class="idl extract">typedef (DOMString or <span class="t">Function</span>) <dfn typedef data-x="timer-handler">TimerHandler</dfn>;</code></pre>
+  "#;
+
+  let blocks = extract_webidl_blocks(src);
+  assert_eq!(blocks.len(), 1);
+  assert!(
+    blocks[0].contains("typedef (DOMString or Function) TimerHandler;"),
+    "expected stripped typedef, got:\n{}",
     blocks[0]
   );
 }

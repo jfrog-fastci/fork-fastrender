@@ -4,7 +4,6 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 use xtask::webidl::resolve::ResolvedWebIdlWorld;
-use xtask::webidl::WebIdlSourceFormat;
 
 #[derive(Args, Debug)]
 pub struct WebIdlCodegenArgs {
@@ -38,11 +37,11 @@ pub fn run_webidl_codegen(args: WebIdlCodegenArgs) -> Result<()> {
     .with_context(|| format!("read HTML spec source {}", html_source.display()))?;
 
   let mut idl = String::new();
-  for block in xtask::webidl::extract_webidl_blocks(&dom_text, WebIdlSourceFormat::Bikeshed) {
+  for block in xtask::webidl::extract_webidl_blocks(&dom_text) {
     idl.push_str(&block);
     idl.push_str("\n\n");
   }
-  for block in xtask::webidl::extract_webidl_blocks(&html_text, WebIdlSourceFormat::WhatwgHtml) {
+  for block in xtask::webidl::extract_webidl_blocks(&html_text) {
     idl.push_str(&block);
     idl.push_str("\n\n");
   }
