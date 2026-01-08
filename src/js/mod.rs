@@ -5,10 +5,15 @@
 //! incrementally on top of these primitives.
 
 pub mod dom_scripts;
+pub mod clock;
 pub mod event_loop;
 
 pub use dom_scripts::extract_script_elements;
-pub use event_loop::{EventLoop, RunLimits, Task, TaskSource};
+pub use clock::{Clock, RealClock, VirtualClock};
+pub use event_loop::{
+  EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, Task, TaskSource,
+  TimerId,
+};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
