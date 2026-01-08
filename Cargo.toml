@@ -15,6 +15,14 @@ default = ["preserve3d_warp"]
 box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
+browser_ui = [
+  "dep:winit",
+  "dep:wgpu",
+  "dep:egui",
+  "dep:egui-winit",
+  "dep:egui-wgpu",
+  "dep:pollster",
+]
 
 [dependencies]
 base64 = "0.22"
@@ -83,6 +91,17 @@ read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
 
+# Optional desktop UI stack (winit + wgpu + egui) used by `src/bin/browser.rs`.
+# Kept behind a feature gate so core renderer builds stay lean.
+winit = { version = "0.28", default-features = false, features = ["x11"], optional = true }
+wgpu = { version = "0.17", optional = true }
+egui = { version = "0.23", optional = true }
+# Disable `egui-winit` default features to avoid pulling in Wayland/clipboard
+# stacks that may require system packages on Linux CI.
+egui-winit = { version = "0.23", default-features = false, features = ["x11"], optional = true }
+egui-wgpu = { version = "0.23", optional = true }
+pollster = { version = "0.3", optional = true }
+
 [dev-dependencies]
 criterion = "0.5"
 filetime = "0.2"
@@ -115,6 +134,12 @@ path = "tools/bench_compare.rs"
 [[bin]]
 name = "render_fixtures"
 path = "src/bin/render_fixtures.rs"
+test = false
+
+[[bin]]
+name = "browser"
+path = "src/bin/browser.rs"
+required-features = ["browser_ui"]
 test = false
 
 [[bench]]

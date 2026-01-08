@@ -34,6 +34,13 @@ Add a new binary target (name TBD, e.g. `browser`):
 
 It owns the OS window + event loop and renders UI + page content each frame.
 
+Note: keep UI dependencies behind a feature gate so the core renderer stays lean.
+Run it with:
+
+```bash
+cargo run --features browser_ui --bin browser
+```
+
 ### 2) UI framework choice
 
 Prefer a UI stack that is:
