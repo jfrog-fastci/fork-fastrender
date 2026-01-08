@@ -125,7 +125,7 @@ fn get_sizes_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
 }
 
 fn normalize_mime_type(value: &str) -> Option<String> {
-  let base = value.split(';').next().unwrap_or("").trim();
+  let base = trim_ascii_whitespace(value.split(';').next().unwrap_or(""));
   if base.is_empty() {
     None
   } else {
@@ -960,6 +960,30 @@ mod tests {
       .unwrap()
       .to_string();
     assert_eq!(out.urls, vec![expected]);
+  }
+
+  #[test]
+  fn discover_image_prefetch_urls_does_not_trim_non_ascii_whitespace_in_type_attr() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      r#"
+      <picture>
+        <source type="{nbsp}image/png" srcset="bad.png 1x">
+        <source type="image/png" srcset="good.png 1x">
+        <img src="fallback.jpg">
+      </picture>
+      "#
+    );
+    let dom = parse_html(&html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_urls(&dom, ctx, ImagePrefetchLimits::default());
+
+    assert_eq!(
+      out.urls[0],
+      Url::parse("https://example.com/").unwrap().join("good.png").unwrap().to_string()
+    );
   }
 
   #[test]
