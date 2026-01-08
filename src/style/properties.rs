@@ -14042,13 +14042,16 @@ fn parse_border_image_repeat(
   value: &PropertyValue,
 ) -> Option<(BorderImageRepeat, BorderImageRepeat)> {
   let tokens: Vec<String> = match value {
-    PropertyValue::Multiple(v) => v
-      .iter()
-      .filter_map(|p| match p {
-        PropertyValue::Keyword(k) => Some(k.clone()),
-        _ => None,
-      })
-      .collect(),
+    PropertyValue::Multiple(v) => {
+      let mut out = Vec::with_capacity(v.len());
+      for token in v {
+        match token {
+          PropertyValue::Keyword(k) => out.push(k.clone()),
+          _ => return None,
+        }
+      }
+      out
+    }
     PropertyValue::Keyword(kw) => kw.split_whitespace().map(|s| s.to_string()).collect(),
     _ => Vec::new(),
   };

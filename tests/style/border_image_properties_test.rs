@@ -238,6 +238,24 @@ fn border_image_repeat_rejects_too_many_keywords() {
 }
 
 #[test]
+fn border_image_repeat_rejects_non_keywords() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(&mut styles, &decl("border-image-repeat", "round"), &parent, 16.0, 16.0);
+  let expected = styles.border_image.repeat;
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-repeat", "stretch 10px"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image.repeat, expected);
+}
+
+#[test]
 fn border_image_shorthand_rejects_too_many_repeat_keywords() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
