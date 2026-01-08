@@ -12402,11 +12402,14 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
     return Ok(());
   }
   let radius = radius as usize;
-  let len = width * height;
+  let len = width
+    .checked_mul(height)
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("drop shadow spread: buffer size overflow ({width}x{height})"),
+    })?;
 
-  let src_pixels = pixmap.pixels();
   let mut base_ratio = (0.0, 0.0, 0.0);
-  for px in src_pixels.iter() {
+  for px in pixmap.pixels().iter() {
     let alpha = px.alpha();
     if alpha > 0 {
       let a = alpha as f32;
@@ -12420,67 +12423,87 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
   }
 
   let mut scratch = DROP_SHADOW_SPREAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
-  scratch.alpha0.resize(len, 0);
-  scratch.alpha1.resize(len, 0);
+  let result = (|| -> RenderResult<()> {
+    scratch
+      .alpha0
+      .try_reserve_exact(len.saturating_sub(scratch.alpha0.len()))
+      .map_err(|err| RenderError::InvalidParameters {
+        message: format!("drop shadow spread: alpha scratch allocation failed: {err}"),
+      })?;
+    scratch.alpha0.resize(len, 0);
 
-  for (src, dst) in src_pixels.iter().zip(scratch.alpha0.iter_mut()) {
-    *dst = src.alpha();
-  }
+    scratch
+      .alpha1
+      .try_reserve_exact(len.saturating_sub(scratch.alpha1.len()))
+      .map_err(|err| RenderError::InvalidParameters {
+        message: format!("drop shadow spread: alpha scratch allocation failed: {err}"),
+      })?;
+    scratch.alpha1.resize(len, 0);
 
-  apply_spread_alpha_horizontal(
-    &scratch.alpha0,
-    &mut scratch.alpha1,
-    width,
-    height,
-    radius,
-    expand,
-  )?;
-
-  apply_spread_alpha_vertical(
-    &scratch.alpha1,
-    &mut scratch.alpha0,
-    width,
-    height,
-    radius,
-    expand,
-  )?;
-
-  // Apply the updated alpha back onto the pixmap while preserving the per-pixel premultiplied
-  // color ratios used by the legacy spread implementation.
-  let dst_pixels = pixmap.pixels_mut();
-  for (idx, px) in dst_pixels.iter_mut().enumerate() {
-    if idx % LEGACY_FILTER_DEADLINE_STRIDE == 0 {
-      check_active(RenderStage::Paint)?;
-    }
-    let agg_alpha = scratch.alpha0[idx];
-    if agg_alpha == 0 {
-      *px = PremultipliedColorU8::TRANSPARENT;
-      continue;
+    {
+      let src_pixels = pixmap.pixels();
+      for (src, dst) in src_pixels.iter().zip(scratch.alpha0.iter_mut()) {
+        *dst = src.alpha();
+      }
     }
 
-    let orig = *px;
-    let orig_alpha = orig.alpha();
-    if orig_alpha > 0 {
-      let factor = (agg_alpha as f32) / (orig_alpha as f32);
-      let r = (orig.red() as f32 * factor).round().clamp(0.0, 255.0) as u8;
-      let g = (orig.green() as f32 * factor).round().clamp(0.0, 255.0) as u8;
-      let b = (orig.blue() as f32 * factor).round().clamp(0.0, 255.0) as u8;
-      *px = PremultipliedColorU8::from_rgba(r, g, b, agg_alpha)
-        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-    } else {
-      let r = (base_ratio.0 * agg_alpha as f32).round().clamp(0.0, 255.0) as u8;
-      let g = (base_ratio.1 * agg_alpha as f32).round().clamp(0.0, 255.0) as u8;
-      let b = (base_ratio.2 * agg_alpha as f32).round().clamp(0.0, 255.0) as u8;
-      *px = PremultipliedColorU8::from_rgba(r, g, b, agg_alpha)
-        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    apply_spread_alpha_horizontal(
+      &scratch.alpha0,
+      &mut scratch.alpha1,
+      width,
+      height,
+      radius,
+      expand,
+    )?;
+
+    apply_spread_alpha_vertical(
+      &scratch.alpha1,
+      &mut scratch.alpha0,
+      width,
+      height,
+      radius,
+      expand,
+    )?;
+
+    // Apply the updated alpha back onto the pixmap while preserving the per-pixel premultiplied
+    // color ratios used by the legacy spread implementation.
+    let dst_pixels = pixmap.pixels_mut();
+    for (idx, px) in dst_pixels.iter_mut().enumerate() {
+      if idx % LEGACY_FILTER_DEADLINE_STRIDE == 0 {
+        check_active(RenderStage::Paint)?;
+      }
+      let agg_alpha = scratch.alpha0[idx];
+      if agg_alpha == 0 {
+        *px = PremultipliedColorU8::TRANSPARENT;
+        continue;
+      }
+
+      let orig = *px;
+      let orig_alpha = orig.alpha();
+      if orig_alpha > 0 {
+        let factor = (agg_alpha as f32) / (orig_alpha as f32);
+        let r = (orig.red() as f32 * factor).round().clamp(0.0, 255.0) as u8;
+        let g = (orig.green() as f32 * factor).round().clamp(0.0, 255.0) as u8;
+        let b = (orig.blue() as f32 * factor).round().clamp(0.0, 255.0) as u8;
+        *px = PremultipliedColorU8::from_rgba(r, g, b, agg_alpha)
+          .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+      } else {
+        let r = (base_ratio.0 * agg_alpha as f32).round().clamp(0.0, 255.0) as u8;
+        let g = (base_ratio.1 * agg_alpha as f32).round().clamp(0.0, 255.0) as u8;
+        let b = (base_ratio.2 * agg_alpha as f32).round().clamp(0.0, 255.0) as u8;
+        *px = PremultipliedColorU8::from_rgba(r, g, b, agg_alpha)
+          .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+      }
     }
-  }
+
+    Ok(())
+  })();
 
   DROP_SHADOW_SPREAD_SCRATCH.with(|cell| {
     *cell.borrow_mut() = scratch;
   });
 
-  Ok(())
+  result
 }
 
 fn apply_spread_alpha_horizontal(
@@ -12497,10 +12520,35 @@ fn apply_spread_alpha_horizontal(
     dst.copy_from_slice(src);
     return Ok(());
   }
-  let window_size = radius * 2 + 1;
-  let extended_len = width + radius * 2;
+  let window_size = radius
+    .checked_mul(2)
+    .and_then(|size| size.checked_add(1))
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("drop shadow spread: window size overflow (radius={radius})"),
+    })?;
+  let extended_len = width
+    .checked_add(
+      radius
+        .checked_mul(2)
+        .ok_or(RenderError::InvalidParameters {
+          message: format!("drop shadow spread: buffer size overflow (radius={radius})"),
+        })?,
+    )
+    .ok_or(RenderError::InvalidParameters {
+      message: format!(
+        "drop shadow spread: buffer size overflow (width={width}, radius={radius})"
+      ),
+    })?;
 
-  let mut queue: VecDeque<(usize, u8)> = VecDeque::with_capacity(window_size);
+  let queue_capacity = window_size.checked_add(1).ok_or(RenderError::InvalidParameters {
+    message: format!("drop shadow spread: window size overflow (radius={radius})"),
+  })?;
+  let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
+  queue
+    .try_reserve_exact(queue_capacity)
+    .map_err(|err| RenderError::InvalidParameters {
+      message: format!("drop shadow spread: window buffer allocation failed: {err}"),
+    })?;
   let mut checked = 0usize;
   for y in 0..height {
     queue.clear();
@@ -12570,10 +12618,35 @@ fn apply_spread_alpha_vertical(
     dst.copy_from_slice(src);
     return Ok(());
   }
-  let window_size = radius * 2 + 1;
-  let extended_len = height + radius * 2;
+  let window_size = radius
+    .checked_mul(2)
+    .and_then(|size| size.checked_add(1))
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("drop shadow spread: window size overflow (radius={radius})"),
+    })?;
+  let extended_len = height
+    .checked_add(
+      radius
+        .checked_mul(2)
+        .ok_or(RenderError::InvalidParameters {
+          message: format!("drop shadow spread: buffer size overflow (radius={radius})"),
+        })?,
+    )
+    .ok_or(RenderError::InvalidParameters {
+      message: format!(
+        "drop shadow spread: buffer size overflow (height={height}, radius={radius})"
+      ),
+    })?;
 
-  let mut queue: VecDeque<(usize, u8)> = VecDeque::with_capacity(window_size);
+  let queue_capacity = window_size.checked_add(1).ok_or(RenderError::InvalidParameters {
+    message: format!("drop shadow spread: window size overflow (radius={radius})"),
+  })?;
+  let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
+  queue
+    .try_reserve_exact(queue_capacity)
+    .map_err(|err| RenderError::InvalidParameters {
+      message: format!("drop shadow spread: window buffer allocation failed: {err}"),
+    })?;
   let mut checked = 0usize;
   for x in 0..width {
     queue.clear();
