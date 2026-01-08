@@ -365,6 +365,24 @@ fn will_change_webkit_mask_image_establishes_backdrop_root() {
 }
 
 #[test]
+fn will_change_webkit_mask_establishes_backdrop_root() {
+  // `-webkit-mask` is a legacy alias for the `mask` shorthand; treat it equivalently for Backdrop
+  // Root semantics.
+  let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-mask");
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_webkit_clip_path_establishes_backdrop_root() {
+  // `-webkit-clip-path` aliases `clip-path`; will-change hints should behave equivalently for
+  // Backdrop Root semantics.
+  let pixmap = render_backdrop_invert_with_parent_will_change("-webkit-clip-path");
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
 fn will_change_multiple_properties_establishes_backdrop_root_if_any_hint_does() {
   // `will-change` accepts a comma-separated list. If any hinted property is a Backdrop Root trigger,
   // the element must establish a Backdrop Root immediately.

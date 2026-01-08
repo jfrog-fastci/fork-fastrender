@@ -10181,6 +10181,9 @@ impl DisplayListRenderer {
           rect: bounds,
           transform: clip_transform,
         });
+
+        // Non-isolated group surfaces may be lazily initialized from backdrop once a descendant
+        // `mix-blend-mode` operation needs it (see `maybe_init_non_isolated_group_backdrop`).
         let init_from_backdrop = false;
         self.stacking_layers.push(StackingRecord {
           establishes_backdrop_root: is_backdrop_root,
@@ -10215,7 +10218,7 @@ impl DisplayListRenderer {
             is_backdrop_root,
             needs_layer,
             item.mix_blend_mode,
-            false,
+            init_from_backdrop,
             canvas_layer_depth_before,
             depth_after,
             stacking_depth_before,
