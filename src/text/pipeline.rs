@@ -75,10 +75,10 @@ use crate::text::bidi_controls::is_bidi_format_char;
 use crate::text::color_fonts::select_cpal_palette;
 use crate::text::emoji;
 use crate::text::emoji_presentation::font_is_emoji_font;
+use crate::text::font_db::compute_font_size_adjusted_size;
 use crate::text::font_db::FontDatabase;
 use crate::text::font_db::FontStretch as DbFontStretch;
 use crate::text::font_db::FontStyle;
-use crate::text::font_db::compute_font_size_adjusted_size;
 use crate::text::font_db::LoadedFont;
 use crate::text::font_fallback::families_signature;
 use crate::text::font_fallback::ClusterFallbackCacheKey;
@@ -2494,19 +2494,49 @@ fn font_metric_ratio(font: &LoadedFont, metric: FontSizeAdjustMetric) -> Option<
   font.font_size_adjust_metric_ratio(metric)
 }
 
+#[inline]
+fn is_ascii_whitespace_html_css(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
+/// Script fallback selection only distinguishes Japanese vs Korean vs everything else.
+///
+/// This helper uses HTML/CSS ASCII whitespace semantics so NBSP is not treated as ignorable.
+#[inline]
+fn language_signature_for_script_fallback(language: &str) -> u64 {
+  let primary = trim_ascii_whitespace_html_css(language)
+    .split(|ch| ch == '-' || ch == '_')
+    .next()
+    .unwrap_or_default();
+  if primary.eq_ignore_ascii_case("ja") {
+    1
+  } else if primary.eq_ignore_ascii_case("ko") {
+    2
+  } else {
+    0
+  }
+}
+
 fn resolve_opentype_language(style: &ComputedStyle, font: &LoadedFont) -> Option<HbLanguage> {
-  let tag = match &style.font_language_override {
-    FontLanguageOverride::Override(tag) => tag.as_str(),
-    FontLanguageOverride::Normal => font
-      .face_settings
-      .font_language_override
-      .as_deref()
-      .unwrap_or(style.language.as_ref()),
+  let (tag, opentype_lang_tag) = match &style.font_language_override {
+    FontLanguageOverride::Override(tag) => (tag.as_str(), true),
+    FontLanguageOverride::Normal => match font.face_settings.font_language_override.as_deref() {
+      Some(tag) => (tag, true),
+      None => (style.language.as_ref(), false),
+    },
   };
-  let tag = tag.trim();
-  (!tag.is_empty())
-    .then(|| HbLanguage::from_str(tag).ok())
-    .flatten()
+  let tag = trim_ascii_whitespace_html_css(tag);
+  if tag.is_empty() {
+    return None;
+  }
+  if opentype_lang_tag && (tag.len() > 4 || !tag.bytes().all(|b| b.is_ascii_alphabetic())) {
+    return None;
+  }
+  HbLanguage::from_str(tag).ok()
 }
 
 fn merge_font_face_features(style_features: &Arc<[Feature]>, font: &LoadedFont) -> Arc<[Feature]> {
@@ -2570,7 +2600,12 @@ pub fn compute_adjusted_font_size(
   font: &LoadedFont,
   preferred_aspect: Option<f32>,
 ) -> f32 {
-  compute_font_size_adjusted_size(style.font_size, style.font_size_adjust, font, preferred_aspect)
+  compute_font_size_adjusted_size(
+    style.font_size,
+    style.font_size_adjust,
+    font,
+    preferred_aspect,
+  )
 }
 
 fn is_non_rendering_for_coverage(ch: char) -> bool {
@@ -2954,22 +2989,7 @@ fn assign_fonts_internal(
     FontLanguageOverride::Normal => style.language.as_ref(),
     FontLanguageOverride::Override(tag) => tag.as_str(),
   };
-  let language_signature = {
-    let primary = language
-      .trim()
-      .split(|ch| ch == '-' || ch == '_')
-      .next()
-      .unwrap_or_default();
-    // Script fallback selection only distinguishes Japanese vs Korean vs everything else.
-    // Map everything else (including empty language) to the same bucket to maximize cache reuse.
-    if primary.eq_ignore_ascii_case("ja") {
-      1
-    } else if primary.eq_ignore_ascii_case("ko") {
-      2
-    } else {
-      0
-    }
-  };
+  let language_signature = language_signature_for_script_fallback(language);
   let families_display =
     descriptor_stats_enabled.then(|| format_family_entries_for_sample(&families));
   let mut local_descriptors: Option<FxHashSet<FallbackCacheDescriptor>> =
@@ -4045,12 +4065,15 @@ fn font_variant_position_synthesis(
         .iter()
         .zip(feature_infos)
         .any(|(base, feature)| base.glyph_id != feature.glyph_id)
-      || base_positions.iter().zip(feature_positions).any(|(base, feature)| {
-        base.x_advance != feature.x_advance
-          || base.y_advance != feature.y_advance
-          || base.x_offset != feature.x_offset
-          || base.y_offset != feature.y_offset
-      });
+      || base_positions
+        .iter()
+        .zip(feature_positions)
+        .any(|(base, feature)| {
+          base.x_advance != feature.x_advance
+            || base.y_advance != feature.y_advance
+            || base.x_offset != feature.x_offset
+            || base.y_offset != feature.y_offset
+        });
     if !affected {
       let (scale, shift) = os2_position_metrics(font, base_font_size, position)
         .unwrap_or((SYNTHETIC_SCALE, base_font_size * fallback_shift));
@@ -5154,8 +5177,16 @@ fn map_hb_position(
   scale: f32,
   pos: &rustybuzz::GlyphPosition,
 ) -> (f32, f32, f32, f32) {
-  let mut inline_advance_raw = if vertical { pos.y_advance } else { pos.x_advance };
-  let mut cross_advance_raw = if vertical { pos.x_advance } else { pos.y_advance };
+  let mut inline_advance_raw = if vertical {
+    pos.y_advance
+  } else {
+    pos.x_advance
+  };
+  let mut cross_advance_raw = if vertical {
+    pos.x_advance
+  } else {
+    pos.y_advance
+  };
 
   // Some fonts (notably bitmap color fonts) do not provide vertical advances via HarfBuzz and
   // instead populate `x_advance` even when shaping in vertical mode. When we fall back to using
@@ -6245,11 +6276,13 @@ impl ShapingPipeline {
       if let Some(flag) = current_small {
         if flag != is_small {
           let Some(segment_original) = text.get(segment_start..idx) else {
-            return Err(TextError::ShapingFailed {
-              text: text.to_string(),
-              reason: "Invalid UTF-8 boundary for small-caps segment".to_string(),
-            }
-            .into());
+            return Err(
+              TextError::ShapingFailed {
+                text: text.to_string(),
+                reason: "Invalid UTF-8 boundary for small-caps segment".to_string(),
+              }
+              .into(),
+            );
           };
           self.flush_small_caps_segment(
             &mut runs,
@@ -6288,11 +6321,13 @@ impl ShapingPipeline {
 
     if !buffer.is_empty() {
       let Some(segment_original) = text.get(segment_start..) else {
-        return Err(TextError::ShapingFailed {
-          text: text.to_string(),
-          reason: "Invalid UTF-8 boundary for small-caps segment".to_string(),
-        }
-        .into());
+        return Err(
+          TextError::ShapingFailed {
+            text: text.to_string(),
+            reason: "Invalid UTF-8 boundary for small-caps segment".to_string(),
+          }
+          .into(),
+        );
       };
       self.flush_small_caps_segment(
         &mut runs,
@@ -6349,7 +6384,10 @@ impl ShapingPipeline {
 
     let map_boundary = |offset: usize| -> usize {
       match mapping_with_end.binary_search_by_key(&offset, |(shaped, _)| *shaped) {
-        Ok(idx) => mapping_with_end.get(idx).map(|(_, orig)| *orig).unwrap_or(offset),
+        Ok(idx) => mapping_with_end
+          .get(idx)
+          .map(|(_, orig)| *orig)
+          .unwrap_or(offset),
         Err(0) => mapping_with_end.first().map(|(_, orig)| *orig).unwrap_or(0),
         Err(idx) => mapping_with_end
           .get(idx.saturating_sub(1))
@@ -6397,11 +6435,13 @@ impl ShapingPipeline {
       run.end = base_offset.saturating_add(orig_end).min(segment_end);
 
       let Some(run_text) = original_text.get(orig_start..orig_end) else {
-        return Err(TextError::ShapingFailed {
-          text: original_text.to_string(),
-          reason: "Invalid UTF-8 boundary for synthetic small-caps segment".to_string(),
-        }
-        .into());
+        return Err(
+          TextError::ShapingFailed {
+            text: original_text.to_string(),
+            reason: "Invalid UTF-8 boundary for synthetic small-caps segment".to_string(),
+          }
+          .into(),
+        );
       };
       run.text = run_text.to_string();
 
@@ -6633,8 +6673,7 @@ mod tests {
 
   fn dejavu_sans_fixture_context() -> FontContext {
     let mut db = FontDatabase::empty();
-    db
-      .load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
+    db.load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
       .expect("fixture font should load");
     db.refresh_generic_fallbacks();
     FontContext::with_database(Arc::new(db))
@@ -8152,9 +8191,7 @@ mod tests {
       .expect("shape with combining mark");
 
     assert!(
-      shaped
-        .iter()
-        .all(|run| (run.font_size - 16.0).abs() < 0.1),
+      shaped.iter().all(|run| (run.font_size - 16.0).abs() < 0.1),
       "synthetic small-caps should keep combining marks with the scaled segment"
     );
   }
@@ -8185,7 +8222,9 @@ mod tests {
     style.font_size = 20.0;
 
     let ctx = dejavu_sans_fixture_context();
-    let runs = pipeline.shape("x", &style, &ctx).expect("shape superscript");
+    let runs = pipeline
+      .shape("x", &style, &ctx)
+      .expect("shape superscript");
     assert!(!runs.is_empty(), "expected at least one shaped run");
     let run = &runs[0];
 
@@ -8209,7 +8248,9 @@ mod tests {
     style.font_synthesis.position = false;
 
     let ctx = dejavu_sans_fixture_context();
-    let runs = pipeline.shape("x", &style, &ctx).expect("shape superscript");
+    let runs = pipeline
+      .shape("x", &style, &ctx)
+      .expect("shape superscript");
     assert!(!runs.is_empty(), "expected at least one shaped run");
     let run = &runs[0];
 
@@ -8411,6 +8452,28 @@ mod tests {
     assert!(runs
       .iter()
       .all(|r| r.language.as_ref().map(|l| l.as_str()) == Some("srb")));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_font_language_override_does_not_trim_nbsp() {
+    let ctx = FontContext::new();
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["serif".to_string()].into();
+    style.font_language_override =
+      crate::style::types::FontLanguageOverride::Override(format!("\u{00A0}SRB\u{00A0}"));
+
+    let runs = ShapingPipeline::new()
+      .shape("text", &style, &ctx)
+      .expect("shape");
+    assert!(runs.iter().all(|r| r.language.is_none()));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_language_signature_for_script_fallback_does_not_trim_nbsp() {
+    assert_eq!(language_signature_for_script_fallback("ja"), 1);
+    assert_eq!(language_signature_for_script_fallback("ko"), 2);
+    assert_eq!(language_signature_for_script_fallback("\u{00A0}ja"), 0);
+    assert_eq!(language_signature_for_script_fallback("ko\u{00A0}"), 0);
   }
 
   #[test]

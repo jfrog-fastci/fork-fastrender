@@ -122,7 +122,7 @@ pub fn vary_partitioned_resource_key(url: &str, vary_key: &str) -> String {
 
 fn parse_vary_partitioned_resource_key(key: &str) -> Option<(&str, &str)> {
   let (base, rest) = key.split_once(BUNDLE_VARY_KEY_SENTINEL)?;
-  let vary_key = rest.trim();
+  let vary_key = super::trim_http_whitespace(rest);
   if base.is_empty() || vary_key.is_empty() {
     return None;
   }
@@ -382,9 +382,13 @@ impl Bundle {
           "Bundle entry is too large to load on this platform: {path} ({size} bytes)"
         ))
       })?;
-      let data = read_all_with_limit(&mut entry, max_bytes, "bundle archive entry").map_err(
-        |err| Error::Io(io::Error::new(err.kind(), format!("Failed to read {path}: {err}"))),
-      )?;
+      let data =
+        read_all_with_limit(&mut entry, max_bytes, "bundle archive entry").map_err(|err| {
+          Error::Io(io::Error::new(
+            err.kind(),
+            format!("Failed to read {path}: {err}"),
+          ))
+        })?;
       files.insert(path, data);
     }
 
@@ -454,18 +458,16 @@ impl Bundle {
       let resource = BundledResource::from_parts(info.clone(), data);
 
       if let Some((base_url, vary_key)) = parse_vary_partitioned_resource_key(original_url) {
-        let canonical = info
-          .final_url
-          .as_deref()
-          .unwrap_or(base_url)
-          .to_string();
+        let canonical = info.final_url.as_deref().unwrap_or(base_url).to_string();
         let bucket = vary_canonical
           .entry(canonical.clone())
           .or_insert_with(|| BundledVaryBucket::new(canonical.clone(), info.vary.clone()));
         if bucket.vary.is_none() {
           bucket.vary = info.vary.clone();
         }
-        bucket.variants.insert(vary_key.to_string(), resource.clone());
+        bucket
+          .variants
+          .insert(vary_key.to_string(), resource.clone());
         vary_aliases.push((base_url.to_string(), canonical));
         continue;
       }
@@ -614,7 +616,8 @@ impl ResourceFetcher for BundledFetcher {
       let origin_key = bundle_key_is_request_partitioned(url).then_some("bundled");
       if let Some(vary) = res.vary.as_deref() {
         if super::vary_contains_star(vary)
-          || (!super::allow_unhandled_vary_env() && !super::vary_is_cacheable(vary, kind, origin_key))
+          || (!super::allow_unhandled_vary_env()
+            && !super::vary_is_cacheable(vary, kind, origin_key))
         {
           return Err(Error::Other(format!(
             "Bundle entry has unhandled Vary and cannot be replayed safely: {url}"
@@ -846,6 +849,15 @@ mod tests {
       .expect("fetch data url");
     assert_eq!(res.bytes, b"hi");
     assert_eq!(res.content_type.as_deref(), Some("text/plain"));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_parse_vary_partitioned_resource_key_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let key = format!("https://example.com/{BUNDLE_VARY_KEY_SENTINEL}{nbsp}");
+    let (base, vary_key) = parse_vary_partitioned_resource_key(&key).expect("parse");
+    assert_eq!(base, "https://example.com/");
+    assert_eq!(vary_key, nbsp);
   }
 
   #[test]
@@ -1099,7 +1111,10 @@ mod tests {
     let css = fetcher
       .fetch("https://example.com/style.css")
       .expect("fetch css");
-    assert_eq!(css.response_referrer_policy, Some(ReferrerPolicy::NoReferrer));
+    assert_eq!(
+      css.response_referrer_policy,
+      Some(ReferrerPolicy::NoReferrer)
+    );
   }
 
   #[test]
@@ -1595,7 +1610,10 @@ mod tests {
         "1".to_string(),
       ),
       ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
-      ("FASTR_CACHE_ALLOW_VARY_UNHANDLED".to_string(), "0".to_string()),
+      (
+        "FASTR_CACHE_ALLOW_VARY_UNHANDLED".to_string(),
+        "0".to_string(),
+      ),
     ])));
     with_thread_runtime_toggles(toggles, || {
       let err = fetcher
@@ -1924,10 +1942,10 @@ mod tests {
     let req_b =
       FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://b.test/page.html");
 
-    let vary_key_a = super::super::compute_vary_key_for_request(&http, req_a, Some("origin"))
-      .expect("vary key A");
-    let vary_key_b = super::super::compute_vary_key_for_request(&http, req_b, Some("origin"))
-      .expect("vary key B");
+    let vary_key_a =
+      super::super::compute_vary_key_for_request(&http, req_a, Some("origin")).expect("vary key A");
+    let vary_key_b =
+      super::super::compute_vary_key_for_request(&http, req_b, Some("origin")).expect("vary key B");
 
     let key_a = vary_partitioned_resource_key(url, &vary_key_a);
     let key_b = vary_partitioned_resource_key(url, &vary_key_b);

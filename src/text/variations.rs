@@ -283,12 +283,21 @@ fn case_fold(value: &str) -> String {
   out
 }
 
+#[inline]
+fn is_ascii_whitespace_html_css(ch: char) -> bool {
+  matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
 fn named_instance_coords(
   face: &Face<'_>,
   target_name: &str,
   axes: &[ttf_parser::VariationAxis],
 ) -> Option<Vec<(Tag, f32)>> {
-  let target = case_fold(target_name.trim());
+  let target = case_fold(trim_ascii_whitespace_html_css(target_name));
   if target.is_empty() {
     return None;
   }
@@ -476,5 +485,45 @@ mod tests {
     let negative = [Variation { tag, value: -0.0 }];
 
     assert_eq!(variation_hash(&positive), variation_hash(&negative));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_named_instance_coords_does_not_trim_nbsp() {
+    let data = include_bytes!("../../tests/fixtures/fonts/TestVar.ttf");
+    let face = Face::parse(data, 0).expect("parse TestVar.ttf");
+    let axes: Vec<_> = face.variation_axes().into_iter().collect();
+
+    let fvar = face
+      .raw_face()
+      .table(Tag::from_bytes(b"fvar"))
+      .expect("expected fvar table");
+    assert!(fvar.len() >= 16, "expected fvar header");
+
+    let axis_count = read_u16_be(fvar, 8).expect("axis_count") as usize;
+    let axis_size = read_u16_be(fvar, 10).expect("axis_size") as usize;
+    let instance_count = read_u16_be(fvar, 12).expect("instance_count") as usize;
+    let axes_offset = read_u16_be(fvar, 4).expect("axes_offset") as usize;
+    let instances_offset = axes_offset + axis_count * axis_size;
+    assert!(instance_count > 0, "expected at least one named instance");
+
+    let name_id = read_u16_be(fvar, instances_offset).expect("instance name id");
+    let instance_name = face
+      .names()
+      .into_iter()
+      .filter(|name| name.name_id == name_id)
+      .filter_map(|name| name.to_string())
+      .next()
+      .expect("instance name string");
+
+    assert!(
+      named_instance_coords(&face, &instance_name, axes.as_slice()).is_some(),
+      "expected instance to resolve without NBSP"
+    );
+
+    let with_nbsp = format!("\u{00A0}{instance_name}\u{00A0}");
+    assert!(
+      named_instance_coords(&face, &with_nbsp, axes.as_slice()).is_none(),
+      "NBSP should not be treated as whitespace when matching instance names"
+    );
   }
 }

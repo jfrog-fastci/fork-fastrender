@@ -705,7 +705,11 @@ fn http_normalize_referrer_url_tolerant(url: &str) -> String {
       .rsplit_once(':')
       .and_then(|(host, port)| (!host.contains(':')).then_some((host, port)))
       .unwrap_or((host_port, ""));
-    let port = if host == host_port { Some(None) } else { normalize_port(port) };
+    let port = if host == host_port {
+      Some(None)
+    } else {
+      normalize_port(port)
+    };
     if let Some(port) = port {
       let mut out = String::with_capacity(host_port.len());
       out.push_str(&host.to_ascii_lowercase());
@@ -955,7 +959,9 @@ impl FetchDestination {
 
   fn origin_and_referer(self, url: &Url) -> Option<(String, String)> {
     match self {
-      Self::Font | Self::ImageCors | Self::StyleCors => http_browser_origin_and_referer_for_url(url),
+      Self::Font | Self::ImageCors | Self::StyleCors => {
+        http_browser_origin_and_referer_for_url(url)
+      }
       _ => None,
     }
   }
@@ -1358,8 +1364,10 @@ fn http_response_allows_empty_body(
   // but we still want to treat unexpected empty bodies as suspicious to catch truncation/corrupt
   // fetches. Only accept empty bodies for stylesheet requests when the server explicitly signals
   // an empty entity with `Content-Length: 0`.
-  matches!(kind, FetchContextKind::Stylesheet | FetchContextKind::StylesheetCors)
-    && (200..300).contains(&status)
+  matches!(
+    kind,
+    FetchContextKind::Stylesheet | FetchContextKind::StylesheetCors
+  ) && (200..300).contains(&status)
     && header_content_length_is_zero(headers)
 }
 
@@ -2828,7 +2836,7 @@ pub fn ensure_stylesheet_mime_sane(resource: &FetchedResource, requested_url: &s
 /// - `status:`
 /// - `url:`
 pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
-  let trimmed = meta.trim();
+  let trimmed = trim_ascii_whitespace(meta);
   if trimmed.is_empty() {
     return CachedHtmlMetadata::default();
   }
@@ -2837,8 +2845,10 @@ pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
 
   for line in meta.lines() {
     let mut parts = line.splitn(2, ':');
-    let key = parts.next().map(|s| s.trim().to_ascii_lowercase());
-    let value = parts.next().map(|s| s.trim());
+    let key = parts
+      .next()
+      .map(|s| trim_ascii_whitespace(s).to_ascii_lowercase());
+    let value = parts.next().map(trim_ascii_whitespace);
     match (key.as_deref(), value) {
       (Some("content-type"), Some(v)) if !v.is_empty() => parsed.content_type = Some(v.to_string()),
       (Some("referrer-policy"), Some(v)) if !v.is_empty() => {
@@ -3402,39 +3412,38 @@ fn http_referer_header_value(
   // opaque-origin schemes, browsers generally omit `Referer` while still sending `Origin: null`
   // where required (e.g. CORS-mode fetches).
   let parsed_referrer_url = Url::parse(raw_referrer).ok();
-  let (referrer_origin, full_referrer, origin_only_referrer) = if let Some(referrer_url) =
-    parsed_referrer_url.as_ref()
-  {
-    if !matches!(referrer_url.scheme(), "http" | "https") {
-      return None;
-    }
-    let mut sanitized = referrer_url.clone();
-    sanitized.set_fragment(None);
-    // `Referer` must not leak credentials even when the initiating document URL contains them.
-    // This matches the Referrer Policy spec's "strip URL for use as referrer" algorithm.
-    let _ = sanitized.set_username("");
-    let _ = sanitized.set_password(None);
-    let full = sanitized.to_string();
-    let origin_only = http_browser_origin_and_referer_for_url(&sanitized)
-      .map(|(_, origin_only)| origin_only)
-      .or_else(|| Some(full.clone()));
-    (
-      DocumentOrigin::from_parsed_url(&sanitized),
-      Some(full),
-      origin_only,
-    )
-  } else {
-    let origin = http_browser_tolerant_origin_from_url(raw_referrer)?;
-    let full = raw_referrer
-      .split_once('#')
-      .map(|(before, _)| before.to_string())
-      .unwrap_or_else(|| raw_referrer.to_string());
-    let full = http_normalize_referrer_url_tolerant(&full);
-    let origin_only = http_browser_origin_and_referer_for_origin(&origin)
-      .map(|(_, origin_only)| origin_only)
-      .or_else(|| Some(full.clone()));
-    (origin, Some(full), origin_only)
-  };
+  let (referrer_origin, full_referrer, origin_only_referrer) =
+    if let Some(referrer_url) = parsed_referrer_url.as_ref() {
+      if !matches!(referrer_url.scheme(), "http" | "https") {
+        return None;
+      }
+      let mut sanitized = referrer_url.clone();
+      sanitized.set_fragment(None);
+      // `Referer` must not leak credentials even when the initiating document URL contains them.
+      // This matches the Referrer Policy spec's "strip URL for use as referrer" algorithm.
+      let _ = sanitized.set_username("");
+      let _ = sanitized.set_password(None);
+      let full = sanitized.to_string();
+      let origin_only = http_browser_origin_and_referer_for_url(&sanitized)
+        .map(|(_, origin_only)| origin_only)
+        .or_else(|| Some(full.clone()));
+      (
+        DocumentOrigin::from_parsed_url(&sanitized),
+        Some(full),
+        origin_only,
+      )
+    } else {
+      let origin = http_browser_tolerant_origin_from_url(raw_referrer)?;
+      let full = raw_referrer
+        .split_once('#')
+        .map(|(before, _)| before.to_string())
+        .unwrap_or_else(|| raw_referrer.to_string());
+      let full = http_normalize_referrer_url_tolerant(&full);
+      let origin_only = http_browser_origin_and_referer_for_origin(&origin)
+        .map(|(_, origin_only)| origin_only)
+        .or_else(|| Some(full.clone()));
+      (origin, Some(full), origin_only)
+    };
 
   let parsed_target_url = Url::parse(target_url).ok();
   let target_origin = parsed_target_url
@@ -3839,7 +3848,7 @@ impl HttpFetcher {
       .min(self.policy.request_timeout);
     Ok(Some(budget))
   }
- 
+
   /// Fetch from an HTTP/HTTPS URL
   fn fetch_http(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
     let destination: FetchDestination = kind.into();
@@ -6493,15 +6502,13 @@ impl HttpFetcher {
         if observed_len > remaining {
           return Err(policy_error(format!(
             "total bytes budget exceeded ({} > {} bytes remaining)",
-            observed_len,
-            remaining
+            observed_len, remaining
           )));
         }
       }
       return Err(policy_error(format!(
         "response too large ({} > {} bytes)",
-        observed_len,
-        limit
+        observed_len, limit
       )));
     }
     let path_str = chosen_path.to_string_lossy();
@@ -6510,8 +6517,7 @@ impl HttpFetcher {
 
     self.policy.reserve_budget(bytes.len())?;
 
-    render_control::check_root(render_stage_hint_for_context(kind, url))
-      .map_err(Error::Render)?;
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     Ok(FetchedResource::with_final_url(
       bytes,
       content_type,
@@ -6569,8 +6575,7 @@ impl HttpFetcher {
 
     self.policy.reserve_budget(bytes.len())?;
 
-    render_control::check_root(render_stage_hint_for_context(kind, url))
-      .map_err(Error::Render)?;
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     Ok(FetchedResource::with_final_url(
       bytes,
       content_type,
@@ -6606,8 +6611,7 @@ impl HttpFetcher {
       )));
     }
     self.policy.reserve_budget(len)?;
-    render_control::check_root(render_stage_hint_for_context(kind, url))
-      .map_err(Error::Render)?;
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     Ok(resource)
   }
 
@@ -6655,8 +6659,7 @@ impl ResourceFetcher for HttpFetcher {
   }
 
   fn fetch_with_context(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
-    render_control::check_root(render_stage_hint_for_context(kind, url))
-      .map_err(Error::Render)?;
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data(kind, url),
       ResourceScheme::File => self.fetch_file(kind, url),
@@ -6673,19 +6676,17 @@ impl ResourceFetcher for HttpFetcher {
     match self.policy.ensure_url_allowed(req.url)? {
       ResourceScheme::Data => self.fetch_data(kind, req.url),
       ResourceScheme::File => self.fetch_file(kind, req.url),
-      ResourceScheme::Http | ResourceScheme::Https => {
-        self.fetch_http_with_context(
-          kind,
-          req.destination,
-          req.url,
-          None,
-          None,
-          req.client_origin,
-          req.referrer_url,
-          req.referrer_policy,
-          req.credentials_mode,
-        )
-      }
+      ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_with_context(
+        kind,
+        req.destination,
+        req.url,
+        None,
+        None,
+        req.client_origin,
+        req.referrer_url,
+        req.referrer_policy,
+        req.credentials_mode,
+      ),
       ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
     }
@@ -6774,8 +6775,7 @@ impl ResourceFetcher for HttpFetcher {
       return Ok(res);
     }
 
-    render_control::check_root(render_stage_hint_for_context(kind, url))
-      .map_err(Error::Render)?;
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data_prefix(kind, url, max_bytes),
       ResourceScheme::File => self.fetch_file_prefix(kind, url, max_bytes),
@@ -6817,18 +6817,16 @@ impl ResourceFetcher for HttpFetcher {
     match self.policy.ensure_url_allowed(req.url)? {
       ResourceScheme::Data => self.fetch_data_prefix(kind, req.url, max_bytes),
       ResourceScheme::File => self.fetch_file_prefix(kind, req.url, max_bytes),
-      ResourceScheme::Http | ResourceScheme::Https => {
-        self.fetch_http_partial(
-          kind,
-          req.destination,
-          req.url,
-          max_bytes,
-          req.client_origin,
-          req.referrer_url,
-          req.referrer_policy,
-          req.credentials_mode,
-        )
-      }
+      ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_partial(
+        kind,
+        req.destination,
+        req.url,
+        max_bytes,
+        req.client_origin,
+        req.referrer_url,
+        req.referrer_policy,
+        req.credentials_mode,
+      ),
       ResourceScheme::Relative => {
         self.fetch_file_prefix(kind, &format!("file://{}", req.url), max_bytes)
       }
@@ -6852,8 +6850,7 @@ impl ResourceFetcher for HttpFetcher {
     etag: Option<&str>,
     last_modified: Option<&str>,
   ) -> Result<FetchedResource> {
-    render_control::check_root(render_stage_hint_for_context(kind, url))
-      .map_err(Error::Render)?;
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Http | ResourceScheme::Https => {
         let destination: FetchDestination = kind.into();
@@ -7568,9 +7565,17 @@ const VARY_KEY_EMPTY: &str = "";
 const INFLIGHT_VARY_SIGNATURE_HEADERS: &str =
   "accept-encoding, accept-language, origin, referer, user-agent";
 
-fn inflight_signature_for_request<F: ResourceFetcher>(fetcher: &F, request: FetchRequest<'_>) -> String {
+fn inflight_signature_for_request<F: ResourceFetcher>(
+  fetcher: &F,
+  request: FetchRequest<'_>,
+) -> String {
   compute_vary_key_for_request(fetcher, request, Some(INFLIGHT_VARY_SIGNATURE_HEADERS))
-    .unwrap_or_else(|| format!("fallback:{:?}:{:?}", request.destination, request.referrer_url))
+    .unwrap_or_else(|| {
+      format!(
+        "fallback:{:?}:{:?}",
+        request.destination, request.referrer_url
+      )
+    })
 }
 
 /// Compute a deterministic `Vary` variant key for a request.
@@ -7645,12 +7650,16 @@ impl CacheVariants {
   }
 
   fn snapshot_for(&self, vary_key: &str) -> Option<CachedSnapshot> {
-    self.entries.get(vary_key).cloned().map(|entry| CachedSnapshot {
-      value: entry.value,
-      etag: entry.etag,
-      last_modified: entry.last_modified,
-      http_cache: entry.http_cache,
-    })
+    self
+      .entries
+      .get(vary_key)
+      .cloned()
+      .map(|entry| CachedSnapshot {
+        value: entry.value,
+        etag: entry.etag,
+        last_modified: entry.last_modified,
+        http_cache: entry.http_cache,
+      })
   }
 }
 
@@ -8335,7 +8344,11 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     current
   }
 
-  fn cached_entry(&self, key: &CacheKey, request: Option<FetchRequest<'_>>) -> Option<CachedSnapshot> {
+  fn cached_entry(
+    &self,
+    key: &CacheKey,
+    request: Option<FetchRequest<'_>>,
+  ) -> Option<CachedSnapshot> {
     self.state.lock().ok().and_then(|mut state| {
       let base_request = request.unwrap_or_else(|| FetchRequest::new(&key.url, key.kind.into()));
       let canonical = self.resolve_alias_locked(&mut state, key, base_request);
@@ -8389,9 +8402,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
       CacheValue::Error(_) => None,
     };
     let request = FetchRequest::new(url, kind.into());
-    let Some(vary_key) =
-      compute_vary_key_for_request(&self.inner, request, vary.as_deref())
-    else {
+    let Some(vary_key) = compute_vary_key_for_request(&self.inner, request, vary.as_deref()) else {
       return url.to_string();
     };
     self
@@ -8421,9 +8432,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     let stored_at = SystemTime::now();
     let vary = resource.vary.clone();
     let request = FetchRequest::new(url, kind.into());
-    let Some(vary_key) =
-      compute_vary_key_for_request(&self.inner, request, vary.as_deref())
-    else {
+    let Some(vary_key) = compute_vary_key_for_request(&self.inner, request, vary.as_deref()) else {
       return;
     };
     let key = CacheKey::new(kind, url.to_string());
@@ -8765,7 +8774,14 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             if let Some(vary_key) =
               compute_vary_key_for_request(&self.inner, canonical_request, vary.as_deref())
             {
-              let _ = self.cache_entry(&key, request, vary, vary_key, entry, res.final_url.as_deref());
+              let _ = self.cache_entry(
+                &key,
+                request,
+                vary,
+                vary_key,
+                entry,
+                res.final_url.as_deref(),
+              );
             }
           } else if !self.config.allow_no_store
             && res
@@ -8942,7 +8958,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                     .as_ref()
                     .and_then(|policy| CachedHttpMetadata::from_policy(policy, stored_at))
                 });
- 
+
               let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
               let memory_cacheable = match stored_resource.vary.as_deref() {
                 Some(vary) => {
@@ -8952,7 +8968,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 }
                 None => true,
               };
- 
+
               if should_store && memory_cacheable {
                 if let Some(vary_key) = compute_vary_key_for_request(
                   &self.inner,
@@ -9045,7 +9061,8 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
               if let Some(vary_key) =
                 compute_vary_key_for_request(&self.inner, canonical_request, vary.as_deref())
               {
-                let _ = self.cache_entry(&key, req, vary, vary_key, entry, res.final_url.as_deref());
+                let _ =
+                  self.cache_entry(&key, req, vary, vary_key, entry, res.final_url.as_deref());
               }
             } else if !self.config.allow_no_store
               && res
@@ -9082,11 +9099,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             .unwrap_or(false);
 
           if self.config.cache_errors && !has_bucket {
-            if let Some(vary_key) = compute_vary_key_for_request(
-              &self.inner,
-              req,
-              Some(INFLIGHT_VARY_SIGNATURE_HEADERS),
-            ) {
+            if let Some(vary_key) =
+              compute_vary_key_for_request(&self.inner, req, Some(INFLIGHT_VARY_SIGNATURE_HEADERS))
+            {
               let _ = self.cache_entry(
                 &key,
                 req,
@@ -10199,8 +10214,7 @@ mod tests {
       "1".to_string(),
     )])));
     runtime::with_thread_runtime_toggles(toggles, || {
-      let mut resource =
-        FetchedResource::new(b"body{}".to_vec(), Some("text/plain".to_string()));
+      let mut resource = FetchedResource::new(b"body{}".to_vec(), Some("text/plain".to_string()));
       resource.status = Some(200);
       resource.nosniff = true;
       let url = "https://example.com/style.css";
@@ -10220,8 +10234,7 @@ mod tests {
       "1".to_string(),
     )])));
     runtime::with_thread_runtime_toggles(toggles, || {
-      let mut resource =
-        FetchedResource::new(b"body{}".to_vec(), Some("text/plain".to_string()));
+      let mut resource = FetchedResource::new(b"body{}".to_vec(), Some("text/plain".to_string()));
       resource.status = Some(200);
       let url = "https://example.com/style.css";
       ensure_stylesheet_mime_sane(&resource, url)
@@ -10323,8 +10336,11 @@ mod tests {
 
       let cors_url = "https://static.example.com/font.woff2";
 
-      let no_cors = FetchRequest::new("https://static.example.com/style.css", FetchDestination::Style)
-        .with_client_origin(&origin_a);
+      let no_cors = FetchRequest::new(
+        "https://static.example.com/style.css",
+        FetchDestination::Style,
+      )
+      .with_client_origin(&origin_a);
       assert_eq!(cors_cache_partition_key(&no_cors), None);
 
       let omit = FetchRequest::new(cors_url, FetchDestination::Font).with_client_origin(&origin_a);
@@ -10356,7 +10372,8 @@ mod tests {
         Some("https://a.test")
       );
 
-      let other_origin = FetchRequest::new(cors_url, FetchDestination::Font).with_client_origin(&origin_b);
+      let other_origin =
+        FetchRequest::new(cors_url, FetchDestination::Font).with_client_origin(&origin_b);
       assert_eq!(
         cors_cache_partition_key(&other_origin).as_deref(),
         Some("https://b.test")
@@ -10372,9 +10389,12 @@ mod tests {
     )])));
     runtime::with_thread_runtime_toggles(toggles, || {
       let origin = origin_from_url("https://example.com/page").expect("origin");
-      let req = FetchRequest::new("https://static.example.com/font.woff2", FetchDestination::Font)
-        .with_client_origin(&origin)
-        .with_credentials_mode(FetchCredentialsMode::Include);
+      let req = FetchRequest::new(
+        "https://static.example.com/font.woff2",
+        FetchDestination::Font,
+      )
+      .with_client_origin(&origin)
+      .with_credentials_mode(FetchCredentialsMode::Include);
       assert_eq!(cors_cache_partition_key(&req), None);
     });
   }
@@ -10395,8 +10415,8 @@ mod tests {
     runtime::with_thread_runtime_toggles(toggles, || {
       let url = "https://static.example.com/font.woff2";
 
-      let http_referrer =
-        FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://a.test/page.html");
+      let http_referrer = FetchRequest::new(url, FetchDestination::Font)
+        .with_referrer_url("https://a.test/page.html");
       assert_eq!(
         cors_cache_partition_key(&http_referrer).as_deref(),
         Some("https://a.test")
@@ -10464,7 +10484,10 @@ mod tests {
     assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("iframe"));
     assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("navigate"));
     assert_eq!(header_value(&headers, "Sec-Fetch-User"), None);
-    assert_eq!(header_value(&headers, "Upgrade-Insecure-Requests"), Some("1"));
+    assert_eq!(
+      header_value(&headers, "Upgrade-Insecure-Requests"),
+      Some("1")
+    );
   }
 
   #[test]
@@ -10576,11 +10599,26 @@ mod tests {
     let cases = [
       (ReferrerPolicy::NoReferrer, None, None, None),
       (ReferrerPolicy::NoReferrerWhenDowngrade, full, full, None),
-      (ReferrerPolicy::Origin, origin_only, origin_only, origin_only),
-      (ReferrerPolicy::OriginWhenCrossOrigin, full, origin_only, origin_only),
+      (
+        ReferrerPolicy::Origin,
+        origin_only,
+        origin_only,
+        origin_only,
+      ),
+      (
+        ReferrerPolicy::OriginWhenCrossOrigin,
+        full,
+        origin_only,
+        origin_only,
+      ),
       (ReferrerPolicy::SameOrigin, full, None, None),
       (ReferrerPolicy::StrictOrigin, origin_only, origin_only, None),
-      (ReferrerPolicy::StrictOriginWhenCrossOrigin, full, origin_only, None),
+      (
+        ReferrerPolicy::StrictOriginWhenCrossOrigin,
+        full,
+        origin_only,
+        None,
+      ),
       (ReferrerPolicy::UnsafeUrl, full, full, full),
       (ReferrerPolicy::EmptyString, full, origin_only, None),
     ];
@@ -10736,7 +10774,10 @@ mod tests {
       header_value(&headers, "Origin"),
       Some("http://client.example.com")
     );
-    assert_eq!(header_value(&headers, "Referer"), Some("http://ref.other.com/"));
+    assert_eq!(
+      header_value(&headers, "Referer"),
+      Some("http://ref.other.com/")
+    );
     assert_eq!(header_value(&headers, "Sec-Fetch-Site"), Some("same-site"));
   }
 
@@ -13794,8 +13835,8 @@ mod tests {
     let url = "https://example.com/asset";
     let include_req = FetchRequest::new(url, FetchDestination::Other)
       .with_credentials_mode(FetchCredentialsMode::Include);
-    let omit_req =
-      FetchRequest::new(url, FetchDestination::Other).with_credentials_mode(FetchCredentialsMode::Omit);
+    let omit_req = FetchRequest::new(url, FetchDestination::Other)
+      .with_credentials_mode(FetchCredentialsMode::Omit);
 
     let include = fetcher
       .fetch_with_request(include_req)
@@ -14094,8 +14135,14 @@ mod tests {
   #[test]
   fn parse_vary_headers_normalizes_and_deduplicates() {
     let mut headers = HeaderMap::new();
-    headers.append("vary", http::HeaderValue::from_static("Origin, Accept-Encoding"));
-    headers.append("vary", http::HeaderValue::from_static("ACCEPT-encoding, User-Agent"));
+    headers.append(
+      "vary",
+      http::HeaderValue::from_static("Origin, Accept-Encoding"),
+    );
+    headers.append(
+      "vary",
+      http::HeaderValue::from_static("ACCEPT-encoding, User-Agent"),
+    );
     assert_eq!(
       parse_vary_headers(&headers).as_deref(),
       Some("accept-encoding, origin, user-agent")
@@ -14656,6 +14703,14 @@ mod tests {
   }
 
   #[test]
+  fn non_ascii_whitespace_parse_cached_meta_does_not_trim_nbsp() {
+    let meta = "content-type: \u{00A0}text/html\nurl: https://example.com/page\n";
+    let parsed = parse_cached_html_meta(meta);
+    assert_eq!(parsed.content_type.as_deref(), Some("\u{00A0}text/html"));
+    assert_eq!(parsed.url.as_deref(), Some("https://example.com/page"));
+  }
+
+  #[test]
   fn parse_cached_meta_reads_status_code() {
     let meta = "content-type: text/html\nstatus: 302\nurl: https://example.com/page\n";
     let parsed = parse_cached_html_meta(meta);
@@ -14672,7 +14727,10 @@ mod tests {
     let parsed = parse_cached_html_meta(meta);
     assert_eq!(parsed.content_type.as_deref(), Some("text/html"));
     assert_eq!(parsed.url.as_deref(), Some("https://example.com/page"));
-    assert_eq!(parsed.response_referrer_policy, Some(ReferrerPolicy::NoReferrer));
+    assert_eq!(
+      parsed.response_referrer_policy,
+      Some(ReferrerPolicy::NoReferrer)
+    );
   }
 
   #[test]
@@ -14837,8 +14895,7 @@ mod tests {
 
   #[test]
   fn http_fetcher_shares_cookie_jar_across_backends() {
-    let Some(listener) =
-      try_bind_localhost("http_fetcher_shares_cookie_jar_across_backends")
+    let Some(listener) = try_bind_localhost("http_fetcher_shares_cookie_jar_across_backends")
     else {
       return;
     };
@@ -17374,11 +17431,16 @@ mod tests {
     })
     .with_cache_errors(true);
     let url = "https://example.com/image.png";
-    let req_a = FetchRequest::new(url, FetchDestination::Image).with_referrer_url("https://a.test/");
-    let req_b = FetchRequest::new(url, FetchDestination::Image).with_referrer_url("https://b.test/");
+    let req_a =
+      FetchRequest::new(url, FetchDestination::Image).with_referrer_url("https://a.test/");
+    let req_b =
+      FetchRequest::new(url, FetchDestination::Image).with_referrer_url("https://b.test/");
 
     assert!(cache.fetch_with_request(req_a).is_err());
-    assert!(cache.fetch_with_request(req_a).is_err(), "should hit cached error");
+    assert!(
+      cache.fetch_with_request(req_a).is_err(),
+      "should hit cached error"
+    );
     assert_eq!(
       calls.load(Ordering::SeqCst),
       1,
@@ -18053,13 +18115,17 @@ mod tests {
 
       let omit = cache.fetch_with_request(req_omit).expect("omit fetch");
       assert_eq!(omit.bytes, b"omit");
-      let include = cache.fetch_with_request(req_include).expect("include fetch");
+      let include = cache
+        .fetch_with_request(req_include)
+        .expect("include fetch");
       assert_eq!(include.bytes, b"include");
 
       // Ensure cache hits are scoped to the credentials mode.
       let omit2 = cache.fetch_with_request(req_omit).expect("omit cache");
       assert_eq!(omit2.bytes, b"omit");
-      let include2 = cache.fetch_with_request(req_include).expect("include cache");
+      let include2 = cache
+        .fetch_with_request(req_include)
+        .expect("include cache");
       assert_eq!(include2.bytes, b"include");
 
       assert_eq!(
@@ -18444,7 +18510,10 @@ mod tests {
     );
 
     let cached = cache
-      .cached_entry(&CacheKey::new(FetchContextKind::Other, url.to_string()), None)
+      .cached_entry(
+        &CacheKey::new(FetchContextKind::Other, url.to_string()),
+        None,
+      )
       .expect("cache entry should remain after fallback");
     let cached_res = cached
       .value
@@ -18810,15 +18879,9 @@ mod tests {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let referer = req.referrer_url.unwrap_or("");
         let (final_url, body) = if referer.contains("a.example") {
-          (
-            "https://example.com/canonical-a",
-            b"canonical-a".to_vec(),
-          )
+          ("https://example.com/canonical-a", b"canonical-a".to_vec())
         } else {
-          (
-            "https://example.com/canonical-b",
-            b"canonical-b".to_vec(),
-          )
+          ("https://example.com/canonical-b", b"canonical-b".to_vec())
         };
         let mut resource = FetchedResource::new(body, Some("text/plain".to_string()));
         resource.final_url = Some(final_url.to_string());
@@ -18829,7 +18892,12 @@ mod tests {
         match header_name {
           "accept-encoding" => Some("gzip".to_string()),
           "accept-language" => Some("en".to_string()),
-          "origin" => Some(req.client_origin.map(ToString::to_string).unwrap_or_default()),
+          "origin" => Some(
+            req
+              .client_origin
+              .map(ToString::to_string)
+              .unwrap_or_default(),
+          ),
           "referer" => Some(req.referrer_url.unwrap_or("").to_string()),
           "user-agent" => Some("fastrender-test".to_string()),
           _ => None,
@@ -19364,7 +19432,10 @@ mod tests {
       header::VARY,
       http::HeaderValue::from_static("Accept-Encoding, origin"),
     );
-    headers.append(header::VARY, http::HeaderValue::from_static("ACCEPT-LANGUAGE"));
+    headers.append(
+      header::VARY,
+      http::HeaderValue::from_static("ACCEPT-LANGUAGE"),
+    );
 
     let normalized = parse_vary_headers(&headers);
     assert_eq!(
