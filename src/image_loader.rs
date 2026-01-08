@@ -2044,33 +2044,66 @@ impl ImageCache {
     crossorigin: CrossOriginAttribute,
     referrer_policy: Option<ReferrerPolicy>,
   ) -> String {
-    if crossorigin == CrossOriginAttribute::None {
-      let mut key = resolved_url.to_string();
-      if let Some(policy) = referrer_policy {
-        key.push_str("@@referrer_policy=");
-        key.push_str(policy.as_str());
-      }
-      return key;
-    }
-
+    // ImageCache keys must be partitioned by any request metadata that can affect the fetch
+    // profile. Otherwise, we'd risk satisfying a request with cached results that were fetched
+    // under a different referrer policy / referrer URL / CORS mode.
+    //
+    // Note: The key intentionally includes the *effective* referrer policy (after resolving the
+    // empty-string state to the Chromium default) and a hashed representation of the document URL
+    // used as the request referrer.
     let crossorigin_key = match crossorigin {
       CrossOriginAttribute::None => "none",
       CrossOriginAttribute::Anonymous => "anonymous",
       CrossOriginAttribute::UseCredentials => "use-credentials",
     };
-    let document_origin = self
+
+    let referrer_url = self
       .resource_context
       .as_ref()
-      .and_then(|ctx| ctx.policy.document_origin.as_ref())
-      .map(|origin| origin.to_string())
-      .unwrap_or_else(|| "<unknown>".to_string());
+      .and_then(|ctx| ctx.document_url.as_deref());
+    let referrer_hash = referrer_url.map(|url| {
+      let mut hasher = DefaultHasher::new();
+      url.hash(&mut hasher);
+      (hasher.finish(), url.len())
+    });
 
-    let mut key =
-      format!("{resolved_url}@@crossorigin={crossorigin_key}@@doc_origin={document_origin}");
-    if let Some(policy) = referrer_policy {
-      key.push_str("@@referrer_policy=");
-      key.push_str(policy.as_str());
+    let doc_referrer_policy = self
+      .resource_context
+      .as_ref()
+      .map(|ctx| ctx.referrer_policy)
+      .unwrap_or_default();
+    let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+    let effective_referrer_policy = match request_referrer_policy {
+      ReferrerPolicy::EmptyString => ReferrerPolicy::CHROMIUM_DEFAULT,
+      other => other,
+    };
+
+    let mut key = resolved_url.to_string();
+    key.push_str("@@crossorigin=");
+    key.push_str(crossorigin_key);
+
+    key.push_str("@@referrer=");
+    match referrer_hash {
+      Some((hash, len)) => {
+        key.push_str(&format!("{hash:016x}:{len}"));
+      }
+      None => key.push_str("none"),
     }
+
+    key.push_str("@@referrer_policy=");
+    key.push_str(effective_referrer_policy.as_str());
+
+    if crossorigin != CrossOriginAttribute::None {
+      let document_origin = self
+        .resource_context
+        .as_ref()
+        .and_then(|ctx| ctx.policy.document_origin.as_ref())
+        .map(|origin| origin.to_string())
+        .unwrap_or_else(|| "<unknown>".to_string());
+      key.push_str("@@doc_origin=");
+      key.push_str(&document_origin);
+    }
+
     key
   }
 
@@ -2186,7 +2219,8 @@ impl ImageCache {
     }
     self.enforce_image_policy(&resolved_url)?;
 
-    let key = raster_pixmap_full_key(&resolved_url, orientation, decorative);
+    let cache_key = self.cache_key_for_crossorigin(&resolved_url, CrossOriginAttribute::None, None);
+    let key = raster_pixmap_full_key(&cache_key, orientation, decorative);
     if let Ok(mut cache) = self.raster_pixmap_cache.lock() {
       if let Some(cached) = cache.get_cloned(&key) {
         record_raster_pixmap_cache_hit();
@@ -2382,8 +2416,9 @@ impl ImageCache {
     }
     self.enforce_image_policy(&resolved_url)?;
 
+    let cache_key = self.cache_key_for_crossorigin(&resolved_url, CrossOriginAttribute::None, None);
     let key = raster_pixmap_key(
-      &resolved_url,
+      &cache_key,
       orientation,
       decorative,
       target_width,
@@ -5535,6 +5570,57 @@ mod tests {
     encoder.finish().expect("finish gzip")
   }
 
+  fn encode_single_pixel_png(rgba: [u8; 4]) -> Vec<u8> {
+    let mut pixels = RgbaImage::new(1, 1);
+    pixels.pixels_mut().for_each(|p| *p = image::Rgba(rgba));
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png)
+      .write_image(pixels.as_raw(), 1, 1, ColorType::Rgba8.into())
+      .expect("encode png");
+    png
+  }
+
+  #[derive(Clone)]
+  struct ReferrerAwarePngFetcher {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    variants: Arc<HashMap<(Option<String>, ReferrerPolicy), Vec<u8>>>,
+  }
+
+  impl ReferrerAwarePngFetcher {
+    fn new(variants: HashMap<(Option<String>, ReferrerPolicy), Vec<u8>>) -> Self {
+      Self {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        variants: Arc::new(variants),
+      }
+    }
+
+    fn calls(&self) -> usize {
+      self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+  }
+
+  impl ResourceFetcher for ReferrerAwarePngFetcher {
+    fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+      panic!("expected ImageCache image load to use fetch_with_request");
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+      self
+        .calls
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+      let key = (req.referrer_url.map(|v| v.to_string()), req.referrer_policy);
+      let bytes = self
+        .variants
+        .get(&key)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("unexpected image fetch request {key:?}")))?;
+      let mut res = FetchedResource::new(bytes, Some("image/png".to_string()));
+      res.status = Some(200);
+      res.final_url = Some(req.url.to_string());
+      Ok(res)
+    }
+  }
+
   #[test]
   fn svg_pixmap_key_canonicalizes_negative_zero() {
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
@@ -5991,6 +6077,116 @@ mod tests {
         "expected probe artifacts to satisfy follow-up requests without additional fetches"
       );
     });
+  }
+
+  #[test]
+  fn image_cache_partitions_by_referrer_url_for_no_cors_images() {
+    let url = "https://img.test/pixel.png";
+    let doc_a = "https://a.test/page";
+    let doc_b = "https://b.test/page";
+
+    let red_png = encode_single_pixel_png([255, 0, 0, 255]);
+    let green_png = encode_single_pixel_png([0, 255, 0, 255]);
+
+    let fetcher = ReferrerAwarePngFetcher::new(HashMap::from([
+      (
+        (Some(doc_a.to_string()), ReferrerPolicy::EmptyString),
+        red_png.clone(),
+      ),
+      (
+        (Some(doc_b.to_string()), ReferrerPolicy::EmptyString),
+        green_png.clone(),
+      ),
+    ]));
+
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    let mut ctx_a = ResourceContext::default();
+    ctx_a.document_url = Some(doc_a.to_string());
+    cache.set_resource_context(Some(ctx_a));
+
+    let img_a = cache.load(url).expect("image load should succeed");
+    let pix_a = img_a.image.as_ref().to_rgba8().get_pixel(0, 0).0;
+    assert_eq!(pix_a, [255, 0, 0, 255]);
+    let pixmap_a = cache
+      .load_raster_pixmap(url, OrientationTransform::IDENTITY, false)
+      .expect("pixmap load should succeed")
+      .expect("expected raster pixmap");
+    assert_eq!(&pixmap_a.data()[..4], &[255, 0, 0, 255]);
+
+    let mut ctx_b = ResourceContext::default();
+    ctx_b.document_url = Some(doc_b.to_string());
+    cache.set_resource_context(Some(ctx_b));
+
+    let img_b = cache.load(url).expect("image load should succeed");
+    let pix_b = img_b.image.as_ref().to_rgba8().get_pixel(0, 0).0;
+    assert_eq!(pix_b, [0, 255, 0, 255]);
+    let pixmap_b = cache
+      .load_raster_pixmap(url, OrientationTransform::IDENTITY, false)
+      .expect("pixmap load should succeed")
+      .expect("expected raster pixmap");
+    assert_eq!(&pixmap_b.data()[..4], &[0, 255, 0, 255]);
+
+    assert_eq!(
+      fetcher.calls(),
+      2,
+      "expected referrer-partitioned image cache to fetch twice"
+    );
+  }
+
+  #[test]
+  fn image_cache_partitions_by_referrer_policy_for_no_cors_images() {
+    let url = "https://img.test/pixel.png";
+    let doc_url = "https://doc.test/page";
+
+    let red_png = encode_single_pixel_png([255, 0, 0, 255]);
+    let green_png = encode_single_pixel_png([0, 255, 0, 255]);
+
+    let fetcher = ReferrerAwarePngFetcher::new(HashMap::from([
+      (
+        (Some(doc_url.to_string()), ReferrerPolicy::EmptyString),
+        red_png.clone(),
+      ),
+      (
+        (Some(doc_url.to_string()), ReferrerPolicy::NoReferrer),
+        green_png.clone(),
+      ),
+    ]));
+
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+
+    let mut ctx_default = ResourceContext::default();
+    ctx_default.document_url = Some(doc_url.to_string());
+    cache.set_resource_context(Some(ctx_default));
+
+    let img_default = cache.load(url).expect("image load should succeed");
+    let pix_default = img_default.image.as_ref().to_rgba8().get_pixel(0, 0).0;
+    assert_eq!(pix_default, [255, 0, 0, 255]);
+    let pixmap_default = cache
+      .load_raster_pixmap(url, OrientationTransform::IDENTITY, false)
+      .expect("pixmap load should succeed")
+      .expect("expected raster pixmap");
+    assert_eq!(&pixmap_default.data()[..4], &[255, 0, 0, 255]);
+
+    let mut ctx_no_referrer = ResourceContext::default();
+    ctx_no_referrer.document_url = Some(doc_url.to_string());
+    ctx_no_referrer.referrer_policy = ReferrerPolicy::NoReferrer;
+    cache.set_resource_context(Some(ctx_no_referrer));
+
+    let img_no_referrer = cache.load(url).expect("image load should succeed");
+    let pix_no_referrer = img_no_referrer.image.as_ref().to_rgba8().get_pixel(0, 0).0;
+    assert_eq!(pix_no_referrer, [0, 255, 0, 255]);
+    let pixmap_no_referrer = cache
+      .load_raster_pixmap(url, OrientationTransform::IDENTITY, false)
+      .expect("pixmap load should succeed")
+      .expect("expected raster pixmap");
+    assert_eq!(&pixmap_no_referrer.data()[..4], &[0, 255, 0, 255]);
+
+    assert_eq!(
+      fetcher.calls(),
+      2,
+      "expected policy-partitioned image cache to fetch twice"
+    );
   }
 
   #[test]
