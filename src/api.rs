@@ -4948,7 +4948,7 @@ impl FastRender {
         inner: Arc::clone(diag),
       });
     let context = Some(self.build_resource_context(
-      self.document_url(),
+      self.document_url_hint(),
       shared_diagnostics,
       initial_referrer_policy,
     ));
@@ -5654,8 +5654,11 @@ impl FastRender {
         .map(|diag| SharedRenderDiagnostics {
           inner: Arc::clone(diag),
         });
-      let context =
-        Some(self.build_resource_context(self.document_url(), shared_diagnostics, ReferrerPolicy::default()));
+      let context = Some(self.build_resource_context(
+        self.document_url_hint(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
       let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
 
       let result = self.prepare_html_internal_inner(html, options, trace_handle);
@@ -7539,7 +7542,7 @@ impl FastRender {
           inner: Arc::clone(diag),
         });
       let context = Some(self.build_resource_context(
-        self.document_url(),
+        self.document_url_hint(),
         shared_diagnostics,
         ReferrerPolicy::default(),
       ));
@@ -7596,7 +7599,7 @@ impl FastRender {
           inner: Arc::clone(diag),
         });
       let context = Some(self.build_resource_context(
-        self.document_url(),
+        self.document_url_hint(),
         shared_diagnostics,
         ReferrerPolicy::default(),
       ));
@@ -7665,7 +7668,7 @@ impl FastRender {
         });
       let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
       let context = Some(self.build_resource_context(
-        self.document_url(),
+        self.document_url_hint(),
         shared_diagnostics,
         initial_referrer_policy,
       ));
@@ -7922,7 +7925,7 @@ impl FastRender {
         inner: Arc::clone(diag),
       });
     let context = Some(self.build_resource_context(
-      self.document_url(),
+      self.document_url_hint(),
       shared_diagnostics,
       ReferrerPolicy::default(),
     ));
@@ -7989,7 +7992,7 @@ impl FastRender {
         inner: Arc::clone(diag),
       });
     let context = Some(self.build_resource_context(
-      self.document_url(),
+      self.document_url_hint(),
       shared_diagnostics,
       ReferrerPolicy::default(),
     ));
@@ -9298,7 +9301,7 @@ impl FastRender {
         inner: Arc::clone(diag),
       });
     let context = Some(self.build_resource_context(
-      self.document_url(),
+      self.document_url_hint(),
       shared_diagnostics,
       ReferrerPolicy::default(),
     ));
@@ -9383,7 +9386,7 @@ impl FastRender {
           inner: Arc::clone(diag),
         });
       let context = self.build_resource_context(
-        self.document_url(),
+        self.document_url_hint(),
         shared_diagnostics,
         ReferrerPolicy::default(),
       );
@@ -9449,7 +9452,7 @@ impl FastRender {
           inner: Arc::clone(diag),
         });
       let context = self.build_resource_context(
-        self.document_url(),
+        self.document_url_hint(),
         shared_diagnostics,
         ReferrerPolicy::default(),
       );
@@ -9644,6 +9647,17 @@ impl FastRender {
 
   fn document_url(&self) -> Option<&str> {
     self.document_url.as_deref()
+  }
+
+  /// Returns the document URL used for resource fetch referrer/origin semantics.
+  ///
+  /// When rendering HTML strings, callers commonly configure only a base URL. Treat that as the
+  /// document URL hint for policy/referrer purposes, while allowing [`FastRender::base_url`] to be
+  /// overridden by `<base href>` for URL resolution.
+  fn document_url_hint(&self) -> Option<&str> {
+    self
+      .document_url()
+      .or_else(|| self.base_url.as_deref().filter(|url| !url.trim().is_empty()))
   }
 
   /// Attach or clear the diagnostics sink for downstream fetchers.

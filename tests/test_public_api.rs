@@ -634,10 +634,9 @@ mod test_public_api {
     toggles.insert("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string());
     toggles.insert("FASTR_FETCH_ENFORCE_CORS".to_string(), "1".to_string());
 
-    // Provide only a base URL (no explicit document URL) so we exercise the code path where
-    // `ResourceContext.document_url` is unset but `ResourceContext.policy.document_origin` is
-    // configured. CORS enforcement should still treat cross-origin fonts as requiring
-    // Access-Control-Allow-Origin.
+    // Provide only a base URL (no explicit document URL). The renderer should treat it as the
+    // document URL hint for referrer/origin policy, and CORS enforcement should still treat
+    // cross-origin fonts as requiring Access-Control-Allow-Origin.
     let config = deterministic_config()
       .with_runtime_toggles(RuntimeToggles::from_map(toggles))
       .with_base_url("https://origin.test/page.html")
