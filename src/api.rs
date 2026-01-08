@@ -7828,7 +7828,7 @@ impl FastRender {
         {
           if let Some(rel) = node.get_attribute_ref("rel") {
             if rel
-              .split_whitespace()
+              .split_ascii_whitespace()
               .any(|token| token.eq_ignore_ascii_case("canonical"))
             {
               if let Some(href) = node.get_attribute_ref("href") {
@@ -24909,6 +24909,56 @@ pub(crate) fn render_html_with_shared_resources(
     );
     let document_url = "file:///tmp/cache/good.example.html";
     let stylesheet_url = "https://good.example/app/%C2%A0?style.css";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      stylesheet_url,
+      "body { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    renderer
+      .render_html_with_stylesheets(
+        &html,
+        document_url,
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .unwrap();
+
+    let requests = fetcher.requests();
+    let stylesheet_request = requests
+      .iter()
+      .find(|request| request.destination == FetchDestination::Style)
+      .expect("stylesheet request");
+    assert_eq!(stylesheet_request.url, stylesheet_url);
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_file_document_does_not_split_nbsp_in_rel() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      r#"<!doctype html><html><head>
+        <link rel="canonical{nbsp}stylesheet" href="https://good.example/app/">
+        <link rel="stylesheet" href="?style.css">
+      </head><body></body></html>"#
+    );
+    let document_url = "file:///tmp/cache/good.example.html";
+    // If NBSP is not treated as a rel-token separator, the canonical hint should be ignored and we
+    // should fall back to the inferred `https://good.example/` base URL from the cache filename.
+    let stylesheet_url = "https://good.example/?style.css";
 
     let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
       stylesheet_url,
