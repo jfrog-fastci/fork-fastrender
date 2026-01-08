@@ -7700,4 +7700,3 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   },
   ],
 };
-

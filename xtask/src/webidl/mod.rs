@@ -10,6 +10,7 @@ use anyhow::Result;
 
 pub mod analyze;
 pub mod ast;
+pub mod generate;
 pub mod load;
 pub mod overload;
 pub mod parse;
@@ -608,7 +609,8 @@ fn html_start_tag_has_class_token(tag: &str, token: &str) -> bool {
 
     // Parse attribute name.
     let name_start = i;
-    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>' {
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>'
+    {
       i += 1;
     }
     let name = &tag[name_start..i];
