@@ -31738,14 +31738,8 @@ fn parse_variation_setting<'i, 't>(
   })
 }
 
-fn inline_axis_positive(wm: WritingMode, dir: Direction) -> bool {
-  match wm {
-    WritingMode::HorizontalTb => dir != Direction::Rtl,
-    WritingMode::VerticalRl
-    | WritingMode::VerticalLr
-    | WritingMode::SidewaysRl
-    | WritingMode::SidewaysLr => true,
-  }
+fn inline_axis_positive(_wm: WritingMode, dir: Direction) -> bool {
+  dir != Direction::Rtl
 }
 
 fn block_axis_positive(wm: WritingMode) -> bool {

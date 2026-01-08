@@ -96,14 +96,8 @@ fn is_vertical_writing_mode(mode: WritingMode) -> bool {
   )
 }
 
-fn inline_axis_positive(mode: WritingMode, direction: Direction) -> bool {
-  match mode {
-    WritingMode::HorizontalTb => direction != Direction::Rtl,
-    WritingMode::VerticalRl
-    | WritingMode::VerticalLr
-    | WritingMode::SidewaysRl
-    | WritingMode::SidewaysLr => true,
-  }
+fn inline_axis_positive(_mode: WritingMode, direction: Direction) -> bool {
+  direction != Direction::Rtl
 }
 
 fn block_axis_positive(mode: WritingMode) -> bool {
