@@ -195,7 +195,6 @@ pub mod css;
 pub mod debug;
 pub mod dom;
 pub mod dom2;
-pub mod interaction;
 pub mod js;
 pub(crate) mod fallible_vec_writer;
 pub mod html;

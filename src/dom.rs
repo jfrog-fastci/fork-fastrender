@@ -4554,38 +4554,6 @@ impl<'a> ElementRef<'a> {
       .unwrap_or(false)
   }
 
-  fn form_owner(&self) -> Option<&DomNode> {
-    if let Some(form_id) = self.node.get_attribute_ref("form") {
-      let form_id = form_id.trim();
-      if form_id.is_empty() {
-        return None;
-      }
-
-      let root = self.all_ancestors.first().copied().unwrap_or(self.node);
-      return Self::find_form_by_id(root, form_id);
-    }
-
-    self.nearest_form()
-  }
-
-  fn find_form_by_id<'b>(root: &'b DomNode, id: &str) -> Option<&'b DomNode> {
-    let mut stack: Vec<&DomNode> = vec![root];
-    while let Some(node) = stack.pop() {
-      if node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
-        && node.get_attribute_ref("id").is_some_and(|value| value == id)
-      {
-        return Some(node);
-      }
-
-      for child in node.children.iter().rev() {
-        stack.push(child);
-      }
-    }
-    None
-  }
-
   fn push_assigned_slot_nodes<'b>(
     current: &'b DomNode,
     slot_map: Option<&SlotAssignmentMap<'b>>,

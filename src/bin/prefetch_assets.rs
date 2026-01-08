@@ -2858,7 +2858,7 @@ mod disk_cache_main {
       let html = r#"<!doctype html><html><head>
         <link rel="stylesheet" href="https://example.com/style.css">
         <style>
-          @import "https://example.com/import.css";
+          @import "https://example.com/import-dry-run.css";
           @font-face { font-family: X; src: url("https://example.com/font.woff2") format("woff2"); }
           body { background-image: url("https://example.com/bg.png"); }
         </style>
@@ -2925,7 +2925,7 @@ mod disk_cache_main {
           .report
           .imports
           .discovered
-          .contains("https://example.com/import.css"),
+          .contains("https://example.com/import-dry-run.css"),
         "expected @import URL to be recorded in report discovery"
       );
       assert!(

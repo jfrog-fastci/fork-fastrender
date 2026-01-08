@@ -5363,7 +5363,7 @@ impl FastRender {
       let (prev_self, prev_image, prev_layout_image, prev_font) =
         self.push_resource_context(context);
 
-      let result = self.prepare_dom_internal_inner(dom, options, trace_handle);
+      let result = self.prepare_dom_internal_inner_owned(dom, options, trace_handle);
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
 
       let snapshot = diagnostics
@@ -6617,7 +6617,7 @@ impl FastRender {
     })
   }
 
-  fn prepare_dom_internal_inner(
+  fn prepare_dom_internal_inner_owned(
     &mut self,
     dom: DomNode,
     options: RenderOptions,
