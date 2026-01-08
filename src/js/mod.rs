@@ -45,12 +45,8 @@ pub struct ScriptElementSpec {
 
 /// Determine the script type for a `<script>` element based on `type`/`language` attributes.
 ///
-/// This is a conservative subset of the HTML Standard behavior:
-/// - `type` missing/empty => classic script
-/// - `type="module"` => module script
-/// - `type="importmap"` => import map
-/// - Known JavaScript MIME types => classic script
-/// - Otherwise => unknown (non-executable) script
+/// This follows the HTML Standard script preparation rules for computing the script block type
+/// string and then mapping it to `classic`/`module`/`importmap`/unknown.
 pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
   let Some(tag_name) = script.tag_name() else {
     return ScriptType::Unknown;
@@ -59,69 +55,68 @@ pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
     return ScriptType::Unknown;
   }
 
-  let mut type_value = script
-    .get_attribute_ref("type")
-    .map(str::trim)
-    .filter(|value| !value.is_empty());
+  // Compute the "script block's type string" per the HTML Standard:
+  // - `type=""` => defaults to `text/javascript`
+  // - no `type` + `language=""` => defaults to `text/javascript`
+  // - no `type` + no `language` => defaults to `text/javascript`
+  // - otherwise:
+  //   - `type=<value>` => ASCII whitespace stripped
+  //   - `language=<value>` => `text/<value>` (no trimming)
+  //
+  // Notably, whitespace-only values do *not* count as empty-string defaults.
+  let type_value_raw = script.get_attribute_ref("type");
+  let language_value_raw = script.get_attribute_ref("language");
 
-  // Treat `type=""` as missing.
-  if type_value.is_none() {
-    // The obsolete `language` attribute can still appear on real pages; treat it as a hint only
-    // when no `type` is present.
-    if let Some(language) = script
-      .get_attribute_ref("language")
-      .map(str::trim)
-      .filter(|value| !value.is_empty())
-    {
-      // Legacy values are typically things like `javascript` / `javascript1.5`.
-      if language.to_ascii_lowercase().starts_with("javascript") {
-        return ScriptType::Classic;
-      }
-      return ScriptType::Unknown;
+  let type_string = if let Some(value) = type_value_raw {
+    if value.is_empty() {
+      "text/javascript".to_string()
+    } else {
+      value.trim().to_string()
     }
+  } else if let Some(value) = language_value_raw {
+    if value.is_empty() {
+      "text/javascript".to_string()
+    } else {
+      format!("text/{}", value)
+    }
+  } else {
+    "text/javascript".to_string()
+  };
 
-    return ScriptType::Classic;
-  }
-
-  let type_value_str = type_value.take().unwrap_or_default();
-  let mime_essence = type_value_str
-    .split_once(';')
-    .map(|(essence, _)| essence.trim())
-    .unwrap_or(type_value_str);
-
-  if mime_essence.eq_ignore_ascii_case("module") {
+  // `module` / `importmap` must match exactly (after trimming performed above).
+  if type_string.eq_ignore_ascii_case("module") {
     return ScriptType::Module;
   }
-  if mime_essence.eq_ignore_ascii_case("importmap") {
+  if type_string.eq_ignore_ascii_case("importmap") {
     return ScriptType::ImportMap;
   }
 
-  // Recognize common JavaScript MIME types.
-  const CLASSIC_JS_MIME_TYPES: [&str; 4] = [
-    "text/javascript",
-    "application/javascript",
-    "text/ecmascript",
-    "application/ecmascript",
-  ];
-  if CLASSIC_JS_MIME_TYPES
-    .iter()
-    .any(|ty| mime_essence.eq_ignore_ascii_case(ty))
-  {
-    return ScriptType::Classic;
-  }
+  // JavaScript MIME type essence match (WHATWG MIME Sniffing + HTML).
+  let mime_essence = type_string
+    .split_once(';')
+    .map(|(essence, _)| essence.trim())
+    .unwrap_or(type_string.as_str())
+    .trim();
 
-  // Legacy JavaScript types seen in the wild.
-  const LEGACY_JS_TYPES: [&str; 8] = [
-    "application/x-javascript",
+  const JS_MIME_TYPE_ESSENCES: [&str; 16] = [
+    "application/ecmascript",
+    "application/javascript",
     "application/x-ecmascript",
-    "text/x-javascript",
-    "text/x-ecmascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "text/javascript",
     "text/javascript1.0",
     "text/javascript1.1",
     "text/javascript1.2",
     "text/javascript1.3",
+    "text/javascript1.4",
+    "text/javascript1.5",
+    "text/jscript",
+    "text/livescript",
+    "text/x-ecmascript",
+    "text/x-javascript",
   ];
-  if LEGACY_JS_TYPES
+  if JS_MIME_TYPE_ESSENCES
     .iter()
     .any(|ty| mime_essence.eq_ignore_ascii_case(ty))
   {
@@ -131,3 +126,79 @@ pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
   ScriptType::Unknown
 }
 
+#[cfg(test)]
+mod tests {
+  use super::{determine_script_type, ScriptType};
+  use crate::dom::{DomNode, DomNodeType};
+
+  fn script(attrs: &[(&str, &str)]) -> DomNode {
+    DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "script".to_string(),
+        namespace: String::new(),
+        attributes: attrs
+          .iter()
+          .map(|(k, v)| (k.to_string(), v.to_string()))
+          .collect(),
+      },
+      children: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn defaults_to_classic_without_type_or_language() {
+    let node = script(&[]);
+    assert_eq!(determine_script_type(&node), ScriptType::Classic);
+  }
+
+  #[test]
+  fn type_empty_string_defaults_to_classic() {
+    let node = script(&[("type", "")]);
+    assert_eq!(determine_script_type(&node), ScriptType::Classic);
+  }
+
+  #[test]
+  fn type_whitespace_does_not_default_and_is_unknown() {
+    let node = script(&[("type", "  ")]);
+    assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+  }
+
+  #[test]
+  fn language_empty_string_defaults_to_classic_when_no_type() {
+    let node = script(&[("language", "")]);
+    assert_eq!(determine_script_type(&node), ScriptType::Classic);
+  }
+
+  #[test]
+  fn language_ecmascript_maps_to_classic() {
+    let node = script(&[("language", "ecmascript")]);
+    assert_eq!(determine_script_type(&node), ScriptType::Classic);
+  }
+
+  #[test]
+  fn legacy_javascript_mime_types_map_to_classic() {
+    for ty in [
+      "text/javascript1.5",
+      "text/jscript",
+      "text/livescript",
+      "text/x-javascript",
+      "application/x-javascript",
+    ] {
+      let node = script(&[("type", ty)]);
+      assert_eq!(determine_script_type(&node), ScriptType::Classic, "type={ty}");
+    }
+  }
+
+  #[test]
+  fn module_and_importmap_require_exact_match() {
+    let node = script(&[("type", "module")]);
+    assert_eq!(determine_script_type(&node), ScriptType::Module);
+    let node = script(&[("type", "module; charset=utf-8")]);
+    assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+
+    let node = script(&[("type", "importmap")]);
+    assert_eq!(determine_script_type(&node), ScriptType::ImportMap);
+    let node = script(&[("type", "importmap; foo=bar")]);
+    assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+  }
+}
