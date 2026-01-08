@@ -6680,6 +6680,14 @@ fn convert_fragment_axes(
   parent_writing_mode: WritingMode,
   parent_direction: crate::style::types::Direction,
 ) -> FragmentNode {
+  if fragment
+    .style
+    .as_ref()
+    .is_some_and(|style| matches!(style.display, Display::TableCell))
+  {
+    return fragment;
+  }
+
   let style_wm = fragment
     .style
     .as_ref()
