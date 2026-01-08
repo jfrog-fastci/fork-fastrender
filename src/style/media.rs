@@ -225,7 +225,7 @@ impl MediaType {
   /// assert!(MediaType::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "all" {
       Ok(MediaType::All)
     } else if s == "screen" {
@@ -271,7 +271,7 @@ pub enum MediaModifier {
 impl MediaModifier {
   /// Parses a modifier from a string
   pub fn parse(s: &str) -> Option<Self> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "not" {
       Some(MediaModifier::Not)
     } else if s == "only" {
@@ -877,7 +877,7 @@ impl MediaFeature {
   /// let color = MediaFeature::parse("color", None).unwrap();
   /// ```
   pub fn parse(name: &str, value: Option<&str>) -> Result<Self, MediaParseError> {
-    let name = ascii_lowercase_cow(name.trim());
+    let name = ascii_lowercase_cow(trim_ascii_whitespace(name));
 
     match name.as_ref() {
       // Width features
@@ -1192,7 +1192,7 @@ impl MediaFeature {
       _ => Ok(MediaFeature::Unknown {
         name: name.as_ref().to_string(),
         value: value
-          .map(str::trim)
+          .map(trim_ascii_whitespace)
           .filter(|v| !v.is_empty())
           .map(|v| v.to_string()),
       }),
@@ -1201,7 +1201,7 @@ impl MediaFeature {
 
   fn parse_length_value(name: &str, value: Option<&str>) -> Result<Length, MediaParseError> {
     let value = value.ok_or_else(|| MediaParseError::MissingValue(name.to_string()))?;
-    let value = value.trim();
+    let value = trim_ascii_whitespace(value);
     let length =
       crate::css::properties::parse_length(value).ok_or_else(|| MediaParseError::InvalidValue {
         feature: name.to_string(),
@@ -1248,7 +1248,7 @@ impl MediaFeature {
 
   fn parse_ratio_value(name: &str, value: Option<&str>) -> Result<(u32, u32), MediaParseError> {
     let value = value.ok_or_else(|| MediaParseError::MissingValue(name.to_string()))?;
-    let value = value.trim();
+    let value = trim_ascii_whitespace(value);
 
     // Parse "16/9" or "16 / 9"
     let mut parts = value.split('/');
@@ -1271,8 +1271,8 @@ impl MediaFeature {
       });
     }
 
-    let first = first.trim();
-    let second = second.trim();
+    let first = trim_ascii_whitespace(first);
+    let second = trim_ascii_whitespace(second);
 
     let width = first
       .parse::<u32>()
@@ -1314,7 +1314,7 @@ impl MediaFeature {
     value: Option<&str>,
   ) -> Result<Resolution, MediaParseError> {
     let value = value.ok_or_else(|| MediaParseError::MissingValue(name.to_string()))?;
-    let value = value.trim();
+    let value = trim_ascii_whitespace(value);
     if let Ok(res) = Resolution::parse(value) {
       return Ok(res);
     }
@@ -1335,8 +1335,7 @@ impl MediaFeature {
 
   fn parse_integer_value(name: &str, value: Option<&str>) -> Result<u32, MediaParseError> {
     let value = value.ok_or_else(|| MediaParseError::MissingValue(name.to_string()))?;
-    value
-      .trim()
+    trim_ascii_whitespace(value)
       .parse::<u32>()
       .map_err(|_| MediaParseError::InvalidValue {
         feature: name.to_string(),
@@ -1357,7 +1356,7 @@ pub enum Orientation {
 impl Orientation {
   /// Parses an orientation value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "portrait" {
       Ok(Orientation::Portrait)
     } else if s == "landscape" {
@@ -1404,7 +1403,7 @@ impl Resolution {
 
   /// Parses a resolution from a string (e.g., "2dppx", "96dpi")
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
 
     let validate =
       |value: f32, unit: ResolutionUnit, original: &str| -> Result<Self, MediaParseError> {
@@ -1417,8 +1416,7 @@ impl Resolution {
     // Try each unit suffix
     if let Some(value_str) = s.as_ref().strip_suffix("dppx") {
       let original = s.as_ref();
-      let value = value_str
-        .trim()
+      let value = trim_ascii_whitespace(value_str)
         .parse::<f32>()
         .map_err(|_| MediaParseError::InvalidResolution(original.to_string()))?;
       return validate(value, ResolutionUnit::Dppx, original);
@@ -1426,8 +1424,7 @@ impl Resolution {
 
     if let Some(value_str) = s.as_ref().strip_suffix("dpcm") {
       let original = s.as_ref();
-      let value = value_str
-        .trim()
+      let value = trim_ascii_whitespace(value_str)
         .parse::<f32>()
         .map_err(|_| MediaParseError::InvalidResolution(original.to_string()))?;
       return validate(value, ResolutionUnit::Dpcm, original);
@@ -1435,8 +1432,7 @@ impl Resolution {
 
     if let Some(value_str) = s.as_ref().strip_suffix("dpi") {
       let original = s.as_ref();
-      let value = value_str
-        .trim()
+      let value = trim_ascii_whitespace(value_str)
         .parse::<f32>()
         .map_err(|_| MediaParseError::InvalidResolution(original.to_string()))?;
       return validate(value, ResolutionUnit::Dpi, original);
@@ -1445,8 +1441,7 @@ impl Resolution {
     // Try 'x' as alias for dppx
     if let Some(value_str) = s.as_ref().strip_suffix('x') {
       let original = s.as_ref();
-      let value = value_str
-        .trim()
+      let value = trim_ascii_whitespace(value_str)
         .parse::<f32>()
         .map_err(|_| MediaParseError::InvalidResolution(original.to_string()))?;
       return validate(value, ResolutionUnit::Dppx, original);
@@ -1498,7 +1493,7 @@ pub enum HoverCapability {
 impl HoverCapability {
   /// Parses a hover capability value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "none" {
       Ok(HoverCapability::None)
     } else if s == "hover" {
@@ -1532,7 +1527,7 @@ pub enum PointerCapability {
 impl PointerCapability {
   /// Parses a pointer capability value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "none" {
       Ok(PointerCapability::None)
     } else if s == "coarse" {
@@ -1565,7 +1560,7 @@ pub enum Scripting {
 
 impl Scripting {
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "none" {
       Ok(Scripting::None)
     } else if s == "initial-only" {
@@ -1598,7 +1593,7 @@ pub enum UpdateFrequency {
 
 impl UpdateFrequency {
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "none" {
       Ok(UpdateFrequency::None)
     } else if s == "slow" {
@@ -1631,7 +1626,7 @@ pub enum LightLevel {
 
 impl LightLevel {
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "dim" {
       Ok(LightLevel::Dim)
     } else if s == "normal" {
@@ -1666,7 +1661,7 @@ pub enum DisplayMode {
 
 impl DisplayMode {
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "browser" {
       Ok(DisplayMode::Browser)
     } else if s == "minimal-ui" {
@@ -1709,7 +1704,7 @@ pub enum ColorScheme {
 impl ColorScheme {
   /// Parses a color scheme value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "no-preference" {
       Ok(ColorScheme::NoPreference)
     } else if s == "light" {
@@ -1744,7 +1739,7 @@ pub enum ReducedMotion {
 impl ReducedMotion {
   /// Parses a reduced motion value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "no-preference" {
       Ok(ReducedMotion::NoPreference)
     } else if s == "reduce" {
@@ -1780,7 +1775,7 @@ pub enum ContrastPreference {
 impl ContrastPreference {
   /// Parses a contrast preference value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "no-preference" {
       Ok(ContrastPreference::NoPreference)
     } else if s == "more" || s == "high" {
@@ -1818,7 +1813,7 @@ pub enum ReducedTransparency {
 impl ReducedTransparency {
   /// Parses a reduced transparency value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "no-preference" {
       Ok(ReducedTransparency::NoPreference)
     } else if s == "reduce" {
@@ -1850,7 +1845,7 @@ pub enum ReducedData {
 impl ReducedData {
   /// Parses a reduced data value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "no-preference" {
       Ok(ReducedData::NoPreference)
     } else if s == "reduce" {
@@ -1880,7 +1875,7 @@ pub enum ColorGamut {
 
 impl ColorGamut {
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "srgb" {
       Ok(ColorGamut::Srgb)
     } else if s == "p3" || s == "display-p3" {
@@ -1913,7 +1908,7 @@ pub enum ForcedColors {
 impl ForcedColors {
   /// Parses a forced-colors value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "none" {
       Ok(ForcedColors::None)
     } else if s == "active" {
@@ -1945,7 +1940,7 @@ pub enum InvertedColors {
 impl InvertedColors {
   /// Parses an inverted-colors value
   pub fn parse(s: &str) -> Result<Self, MediaParseError> {
-    let s = ascii_lowercase_cow(s.trim());
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
     if s == "none" {
       Ok(InvertedColors::None)
     } else if s == "inverted" {
@@ -3176,7 +3171,7 @@ impl<'a> MediaQueryParser<'a> {
   fn parse_query_list(&mut self) -> Result<Vec<MediaQuery>, MediaParseError> {
     // MQ4: an empty media query list evaluates to true, so preserve the empty
     // list as a distinct value (don't coerce it to `not all`).
-    if self.input.trim().is_empty() {
+    if trim_ascii_whitespace(self.input).is_empty() {
       return Ok(Vec::new());
     }
 
@@ -3190,7 +3185,7 @@ impl<'a> MediaQueryParser<'a> {
         '(' => depth = depth.saturating_add(1),
         ')' => depth = depth.saturating_sub(1),
         ',' if depth == 0 => {
-          let slice = self.input[start..idx].trim();
+          let slice = trim_ascii_whitespace(&self.input[start..idx]);
           if slice.is_empty() {
             queries.push(MediaQuery::not_all());
           } else if let Ok(query) = MediaQueryParser::new(slice).parse_query() {
@@ -3204,7 +3199,7 @@ impl<'a> MediaQueryParser<'a> {
       }
     }
 
-    let tail = self.input[start..].trim();
+    let tail = trim_ascii_whitespace(&self.input[start..]);
     if tail.is_empty() {
       queries.push(MediaQuery::not_all());
     } else if let Ok(query) = MediaQueryParser::new(tail).parse_query() {
@@ -3260,7 +3255,7 @@ impl<'a> MediaQueryParser<'a> {
     if !self.is_eof() {
       return Err(MediaParseError::InvalidValue {
         feature: "media query".to_string(),
-        value: self.input[self.pos..].trim().to_string(),
+        value: trim_ascii_whitespace(&self.input[self.pos..]).to_string(),
       });
     }
 
@@ -3337,7 +3332,7 @@ impl<'a> MediaQueryParser<'a> {
 
   fn parse_in_parens(&mut self) -> Result<MediaFeature, MediaParseError> {
     let inner = self.consume_parenthesis_block()?;
-    let inner = inner.trim();
+    let inner = trim_ascii_whitespace(inner);
     if inner.is_empty() {
       return Ok(MediaFeature::Unknown {
         name: String::new(),
@@ -3351,7 +3346,7 @@ impl<'a> MediaQueryParser<'a> {
       && inner
         .as_bytes()
         .get(3)
-        .map(|b| b.is_ascii_whitespace() || *b == b'(')
+        .map(|b| is_ascii_whitespace_css_byte(*b) || *b == b'(')
         .unwrap_or(true);
 
     if inner.starts_with('(') || starts_with_not {
@@ -3381,13 +3376,13 @@ impl<'a> MediaQueryParser<'a> {
     } else {
       Err(MediaParseError::InvalidValue {
         feature: "media condition".to_string(),
-        value: self.input[self.pos..].trim().to_string(),
+        value: trim_ascii_whitespace(&self.input[self.pos..]).to_string(),
       })
     }
   }
 
   fn parse_media_feature_expr(input: &str) -> Result<MediaFeature, MediaParseError> {
-    let trimmed = input.trim();
+    let trimmed = trim_ascii_whitespace(input);
     if trimmed.is_empty() {
       return Ok(MediaFeature::Unknown {
         name: String::new(),
@@ -3396,7 +3391,7 @@ impl<'a> MediaQueryParser<'a> {
     }
 
     if let Some((name, value)) = split_top_level_once(trimmed, ':') {
-      return MediaFeature::parse(name, Some(value.trim()));
+      return MediaFeature::parse(name, Some(trim_ascii_whitespace(value)));
     }
 
     if let Some(result) = Self::parse_range_feature_expr(trimmed) {
@@ -3439,7 +3434,7 @@ impl<'a> MediaQueryParser<'a> {
         '{' => brace_depth = brace_depth.saturating_add(1),
         '}' => brace_depth = brace_depth.saturating_sub(1),
         '<' | '>' | '=' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-          parts.push(input[last..idx].trim());
+          parts.push(trim_ascii_whitespace(&input[last..idx]));
           let mut end = idx + ch.len_utf8();
           let op = match ch {
             '<' => {
@@ -3474,10 +3469,10 @@ impl<'a> MediaQueryParser<'a> {
       return None;
     }
 
-    parts.push(input[last..].trim());
+    parts.push(trim_ascii_whitespace(&input[last..]));
 
     fn parse_feature_kind(name: &str) -> Option<RangeFeature> {
-      let name = ascii_lowercase_cow(name.trim());
+      let name = ascii_lowercase_cow(trim_ascii_whitespace(name));
       match name.as_ref() {
         "width" => Some(RangeFeature::Width),
         "inline-size" => Some(RangeFeature::InlineSize),
@@ -3594,7 +3589,7 @@ impl<'a> MediaQueryParser<'a> {
 
   fn skip_whitespace(&mut self) {
     while let Some(c) = self.peek() {
-      if c.is_whitespace() {
+      if is_ascii_whitespace_css(c) {
         self.advance();
       } else {
         break;
@@ -3690,7 +3685,7 @@ fn split_top_level_once<'a>(input: &'a str, needle: char) -> Option<(&'a str, &'
       _ if ch == needle && depth == 0 => {
         let (left, right) = input.split_at(idx);
         let right = &right[needle.len_utf8()..];
-        return Some((left.trim(), right));
+        return Some((trim_ascii_whitespace(left), right));
       }
       _ => {}
     }
@@ -3907,6 +3902,21 @@ impl std::error::Error for MediaParseError {}
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+// CSS Media Queries use the CSS Syntax "whitespace" production (TAB/LF/FF/CR/SPACE). Avoid Rust's
+// Unicode whitespace helpers (`str::trim`, `char::is_whitespace`, etc.) so non-ASCII whitespace
+// like NBSP (U+00A0) is preserved.
+fn is_ascii_whitespace_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn is_ascii_whitespace_css_byte(b: u8) -> bool {
+  matches!(b, b'\t' | b'\n' | b'\x0C' | b'\r' | b' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
 
 fn ascii_lowercase_cow(s: &str) -> Cow<'_, str> {
   if s.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
@@ -4290,6 +4300,13 @@ mod tests {
     assert_eq!(queries.len(), 2);
     assert_eq!(queries[0].media_type, Some(MediaType::Screen));
     assert_eq!(queries[1].media_type, Some(MediaType::Print));
+  }
+
+  #[test]
+  fn media_query_list_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let queries = MediaQuery::parse_list(nbsp).unwrap();
+    assert_eq!(queries, vec![MediaQuery::not_all()]);
   }
 
   #[test]
