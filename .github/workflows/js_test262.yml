@@ -101,3 +101,72 @@ jobs:
           name: test262_semantic_report
           path: ${{ env.TEST262_REPORT }}
           if-no-files-found: error
+
+      - name: Download previous baseline report
+        id: download_baseline
+        uses: dawidd6/action-download-artifact@v3
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: js_test262.yml
+          workflow_conclusion: success
+          branch: main
+          name: test262_semantic_report
+          path: baseline
+
+      - name: Locate baseline report
+        if: steps.download_baseline.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f baseline/"${TEST262_REPORT}" ]; then
+            echo "BASELINE_REPORT=baseline/${TEST262_REPORT}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          match=$(find baseline -type f -name "$(basename "${TEST262_REPORT}")" | head -n 1 || true)
+          if [ -z "$match" ]; then
+            echo "Downloaded artifact did not contain ${TEST262_REPORT}" >&2
+            exit 1
+          fi
+          echo "BASELINE_REPORT=$match" >> "$GITHUB_ENV"
+          echo "Using baseline report at $match"
+
+      - name: Compare against baseline (fail on regressions)
+        if: steps.download_baseline.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+          report_out="test262_report_compare.txt"
+          rm -f "${report_out}"
+
+          (
+            cd engines/ecma-rs
+            cargo run -p test262-semantic -- \
+              report compare \
+              --baseline "${GITHUB_WORKSPACE}/${BASELINE_REPORT}" \
+              --current "${GITHUB_WORKSPACE}/${TEST262_REPORT}" \
+              --fail-on-regression
+          ) | tee "${report_out}"
+          status=${PIPESTATUS[0]}
+
+          {
+            echo "## test262 semantic regression check"
+            echo
+            echo '```'
+            cat "${report_out}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit $status
+
+      - name: Baseline unavailable
+        if: steps.download_baseline.outcome != 'success'
+        shell: bash
+        run: |
+          echo "Previous test262 semantic report artifact not found; skipping regression gate."
+          {
+            echo "## test262 semantic regression check"
+            echo
+            echo "No prior baseline artifact was available from main."
+            echo "The uploaded JSON report from this run will serve as the next baseline."
+          } >> "$GITHUB_STEP_SUMMARY"
