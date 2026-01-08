@@ -263,6 +263,43 @@ fn row_reverse_space_evenly_respects_row_gap_between_lines() {
 }
 
 #[test]
+fn column_reverse_space_evenly_respects_column_gap_between_lines() {
+  let fc = FlexFormattingContext::new();
+
+  let container = build_multiline_container(
+    AlignContent::SpaceEvenly,
+    WritingMode::HorizontalTb,
+    FlexDirection::ColumnReverse,
+    FlexWrap::Wrap,
+    50.0,
+    60.0,
+    0.0,
+    5.0,
+    10.0,
+    30.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(50.0, 60.0))
+    .expect("layout succeeds");
+
+  // Same geometry as `column_direction_space_evenly_respects_column_gap_between_lines`, but with
+  // column-reverse: items in each column are stacked from bottom to top, while the cross-axis line
+  // offsets should remain the same.
+  let epsilon = 0.6;
+  let first_line_x = 25.0 / 3.0;
+  let second_line_x = first_line_x + 10.0 + 5.0 + first_line_x;
+
+  assert_approx(find_block_child(&fragment, 1).bounds.x(), first_line_x, epsilon, "child1 x");
+  assert_approx(find_block_child(&fragment, 2).bounds.x(), first_line_x, epsilon, "child2 x");
+  assert_approx(find_block_child(&fragment, 3).bounds.x(), second_line_x, epsilon, "child3 x");
+
+  // Column-reverse stacks items from the bottom edge when the column is exactly filled.
+  assert_approx(find_block_child(&fragment, 1).bounds.y(), 30.0, epsilon, "child1 y");
+  assert_approx(find_block_child(&fragment, 2).bounds.y(), 0.0, epsilon, "child2 y");
+  assert_approx(find_block_child(&fragment, 3).bounds.y(), 30.0, epsilon, "child3 y");
+}
+
+#[test]
 fn vertical_writing_mode_column_gap_affects_main_axis_spacing() {
   let fc = FlexFormattingContext::new();
 
