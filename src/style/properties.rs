@@ -10205,6 +10205,7 @@ fn apply_declaration_with_base_internal_with_order(
     },
     "font-weight" => match resolved_value {
       PropertyValue::Keyword(kw) => {
+        let kw = kw.to_ascii_lowercase();
         styles.font_weight = match kw.as_str() {
           "normal" => FontWeight::Normal,
           "bold" => FontWeight::Bold,
@@ -10505,6 +10506,7 @@ fn apply_declaration_with_base_internal_with_order(
     },
     "font-kerning" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.font_kerning = match kw.as_str() {
           "auto" => FontKerning::Auto,
           "normal" => FontKerning::Normal,
@@ -10530,34 +10532,51 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "font-synthesis" => {
-      if let PropertyValue::Keyword(raw) = resolved_value {
-        let tokens: Vec<&str> = raw.split_whitespace().collect();
-        if tokens.len() == 1 && tokens[0] == "none" {
-          styles.font_synthesis = FontSynthesis {
-            weight: false,
-            style: false,
-            small_caps: false,
-            position: false,
-          };
-        } else if !tokens.is_empty() {
-          let mut synth = FontSynthesis {
-            weight: false,
-            style: false,
-            small_caps: false,
-            position: false,
-          };
-          for tok in tokens {
-            match tok {
-              "weight" => synth.weight = true,
-              "style" => synth.style = true,
-              "small-caps" => synth.small_caps = true,
-              "position" => synth.position = true,
-              _ => {}
+      let mut tokens: Vec<&str> = Vec::new();
+      match resolved_value {
+        PropertyValue::Keyword(raw) => {
+          tokens.extend(raw.split_whitespace());
+        }
+        PropertyValue::Multiple(values) => {
+          for token in values {
+            if let PropertyValue::Keyword(raw) = token {
+              tokens.extend(raw.split_whitespace());
             }
           }
-          styles.font_synthesis = synth;
+        }
+        _ => {}
+      }
+      if tokens.is_empty() {
+        return;
+      }
+      if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("none") {
+        styles.font_synthesis = FontSynthesis {
+          weight: false,
+          style: false,
+          small_caps: false,
+          position: false,
+        };
+        return;
+      }
+
+      let mut synth = FontSynthesis {
+        weight: false,
+        style: false,
+        small_caps: false,
+        position: false,
+      };
+      for tok in tokens {
+        if tok.eq_ignore_ascii_case("weight") {
+          synth.weight = true;
+        } else if tok.eq_ignore_ascii_case("style") {
+          synth.style = true;
+        } else if tok.eq_ignore_ascii_case("small-caps") {
+          synth.small_caps = true;
+        } else if tok.eq_ignore_ascii_case("position") {
+          synth.position = true;
         }
       }
+      styles.font_synthesis = synth;
     }
     "font-synthesis-weight" => {
       if let PropertyValue::Keyword(raw) = resolved_value {
@@ -10606,6 +10625,7 @@ fn apply_declaration_with_base_internal_with_order(
     },
     "table-layout" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.table_layout = match kw.as_str() {
           "auto" => TableLayout::Auto,
           "fixed" => TableLayout::Fixed,
@@ -10615,6 +10635,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "empty-cells" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.empty_cells = match kw.as_str() {
           "show" => EmptyCells::Show,
           "hide" => EmptyCells::Hide,
@@ -10624,6 +10645,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "caption-side" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.caption_side = match kw.as_str() {
           "top" => CaptionSide::Top,
           "bottom" => CaptionSide::Bottom,
@@ -10756,6 +10778,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "text-wrap" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.text_wrap = match kw.as_str() {
           "wrap" | "auto" | "normal" => TextWrap::Auto,
           "nowrap" => TextWrap::NoWrap,
@@ -13095,6 +13118,7 @@ fn apply_declaration_with_base_internal_with_order(
 
     "border-collapse" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
         styles.border_collapse = match kw.as_str() {
           "collapse" => crate::style::types::BorderCollapse::Collapse,
           "separate" => crate::style::types::BorderCollapse::Separate,
