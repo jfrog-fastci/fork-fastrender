@@ -16,8 +16,8 @@ use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
-use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::{FastRender, FastRenderConfig};
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
+use fastrender::{FastRender, FastRenderConfig, RenderArtifactRequest, RenderArtifacts, RenderOptions};
 use fastrender::FormattingContext;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1025,5 +1025,159 @@ fn overflow_hidden_clips_overflow_columns() {
     sample_pixel(&overflow_hidden, 215, 20),
     (255, 0, 255, 255),
     "overflow:hidden should clip overflow columns outside the multicol container"
+  );
+}
+
+fn find_first_multicol_container<'a>(fragment: &'a FragmentNode) -> Option<&'a FragmentNode> {
+  if fragment.fragmentation.is_some() {
+    return Some(fragment);
+  }
+  for child in fragment.children.iter() {
+    if let Some(found) = find_first_multicol_container(child) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn render_tree_with_artifacts(html: &str, width: u32, height: u32) -> FragmentTree {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new()
+    .with_runtime_toggles(toggles)
+    .with_paint_parallelism(PaintParallelism::disabled())
+    .with_layout_parallelism(LayoutParallelism::disabled());
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+
+  let options = RenderOptions::new().with_viewport(width, height);
+  let mut artifacts = RenderArtifacts::new(RenderArtifactRequest {
+    fragment_tree: true,
+    ..Default::default()
+  });
+  renderer
+    .render_html_with_options_and_artifacts(html, options, &mut artifacts)
+    .expect("render");
+
+  artifacts.fragment_tree.expect("fragment tree artifact")
+}
+
+#[test]
+fn column_width_without_count_generates_auto_columns() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi { width: 300px; column-width: 100px; }
+    </style>
+    <div id="multi">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container.fragmentation.as_ref().expect("fragmentation info");
+
+  assert_eq!(info.column_count, 2);
+  assert!((info.column_gap - 16.0).abs() < 0.1, "expected 1em gap");
+  assert!(
+    (info.column_width - 142.0).abs() < 0.6,
+    "expected auto column width (got {})",
+    info.column_width
+  );
+}
+
+#[test]
+fn columns_shorthand_single_length_sets_column_width() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi { width: 600px; columns: 12em; }
+    </style>
+    <div id="multi">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container.fragmentation.as_ref().expect("fragmentation info");
+
+  assert_eq!(info.column_count, 2);
+  assert!((info.column_gap - 16.0).abs() < 0.1);
+  assert!(
+    (info.column_width - 292.0).abs() < 0.6,
+    "expected auto column width (got {})",
+    info.column_width
+  );
+  assert!(info.column_width >= 192.0);
+}
+
+#[test]
+fn columns_shorthand_single_number_sets_column_count() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi { width: 800px; columns: 4; }
+    </style>
+    <div id="multi">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 900, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container.fragmentation.as_ref().expect("fragmentation info");
+
+  assert_eq!(info.column_count, 4);
+  assert!(
+    (info.column_width - 188.0).abs() < 0.6,
+    "expected computed column width (got {})",
+    info.column_width
+  );
+}
+
+#[test]
+fn columns_shorthand_number_and_length_treats_count_as_maximum() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi { width: 600px; columns: 12 8em; }
+    </style>
+    <div id="multi">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container.fragmentation.as_ref().expect("fragmentation info");
+
+  assert_eq!(info.column_count, 4);
+  assert!(
+    (info.column_width - 138.0).abs() < 0.6,
+    "expected computed column width (got {})",
+    info.column_width
+  );
+  assert!(info.column_width >= 128.0);
+}
+
+#[test]
+fn column_gap_em_resolves_against_font_size() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi { width: 500px; column-count: 5; column-gap: 2em; }
+    </style>
+    <div id="multi">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 600, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container.fragmentation.as_ref().expect("fragmentation info");
+
+  assert_eq!(info.column_count, 5);
+  assert!(
+    (info.column_gap - 32.0).abs() < 0.2,
+    "expected 2em gap (got {})",
+    info.column_gap
+  );
+  assert!(
+    (info.column_width - 74.4).abs() < 0.6,
+    "expected computed column width (got {})",
+    info.column_width
   );
 }
