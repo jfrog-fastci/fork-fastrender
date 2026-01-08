@@ -3863,16 +3863,42 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   Some(IntrinsicSizeKeyword::FitContent { limit: Some(limit) })
 }
 
-fn extract_sizing_value(value: &PropertyValue) -> crate::style::LogicalSizingValue {
+fn extract_sizing_value(
+  value: &PropertyValue,
+  allow_none_keyword: bool,
+) -> Option<crate::style::LogicalSizingValue> {
   if let Some(keyword) = parse_intrinsic_size_keyword(value) {
-    return crate::style::LogicalSizingValue {
+    return Some(crate::style::LogicalSizingValue {
       length: None,
       keyword: Some(keyword),
-    };
+    });
   }
-  crate::style::LogicalSizingValue {
-    length: extract_length(value),
-    keyword: None,
+
+  match value {
+    PropertyValue::Length(len) => Some(crate::style::LogicalSizingValue {
+      length: Some(*len),
+      keyword: None,
+    }),
+    PropertyValue::Number(n) if *n == 0.0 => Some(crate::style::LogicalSizingValue {
+      length: Some(Length::px(0.0)),
+      keyword: None,
+    }),
+    PropertyValue::Keyword(kw) => {
+      let trimmed = kw.trim();
+      if trimmed.eq_ignore_ascii_case("auto")
+        || (allow_none_keyword && trimmed.eq_ignore_ascii_case("none"))
+      {
+        return Some(crate::style::LogicalSizingValue {
+          length: None,
+          keyword: None,
+        });
+      }
+      parse_length(trimmed).map(|len| crate::style::LogicalSizingValue {
+        length: Some(len),
+        keyword: None,
+      })
+    }
+    _ => None,
   }
 }
 #[derive(Debug, Clone, Copy)]
@@ -8239,128 +8265,136 @@ fn apply_declaration_with_base_internal_with_order(
 
     // Width and height
     "width" => {
-      set_size_property_with_order(
-        &mut styles.width,
-        &mut styles.width_keyword,
-        &mut styles.logical.width_order,
-        extract_sizing_value(resolved_value),
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, false) {
+        set_size_property_with_order(
+          &mut styles.width,
+          &mut styles.width_keyword,
+          &mut styles.logical.width_order,
+          value,
+          order,
+        );
+      }
     }
     "height" => {
-      set_size_property_with_order(
-        &mut styles.height,
-        &mut styles.height_keyword,
-        &mut styles.logical.height_order,
-        extract_sizing_value(resolved_value),
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, false) {
+        set_size_property_with_order(
+          &mut styles.height,
+          &mut styles.height_keyword,
+          &mut styles.logical.height_order,
+          value,
+          order,
+        );
+      }
     }
     "min-width" => {
-      let value = extract_sizing_value(resolved_value);
-      set_size_property_with_order(
-        &mut styles.min_width,
-        &mut styles.min_width_keyword,
-        &mut styles.logical.min_width_order,
-        crate::style::LogicalSizingValue {
-          length: sanitize_min_length(value.length),
-          keyword: value.keyword,
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, false) {
+        set_size_property_with_order(
+          &mut styles.min_width,
+          &mut styles.min_width_keyword,
+          &mut styles.logical.min_width_order,
+          crate::style::LogicalSizingValue {
+            length: sanitize_min_length(value.length),
+            keyword: value.keyword,
+          },
+          order,
+        );
+      }
     }
     "min-height" => {
-      let value = extract_sizing_value(resolved_value);
-      set_size_property_with_order(
-        &mut styles.min_height,
-        &mut styles.min_height_keyword,
-        &mut styles.logical.min_height_order,
-        crate::style::LogicalSizingValue {
-          length: sanitize_min_length(value.length),
-          keyword: value.keyword,
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, false) {
+        set_size_property_with_order(
+          &mut styles.min_height,
+          &mut styles.min_height_keyword,
+          &mut styles.logical.min_height_order,
+          crate::style::LogicalSizingValue {
+            length: sanitize_min_length(value.length),
+            keyword: value.keyword,
+          },
+          order,
+        );
+      }
     }
     "max-width" => {
-      let value = extract_sizing_value(resolved_value);
-      set_size_property_with_order(
-        &mut styles.max_width,
-        &mut styles.max_width_keyword,
-        &mut styles.logical.max_width_order,
-        crate::style::LogicalSizingValue {
-          length: sanitize_max_length(value.length),
-          keyword: value.keyword,
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, true) {
+        set_size_property_with_order(
+          &mut styles.max_width,
+          &mut styles.max_width_keyword,
+          &mut styles.logical.max_width_order,
+          crate::style::LogicalSizingValue {
+            length: sanitize_max_length(value.length),
+            keyword: value.keyword,
+          },
+          order,
+        );
+      }
     }
     "max-height" => {
-      let value = extract_sizing_value(resolved_value);
-      set_size_property_with_order(
-        &mut styles.max_height,
-        &mut styles.max_height_keyword,
-        &mut styles.logical.max_height_order,
-        crate::style::LogicalSizingValue {
-          length: sanitize_max_length(value.length),
-          keyword: value.keyword,
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, true) {
+        set_size_property_with_order(
+          &mut styles.max_height,
+          &mut styles.max_height_keyword,
+          &mut styles.logical.max_height_order,
+          crate::style::LogicalSizingValue {
+            length: sanitize_max_length(value.length),
+            keyword: value.keyword,
+          },
+          order,
+        );
+      }
     }
     "inline-size" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::InlineSize {
-          value: Some(extract_sizing_value(resolved_value)),
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, false) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::InlineSize { value: Some(value) },
+          order,
+        );
+      }
     }
     "block-size" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::BlockSize {
-          value: Some(extract_sizing_value(resolved_value)),
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, false) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::BlockSize { value: Some(value) },
+          order,
+        );
+      }
     }
     "min-inline-size" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::MinInlineSize {
-          value: Some(extract_sizing_value(resolved_value)),
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, false) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::MinInlineSize { value: Some(value) },
+          order,
+        );
+      }
     }
     "min-block-size" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::MinBlockSize {
-          value: Some(extract_sizing_value(resolved_value)),
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, false) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::MinBlockSize { value: Some(value) },
+          order,
+        );
+      }
     }
     "max-inline-size" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::MaxInlineSize {
-          value: Some(extract_sizing_value(resolved_value)),
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, true) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::MaxInlineSize { value: Some(value) },
+          order,
+        );
+      }
     }
     "max-block-size" => {
-      push_logical(
-        styles,
-        crate::style::LogicalProperty::MaxBlockSize {
-          value: Some(extract_sizing_value(resolved_value)),
-        },
-        order,
-      );
+      if let Some(value) = extract_sizing_value(resolved_value, true) {
+        push_logical(
+          styles,
+          crate::style::LogicalProperty::MaxBlockSize { value: Some(value) },
+          order,
+        );
+      }
     }
 
     // Margin
