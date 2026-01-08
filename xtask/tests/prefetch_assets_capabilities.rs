@@ -18,7 +18,11 @@ fn parses_prefetch_assets_capabilities_and_extracts_supported_flags() {
     "prefetch_css_url_assets": true,
     "max_discovered_assets_per_page": true,
     "max_images_per_page": false,
-    "max_image_urls_per_element": true
+    "max_image_urls_per_element": true,
+    "report_json": true,
+    "report_per_page_dir": true,
+    "max_report_urls_per_kind": true,
+    "dry_run": true
   }
 }
 "#;
@@ -41,6 +45,10 @@ fn parses_prefetch_assets_capabilities_and_extracts_supported_flags() {
       max_discovered_assets_per_page: true,
       max_images_per_page: false,
       max_image_urls_per_element: true,
+      report_json: true,
+      report_per_page_dir: true,
+      max_report_urls_per_kind: true,
+      dry_run: true,
     }
   );
 
@@ -60,6 +68,12 @@ fn parses_prefetch_assets_capabilities_and_extracts_supported_flags() {
     "--max-images-per-page=5".to_string(),
     "--max-image-urls-per-element".to_string(),
     "2".to_string(),
+    "--report-json".to_string(),
+    "out.json".to_string(),
+    "--report-per-page-dir=outdir".to_string(),
+    "--max-report-urls-per-kind".to_string(),
+    "25".to_string(),
+    "--discover-only".to_string(),
     "--foo".to_string(),
     "bar".to_string(),
   ];
@@ -79,6 +93,12 @@ fn parses_prefetch_assets_capabilities_and_extracts_supported_flags() {
       "10".to_string(),
       "--max-image-urls-per-element".to_string(),
       "2".to_string(),
+      "--report-json".to_string(),
+      "out.json".to_string(),
+      "--report-per-page-dir=outdir".to_string(),
+      "--max-report-urls-per-kind".to_string(),
+      "25".to_string(),
+      "--discover-only".to_string(),
     ],
     "supported prefetch flags (and their values) should be extracted"
   );

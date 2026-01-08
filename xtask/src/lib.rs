@@ -101,6 +101,10 @@ pub struct PrefetchAssetsSupport {
   pub max_discovered_assets_per_page: bool,
   pub max_images_per_page: bool,
   pub max_image_urls_per_element: bool,
+  pub report_json: bool,
+  pub report_per_page_dir: bool,
+  pub max_report_urls_per_kind: bool,
+  pub dry_run: bool,
 }
 
 impl PrefetchAssetsSupport {
@@ -116,6 +120,10 @@ impl PrefetchAssetsSupport {
       max_discovered_assets_per_page: true,
       max_images_per_page: true,
       max_image_urls_per_element: true,
+      report_json: true,
+      report_per_page_dir: true,
+      max_report_urls_per_kind: true,
+      dry_run: true,
     }
   }
 
@@ -130,6 +138,10 @@ impl PrefetchAssetsSupport {
       || self.max_discovered_assets_per_page
       || self.max_images_per_page
       || self.max_image_urls_per_element
+      || self.report_json
+      || self.report_per_page_dir
+      || self.max_report_urls_per_kind
+      || self.dry_run
   }
 }
 
@@ -184,6 +196,16 @@ pub fn extract_prefetch_assets_args(
       || (support.max_image_urls_per_element
         && (arg == "--max-image-urls-per-element"
           || arg.starts_with("--max-image-urls-per-element=")));
+    let is_prefetch_arg = is_prefetch_arg
+      || (support.report_json && (arg == "--report-json" || arg.starts_with("--report-json=")));
+    let is_prefetch_arg = is_prefetch_arg
+      || (support.report_per_page_dir
+        && (arg == "--report-per-page-dir" || arg.starts_with("--report-per-page-dir=")));
+    let is_prefetch_arg = is_prefetch_arg
+      || (support.max_report_urls_per_kind
+        && (arg == "--max-report-urls-per-kind" || arg.starts_with("--max-report-urls-per-kind=")));
+    let is_prefetch_arg =
+      is_prefetch_arg || (support.dry_run && (arg == "--dry-run" || arg == "--discover-only"));
 
     if is_prefetch_arg {
       prefetch_args.push(arg.clone());
