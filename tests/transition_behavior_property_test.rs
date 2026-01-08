@@ -68,6 +68,66 @@ fn transition_behavior_property_parses_comma_separated_list() {
 }
 
 #[test]
+fn transition_behavior_property_parses_escaped_keyword() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+  let declaration = Declaration {
+    property: "transition-behavior".into(),
+    value: PropertyValue::Keyword("allow\\-discrete".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+
+  apply_declaration_with_base(
+    &mut styles,
+    &declaration,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_behaviors,
+    vec![TransitionBehavior::AllowDiscrete].into()
+  );
+}
+
+#[test]
+fn transition_shorthand_parses_escaped_transition_behavior() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "transition".into(),
+    value: PropertyValue::Keyword("opacity 1s linear allow\\-discrete".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(
+    styles.transition_behaviors,
+    vec![TransitionBehavior::AllowDiscrete].into()
+  );
+}
+
+#[test]
 fn transition_behavior_longhand_overrides_transition_shorthand() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();

@@ -2719,7 +2719,22 @@ fn parse_transition_delay_list(raw: &str) -> Option<Vec<f32>> {
 }
 
 fn parse_transition_behavior(raw: &str) -> Option<TransitionBehavior> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let ident = match parser.next_including_whitespace() {
+    Ok(Token::Ident(ident)) => ident.as_ref().to_ascii_lowercase(),
+    _ => return None,
+  };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return None;
+  }
+  match ident.as_str() {
     "normal" => Some(TransitionBehavior::Normal),
     "allow-discrete" => Some(TransitionBehavior::AllowDiscrete),
     _ => None,
