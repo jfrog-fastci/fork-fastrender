@@ -249,6 +249,10 @@ fn normalize_header_value(value: &str) -> String {
     .to_string()
 }
 
+fn trim_http_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, ' ' | '\t'))
+}
+
 fn validate_header_value(value: &str) -> Result<()> {
   // https://fetch.spec.whatwg.org/#concept-header-value
   if value
@@ -307,7 +311,7 @@ fn is_forbidden_request_header(name: &HeaderName, value: &str) -> bool {
         name_str,
         "x-http-method" | "x-http-method-override" | "x-method-override"
       ) {
-        for method in value.split(',').map(|s| s.trim()) {
+        for method in value.split(',').map(trim_http_whitespace) {
           if is_forbidden_method(method) {
             return true;
           }
@@ -366,12 +370,7 @@ fn is_cors_safelisted_request_header(name: &HeaderName, value: &str) -> bool {
         return false;
       }
 
-      let essence = value
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
+      let essence = trim_http_whitespace(value.split(';').next().unwrap_or("")).to_ascii_lowercase();
 
       matches!(
         essence.as_str(),
@@ -402,7 +401,7 @@ fn is_cors_safelisted_language_byte(byte: u8) -> bool {
 
 fn is_safelisted_range_header_value(value: &str) -> bool {
   // https://fetch.spec.whatwg.org/#cors-safelisted-request-header (range case)
-  let trimmed = value.trim();
+  let trimmed = trim_http_whitespace(value);
   let Some(rest) = trimmed
     .strip_prefix("bytes=")
     .or_else(|| trimmed.strip_prefix("Bytes="))
@@ -431,3 +430,24 @@ fn is_safelisted_range_header_value(value: &str) -> bool {
   true
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn cors_safelisted_range_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let value = format!("{nbsp}bytes=0-1");
+    assert!(!is_safelisted_range_header_value(&value));
+    assert!(is_safelisted_range_header_value("bytes=0-1"));
+  }
+
+  #[test]
+  fn cors_safelisted_content_type_does_not_trim_non_ascii_whitespace() {
+    let name = HeaderName::from_static("content-type");
+    assert!(is_cors_safelisted_request_header(&name, "text/plain"));
+    let nbsp = "\u{00A0}";
+    let value = format!("{nbsp}text/plain");
+    assert!(!is_cors_safelisted_request_header(&name, &value));
+  }
+}

@@ -4484,7 +4484,10 @@ impl ImageCache {
     let mime = content_type?
       .split(';')
       .next()
-      .map(|ct| ct.trim().to_ascii_lowercase())?;
+      .map(|ct| {
+        ct.trim_matches(|c: char| matches!(c, ' ' | '\t'))
+          .to_ascii_lowercase()
+      })?;
     ImageFormat::from_mime_type(mime)
   }
 
@@ -8495,6 +8498,17 @@ mod tests {
     assert!(
       requests.iter().any(|(url, _)| *url == expected_url),
       "expected fetcher to request {expected_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn image_format_from_content_type_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let content_type = format!("{nbsp}image/png");
+    assert_eq!(ImageCache::format_from_content_type(Some(&content_type)), None);
+    assert_eq!(
+      ImageCache::format_from_content_type(Some("image/png")),
+      Some(ImageFormat::Png)
     );
   }
 

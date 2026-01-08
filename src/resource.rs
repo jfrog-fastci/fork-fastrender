@@ -382,6 +382,10 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn trim_http_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, ' ' | '\t'))
+}
+
 /// Normalize a URL into a filename-safe stem used for caches and outputs.
 pub fn url_to_filename(url: &str) -> String {
   let trimmed = trim_ascii_whitespace(url);
@@ -1609,7 +1613,7 @@ fn format_attempt_suffix(attempt: usize, max_attempts: usize) -> String {
 }
 
 fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
-  let value = headers.get("retry-after")?.to_str().ok()?.trim();
+  let value = trim_http_whitespace(headers.get("retry-after")?.to_str().ok()?);
   if value.is_empty() {
     return None;
   }
@@ -2501,11 +2505,7 @@ fn response_resource_error(
 }
 
 fn content_type_mime(content_type: &str) -> &str {
-  content_type
-    .split(';')
-    .next()
-    .unwrap_or(content_type)
-    .trim()
+  trim_http_whitespace(content_type.split(';').next().unwrap_or(content_type))
 }
 
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
@@ -2515,13 +2515,13 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 }
 
 fn mime_is_html(mime: &str) -> bool {
-  let mime = mime.trim();
+  let mime = trim_http_whitespace(mime);
   starts_with_ignore_ascii_case(mime, "text/html")
     || starts_with_ignore_ascii_case(mime, "application/xhtml+xml")
 }
 
 fn mime_is_svg(mime: &str) -> bool {
-  starts_with_ignore_ascii_case(mime.trim(), "image/svg")
+  starts_with_ignore_ascii_case(trim_http_whitespace(mime), "image/svg")
 }
 
 fn url_looks_like_suffix(url: &str, suffix: &str) -> bool {
@@ -2772,7 +2772,7 @@ pub fn ensure_stylesheet_mime_sane(resource: &FetchedResource, requested_url: &s
     let content_type = resource
       .content_type
       .as_deref()
-      .map(str::trim)
+      .map(trim_http_whitespace)
       .filter(|ct| !ct.is_empty())
       .ok_or_else(|| {
         response_resource_error(
@@ -6880,13 +6880,13 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
   let mut policy = HttpCachePolicy::default();
   if let Some(value) = headers.get("cache-control").and_then(|h| h.to_str().ok()) {
     for directive in value.split(',') {
-      let directive = directive.trim();
+      let directive = trim_http_whitespace(directive);
       if directive.is_empty() {
         continue;
       }
       let (name, value) = directive
         .split_once('=')
-        .map(|(k, v)| (k.trim(), Some(v.trim())))
+        .map(|(k, v)| (trim_http_whitespace(k), Some(trim_http_whitespace(v))))
         .unwrap_or((directive, None));
       match name.to_ascii_lowercase().as_str() {
         "max-age" => {
@@ -6925,12 +6925,14 @@ fn allow_unhandled_vary_env() -> bool {
 }
 
 fn vary_contains_star(vary: &str) -> bool {
-  vary.split(',').any(|part| part.trim() == "*")
+  vary
+    .split(',')
+    .any(|part| trim_http_whitespace(part) == "*")
 }
 
 fn vary_is_cacheable(vary: &str, _kind: FetchContextKind, _origin_key: Option<&str>) -> bool {
   for part in vary.split(',') {
-    let part = part.trim();
+    let part = trim_http_whitespace(part);
     if part.is_empty() {
       continue;
     }
@@ -7578,17 +7580,17 @@ fn compute_vary_key_for_request<F: ResourceFetcher>(
   req: FetchRequest<'_>,
   vary: Option<&str>,
 ) -> Option<String> {
-  let Some(vary) = vary.filter(|v| !v.trim().is_empty()) else {
+  let Some(vary) = vary.filter(|v| !trim_http_whitespace(v).is_empty()) else {
     return Some(VARY_KEY_EMPTY.to_string());
   };
-  if vary.trim() == "*" {
+  if trim_http_whitespace(vary) == "*" {
     return None;
   }
 
   let mut hasher = Sha256::new();
   let mut saw_field = false;
   for field in vary.split(',') {
-    let name = field.trim();
+    let name = trim_http_whitespace(field);
     if name.is_empty() {
       continue;
     }
@@ -9195,7 +9197,7 @@ fn header_values_joined(headers: &HeaderMap, name: &str) -> Option<String> {
     .get_all(name)
     .iter()
     .filter_map(|value| value.to_str().ok())
-    .map(str::trim)
+    .map(trim_http_whitespace)
     .filter(|value| !value.is_empty())
     .collect();
   match values.as_slice() {
@@ -9242,7 +9244,7 @@ fn parse_vary_headers(headers: &HeaderMap) -> Option<String> {
       continue;
     };
     for token in value.split(',') {
-      let token = token.trim();
+      let token = trim_http_whitespace(token);
       if token.is_empty() {
         continue;
       }
@@ -9267,7 +9269,7 @@ fn parse_content_encodings(headers: &HeaderMap) -> Vec<String> {
     .iter()
     .filter_map(|h| h.to_str().ok())
     .flat_map(|value| value.split(','))
-    .map(|value| value.trim().to_ascii_lowercase())
+    .map(|value| trim_http_whitespace(value).to_ascii_lowercase())
     .filter(|value| !value.is_empty())
     .collect()
 }
@@ -9278,7 +9280,7 @@ fn parse_cors_response_headers(headers: &HeaderMap) -> (Option<String>, bool) {
     .get_all("access-control-allow-credentials")
     .iter()
     .filter_map(|value| value.to_str().ok())
-    .map(str::trim)
+    .map(trim_http_whitespace)
     .filter(|value| !value.is_empty())
     .collect();
   // Chromium expects `Access-Control-Allow-Credentials: true` exactly; treat multiple values as
@@ -9322,7 +9324,7 @@ fn decode_stage_for_content_type(content_type: Option<&str>) -> RenderStage {
   }
   let mime = content_type
     .and_then(|ct| ct.split(';').next())
-    .map(|ct| ct.trim().to_ascii_lowercase())
+    .map(|ct| trim_http_whitespace(ct).to_ascii_lowercase())
     .unwrap_or_else(String::new);
 
   if mime.contains("text/css") || mime.contains("font/") {
@@ -9899,6 +9901,34 @@ mod tests {
     assert!(mime_is_svg("IMAGE/SVG+XML"));
     assert!(mime_is_svg("image/svg+xml"));
     assert!(!mime_is_svg("image/png"));
+  }
+
+  #[test]
+  fn mime_predicates_do_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      !mime_is_html(&format!("{nbsp}text/html")),
+      "NBSP must not be treated as whitespace for HTML MIME detection"
+    );
+    assert!(
+      !mime_is_svg(&format!("{nbsp}image/svg+xml")),
+      "NBSP must not be treated as whitespace for SVG MIME detection"
+    );
+  }
+
+  #[test]
+  fn parse_cors_response_headers_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let mut headers = HeaderMap::new();
+    headers.insert(
+      "access-control-allow-credentials",
+      http::HeaderValue::from_bytes(format!("{nbsp}true").as_bytes()).expect("header value"),
+    );
+    let (_, allow_credentials) = parse_cors_response_headers(&headers);
+    assert!(
+      !allow_credentials,
+      "NBSP must not be treated as whitespace when matching allow-credentials"
+    );
   }
 
   #[test]
