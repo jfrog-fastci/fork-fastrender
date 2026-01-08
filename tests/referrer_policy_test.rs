@@ -258,6 +258,30 @@ impl HeaderCaptureServer {
 </html>"#
                   .to_vec(),
               ),
+              "/doc_links_img.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head></head>
+  <body>
+    <img src="/img.png" style="width: 10px; height: 10px">
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
+              "/doc_links_iframe.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head></head>
+  <body>
+    <iframe src="/frame.html" style="width: 10px; height: 10px"></iframe>
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
               "/doc_links_img_meta_origin.html" => (
                 "200 OK",
                 "text/html; charset=utf-8",
@@ -331,6 +355,16 @@ impl HeaderCaptureServer {
                   .to_vec(),
               ),
               "/doc_redirect_policy.html" => (
+                "302 Found",
+                "text/plain; charset=utf-8",
+                b"redirecting".to_vec(),
+              ),
+              "/doc_redirect_policy_img.html" => (
+                "302 Found",
+                "text/plain; charset=utf-8",
+                b"redirecting".to_vec(),
+              ),
+              "/doc_redirect_policy_iframe.html" => (
                 "302 Found",
                 "text/plain; charset=utf-8",
                 b"redirecting".to_vec(),
@@ -434,6 +468,14 @@ body { font-family: "TestFont"; }"#
             }
             if path == "/doc_redirect_policy.html" {
               extra_headers.push_str("Location: /doc_links_style_import.html\r\n");
+              extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
+            }
+            if path == "/doc_redirect_policy_img.html" {
+              extra_headers.push_str("Location: /doc_links_img.html\r\n");
+              extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
+            }
+            if path == "/doc_redirect_policy_iframe.html" {
+              extra_headers.push_str("Location: /doc_links_iframe.html\r\n");
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
             if path == "/doc_redirect_policy_link_override.html" {
@@ -2012,6 +2054,82 @@ fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for
       req.headers
     );
   }
+}
+
+#[test]
+fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_images() {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_images",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_redirect_policy_img.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in [
+    "/doc_redirect_policy_img.html",
+    "/doc_links_img.html",
+    "/img.png",
+  ] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let img_req = requests
+    .iter()
+    .find(|req| req.path == "/img.png")
+    .expect("expected /img.png request");
+  assert!(
+    header_value(&img_req.headers, "referer").is_none(),
+    "expected redirect Referrer-Policy to suppress Referer for /img.png; got:\n{}",
+    img_req.headers
+  );
+}
+
+#[test]
+fn document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_iframes() {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_redirect_response_referrer_policy_no_referrer_suppresses_referer_for_iframes",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_redirect_policy_iframe.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in [
+    "/doc_redirect_policy_iframe.html",
+    "/doc_links_iframe.html",
+    "/frame.html",
+  ] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let requests = server.take_requests();
+  let frame_req = requests
+    .iter()
+    .find(|req| req.path == "/frame.html")
+    .expect("expected /frame.html request");
+  assert!(
+    header_value(&frame_req.headers, "referer").is_none(),
+    "expected redirect Referrer-Policy to suppress Referer for /frame.html; got:\n{}",
+    frame_req.headers
+  );
 }
 
 #[test]
