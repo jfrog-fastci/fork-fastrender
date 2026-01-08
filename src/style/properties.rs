@@ -13876,12 +13876,20 @@ fn parse_border_image_slice_values(values: &[PropertyValue]) -> Option<BorderIma
   let mut numeric: Vec<BorderImageSliceValue> = Vec::new();
   for v in values {
     match v {
-      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("fill") => fill = true,
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("fill") => {
+        if fill {
+          return None;
+        }
+        fill = true
+      }
       PropertyValue::Number(n) if *n >= 0.0 => numeric.push(BorderImageSliceValue::Number(*n)),
       PropertyValue::Percentage(p) if *p >= 0.0 => {
         numeric.push(BorderImageSliceValue::Percentage(*p))
       }
       _ => return None,
+    }
+    if numeric.len() > 4 {
+      return None;
     }
   }
   if numeric.is_empty() {
@@ -13915,6 +13923,9 @@ fn parse_border_image_width(value: &PropertyValue) -> Option<BorderImageWidth> {
 
 fn parse_border_image_width_list(values: &[PropertyValue]) -> Option<BorderImageWidth> {
   if values.is_empty() {
+    return None;
+  }
+  if values.len() > 4 {
     return None;
   }
   let mut widths: Vec<BorderImageWidthValue> = Vec::new();
@@ -13969,6 +13980,9 @@ fn parse_border_image_outset_list(values: &[PropertyValue]) -> Option<BorderImag
   if values.is_empty() {
     return None;
   }
+  if values.len() > 4 {
+    return None;
+  }
   let mut outsets: Vec<BorderImageOutsetValue> = Vec::new();
   for v in values {
     match v {
@@ -14013,6 +14027,9 @@ fn parse_border_image_repeat(
     _ => Vec::new(),
   };
   if tokens.is_empty() {
+    return None;
+  }
+  if tokens.len() > 2 {
     return None;
   }
   let parse = |kw: &str| -> Option<BorderImageRepeat> {

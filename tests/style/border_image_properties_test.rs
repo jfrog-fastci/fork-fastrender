@@ -122,3 +122,93 @@ fn border_image_shorthand_splits_segments() {
     (BorderImageRepeat::Stretch, BorderImageRepeat::Stretch)
   );
 }
+
+#[test]
+fn border_image_slice_rejects_duplicate_fill() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(&mut styles, &decl("border-image-slice", "30 fill"), &parent, 16.0, 16.0);
+  let expected = styles.border_image.slice.clone();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-slice", "30 fill fill"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image.slice, expected);
+}
+
+#[test]
+fn border_image_slice_rejects_too_many_values() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(&mut styles, &decl("border-image-slice", "30 fill"), &parent, 16.0, 16.0);
+  let expected = styles.border_image.slice.clone();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-slice", "10 20 30 40 50 fill"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image.slice, expected);
+}
+
+#[test]
+fn border_image_width_rejects_too_many_values() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(&mut styles, &decl("border-image-width", "10px"), &parent, 16.0, 16.0);
+  let expected = styles.border_image.width.clone();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-width", "1 2 3 4 5"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image.width, expected);
+}
+
+#[test]
+fn border_image_outset_rejects_too_many_values() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(&mut styles, &decl("border-image-outset", "1"), &parent, 16.0, 16.0);
+  let expected = styles.border_image.outset.clone();
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-outset", "1 2 3 4 5"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image.outset, expected);
+}
+
+#[test]
+fn border_image_repeat_rejects_too_many_keywords() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  apply_declaration(&mut styles, &decl("border-image-repeat", "round"), &parent, 16.0, 16.0);
+  let expected = styles.border_image.repeat;
+
+  apply_declaration(
+    &mut styles,
+    &decl("border-image-repeat", "stretch round space"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(styles.border_image.repeat, expected);
+}
