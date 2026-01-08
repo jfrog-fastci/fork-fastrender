@@ -4545,6 +4545,60 @@ impl<'a> ElementRef<'a> {
       .unwrap_or(false)
   }
 
+  fn user_validity_flag(&self) -> bool {
+    // HTML "user validity" is initially false and flips to true after a user interaction /
+    // submission attempt. Since FastRender is a static renderer (no DOM events), we expose an
+    // explicit opt-in hint to treat the control as user-validated:
+    //
+    // - `data-fastr-user-validity="true"` on the control itself, or
+    // - `data-fastr-user-validity="true"` on its form owner.
+    //
+    // Without these hints, `:user-valid` / `:user-invalid` match nothing on a fresh document.
+    if let Some(value) = self.node.get_attribute_ref("data-fastr-user-validity") {
+      return value.eq_ignore_ascii_case("true");
+    }
+
+    let Some(form) = self.form_owner() else {
+      return false;
+    };
+    form
+      .get_attribute_ref("data-fastr-user-validity")
+      .map(|v| v.eq_ignore_ascii_case("true"))
+      .unwrap_or(false)
+  }
+
+  fn form_owner(&self) -> Option<&DomNode> {
+    if let Some(form_id) = self.node.get_attribute_ref("form") {
+      let form_id = form_id.trim();
+      if form_id.is_empty() {
+        return None;
+      }
+
+      let root = self.all_ancestors.first().copied().unwrap_or(self.node);
+      return Self::find_form_by_id(root, form_id);
+    }
+
+    self.nearest_form()
+  }
+
+  fn find_form_by_id<'b>(root: &'b DomNode, id: &str) -> Option<&'b DomNode> {
+    let mut stack: Vec<&DomNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+        && node.get_attribute_ref("id").is_some_and(|value| value == id)
+      {
+        return Some(node);
+      }
+
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
   fn push_assigned_slot_nodes<'b>(
     current: &'b DomNode,
     slot_map: Option<&SlotAssignmentMap<'b>>,
@@ -6330,12 +6384,24 @@ impl<'a> Element for ElementRef<'a> {
       // browsers.
       PseudoClass::Required => self.is_required(),
       PseudoClass::Optional => self.supports_required() && !self.is_required(),
-      PseudoClass::Valid | PseudoClass::UserValid => {
+      PseudoClass::Valid => {
         (self.supports_validation() && self.is_disabled())
           || (self.supports_validation() && self.is_valid_control())
       }
-      PseudoClass::Invalid | PseudoClass::UserInvalid => {
+      PseudoClass::Invalid => {
         self.supports_validation() && !self.is_disabled() && !self.is_valid_control()
+      }
+      PseudoClass::UserValid => {
+        self.user_validity_flag()
+          && self.supports_validation()
+          && !self.is_disabled()
+          && self.is_valid_control()
+      }
+      PseudoClass::UserInvalid => {
+        self.user_validity_flag()
+          && self.supports_validation()
+          && !self.is_disabled()
+          && !self.is_valid_control()
       }
       PseudoClass::InRange => !self.is_disabled() && self.range_state() == Some(true),
       PseudoClass::OutOfRange => !self.is_disabled() && self.range_state() == Some(false),
@@ -11982,9 +12048,34 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&text_input, &[], &PseudoClass::Valid));
-    assert!(matches(&text_input, &[], &PseudoClass::UserValid));
+    assert!(
+      !matches(&text_input, &[], &PseudoClass::UserValid),
+      "user-validity is initially false"
+    );
     assert!(!matches(&text_input, &[], &PseudoClass::Invalid));
     assert!(!matches(&text_input, &[], &PseudoClass::UserInvalid));
+
+    let text_input_user_validity = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "text".to_string()),
+          ("data-fastr-user-validity".to_string(), "true".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(matches(
+      &text_input_user_validity,
+      &[],
+      &PseudoClass::UserValid
+    ));
+    assert!(!matches(
+      &text_input_user_validity,
+      &[],
+      &PseudoClass::UserInvalid
+    ));
 
     let required_empty = DomNode {
       node_type: DomNodeType::Element {
@@ -11995,9 +12086,34 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&required_empty, &[], &PseudoClass::Invalid));
-    assert!(matches(&required_empty, &[], &PseudoClass::UserInvalid));
+    assert!(
+      !matches(&required_empty, &[], &PseudoClass::UserInvalid),
+      "user-invalid is gated by user validity"
+    );
     assert!(!matches(&required_empty, &[], &PseudoClass::Valid));
     assert!(!matches(&required_empty, &[], &PseudoClass::UserValid));
+
+    let required_empty_user_validity = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("required".to_string(), "true".to_string()),
+          ("data-fastr-user-validity".to_string(), "true".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(matches(
+      &required_empty_user_validity,
+      &[],
+      &PseudoClass::UserInvalid
+    ));
+    assert!(!matches(
+      &required_empty_user_validity,
+      &[],
+      &PseudoClass::UserValid
+    ));
 
     let number_in_range = DomNode {
       node_type: DomNodeType::Element {
@@ -12013,7 +12129,7 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&number_in_range, &[], &PseudoClass::Valid));
-    assert!(matches(&number_in_range, &[], &PseudoClass::UserValid));
+    assert!(!matches(&number_in_range, &[], &PseudoClass::UserValid));
     assert!(matches(&number_in_range, &[], &PseudoClass::InRange));
     assert!(!matches(&number_in_range, &[], &PseudoClass::OutOfRange));
 
@@ -12031,7 +12147,7 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&number_out_of_range, &[], &PseudoClass::Invalid));
-    assert!(matches(&number_out_of_range, &[], &PseudoClass::UserInvalid));
+    assert!(!matches(&number_out_of_range, &[], &PseudoClass::UserInvalid));
     assert!(matches(&number_out_of_range, &[], &PseudoClass::OutOfRange));
     assert!(!matches(&number_out_of_range, &[], &PseudoClass::InRange));
 
@@ -12047,7 +12163,7 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&number_nan, &[], &PseudoClass::Invalid));
-    assert!(matches(&number_nan, &[], &PseudoClass::UserInvalid));
+    assert!(!matches(&number_nan, &[], &PseudoClass::UserInvalid));
     assert!(!matches(&number_nan, &[], &PseudoClass::Valid));
     assert!(!matches(&number_nan, &[], &PseudoClass::UserValid));
 
@@ -12063,7 +12179,7 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&disabled_input, &[], &PseudoClass::Valid));
-    assert!(matches(&disabled_input, &[], &PseudoClass::UserValid));
+    assert!(!matches(&disabled_input, &[], &PseudoClass::UserValid));
     assert!(!matches(&disabled_input, &[], &PseudoClass::Invalid));
     assert!(!matches(&disabled_input, &[], &PseudoClass::UserInvalid));
 

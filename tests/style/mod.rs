@@ -70,6 +70,7 @@ mod shadow_slotted_test;
 mod sizing_keywords_test;
 mod string_set_test;
 mod styled_node_shallow_dom_clone;
+mod user_validity_pseudo_test;
 mod supports_rule_test;
 mod supports_selector_test;
 mod supports_selector_forgiving_list_test;
