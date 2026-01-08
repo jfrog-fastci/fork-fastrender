@@ -1914,6 +1914,7 @@ fn eval_style_range_value(
         ty: NumericType::LengthPx,
         value: styles.word_spacing,
       }),
+      "text-indent" => length_to_numeric(&styles.text_indent.length, container, ctx),
       "flex-grow" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.flex_grow,
