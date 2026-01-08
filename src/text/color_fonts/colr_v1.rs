@@ -497,26 +497,6 @@ struct ColorStop {
   color: Rgba,
 }
 
-impl ResolvedColorLine {
-  fn new(spread: SpreadMode, stops: Vec<ColorStop>) -> Self {
-    let gradient_stops = stops
-      .iter()
-      .map(|stop| GradientStop::new(stop.offset, color_from_rgba(stop.color)))
-      .collect();
-    Self {
-      spread,
-      stops,
-      gradient_stops,
-    }
-  }
-}
-
-struct ResolvedColorLine {
-  spread: SpreadMode,
-  stops: Vec<ColorStop>,
-  gradient_stops: Vec<GradientStop>,
-}
-
 impl<'a, 'p> Renderer<'a, 'p> {
   fn vary_fword(&self, value: i16, var_index_base: u32, offset: u32) -> f32 {
     self
@@ -921,7 +901,8 @@ impl<'a, 'p> Renderer<'a, 'p> {
       ))),
       Paint::LinearGradient(gradient) => {
         let color_line = gradient.color_line().ok()?;
-        let resolved = resolve_color_line(color_line, self.palette, self.text_color)?;
+        let (spread, stops) =
+          resolve_color_line_gradient_stops(color_line, self.palette, self.text_color)?;
         let p0 = map_point(
           gradient.x0().to_i16() as f32,
           gradient.y0().to_i16() as f32,
@@ -941,13 +922,13 @@ impl<'a, 'p> Renderer<'a, 'p> {
           p0,
           p1,
           p2,
-          stops: resolved.gradient_stops,
-          spread: resolved.spread,
+          stops,
+          spread,
         })
       }
       Paint::VarLinearGradient(gradient) => {
         let color_line = gradient.color_line().ok()?;
-        let resolved = resolve_var_color_line(
+        let (spread, stops) = resolve_var_color_line_gradient_stops(
           color_line,
           self.palette,
           self.text_color,
@@ -973,26 +954,26 @@ impl<'a, 'p> Renderer<'a, 'p> {
           p0,
           p1,
           p2,
-          stops: resolved.gradient_stops,
-          spread: resolved.spread,
+          stops,
+          spread,
         })
       }
       Paint::RadialGradient(radial) => {
         let color_line = radial.color_line().ok()?;
-        let resolved = resolve_color_line(color_line, self.palette, self.text_color)?;
+        let (spread, stops) = resolve_color_line_rgba(color_line, self.palette, self.text_color)?;
         Some(Brush::RadialGradient {
           c0: Point::from_xy(radial.x0().to_i16() as f32, radial.y0().to_i16() as f32),
           r0: fixed_to_f32(radial.radius0().to_fixed()),
           c1: Point::from_xy(radial.x1().to_i16() as f32, radial.y1().to_i16() as f32),
           r1: fixed_to_f32(radial.radius1().to_fixed()),
-          stops: resolved.stops,
-          spread: resolved.spread,
+          stops,
+          spread,
           transform: combined,
         })
       }
       Paint::VarRadialGradient(radial) => {
         let color_line = radial.color_line().ok()?;
-        let resolved = resolve_var_color_line(
+        let (spread, stops) = resolve_var_color_line_rgba(
           color_line,
           self.palette,
           self.text_color,
@@ -1012,8 +993,8 @@ impl<'a, 'p> Renderer<'a, 'p> {
           r0: self.vary_ufword(radial.radius0().to_u16(), var_index, 2),
           c1,
           r1: self.vary_ufword(radial.radius1().to_u16(), var_index, 5),
-          stops: resolved.stops,
-          spread: resolved.spread,
+          stops,
+          spread,
           transform: combined,
         })
       }
@@ -1509,37 +1490,42 @@ fn resolve_palette_color(idx: u16, palette: &[Rgba], text_color: Rgba) -> Rgba {
   palette.get(idx as usize).copied().unwrap_or(text_color)
 }
 
-fn resolve_color_line(
+fn resolve_color_line_gradient_stops(
   line: ColorLine<'_>,
   palette: &[Rgba],
   text_color: Rgba,
-) -> Option<ResolvedColorLine> {
-  let spread = match map_spread(line.extend()) {
-    Some(s) => s,
-    None => return None,
-  };
-  let mut stops = Vec::with_capacity(line.num_stops() as usize);
-  for stop in line.color_stops() {
-    stops.push(ColorStop {
-      offset: stop.stop_offset().to_f32(),
-      color: resolve_rgba_color(stop.palette_index(), stop.alpha(), palette, text_color),
-    });
+) -> Option<(SpreadMode, Vec<GradientStop>)> {
+  let spread = map_spread(line.extend())?;
+  let stop_count = line.num_stops() as usize;
+
+  let mut stops = Vec::new();
+  if stops.try_reserve_exact(stop_count).is_err() {
+    return None;
   }
-  Some(ResolvedColorLine::new(spread, stops))
+  for stop in line.color_stops().iter().take(stop_count) {
+    let rgba = resolve_rgba_color(stop.palette_index(), stop.alpha(), palette, text_color);
+    stops.push(GradientStop::new(stop.stop_offset().to_f32(), color_from_rgba(rgba)));
+  }
+  if stops.len() != stop_count {
+    return None;
+  }
+  Some((spread, stops))
 }
 
-fn resolve_var_color_line(
+fn resolve_var_color_line_gradient_stops(
   line: VarColorLine<'_>,
   palette: &[Rgba],
   text_color: Rgba,
   variations: Option<&VariationInfo<'_>>,
-) -> Option<ResolvedColorLine> {
-  let spread = match map_spread(line.extend()) {
-    Some(s) => s,
-    None => return None,
-  };
-  let mut stops = Vec::with_capacity(line.num_stops() as usize);
-  for stop in line.color_stops() {
+) -> Option<(SpreadMode, Vec<GradientStop>)> {
+  let spread = map_spread(line.extend())?;
+  let stop_count = line.num_stops() as usize;
+
+  let mut stops = Vec::new();
+  if stops.try_reserve_exact(stop_count).is_err() {
+    return None;
+  }
+  for stop in line.color_stops().iter().take(stop_count) {
     let var_index = stop.var_index_base();
     let offset = variations
       .as_ref()
@@ -1549,12 +1535,13 @@ fn resolve_var_color_line(
       .as_ref()
       .map(|variation| F2Dot14::from_f32(variation.f2dot14(stop.alpha(), var_index + 1)))
       .unwrap_or_else(|| stop.alpha());
-    stops.push(ColorStop {
-      offset,
-      color: resolve_rgba_color(stop.palette_index(), alpha, palette, text_color),
-    });
+    let rgba = resolve_rgba_color(stop.palette_index(), alpha, palette, text_color);
+    stops.push(GradientStop::new(offset, color_from_rgba(rgba)));
   }
-  Some(ResolvedColorLine::new(spread, stops))
+  if stops.len() != stop_count {
+    return None;
+  }
+  Some((spread, stops))
 }
 
 fn resolve_color_line_rgba(
@@ -1562,16 +1549,21 @@ fn resolve_color_line_rgba(
   palette: &[Rgba],
   text_color: Rgba,
 ) -> Option<(SpreadMode, Vec<ColorStop>)> {
-  let spread = match map_spread(line.extend()) {
-    Some(s) => s,
-    None => return None,
-  };
-  let mut stops = Vec::with_capacity(line.num_stops() as usize);
-  for stop in line.color_stops() {
+  let spread = map_spread(line.extend())?;
+  let stop_count = line.num_stops() as usize;
+
+  let mut stops = Vec::new();
+  if stops.try_reserve_exact(stop_count).is_err() {
+    return None;
+  }
+  for stop in line.color_stops().iter().take(stop_count) {
     stops.push(ColorStop {
       offset: stop.stop_offset().to_f32(),
       color: resolve_rgba_color(stop.palette_index(), stop.alpha(), palette, text_color),
     });
+  }
+  if stops.len() != stop_count {
+    return None;
   }
   Some((spread, stops))
 }
@@ -1582,12 +1574,14 @@ fn resolve_var_color_line_rgba(
   text_color: Rgba,
   variations: Option<&VariationInfo<'_>>,
 ) -> Option<(SpreadMode, Vec<ColorStop>)> {
-  let spread = match map_spread(line.extend()) {
-    Some(s) => s,
-    None => return None,
-  };
-  let mut stops = Vec::with_capacity(line.num_stops() as usize);
-  for stop in line.color_stops() {
+  let spread = map_spread(line.extend())?;
+  let stop_count = line.num_stops() as usize;
+
+  let mut stops = Vec::new();
+  if stops.try_reserve_exact(stop_count).is_err() {
+    return None;
+  }
+  for stop in line.color_stops().iter().take(stop_count) {
     let var_index = stop.var_index_base();
     let offset = variations
       .as_ref()
@@ -1601,6 +1595,9 @@ fn resolve_var_color_line_rgba(
       offset,
       color: resolve_rgba_color(stop.palette_index(), alpha, palette, text_color),
     });
+  }
+  if stops.len() != stop_count {
+    return None;
   }
   Some((spread, stops))
 }
