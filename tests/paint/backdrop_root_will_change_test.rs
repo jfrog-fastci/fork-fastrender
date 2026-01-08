@@ -681,6 +681,7 @@ fn will_change_auto_is_case_insensitive_and_overrides_hints() {
       html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
       #parent { position: absolute; inset: 0; will-change: filter; }
       #parent { will-change: AUTO; }
+      #parent { will-change: AUTO; }
       #child {
         position: absolute;
         left: 0;
@@ -703,5 +704,38 @@ fn will_change_auto_is_case_insensitive_and_overrides_hints() {
 
   // Red backdrop inverted to cyan.
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_default_is_invalid_and_does_not_override() {
+  // css-values-3 reserves `default` (not a valid <<custom-ident>>), so it is invalid here and
+  // should not override the earlier Backdrop Root-triggering value.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent { position: absolute; inset: 0; will-change: filter; }
+      #parent { will-change: default; }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        background: transparent;
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
