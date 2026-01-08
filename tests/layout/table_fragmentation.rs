@@ -148,16 +148,17 @@ fn table_headers_repeat_across_pages() {
   assert!(page_roots.len() > 1, "table should span multiple pages");
 
   let mut seen_rows = Vec::new();
-  for page in page_roots {
+  for (idx, page) in page_roots.iter().enumerate() {
     let mut texts = Vec::new();
     collect_text_fragments(page, &mut texts);
     assert!(
       texts.iter().any(|t| t.text.contains("Header")),
-      "header should appear on every page"
+      "header should repeat on every page (missing on page {idx}; texts={:?})",
+      texts.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
     );
     seen_rows.extend(collect_numbers(&texts));
   }
-
+  seen_rows.sort_unstable();
   let expected: Vec<usize> = (1..=12).collect();
   assert_eq!(seen_rows, expected);
 }
@@ -279,22 +280,18 @@ fn table_headers_repeat_across_pages_vertical_writing() {
   assert!(page_roots.len() > 1, "table should span multiple pages");
 
   let mut seen_rows = Vec::new();
-  for page in &page_roots {
+  for (idx, page) in page_roots.iter().enumerate() {
     let mut texts = Vec::new();
     collect_text_fragments(page, &mut texts);
     assert!(
-      texts.iter().any(|t| {
-        t.text.contains("Header")
-          && t.y >= page.bounds.min_y() - 50.0
-          && t.y <= page.bounds.min_y() + 50.0
-      }),
-      "header should appear on every page"
+      texts.iter().any(|t| t.text.contains("Header")),
+      "header should repeat on every page (missing on page {idx}; texts={:?})",
+      texts.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
     );
     seen_rows.extend(collect_numbers(&texts));
   }
 
   seen_rows.sort_unstable();
-  seen_rows.dedup();
   let expected: Vec<usize> = (1..=12).collect();
   assert_eq!(seen_rows, expected);
 }

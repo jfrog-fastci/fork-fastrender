@@ -615,7 +615,7 @@ pub(crate) fn parallel_flow_content_extent(
 #[derive(Debug)]
 pub struct FragmentationAnalyzer {
   _axis: FragmentAxis,
-  _context: FragmentationContext,
+  context: FragmentationContext,
   enforce_fragmentainer_size: bool,
   opportunities: Vec<BreakOpportunity>,
   line_containers: Vec<LineContainer>,
@@ -725,7 +725,7 @@ impl FragmentationAnalyzer {
     let line_starts = vec![0; line_containers.len()];
     Self {
       _axis: axis,
-      _context: context,
+      context,
       opportunities: collection.opportunities,
       line_containers,
       line_starts,
@@ -998,7 +998,7 @@ impl FragmentationAnalyzer {
       // because fragment stacking assumes fixed-size fragmentainers (`fragmentainer_size +
       // fragmentainer_gap`). Prefer the natural fragmentainer limit unless the sibling boundary is
       // effectively at the limit.
-      if kind_rank == 0 && matches!(self._context, FragmentationContext::Page) {
+      if kind_rank == 0 && matches!(self.context, FragmentationContext::Page) {
         // Allow a small amount of slack for sibling boundaries near the limit: the closer the
         // boundary is, the less it perturbs the flow→fragment mapping. Cap the slack so huge pages
         // do not accept large shifts.
@@ -1014,7 +1014,7 @@ impl FragmentationAnalyzer {
       return clamped;
     }
 
-    if matches!(self._context, FragmentationContext::Column) && !self.enforce_fragmentainer_size {
+    if matches!(self.context, FragmentationContext::Column) && !self.enforce_fragmentainer_size {
       // Multi-column layout prefers moving content to the next available break opportunity rather
       // than slicing it at an arbitrary fragmentainer limit (e.g. splitting a block box when the
       // next legal break is just after the limit). Only do this when the caller did not request a
@@ -1465,6 +1465,12 @@ pub(crate) fn clip_node(
   // clip window depends on both its start *and* end.
   let clipped_flow_start = node_flow_start.max(fragment_start);
   let clipped_flow_end = node_bbox_flow_end.min(fragment_end);
+  // Descendants can extend outside a node's own border box (e.g. scroll overflow or reversed
+  // block progression that places content in negative physical coordinates). Use the logical
+  // bounding box overlap to derive the clipping window that is propagated to children so
+  // overflow content participates in fragmentation.
+  let clipped_bbox_flow_start = node_bbox_flow_start.max(fragment_start);
+  let clipped_bbox_flow_end = node_bbox_flow_end.min(fragment_end);
   let new_block_size = (clipped_flow_end - clipped_flow_start).max(0.0);
   let clipped_phys_start = axis.flow_box_start_to_physical(
     clipped_flow_start - parent_abs_flow_start,
@@ -1616,8 +1622,8 @@ pub(crate) fn clip_node(
       fragment_start,
       fragment_end,
       node_flow_start,
-      clipped_flow_start,
-      clipped_flow_end,
+      clipped_bbox_flow_start,
+      clipped_bbox_flow_end,
       original_node_block_size,
       fragment_index,
       fragment_count,
@@ -1755,6 +1761,18 @@ fn inject_table_headers_and_footers(
   let mut max_block_extent = axis.block_size(&clipped.bounds);
   let original_block_size = axis.block_size(&original.bounds);
   let clipped_block_size = axis.block_size(&clipped.bounds);
+  // `clip_node` rebases descendants so the fragment's clipping window becomes the new origin for
+  // child coordinates. When duplicating table headers/footers, the candidate fragments come from
+  // the original coordinate system, so we must apply the same rebasing transform to keep the
+  // injected fragments aligned with the clipped slice.
+  let base_offset = original.slice_info.slice_offset.max(0.0);
+  let slice_start = (clipped.slice_info.slice_offset - base_offset).max(0.0);
+  let clip_origin_phys = axis.flow_box_start_to_physical(slice_start, clipped_block_size, original_block_size);
+  let rebase_translation = if axis.block_is_horizontal {
+    Point::new(-clip_origin_phys, 0.0)
+  } else {
+    Point::new(0.0, -clip_origin_phys)
+  };
 
   if !headers.is_empty() && (!has_header || fragment_index > 0) {
     let mut regions = Vec::new();
@@ -1766,11 +1784,7 @@ fn inject_table_headers_and_footers(
     let region_height: f32 = regions.iter().map(|(s, e)| e - s).sum();
     for child in clipped.children_mut() {
       let child_axis = axis_for_candidate(child);
-      let translation = child_axis.block_translation(region_height);
-      child.bounds = child.bounds.translate(translation);
-      if let Some(logical) = child.logical_override {
-        child.logical_override = Some(logical.translate(translation));
-      }
+      translate_fragment_in_parent_space(child, child_axis.block_translation(region_height));
     }
     let mut offset = 0.0;
     let mut clones = Vec::new();
@@ -1794,11 +1808,11 @@ fn inject_table_headers_and_footers(
           candidate_axis.flow_range(0.0, original_block_size, &candidate.bounds);
         if c_start + 0.01 >= start && c_end <= end + 0.01 {
           let mut clone = candidate.clone();
-          let translation = candidate_axis.block_translation(offset - start);
-          clone.bounds = clone.bounds.translate(translation);
-          if let Some(logical) = clone.logical_override {
-            clone.logical_override = Some(logical.translate(translation));
-          }
+          translate_fragment_in_parent_space(
+            &mut clone,
+            axis.block_translation(slice_start + offset - start),
+          );
+          translate_fragment_in_parent_space(&mut clone, rebase_translation);
           propagate_fragment_metadata(&mut clone, fragment_index, fragment_count);
           clones.push(clone);
         }
@@ -1845,12 +1859,12 @@ fn inject_table_headers_and_footers(
           candidate_axis.flow_range(0.0, original_block_size, &candidate.bounds);
         if c_start + 0.01 >= start && c_end <= end + 0.01 {
           let mut clone = candidate.clone();
-          let translation = candidate_axis.block_translation(footer_offset - start);
-          clone.bounds = clone.bounds.translate(translation);
-          if let Some(logical) = clone.logical_override {
-            clone.logical_override = Some(logical.translate(translation));
-          }
-          footer_offset += candidate_axis.block_size(&clone.bounds);
+          translate_fragment_in_parent_space(
+            &mut clone,
+            axis.block_translation(slice_start + footer_offset - start),
+          );
+          translate_fragment_in_parent_space(&mut clone, rebase_translation);
+          footer_offset += axis.block_size(&clone.bounds);
           propagate_fragment_metadata(&mut clone, fragment_index, fragment_count);
           clones.push(clone);
         }

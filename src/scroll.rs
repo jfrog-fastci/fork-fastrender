@@ -745,22 +745,22 @@ pub(crate) fn build_scroll_metadata(tree: &mut FragmentTree) -> ScrollMetadata {
 
   // The viewport scroll snap container is determined by the document's root scrolling element.
   //
-  // In most trees `tree.root` is the root element (or its immediate wrapper). Paginated output
-  // introduces an additional `@page` root and a page-content wrapper above the document root, so
-  // walk down the leading single-child chain a few steps to find the first snap container without
-  // accidentally promoting unrelated element scrollers deeper in the tree.
+  // In non-fragmented trees, this is typically `tree.root` (the HTML element). In paginated trees,
+  // the root is the synthetic page box, with the document root nested under the first child.
+  //
+  // Walk down a few nodes along the first-child chain so paginated trees can still locate the
+  // document root without accidentally promoting unrelated element scrollers to viewport-level snap
+  // containers.
   let viewport_container = {
-    let mut current = &tree.root;
+    let mut current: Option<&FragmentNode> = Some(&tree.root);
     let mut found: Option<Option<usize>> = None;
-    for _ in 0..8 {
-      if is_snap_container(current) {
-        found = Some(fragment_box_id(current));
+    for _ in 0..4 {
+      let Some(node) = current else { break };
+      if is_snap_container(node) {
+        found = Some(fragment_box_id(node));
         break;
       }
-      let Some(next) = current.children.iter().next() else {
-        break;
-      };
-      current = next;
+      current = node.children.iter().next();
     }
     found
   };

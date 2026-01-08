@@ -15,9 +15,9 @@ use crate::layout::formatting_context::{
 };
 use crate::layout::fragmentation::{
   apply_grid_parallel_flow_forced_break_shifts, clip_node, collect_atomic_ranges_with_axes,
-  collect_forced_boundaries_for_pagination_with_axes, fragmentation_axis,
-  normalize_atomic_ranges, normalize_fragment_margins, parallel_flow_content_extent,
-  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentAxis, FragmentationContext,
+  collect_forced_boundaries_for_pagination_with_axes, normalize_atomic_ranges,
+  normalize_fragment_margins, parallel_flow_content_extent, propagate_fragment_metadata,
+  AtomicRange, ForcedBoundary, FragmentAxis, FragmentationContext,
 };
 use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
 use crate::style::content::{
@@ -572,7 +572,7 @@ pub fn paginate_fragment_tree(
           page_style.content_origin.x,
           page_style.content_origin.y,
         );
-        page_running_elements = collect_running_elements_for_page(&content);
+        page_running_elements = collect_running_elements_for_page(&content, root_axes);
         if log_running_elements {
           let mut counts: HashMap<String, usize> = HashMap::new();
           fn collect(node: &FragmentNode, out: &mut HashMap<String, usize>) {
@@ -713,6 +713,10 @@ pub fn paginate_fragment_tree_with_options(
 fn adjust_for_atomic_ranges(start: f32, mut end: f32, ranges: &[AtomicRange]) -> f32 {
   const EPSILON: f32 = 0.01;
 
+  // If the fragment starts inside an atomic range, extend the end so we don't split it.
+  //
+  // Atomic range endpoints are break-safe (see `atomic_containing` in `fragmentation.rs`), so treat
+  // `start == range.start` as being "inside" for this extension logic.
   if let Some(containing) = ranges.iter().copied().find(|range| {
     start >= range.start - EPSILON && start < range.end - EPSILON && range.end > range.start
   }) {
@@ -1051,19 +1055,21 @@ fn clean_running_element_snapshot(snapshot: &mut FragmentNode) {
 
 fn collect_running_elements_for_page(
   root: &FragmentNode,
+  axes: FragmentAxes,
 ) -> HashMap<String, RunningElementPageValues> {
-  let axis = fragmentation_axis(root);
-  let root_block_start = if axis.block_is_horizontal {
-    root.bounds.x()
-  } else {
-    root.bounds.y()
-  };
   let mut occurrences: HashMap<String, Vec<(f32, FragmentNode)>> = HashMap::new();
+  let root_bounds = root.logical_bounds();
+  let root_block_size = axes.block_size(&root_bounds);
+  // Margin boxes select running elements relative to the page content area's origin. Because
+  // pagination translates the content slice into the page box after clipping, the fragment's root
+  // may be offset from (0, 0). Shift the absolute coordinate space so the root's block-start is
+  // always 0, ensuring `element(..., start)` correctly detects elements that begin the page.
+  let root_start = axes.block_start(&root_bounds, root_block_size);
   collect_running_element_occurrences(
     root,
-    Point::ZERO,
-    axis.block_is_horizontal,
-    root_block_start,
+    -root_start,
+    root_block_size,
+    axes,
     &mut occurrences,
   );
 
@@ -1308,24 +1314,20 @@ fn build_footnote_area_fragment(
 
 fn collect_running_element_occurrences(
   node: &FragmentNode,
-  origin: Point,
-  block_is_horizontal: bool,
-  root_block_start: f32,
+  abs_start: f32,
+  parent_block_size: f32,
+  axes: FragmentAxes,
   out: &mut HashMap<String, Vec<(f32, FragmentNode)>>,
 ) {
-  let abs_origin = Point::new(origin.x + node.bounds.x(), origin.y + node.bounds.y());
-  let abs_block = if block_is_horizontal {
-    abs_origin.x
-  } else {
-    abs_origin.y
-  };
-  let rel_block = abs_block - root_block_start;
+  let logical_bounds = node.logical_bounds();
+  let start = axes.abs_block_start(&logical_bounds, abs_start, parent_block_size);
+  let node_block_size = axes.block_size(&logical_bounds);
 
   if let FragmentContent::RunningAnchor { name, snapshot } = &node.content {
     out
       .entry(name.to_string())
       .or_default()
-      .push((rel_block, (**snapshot).clone()));
+      .push((start, (**snapshot).clone()));
   } else if node.content.is_block() || node.content.is_inline() || node.content.is_replaced() {
     if let Some(name) = node
       .style
@@ -1335,18 +1337,12 @@ fn collect_running_element_occurrences(
       out
         .entry(name.clone())
         .or_default()
-        .push((rel_block, node.clone()));
+        .push((start, node.clone()));
     }
   }
 
   for child in node.children.iter() {
-    collect_running_element_occurrences(
-      child,
-      abs_origin,
-      block_is_horizontal,
-      root_block_start,
-      out,
-    );
+    collect_running_element_occurrences(child, start, node_block_size, axes, out);
   }
 }
 
@@ -1917,7 +1913,7 @@ mod tests {
       "fixture should include a running anchor fragment"
     );
 
-    let running = collect_running_elements_for_page(&root);
+    let running = collect_running_elements_for_page(&root, FragmentAxes::default());
     let values = running
       .get("header")
       .expect("running element snapshot collected");

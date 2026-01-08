@@ -6771,6 +6771,23 @@ fn convert_fragment_axes(
       parent_physical_height - logical_inline_start - inline_size
     };
     fragment.bounds = Rect::from_xywh(phys_x, phys_y, block_size, inline_size);
+    if let Some(logical) = fragment.logical_override {
+      let logical_inline_start = logical.x();
+      let logical_block_start = logical.y();
+      let inline_size = logical.width();
+      let block_size = logical.height();
+      let phys_x = if block_positive {
+        logical_block_start
+      } else {
+        parent_physical_width - logical_block_start - block_size
+      };
+      let phys_y = if inline_positive {
+        logical_inline_start
+      } else {
+        parent_physical_height - logical_inline_start - inline_size
+      };
+      fragment.logical_override = Some(Rect::from_xywh(phys_x, phys_y, block_size, inline_size));
+    }
     let child_inline = inline_size;
     let child_block = block_size;
     let mapped_children: Vec<_> = fragment

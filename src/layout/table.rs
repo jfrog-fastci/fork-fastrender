@@ -3455,9 +3455,19 @@ fn compute_collapsed_borders(
     let end_col = (cell.col + cell.colspan).min(columns);
     let start_row = cell.row;
     let end_row = (cell.row + cell.rowspan).min(rows);
+    // CSS 2.1 §17.4: `direction` affects the column ordering for table layout.
+    // The collapsed border algorithm resolves borders in the table's logical grid
+    // (source column order), so in RTL we map a cell's logical left/right borders
+    // onto the opposite physical grid lines.
+    let (left_border_col, right_border_col) = if matches!(direction, Direction::Rtl) {
+      (end_col, start_col)
+    } else {
+      (start_col, end_col)
+    };
+    let origin_col = cell.source_col;
 
     apply_vertical(
-      start_col,
+      left_border_col,
       start_row,
       end_row,
       style.border_left_style,
@@ -3466,10 +3476,10 @@ fn compute_collapsed_borders(
       BorderOrigin::Cell,
       cell.index as u32,
       cell.row,
-      cell.col,
+      origin_col,
     )?;
     apply_vertical(
-      end_col,
+      right_border_col,
       start_row,
       end_row,
       style.border_right_style,
@@ -3478,7 +3488,7 @@ fn compute_collapsed_borders(
       BorderOrigin::Cell,
       cell.index as u32,
       cell.row,
-      cell.col,
+      origin_col,
     )?;
     apply_horizontal(
       start_row,
@@ -3490,7 +3500,7 @@ fn compute_collapsed_borders(
       BorderOrigin::Cell,
       cell.index as u32,
       cell.row,
-      cell.col,
+      origin_col,
     )?;
     apply_horizontal(
       end_row,
@@ -3502,7 +3512,7 @@ fn compute_collapsed_borders(
       BorderOrigin::Cell,
       cell.index as u32,
       cell.row,
-      cell.col,
+      origin_col,
     )?;
   }
 
@@ -5870,16 +5880,13 @@ impl FormattingContext for TableFormattingContext {
     let used_border_box_width = constraints
       .used_border_box_width
       .filter(|w| w.is_finite() && *w >= 0.0);
-    let table_width = if let Some(w) = used_border_box_width {
-      Some(clamp_to_min_max(w, min_width, max_width))
-    } else {
-      specified_width
-        .or(containing_width)
-        .map(|w| clamp_to_min_max(w, min_width, max_width))
-    };
-    // Percentages on columns rely on an explicit table width. When the table width is `auto`,
-    // treat percentage constraints as auto so layout isn't forced by the containing block.
-    let percent_base_width = specified_width;
+    // Treat `width:auto` tables as shrink-to-fit rather than immediately expanding to the
+    // containing block width. The auto-layout column distribution clamps itself to intrinsic
+    // max-content widths; fixed-layout tables additionally clamp the available width after we
+    // know the column constraints (see `available_content` below).
+    let table_width =
+      used_border_box_width.or(specified_width).map(|w| clamp_to_min_max(w, min_width, max_width));
+    let percent_base_width = table_width;
     // Table padding and borders (ignored for box sizing under collapsed model per CSS 2.1),
     // but we still track outer borders for percentage-height resolution.
     let resolve_abs = |l: &crate::style::values::Length| match l.unit {
@@ -6551,6 +6558,17 @@ impl FormattingContext for TableFormattingContext {
         available_content = min_content_sum;
       } else {
         available_content = 0.0;
+      }
+    }
+    // Fixed table layout distributes slack to fill the supplied available width (CSS 2.1
+    // §17.5.2.1). For `width:auto` tables, the used table width is shrink-to-fit, so clamp the
+    // available width to the intrinsic min/max sums before distribution.
+    if table_width.is_none() && mode == DistributionMode::Fixed {
+      if max_content_sum.is_finite() {
+        available_content = available_content.min(max_content_sum);
+      }
+      if min_content_sum.is_finite() {
+        available_content = available_content.max(min_content_sum);
       }
     }
     // Honor min/max width constraints even when the table width is auto: expand or clamp the content
