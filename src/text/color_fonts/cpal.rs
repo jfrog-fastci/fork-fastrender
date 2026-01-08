@@ -44,7 +44,10 @@ pub fn parse_cpal_palette(data: &[u8], palette_index: u16) -> Option<ParsedPalet
     return None;
   }
 
-  let mut colors = Vec::with_capacity(num_entries);
+  let mut colors = Vec::new();
+  if colors.try_reserve_exact(num_entries).is_err() {
+    return None;
+  }
   for i in 0..num_entries {
     let off = colors_start + i * 4;
     let b = data[off];
