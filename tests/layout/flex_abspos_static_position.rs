@@ -443,6 +443,27 @@ fn abspos_static_position_ignores_wrap_reverse_for_start_keyword() {
 }
 
 #[test]
+fn abspos_static_position_ignores_wrap_reverse_for_end_keyword() {
+  // `end` is physical and must not mirror with wrap-reverse (unlike `flex-end`).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::End;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis() {
   // Same as above, but with a horizontal cross axis (`flex-direction: column`).
   let mut container_style = ComputedStyle::default();
@@ -484,6 +505,27 @@ fn abspos_static_position_ignores_wrap_reverse_for_start_keyword_with_horizontal
 
   let (x, _) = layout_abspos_child(container_style, child_style);
   assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+}
+
+#[test]
+fn abspos_static_position_ignores_wrap_reverse_for_end_keyword_with_horizontal_cross_axis() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::End;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
 }
 
 #[test]
