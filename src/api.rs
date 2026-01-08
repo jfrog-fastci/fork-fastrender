@@ -13695,6 +13695,10 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_border_style(&style.border_left_style, &mut h);
   hash_grid_tracks(&style.grid_template_columns, &mut h);
   hash_grid_tracks(&style.grid_template_rows, &mut h);
+  style.grid_row_subgrid.hash(&mut h);
+  style.grid_column_subgrid.hash(&mut h);
+  style.subgrid_row_line_names.hash(&mut h);
+  style.subgrid_column_line_names.hash(&mut h);
   hash_grid_template_areas(&style.grid_template_areas, &mut h);
   hash_grid_tracks(&style.grid_auto_rows, &mut h);
   hash_grid_tracks(&style.grid_auto_columns, &mut h);
@@ -13705,7 +13709,9 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_grid_line_names(&style.grid_row_line_names, &mut h);
   hash_length(&style.grid_gap, &mut h);
   hash_length(&style.grid_row_gap, &mut h);
+  style.grid_row_gap_is_normal.hash(&mut h);
   hash_length(&style.grid_column_gap, &mut h);
+  style.grid_column_gap_is_normal.hash(&mut h);
   style.grid_column_start.hash(&mut h);
   style.grid_column_end.hash(&mut h);
   style.grid_row_start.hash(&mut h);
@@ -15685,6 +15691,72 @@ pub(crate) fn render_html_with_shared_resources(
       base_fp,
       super::style_layout_fingerprint(&cloned),
       "expected box-decoration-break to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_subgrid_flags() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut row_subgrid = base.clone();
+    row_subgrid.grid_row_subgrid = true;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&row_subgrid),
+      "expected grid row subgrid flag to affect layout fingerprints"
+    );
+
+    let mut column_subgrid = base;
+    column_subgrid.grid_column_subgrid = true;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&column_subgrid),
+      "expected grid column subgrid flag to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_subgrid_line_names() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut row_names = base.clone();
+    row_names.subgrid_row_line_names = vec![vec!["row".to_string()]];
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&row_names),
+      "expected subgrid row line names to affect layout fingerprints"
+    );
+
+    let mut column_names = base;
+    column_names.subgrid_column_line_names = vec![vec!["col".to_string()]];
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&column_names),
+      "expected subgrid column line names to affect layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn style_layout_fingerprint_includes_grid_gap_normal_flags() {
+    let base = ComputedStyle::default();
+    let base_fp = super::style_layout_fingerprint(&base);
+
+    let mut row_normal = base.clone();
+    row_normal.grid_row_gap_is_normal = false;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&row_normal),
+      "expected grid row gap normal flag to affect layout fingerprints"
+    );
+
+    let mut column_normal = base;
+    column_normal.grid_column_gap_is_normal = false;
+    assert_ne!(
+      base_fp,
+      super::style_layout_fingerprint(&column_normal),
+      "expected grid column gap normal flag to affect layout fingerprints"
     );
   }
 
