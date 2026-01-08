@@ -153,6 +153,20 @@ impl HeaderCaptureServer {
 </html>"#
                   .to_vec(),
               ),
+              "/doc_response_policy_link_override.html" => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                br#"<!doctype html>
+<html>
+  <head>
+    <link rel="stylesheet" href="/style_import.css" referrerpolicy="origin">
+  </head>
+  <body>
+    <div>hello</div>
+  </body>
+</html>"#
+                  .to_vec(),
+              ),
               "/doc_redirect_policy.html" => (
                 "302 Found",
                 "text/plain; charset=utf-8",
@@ -221,7 +235,10 @@ body { font-family: "TestFont"; }"#
                 extra_headers.push_str("Access-Control-Allow-Origin: *\r\n");
               }
             }
-            if path == "/doc_response_policy.html" {
+            if matches!(
+              path.as_str(),
+              "/doc_response_policy.html" | "/doc_response_policy_link_override.html"
+            ) {
               extra_headers.push_str("Referrer-Policy: no-referrer\r\n");
             }
             if path == "/doc_redirect_policy.html" {
@@ -1126,6 +1143,59 @@ fn meta_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_neste
 }
 
 #[test]
+fn meta_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests() {
+  let Some(server) = HeaderCaptureServer::start(
+    "meta_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests",
+  ) else {
+    return;
+  };
+
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta name="referrer" content="no-referrer">
+          <link rel="stylesheet" href="{}/style_import.css" referrerpolicy="origin">
+        </head>
+        <body><div>hello</div></body>
+      </html>"#,
+    server.base_url
+  );
+  let document_url = format!("{}/page.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_html_with_stylesheets(
+      &html,
+      &document_url,
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("render");
+
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(expected_referer.as_str()),
+      "expected link referrerpolicy override to win over meta Referrer-Policy for {path}; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
 fn document_response_referrer_policy_no_referrer_suppresses_referer_for_stylesheets_and_nested_requests(
 ) {
   let Some(server) = HeaderCaptureServer::start(
@@ -1162,6 +1232,50 @@ fn document_response_referrer_policy_no_referrer_suppresses_referer_for_styleshe
     assert!(
       header_value(&req.headers, "referer").is_none(),
       "expected Referer header to be omitted for {path} due to document response Referrer-Policy; got:\n{}",
+      req.headers
+    );
+  }
+}
+
+#[test]
+fn document_response_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests(
+) {
+  let Some(server) = HeaderCaptureServer::start(
+    "document_response_referrer_policy_no_referrer_allows_link_referrerpolicy_override_for_nested_requests",
+  ) else {
+    return;
+  };
+
+  let doc_url = format!("{}/doc_response_policy_link_override.html", server.base_url);
+
+  let mut renderer = build_renderer();
+  let _ = renderer
+    .render_url_with_options(&doc_url, RenderOptions::new().with_viewport(32, 32))
+    .expect("render");
+
+  for path in [
+    "/doc_response_policy_link_override.html",
+    "/style_import.css",
+    "/import.css",
+    "/font.woff2",
+  ] {
+    server.wait_for_request(
+      |req| req.path == path,
+      &format!("expected {path} request to be issued for the test fixture"),
+    );
+  }
+
+  let expected_referer = format!("{}/", server.base_url);
+  let requests = server.take_requests();
+  for path in ["/style_import.css", "/import.css", "/font.woff2"] {
+    let req = requests
+      .iter()
+      .find(|req| req.path == path)
+      .unwrap_or_else(|| panic!("expected {path} request"));
+    assert_eq!(
+      header_value(&req.headers, "referer").as_deref(),
+      Some(expected_referer.as_str()),
+      "expected link referrerpolicy override to win over document response Referrer-Policy for {path}; got:\n{}",
       req.headers
     );
   }
