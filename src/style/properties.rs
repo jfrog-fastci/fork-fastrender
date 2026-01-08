@@ -13506,12 +13506,16 @@ fn extract_dashed_ident_list(value: &PropertyValue) -> Option<Vec<String>> {
 pub fn extract_length_pair(value: &PropertyValue) -> Option<(Length, Length)> {
   match value {
     PropertyValue::Multiple(values) => {
-      let lengths: Vec<Length> = values.iter().filter_map(extract_length).collect();
-      match lengths.len() {
-        1 => Some((lengths[0], lengths[0])),
-        l if l >= 2 => Some((lengths[0], lengths[1])),
-        _ => None,
+      if values.is_empty() || values.len() > 2 {
+        return None;
       }
+      let first = extract_length(&values[0])?;
+      let second = if values.len() == 1 {
+        first
+      } else {
+        extract_length(&values[1])?
+      };
+      Some((first, second))
     }
     _ => extract_length(value).map(|len| (len, len)),
   }
@@ -13520,12 +13524,16 @@ pub fn extract_length_pair(value: &PropertyValue) -> Option<(Length, Length)> {
 fn extract_border_width_pair(value: &PropertyValue) -> Option<(Length, Length)> {
   match value {
     PropertyValue::Multiple(values) => {
-      let lengths: Vec<Length> = values.iter().filter_map(parse_border_width).collect();
-      match lengths.len() {
-        1 => Some((lengths[0], lengths[0])),
-        l if l >= 2 => Some((lengths[0], lengths[1])),
-        _ => None,
+      if values.is_empty() || values.len() > 2 {
+        return None;
       }
+      let first = parse_border_width(&values[0])?;
+      let second = if values.len() == 1 {
+        first
+      } else {
+        parse_border_width(&values[1])?
+      };
+      Some((first, second))
     }
     _ => parse_border_width(value).map(|len| (len, len)),
   }
@@ -19240,15 +19248,14 @@ pub fn extract_scroll_padding_values(value: &PropertyValue) -> Option<Vec<Length
       extract_scroll_padding_length(value).map(|v| vec![v])
     }
     PropertyValue::Multiple(values) => {
-      let lengths: Vec<Length> = values
-        .iter()
-        .filter_map(extract_scroll_padding_length)
-        .collect();
-      if lengths.is_empty() {
-        None
-      } else {
-        Some(lengths)
+      if values.is_empty() || values.len() > 4 {
+        return None;
       }
+      let mut out: Vec<Length> = Vec::with_capacity(values.len());
+      for token in values {
+        out.push(extract_scroll_padding_length(token)?);
+      }
+      Some(out)
     }
     _ => None,
   }
@@ -19259,12 +19266,14 @@ pub fn extract_box_values(value: &PropertyValue) -> Option<Vec<Length>> {
     PropertyValue::Length(len) => Some(vec![*len]),
     PropertyValue::Number(n) if *n == 0.0 => Some(vec![Length::px(0.0)]),
     PropertyValue::Multiple(values) => {
-      let lengths: Vec<Length> = values.iter().filter_map(extract_length).collect();
-      if lengths.is_empty() {
-        None
-      } else {
-        Some(lengths)
+      if values.is_empty() || values.len() > 4 {
+        return None;
       }
+      let mut out: Vec<Length> = Vec::with_capacity(values.len());
+      for token in values {
+        out.push(extract_length(token)?);
+      }
+      Some(out)
     }
     _ => None,
   }
@@ -19273,12 +19282,14 @@ pub fn extract_box_values(value: &PropertyValue) -> Option<Vec<Length>> {
 fn extract_border_width_values(value: &PropertyValue) -> Option<Vec<Length>> {
   match value {
     PropertyValue::Multiple(values) => {
-      let lengths: Vec<Length> = values.iter().filter_map(parse_border_width).collect();
-      if lengths.is_empty() {
-        None
-      } else {
-        Some(lengths)
+      if values.is_empty() || values.len() > 4 {
+        return None;
       }
+      let mut out: Vec<Length> = Vec::with_capacity(values.len());
+      for token in values {
+        out.push(parse_border_width(token)?);
+      }
+      Some(out)
     }
     _ => parse_border_width(value).map(|len| vec![len]),
   }
