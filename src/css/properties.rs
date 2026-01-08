@@ -2741,6 +2741,41 @@ fn parse_simple_value(value_str: &str) -> Option<PropertyValue> {
     };
   }
 
+  // If the authored value contains escapes or comments, it may still represent a single
+  // identifier token. For non-tokenized properties we store the raw value as a Keyword, so
+  // normalize the common `ident/*comment*/` case by parsing the token stream and extracting the
+  // identifier. This lets downstream keyword matching stay ASCII-case-insensitive without needing
+  // to re-implement comment/escape handling in every property parser.
+  let bytes = trimmed.as_bytes();
+  if bytes.contains(&b'\\')
+    || (bytes.contains(&b'/') && bytes.windows(2).any(|pair| pair == b"/*"))
+  {
+    let mut input = ParserInput::new(trimmed);
+    let mut parser = Parser::new(&mut input);
+    let mut ident: Option<String> = None;
+
+    while let Ok(token) = parser.next_including_whitespace_and_comments() {
+      match token {
+        Token::WhiteSpace(_) | Token::Comment(_) => continue,
+        Token::Ident(name) => {
+          if ident.is_some() {
+            ident = None;
+            break;
+          }
+          ident = Some(name.as_ref().to_string());
+        }
+        _ => {
+          ident = None;
+          break;
+        }
+      }
+    }
+
+    if let Some(ident) = ident {
+      return Some(PropertyValue::Keyword(ident));
+    }
+  }
+
   Some(PropertyValue::Keyword(value_str.to_string()))
 }
 

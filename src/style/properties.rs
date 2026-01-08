@@ -19563,7 +19563,34 @@ fn parse_text_transform(value: &PropertyValue) -> Option<TextTransform> {
 fn parse_list_style_type(value: &PropertyValue) -> Option<ListStyleType> {
   match value {
     PropertyValue::Keyword(kw) => {
-      let lower = kw.to_ascii_lowercase();
+      let raw = kw.trim();
+      if raw.is_empty() {
+        return None;
+      }
+
+      // `list-style-type` accepts a single <counter-style> identifier. The CSS lexer treats
+      // comments as whitespace, so `dec/*comment*/imal` must not be accepted as a custom ident.
+      // Parse as tokens so we only accept a single identifier token and ignore surrounding
+      // comments/whitespace.
+      let mut input = ParserInput::new(raw);
+      let mut parser = Parser::new(&mut input);
+      let mut ident: Option<String> = None;
+      while let Ok(token) = parser.next_including_whitespace_and_comments() {
+        match token {
+          Token::WhiteSpace(_) | Token::Comment(_) => continue,
+          Token::Ident(name) => {
+            if ident.is_some() {
+              return None;
+            }
+            ident = Some(name.as_ref().to_string());
+          }
+          // `symbols(...)` and other functions are not supported here.
+          _ => return None,
+        }
+      }
+      let ident = ident?;
+
+      let lower = ident.to_ascii_lowercase();
       match lower.as_str() {
         "disc" => Some(ListStyleType::Disc),
         "circle" => Some(ListStyleType::Circle),
@@ -19581,7 +19608,6 @@ fn parse_list_style_type(value: &PropertyValue) -> Option<ListStyleType> {
         "disclosure-open" => Some(ListStyleType::DisclosureOpen),
         "disclosure-closed" => Some(ListStyleType::DisclosureClosed),
         "none" => Some(ListStyleType::None),
-        _ if kw.contains('(') => None,
         _ => Some(ListStyleType::Custom(lower)),
       }
     }
