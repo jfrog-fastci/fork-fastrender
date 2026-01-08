@@ -3100,6 +3100,24 @@ impl BlockFormattingContext {
         }
       };
 
+      // Inline formatting contexts currently produce fragment trees in physical coordinates when
+      // the block axis is horizontal (vertical writing modes). Block layout operates in logical
+      // inline/block space and will convert the full subtree once at the end, so map the inline
+      // fragment tree back into logical coordinates here.
+      if block_axis_is_horizontal(parent.style.writing_mode) {
+        let phys_w = inline_fragment.bounds.width();
+        let phys_h = inline_fragment.bounds.height();
+        let parent_inline = phys_h;
+        let parent_block = phys_w;
+        inline_fragment = unconvert_fragment_axes(
+          inline_fragment,
+          parent_inline,
+          parent_block,
+          parent.style.writing_mode,
+          parent.style.direction,
+        );
+      }
+
       inline_fragment.bounds = Rect::from_xywh(
         0.0,
         inline_y,
