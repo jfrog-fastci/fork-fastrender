@@ -1945,6 +1945,14 @@ fn eval_style_range_value(
       "padding-right" => length_to_numeric(&styles.padding_right, container, ctx),
       "padding-bottom" => length_to_numeric(&styles.padding_bottom, container, ctx),
       "padding-left" => length_to_numeric(&styles.padding_left, container, ctx),
+      "scroll-padding-top" => length_to_numeric(&styles.scroll_padding_top, container, ctx),
+      "scroll-padding-right" => length_to_numeric(&styles.scroll_padding_right, container, ctx),
+      "scroll-padding-bottom" => length_to_numeric(&styles.scroll_padding_bottom, container, ctx),
+      "scroll-padding-left" => length_to_numeric(&styles.scroll_padding_left, container, ctx),
+      "scroll-margin-top" => length_to_numeric(&styles.scroll_margin_top, container, ctx),
+      "scroll-margin-right" => length_to_numeric(&styles.scroll_margin_right, container, ctx),
+      "scroll-margin-bottom" => length_to_numeric(&styles.scroll_margin_bottom, container, ctx),
+      "scroll-margin-left" => length_to_numeric(&styles.scroll_margin_left, container, ctx),
       "line-height" => match &styles.line_height {
         crate::style::types::LineHeight::Normal => {
           let font_size = styles
