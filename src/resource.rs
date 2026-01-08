@@ -3934,6 +3934,8 @@ impl HttpFetcher {
     let mut www_fallback_error: Option<Error> = None;
 
     loop {
+      render_control::check_active(render_stage_hint_for_context(kind, effective_url.as_ref()))
+        .map_err(Error::Render)?;
       let result = match http_backend_mode() {
         HttpBackendMode::Curl => curl_backend::fetch_http_with_accept_inner(
           self,
@@ -4217,9 +4219,7 @@ impl HttpFetcher {
       for attempt in 1..=max_attempts {
         self.policy.ensure_url_allowed(&current)?;
         let stage_hint = render_stage_hint_for_context(kind, &current);
-        if let Some(deadline) = deadline.as_ref().filter(|d| d.is_enabled()) {
-          deadline.check(stage_hint).map_err(Error::Render)?;
-        }
+        render_control::check_active(stage_hint).map_err(Error::Render)?;
         let allowed_limit = self.policy.allowed_response_limit()?;
         let read_limit = max_bytes.min(allowed_limit).max(1);
         let per_request_timeout = self.deadline_aware_timeout(kind, deadline.as_ref(), &current)?;
@@ -4299,6 +4299,7 @@ impl HttpFetcher {
                 }
               }
               if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
                 let reason = err.to_string();
                 log_http_retry(&reason, attempt, max_attempts, &current, backoff);
                 if !backoff.is_zero() {
@@ -4364,6 +4365,8 @@ impl HttpFetcher {
               .map(|u| u.to_string())
               .unwrap_or_else(|| loc.to_string());
             finish_network_fetch_diagnostics(network_timer.take());
+            render_control::check_active(render_stage_hint_for_context(kind, &next))
+              .map_err(Error::Render)?;
             self.policy.ensure_url_allowed(&next)?;
             current = next;
             continue 'redirects;
@@ -4497,6 +4500,7 @@ impl HttpFetcher {
                 }
 
                 if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
                   log_http_retry(
                     &format!("empty body (status {status_code})"),
                     attempt,
@@ -4555,6 +4559,7 @@ impl HttpFetcher {
                   }
                 }
                 if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
                   log_http_retry(
                     &format!("status {status_code}"),
                     attempt,
@@ -4636,6 +4641,7 @@ impl HttpFetcher {
                 }
               }
               if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
                 let reason = err.to_string();
                 log_http_retry(&reason, attempt, max_attempts, &current, backoff);
                 if !backoff.is_zero() {
@@ -4735,9 +4741,7 @@ impl HttpFetcher {
       for attempt in 1..=max_attempts {
         self.policy.ensure_url_allowed(&current)?;
         let stage_hint = render_stage_hint_for_context(kind, &current);
-        if let Some(deadline) = deadline.as_ref().filter(|d| d.is_enabled()) {
-          deadline.check(stage_hint).map_err(Error::Render)?;
-        }
+        render_control::check_active(stage_hint).map_err(Error::Render)?;
         let allowed_limit = self.policy.allowed_response_limit()?;
         let read_limit = max_bytes.min(allowed_limit).max(1);
         let per_request_timeout = self.deadline_aware_timeout(kind, deadline.as_ref(), &current)?;
@@ -4811,6 +4815,7 @@ impl HttpFetcher {
                 }
               }
               if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
                 let reason = err.to_string();
                 log_http_retry(&reason, attempt, max_attempts, &current, backoff);
                 if !backoff.is_zero() {
@@ -4875,6 +4880,8 @@ impl HttpFetcher {
               .map(|u| u.to_string())
               .unwrap_or_else(|| loc.to_string());
             finish_network_fetch_diagnostics(network_timer.take());
+            render_control::check_active(render_stage_hint_for_context(kind, &next))
+              .map_err(Error::Render)?;
             self.policy.ensure_url_allowed(&next)?;
             current = next;
             continue 'redirects;
@@ -5007,6 +5014,7 @@ impl HttpFetcher {
                 }
 
                 if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
                   log_http_retry(
                     &format!("empty body (status {status_code})"),
                     attempt,
@@ -5065,6 +5073,7 @@ impl HttpFetcher {
                   }
                 }
                 if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
                   log_http_retry(
                     &format!("status {status_code}"),
                     attempt,
@@ -5146,6 +5155,7 @@ impl HttpFetcher {
                 }
               }
               if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
                 let reason = err.to_string();
                 log_http_retry(&reason, attempt, max_attempts, &current, backoff);
                 if !backoff.is_zero() {
@@ -5248,9 +5258,7 @@ impl HttpFetcher {
       for attempt in 1..=max_attempts {
         self.policy.ensure_url_allowed(&current)?;
         let stage_hint = render_stage_hint_for_context(kind, &current);
-        if let Some(deadline) = deadline.as_ref().filter(|d| d.is_enabled()) {
-          deadline.check(stage_hint).map_err(Error::Render)?;
-        }
+        render_control::check_active(stage_hint).map_err(Error::Render)?;
         let allowed_limit = self.policy.allowed_response_limit()?;
         let per_request_timeout = self.deadline_aware_timeout(kind, deadline.as_ref(), &current)?;
         let mut effective_timeout = per_request_timeout.unwrap_or(self.policy.request_timeout);
@@ -5340,6 +5348,7 @@ impl HttpFetcher {
                 }
               }
               if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
                 let reason = err.to_string();
                 log_http_retry(&reason, attempt, max_attempts, &current, backoff);
                 if !backoff.is_zero() {
@@ -5405,6 +5414,8 @@ impl HttpFetcher {
               .map(|u| u.to_string())
               .unwrap_or_else(|| loc.to_string());
             finish_network_fetch_diagnostics(network_timer.take());
+            render_control::check_active(render_stage_hint_for_context(kind, &next))
+              .map_err(Error::Render)?;
             self.policy.ensure_url_allowed(&next)?;
             current = next;
             validators = None;
@@ -5463,6 +5474,10 @@ impl HttpFetcher {
 
         match body_result {
           Ok(bytes) => {
+            if let Err(err) = render_control::check_active(stage_hint) {
+              finish_network_fetch_diagnostics(network_timer.take());
+              return Err(Error::Render(err));
+            }
             let mut bytes =
               match decode_content_encodings(bytes, &encodings, allowed_limit, decode_stage) {
                 Ok(decoded) => decoded,
@@ -5560,6 +5575,7 @@ impl HttpFetcher {
                 }
 
                 if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
                   log_http_retry(
                     &format!("empty body (status {status_code})"),
                     attempt,
@@ -5618,6 +5634,7 @@ impl HttpFetcher {
                   }
                 }
                 if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
                   log_http_retry(
                     &format!("status {status_code}"),
                     attempt,
@@ -5734,6 +5751,7 @@ impl HttpFetcher {
                 }
               }
               if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
                 let reason = err.to_string();
                 log_http_retry(&reason, attempt, max_attempts, &current, backoff);
                 if !backoff.is_zero() {
@@ -5838,9 +5856,7 @@ impl HttpFetcher {
       for attempt in 1..=max_attempts {
         self.policy.ensure_url_allowed(&current)?;
         let stage_hint = render_stage_hint_for_context(kind, &current);
-        if let Some(deadline) = deadline.as_ref().filter(|d| d.is_enabled()) {
-          deadline.check(stage_hint).map_err(Error::Render)?;
-        }
+        render_control::check_active(stage_hint).map_err(Error::Render)?;
         let allowed_limit = self.policy.allowed_response_limit()?;
         let per_request_timeout = self.deadline_aware_timeout(kind, deadline.as_ref(), &current)?;
         let mut effective_timeout = per_request_timeout.unwrap_or(self.policy.request_timeout);
@@ -5910,6 +5926,7 @@ impl HttpFetcher {
                 }
               }
               if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
                 let reason = err.to_string();
                 log_http_retry(&reason, attempt, max_attempts, &current, backoff);
                 if !backoff.is_zero() {
@@ -5974,6 +5991,8 @@ impl HttpFetcher {
               .map(|u| u.to_string())
               .unwrap_or_else(|| loc.to_string());
             finish_network_fetch_diagnostics(network_timer.take());
+            render_control::check_active(render_stage_hint_for_context(kind, &next))
+              .map_err(Error::Render)?;
             self.policy.ensure_url_allowed(&next)?;
             current = next;
             validators = None;
@@ -6067,6 +6086,10 @@ impl HttpFetcher {
               return Err(Error::Resource(err));
             }
 
+            if let Err(err) = render_control::check_active(stage_hint) {
+              finish_network_fetch_diagnostics(network_timer.take());
+              return Err(Error::Render(err));
+            }
             let mut bytes =
               match decode_content_encodings(body, &encodings, allowed_limit, decode_stage) {
                 Ok(decoded) => decoded,
@@ -6156,6 +6179,7 @@ impl HttpFetcher {
                 }
 
                 if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
                   log_http_retry(
                     &format!("empty body (status {status_code})"),
                     attempt,
@@ -6214,6 +6238,7 @@ impl HttpFetcher {
                   }
                 }
                 if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
                   log_http_retry(
                     &format!("status {status_code}"),
                     attempt,
@@ -6326,6 +6351,7 @@ impl HttpFetcher {
                 }
               }
               if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
                 let reason = err.to_string();
                 log_http_retry(&reason, attempt, max_attempts, &current, backoff);
                 if !backoff.is_zero() {
@@ -15889,6 +15915,123 @@ mod tests {
       request_count.load(Ordering::SeqCst),
       1,
       "expected retries to be disabled under render deadline"
+    );
+  }
+
+  #[test]
+  fn http_fetch_cancel_callback_aborts_retries_and_backoff() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+
+    let Some(listener) =
+      try_bind_localhost("http_fetch_cancel_callback_aborts_retries_and_backoff")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&request_count);
+    let (first_request_tx, first_request_rx) = mpsc::channel();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier_server = Arc::clone(&barrier);
+
+    let handle = thread::spawn(move || {
+      barrier_server.wait();
+      let start = Instant::now();
+      let mut last_request = None::<Instant>;
+
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            let count = seen.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            last_request = Some(Instant::now());
+
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let _ = read_http_request(&mut stream);
+
+            let body = b"unavailable";
+            let headers = format!(
+              "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(body);
+
+            if count == 1 {
+              let _ = first_request_tx.send(());
+            }
+          }
+          Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            if let Some(last) = last_request {
+              if last.elapsed() > Duration::from_millis(250) {
+                break;
+              }
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept http_fetch_cancel_callback_aborts_retries_and_backoff: {err}"),
+        }
+      }
+    });
+
+    let retry_policy = HttpRetryPolicy {
+      max_attempts: 2,
+      backoff_base: Duration::from_secs(1),
+      backoff_cap: Duration::from_secs(1),
+      respect_retry_after: false,
+    };
+    let fetcher = HttpFetcher::new()
+      .with_timeout(Duration::from_secs(5))
+      .with_retry_policy(retry_policy);
+    let url = format!("http://{addr}/style.css");
+
+    barrier.wait();
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_flag_worker = Arc::clone(&cancel_flag);
+    let cancel: Arc<crate::render_control::CancelCallback> =
+      Arc::new(move || cancel_flag_worker.load(Ordering::Relaxed));
+    let deadline = render_control::RenderDeadline::new(None, Some(cancel));
+
+    let canceller = {
+      let cancel_flag = Arc::clone(&cancel_flag);
+      thread::spawn(move || {
+        let _ = first_request_rx.recv_timeout(Duration::from_secs(1));
+        cancel_flag.store(true, Ordering::Relaxed);
+      })
+    };
+
+    let start = Instant::now();
+    let res = render_control::with_deadline(Some(&deadline), || {
+      fetcher.fetch_with_context(FetchContextKind::Stylesheet, &url)
+    });
+    let elapsed = start.elapsed();
+
+    canceller.join().unwrap();
+    handle.join().unwrap();
+
+    assert!(
+      elapsed < Duration::from_millis(400),
+      "fetch should abort quickly under cancel callback (elapsed={elapsed:?})"
+    );
+
+    let err = res.expect_err("expected fetch to fail under cancel callback");
+    match err {
+      Error::Render(RenderError::Timeout { stage, .. }) => {
+        assert_eq!(stage, RenderStage::Css);
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
+
+    assert_eq!(
+      request_count.load(Ordering::SeqCst),
+      1,
+      "expected cancellation to stop retries before starting another request"
     );
   }
 
