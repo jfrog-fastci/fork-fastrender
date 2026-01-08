@@ -325,6 +325,52 @@ fn collapsed_border_resolution_honors_colgroup_span_border_left_in_rtl() {
 }
 
 #[test]
+fn collapsed_border_resolution_honors_colgroup_with_col_children_border_left_in_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; direction: rtl; }
+          #cg { border-left: 3px solid red; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <colgroup id="cg">
+            <col span="2">
+          </colgroup>
+          <col>
+          <tr><td></td><td></td><td></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  let line0 = borders.vertical_line_width(0);
+  let line1 = borders.vertical_line_width(1);
+  let line2 = borders.vertical_line_width(2);
+  let line3 = borders.vertical_line_width(3);
+  assert!(
+    (line1 - 3.0).abs() < 0.01,
+    "expected the colgroup border-left to land on the divider between the remaining column and the colgroup in RTL, got {line1} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+  assert!(
+    line0 < 0.01,
+    "expected no border on the left outer edge, got {line0} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+  assert!(
+    line2 < 0.01,
+    "expected no border on the internal divider within the colgroup, got {line2} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+  assert!(
+    line3 < 0.01,
+    "expected no border on the right outer edge, got {line3} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+}
+
+#[test]
 fn collapsed_border_resolution_honors_colgroup_with_col_children_in_rtl() {
   let html = r#"
     <html>
@@ -445,6 +491,70 @@ fn collapsed_border_resolution_honors_col_span_in_rtl() {
     (borders.vertical_line_width(3) - 3.0).abs() < 0.01,
     "expected the <col span> border-right to also apply on the outer edge, got {}",
     borders.vertical_line_width(3)
+  );
+}
+
+#[test]
+fn collapsed_border_resolution_honors_col_span_border_left_in_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; direction: rtl; }
+          col { border: none; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col span="2" style="border-left: 3px solid red;">
+          <col>
+          <tr><td></td><td></td><td></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  let line0 = borders.vertical_line_width(0);
+  let line1 = borders.vertical_line_width(1);
+  let line2 = borders.vertical_line_width(2);
+  let line3 = borders.vertical_line_width(3);
+  assert!(
+    line0 < 0.01,
+    "expected no border on the left edge, got {line0} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+  assert!(
+    (line1 - 3.0).abs() < 0.01,
+    "expected the <col span> border-left to apply between the non-spanned column and the spanned columns in RTL, got {line1} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+  assert!(
+    (line2 - 3.0).abs() < 0.01,
+    "expected the <col span> border-left to also apply between the spanned columns in RTL, got {line2} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+  assert!(
+    line3 < 0.01,
+    "expected no border on the right edge, got {line3} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+
+  let segment1 = borders
+    .vertical_segment(1, 0)
+    .expect("expected the border segment between the non-spanned column and the spanned columns");
+  assert_eq!(segment1.color, Rgba::RED);
+  assert_eq!(segment1.style, BorderStyle::Solid);
+  assert!(
+    (segment1.width - 3.0).abs() < 0.01,
+    "expected a 3px border segment, got {segment1:?}"
+  );
+
+  let segment2 = borders
+    .vertical_segment(2, 0)
+    .expect("expected the border segment between the spanned columns");
+  assert_eq!(segment2.color, Rgba::RED);
+  assert_eq!(segment2.style, BorderStyle::Solid);
+  assert!(
+    (segment2.width - 3.0).abs() < 0.01,
+    "expected a 3px border segment, got {segment2:?}"
   );
 }
 
