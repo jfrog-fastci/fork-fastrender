@@ -6,10 +6,13 @@ If a document can’t be kept accurate, delete it and replace it with something 
 
 ## Start here
 
-- Agent workflow & mindset: [`AGENTS.md`](../AGENTS.md)
+- Common agent rules & resource safety: [`AGENTS.md`](../AGENTS.md)
+- Capability buildout workstream: [`instructions/capability_buildout.md`](../instructions/capability_buildout.md)
+- Pageset-by-page fixing loop: [`instructions/pageset_page_loop.md`](../instructions/pageset_page_loop.md)
+- Browser UI / chrome work: [`instructions/browser_ui.md`](../instructions/browser_ui.md)
 - Running the renderer: [running.md](running.md)
 - CLI tools & workflows: [cli.md](cli.md)
-- Evidence loop (spec → code → regression): see [`AGENTS.md`](../AGENTS.md) “The work loop” plus [testing.md](testing.md) (WPT harness) and [cli.md](cli.md) (fixture tooling).
+- Evidence loop (spec → code → regression): see `AGENTS.md` plus [testing.md](testing.md) (WPT harness) and [cli.md](cli.md) (fixture tooling).
 - Library API: [api.md](api.md)
 - Architecture overview: [architecture.md](architecture.md)
 - Conformance targets & support matrix: [conformance.md](conformance.md)
