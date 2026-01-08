@@ -515,11 +515,14 @@ fn resolve_container_query_length(
 
     if let Some(calc) = length.calc {
       for term in calc.terms() {
-        if term.unit.is_container_query_relative() && !bases_known(term.unit) {
+        if term.unit.is_container_query_relative() && term.value != 0.0 && !bases_known(term.unit) {
           return None;
         }
       }
-    } else if length.unit.is_container_query_relative() && !bases_known(length.unit) {
+    } else if length.unit.is_container_query_relative()
+      && length.value != 0.0
+      && !bases_known(length.unit)
+    {
       return None;
     }
   }
@@ -1916,11 +1919,14 @@ fn resolve_length_for_query(
 
     if let Some(calc) = length.calc {
       for term in calc.terms() {
-        if term.unit.is_container_query_relative() && !bases_known(term.unit) {
+        if term.unit.is_container_query_relative() && term.value != 0.0 && !bases_known(term.unit) {
           return None;
         }
       }
-    } else if length.unit.is_container_query_relative() && !bases_known(length.unit) {
+    } else if length.unit.is_container_query_relative()
+      && length.value != 0.0
+      && !bases_known(length.unit)
+    {
       return None;
     }
   }
