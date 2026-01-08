@@ -1893,6 +1893,29 @@ fn eval_style_range_value(
       "padding-right" => length_to_numeric(&styles.padding_right, container, ctx),
       "padding-bottom" => length_to_numeric(&styles.padding_bottom, container, ctx),
       "padding-left" => length_to_numeric(&styles.padding_left, container, ctx),
+      "line-height" => match &styles.line_height {
+        crate::style::types::LineHeight::Normal => {
+          let font_size = styles
+            .font_size
+            .is_finite()
+            .then_some(styles.font_size)
+            .filter(|v| *v >= 0.0)
+            .unwrap_or(16.0);
+          Some(NumericValue {
+            ty: NumericType::LengthPx,
+            value: font_size * 1.2,
+          })
+        }
+        crate::style::types::LineHeight::Number(mult) => Some(NumericValue {
+          ty: NumericType::Number,
+          value: *mult,
+        }),
+        crate::style::types::LineHeight::Percentage(pct) => Some(NumericValue {
+          ty: NumericType::Percentage,
+          value: *pct,
+        }),
+        crate::style::types::LineHeight::Length(len) => length_to_numeric(len, container, ctx),
+      },
       "z-index" => styles.z_index.map(|z| NumericValue {
         ty: NumericType::Number,
         value: z as f32,

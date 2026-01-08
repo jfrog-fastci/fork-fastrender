@@ -1044,6 +1044,84 @@ fn container_style_query_range_feature_matches_padding_left() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_line_height_number() {
+  let html = r#"
+    <style>
+      .container-short { container-type: inline-size; line-height: 1; }
+      .container-tall { container-type: inline-size; line-height: 2; }
+      .child { color: rgb(0 0 255); }
+      @container style(line-height > 1.5) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-short">
+      <div id="short" class="child">hello</div>
+    </div>
+    <div class="container-tall">
+      <div id="tall" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let short = find_by_id(&styled, "short").expect("short element");
+  let tall = find_by_id(&styled, "tall").expect("tall element");
+  assert_eq!(short.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(tall.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_line_height_percentage() {
+  let html = r#"
+    <style>
+      .container-short { container-type: inline-size; line-height: 100%; }
+      .container-tall { container-type: inline-size; line-height: 150%; }
+      .child { color: rgb(0 0 255); }
+      @container style(line-height > 100%) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-short">
+      <div id="short" class="child">hello</div>
+    </div>
+    <div class="container-tall">
+      <div id="tall" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let short = find_by_id(&styled, "short").expect("short element");
+  let tall = find_by_id(&styled, "tall").expect("tall element");
+  assert_eq!(short.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(tall.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_line_height_length() {
+  let html = r#"
+    <style>
+      .container-short { container-type: inline-size; line-height: 10px; }
+      .container-tall { container-type: inline-size; line-height: 20px; }
+      .child { color: rgb(0 0 255); }
+      @container style(line-height > 15px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-short">
+      <div id="short" class="child">hello</div>
+    </div>
+    <div class="container-tall">
+      <div id="tall" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let short = find_by_id(&styled, "short").expect("short element");
+  let tall = find_by_id(&styled, "tall").expect("tall element");
+  assert_eq!(short.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(tall.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_coerces_unitless_zero_to_time() {
   let html = r#"
     <style>
