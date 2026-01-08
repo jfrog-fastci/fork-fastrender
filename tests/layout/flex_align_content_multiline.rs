@@ -2,6 +2,7 @@ use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::types::AlignContent;
+use fastrender::style::types::AlignItems;
 use fastrender::style::types::FlexDirection;
 use fastrender::style::types::FlexWrap;
 use fastrender::style::values::Length;
@@ -18,6 +19,7 @@ fn layout_with_align_content(align_content: AlignContent) -> (f32, f32) {
   container_style.flex_direction = FlexDirection::Row;
   container_style.flex_wrap = FlexWrap::Wrap;
   container_style.align_content = align_content;
+  container_style.align_items = AlignItems::FlexStart;
   container_style.width = Some(Length::px(60.0));
   container_style.height = Some(Length::px(50.0));
 
@@ -80,12 +82,17 @@ fn layout_with_align_content(align_content: AlignContent) -> (f32, f32) {
   (first_y, last_y)
 }
 
-fn layout_single_line_with_align_content(align_content: AlignContent) -> (f32, f32) {
+fn layout_single_line_with_align_content(
+  align_content: AlignContent,
+  flex_wrap: FlexWrap,
+  align_items: AlignItems,
+) -> (f32, f32) {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
   container_style.flex_direction = FlexDirection::Row;
-  container_style.flex_wrap = FlexWrap::Wrap;
+  container_style.flex_wrap = flex_wrap;
   container_style.align_content = align_content;
+  container_style.align_items = align_items;
   container_style.width = Some(Length::px(100.0));
   container_style.height = Some(Length::px(100.0));
 
@@ -210,7 +217,8 @@ fn align_content_stretch_stretches_line_cross_sizes() {
 
 #[test]
 fn align_content_center_centers_single_line_in_wrapping_container() {
-  let (first_y, second_y) = layout_single_line_with_align_content(AlignContent::Center);
+  let (first_y, second_y) =
+    layout_single_line_with_align_content(AlignContent::Center, FlexWrap::Wrap, AlignItems::FlexStart);
   let eps = 1e-3;
   let expected = (100.0 - 10.0) / 2.0;
   assert!(
@@ -225,7 +233,8 @@ fn align_content_center_centers_single_line_in_wrapping_container() {
 
 #[test]
 fn align_content_flex_end_packs_single_line_to_end_in_wrapping_container() {
-  let (first_y, second_y) = layout_single_line_with_align_content(AlignContent::FlexEnd);
+  let (first_y, second_y) =
+    layout_single_line_with_align_content(AlignContent::FlexEnd, FlexWrap::Wrap, AlignItems::FlexStart);
   let eps = 1e-3;
   let expected = 100.0 - 10.0;
   assert!(
@@ -240,7 +249,11 @@ fn align_content_flex_end_packs_single_line_to_end_in_wrapping_container() {
 
 #[test]
 fn align_content_space_between_falls_back_to_flex_start_on_single_line() {
-  let (first_y, second_y) = layout_single_line_with_align_content(AlignContent::SpaceBetween);
+  let (first_y, second_y) = layout_single_line_with_align_content(
+    AlignContent::SpaceBetween,
+    FlexWrap::Wrap,
+    AlignItems::FlexStart,
+  );
   let eps = 1e-3;
   assert!(
     first_y.abs() < eps,
@@ -249,5 +262,89 @@ fn align_content_space_between_falls_back_to_flex_start_on_single_line() {
   assert!(
     second_y.abs() < eps,
     "expected second_y≈0 under align-content:space-between with a single flex line, got {second_y}"
+  );
+}
+
+#[test]
+fn align_content_space_evenly_centers_single_line_in_wrapping_container() {
+  let (first_y, second_y) = layout_single_line_with_align_content(
+    AlignContent::SpaceEvenly,
+    FlexWrap::Wrap,
+    AlignItems::FlexStart,
+  );
+  let eps = 1e-3;
+  let expected = (100.0 - 10.0) / 2.0;
+  assert!(
+    (first_y - expected).abs() < eps,
+    "expected first_y≈{expected} under align-content:space-evenly, got {first_y}"
+  );
+  assert!(
+    (second_y - expected).abs() < eps,
+    "expected second_y≈{expected} under align-content:space-evenly, got {second_y}"
+  );
+}
+
+#[test]
+fn align_content_space_around_centers_single_line_in_wrapping_container() {
+  let (first_y, second_y) = layout_single_line_with_align_content(
+    AlignContent::SpaceAround,
+    FlexWrap::Wrap,
+    AlignItems::FlexStart,
+  );
+  let eps = 1e-3;
+  let expected = (100.0 - 10.0) / 2.0;
+  assert!(
+    (first_y - expected).abs() < eps,
+    "expected first_y≈{expected} under align-content:space-around, got {first_y}"
+  );
+  assert!(
+    (second_y - expected).abs() < eps,
+    "expected second_y≈{expected} under align-content:space-around, got {second_y}"
+  );
+}
+
+#[test]
+fn align_content_stretch_increases_single_line_cross_size() {
+  let (first_y, second_y) =
+    layout_single_line_with_align_content(AlignContent::Stretch, FlexWrap::Wrap, AlignItems::FlexEnd);
+  let eps = 1e-3;
+  let expected = 100.0 - 10.0;
+  assert!(
+    (first_y - expected).abs() < eps,
+    "expected first_y≈{expected} under align-content:stretch, got {first_y}"
+  );
+  assert!(
+    (second_y - expected).abs() < eps,
+    "expected second_y≈{expected} under align-content:stretch, got {second_y}"
+  );
+}
+
+#[test]
+fn align_content_center_has_no_effect_on_no_wrap_flex_container() {
+  let (first_y, second_y) =
+    layout_single_line_with_align_content(AlignContent::Center, FlexWrap::NoWrap, AlignItems::FlexStart);
+  let eps = 1e-3;
+  assert!(
+    first_y.abs() < eps,
+    "expected first_y≈0 under nowrap + align-content:center, got {first_y}"
+  );
+  assert!(
+    second_y.abs() < eps,
+    "expected second_y≈0 under nowrap + align-content:center, got {second_y}"
+  );
+}
+
+#[test]
+fn align_content_flex_end_has_no_effect_on_no_wrap_flex_container() {
+  let (first_y, second_y) =
+    layout_single_line_with_align_content(AlignContent::FlexEnd, FlexWrap::NoWrap, AlignItems::FlexStart);
+  let eps = 1e-3;
+  assert!(
+    first_y.abs() < eps,
+    "expected first_y≈0 under nowrap + align-content:flex-end, got {first_y}"
+  );
+  assert!(
+    second_y.abs() < eps,
+    "expected second_y≈0 under nowrap + align-content:flex-end, got {second_y}"
   );
 }
