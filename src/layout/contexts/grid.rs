@@ -7556,8 +7556,22 @@ fn translate_along_axis(
   translate_fragment_tree(fragment, delta_point, deadline_counter)
 }
 
+fn is_css_ascii_whitespace(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_css_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_css_ascii_whitespace)
+}
+
+fn split_css_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
+  value
+    .split(is_css_ascii_whitespace)
+    .filter(|part| !part.is_empty())
+}
+
 fn parse_grid_line_placement_raw(raw: &str) -> Line<TaffyGridPlacement<String>> {
-  let mut parts = raw.splitn(2, '/').map(|s| s.trim());
+  let mut parts = raw.splitn(2, '/').map(trim_css_ascii_whitespace);
   let start_str = parts.next().unwrap_or("auto");
   let end_str = parts.next().unwrap_or("auto");
   Line {
@@ -7567,15 +7581,12 @@ fn parse_grid_line_placement_raw(raw: &str) -> Line<TaffyGridPlacement<String>> 
 }
 
 fn parse_grid_line_component(token: &str) -> TaffyGridPlacement<String> {
-  let trimmed = token.trim();
+  let trimmed = trim_css_ascii_whitespace(token);
   if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
     return TaffyGridPlacement::Auto;
   }
 
-  let parts: Vec<&str> = trimmed
-    .split_whitespace()
-    .filter(|p| !p.is_empty())
-    .collect();
+  let parts: Vec<&str> = split_css_ascii_whitespace(trimmed).collect();
   if parts.is_empty() {
     return TaffyGridPlacement::Auto;
   }
@@ -13231,6 +13242,19 @@ mod tests {
       TaffyGridPlacement::NamedLine(name, idx) => {
         assert_eq!(name, "foo");
         assert_eq!(idx, 2);
+      }
+      other => panic!("expected named line, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn parses_grid_line_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let placement = parse_grid_line_placement_raw(&format!("{nbsp}auto"));
+    match placement.start {
+      TaffyGridPlacement::NamedLine(name, idx) => {
+        assert_eq!(name, format!("{nbsp}auto"));
+        assert_eq!(idx, 1);
       }
       other => panic!("expected named line, got {:?}", other),
     }

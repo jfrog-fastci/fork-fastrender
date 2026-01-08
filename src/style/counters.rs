@@ -51,6 +51,20 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+fn is_css_ascii_whitespace(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_css_ascii_whitespace)
+}
+
+fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
+  value
+    .split(is_css_ascii_whitespace)
+    .filter(|part| !part.is_empty())
+}
+
 /// A set of counter specifications for `counter-reset` or `counter-increment`
 ///
 /// CSS syntax: `<counter-name> <integer>?`+
@@ -162,7 +176,7 @@ impl CounterSet {
   ///
   /// Some(CounterSet) on success, None if parsing fails
   pub fn parse_with_default(input: &str, default_value: i32) -> Option<Self> {
-    let input = input.trim();
+    let input = trim_ascii_whitespace(input);
 
     // Handle "none" keyword
     if input.eq_ignore_ascii_case("none") {
@@ -170,7 +184,7 @@ impl CounterSet {
     }
 
     let mut items = Vec::new();
-    let mut tokens = input.split_whitespace().peekable();
+    let mut tokens = split_ascii_whitespace(input).peekable();
 
     while let Some(token) = tokens.next() {
       // Skip keywords we don't understand
@@ -836,6 +850,20 @@ mod tests {
   fn test_parse_none() {
     let set = CounterSet::parse_reset("none").unwrap();
     assert!(set.is_empty());
+  }
+
+  #[test]
+  fn counter_set_parsing_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let prefixed = CounterSet::parse_reset(&format!("{nbsp}chapter 1")).unwrap();
+    assert_eq!(prefixed.items.len(), 1);
+    assert_eq!(prefixed.items[0].name, format!("{nbsp}chapter"));
+    assert_eq!(prefixed.items[0].value, 1);
+
+    let embedded = CounterSet::parse_reset(&format!("chapter{nbsp}1")).unwrap();
+    assert_eq!(embedded.items.len(), 1);
+    assert_eq!(embedded.items[0].name, format!("chapter{nbsp}1"));
+    assert_eq!(embedded.items[0].value, 0);
   }
 
   #[test]

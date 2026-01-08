@@ -3097,8 +3097,10 @@ fn parse_override_colors(value: &str) -> Vec<FontPaletteOverride> {
   value
     .split(',')
     .filter_map(|entry| {
-      let mut parts = entry.split_whitespace();
-      let idx_str = parts.next()?.trim();
+      let mut parts = entry
+        .split(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+        .filter(|part| !part.is_empty());
+      let idx_str = trim_ascii_whitespace(parts.next()?);
       let Ok(idx) = idx_str.parse::<i32>() else {
         return None;
       };
@@ -5476,6 +5478,20 @@ mod tests {
       result.is_ok(),
       "expected UA stylesheet to parse without errors, got {:?}",
       result.errors
+    );
+  }
+
+  #[test]
+  fn font_palette_override_colors_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(parse_override_colors("0 red").len(), 1);
+    assert!(
+      parse_override_colors(&format!("{nbsp}0 red")).is_empty(),
+      "NBSP must not be treated as CSS whitespace before the palette index"
+    );
+    assert!(
+      parse_override_colors(&format!("0{nbsp}red")).is_empty(),
+      "NBSP must not be treated as CSS whitespace between index and color"
     );
   }
 

@@ -6,6 +6,20 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::ptr;
 
+fn is_html_ascii_whitespace(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_html_ascii_whitespace)
+}
+
+fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
+  value
+    .split(is_html_ascii_whitespace)
+    .filter(|part| !part.is_empty())
+}
+
 /// Checked state for toggleable controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -809,7 +823,7 @@ fn collect_labels(
 
     if is_label {
       if let Some(for_attr) = node.node.get_attribute_ref("for") {
-        let target_key = for_attr.trim();
+        let target_key = trim_ascii_whitespace(for_attr);
         if !target_key.is_empty() {
           if let Some(target_id) =
             node_id_for_id_scoped(node_scope, ids_by_scope, node.node_id, target_key)
@@ -917,7 +931,7 @@ fn normalize_whitespace(input: &str) -> String {
       continue;
     }
 
-    if ch.is_whitespace() {
+    if is_html_ascii_whitespace(ch) {
       if !last_space {
         out.push(' ');
       }
@@ -927,7 +941,7 @@ fn normalize_whitespace(input: &str) -> String {
       last_space = false;
     }
   }
-  out.trim().to_string()
+  trim_ascii_whitespace(&out).to_string()
 }
 
 fn is_landmark_role(role: &str) -> bool {
@@ -948,13 +962,13 @@ fn is_landmark_role(role: &str) -> bool {
 fn has_accessible_name_attr(node: &DomNode) -> bool {
   node
     .get_attribute_ref("aria-label")
-    .is_some_and(|v| !v.trim().is_empty())
+    .is_some_and(|v| !trim_ascii_whitespace(v).is_empty())
     || node
       .get_attribute_ref("aria-labelledby")
-      .is_some_and(|v| !v.trim().is_empty())
+      .is_some_and(|v| !trim_ascii_whitespace(v).is_empty())
     || node
       .get_attribute_ref("title")
-      .is_some_and(|v| !v.trim().is_empty())
+      .is_some_and(|v| !trim_ascii_whitespace(v).is_empty())
 }
 
 fn is_html_element(node: &DomNode) -> bool {
@@ -1759,7 +1773,7 @@ fn placeholder_as_name(node: &StyledNode, ctx: &BuildContext) -> Option<String> 
         .get_attribute_ref("type")
         .map(|t| t.to_ascii_lowercase())
         .unwrap_or_else(|| "text".to_string());
-      if input_type.trim().is_empty() {
+      if trim_ascii_whitespace(&input_type).is_empty() {
         input_type = "text".to_string();
       }
       matches!(
@@ -1813,7 +1827,7 @@ fn referenced_text_attr(
   mode: TextAlternativeMode,
 ) -> String {
   let mut parts = Vec::new();
-  for id in attr_value.split_whitespace() {
+  for id in split_ascii_whitespace(attr_value) {
     if let Some(target) = ctx.node_for_id_scoped(referrer_node_id, id) {
       if let Some(text) = ctx.text_alternative(target, visited, mode, Some(true)) {
         if !text.is_empty() {
@@ -2154,7 +2168,7 @@ fn compute_description(
 fn resolve_idref_list(ctx: &BuildContext, origin: &StyledNode, attr_value: &str) -> Vec<String> {
   let mut out = Vec::new();
   let mut seen_tokens: HashSet<&str> = HashSet::new();
-  for token in attr_value.split_whitespace() {
+  for token in split_ascii_whitespace(attr_value) {
     if !seen_tokens.insert(token) {
       continue;
     }
@@ -2172,13 +2186,13 @@ fn resolve_idref_list(ctx: &BuildContext, origin: &StyledNode, attr_value: &str)
 }
 
 fn resolve_idref(ctx: &BuildContext, origin: &StyledNode, attr_value: &str) -> Option<String> {
-  let trimmed = attr_value.trim();
+  let trimmed = trim_ascii_whitespace(attr_value);
   if trimmed.is_empty() {
     return None;
   }
 
   // IDREF attributes are not lists; ignore whitespace-separated lists.
-  let mut tokens = trimmed.split_whitespace();
+  let mut tokens = split_ascii_whitespace(trimmed);
   let token = tokens.next()?;
   if tokens.next().is_some() {
     return None;
@@ -2197,13 +2211,13 @@ fn resolve_idref_target<'a>(
   origin: &StyledNode,
   attr_value: &str,
 ) -> Option<&'a StyledNode> {
-  let trimmed = attr_value.trim();
+  let trimmed = trim_ascii_whitespace(attr_value);
   if trimmed.is_empty() {
     return None;
   }
 
   // `aria-errormessage` is an IDREF, not a list; ignore whitespace-separated lists.
-  let mut tokens = trimmed.split_whitespace();
+  let mut tokens = split_ascii_whitespace(trimmed);
   let token = tokens.next()?;
   if tokens.next().is_some() {
     return None;
@@ -2272,7 +2286,7 @@ fn compute_level(node: &DomNode, role: Option<&str>) -> Option<u32> {
   }
 
   if let Some(attr) = node.get_attribute_ref("aria-level") {
-    if let Ok(level) = attr.trim().parse::<u32>() {
+    if let Ok(level) = trim_ascii_whitespace(attr).parse::<u32>() {
       if level > 0 {
         return Some(level);
       }
@@ -2378,8 +2392,7 @@ fn format_number(mut value: f64) -> String {
 
 fn progress_value(node: &DomNode) -> Option<String> {
   let raw_value = node.get_attribute_ref("value")?;
-  let parsed = raw_value
-    .trim()
+  let parsed = trim_ascii_whitespace(raw_value)
     .parse::<f64>()
     .ok()
     .filter(|v| v.is_finite())?;
@@ -2388,8 +2401,7 @@ fn progress_value(node: &DomNode) -> Option<String> {
 
 fn meter_value(node: &DomNode) -> Option<String> {
   let raw_value = node.get_attribute_ref("value")?;
-  let parsed = raw_value
-    .trim()
+  let parsed = trim_ascii_whitespace(raw_value)
     .parse::<f64>()
     .ok()
     .filter(|v| v.is_finite())?;
@@ -2622,11 +2634,14 @@ fn compute_invalid(
 
     if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number")) {
       let raw = node.node.get_attribute_ref("value").unwrap_or_default();
-      if raw.trim().is_empty() {
+      if trim_ascii_whitespace(raw).is_empty() {
         return required;
       }
 
-      let parsed = raw.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+      let parsed = trim_ascii_whitespace(raw)
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite());
       let Some(value) = parsed else {
         return true;
       };
@@ -2634,11 +2649,21 @@ fn compute_invalid(
       let min = node
         .node
         .get_attribute_ref("min")
-        .and_then(|m| m.trim().parse::<f64>().ok().filter(|v| v.is_finite()));
+        .and_then(|m| {
+          trim_ascii_whitespace(m)
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+        });
       let max = node
         .node
         .get_attribute_ref("max")
-        .and_then(|m| m.trim().parse::<f64>().ok().filter(|v| v.is_finite()));
+        .and_then(|m| {
+          trim_ascii_whitespace(m)
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+        });
 
       if let Some(min) = min {
         if value < min {
@@ -2665,12 +2690,7 @@ fn compute_invalid(
         return false;
       }
 
-      return node
-        .node
-        .get_attribute_ref("value")
-        .unwrap_or_default()
-        .trim()
-        .is_empty();
+      return trim_ascii_whitespace(node.node.get_attribute_ref("value").unwrap_or_default()).is_empty();
     }
 
     if crate::dom::supports_placeholder(input_type)
@@ -2681,7 +2701,7 @@ fn compute_invalid(
     }
 
     let value = node.node.get_attribute_ref("value").unwrap_or_default();
-    return required && value.trim().is_empty();
+    return required && trim_ascii_whitespace(value).is_empty();
   }
 
   false
@@ -2865,7 +2885,7 @@ fn compute_focusable(node: &DomNode, role: Option<&str>, disabled: bool) -> bool
   }
 
   if let Some(tabindex) = node.get_attribute_ref("tabindex") {
-    let trimmed = tabindex.trim();
+    let trimmed = trim_ascii_whitespace(tabindex);
     if !trimmed.is_empty() && trimmed.parse::<i32>().is_ok() {
       return true;
     }
@@ -2919,13 +2939,13 @@ fn parse_invalid(
 
 fn parse_expanded(node: &DomNode) -> Option<bool> {
   let value = node.get_attribute_ref("aria-expanded")?;
-  let token = value.trim().to_ascii_lowercase();
+  let token = trim_ascii_whitespace(value).to_ascii_lowercase();
   parse_bool_token(&token)
 }
 
 fn parse_has_popup(node: &DomNode) -> Option<String> {
   let value = node.get_attribute_ref("aria-haspopup")?;
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   // `aria-haspopup` is an enumerated ARIA token attribute. Only allow known tokens; ignore invalid
   // values so they don't leak into serialized accessibility output.
   //
@@ -2958,7 +2978,7 @@ fn parse_has_popup(node: &DomNode) -> Option<String> {
 
 fn parse_aria_live(node: &DomNode) -> Option<String> {
   let value = node.get_attribute_ref("aria-live")?;
-  let token = value.trim().to_ascii_lowercase();
+  let token = trim_ascii_whitespace(value).to_ascii_lowercase();
   if matches!(token.as_str(), "off" | "polite" | "assertive") {
     Some(token)
   } else {
@@ -2971,7 +2991,7 @@ fn parse_aria_relevant(node: &DomNode) -> Option<String> {
   let mut tokens: Vec<String> = Vec::new();
   let mut all = false;
 
-  for token in value.split_ascii_whitespace() {
+  for token in split_ascii_whitespace(value) {
     let lower = token.to_ascii_lowercase();
     match lower.as_str() {
       "all" => all = true,
@@ -2996,7 +3016,7 @@ fn parse_aria_relevant(node: &DomNode) -> Option<String> {
 
 fn parse_aria_invalid(node: &DomNode) -> Option<bool> {
   let value = node.get_attribute_ref("aria-invalid")?;
-  let token = value.trim().to_ascii_lowercase();
+  let token = trim_ascii_whitespace(value).to_ascii_lowercase();
 
   if matches!(token.as_str(), "grammar" | "spelling") {
     return Some(true);
@@ -3007,7 +3027,7 @@ fn parse_aria_invalid(node: &DomNode) -> Option<bool> {
 
 fn parse_bool_attr(node: &DomNode, name: &str) -> Option<bool> {
   let value = node.get_attribute_ref(name)?;
-  let token = value.trim().to_ascii_lowercase();
+  let token = trim_ascii_whitespace(value).to_ascii_lowercase();
   parse_bool_token(&token)
 }
 
@@ -3026,13 +3046,14 @@ fn attr_truthy(node: &DomNode, name: &str) -> bool {
 
 fn parse_aria_multiline(node: &DomNode) -> Option<bool> {
   let value = node.get_attribute_ref("aria-multiline")?;
-  let token = value.trim().to_ascii_lowercase();
+  let token = trim_ascii_whitespace(value).to_ascii_lowercase();
   parse_bool_token(&token)
 }
 
 fn parse_check_state(node: &DomNode, name: &str) -> Option<CheckState> {
   let value = node.get_attribute_ref(name)?;
-  match value.to_ascii_lowercase().trim() {
+  let token = trim_ascii_whitespace(value).to_ascii_lowercase();
+  match token.as_str() {
     "true" | "1" => Some(CheckState::True),
     "false" | "0" => Some(CheckState::False),
     "mixed" => Some(CheckState::Mixed),
@@ -3042,7 +3063,8 @@ fn parse_check_state(node: &DomNode, name: &str) -> Option<CheckState> {
 
 fn parse_pressed_state(node: &DomNode, name: &str) -> Option<PressedState> {
   let value = node.get_attribute_ref(name)?;
-  match value.to_ascii_lowercase().trim() {
+  let token = trim_ascii_whitespace(value).to_ascii_lowercase();
+  match token.as_str() {
     "true" | "1" => Some(PressedState::True),
     "false" | "0" => Some(PressedState::False),
     "mixed" => Some(PressedState::Mixed),
@@ -3052,7 +3074,7 @@ fn parse_pressed_state(node: &DomNode, name: &str) -> Option<PressedState> {
 
 fn parse_aria_current(node: &DomNode) -> Option<AriaCurrent> {
   let value = node.get_attribute_ref("aria-current")?;
-  let token = value.trim().to_ascii_lowercase();
+  let token = trim_ascii_whitespace(value).to_ascii_lowercase();
 
   if token.is_empty() || token == "false" {
     return None;
@@ -3088,5 +3110,28 @@ fn is_labelable(node: &DomNode) -> bool {
       input_type != "hidden"
     }
     _ => false,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn accessibility_normalize_whitespace_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(
+      normalize_whitespace(&format!("{nbsp}hello{nbsp}")),
+      format!("{nbsp}hello{nbsp}")
+    );
+    assert_eq!(normalize_whitespace("  hello \n"), "hello");
+  }
+
+  #[test]
+  fn accessibility_split_ascii_whitespace_does_not_split_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let input = format!("a{nbsp}b");
+    let tokens: Vec<&str> = split_ascii_whitespace(&input).collect();
+    assert_eq!(tokens, vec![input.as_str()]);
   }
 }

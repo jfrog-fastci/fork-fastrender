@@ -5,12 +5,16 @@ use super::properties::{
 use crate::style::var_resolution::contains_var;
 use std::borrow::Cow;
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 /// Validates a (property, value) pair for use in @supports queries.
 ///
 /// Returns true when the property is recognized and either the value is a CSS-wide keyword,
 /// contains a var() reference, or parses according to the engine's supported grammar.
 pub fn supports_declaration(property: &str, value: &str) -> bool {
-  let trimmed_property = property.trim();
+  let trimmed_property = trim_ascii_whitespace(property);
   if trimmed_property.is_empty() {
     return false;
   }
@@ -29,8 +33,8 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
   } else {
     Cow::Borrowed(trimmed_property)
   };
-  let raw_value = value.trim().trim_end_matches(';');
-  let value_without_important = raw_value.trim_end_matches("!important").trim();
+  let raw_value = trim_ascii_whitespace(value).trim_end_matches(';');
+  let value_without_important = trim_ascii_whitespace(raw_value.trim_end_matches("!important"));
 
   // Tailwind v4 gates its `@layer properties` reset behind vendor-prefixed probes:
   // `(-webkit-hyphens:none)` and `(-moz-orient:inline)`. These should evaluate true so the global
@@ -236,5 +240,22 @@ mod tests {
     assert!(!supports_declaration("timeline-scope", "bogus"));
     assert!(!supports_declaration("timeline-scope", "foo, --bar"));
     assert!(!supports_declaration("timeline-scope", "--foo bar"));
+  }
+
+  #[test]
+  fn supports_declaration_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      supports_declaration("display", "block"),
+      "baseline sanity check failed"
+    );
+    assert!(
+      !supports_declaration("display", &format!("{nbsp}block")),
+      "NBSP must not be treated as whitespace in @supports values"
+    );
+    assert!(
+      !supports_declaration(&format!("{nbsp}display"), "block"),
+      "NBSP must not be treated as whitespace in @supports property names"
+    );
   }
 }

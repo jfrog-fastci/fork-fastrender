@@ -43,11 +43,33 @@ fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a st
   }
 }
 
+fn is_css_ascii_whitespace(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_css_ascii_whitespace)
+}
+
+fn trim_ascii_whitespace_start(value: &str) -> &str {
+  value.trim_start_matches(is_css_ascii_whitespace)
+}
+
+fn trim_ascii_whitespace_end(value: &str) -> &str {
+  value.trim_end_matches(is_css_ascii_whitespace)
+}
+
+fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
+  value
+    .split(is_css_ascii_whitespace)
+    .filter(|part| !part.is_empty())
+}
+
 fn extract_single_function_inner<'a>(input: &'a str) -> Option<&'a str> {
-  let trimmed = input.trim();
+  let trimmed = trim_ascii_whitespace(input);
   let open = trimmed.find('(')?;
   let close = find_matching_paren(trimmed, open)?;
-  if !trimmed.get(close + 1..)?.trim().is_empty() {
+  if !trim_ascii_whitespace(trimmed.get(close + 1..)?).is_empty() {
     return None;
   }
   trimmed.get(open + 1..close)
@@ -963,7 +985,7 @@ impl Color {
   /// assert!(Color::parse("transparent").is_ok());
   /// ```
   pub fn parse(s: &str) -> Result<Self, ColorParseError> {
-    let s = s.trim();
+    let s = trim_ascii_whitespace(s);
 
     // Hex colors are extremely common, so keep the hottest path allocation-free.
     if s.starts_with('#') {
@@ -1007,7 +1029,7 @@ impl Color {
 
     if starts_with_ignore_ascii_case(s, "color(") {
       let after_paren = &s["color(".len()..];
-      if starts_with_ignore_ascii_case(after_paren.trim_start(), "from") {
+      if starts_with_ignore_ascii_case(trim_ascii_whitespace_start(after_paren), "from") {
         return parse_relative_color(s);
       }
       return parse_color_function(s);
@@ -1854,8 +1876,8 @@ fn split_on_top_level_keyword<'a>(input: &'a str, keyword: &str) -> Option<(&'a 
       if before_char.map_or(true, |c| !is_ident_char(c))
         && after_char.map_or(true, |c| !is_ident_char(c))
       {
-        let before = input[..idx].trim_end();
-        let after = input[idx + keyword.len()..].trim_start();
+        let before = trim_ascii_whitespace_end(&input[..idx]);
+        let after = trim_ascii_whitespace_start(&input[idx + keyword.len()..]);
         return Some((before, after));
       }
     }
@@ -1866,12 +1888,12 @@ fn split_on_top_level_keyword<'a>(input: &'a str, keyword: &str) -> Option<(&'a 
 fn parse_color_contrast(input: &str) -> Result<Color, ColorParseError> {
   let inner = strip_prefix_ignore_ascii_case(input, "color-contrast(")
     .and_then(|rest| rest.strip_suffix(')'))
-    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?
-    .trim();
+    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+  let inner = trim_ascii_whitespace(inner);
 
   let (against_part, options_part) =
     if let Some((before, after)) = split_on_top_level_keyword(inner, "vs") {
-      (before.trim(), after.trim())
+      (trim_ascii_whitespace(before), trim_ascii_whitespace(after))
     } else {
       ("", inner)
     };
@@ -1900,8 +1922,8 @@ fn parse_color_contrast(input: &str) -> Result<Color, ColorParseError> {
 fn parse_light_dark(input: &str) -> Result<Color, ColorParseError> {
   let inner = strip_prefix_ignore_ascii_case(input, "light-dark(")
     .and_then(|rest| rest.strip_suffix(')'))
-    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?
-    .trim();
+    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+  let inner = trim_ascii_whitespace(inner);
 
   let parts = split_top_level_commas(inner);
   if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
@@ -1921,16 +1943,16 @@ fn split_relative_color_source(input: &str) -> Option<(String, String)> {
     match ch {
       '(' => depth += 1,
       ')' => depth -= 1,
-      c if c.is_whitespace() && depth == 0 => last_space = last_space.or(Some(idx)),
+      c if is_css_ascii_whitespace(c) && depth == 0 => last_space = last_space.or(Some(idx)),
       _ => {
         if let Some(space_idx) = last_space {
-          let after = input[idx..].trim_start();
+          let after = trim_ascii_whitespace_start(&input[idx..]);
           let first_token = after
-            .split(|c: char| c.is_whitespace() || c == '/')
+            .split(|c: char| is_css_ascii_whitespace(c) || c == '/')
             .next()
             .unwrap_or("");
           if parse_relative_color_space(first_token).is_ok() {
-            let before = input[..space_idx].trim_end();
+            let before = trim_ascii_whitespace_end(&input[..space_idx]);
             return Some((before.to_string(), after.to_string()));
           }
         }
@@ -1944,13 +1966,13 @@ fn split_relative_color_source(input: &str) -> Option<(String, String)> {
 fn parse_relative_color(input: &str) -> Result<Color, ColorParseError> {
   let inner = strip_prefix_ignore_ascii_case(input, "color(")
     .and_then(|rest| rest.strip_suffix(')'))
-    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?
-    .trim();
+    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+  let inner = trim_ascii_whitespace(inner);
 
   if !starts_with_ignore_ascii_case(inner, "from") {
     return Err(ColorParseError::InvalidFormat(input.to_string()));
   }
-  let body = inner[4..].trim_start();
+  let body = trim_ascii_whitespace_start(&inner[4..]);
   let (source_str, rest) = split_relative_color_source(body)
     .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
 
@@ -2316,7 +2338,7 @@ fn parse_color_mix(input: &str) -> Result<Color, ColorParseError> {
   }
 
   let space = {
-    let mut iter = parts[0].split_whitespace();
+    let mut iter = split_ascii_whitespace(parts[0]);
     if !matches!(iter.next(), Some(tok) if tok.eq_ignore_ascii_case("in")) {
       return Err(ColorParseError::InvalidFormat(input.to_string()));
     }
@@ -2337,8 +2359,8 @@ fn parse_color_mix(input: &str) -> Result<Color, ColorParseError> {
     }
   };
 
-  let (c0, w0) = parse_mix_component(parts[1].trim())?;
-  let (c1, w1) = parse_mix_component(parts[2].trim())?;
+  let (c0, w0) = parse_mix_component(trim_ascii_whitespace(parts[1]))?;
+  let (c1, w1) = parse_mix_component(trim_ascii_whitespace(parts[2]))?;
   let (w0, w1) = normalize_mix_weights(w0, w1);
 
   Ok(Color::Mix {
@@ -2385,14 +2407,14 @@ fn split_top_level_commas(input: &str) -> Vec<&str> {
       '{' => brace += 1,
       '}' => brace -= 1,
       ',' if paren == 0 && bracket == 0 && brace == 0 => {
-        parts.push(input[start..idx].trim());
+        parts.push(trim_ascii_whitespace(&input[start..idx]));
         start = idx + 1;
       }
       _ => {}
     }
   }
   if start < input.len() {
-    parts.push(input[start..].trim());
+    parts.push(trim_ascii_whitespace(&input[start..]));
   }
   parts
 }
@@ -2404,22 +2426,22 @@ fn split_color_and_percentage(component: &str) -> (String, Option<f32>) {
     match ch {
       '(' => depth += 1,
       ')' => depth -= 1,
-      c if c.is_whitespace() && depth == 0 => last_space = Some(idx),
+      c if is_css_ascii_whitespace(c) && depth == 0 => last_space = Some(idx),
       _ => {}
     }
   }
 
   if let Some(idx) = last_space {
-    let color = component[..idx].trim_end();
-    let tail = component[idx + 1..].trim();
+    let color = trim_ascii_whitespace_end(&component[..idx]);
+    let tail = trim_ascii_whitespace(&component[idx + 1..]);
     if let Some(val) = tail.strip_suffix('%') {
-      if let Ok(p) = val.trim().parse::<f32>() {
+      if let Ok(p) = trim_ascii_whitespace(val).parse::<f32>() {
         return (color.to_string(), Some(p.max(0.0)));
       }
     }
     (color.to_string(), None)
   } else {
-    (component.trim().to_string(), None)
+    (trim_ascii_whitespace(component).to_string(), None)
   }
 }
 
@@ -2711,6 +2733,21 @@ fn parse_named_color(s: &str) -> Option<Rgba> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn color_parsing_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(Color::parse("red").is_ok());
+    assert!(
+      Color::parse(&format!("{nbsp}red")).is_err(),
+      "NBSP must not be treated as CSS whitespace when parsing named colors"
+    );
+    assert!(Color::parse("color-mix(in srgb, red, blue)").is_ok());
+    assert!(
+      Color::parse(&format!("color-mix(in{nbsp}srgb, red, blue)")).is_err(),
+      "NBSP must not be treated as CSS whitespace in function argument tokenization"
+    );
+  }
 
   // Rgba tests
   #[test]

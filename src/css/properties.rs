@@ -1185,7 +1185,7 @@ pub(crate) fn is_global_keyword_str(value: &str) -> bool {
       || value.eq_ignore_ascii_case("revert-layer")
   }
 
-  let value = value.trim();
+  let value = trim_css_whitespace(value);
   let bytes = value.as_bytes();
   if !bytes.contains(&b'\\')
     && (!bytes.contains(&b'/') || !bytes.windows(2).any(|pair| pair == b"/*"))
@@ -1314,7 +1314,7 @@ fn parse_property_value_in_context_internal(
 
   // When no property name is provided (utility parsing paths) accept generic values.
   if property.is_empty() {
-    return parse_simple_value(value_str.trim());
+    return parse_simple_value(trim_css_whitespace(value_str));
   }
 
   // Unknown properties are ignored per the CSS error-handling rules.
@@ -1323,19 +1323,19 @@ fn parse_property_value_in_context_internal(
   }
 
   if is_raw_only_property(property) {
-    let trimmed = value_str.trim();
+    let trimmed = trim_css_whitespace(value_str);
     if trimmed.is_empty() {
       return None;
     }
-    let trimmed = trimmed.trim_end_matches("!important").trim();
+    let trimmed = trim_css_whitespace(trimmed.trim_end_matches("!important"));
     return Some(PropertyValue::Keyword(trimmed.to_string()));
   }
 
-  let trimmed = value_str.trim();
+  let trimmed = trim_css_whitespace(value_str);
   if trimmed.is_empty() {
     return None;
   }
-  let trimmed = trimmed.trim_end_matches("!important").trim();
+  let trimmed = trim_css_whitespace(trimmed.trim_end_matches("!important"));
 
   // CSS-wide keywords are valid for all properties (including those we otherwise parse strictly,
   // like `text-shadow`). Accept them unconditionally so cascade-time keyword handling can run.
@@ -1390,11 +1390,11 @@ pub(crate) fn property_allowed_in_context(context: DeclarationContext, property:
 }
 
 fn parse_text_shadow_list(value_str: &str) -> Option<Vec<TextShadow>> {
-  if value_str.trim().eq_ignore_ascii_case("none") {
+  if trim_css_whitespace(value_str).eq_ignore_ascii_case("none") {
     return Some(Vec::new());
   }
 
-  let trimmed = value_str.trim();
+  let trimmed = trim_css_whitespace(value_str);
   if trimmed.is_empty() {
     return None;
   }
@@ -1478,11 +1478,11 @@ fn parse_text_shadow_list(value_str: &str) -> Option<Vec<TextShadow>> {
 }
 
 fn parse_box_shadow_list(value_str: &str) -> Option<Vec<BoxShadow>> {
-  if value_str.trim().eq_ignore_ascii_case("none") {
+  if trim_css_whitespace(value_str).eq_ignore_ascii_case("none") {
     return Some(Vec::new());
   }
 
-  let trimmed = value_str.trim();
+  let trimmed = trim_css_whitespace(value_str);
   if trimmed.is_empty() {
     return None;
   }
@@ -1584,13 +1584,13 @@ fn parse_box_shadow_list(value_str: &str) -> Option<Vec<BoxShadow>> {
 }
 
 fn parse_known_property_value(property: &str, value_str: &str) -> Option<PropertyValue> {
-  let value_str = value_str.trim();
+  let value_str = trim_css_whitespace(value_str);
   if value_str.is_empty() {
     return None;
   }
 
   // Remove trailing !important if present
-  let value_str = value_str.trim_end_matches("!important").trim();
+  let value_str = trim_css_whitespace(value_str.trim_end_matches("!important"));
 
   let is_background_longhand = property.starts_with("background-") || property == "background";
   let is_mask_longhand = property.starts_with("mask-") || property == "mask";
@@ -2030,7 +2030,7 @@ fn keyword_parse<T>(value: &PropertyValue, parse: impl Fn(&str) -> Option<T>) ->
 }
 
 fn supports_animation_timeline_value(raw_value: &str) -> bool {
-  let raw_value = raw_value.trim();
+  let raw_value = trim_css_whitespace(raw_value);
   if raw_value.is_empty() {
     return false;
   }
@@ -2069,7 +2069,7 @@ fn supports_animation_timeline_value(raw_value: &str) -> bool {
 }
 
 fn supports_animation_duration_value(raw_value: &str) -> bool {
-  let raw_value = raw_value.trim();
+  let raw_value = trim_css_whitespace(raw_value);
   if raw_value.is_empty() {
     return false;
   }
@@ -2125,7 +2125,7 @@ fn supports_animation_duration_value(raw_value: &str) -> bool {
 }
 
 fn supports_transition_behavior_value(raw_value: &str) -> bool {
-  let raw_value = raw_value.trim();
+  let raw_value = trim_css_whitespace(raw_value);
   if raw_value.is_empty() {
     return false;
   }
@@ -2159,7 +2159,7 @@ fn supports_transition_behavior_value(raw_value: &str) -> bool {
 }
 
 fn supports_timeline_scope_value(raw_value: &str) -> bool {
-  let raw_value = raw_value.trim();
+  let raw_value = trim_css_whitespace(raw_value);
   if raw_value.is_empty() {
     return false;
   }
@@ -2364,7 +2364,7 @@ fn background_box_list_is_valid(value: &PropertyValue, allow_text: bool) -> bool
 }
 
 fn supports_intrinsic_size_keyword(raw_value: &str) -> bool {
-  let trimmed = raw_value.trim();
+  let trimmed = trim_css_whitespace(raw_value);
   if trimmed.is_empty() {
     return false;
   }
@@ -2387,7 +2387,7 @@ fn supports_intrinsic_size_keyword(raw_value: &str) -> bool {
       continue;
     }
     let inner = match lower.strip_prefix(prefix).and_then(|s| s.strip_suffix(')')) {
-      Some(inner) => inner.trim(),
+      Some(inner) => trim_css_whitespace(inner),
       None => continue,
     };
     if parse_length(inner).is_some() {
@@ -2399,7 +2399,7 @@ fn supports_intrinsic_size_keyword(raw_value: &str) -> bool {
 }
 
 fn supports_sizing_value(raw_value: &str, allow_none_keyword: bool) -> bool {
-  let trimmed = raw_value.trim();
+  let trimmed = trim_css_whitespace(raw_value);
   if trimmed.is_empty() {
     return false;
   }
@@ -2661,7 +2661,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
 }
 
 fn parse_simple_value(value_str: &str) -> Option<PropertyValue> {
-  let trimmed = value_str.trim();
+  let trimmed = trim_css_whitespace(value_str);
   if trimmed.len() >= 2 {
     let first = trimmed.chars().next();
     let last = trimmed.chars().last();
@@ -2709,7 +2709,7 @@ fn parse_simple_value(value_str: &str) -> Option<PropertyValue> {
     && trimmed.ends_with(')')
     && is_single_function_call(trimmed, "url")
   {
-    let inner = trimmed[4..trimmed.len() - 1].trim();
+    let inner = trim_css_whitespace(&trimmed[4..trimmed.len() - 1]);
     let inner = if inner.len() >= 2 {
       let first = inner.as_bytes()[0];
       let last = inner.as_bytes()[inner.len() - 1];
@@ -2781,6 +2781,25 @@ fn parse_simple_value(value_str: &str) -> Option<PropertyValue> {
 
 fn is_css_whitespace(ch: char) -> bool {
   matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}')
+}
+
+#[inline]
+fn trim_css_whitespace(value: &str) -> &str {
+  value.trim_matches(is_css_whitespace)
+}
+
+#[inline]
+fn trim_css_whitespace_start(value: &str) -> &str {
+  value.trim_start_matches(is_css_whitespace)
+}
+
+#[inline]
+fn trim_css_whitespace_end(value: &str) -> &str {
+  value.trim_end_matches(is_css_whitespace)
+}
+
+fn split_css_whitespace<'a>(value: &'a str) -> impl Iterator<Item = &'a str> {
+  value.split(is_css_whitespace).filter(|part| !part.is_empty())
 }
 
 fn is_single_function_call(trimmed: &str, name: &str) -> bool {
@@ -2912,7 +2931,7 @@ fn parse_gradient(value: &str) -> Option<PropertyValue> {
     trimmed.get(name_len + 1..trimmed.len().saturating_sub(1))
   }
 
-  let trimmed = value.trim();
+  let trimmed = trim_css_whitespace(value);
   if !trimmed.ends_with(')') {
     return None;
   }
@@ -3051,7 +3070,7 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
   }
 
   fn parse_coord(token: &str, axis: Axis) -> Option<f32> {
-    let t = token.trim();
+    let t = trim_css_whitespace(token);
     if t.is_empty() {
       return None;
     }
@@ -3082,7 +3101,7 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
     }
 
     if let Some(num) = t.strip_suffix('%') {
-      let pct = num.trim().parse::<f32>().ok()?;
+      let pct = trim_css_whitespace(num).parse::<f32>().ok()?;
       return Some(pct / 100.0);
     }
 
@@ -3090,7 +3109,7 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
   }
 
   fn parse_point(token: &str) -> Option<(f32, f32)> {
-    let mut parts = token.split_whitespace();
+    let mut parts = split_css_whitespace(token);
     let x_token = parts.next()?;
     let y_token = parts.next()?;
     if parts.next().is_some() {
@@ -3102,7 +3121,7 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
   }
 
   fn extract_simple_function_inner<'a>(token: &'a str, name: &str) -> Option<&'a str> {
-    let token = token.trim();
+    let token = trim_css_whitespace(token);
     if !token.ends_with(')') {
       return None;
     }
@@ -3117,11 +3136,13 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
     if token.as_bytes().get(name_len) != Some(&b'(') {
       return None;
     }
-    token.get(name_len + 1..token.len() - 1).map(str::trim)
+    token
+      .get(name_len + 1..token.len() - 1)
+      .map(trim_css_whitespace)
   }
 
   fn parse_stop(token: &str, stops: &mut Vec<crate::css::types::ColorStop>) -> bool {
-    let trimmed = token.trim();
+    let trimmed = trim_css_whitespace(token);
     if trimmed.is_empty() {
       return false;
     }
@@ -3193,7 +3214,7 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
   }
 
   let mut parts = split_top_level_commas(inner);
-  let first = parts.next()?.trim();
+  let first = trim_css_whitespace(parts.next()?);
   if first.eq_ignore_ascii_case("linear") {
     let start = parts.next()?;
     let end = parts.next()?;
@@ -3213,13 +3234,13 @@ fn parse_linear_gradient(
   allow_legacy_direction: bool,
 ) -> Option<PropertyValue> {
   fn parse_legacy_direction(token: &str) -> Option<f32> {
-    let token = token.trim();
+    let token = trim_css_whitespace(token);
     if token.is_empty() {
       return None;
     }
     let mut dx = 0i32;
     let mut dy = 0i32;
-    for part in token.split_whitespace() {
+    for part in split_css_whitespace(token) {
       if part.eq_ignore_ascii_case("left") {
         dx += 1;
       } else if part.eq_ignore_ascii_case("right") {
@@ -3302,7 +3323,7 @@ fn parse_radial_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> 
   }
 
   fn looks_like_prelude(text: &str) -> bool {
-    let text = text.trim_start();
+    let text = trim_css_whitespace_start(text);
     if text.is_empty() {
       return false;
     }
@@ -3315,7 +3336,7 @@ fn parse_radial_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> 
       return true;
     }
 
-    let Some(first_token) = text.split_whitespace().next() else {
+    let Some(first_token) = split_css_whitespace(text).next() else {
       return false;
     };
 
@@ -3334,7 +3355,7 @@ fn parse_radial_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> 
     size: &mut RadialGradientSize,
     position: &mut GradientPosition,
   ) -> Option<()> {
-    let trimmed = text.trim_start();
+    let trimmed = trim_css_whitespace_start(text);
     // Support `radial-gradient(at <position>, ...)` where no explicit shape/size precedes the `at`
     // clause. (The `" at "` search below requires a leading space.)
     let (prelude, pos_part) = if trimmed.len() >= 3
@@ -3342,10 +3363,13 @@ fn parse_radial_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> 
       && trimmed.as_bytes()[1].to_ascii_lowercase() == b't'
       && trimmed.as_bytes()[2].is_ascii_whitespace()
     {
-      ("", Some(trimmed.get(2..)?.trim()))
+      ("", Some(trim_css_whitespace(trimmed.get(2..)?)))
     } else {
       match find_at_separator(text) {
-        Some(idx) => (text.get(..idx)?.trim(), Some(text.get(idx + 4..)?.trim())),
+        Some(idx) => (
+          trim_css_whitespace(text.get(..idx)?),
+          Some(trim_css_whitespace(text.get(idx + 4..)?)),
+        ),
         None => (text, None),
       }
     };
@@ -3358,7 +3382,7 @@ fn parse_radial_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> 
 
     let mut explicit_x: Option<Length> = None;
     let mut explicit_y: Option<Length> = None;
-    for token in prelude.split_whitespace() {
+    for token in split_css_whitespace(prelude) {
       if token.eq_ignore_ascii_case("circle") {
         *shape = RadialGradientShape::Circle;
       } else if token.eq_ignore_ascii_case("ellipse") {
@@ -3463,7 +3487,7 @@ fn parse_radial_position(text: &str) -> Option<GradientPosition> {
   }
 
   fn classify_token(token: &str) -> Option<Part> {
-    let token = token.trim();
+    let token = trim_css_whitespace(token);
     if token.eq_ignore_ascii_case("left") {
       Some(Part::Keyword(AxisKind::Horizontal, 0.0))
     } else if token.eq_ignore_ascii_case("right") {
@@ -3727,7 +3751,7 @@ fn parse_radial_position(text: &str) -> Option<GradientPosition> {
 
 fn parse_conic_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> {
   fn split_first_whitespace(input: &str) -> Option<(&str, &str)> {
-    let input = input.trim_start();
+    let input = trim_css_whitespace_start(input);
     if input.is_empty() {
       return None;
     }
@@ -3757,7 +3781,7 @@ fn parse_conic_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> {
         break;
       }
       if token.eq_ignore_ascii_case("at") {
-        let pos_text = tail.trim();
+        let pos_text = trim_css_whitespace(tail);
         if let Some(pos) = parse_radial_position(pos_text) {
           *position = pos;
           break;
@@ -3787,14 +3811,14 @@ fn parse_conic_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> {
     },
   };
 
-  let prelude = first_part.trim();
+  let prelude = trim_css_whitespace(first_part);
   let mut stops = Vec::new();
 
   // Conic gradients may have an optional `from <angle>` and/or `at <position>` prelude.
   //
   // Avoid parsing the prelude as a color stop when it clearly starts with `from`/`at`, since a
   // failed color parse allocates an owned error string.
-  let first_token = prelude.split_whitespace().next();
+  let first_token = split_css_whitespace(prelude).next();
   let looks_like_prelude =
     first_token.is_some_and(|t| t.eq_ignore_ascii_case("from") || t.eq_ignore_ascii_case("at"));
 
@@ -3897,7 +3921,7 @@ impl<'a> Iterator for TopLevelCommaSplit<'a> {
         b'}' => self.brace -= 1,
         b',' if self.paren == 0 && self.bracket == 0 && self.brace == 0 => {
           self.idx = idx + 1;
-          return Some(self.input[start..idx].trim());
+          return Some(trim_css_whitespace(&self.input[start..idx]));
         }
         _ => {}
       }
@@ -3906,7 +3930,7 @@ impl<'a> Iterator for TopLevelCommaSplit<'a> {
     }
 
     self.idx = bytes.len();
-    Some(self.input[start..].trim())
+    Some(trim_css_whitespace(&self.input[start..]))
   }
 }
 
@@ -3935,8 +3959,8 @@ fn strip_suffix_ignore_ascii_case<'a>(s: &'a str, suffix: &str) -> Option<&'a st
 }
 
 fn parse_gradient_angle(token: &str) -> Option<f32> {
-  let token = token.trim();
-  let mut words = token.split_whitespace();
+  let token = trim_css_whitespace(token);
+  let mut words = split_css_whitespace(token);
   if let Some(first) = words.next() {
     if first.eq_ignore_ascii_case("to") {
       let mut dx = 0i32;
@@ -3974,22 +3998,31 @@ fn parse_gradient_angle(token: &str) -> Option<f32> {
 }
 
 fn parse_angle(token: &str) -> Option<f32> {
-  let token = token.trim();
+  let token = trim_css_whitespace(token);
   if let Some(num) = strip_suffix_ignore_ascii_case(token, "deg") {
-    num.trim().parse::<f32>().ok()
+    trim_css_whitespace(num).parse::<f32>().ok()
   } else if let Some(num) = strip_suffix_ignore_ascii_case(token, "rad") {
-    num.trim().parse::<f32>().ok().map(|r| r.to_degrees())
+    trim_css_whitespace(num)
+      .parse::<f32>()
+      .ok()
+      .map(|r| r.to_degrees())
   } else if let Some(num) = strip_suffix_ignore_ascii_case(token, "turn") {
-    num.trim().parse::<f32>().ok().map(|t| t * 360.0)
+    trim_css_whitespace(num)
+      .parse::<f32>()
+      .ok()
+      .map(|t| t * 360.0)
   } else if let Some(num) = strip_suffix_ignore_ascii_case(token, "grad") {
-    num.trim().parse::<f32>().ok().map(|g| g * 0.9)
+    trim_css_whitespace(num)
+      .parse::<f32>()
+      .ok()
+      .map(|g| g * 0.9)
   } else {
     None
   }
 }
 
 fn parse_color_stop_segment(token: &str, stops: &mut Vec<crate::css::types::ColorStop>) -> bool {
-  let trimmed = token.trim();
+  let trimmed = trim_css_whitespace(token);
   if trimmed.is_empty() {
     return false;
   }
@@ -4046,8 +4079,8 @@ fn split_color_and_positions(token: &str) -> (&str, Option<f32>, Option<f32>) {
         b')' => depth += 1,
         b'(' => depth -= 1,
         b if b.is_ascii_whitespace() && depth == 0 => {
-          let head = input[..idx].trim_end();
-          let tail = input[idx..].trim();
+          let head = trim_css_whitespace_end(&input[..idx]);
+          let tail = trim_css_whitespace(&input[idx..]);
           if head.is_empty() || tail.is_empty() {
             return None;
           }
@@ -4078,10 +4111,9 @@ fn split_color_and_positions(token: &str) -> (&str, Option<f32>, Option<f32>) {
 }
 
 fn parse_stop_position(token: &str) -> Option<f32> {
-  let t = token.trim();
+  let t = trim_css_whitespace(token);
   if t.ends_with('%') {
-    t[..t.len() - 1]
-      .trim()
+    trim_css_whitespace(&t[..t.len() - 1])
       .parse::<f32>()
       .ok()
       .map(|p| (p / 100.0).clamp(0.0, 1.0))
@@ -4099,15 +4131,24 @@ fn parse_stop_position(token: &str) -> Option<f32> {
 }
 
 fn parse_stop_angle(token: &str) -> Option<f32> {
-  let t = token.trim();
+  let t = trim_css_whitespace(token);
   if let Some(num) = strip_suffix_ignore_ascii_case(t, "deg") {
-    num.trim().parse::<f32>().ok()
+    trim_css_whitespace(num).parse::<f32>().ok()
   } else if let Some(num) = strip_suffix_ignore_ascii_case(t, "turn") {
-    num.trim().parse::<f32>().ok().map(|v| v * 360.0)
+    trim_css_whitespace(num)
+      .parse::<f32>()
+      .ok()
+      .map(|v| v * 360.0)
   } else if let Some(num) = strip_suffix_ignore_ascii_case(t, "rad") {
-    num.trim().parse::<f32>().ok().map(|v| v.to_degrees())
+    trim_css_whitespace(num)
+      .parse::<f32>()
+      .ok()
+      .map(|v| v.to_degrees())
   } else if let Some(num) = strip_suffix_ignore_ascii_case(t, "grad") {
-    num.trim().parse::<f32>().ok().map(|v| v * 0.9)
+    trim_css_whitespace(num)
+      .parse::<f32>()
+      .ok()
+      .map(|v| v * 0.9)
   } else {
     None
   }
@@ -4214,30 +4255,30 @@ mod tests {
           current.push(ch);
         }
         '/' if paren == 0 && bracket == 0 && brace == 0 => {
-          if !current.trim().is_empty() {
-            tokens.push(current.trim().to_string());
+          if !trim_css_whitespace(&current).is_empty() {
+            tokens.push(trim_css_whitespace(&current).to_string());
           }
           tokens.push("/".to_string());
           current.clear();
         }
         ',' if allow_commas && paren == 0 && bracket == 0 && brace == 0 => {
-          if !current.trim().is_empty() {
-            tokens.push(current.trim().to_string());
+          if !trim_css_whitespace(&current).is_empty() {
+            tokens.push(trim_css_whitespace(&current).to_string());
           }
           tokens.push(",".to_string());
           current.clear();
         }
-        ch if ch.is_whitespace() && paren == 0 && bracket == 0 && brace == 0 => {
-          if !current.trim().is_empty() {
-            tokens.push(current.trim().to_string());
+        ch if is_css_whitespace(ch) && paren == 0 && bracket == 0 && brace == 0 => {
+          if !trim_css_whitespace(&current).is_empty() {
+            tokens.push(trim_css_whitespace(&current).to_string());
           }
           current.clear();
         }
         _ => current.push(ch),
       }
     }
-    if !current.trim().is_empty() {
-      tokens.push(current.trim().to_string());
+    if !trim_css_whitespace(&current).is_empty() {
+      tokens.push(trim_css_whitespace(&current).to_string());
     }
     tokens
   }
@@ -5743,7 +5784,7 @@ const MATH_PREFIXES: &[&str] = &[
 
 /// Parse a CSS length value
 pub fn parse_length(s: &str) -> Option<Length> {
-  let s = s.trim();
+  let s = trim_css_whitespace(s);
   if s.is_empty() {
     return None;
   }
@@ -5822,7 +5863,7 @@ pub fn parse_length(s: &str) -> Option<Length> {
     if !actual_suffix.eq_ignore_ascii_case(suffix) {
       continue;
     }
-    if let Ok(value) = rest.trim().parse::<f32>() {
+    if let Ok(value) = trim_css_whitespace(rest).parse::<f32>() {
       return Some(Length::new(value, unit));
     }
   }
@@ -5950,7 +5991,7 @@ fn parse_function_number_slow_path_calls() -> u32 {
 }
 
 pub(crate) fn parse_function_number(input: &str) -> Option<f32> {
-  let input = input.trim();
+  let input = trim_css_whitespace(input);
   if input.is_empty() {
     return None;
   }

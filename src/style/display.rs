@@ -26,6 +26,11 @@
 
 use std::fmt;
 
+#[inline]
+fn trim_css_whitespace(value: &str) -> &str {
+  value.trim_matches(|ch| matches!(ch, '\t' | '\n' | '\u{000C}' | '\r' | ' '))
+}
+
 /// CSS display property value
 ///
 /// Represents the display type of an element, controlling how it
@@ -424,7 +429,7 @@ impl Display {
   /// assert!(Display::parse("invalid").is_err());
   /// ```
   pub fn parse(s: &str) -> Result<Self, DisplayParseError> {
-    let s = s.trim().to_ascii_lowercase();
+    let s = trim_css_whitespace(s).to_ascii_lowercase();
     match s.as_str() {
       "none" => Ok(Display::None),
       "block" => Ok(Display::Block),
@@ -678,6 +683,13 @@ mod tests {
   #[test]
   fn test_parse_flow_root() {
     assert_eq!(Display::parse("flow-root").unwrap(), Display::FlowRoot);
+  }
+
+  #[test]
+  fn display_parse_does_not_trim_non_ascii_whitespace() {
+    let nbsp = '\u{00A0}';
+    assert!(Display::parse(&format!("{nbsp}block")).is_err());
+    assert!(Display::parse(&format!("block{nbsp}")).is_err());
   }
 
   #[test]

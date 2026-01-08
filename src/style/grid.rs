@@ -17,6 +17,20 @@ use cssparser::Token;
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
+fn is_css_ascii_whitespace(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_css_ascii_whitespace)
+}
+
+fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
+  value
+    .split(is_css_ascii_whitespace)
+    .filter(|part| !part.is_empty())
+}
+
 /// Parse grid-template-columns/rows into track list with named lines
 ///
 /// Handles syntax like: `[text-start] 1fr [text-end sidebar-start] 300px [sidebar-end]`
@@ -41,7 +55,7 @@ pub fn parse_grid_line<S: BuildHasher>(
   value: &str,
   named_lines: &HashMap<String, Vec<usize>, S>,
 ) -> i32 {
-  let value = value.trim();
+  let value = trim_ascii_whitespace(value);
 
   // Try parsing as integer first
   if let Ok(n) = value.parse::<i32>() {
@@ -66,7 +80,7 @@ pub fn parse_grid_line<S: BuildHasher>(
 }
 
 pub(crate) fn parse_grid_auto_flow_value(value: &str) -> Option<crate::style::types::GridAutoFlow> {
-  let value = value.trim();
+  let value = trim_ascii_whitespace(value);
   if value.is_empty() {
     return None;
   }
@@ -132,7 +146,7 @@ pub(crate) fn parse_grid_auto_flow_value(value: &str) -> Option<crate::style::ty
 /// Returns `None` on syntax errors or non-rectangular area definitions. The rows are stored with `None`
 /// representing an empty cell (`.` in authored CSS).
 pub fn parse_grid_template_areas(value: &str) -> Option<Vec<Vec<Option<String>>>> {
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   if trimmed.eq_ignore_ascii_case("none") {
     return Some(Vec::new());
   }
@@ -146,7 +160,8 @@ pub fn parse_grid_template_areas(value: &str) -> Option<Vec<Vec<Option<String>>>
       Ok(Token::WhiteSpace(_)) => continue,
       Ok(Token::QuotedString(s)) => {
         let cols: Vec<Option<String>> = s
-          .split_whitespace()
+          .split(is_css_ascii_whitespace)
+          .filter(|part| !part.is_empty())
           .map(|name| {
             if name == "." {
               None
@@ -248,7 +263,7 @@ pub struct ParsedGridShorthand {
 /// 2) `<area-rows> [ / <col-tracks> ]`, where area rows are quoted strings with optional
 ///    per-row track sizes following each string.
 pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> {
-  let value = value.trim();
+  let value = trim_ascii_whitespace(value);
   if value.eq_ignore_ascii_case("none") {
     return Some(ParsedGridTemplate {
       areas: Some(Vec::new()),
@@ -263,9 +278,9 @@ pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> 
 
   let (main, cols_part) = split_once_unquoted(value, '/');
 
-  let main = main.trim();
+  let main = trim_ascii_whitespace(main);
   let cols_part = cols_part.and_then(|s| {
-    let trimmed = s.trim();
+    let trimmed = trim_ascii_whitespace(s);
     if trimmed.is_empty() {
       None
     } else {
@@ -437,15 +452,15 @@ fn contains_grid_auto_flow_keyword(input: &str) -> bool {
 
 /// Parse the `grid` shorthand (template or auto-flow forms).
 pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
-  let value = value.trim();
+  let value = trim_ascii_whitespace(value);
   if value.eq_ignore_ascii_case("none") {
     return Some(reset_grid_shorthand());
   }
 
   // Auto-flow form: either left or right of the slash contains auto-flow.
   let (left, right_opt) = split_once_unquoted(value, '/');
-  let left = left.trim();
-  let right = right_opt.map(str::trim);
+  let left = trim_ascii_whitespace(left);
+  let right = right_opt.map(trim_ascii_whitespace);
 
   let left_has_flow = contains_grid_auto_flow_keyword(left);
   let right_has_flow = right.as_ref().is_some_and(|r| contains_grid_auto_flow_keyword(r));
@@ -469,7 +484,7 @@ pub fn parse_grid_shorthand(value: &str) -> Option<ParsedGridShorthand> {
       let mut dense = false;
       let mut has_column = false;
       let mut remainder: Vec<&str> = Vec::new();
-      for token in tokens.split_whitespace() {
+      for token in split_ascii_whitespace(tokens) {
         if token.eq_ignore_ascii_case("auto-flow") {
           saw_auto_flow = true;
           continue;
@@ -603,7 +618,7 @@ fn parse_area_rows_with_sizes(input: &str) -> Option<(Vec<String>, Vec<Option<St
     while i < bytes.len() && bytes[i] != b'"' && bytes[i] != b'/' {
       i += 1;
     }
-    let size = input[size_start..i].trim();
+    let size = trim_ascii_whitespace(&input[size_start..i]);
     if size.is_empty() {
       row_sizes.push(None);
     } else {
@@ -622,8 +637,7 @@ fn build_area_matrix(rows: &[String]) -> Option<Vec<Vec<Option<String>>>> {
   let mut matrix = Vec::with_capacity(rows.len());
   let mut expected_cols: Option<usize> = None;
   for row in rows {
-    let cols: Vec<Option<String>> = row
-      .split_whitespace()
+    let cols: Vec<Option<String>> = split_ascii_whitespace(row)
       .map(|name| {
         if name == "." {
           None
@@ -670,12 +684,12 @@ pub fn parse_grid_line_placement<S: BuildHasher>(
   value: &str,
   named_lines: &HashMap<String, Vec<usize>, S>,
 ) -> (i32, i32) {
-  let value = value.trim();
+  let value = trim_ascii_whitespace(value);
 
   // Check if it contains a slash (explicit start / end)
   if let Some(slash_pos) = value.find('/') {
-    let start_str = value[..slash_pos].trim();
-    let end_str = value[slash_pos + 1..].trim();
+    let start_str = trim_ascii_whitespace(&value[..slash_pos]);
+    let end_str = trim_ascii_whitespace(&value[slash_pos + 1..]);
     let start = parse_grid_line(start_str, named_lines);
     let end = parse_grid_line(end_str, named_lines);
     return (start, end);
@@ -753,7 +767,7 @@ impl<'a> TrackListParser<'a> {
 
   fn skip_whitespace(&mut self) {
     while let Some(ch) = self.peek_char() {
-      if ch.is_whitespace() {
+      if is_css_ascii_whitespace(ch) {
         self.advance_char();
       } else {
         break;
@@ -797,9 +811,7 @@ impl<'a> TrackListParser<'a> {
       if ch == ']' {
         let names_raw = &self.input[start..i];
         self.pos = i + ch_len;
-        let names = names_raw
-          .split_whitespace()
-          .filter(|n| !n.is_empty())
+        let names = split_ascii_whitespace(names_raw)
           .map(|n| n.to_string())
           .collect::<Vec<_>>();
         return Some(names);
@@ -853,7 +865,7 @@ impl<'a> TrackListParser<'a> {
         '(' => depth += 1,
         ')' => depth = depth.saturating_sub(1),
         '[' if depth == 0 => {
-          let token = self.input[start..i].trim();
+          let token = trim_ascii_whitespace(&self.input[start..i]);
           self.pos = i;
           return if token.is_empty() {
             None
@@ -861,8 +873,8 @@ impl<'a> TrackListParser<'a> {
             Some(token.to_string())
           };
         }
-        _ if ch.is_whitespace() && depth == 0 => {
-          let token = self.input[start..i].trim();
+        _ if is_css_ascii_whitespace(ch) && depth == 0 => {
+          let token = trim_ascii_whitespace(&self.input[start..i]);
           self.pos = i + ch_len;
           return if token.is_empty() {
             None
@@ -876,7 +888,7 @@ impl<'a> TrackListParser<'a> {
     }
 
     self.pos = self.input.len();
-    let token = self.input[start..].trim();
+    let token = trim_ascii_whitespace(&self.input[start..]);
     if token.is_empty() {
       None
     } else {
@@ -887,7 +899,7 @@ impl<'a> TrackListParser<'a> {
   fn parse_repeat(&mut self) -> Option<ParsedTracks> {
     let inner = self.consume_function_arguments("repeat")?;
     let (count_str, pattern_str) = split_once_comma(&inner)?;
-    let count_str = count_str.trim();
+    let count_str = trim_ascii_whitespace(count_str);
     let pattern = parse_track_list(pattern_str);
     if pattern.tracks.is_empty() {
       return None;
@@ -1004,8 +1016,8 @@ fn split_once_comma(input: &str) -> Option<(&str, &str)> {
       '(' => depth += 1,
       ')' => depth = depth.saturating_sub(1),
       ',' if depth == 0 => {
-        let first = input[..i].trim();
-        let second = input[i + ch_len..].trim();
+        let first = trim_ascii_whitespace(&input[..i]);
+        let second = trim_ascii_whitespace(&input[i + ch_len..]);
         return Some((first, second));
       }
       _ => {}
@@ -1096,7 +1108,7 @@ pub(crate) fn parse_track_list(input: &str) -> ParsedTracks {
 
 /// Parse a single grid track value
 pub(crate) fn parse_single_grid_track(track_str: &str) -> Option<GridTrack> {
-  let track_str = track_str.trim();
+  let track_str = trim_ascii_whitespace(track_str);
   if track_str.is_empty() {
     return None;
   }
@@ -1132,7 +1144,7 @@ pub(crate) fn parse_single_grid_track(track_str: &str) -> Option<GridTrack> {
   }
 
   if let Some(val_str) = lower.strip_suffix("fr") {
-    if let Ok(val) = val_str.trim().parse::<f32>() {
+    if let Ok(val) = trim_ascii_whitespace(val_str).parse::<f32>() {
       return Some(GridTrack::Fr(val));
     }
   }
@@ -1145,7 +1157,7 @@ pub(crate) fn parse_single_grid_track(track_str: &str) -> Option<GridTrack> {
 }
 
 fn parse_track_breadth(value: &str) -> Option<GridTrack> {
-  let trimmed = value.trim();
+  let trimmed = trim_ascii_whitespace(value);
   let lower = trimmed.to_ascii_lowercase();
   if lower == "auto" {
     return Some(GridTrack::Auto);
@@ -1163,7 +1175,7 @@ fn parse_track_breadth(value: &str) -> Option<GridTrack> {
     return parse_length_value(inner).map(GridTrack::FitContent);
   }
   if let Some(val_str) = lower.strip_suffix("fr") {
-    if let Ok(val) = val_str.trim().parse::<f32>() {
+    if let Ok(val) = trim_ascii_whitespace(val_str).parse::<f32>() {
       return Some(GridTrack::Fr(val));
     }
   }
@@ -1183,6 +1195,22 @@ fn parse_length_value(raw: &str) -> Option<Length> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn grid_parsers_do_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    assert!(parse_grid_auto_flow_value("row").is_some());
+    assert!(
+      parse_grid_auto_flow_value(&format!("{nbsp}row")).is_none(),
+      "NBSP must not be treated as CSS whitespace when parsing grid-auto-flow"
+    );
+
+    assert!(parse_grid_template_areas("\"a\"").is_some());
+    assert!(
+      parse_grid_template_areas(&format!("{nbsp}\"a\"")).is_none(),
+      "NBSP must not be treated as CSS whitespace when parsing grid-template-areas"
+    );
+  }
 
   #[test]
   fn parses_minmax_and_content_keywords() {
