@@ -112,6 +112,42 @@ fn native_single_select_last_selected_wins() {
 }
 
 #[test]
+fn focus_states_use_data_fastr_hints() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <input
+          id="focused"
+          type="text"
+          data-fastr-focus="true"
+          data-fastr-focus-visible="true"
+        />
+        <input id="focus-only" type="text" data-fastr-focus="true" />
+        <input id="visible-only" type="text" data-fastr-focus-visible="true" />
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let focused = find_by_id(&tree, "focused").expect("focused input");
+  assert!(focused.states.focused);
+  assert!(focused.states.focus_visible);
+
+  let focus_only = find_by_id(&tree, "focus-only").expect("focus-only input");
+  assert!(focus_only.states.focused);
+  assert!(!focus_only.states.focus_visible);
+
+  let visible_only = find_by_id(&tree, "visible-only").expect("visible-only input");
+  assert!(!visible_only.states.focused);
+  assert!(!visible_only.states.focus_visible);
+}
+
+#[test]
 fn native_single_select_all_disabled_defaults_to_first() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"

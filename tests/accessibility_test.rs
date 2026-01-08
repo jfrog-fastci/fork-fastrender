@@ -281,8 +281,8 @@ fn accessibility_presentational_role_suppresses_semantics() {
   assert_eq!(labeled.name.as_deref(), Some("Labelled"));
 
   let presentational = find_by_id(&tree, "presentational").expect("presentational node");
-  assert_eq!(presentational.role, "generic");
-  assert_eq!(presentational.name, None);
+  assert_eq!(presentational.role, "button");
+  assert_eq!(presentational.name.as_deref(), Some("Native"));
   assert!(presentational.states.focusable);
 }
 

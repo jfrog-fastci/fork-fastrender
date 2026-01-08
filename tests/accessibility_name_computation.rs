@@ -289,3 +289,41 @@ fn presentational_roles_can_label_targets() {
   let target = find_by_id(&tree, "target").expect("button target");
   assert_eq!(target.name.as_deref(), Some("Presentational label"));
 }
+
+#[test]
+fn aria_labelledby_empty_blocks_fallbacks() {
+  let html = r#"
+    <html>
+      <body>
+        <button id="target" aria-labelledby="" aria-label="Fallback">Click</button>
+      </body>
+    </html>
+  "#;
+
+  let tree = render_accessibility_tree(html);
+  let target = find_by_id(&tree, "target").expect("target button");
+  assert_eq!(target.name.as_deref(), Some(""));
+}
+
+#[test]
+fn aria_describedby_does_not_include_described_node_when_reference_contains_it() {
+  let html = r#"
+    <html>
+      <body>
+        <div id="container">
+          Helper text
+          <input
+            id="field"
+            type="text"
+            placeholder="Placeholder should not leak"
+            aria-describedby="container"
+          />
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let tree = render_accessibility_tree(html);
+  let field = find_by_id(&tree, "field").expect("described input");
+  assert_eq!(field.description.as_deref(), Some("Helper text"));
+}

@@ -54,6 +54,10 @@ pub enum AriaCurrent {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AccessibilityState {
   pub focusable: bool,
+  #[serde(skip_serializing_if = "is_false")]
+  pub focused: bool,
+  #[serde(skip_serializing_if = "is_false")]
+  pub focus_visible: bool,
   pub disabled: bool,
   pub required: bool,
   pub invalid: bool,
@@ -89,6 +93,8 @@ impl Default for AccessibilityState {
   fn default() -> Self {
     Self {
       focusable: false,
+      focused: false,
+      focus_visible: false,
       disabled: false,
       required: false,
       invalid: false,
@@ -168,7 +174,7 @@ pub fn build_accessibility_tree(root: &StyledNode) -> AccessibilityNode {
     &mut ids_by_scope,
   );
 
-  let labels = collect_labels(root, &hidden, &node_scope, &ids_by_scope, &lookup);
+  let labels = collect_labels(root, &node_scope, &ids_by_scope, &lookup);
 
   let ctx = BuildContext {
     hidden,
@@ -632,12 +638,16 @@ fn build_nodes<'a>(
       let visited =
         role.as_deref() == Some("link") && attr_truthy(&node.node, "data-fastr-visited");
       let focusable = compute_focusable(&node.node, role.as_deref(), disabled);
+      let focused = !disabled && attr_truthy(&node.node, "data-fastr-focus");
+      let focus_visible = focused && attr_truthy(&node.node, "data-fastr-focus-visible");
       let readonly = compute_readonly(&node.node, role.as_deref(), &element_ref);
       let value = compute_value(node, role.as_deref(), &element_ref, ctx);
       let level = compute_level(&node.node, role.as_deref());
 
       let states = AccessibilityState {
         focusable,
+        focused,
+        focus_visible,
         disabled,
         required,
         invalid,
@@ -754,15 +764,10 @@ fn compute_hidden_and_scoped_ids(
 
 fn collect_labels(
   root: &StyledNode,
-  hidden: &HashMap<usize, bool>,
   node_scope: &HashMap<usize, usize>,
   ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
   lookup: &HashMap<usize, &StyledNode>,
 ) -> HashMap<usize, Vec<usize>> {
-  fn is_hidden(node: &StyledNode, hidden: &HashMap<usize, bool>) -> bool {
-    *hidden.get(&node.node_id).unwrap_or(&false)
-  }
-
   fn node_id_for_id_scoped(
     node_scope: &HashMap<usize, usize>,
     ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
@@ -775,16 +780,9 @@ fn collect_labels(
   }
 
   /// HTML label containment is defined in terms of the DOM tree, not the composed tree.
-  fn first_labelable_dom_descendant<'a>(
-    node: &'a StyledNode,
-    hidden: &HashMap<usize, bool>,
-  ) -> Option<&'a StyledNode> {
+  fn first_labelable_dom_descendant<'a>(node: &'a StyledNode) -> Option<&'a StyledNode> {
     for child in node.children.iter() {
       if matches!(child.node.node_type, DomNodeType::ShadowRoot { .. }) {
-        continue;
-      }
-
-      if is_hidden(child, hidden) {
         continue;
       }
 
@@ -800,7 +798,7 @@ fn collect_labels(
         continue;
       }
 
-      if let Some(found) = first_labelable_dom_descendant(child, hidden) {
+      if let Some(found) = first_labelable_dom_descendant(child) {
         return Some(found);
       }
     }
@@ -809,7 +807,6 @@ fn collect_labels(
 
   fn walk_dom(
     node: &StyledNode,
-    hidden: &HashMap<usize, bool>,
     node_scope: &HashMap<usize, usize>,
     ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
     lookup: &HashMap<usize, &StyledNode>,
@@ -835,7 +832,7 @@ fn collect_labels(
             }
           }
         }
-      } else if let Some(target) = first_labelable_dom_descendant(node, hidden) {
+      } else if let Some(target) = first_labelable_dom_descendant(node) {
         labels.entry(target.node_id).or_default().push(node.node_id);
       }
     }
@@ -849,12 +846,12 @@ fn collect_labels(
     }
 
     for child in node.children.iter() {
-      walk_dom(child, hidden, node_scope, ids_by_scope, lookup, labels);
+      walk_dom(child, node_scope, ids_by_scope, lookup, labels);
     }
   }
 
   let mut labels: HashMap<usize, Vec<usize>> = HashMap::new();
-  walk_dom(root, hidden, node_scope, ids_by_scope, lookup, &mut labels);
+  walk_dom(root, node_scope, ids_by_scope, lookup, &mut labels);
   labels
 }
 
@@ -1132,8 +1129,49 @@ fn has_global_aria_attributes(node: &DomNode) -> bool {
   })
 }
 
+fn focusable_for_presentational_role(node: &DomNode) -> bool {
+  if !node.is_element() {
+    return false;
+  }
+
+  if let Some(tabindex) = node.get_attribute_ref("tabindex") {
+    let trimmed = trim_ascii_whitespace(tabindex);
+    if !trimmed.is_empty() && trimmed.parse::<i32>().is_ok() {
+      return true;
+    }
+  }
+
+  let Some(tag) = node.tag_name().map(|t| t.to_ascii_lowercase()) else {
+    return false;
+  };
+
+  if tag == "a" && node.get_attribute_ref("href").is_some() {
+    return true;
+  }
+
+  if matches!(tag.as_str(), "button" | "select" | "textarea") {
+    return node.get_attribute_ref("disabled").is_none();
+  }
+
+  if tag == "input" {
+    if node.get_attribute_ref("disabled").is_some() {
+      return false;
+    }
+    let input_type = node
+      .get_attribute_ref("type")
+      .map(|t| t.to_ascii_lowercase())
+      .unwrap_or_else(|| "text".to_string());
+    return input_type != "hidden";
+  }
+
+  node
+    .get_attribute_ref("contenteditable")
+    .map(|v| v.is_empty() || v.eq_ignore_ascii_case("true"))
+    .unwrap_or(false)
+}
+
 fn should_honor_presentational(node: &DomNode) -> bool {
-  !has_global_aria_attributes(node)
+  !has_global_aria_attributes(node) && !focusable_for_presentational_role(node)
 }
 
 fn compute_role(
@@ -2094,6 +2132,7 @@ fn compute_description(
   let mut has_describedby = false;
   if let Some(desc_attr) = node.node.get_attribute_ref("aria-describedby") {
     let mut visited = HashSet::new();
+    visited.insert(node.node_id);
     let desc = referenced_text_attr(
       ctx,
       node.node_id,
@@ -2113,6 +2152,7 @@ fn compute_description(
     if let Some(err_attr) = node.node.get_attribute_ref("aria-errormessage") {
       if let Some(target) = resolve_idref_target(ctx, node, err_attr) {
         let mut visited = HashSet::new();
+        visited.insert(node.node_id);
         let text = ctx
           .text_alternative(
             target,
@@ -2723,7 +2763,14 @@ fn compute_checked(
       .is_some_and(|t| t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio"));
 
   if is_native_checkbox_or_radio
-    && matches!(role, Some("checkbox") | Some("radio") | Some("switch"))
+    && matches!(
+      role,
+      Some("checkbox")
+        | Some("radio")
+        | Some("switch")
+        | Some("menuitemcheckbox")
+        | Some("menuitemradio")
+    )
   {
     if element_ref.accessibility_indeterminate() {
       return Some(CheckState::Mixed);
@@ -2738,7 +2785,14 @@ fn compute_checked(
     return Some(state);
   }
 
-  if matches!(role, Some("checkbox") | Some("radio") | Some("switch")) {
+  if matches!(
+    role,
+    Some("checkbox")
+      | Some("radio")
+      | Some("switch")
+      | Some("menuitemcheckbox")
+      | Some("menuitemradio")
+  ) {
     if element_ref.accessibility_indeterminate() {
       return Some(CheckState::Mixed);
     }
@@ -2781,6 +2835,10 @@ fn compute_selected(
 
   if let Some(selected) = parse_bool_attr(&node.node, "aria-selected") {
     return Some(selected);
+  }
+
+  if matches!(role, Some("tab") | Some("treeitem") | Some("gridcell")) {
+    return Some(false);
   }
 
   None

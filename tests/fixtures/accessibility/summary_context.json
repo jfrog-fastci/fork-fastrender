@@ -32,22 +32,7 @@
         "visited": false,
         "readonly": false
       }
-    },
-    "s3": {
-      "role": "generic",
-      "name": "Extra summary",
-      "description": null,
-      "value": null,
-      "level": null,
-      "html_tag": "summary",
-      "states": {
-        "focusable": false,
-        "disabled": false,
-        "required": false,
-        "invalid": false,
-        "visited": false,
-        "readonly": false
-      }
     }
-  }
+  },
+  "absent": ["s3"]
 }
