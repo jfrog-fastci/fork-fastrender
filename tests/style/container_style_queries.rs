@@ -1998,6 +1998,70 @@ fn container_style_query_range_feature_matches_line_height_length() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_text_decoration_thickness() {
+  let html = r#"
+    <style>
+      .container-from-font { container-type: inline-size; text-decoration-thickness: from-font; }
+      .container-thin { container-type: inline-size; text-decoration-thickness: 1px; }
+      .container-thick { container-type: inline-size; text-decoration-thickness: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(text-decoration-thickness > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-from-font">
+      <div id="from-font" class="child">hello</div>
+    </div>
+    <div class="container-thin">
+      <div id="thin" class="child">hello</div>
+    </div>
+    <div class="container-thick">
+      <div id="thick" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let from_font = find_by_id(&styled, "from-font").expect("from-font element");
+  let thin = find_by_id(&styled, "thin").expect("thin element");
+  let thick = find_by_id(&styled, "thick").expect("thick element");
+  assert_eq!(from_font.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_text_underline_offset() {
+  let html = r#"
+    <style>
+      .container-auto { container-type: inline-size; text-underline-offset: auto; }
+      .container-shallow { container-type: inline-size; text-underline-offset: 1px; }
+      .container-deep { container-type: inline-size; text-underline-offset: 3px; }
+      .child { color: rgb(0 0 255); }
+      @container style(text-underline-offset > 2px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-auto">
+      <div id="auto" class="child">hello</div>
+    </div>
+    <div class="container-shallow">
+      <div id="shallow" class="child">hello</div>
+    </div>
+    <div class="container-deep">
+      <div id="deep" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let auto = find_by_id(&styled, "auto").expect("auto element");
+  let shallow = find_by_id(&styled, "shallow").expect("shallow element");
+  let deep = find_by_id(&styled, "deep").expect("deep element");
+  assert_eq!(auto.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(shallow.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(deep.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_scroll_margin_left() {
   let html = r#"
     <style>

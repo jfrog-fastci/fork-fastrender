@@ -2049,6 +2049,19 @@ fn eval_style_range_value(
         value: styles.word_spacing,
       }),
       "text-indent" => length_to_numeric(&styles.text_indent.length, container, ctx),
+      "text-decoration-thickness" => match styles.text_decoration.thickness {
+        crate::style::types::TextDecorationThickness::Length(len) => {
+          length_to_numeric(&len, container, ctx)
+        }
+        crate::style::types::TextDecorationThickness::Auto
+        | crate::style::types::TextDecorationThickness::FromFont => None,
+      },
+      "text-underline-offset" => match styles.text_underline_offset {
+        crate::style::types::TextUnderlineOffset::Length(len) => {
+          length_to_numeric(&len, container, ctx)
+        }
+        crate::style::types::TextUnderlineOffset::Auto => None,
+      },
       "shape-margin" => length_to_numeric(&styles.shape_margin, container, ctx),
       "shape-image-threshold" => Some(NumericValue {
         ty: NumericType::Number,
