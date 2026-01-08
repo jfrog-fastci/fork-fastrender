@@ -12,6 +12,7 @@
 use fastrender::style::types::TextOrientation;
 use fastrender::style::types::UnicodeBidi;
 use fastrender::style::types::WritingMode;
+use fastrender::text::segment_grapheme_clusters;
 use fastrender::text::pipeline::atomic_shaping_clusters;
 use fastrender::text::pipeline::itemize_text;
 use fastrender::text::pipeline::BidiAnalysis;
@@ -359,6 +360,87 @@ fn bundled_only_gurmukhi_shapes_prebase_matra() {
 }
 
 // ============================================================================
+// Emoji Sequence Shaping Tests
+// ============================================================================
+
+#[test]
+fn bundled_only_sans_serif_shapes_flag_sequences_as_single_glyph() {
+  let pipeline = ShapingPipeline::new();
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["sans-serif".to_string()].into();
+  style.font_size = 64.0;
+
+  let text = "🇺🇸";
+  let runs = pipeline.shape(text, &style, &font_ctx).expect("shape flag");
+  let run = runs
+    .iter()
+    .find(|run| run.font.family == "FastRender Emoji")
+    .unwrap_or_else(|| panic!("expected {text:?} to use bundled emoji font"));
+  assert!(
+    run.glyphs.iter().all(|g| g.glyph_id != 0),
+    "emoji font run should not contain .notdef glyphs"
+  );
+  assert_eq!(
+    run.glyphs.len(),
+    1,
+    "expected flag sequences to shape as a single glyph (ligature)"
+  );
+}
+
+#[test]
+fn bundled_only_sans_serif_shapes_keycap_sequences_with_bundled_emoji_font() {
+  let pipeline = ShapingPipeline::new();
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["sans-serif".to_string()].into();
+  style.font_size = 64.0;
+
+  // U+0031 U+FE0F U+20E3 => 1️⃣
+  let text = "1\u{fe0f}\u{20e3}";
+  let runs = pipeline.shape(text, &style, &font_ctx).expect("shape keycap");
+  let run = runs
+    .iter()
+    .find(|run| run.font.family == "FastRender Emoji")
+    .unwrap_or_else(|| panic!("expected {text:?} to use bundled emoji font"));
+  assert!(
+    run.glyphs.iter().all(|g| g.glyph_id != 0),
+    "emoji font run should not contain .notdef glyphs"
+  );
+  assert!(
+    !run.glyphs.is_empty(),
+    "emoji keycap sequence should yield shaped glyphs"
+  );
+}
+
+#[test]
+fn bundled_only_sans_serif_shapes_zwj_profession_sequences_with_bundled_emoji_font() {
+  let pipeline = ShapingPipeline::new();
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["sans-serif".to_string()].into();
+  style.font_size = 64.0;
+
+  // U+1F469 U+1F3FB U+200D U+2695 U+FE0F => 👩🏻‍⚕️
+  let text = "\u{1F469}\u{1F3FB}\u{200D}\u{2695}\u{FE0F}";
+  let runs = pipeline
+    .shape(text, &style, &font_ctx)
+    .expect("shape ZWJ profession sequence");
+  let run = runs
+    .iter()
+    .find(|run| run.font.family == "FastRender Emoji")
+    .unwrap_or_else(|| panic!("expected {text:?} to use bundled emoji font"));
+  assert!(
+    run.glyphs.iter().all(|g| g.glyph_id != 0),
+    "emoji font run should not contain .notdef glyphs"
+  );
+  assert!(
+    !run.glyphs.is_empty(),
+    "emoji ZWJ sequences should yield shaped glyphs"
+  );
+}
+
+// ============================================================================
 // Cluster Segmentation Tests
 // ============================================================================
 
@@ -426,10 +508,57 @@ fn atomic_clusters_preserve_emoji_variation_sequences() {
 }
 
 #[test]
+fn atomic_clusters_preserve_keycap_sequences() {
+  let text = "1\u{20e3}";
+  let clusters = atomic_shaping_clusters(text);
+  assert_eq!(clusters, vec![(0, text.len())]);
+
+  let text = "1\u{fe0f}\u{20e3}";
+  let clusters = atomic_shaping_clusters(text);
+  assert_eq!(clusters, vec![(0, text.len())]);
+}
+
+#[test]
 fn atomic_clusters_preserve_crlf() {
   let text = "\r\n";
   let clusters = atomic_shaping_clusters(text);
   assert_eq!(clusters, vec![(0, text.len())]);
+}
+
+// ============================================================================
+// Grapheme Segmentation Tests
+// ============================================================================
+
+#[test]
+fn grapheme_segmentation_returns_start_for_empty_text() {
+  assert_eq!(segment_grapheme_clusters(""), vec![0]);
+}
+
+#[test]
+fn grapheme_segmentation_does_not_split_zwj_sequences() {
+  let text = "👨\u{200d}👩";
+  assert_eq!(segment_grapheme_clusters(text), vec![0, text.len()]);
+}
+
+#[test]
+fn grapheme_segmentation_does_not_split_flag_sequences() {
+  let text = "🇺🇸";
+  assert_eq!(segment_grapheme_clusters(text), vec![0, text.len()]);
+}
+
+#[test]
+fn grapheme_segmentation_does_not_split_keycap_sequences() {
+  let text = "1\u{20e3}";
+  assert_eq!(segment_grapheme_clusters(text), vec![0, text.len()]);
+
+  let text = "1\u{fe0f}\u{20e3}";
+  assert_eq!(segment_grapheme_clusters(text), vec![0, text.len()]);
+}
+
+#[test]
+fn grapheme_segmentation_does_not_split_emoji_variation_sequences() {
+  let text = "❤\u{fe0f}";
+  assert_eq!(segment_grapheme_clusters(text), vec![0, text.len()]);
 }
 
 // ============================================================================
