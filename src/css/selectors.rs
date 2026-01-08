@@ -13,6 +13,7 @@ use cssparser::ParseError;
 use cssparser::Parser;
 use cssparser::ToCss;
 use cssparser::Token;
+use rustc_hash::FxHashSet;
 use selectors::parser::Selector;
 use selectors::parser::SelectorImpl;
 use selectors::parser::SelectorList;
@@ -60,6 +61,8 @@ pub struct ShadowMatchData<'a> {
   pub sibling_cache: Option<&'a SiblingListCache>,
   /// Per-pass cache for expensive element attribute lookups during selector matching.
   pub element_attr_cache: Option<&'a ElementAttrCache>,
+  /// Per-pass cache for `form:valid/invalid` and `fieldset:valid/invalid` propagation.
+  pub form_validity_index: Option<&'a FormValidityIndex>,
 }
 
 impl<'a> ShadowMatchData<'a> {
@@ -114,6 +117,41 @@ impl<'a> ShadowMatchData<'a> {
   pub fn with_element_attr_cache(mut self, element_attr_cache: &'a ElementAttrCache) -> Self {
     self.element_attr_cache = Some(element_attr_cache);
     self
+  }
+
+  pub fn with_form_validity_index(mut self, form_validity_index: &'a FormValidityIndex) -> Self {
+    self.form_validity_index = Some(form_validity_index);
+    self
+  }
+}
+
+/// Per-document index for `form:valid/invalid` and `fieldset:valid/invalid` selectors.
+///
+/// This is built once per cascade pass and queried during selector matching to avoid repeatedly
+/// scanning descendant controls for every `<form>`/`<fieldset>` node.
+#[derive(Debug, Default)]
+pub struct FormValidityIndex {
+  invalid_forms: FxHashSet<*const DomNode>,
+  invalid_fieldsets: FxHashSet<*const DomNode>,
+}
+
+impl FormValidityIndex {
+  pub fn insert_invalid_form(&mut self, form: *const DomNode) {
+    self.invalid_forms.insert(form);
+  }
+
+  pub fn insert_invalid_fieldset(&mut self, fieldset: *const DomNode) {
+    self.invalid_fieldsets.insert(fieldset);
+  }
+
+  pub fn form_is_invalid(&self, form: &DomNode) -> bool {
+    self.invalid_forms.contains(&(form as *const DomNode))
+  }
+
+  pub fn fieldset_is_invalid(&self, fieldset: &DomNode) -> bool {
+    self
+      .invalid_fieldsets
+      .contains(&(fieldset as *const DomNode))
   }
 }
 

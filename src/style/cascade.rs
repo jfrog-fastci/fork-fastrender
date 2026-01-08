@@ -10,6 +10,7 @@ use crate::css::parser::parse_declarations;
 use crate::css::parser::parse_inline_style_declarations;
 use crate::css::parser::parse_stylesheet;
 use crate::css::selectors::FastRenderSelectorImpl;
+use crate::css::selectors::FormValidityIndex;
 use crate::css::selectors::PseudoClass;
 use crate::css::selectors::PseudoElement;
 use crate::css::selectors::ShadowMatchData;
@@ -4064,6 +4065,7 @@ struct DomMaps {
   exportparts_map: HashMap<usize, Vec<(String, String)>>,
   selector_blooms: Option<SelectorBloomStore>,
   selector_keys: DomSelectorKeyCache,
+  form_validity_index: FormValidityIndex,
 }
 
 const SELECTOR_BLOOM_MIN_NODES: usize = 32;
@@ -4284,6 +4286,7 @@ impl DomMaps {
       exportparts_map,
       selector_blooms: None,
       selector_keys,
+      form_validity_index: FormValidityIndex::default(),
     }
   }
 
@@ -4425,6 +4428,141 @@ fn build_slot_maps<'a>(
   }
 
   maps
+}
+
+fn build_form_validity_index(root: &DomNode, dom_maps: &DomMaps) -> FormValidityIndex {
+  fn is_html_element(node: &DomNode) -> bool {
+    matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
+  }
+
+  fn is_html_tag(node: &DomNode, name: &str) -> bool {
+    is_html_element(node)
+      && node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case(name))
+  }
+
+  let mut forms_by_tree_scope: FxHashMap<usize, FxHashMap<String, *const DomNode>> =
+    FxHashMap::default();
+
+  // First pass: collect `<form id=...>` by tree scope so `form="..."` controls can resolve.
+  let mut stack: Vec<&DomNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    for child in node.traversal_children().iter().rev() {
+      stack.push(child);
+    }
+
+    if !is_html_tag(node, "form") {
+      continue;
+    }
+    let Some(id) = node.get_attribute_ref("id") else {
+      continue;
+    };
+    let Some(&node_id) = dom_maps.id_map.get(&(node as *const DomNode)) else {
+      continue;
+    };
+    let tree_scope_id = dom_maps.containing_shadow_root(node_id).unwrap_or(0);
+    let scope_map = forms_by_tree_scope.entry(tree_scope_id).or_default();
+    scope_map.entry(id.to_string()).or_insert(node as *const DomNode);
+  }
+
+  let mut index = FormValidityIndex::default();
+
+  struct Frame<'a> {
+    node: &'a DomNode,
+    node_id: usize,
+    next_child: usize,
+    subtree_has_invalid_candidate: bool,
+    nearest_form: Option<*const DomNode>,
+  }
+
+  let root_id = dom_maps.id_map.get(&(root as *const DomNode)).copied().unwrap_or(0);
+  let mut ancestors: Vec<&DomNode> = Vec::new();
+  let mut stack: Vec<Frame<'_>> = vec![Frame {
+    node: root,
+    node_id: root_id,
+    next_child: 0,
+    subtree_has_invalid_candidate: false,
+    nearest_form: None,
+  }];
+
+  while let Some(frame) = stack.last_mut() {
+    let children = frame.node.traversal_children();
+    if frame.next_child < children.len() {
+      let child = &children[frame.next_child];
+      frame.next_child += 1;
+
+      let child_id = dom_maps
+        .id_map
+        .get(&(child as *const DomNode))
+        .copied()
+        .unwrap_or(0);
+
+      let next_nearest_form = if is_html_tag(frame.node, "form") {
+        Some(frame.node as *const DomNode)
+      } else {
+        frame.nearest_form
+      };
+
+      ancestors.push(frame.node);
+      stack.push(Frame {
+        node: child,
+        node_id: child_id,
+        next_child: 0,
+        subtree_has_invalid_candidate: false,
+        nearest_form: next_nearest_form,
+      });
+      continue;
+    }
+
+    let mut subtree_invalid = frame.subtree_has_invalid_candidate;
+
+    if frame.node.is_element() {
+      let element_ref = ElementRef::with_ancestors(frame.node, ancestors.as_slice());
+      let supports_validation = element_ref.accessibility_supports_validation();
+      let disabled = element_ref.accessibility_disabled();
+      let valid = element_ref.accessibility_is_valid();
+      if supports_validation && !disabled && !valid {
+        subtree_invalid = true;
+
+        // Resolve form owner for invalid controls:
+        // - If `form=...` is present and resolves to a `<form>` in the same tree scope, use it.
+        // - Otherwise fall back to the nearest ancestor `<form>`.
+        let mut owner: Option<*const DomNode> = None;
+        if let Some(attr) = frame.node.get_attribute_ref("form") {
+          let attr = attr.trim();
+          if !attr.is_empty() {
+            let tree_scope_id = dom_maps.containing_shadow_root(frame.node_id).unwrap_or(0);
+            owner = forms_by_tree_scope
+              .get(&tree_scope_id)
+              .and_then(|map| map.get(attr).copied());
+          }
+        }
+
+        if owner.is_none() {
+          owner = frame.nearest_form;
+        }
+
+        if let Some(form_ptr) = owner {
+          index.insert_invalid_form(form_ptr);
+        }
+      }
+    }
+
+    if is_html_tag(frame.node, "fieldset") && subtree_invalid {
+      index.insert_invalid_fieldset(frame.node as *const DomNode);
+    }
+
+    // Pop the frame and propagate the subtree invalidity upward.
+    let subtree_invalid_result = subtree_invalid;
+    stack.pop();
+    if let Some(parent) = stack.last_mut() {
+      parent.subtree_has_invalid_candidate |= subtree_invalid_result;
+      ancestors.pop();
+    }
+  }
+
+  index
 }
 
 // Tree scopes participate in cascade-layer ordering (outer document vs inner shadow trees).
@@ -9416,6 +9554,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   let dom_node_count = id_map.len();
   let shadow_stylesheets = collect_shadow_stylesheets(dom, &id_map)?;
   let mut dom_maps = DomMaps::new(dom, id_map);
+  dom_maps.form_validity_index = build_form_validity_index(dom, &dom_maps);
   let slot_assignment = if !dom_maps.has_shadow_roots() {
     SlotAssignment::default()
   } else {
@@ -9968,7 +10107,8 @@ impl<'a> PreparedCascade<'a> {
 
     let id_map = enumerate_dom_ids(dom);
     let dom_node_count = id_map.len();
-    let dom_maps = DomMaps::new(dom, id_map);
+    let mut dom_maps = DomMaps::new(dom, id_map);
+    dom_maps.form_validity_index = build_form_validity_index(dom, &dom_maps);
     let slot_assignment = if !dom_maps.has_shadow_roots() {
       SlotAssignment::default()
     } else {
@@ -11190,6 +11330,7 @@ fn match_part_rules<'a>(
             dom_maps.selector_blooms(),
             Some(&dom_maps.id_map),
             Some(element_attr_cache),
+            Some(&dom_maps.form_validity_index),
             sibling_cache,
             &info.pseudo,
             allow_shadow_host,
@@ -11435,6 +11576,7 @@ fn collect_pseudo_matching_rules<'a>(
     dom_maps.selector_blooms(),
     Some(&dom_maps.id_map),
     Some(element_attr_cache),
+    Some(&dom_maps.form_validity_index),
     sibling_cache,
     pseudo,
     false,
@@ -11459,6 +11601,7 @@ fn collect_pseudo_matching_rules<'a>(
       dom_maps.selector_blooms(),
       Some(&dom_maps.id_map),
       Some(element_attr_cache),
+      Some(&dom_maps.form_validity_index),
       sibling_cache,
       pseudo,
       allow_shadow_host,
@@ -11486,6 +11629,7 @@ fn collect_pseudo_matching_rules<'a>(
           dom_maps.selector_blooms(),
           Some(&dom_maps.id_map),
           Some(element_attr_cache),
+          Some(&dom_maps.form_validity_index),
           sibling_cache,
           pseudo,
           false,
@@ -11513,6 +11657,7 @@ fn collect_pseudo_matching_rules<'a>(
       dom_maps.selector_blooms(),
       Some(&dom_maps.id_map),
       Some(element_attr_cache),
+      Some(&dom_maps.form_validity_index),
       sibling_cache,
       pseudo,
       true,
@@ -15184,6 +15329,7 @@ mod tests {
       node_to_id: Some(&dom_maps.id_map),
       sibling_cache: Some(sibling_cache),
       element_attr_cache: None,
+      form_validity_index: Some(&dom_maps.form_validity_index),
     };
 
     let mut matched = BTreeSet::new();
@@ -26857,6 +27003,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       None,
       None,
       None,
+      None,
       &sibling_cache,
       &PseudoElement::Marker,
       false,
@@ -28265,6 +28412,7 @@ fn find_matching_rules<'a>(
     node_to_id: Some(&dom_maps.id_map),
     sibling_cache: Some(sibling_cache),
     element_attr_cache,
+    form_validity_index: Some(&dom_maps.form_validity_index),
   };
 
   let scope_allows = |scope: &RuleScope, is_slotted: bool| -> bool {
@@ -28862,6 +29010,7 @@ fn find_pseudo_element_rules<'a>(
   selector_blooms: Option<&SelectorBloomStore>,
   node_to_id: Option<&HashMap<*const DomNode, usize>>,
   element_attr_cache: Option<&'a ElementAttrCache>,
+  form_validity_index: Option<&FormValidityIndex>,
   sibling_cache: &SiblingListCache,
   pseudo: &PseudoElement,
   allow_shadow_host: bool,
@@ -28952,6 +29101,7 @@ fn find_pseudo_element_rules<'a>(
     node_to_id,
     sibling_cache: Some(sibling_cache),
     element_attr_cache,
+    form_validity_index,
   };
 
   let include_self_container =

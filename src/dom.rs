@@ -6385,10 +6385,44 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::Required => self.is_required(),
       PseudoClass::Optional => self.supports_required() && !self.is_required(),
       PseudoClass::Valid => {
+        if self.is_html_element() {
+          if let Some(tag) = self.node.tag_name() {
+            if tag.eq_ignore_ascii_case("form") {
+              return _context
+                .extra_data
+                .form_validity_index
+                .is_some_and(|index| !index.form_is_invalid(self.node));
+            }
+            if tag.eq_ignore_ascii_case("fieldset") {
+              return _context
+                .extra_data
+                .form_validity_index
+                .is_some_and(|index| !index.fieldset_is_invalid(self.node));
+            }
+          }
+        }
+
         (self.supports_validation() && self.is_disabled())
           || (self.supports_validation() && self.is_valid_control())
       }
       PseudoClass::Invalid => {
+        if self.is_html_element() {
+          if let Some(tag) = self.node.tag_name() {
+            if tag.eq_ignore_ascii_case("form") {
+              return _context
+                .extra_data
+                .form_validity_index
+                .is_some_and(|index| index.form_is_invalid(self.node));
+            }
+            if tag.eq_ignore_ascii_case("fieldset") {
+              return _context
+                .extra_data
+                .form_validity_index
+                .is_some_and(|index| index.fieldset_is_invalid(self.node));
+            }
+          }
+        }
+
         self.supports_validation() && !self.is_disabled() && !self.is_valid_control()
       }
       PseudoClass::UserValid => {
