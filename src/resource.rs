@@ -607,18 +607,23 @@ fn http_browser_tolerant_origin_from_url(url: &str) -> Option<DocumentOrigin> {
   Some(DocumentOrigin::new(scheme, Some(host), port))
 }
 
-/// Remove `user:pass@` credentials from a URL string without requiring strict URL parsing.
+/// Normalize a referrer URL for use in the HTTP `Referer` header without requiring strict URL
+/// parsing.
 ///
 /// This exists for tolerant referrer handling: `http_referer_header_value` supports referrer URLs
 /// that contain characters rejected by `url::Url::parse` (e.g. `|` in query strings) so we can
-/// still generate `Referer` headers for real-world pages. When taking the tolerant path, we still
-/// must not leak credentials in the serialized referrer.
-fn http_strip_userinfo_for_referrer(url: &str) -> String {
+/// still generate `Referer` headers for real-world pages. When taking the tolerant path, we:
+///
+/// - strip any `user:pass@` credentials
+/// - lowercase scheme + host (matching URL serialization)
+/// - drop default ports (80/443)
+fn http_normalize_referrer_url_tolerant(url: &str) -> String {
   let trimmed = url.trim();
   let Some(scheme_end) = trimmed.find("://") else {
     return trimmed.to_string();
   };
-  if !matches!(trimmed[..scheme_end].to_ascii_lowercase().as_str(), "http" | "https") {
+  let scheme = trimmed[..scheme_end].to_ascii_lowercase();
+  if !matches!(scheme.as_str(), "http" | "https") {
     return trimmed.to_string();
   }
 
@@ -627,16 +632,88 @@ fn http_strip_userinfo_for_referrer(url: &str) -> String {
     .find(|c| matches!(c, '/' | '?' | '#'))
     .unwrap_or(after_scheme.len());
   let authority = &after_scheme[..authority_end];
-  let Some((_, host_port)) = authority.rsplit_once('@') else {
-    return trimmed.to_string();
-  };
+  let host_port = authority
+    .rsplit_once('@')
+    .map(|(_, host_port)| host_port)
+    .unwrap_or(authority);
   if host_port.is_empty() {
     return trimmed.to_string();
   }
 
+  let default_port = match scheme.as_str() {
+    "http" => Some(80u16),
+    "https" => Some(443u16),
+    _ => None,
+  };
+
+  let normalize_port = |port: &str| -> Option<Option<String>> {
+    if port.is_empty() {
+      return None;
+    }
+    let Ok(port_num) = port.parse::<u16>() else {
+      return Some(Some(port.to_string()));
+    };
+    if default_port.is_some_and(|default| default == port_num) {
+      return Some(None);
+    }
+    Some(Some(port_num.to_string()))
+  };
+
+  let normalized_host_port = if host_port.starts_with('[') {
+    match host_port.find(']') {
+      Some(end) => {
+        let host = host_port.get(1..end).unwrap_or("");
+        if host.is_empty() {
+          host_port.to_string()
+        } else {
+          let rest = &host_port[end + 1..];
+          let port = if rest.is_empty() {
+            Some(None)
+          } else if let Some(port) = rest.strip_prefix(':') {
+            normalize_port(port)
+          } else {
+            None
+          };
+          if let Some(port) = port {
+            let mut out = String::with_capacity(host_port.len());
+            out.push('[');
+            out.push_str(&host.to_ascii_lowercase());
+            out.push(']');
+            if let Some(port) = port {
+              out.push(':');
+              out.push_str(&port);
+            }
+            out
+          } else {
+            host_port.to_string()
+          }
+        }
+      }
+      None => host_port.to_string(),
+    }
+  } else {
+    let (host, port) = host_port
+      .rsplit_once(':')
+      .and_then(|(host, port)| (!host.contains(':')).then_some((host, port)))
+      .unwrap_or((host_port, ""));
+    let port = if host == host_port { Some(None) } else { normalize_port(port) };
+    if let Some(port) = port {
+      let mut out = String::with_capacity(host_port.len());
+      out.push_str(&host.to_ascii_lowercase());
+      if let Some(port) = port {
+        out.push(':');
+        out.push_str(&port);
+      }
+      out
+    } else {
+      host_port.to_string()
+    }
+  };
+
   let mut out = String::with_capacity(trimmed.len());
-  out.push_str(&trimmed[..scheme_end + "://".len()]);
-  out.push_str(host_port);
+  out.push_str(&scheme);
+  out.push_str("://");
+  out.push_str(&normalized_host_port);
   out.push_str(&after_scheme[authority_end..]);
   out
 }
@@ -3289,7 +3366,7 @@ fn http_referer_header_value(
       .split_once('#')
       .map(|(before, _)| before.to_string())
       .unwrap_or_else(|| raw_referrer.to_string());
-    let full = http_strip_userinfo_for_referrer(&full);
+    let full = http_normalize_referrer_url_tolerant(&full);
     let origin_only = http_browser_origin_and_referer_for_origin(&origin)
       .map(|(_, origin_only)| origin_only)
       .or_else(|| Some(full.clone()));

@@ -7,11 +7,27 @@ fn referer_header_strips_url_credentials() {
   std::env::set_var("FASTR_HTTP_BROWSER_HEADERS", "1");
 
   let fetcher = HttpFetcher::new();
-  for referrer_url in [
-    // Strict URL parsing succeeds.
-    "https://user:pass@example.com/path/page.html?q=1#frag",
-    // Tolerant path (invalid `|` in query) should still strip credentials.
-    "https://user:pass@example.com/path/page.html?q=|#frag",
+  for (referrer_url, expected) in [
+    (
+      // Strict URL parsing succeeds.
+      "https://user:pass@example.com/path/page.html?q=1#frag",
+      "https://example.com/path/page.html?q=1",
+    ),
+    (
+      // Tolerant path (invalid `|` in query) should still strip credentials.
+      "https://user:pass@example.com/path/page.html?q=|#frag",
+      "https://example.com/path/page.html?q=|",
+    ),
+    (
+      // Tolerant path should also normalize scheme/host case and drop default ports.
+      "HTTPS://user:pass@EXAMPLE.COM:443/path/page.html?q=|#frag",
+      "https://example.com/path/page.html?q=|",
+    ),
+    (
+      // Same for HTTP default port.
+      "HTTP://user:pass@EXAMPLE.COM:80/path/page.html?q=|#frag",
+      "http://example.com/path/page.html?q=|",
+    ),
   ] {
     let req = FetchRequest::new("https://example.com/img.png", FetchDestination::Image)
       .with_referrer_url(referrer_url)
@@ -21,11 +37,6 @@ fn referer_header_strips_url_credentials() {
       .request_header_value(req, "Referer")
       .expect("HttpFetcher should deterministically construct Referer");
 
-    let expected = if referrer_url.contains("q=|") {
-      "https://example.com/path/page.html?q=|"
-    } else {
-      "https://example.com/path/page.html?q=1"
-    };
     assert_eq!(referer, expected);
   }
 
