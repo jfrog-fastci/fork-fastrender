@@ -21,13 +21,13 @@ pub enum JsValue {
 /// Per the web platform APIs, the handler must be callable. String handlers are allowed by the
 /// HTML Standard but are **intentionally rejected** for now (we throw a `TypeError`) to avoid
 /// evaluating arbitrary strings as code in the host environment.
-pub enum TimerHandler<Host> {
+pub enum TimerHandler<Host: 'static> {
   Function(Box<dyn FnMut(&mut Host, &mut EventLoop<Host>, &[JsValue]) -> Result<()> + 'static>),
   String(String),
   NotCallable,
 }
 
-impl<Host> TimerHandler<Host> {
+impl<Host: 'static> TimerHandler<Host> {
   pub fn from_fn<F>(f: F) -> Self
   where
     F: FnMut(&mut Host, &mut EventLoop<Host>, &[JsValue]) -> Result<()> + 'static,
@@ -41,7 +41,7 @@ fn type_error(message: &str) -> Error {
 }
 
 #[allow(non_snake_case)]
-pub fn setTimeout<Host>(
+pub fn setTimeout<Host: 'static>(
   event_loop: &mut EventLoop<Host>,
   handler: TimerHandler<Host>,
   timeout_ms: i64,
@@ -63,12 +63,12 @@ pub fn setTimeout<Host>(
 }
 
 #[allow(non_snake_case)]
-pub fn clearTimeout<Host>(event_loop: &mut EventLoop<Host>, id: TimerId) {
+pub fn clearTimeout<Host: 'static>(event_loop: &mut EventLoop<Host>, id: TimerId) {
   event_loop.clear_timeout(id);
 }
 
 #[allow(non_snake_case)]
-pub fn setInterval<Host>(
+pub fn setInterval<Host: 'static>(
   event_loop: &mut EventLoop<Host>,
   handler: TimerHandler<Host>,
   timeout_ms: i64,
@@ -88,12 +88,12 @@ pub fn setInterval<Host>(
 }
 
 #[allow(non_snake_case)]
-pub fn clearInterval<Host>(event_loop: &mut EventLoop<Host>, id: TimerId) {
+pub fn clearInterval<Host: 'static>(event_loop: &mut EventLoop<Host>, id: TimerId) {
   event_loop.clear_interval(id);
 }
 
 #[allow(non_snake_case)]
-pub fn queueMicrotask<Host>(
+pub fn queueMicrotask<Host: 'static>(
   event_loop: &mut EventLoop<Host>,
   callback: TimerHandler<Host>,
 ) -> Result<()> {
@@ -130,7 +130,7 @@ mod tests {
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
       setTimeout(
         event_loop,
-        TimerHandler::from_fn(|host, _event_loop, _args| {
+        TimerHandler::<Host>::from_fn(|host, _event_loop, _args| {
           host.log.push("t");
           Ok(())
         }),
@@ -140,7 +140,7 @@ mod tests {
 
       queueMicrotask(
         event_loop,
-        TimerHandler::from_fn(|host, _event_loop, _args| {
+        TimerHandler::<Host>::from_fn(|host, _event_loop, _args| {
           host.log.push("m");
           Ok(())
         }),
@@ -171,7 +171,7 @@ mod tests {
     event_loop.queue_task(TaskSource::Script, |_host, event_loop| {
       let id = setTimeout(
         event_loop,
-        TimerHandler::from_fn(|host, _event_loop, _args| {
+        TimerHandler::<Host>::from_fn(|host, _event_loop, _args| {
           host.log.push("t");
           Ok(())
         }),
@@ -206,7 +206,7 @@ mod tests {
 
     let id = setInterval(
       &mut event_loop,
-      TimerHandler::from_fn(move |host, event_loop, _args| {
+      TimerHandler::<Host>::from_fn(move |host, event_loop, _args| {
         host.count += 1;
         if host.count == 3 {
           clearInterval(event_loop, id_cell_for_cb.get());
@@ -246,7 +246,7 @@ mod tests {
     event_loop.queue_task(TaskSource::Script, |_host, event_loop| {
       setTimeout(
         event_loop,
-        TimerHandler::from_fn(|host, _event_loop, args| {
+        TimerHandler::<Host>::from_fn(|host, _event_loop, args| {
           host.observed.extend_from_slice(args);
           Ok(())
         }),

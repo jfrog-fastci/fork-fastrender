@@ -19,6 +19,14 @@ const SCRIPT_SCALE: f32 = 0.71;
 const MAX_SCRIPT_LEVEL: u8 = 8;
 const MIN_SCRIPT_FONT_SIZE_PX: f32 = 6.0;
 
+fn is_ascii_whitespace_mathml(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_mathml)
+}
+
 /// Math variant requested by MathML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MathVariant {
@@ -416,7 +424,7 @@ fn normalized_text(node: &DomNode, preserve_space: bool) -> Option<String> {
       Some(buf)
     }
   } else {
-    let trimmed = buf.trim();
+    let trimmed = trim_ascii_whitespace(&buf);
     if trimmed.is_empty() {
       None
     } else {
@@ -467,24 +475,33 @@ fn parse_mathvariant(node: &DomNode) -> Option<MathVariant> {
 }
 
 fn parse_math_length(raw: Option<&str>) -> Option<MathLength> {
-  let value = raw?.trim();
+  let value = trim_ascii_whitespace(raw?);
   if value.is_empty() {
     return None;
   }
   if let Some(v) = value.strip_suffix("ex") {
-    return v.trim().parse::<f32>().ok().map(MathLength::Ex);
+    return trim_ascii_whitespace(v)
+      .parse::<f32>()
+      .ok()
+      .map(MathLength::Ex);
   }
   if let Some(v) = value.strip_suffix("em") {
-    return v.trim().parse::<f32>().ok().map(MathLength::Em);
+    return trim_ascii_whitespace(v)
+      .parse::<f32>()
+      .ok()
+      .map(MathLength::Em);
   }
   if let Some(v) = value.strip_suffix("px") {
-    return v.trim().parse::<f32>().ok().map(MathLength::Px);
+    return trim_ascii_whitespace(v)
+      .parse::<f32>()
+      .ok()
+      .map(MathLength::Px);
   }
   value.parse::<f32>().ok().map(MathLength::Em)
 }
 
 fn parse_math_length_or_keyword(raw: Option<&str>) -> Option<MathLengthOrKeyword> {
-  let value = raw?.trim();
+  let value = trim_ascii_whitespace(raw?);
   if value.is_empty() {
     return None;
   }
@@ -498,21 +515,27 @@ fn parse_math_length_or_keyword(raw: Option<&str>) -> Option<MathLengthOrKeyword
 }
 
 fn parse_math_size(raw: &str) -> Option<MathSize> {
-  match raw.trim().to_ascii_lowercase().as_str() {
+  match trim_ascii_whitespace(raw).to_ascii_lowercase().as_str() {
     "small" => Some(MathSize::Scale(0.8)),
     "normal" => Some(MathSize::Scale(1.0)),
     "big" => Some(MathSize::Scale(1.2)),
     other => {
       if let Some(v) = other.strip_suffix('%') {
-        if let Ok(pct) = v.trim().parse::<f32>() {
+        if let Ok(pct) = trim_ascii_whitespace(v).parse::<f32>() {
           return Some(MathSize::Scale(pct / 100.0));
         }
       }
       if let Some(v) = other.strip_suffix("px") {
-        return v.trim().parse::<f32>().ok().map(MathSize::Absolute);
+        return trim_ascii_whitespace(v)
+          .parse::<f32>()
+          .ok()
+          .map(MathSize::Absolute);
       }
       if let Some(v) = other.strip_suffix("em") {
-        return v.trim().parse::<f32>().ok().map(|v| MathSize::Scale(v));
+        return trim_ascii_whitespace(v)
+          .parse::<f32>()
+          .ok()
+          .map(|v| MathSize::Scale(v));
       }
       if let Ok(val) = other.parse::<f32>() {
         Some(MathSize::Scale(val))
@@ -524,7 +547,7 @@ fn parse_math_size(raw: &str) -> Option<MathSize> {
 }
 
 fn parse_display_style(value: Option<&str>) -> Option<bool> {
-  let raw = value?.trim();
+  let raw = trim_ascii_whitespace(value?);
   if raw.is_empty() {
     return None;
   }
@@ -538,7 +561,7 @@ fn parse_display_style(value: Option<&str>) -> Option<bool> {
 }
 
 fn parse_script_level(value: Option<&str>) -> Option<MathScriptLevel> {
-  let raw = value?.trim();
+  let raw = trim_ascii_whitespace(value?);
   if raw.is_empty() {
     return None;
   }
@@ -547,7 +570,7 @@ fn parse_script_level(value: Option<&str>) -> Option<MathScriptLevel> {
     Some(b'-') => (Some('-'), &raw[1..]),
     _ => (None, raw),
   };
-  let parsed = digits.trim().parse::<i32>().ok()?;
+  let parsed = trim_ascii_whitespace(digits).parse::<i32>().ok()?;
   match kind {
     Some('+') => Some(MathScriptLevel::Relative(parsed)),
     Some('-') => Some(MathScriptLevel::Relative(-parsed)),
@@ -559,7 +582,7 @@ fn parse_script_level(value: Option<&str>) -> Option<MathScriptLevel> {
 }
 
 fn parse_operator_form(value: Option<&str>) -> Option<OperatorForm> {
-  let raw = value?.trim();
+  let raw = trim_ascii_whitespace(value?);
   if raw.is_empty() {
     return None;
   }
@@ -572,7 +595,7 @@ fn parse_operator_form(value: Option<&str>) -> Option<OperatorForm> {
 }
 
 fn parse_math_space(raw: Option<&str>) -> Option<MathLengthOrKeyword> {
-  let value = raw?.trim();
+  let value = trim_ascii_whitespace(raw?);
   if value.is_empty() {
     return None;
   }
@@ -589,7 +612,7 @@ fn parse_row_align_list(value: Option<&str>) -> Vec<RowAlign> {
   value
     .map(|v| {
       v.split(|c| c == ' ' || c == ',')
-        .filter_map(|item| match item.trim().to_ascii_lowercase().as_str() {
+        .filter_map(|item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
           "axis" => Some(RowAlign::Axis),
           "top" => Some(RowAlign::Top),
           "bottom" => Some(RowAlign::Bottom),
@@ -606,7 +629,7 @@ fn parse_column_align_list(value: Option<&str>) -> Vec<ColumnAlign> {
   value
     .map(|v| {
       v.split(|c| c == ' ' || c == ',')
-        .filter_map(|item| match item.trim().to_ascii_lowercase().as_str() {
+        .filter_map(|item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
           "left" => Some(ColumnAlign::Left),
           "center" | "centre" => Some(ColumnAlign::Center),
           "right" => Some(ColumnAlign::Right),
@@ -627,7 +650,7 @@ fn parse_menclose_notation(value: Option<&str>) -> Vec<MencloseNotation> {
   };
   let parsed: Vec<MencloseNotation> = raw
     .split(|c| c == ' ' || c == ',')
-    .filter_map(|item| match item.trim().to_ascii_lowercase().as_str() {
+    .filter_map(|item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
       "box" => Some(MencloseNotation::Box),
       "roundedbox" => Some(MencloseNotation::RoundedBox),
       "circle" => Some(MencloseNotation::Circle),
@@ -716,7 +739,7 @@ fn empty_text_node() -> MathNode {
 pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
   match &node.node_type {
     DomNodeType::Text { content } => {
-      let trimmed = content.trim();
+      let trimmed = trim_ascii_whitespace(content);
       if trimmed.is_empty() {
         None
       } else {
@@ -748,7 +771,7 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
                 }
               }
               DomNodeType::Text { content } => {
-                if content.trim().is_empty() {
+                if trim_ascii_whitespace(content).is_empty() {
                   continue;
                 }
               }
@@ -1289,7 +1312,7 @@ impl MathLayoutContext {
   fn is_form_ignorable(node: &MathNode) -> bool {
     match node {
       MathNode::Space { .. } => true,
-      MathNode::Text { text, .. } => text.trim().is_empty(),
+      MathNode::Text { text, .. } => trim_ascii_whitespace(text).is_empty(),
       _ => false,
     }
   }
@@ -3644,6 +3667,38 @@ mod tests {
       "none placeholder should not change width: {} vs {}",
       with_layout.width,
       without_layout.width
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_mathml_normalized_text_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let markup = format!("<math><mi>{nbsp}x{nbsp}</mi></math>");
+    let parsed = parse_math_from_html(&markup);
+    let MathNode::Math { children, .. } = parsed else {
+      panic!("expected math root");
+    };
+    let MathNode::Identifier { text, .. } = &children[0] else {
+      panic!("expected identifier child");
+    };
+    assert_eq!(text, &format!("{nbsp}x{nbsp}"));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_mathml_mspace_width_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let markup = format!("<math><mspace width=\"{nbsp}1em{nbsp}\"/></math>");
+    let parsed = parse_math_from_html(&markup);
+    let MathNode::Math { children, .. } = parsed else {
+      panic!("expected math root");
+    };
+    let MathNode::Space { width, .. } = &children[0] else {
+      panic!("expected mspace child");
+    };
+    assert_eq!(
+      *width,
+      MathLength::Em(0.0),
+      "NBSP must not be treated as HTML/MathML whitespace when parsing length attributes"
     );
   }
 }

@@ -884,7 +884,8 @@ mod tests {
   fn clear_timeout_after_due_but_before_run_cancels_callback() -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock));
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
 
     let id = event_loop.set_timeout(Duration::from_millis(0), |host, _event_loop| {
       host.count += 1;
@@ -907,7 +908,8 @@ mod tests {
   fn interval_cleared_inside_callback_does_not_reschedule() -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock));
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
 
     let id_cell: Rc<Cell<Option<TimerId>>> = Rc::new(Cell::new(None));
     let id_cell_for_cb = Rc::clone(&id_cell);
@@ -940,7 +942,8 @@ mod tests {
   fn interval_cleared_after_first_firing_but_before_queued_second_firing_cancels_second() -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock));
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
 
     let id = event_loop.set_interval(Duration::from_millis(5), |host, _event_loop| {
       host.count += 1;
@@ -969,7 +972,8 @@ mod tests {
   fn reused_timer_id_does_not_run_stale_enqueued_task() -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<TestHost>::with_clock(Arc::clone(&clock));
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
 
     let id = event_loop.set_timeout(Duration::from_millis(0), |_host, _event_loop| Ok(()))?;
     event_loop.queue_due_timers()?;
@@ -977,7 +981,7 @@ mod tests {
 
     // Force ID reuse by rewinding the internal counter (mirrors the HTML model where IDs can be
     // reused once cleared).
-    event_loop.next_timer_id = id.0;
+    event_loop.next_timer_id = id;
     let _new_id = event_loop.set_timeout(Duration::from_millis(5), |host, _event_loop| {
       host.count += 1;
       Ok(())

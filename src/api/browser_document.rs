@@ -59,10 +59,12 @@ impl BrowserDocument {
     options: RenderOptions,
   ) -> Result<Self> {
     let dom = prepared.dom.clone();
+    let document_url = renderer.document_url_hint().map(|url| url.to_string());
     Ok(Self {
       renderer,
       dom,
       options,
+      document_url,
       prepared: Some(prepared),
       style_dirty: false,
       layout_dirty: false,
@@ -81,7 +83,7 @@ impl BrowserDocument {
       None => self.renderer.clear_document_url(),
     }
     match base_url {
-      Some(url) if !url.trim().is_empty() => self.renderer.set_base_url(url),
+      Some(url) if !super::trim_ascii_whitespace(&url).is_empty() => self.renderer.set_base_url(url),
       _ => self.renderer.clear_base_url(),
     }
   }
@@ -486,6 +488,15 @@ mod tests {
       stages.contains(&StageHeartbeat::Layout),
       "expected layout stage after reset_with_html; got {stages:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn non_ascii_whitespace_set_navigation_urls_does_not_trim_nbsp_base_url() -> Result<()> {
+    let mut document = BrowserDocument::from_html("<div>hi</div>", RenderOptions::default())?;
+    let nbsp = "\u{00A0}".to_string();
+    document.set_navigation_urls(None, Some(nbsp.clone()));
+    assert_eq!(document.renderer.base_url.as_deref(), Some(nbsp.as_str()));
     Ok(())
   }
 }
