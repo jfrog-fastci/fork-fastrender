@@ -121,6 +121,14 @@ fn resolve_href_accepts_uppercase_data_urls() {
 }
 
 #[test]
+fn resolve_href_does_not_trim_non_ascii_whitespace() {
+  let nbsp = "\u{00A0}";
+  let href = format!("app.js{nbsp}");
+  let resolved = resolve_href("https://example.com/base/", &href).expect("href should resolve");
+  assert_eq!(resolved, "https://example.com/base/app.js%C2%A0");
+}
+
+#[test]
 fn inline_imports_resolves_urls_relative_to_imported_sheet() {
   let mut state = InlineImportState::new();
   let mut fetch = |url: &str, _referrer: &str| -> fastrender::error::Result<FetchedStylesheet> {

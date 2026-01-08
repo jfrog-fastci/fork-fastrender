@@ -33,8 +33,6 @@ pub fn extract_script_elements(dom: &DomNode, document_url: Option<&str>) -> Vec
 
         let src = node
           .get_attribute_ref("src")
-          .map(str::trim)
-          .filter(|value| !value.is_empty())
           .and_then(|value| resolve_href_with_base(base_url.as_deref(), value));
 
         let mut inline_text = String::new();
@@ -123,6 +121,41 @@ mod tests {
   }
 
   #[test]
+  fn trims_src_using_ascii_whitespace() {
+    let dom = parse_html(
+      r#"<!doctype html>
+      <html>
+        <head>
+          <base href="https://example.com/base/">
+        </head>
+        <body>
+          <script src="  app.js  "></script>
+        </body>
+      </html>"#,
+    )
+    .unwrap();
+    let scripts = extract_script_elements(&dom, None);
+    assert_eq!(scripts.len(), 1);
+    assert_eq!(scripts[0].src.as_deref(), Some("https://example.com/base/app.js"));
+  }
+
+  #[test]
+  fn src_does_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      "<!doctype html><html><head><base href=\"https://example.com/base/\"></head>\
+       <body><script src=\"app.js{nbsp}\"></script></body></html>"
+    );
+    let dom = parse_html(&html).unwrap();
+    let scripts = extract_script_elements(&dom, None);
+    assert_eq!(scripts.len(), 1);
+    assert_eq!(
+      scripts[0].src.as_deref(),
+      Some("https://example.com/base/app.js%C2%A0")
+    );
+  }
+
+  #[test]
   fn skips_template_and_shadow_root_scripts_and_preserves_order() {
     let dom = parse_html(
       r#"<!doctype html>
@@ -145,4 +178,3 @@ mod tests {
     assert_eq!(texts, vec!["a", "b", "c"]);
   }
 }
-

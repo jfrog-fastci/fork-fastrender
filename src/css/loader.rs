@@ -73,8 +73,17 @@ pub fn link_rel_is_stylesheet_candidate(
 /// directory paths. JavaScript-escaped hrefs (e.g. `https:\/\/example.com`) are
 /// unescaped before resolution.
 pub fn resolve_href(base: &str, href: &str) -> Option<String> {
+  // HTML/CSS URL attributes strip leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but do
+  // not treat all Unicode whitespace as ignorable. Use an explicit trim instead of `str::trim()`
+  // to avoid incorrectly dropping characters like NBSP (U+00A0).
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    })
+  }
+
   let href = unescape_js_escapes(href);
-  let href = href.trim();
+  let href = trim_ascii_whitespace(href.as_ref());
   if href.is_empty() {
     return None;
   }
