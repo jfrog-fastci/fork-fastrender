@@ -101,6 +101,56 @@ fn separate_border_spacing_uses_full_edges() {
 }
 
 #[test]
+fn separate_border_spacing_uses_full_edges_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { border-collapse: separate; border-spacing: 10px 6px; padding: 0; border: 0; direction: rtl; }
+          td { width: 40px; height: 10px; padding: 0; margin: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table><tr><td>A</td></tr></table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 60, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment");
+  let mut cells = HashMap::new();
+  for child in table.children.iter() {
+    collect_cells(child, (0.0, 0.0), &mut cells);
+  }
+  let cell = cells.get(&'A').expect("table cell fragment");
+
+  assert!(
+    (cell.x() - 10.0).abs() < 0.1,
+    "expected edge cell to start after full horizontal border-spacing in RTL (got x={})",
+    cell.x()
+  );
+  assert!(
+    (cell.y() - 6.0).abs() < 0.1,
+    "expected edge cell to start after full vertical border-spacing in RTL (got y={})",
+    cell.y()
+  );
+  assert!(
+    (table.bounds.width() - 60.0).abs() < 0.1,
+    "expected table width to include left+right border-spacing in RTL (got {})",
+    table.bounds.width()
+  );
+  assert!(
+    (table.bounds.height() - 22.0).abs() < 0.1,
+    "expected table height to include top+bottom border-spacing in RTL (got {})",
+    table.bounds.height()
+  );
+}
+
+#[test]
 fn border_spacing_applies_at_table_edges_in_separated_model() {
   let html = r#"
     <html>
@@ -154,5 +204,69 @@ fn border_spacing_applies_at_table_edges_in_separated_model() {
   assert!(
     (spacing_x - 10.0).abs() < 0.1,
     "spacing between cells should match border-spacing (expected ~10, got {spacing_x})"
+  );
+}
+
+#[test]
+fn border_spacing_applies_at_table_edges_in_separated_model_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: separate;
+            border-spacing: 10px 6px;
+            width: 200px;
+            table-layout: fixed;
+            border: 0;
+            padding: 0;
+            direction: rtl;
+          }
+          td { padding: 0; margin: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td>A</td><td>B</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  for child in table.children.iter() {
+    collect_cells(child, (0.0, 0.0), &mut cells);
+  }
+
+  let a = cells.get(&'A').expect("A cell");
+  let b = cells.get(&'B').expect("B cell");
+
+  assert!(
+    a.x() > b.x(),
+    "expected RTL order A (right) > B (left), got A.x={} B.x={}",
+    a.x(),
+    b.x()
+  );
+  assert!(
+    (b.x() - 10.0).abs() < 0.1,
+    "leftmost cell should start after horizontal edge border-spacing in RTL (expected ~10, got {})",
+    b.x()
+  );
+  assert!(
+    (a.y() - 6.0).abs() < 0.1,
+    "first row should start after vertical border-spacing in RTL (expected ~6, got {})",
+    a.y()
+  );
+
+  let spacing_x = a.x() - (b.x() + b.width());
+  assert!(
+    (spacing_x - 10.0).abs() < 0.1,
+    "spacing between cells should match border-spacing in RTL (expected ~10, got {spacing_x})"
   );
 }
