@@ -2555,12 +2555,9 @@ impl DisplayListBuilder {
         self.canvas_background_suppress_box_id = Some(suppress_box_id);
         Some(RootBackground {
           paint_rect: target_rect,
-          // When propagating the canvas background, Chrome continues to resolve
-          // `background-size:auto` against the *source element's* background positioning area
-          // (typically the body's padding box). This can be shorter than the viewport, meaning
-          // generated images like gradients repeat to fill the canvas when `background-repeat`
-          // is `repeat` (the default).
-          origin_rect: source_rect,
+          // Treat the propagated background as if it were painted on the canvas itself so
+          // generated images like gradients resolve against the viewport-sized paint rect.
+          origin_rect: target_rect,
           style,
         })
       })
@@ -5491,7 +5488,11 @@ impl DisplayListBuilder {
     fragment: &FragmentNode,
     origin: Point,
   ) -> Option<(Arc<ComputedStyle>, usize, Rect)> {
-    let (html, html_origin) = if fragment.children.len() == 1 {
+    // Some unit tests construct a synthetic viewport fragment with a single child representing the
+    // root element. Renderer-produced fragment trees always use the root element itself as the
+    // fragment tree root (even when it only has one child), so only treat a single-child root as a
+    // wrapper when there is no originating box.
+    let (html, html_origin) = if Self::get_box_id(fragment).is_none() && fragment.children.len() == 1 {
       let child = fragment.children.first().unwrap_or(fragment);
       (child, origin.translate(child.bounds.origin))
     } else {
@@ -5505,14 +5506,34 @@ impl DisplayListBuilder {
       }
     }
 
+    if let Some(html_id) = Self::get_box_id(html) {
+      // Renderer-produced fragment trees can flatten the body box when it has no paintable
+      // background. Avoid treating arbitrary descendants as the canvas background in that case by
+      // only considering the body box (which is expected to be the root element's first child).
+      if let Some(body_id) = html_id.checked_add(1) {
+        if let Some(body) = html
+          .children
+          .iter()
+          .find(|child| Self::get_box_id(child) == Some(body_id))
+        {
+          if let Some(style) = body.style.clone() {
+            if Self::has_paintable_background(&style) {
+              let rect = Rect::new(html_origin.translate(body.bounds.origin), body.bounds.size);
+              return Some((style, body_id, rect));
+            }
+          }
+        }
+      }
+      return None;
+    }
+
+    // Fallback for fragment trees without box IDs (unit tests): treat the first paintable child as
+    // the body element.
     for child in html.children.iter() {
       if let Some(style) = child.style.clone() {
         if Self::has_paintable_background(&style) {
           let box_id = Self::get_box_id(child)?;
-          let rect = Rect::new(
-            html_origin.translate(child.bounds.origin),
-            child.bounds.size,
-          );
+          let rect = Rect::new(html_origin.translate(child.bounds.origin), child.bounds.size);
           return Some((style, box_id, rect));
         }
       }
