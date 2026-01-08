@@ -41,6 +41,15 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+#[inline]
+fn is_ascii_whitespace_html_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
 /// The computed value of the CSS `content` property
 ///
 /// Represents what content should be generated for a pseudo-element.
@@ -572,7 +581,7 @@ impl CounterStyle {
   /// assert_eq!(CounterStyle::parse("unknown"), None);
   /// ```
   pub fn parse(s: &str) -> Option<Self> {
-    match s.trim().to_ascii_lowercase().as_str() {
+    match trim_ascii_whitespace(s).to_ascii_lowercase().as_str() {
       "decimal" => Some(CounterStyle::Decimal),
       "decimal-leading-zero" => Some(CounterStyle::DecimalLeadingZero),
       "armenian" | "upper-armenian" => Some(CounterStyle::Armenian),
@@ -1340,7 +1349,7 @@ impl ContentGenerator {
 /// assert_eq!(none, ContentValue::None);
 /// ```
 pub fn parse_content(input: &str) -> Option<ContentValue> {
-  let input = input.trim();
+  let input = trim_ascii_whitespace(input);
 
   // Handle keywords
   match input.to_ascii_lowercase().as_str() {
@@ -1355,7 +1364,11 @@ pub fn parse_content(input: &str) -> Option<ContentValue> {
 
   while chars.peek().is_some() {
     // Skip whitespace
-    while chars.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
+    while chars
+      .peek()
+      .copied()
+      .is_some_and(is_ascii_whitespace_html_css)
+    {
       chars.next();
     }
 
@@ -1388,7 +1401,11 @@ pub fn parse_content(input: &str) -> Option<ContentValue> {
       }
 
       // Skip whitespace
-      while chars.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
+      while chars
+        .peek()
+        .copied()
+        .is_some_and(is_ascii_whitespace_html_css)
+      {
         chars.next();
       }
 
@@ -1467,11 +1484,11 @@ fn parse_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<Stri
 fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
   match name {
     "attr" => {
-      let args = args.trim();
+      let args = trim_ascii_whitespace(args);
       // Simple attr(name) or attr(name, fallback)
       if let Some(comma_pos) = args.find(',') {
-        let attr_name = args[..comma_pos].trim();
-        let fallback = args[comma_pos + 1..].trim();
+        let attr_name = trim_ascii_whitespace(&args[..comma_pos]);
+        let fallback = trim_ascii_whitespace(&args[comma_pos + 1..]);
         // Remove quotes from fallback if present. Use `strip_prefix`/`strip_suffix` so malformed
         // tokens like `"` don't panic when slicing.
         let fallback = fallback
@@ -1494,11 +1511,11 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
     }
 
     "counter" => {
-      let args = args.trim();
+      let args = trim_ascii_whitespace(args);
       // counter(name) or counter(name, style)
       if let Some(comma_pos) = args.find(',') {
-        let name = args[..comma_pos].trim();
-        let style_str = args[comma_pos + 1..].trim();
+        let name = trim_ascii_whitespace(&args[..comma_pos]);
+        let style_str = trim_ascii_whitespace(&args[comma_pos + 1..]);
         let style = Some(CounterStyleName::parse(style_str));
         Some(ContentItem::Counter {
           name: name.to_string(),
@@ -1510,7 +1527,7 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
     }
 
     "counters" => {
-      let args = args.trim();
+      let args = trim_ascii_whitespace(args);
       // counters(name, separator) or counters(name, separator, style)
       // Find the separator string (quoted)
       let mut parts = Vec::new();
@@ -1529,16 +1546,18 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
         } else if in_string {
           current.push(c);
         } else if c == ',' && !in_string {
-          if !current.trim().is_empty() {
-            parts.push(current.trim().to_string());
+          let trimmed = trim_ascii_whitespace(&current);
+          if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
           }
           current.clear();
-        } else if !c.is_whitespace() || in_string {
+        } else if !is_ascii_whitespace_html_css(c) || in_string {
           current.push(c);
         }
       }
-      if !current.trim().is_empty() {
-        parts.push(current.trim().to_string());
+      let trimmed = trim_ascii_whitespace(&current);
+      if !trimmed.is_empty() {
+        parts.push(trimmed.to_string());
       }
 
       if parts.len() >= 2 {
@@ -1556,7 +1575,10 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
     }
 
     "string" => {
-      let mut parts = args.split(',').map(|p| p.trim()).filter(|p| !p.is_empty());
+      let mut parts = args
+        .split(',')
+        .map(trim_ascii_whitespace)
+        .filter(|p| !p.is_empty());
       let name = parts
         .next()?
         .trim_matches(|c| c == '"' || c == '\'')
@@ -1576,7 +1598,7 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
     }
 
     "url" => {
-      let args = args.trim();
+      let args = trim_ascii_whitespace(args);
       // Remove quotes if present. Use `strip_prefix`/`strip_suffix` so malformed tokens like `"`
       // don't panic when slicing.
       let url = args
@@ -1587,13 +1609,13 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
       Some(ContentItem::Url(url.to_string()))
     }
     "element" => {
-      let args = args.trim();
+      let args = trim_ascii_whitespace(args);
       if args.is_empty() {
         return None;
       }
 
       let mut parts = args.splitn(2, ',');
-      let ident = parts.next()?.trim();
+      let ident = trim_ascii_whitespace(parts.next()?);
       if ident.is_empty()
         || !ident
           .chars()
@@ -1603,7 +1625,7 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
       }
 
       let select = if let Some(raw_select) = parts.next() {
-        match raw_select.trim().to_ascii_lowercase().as_str() {
+        match trim_ascii_whitespace(raw_select).to_ascii_lowercase().as_str() {
           "first" => RunningElementSelect::First,
           "start" => RunningElementSelect::Start,
           "last" => RunningElementSelect::Last,
@@ -2077,6 +2099,15 @@ mod tests {
   fn test_parse_none() {
     let content = parse_content("none").unwrap();
     assert_eq!(content, ContentValue::None);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_parse_content_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      parse_content(&format!("{nbsp}none")).is_none(),
+      "NBSP must not be treated as CSS whitespace"
+    );
   }
 
   #[test]
