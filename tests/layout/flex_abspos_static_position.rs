@@ -1126,6 +1126,70 @@ fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_on_align_s
 }
 
 #[test]
+fn abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertical_lr_writing_mode_column() {
+  // Similar to `abspos_static_position_ignores_wrap_reverse_for_start_end_keywords_in_vertical_lr_writing_mode`,
+  // but with a vertical cross axis (`flex-direction: column`). This exercises `start`/`end` in the
+  // inline axis for a vertical writing mode.
+  for (align_items, expected_y) in [(AlignItems::Start, 0.0), (AlignItems::End, 90.0)] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.writing_mode = WritingMode::VerticalLr;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.flex_wrap = FlexWrap::WrapReverse;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.align_items = align_items;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+
+    let (x, y) = layout_abspos_child(container_style, child_style);
+    assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+    assert!(
+      (y - expected_y).abs() < 0.1,
+      "expected y≈{expected_y} for align-items={align_items:?}, got {y}"
+    );
+  }
+}
+
+#[test]
+fn abspos_static_position_respects_self_start_end_under_wrap_reverse_in_vertical_lr_writing_mode_column() {
+  // `self-start`/`self-end` resolve against the item's writing-mode/direction. Ensure the
+  // wrap-reverse mirroring pass does not flip the child's interpretation.
+  for (align_self, expected_y) in [(AlignItems::SelfStart, 90.0), (AlignItems::SelfEnd, 0.0)] {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.position = Position::Relative;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.writing_mode = WritingMode::VerticalLr;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.flex_wrap = FlexWrap::WrapReverse;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.align_items = AlignItems::FlexStart;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.position = Position::Absolute;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.writing_mode = WritingMode::VerticalLr;
+    child_style.direction = Direction::Rtl;
+    child_style.align_self = Some(align_self);
+
+    let (x, y) = layout_abspos_child(container_style, child_style);
+    assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+    assert!(
+      (y - expected_y).abs() < 0.1,
+      "expected y≈{expected_y} for align-self={align_self:?}, got {y}"
+    );
+  }
+}
+
+#[test]
 fn abspos_static_position_respects_start_end_keywords_in_vertical_writing_mode_rtl_row_reverse() {
   // Same as the previous test, but with `direction: rtl` which flips the inline-start edge to the
   // bottom in vertical writing modes.
