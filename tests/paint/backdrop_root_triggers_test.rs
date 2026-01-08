@@ -1197,6 +1197,67 @@ fn invalid_mask_border_outset_percentage_does_not_clear_backdrop_root() {
 }
 
 #[test]
+fn invalid_mask_border_source_declaration_does_not_clear_backdrop_root() {
+  let html_without_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+  let pixmap = render(html_without_backdrop_root, 64, 64);
+  assert_eq!(
+    pixel(&pixmap, 15, 15),
+    (0, 255, 255, 255),
+    "sanity: without a backdrop-root boundary, the overlay should invert the body background"
+  );
+
+  let html_with_backdrop_root = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent {
+        width: 20px;
+        height: 20px;
+        margin: 20px;
+        mask-border-source: url(#missing);
+        /* Invalid declarations must be ignored per spec; they should not clear the previously-set
+           mask-border-source value (and thus must not remove the Backdrop Root boundary). */
+        mask-border-source: bogus;
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        left: -10px;
+        top: -10px;
+        backdrop-filter: invert(1);
+        box-sizing: border-box;
+        border: 2px solid rgb(0 255 0);
+      }
+    </style>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html_with_backdrop_root, 64, 64);
+  assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 15), (255, 0, 0, 255));
+}
+
+#[test]
 fn mask_triggers_backdrop_root() {
   let html = r#"<!doctype html>
     <style>
