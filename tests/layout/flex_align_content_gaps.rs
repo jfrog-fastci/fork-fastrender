@@ -332,6 +332,86 @@ fn column_reverse_space_evenly_respects_column_gap_between_lines() {
 }
 
 #[test]
+fn vertical_writing_mode_column_direction_space_evenly_respects_column_gap_between_lines() {
+  let fc = FlexFormattingContext::new();
+
+  // In vertical writing-mode, `flex-direction: column` maps the main axis to the physical X axis.
+  // Wrapping therefore creates new *rows* along the physical Y axis (the inline axis). The
+  // cross-axis gap for line stacking is `column-gap` (inline axis).
+  let container = build_multiline_container(
+    AlignContent::SpaceEvenly,
+    WritingMode::VerticalLr,
+    FlexDirection::Column,
+    FlexWrap::Wrap,
+    60.0,
+    50.0,
+    0.0,
+    5.0,
+    30.0,
+    10.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(60.0, 50.0))
+    .expect("layout succeeds");
+
+  // Container cross size is 50px (physical Y).
+  // Two flex lines (each 10px), plus a 5px column-gap => used cross size = 25px, free = 25px.
+  // align-content: space-evenly => first line offset = free/(lines+1) = 25/3 = 8.333.
+  // second line offset = 8.333 + 10 + 5 + 8.333 = 31.666.
+  let epsilon = 0.6;
+  let first_line_y = 25.0 / 3.0;
+  let second_line_y = first_line_y + 10.0 + 5.0 + first_line_y;
+
+  assert_approx(find_block_child(&fragment, 1).bounds.y(), first_line_y, epsilon, "child1 y");
+  assert_approx(find_block_child(&fragment, 2).bounds.y(), first_line_y, epsilon, "child2 y");
+  assert_approx(find_block_child(&fragment, 3).bounds.y(), second_line_y, epsilon, "child3 y");
+}
+
+#[test]
+fn vertical_writing_mode_column_direction_row_gap_affects_main_axis_spacing() {
+  let fc = FlexFormattingContext::new();
+
+  // `row-gap` follows the block axis. In vertical writing-mode, the block axis is physical X.
+  // `flex-direction: column` uses the block axis as its main axis, so row-gap should affect item
+  // x positions without changing cross-axis (y) line offsets.
+  let container = build_multiline_container(
+    AlignContent::SpaceEvenly,
+    WritingMode::VerticalLr,
+    FlexDirection::Column,
+    FlexWrap::Wrap,
+    75.0,
+    50.0,
+    15.0,
+    0.0,
+    30.0,
+    10.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(75.0, 50.0))
+    .expect("layout succeeds");
+
+  // With column-gap=0, used cross size is 20px and free space is 30px. For space-evenly:
+  // first line y = free/(lines+1) = 30/3 = 10px.
+  // second line y = 10 + 10 + 0 + 10 = 30px.
+  let epsilon = 0.6;
+  let first_line_y = 30.0 / 3.0;
+  let second_line_y = first_line_y + 10.0 + first_line_y;
+
+  let child1 = find_block_child(&fragment, 1);
+  let child2 = find_block_child(&fragment, 2);
+  let child3 = find_block_child(&fragment, 3);
+
+  assert_approx(child1.bounds.y(), first_line_y, epsilon, "child1 y");
+  assert_approx(child2.bounds.y(), first_line_y, epsilon, "child2 y");
+  assert_approx(child3.bounds.y(), second_line_y, epsilon, "child3 y");
+
+  // Row gap is on the main axis for a column-direction flex container in vertical writing mode.
+  assert_approx(child1.bounds.x(), 0.0, 1e-3, "child1 x");
+  assert_approx(child2.bounds.x(), 45.0, 1e-3, "child2 x");
+  assert_approx(child3.bounds.x(), 0.0, 1e-3, "child3 x");
+}
+
+#[test]
 fn vertical_writing_mode_column_gap_affects_main_axis_spacing() {
   let fc = FlexFormattingContext::new();
 
@@ -616,4 +696,10 @@ fn column_direction_space_evenly_respects_column_gap_between_lines() {
   assert_approx(find_block_child(&fragment, 1).bounds.x(), first_line_x, epsilon, "child1 x");
   assert_approx(find_block_child(&fragment, 2).bounds.x(), first_line_x, epsilon, "child2 x");
   assert_approx(find_block_child(&fragment, 3).bounds.x(), second_line_x, epsilon, "child3 x");
+
+  // Wrap should start the new column at y=0; only the cross-axis x offsets change with
+  // `align-content`.
+  assert_approx(find_block_child(&fragment, 1).bounds.y(), 0.0, epsilon, "child1 y");
+  assert_approx(find_block_child(&fragment, 2).bounds.y(), 30.0, epsilon, "child2 y");
+  assert_approx(find_block_child(&fragment, 3).bounds.y(), 0.0, epsilon, "child3 y");
 }

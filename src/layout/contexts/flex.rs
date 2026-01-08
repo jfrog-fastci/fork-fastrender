@@ -7231,19 +7231,22 @@ impl FlexFormattingContext {
           }
           let mut origin_x = child_loc_x;
           let mut origin_y = child_loc_y;
-          if main_axis_is_row && rect.height().is_finite() {
+          if main_axis_is_horizontal && rect.height().is_finite() {
             let limit = rect.height().max(1.0) * 5.0;
             if origin_y.abs() > limit {
               origin_y = rect.origin.y;
             }
           }
-          if resolved_width <= eps && main_axis_is_row {
+          if resolved_width <= eps && main_axis_is_horizontal {
             manual_row_positions = true;
           }
-          if resolved_height <= eps && !main_axis_is_row {
+          if resolved_height <= eps && !main_axis_is_horizontal {
             manual_col_positions = true;
           }
-          if allow_overflow_fallback && main_axis_is_row && rect_w.is_finite() && rect_w > wrap_eps
+          if allow_overflow_fallback
+            && main_axis_is_horizontal
+            && rect_w.is_finite()
+            && rect_w > wrap_eps
           {
             let runaway = child_loc_x.abs() > rect_w * 2.0;
             if runaway {
@@ -7251,7 +7254,7 @@ impl FlexFormattingContext {
               fallback_cursor_x = rect.origin.x;
             }
           }
-          if main_axis_is_row {
+          if main_axis_is_horizontal {
             let same_row = last_layout_y
               .map(|prev_y| (child_loc_y - prev_y).abs() < wrap_eps)
               .unwrap_or(true);
@@ -7305,16 +7308,24 @@ impl FlexFormattingContext {
               last_layout_y = Some(child_loc_y);
             }
           } else {
-            if let Some(prev) = last_layout_y {
-              let non_monotonic = if main_grows_positive {
-                child_loc_y <= prev + 0.1
+            let same_col = last_layout_x
+              .map(|prev_x| (child_loc_x - prev_x).abs() < wrap_eps)
+              .unwrap_or(true);
+            if same_col {
+              if let Some(prev) = last_layout_y {
+                let non_monotonic = if main_grows_positive {
+                  child_loc_y <= prev + 0.1
+                } else {
+                  child_loc_y >= prev - 0.1
+                };
+                if non_monotonic {
+                  manual_col_positions = true;
+                }
               } else {
-                child_loc_y >= prev - 0.1
-              };
-              if non_monotonic {
-                manual_col_positions = true;
+                fallback_cursor_y = child_loc_y;
               }
             } else {
+              manual_col_positions = false;
               fallback_cursor_y = child_loc_y;
             }
             if manual_col_positions {
@@ -7322,6 +7333,7 @@ impl FlexFormattingContext {
               fallback_cursor_y += resolved_height;
             } else {
               fallback_cursor_y = child_loc_y + resolved_height;
+              last_layout_x = Some(child_loc_x);
               last_layout_y = Some(child_loc_y);
             }
           }
@@ -7449,26 +7461,26 @@ impl FlexFormattingContext {
             }
             let mut origin_x = child_loc_x;
             let mut origin_y = child_loc_y;
-            if main_axis_is_row && rect.height().is_finite() {
+            if main_axis_is_horizontal && rect.height().is_finite() {
               let limit = rect.height().max(1.0) * 5.0;
               if origin_y.abs() > limit {
                 origin_y = rect.origin.y;
               }
             }
-            if resolved_width <= eps && main_axis_is_row {
+            if resolved_width <= eps && main_axis_is_horizontal {
               manual_row_positions = true;
             }
-            if resolved_height <= eps && !main_axis_is_row {
+            if resolved_height <= eps && !main_axis_is_horizontal {
               manual_col_positions = true;
             }
-            if main_axis_is_row && rect_w.is_finite() && rect_w > wrap_eps {
+            if main_axis_is_horizontal && rect_w.is_finite() && rect_w > wrap_eps {
               let runaway = child_loc_x.abs() > rect_w * 2.0;
               if runaway {
                 manual_row_positions = true;
                 fallback_cursor_x = rect.origin.x;
               }
             }
-            if main_axis_is_row {
+            if main_axis_is_horizontal {
               let same_row = last_layout_y
                 .map(|prev_y| (child_loc_y - prev_y).abs() < wrap_eps)
                 .unwrap_or(true);
@@ -7522,16 +7534,24 @@ impl FlexFormattingContext {
                 last_layout_y = Some(child_loc_y);
               }
             } else {
-              if let Some(prev) = last_layout_y {
-                let non_monotonic = if main_grows_positive {
-                  child_loc_y <= prev + 0.1
+              let same_col = last_layout_x
+                .map(|prev_x| (child_loc_x - prev_x).abs() < wrap_eps)
+                .unwrap_or(true);
+              if same_col {
+                if let Some(prev) = last_layout_y {
+                  let non_monotonic = if main_grows_positive {
+                    child_loc_y <= prev + 0.1
+                  } else {
+                    child_loc_y >= prev - 0.1
+                  };
+                  if non_monotonic {
+                    manual_col_positions = true;
+                  }
                 } else {
-                  child_loc_y >= prev - 0.1
-                };
-                if non_monotonic {
-                  manual_col_positions = true;
+                  fallback_cursor_y = child_loc_y;
                 }
               } else {
+                manual_col_positions = false;
                 fallback_cursor_y = child_loc_y;
               }
               if manual_col_positions {
@@ -7539,6 +7559,7 @@ impl FlexFormattingContext {
                 fallback_cursor_y += resolved_height;
               } else {
                 fallback_cursor_y = child_loc_y + resolved_height;
+                last_layout_x = Some(child_loc_x);
                 last_layout_y = Some(child_loc_y);
               }
             }
