@@ -95,9 +95,33 @@ mkdir -p "${lock_dir}"
 
 run_cargo() {
   local cargo_cmd=(cargo)
+
+  # Cargo expects `-j/--jobs` to appear after the subcommand (`cargo test -j 1`, not `cargo -j 1 test`).
+  # See: https://doc.rust-lang.org/cargo/commands/cargo.html
+  #
+  # Support optional toolchain syntax (`cargo +nightly test ...`) even though the wrapper primarily
+  # targets `scripts/cargo_agent.sh <subcommand> ...`.
+  if [[ $# -lt 1 ]]; then
+    echo "missing cargo subcommand" >&2
+    return 2
+  fi
+
+  if [[ "$1" == +* ]]; then
+    cargo_cmd+=("$1")
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "missing cargo subcommand after toolchain spec" >&2
+      return 2
+    fi
+  fi
+
+  cargo_cmd+=("$1")
+  shift
+
   if [[ -n "${jobs}" ]]; then
     cargo_cmd+=(-j "${jobs}")
   fi
+
   cargo_cmd+=("$@")
 
   if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" ]]; then
@@ -156,4 +180,3 @@ set -e
 # Release lock.
 exec {slot_fd}>&-
 exit "${status}"
-
