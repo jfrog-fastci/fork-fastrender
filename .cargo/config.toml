@@ -9,6 +9,8 @@ xtask = "run -p xtask --"
 # `cmake` crate forwards `CMAKE_ARGS` as extra configure args.
 [env]
 AOM_TARGET_CPU = "generic"
+#
+# `cmake` crate forwards this env var as extra configure args.
 CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"
 
 # Use the mold linker on Linux for much faster links (and to avoid sporadic `rust-lld` SIGBUS

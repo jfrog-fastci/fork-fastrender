@@ -294,17 +294,31 @@ pub fn parse_delta_set_index_map(data: &[u8]) -> Result<DeltaSetIndexMapParsed, 
     ));
   }
 
+  let map_count_usize = usize::try_from(map_count)
+    .map_err(|_| ParseError::InvalidValue("map count does not fit in usize"))?;
+  let entry_size_usize = entry_size as usize;
+  let required_bytes = map_count_usize
+    .checked_mul(entry_size_usize)
+    .ok_or(ParseError::InvalidValue("map count overflows entry byte length"))?;
+  if offset > data.len() || data.len() - offset < required_bytes {
+    return Err(ParseError::UnexpectedEof);
+  }
+
   let entry_mask = if inner_index_bit_count == 64 {
     u64::MAX
   } else {
     (1u64 << inner_index_bit_count) - 1
   };
 
-  let mut entries = Vec::with_capacity(map_count as usize);
-  for _ in 0..map_count {
-    let slice = data
-      .get(offset..offset + entry_size as usize)
-      .ok_or(ParseError::UnexpectedEof)?;
+  let mut entries = Vec::new();
+  if entries.try_reserve_exact(map_count_usize).is_err() {
+    return Err(ParseError::InvalidValue(
+      "delta set index map allocation failed",
+    ));
+  }
+
+  for _ in 0..map_count_usize {
+    let slice = &data[offset..offset + entry_size_usize];
     let mut raw = 0u64;
     for byte in slice {
       raw = (raw << 8) | *byte as u64;
@@ -315,7 +329,7 @@ pub fn parse_delta_set_index_map(data: &[u8]) -> Result<DeltaSetIndexMapParsed, 
       outer_index,
       inner_index,
     });
-    offset += entry_size as usize;
+    offset += entry_size_usize;
   }
 
   Ok(DeltaSetIndexMapParsed {
