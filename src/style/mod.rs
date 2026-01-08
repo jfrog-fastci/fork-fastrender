@@ -1914,6 +1914,7 @@ impl ComputedStyle {
     self.background_color = Rgba::TRANSPARENT;
     self.set_background_layers(vec![BackgroundLayer::default()]);
     self.set_mask_layers(vec![MaskLayer::default()]);
+    self.mask_border = false;
   }
 }
 
@@ -1956,11 +1957,20 @@ pub(crate) fn normalize_language_tag(tag: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::normalize_language_tag;
+  use super::ComputedStyle;
 
   #[test]
   fn normalizes_language_tags_to_lower_hyphenated() {
     assert_eq!(normalize_language_tag("En-US"), "en-us");
     assert_eq!(normalize_language_tag(" sr_Cyrl_RS "), "sr-cyrl-rs");
     assert_eq!(normalize_language_tag(""), "");
+  }
+
+  #[test]
+  fn reset_background_to_initial_resets_mask_border() {
+    let mut style = ComputedStyle::default();
+    style.mask_border = true;
+    style.reset_background_to_initial();
+    assert!(!style.mask_border);
   }
 }
