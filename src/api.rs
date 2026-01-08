@@ -8281,7 +8281,9 @@ impl FastRender {
 
     // Generate box tree
     let box_tree_timer = stats.as_deref().and_then(|rec| rec.timer());
-    let box_gen_options = self.box_generation_options();
+    let box_gen_options = self
+      .box_generation_options()
+      .with_footnote_floats(!page_rules.is_empty());
     let box_gen_start = timings_enabled.then(Instant::now);
     record_stage(StageHeartbeat::BoxTree);
     let mut box_tree = {

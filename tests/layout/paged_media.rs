@@ -2426,6 +2426,50 @@ fn vertical_writing_forced_break_respected() {
 }
 
 #[test]
+fn footnote_float_does_not_detach_without_pagination() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">Footnote body</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 100).unwrap();
+
+  assert!(find_text(&tree.root, "Main").is_some());
+  assert!(
+    find_text(&tree.root, "Footnote body").is_some(),
+    "without pagination, float: footnote should not remove the footnote body from the flow"
+  );
+
+  fn contains_footnote_anchor(node: &FragmentNode) -> bool {
+    if matches!(node.content, FragmentContent::FootnoteAnchor { .. }) {
+      return true;
+    }
+    node.children.iter().any(contains_footnote_anchor)
+  }
+
+  let mut has_anchor = contains_footnote_anchor(&tree.root);
+  for fragment in tree.additional_fragments.iter() {
+    has_anchor |= contains_footnote_anchor(fragment);
+  }
+  assert!(
+    !has_anchor,
+    "expected `float: footnote` to be treated as a normal element when pagination is disabled"
+  );
+}
+
+#[test]
 fn footnote_float_generates_call_and_page_footnote_area() {
   let html = r#"
     <html>

@@ -100,12 +100,19 @@ use crate::style::cascade::StyledNode;
 pub struct BoxGenerationOptions {
   /// Compatibility profile controlling whether site-specific heuristics are enabled.
   pub compat_profile: CompatProfile,
+  /// Whether `float: footnote` should be interpreted as a paged-media footnote.
+  ///
+  /// Footnote floats require a pagination pass to build per-page footnote areas.
+  /// When pagination is disabled, treating `float: footnote` as a real footnote
+  /// would detach its contents from the normal flow and drop it from the output.
+  pub enable_footnote_floats: bool,
 }
 
 impl Default for BoxGenerationOptions {
   fn default() -> Self {
     Self {
       compat_profile: CompatProfile::Standards,
+      enable_footnote_floats: false,
     }
   }
 }
@@ -119,6 +126,12 @@ impl BoxGenerationOptions {
   /// Sets the compatibility profile for box generation.
   pub fn with_compat_profile(mut self, profile: CompatProfile) -> Self {
     self.compat_profile = profile;
+    self
+  }
+
+  /// Enables or disables `float: footnote` handling.
+  pub fn with_footnote_floats(mut self, enabled: bool) -> Self {
+    self.enable_footnote_floats = enabled;
     self
   }
 
@@ -2767,10 +2780,10 @@ fn generate_boxes_for_styled_into(
             continue;
           }
         }
-
+ 
         let in_footnote = stack.last().expect("frame exists").in_footnote;
         counters.enter_scope();
-        apply_counter_properties_from_style(styled, counters, in_footnote);
+        apply_counter_properties_from_style(styled, counters, in_footnote, options.enable_footnote_floats);
         stack
           .last_mut()
           .expect("frame exists")
@@ -2996,10 +3009,11 @@ fn generate_boxes_for_styled_into(
             }
           }
         }
-
+ 
         if let Some(child) = next_child {
           let parent = stack.last().expect("frame exists");
-          let child_in_footnote = parent.in_footnote || parent.styled.styles.float == Float::Footnote;
+          let child_in_footnote = parent.in_footnote
+            || (options.enable_footnote_floats && parent.styled.styles.float == Float::Footnote);
           stack.push(Frame::new(child, child_in_footnote));
         }
       }
@@ -3084,7 +3098,7 @@ fn generate_boxes_for_styled_into(
         box_node.first_line_style = styled.first_line_styles.as_ref().map(Arc::clone);
         box_node.first_letter_style = styled.first_letter_styles.as_ref().map(Arc::clone);
 
-        if styled.styles.float == Float::Footnote && !in_footnote {
+        if options.enable_footnote_floats && styled.styles.float == Float::Footnote && !in_footnote {
           let mut body_box = box_node;
           // The footnote body is laid out in the per-page footnote area; it should not itself be a
           // footnote float.
@@ -3737,6 +3751,7 @@ fn apply_counter_properties_from_style(
   styled: &StyledNode,
   counters: &mut CounterManager,
   in_footnote: bool,
+  enable_footnote_floats: bool,
 ) {
   if styled.node.text_content().is_some() {
     return;
@@ -3863,7 +3878,11 @@ fn apply_counter_properties_from_style(
     counters.apply_increment(&CounterSet::single("list-item", list_item_step));
   }
 
-  if !in_footnote && styled.styles.display != Display::None && styled.styles.float == Float::Footnote {
+  if enable_footnote_floats
+    && !in_footnote
+    && styled.styles.display != Display::None
+    && styled.styles.float == Float::Footnote
+  {
     counters.apply_increment(&CounterSet::single("footnote", 1));
   }
 }
