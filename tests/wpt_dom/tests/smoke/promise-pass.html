@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>WPT DOM smoke: promise_test pass</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+  promise_test(async () => {
+    const v = await Promise.resolve(42);
+    assert_equals(v, 42);
+  }, "promise_test pass");
+</script>
+

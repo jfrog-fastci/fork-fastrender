@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>WPT DOM smoke: async_test + setTimeout pass</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+  async_test((t) => {
+    setTimeout(
+      t.step_func_done(() => {
+        assert_true(true, "setTimeout callback ran");
+      }),
+      0,
+    );
+  }, "async_test + setTimeout pass");
+</script>
+

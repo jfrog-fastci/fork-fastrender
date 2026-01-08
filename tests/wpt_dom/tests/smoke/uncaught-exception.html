@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>WPT DOM smoke: uncaught exception classification (intentional)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+  test(() => {
+    assert_true(true);
+  }, "sanity test before uncaught exception");
+
+  // Intentionally throw an uncaught exception outside of any `test()` so the runner can
+  // validate harness-level error classification.
+  throw new Error("intentional uncaught exception");
+</script>
+

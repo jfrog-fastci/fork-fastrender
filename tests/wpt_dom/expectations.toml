@@ -1,0 +1,14 @@
+# Expectations for the offline WPT DOM corpus under `tests/wpt_dom/tests`.
+#
+# This file uses the ecma-rs `conformance-harness` expectations format:
+# - Each `[[expectations]]` entry matches `id` (exact), `glob`, or `regex`.
+# - `status` can be: "pass" | "skip" | "xfail" | "flaky".
+# - `reason` is recommended for anything other than `pass`.
+#
+# If this file is empty, all tests are treated as expected `pass`.
+
+[[expectations]]
+id = "smoke/sync-fail.html"
+status = "xfail"
+reason = "Intentional failing smoke test used to validate xfail/failure plumbing in the future runner."
+
