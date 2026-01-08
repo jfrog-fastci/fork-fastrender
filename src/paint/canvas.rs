@@ -184,6 +184,14 @@ pub(crate) struct LayerRecord {
   /// [`Canvas::fill_backdrop_root_region`] for how we strip the initialization backdrop when the
   /// layer is acting as the Backdrop Root.
   pub(crate) init_from_backdrop: bool,
+  /// Tracks the alpha coverage of the layer's computed element when `init_from_backdrop` is true.
+  ///
+  /// The offscreen pixmap for non-isolated groups is initialized from the already-painted
+  /// backdrop so descendants with blend modes can sample the correct backdrop. This makes the
+  /// layer alpha ambiguous when the backdrop is fully opaque (`out_a` is always 1.0 under
+  /// source-over compositing), so we also paint the layer content into a transparent surface to
+  /// recover the source alpha during uncompositing.
+  source_alpha: Option<Pixmap>,
 }
 
 impl LayerRecord {
@@ -196,10 +204,14 @@ impl LayerRecord {
   pub(crate) fn effective_blend_mode(&self) -> SkiaBlendMode {
     self.composite_blend.unwrap_or(self.parent_blend_mode)
   }
-
   #[inline]
   pub(crate) fn is_initialized_from_backdrop(&self) -> bool {
     self.init_from_backdrop
+  }
+
+  #[inline]
+  pub(crate) fn source_alpha(&self) -> Option<&Pixmap> {
+    self.source_alpha.as_ref()
   }
 }
 
@@ -237,6 +249,11 @@ pub struct Canvas {
   state_stack: Vec<CanvasState>,
   /// Stack of offscreen layers for grouped effects
   layer_stack: Vec<LayerRecord>,
+  /// Depth counter for source-alpha mirroring.
+  ///
+  /// When non-zero, drawing operations must not recursively mirror into `source_alpha` surfaces
+  /// because an outer call is already replaying the same drawing operations onto both surfaces.
+  source_alpha_recording_depth: usize,
   /// Current graphics state
   current_state: CanvasState,
   /// Cached text rasterizer
@@ -290,6 +307,7 @@ impl Canvas {
       pixmap,
       state_stack: Vec::new(),
       layer_stack: Vec::new(),
+      source_alpha_recording_depth: 0,
       current_state: CanvasState::new(),
       text_rasterizer,
     };
@@ -317,6 +335,7 @@ impl Canvas {
       pixmap,
       state_stack: Vec::new(),
       layer_stack: Vec::new(),
+      source_alpha_recording_depth: 0,
       current_state: CanvasState::new(),
       text_rasterizer: TextRasterizer::new(),
     }
@@ -382,6 +401,107 @@ impl Canvas {
     &mut self.pixmap
   }
 
+  /// Runs a mutation against the active pixmap and (when present) the layer's source-alpha
+  /// tracking surface.
+  ///
+  /// This is primarily used by paint code paths that need direct access to tiny-skia APIs.
+  pub(crate) fn with_mirrored_pixmap_mut<F>(&mut self, mut f: F)
+  where
+    F: FnMut(&mut Pixmap),
+  {
+    self.mirror_to_source_alpha(|canvas| {
+      f(&mut canvas.pixmap);
+    });
+  }
+
+  pub(crate) fn with_mirrored_pixmap_mut_result<T, F>(&mut self, mut f: F) -> Result<T>
+  where
+    F: FnMut(&mut Pixmap) -> Result<T>,
+  {
+    self.mirror_to_source_alpha_result(|canvas| f(&mut canvas.pixmap))
+  }
+
+  fn mirror_to_source_alpha<F>(&mut self, mut draw: F)
+  where
+    F: FnMut(&mut Canvas),
+  {
+    if self.source_alpha_recording_depth > 0 {
+      draw(self);
+      return;
+    }
+    if self
+      .layer_stack
+      .last()
+      .and_then(|record| record.source_alpha.as_ref())
+      .is_none()
+    {
+      draw(self);
+      return;
+    }
+
+    self.source_alpha_recording_depth = self.source_alpha_recording_depth.saturating_add(1);
+    draw(self);
+
+    let source_alpha = self
+      .layer_stack
+      .last_mut()
+      .and_then(|record| record.source_alpha.take());
+    if let Some(source_alpha) = source_alpha {
+      let main = std::mem::replace(&mut self.pixmap, source_alpha);
+      draw(self);
+      let source_alpha = std::mem::replace(&mut self.pixmap, main);
+      if let Some(record) = self.layer_stack.last_mut() {
+        record.source_alpha = Some(source_alpha);
+      }
+    }
+
+    self.source_alpha_recording_depth = self.source_alpha_recording_depth.saturating_sub(1);
+  }
+
+  fn mirror_to_source_alpha_result<T, F>(&mut self, mut draw: F) -> Result<T>
+  where
+    F: FnMut(&mut Canvas) -> Result<T>,
+  {
+    if self.source_alpha_recording_depth > 0 {
+      return draw(self);
+    }
+    if self
+      .layer_stack
+      .last()
+      .and_then(|record| record.source_alpha.as_ref())
+      .is_none()
+    {
+      return draw(self);
+    }
+
+    self.source_alpha_recording_depth = self.source_alpha_recording_depth.saturating_add(1);
+    let value = match draw(self) {
+      Ok(v) => v,
+      Err(err) => {
+        self.source_alpha_recording_depth = self.source_alpha_recording_depth.saturating_sub(1);
+        return Err(err);
+      }
+    };
+
+    let source_alpha = self
+      .layer_stack
+      .last_mut()
+      .and_then(|record| record.source_alpha.take());
+    if let Some(source_alpha) = source_alpha {
+      let main = std::mem::replace(&mut self.pixmap, source_alpha);
+      let replay = draw(self);
+      let source_alpha = std::mem::replace(&mut self.pixmap, main);
+      if let Some(record) = self.layer_stack.last_mut() {
+        record.source_alpha = Some(source_alpha);
+      }
+      self.source_alpha_recording_depth = self.source_alpha_recording_depth.saturating_sub(1);
+      replay.map(|_| value)
+    } else {
+      self.source_alpha_recording_depth = self.source_alpha_recording_depth.saturating_sub(1);
+      Ok(value)
+    }
+  }
+
   /// Returns glyph cache statistics for text rendering.
   pub fn text_cache_stats(&self) -> GlyphCacheStats {
     self.text_rasterizer.cache_stats()
@@ -413,6 +533,27 @@ impl Canvas {
   pub(crate) fn split_backdrop_and_pixmap_mut(&mut self) -> Option<(&Pixmap, &mut Pixmap)> {
     let backdrop = self.layer_stack.last().map(|layer| &layer.pixmap)?;
     Some((backdrop, &mut self.pixmap))
+  }
+
+  /// Ensures the current layer has a source-alpha recording surface.
+  ///
+  /// This is primarily used when a non-isolated compositing group lazily injects backdrop pixels
+  /// (via destination-over) partway through painting: we must capture the group's computed element
+  /// *before* the backdrop injection, otherwise fully opaque backdrops would make the source alpha
+  /// unrecoverable during uncompositing.
+  pub(crate) fn ensure_current_layer_source_alpha(&mut self) -> Result<()> {
+    let Some(record) = self.layer_stack.last_mut() else {
+      return Ok(());
+    };
+    if record.source_alpha.is_some() {
+      return Ok(());
+    }
+    let width = self.pixmap.width();
+    let height = self.pixmap.height();
+    let mut source_alpha = new_pixmap_with_context(width, height, "layer_source_alpha")?;
+    source_alpha.data_mut().copy_from_slice(self.pixmap.data());
+    record.source_alpha = Some(source_alpha);
+    Ok(())
   }
 
   /// Marks the current (topmost) offscreen layer as having been initialized from the backdrop.
@@ -655,6 +796,13 @@ impl Canvas {
     if init_from_backdrop {
       Self::copy_pixmap_region(&mut new_pixmap, &self.pixmap, origin_x, origin_y)?;
     }
+    let source_alpha = init_from_backdrop
+      .then(|| {
+        let mut pixmap = new_pixmap_with_context(width, height, "layer_source_alpha")?;
+        pixmap.data_mut().fill(0);
+        Ok::<_, RenderError>(pixmap)
+      })
+      .transpose()?;
 
     let parent_transform = self.current_state.transform;
 
@@ -671,6 +819,7 @@ impl Canvas {
       origin: (origin_x, origin_y),
       is_backdrop_root,
       init_from_backdrop,
+      source_alpha,
     };
     self.layer_stack.push(record);
     // Painting inside the layer should start from a neutral state.
@@ -807,13 +956,21 @@ impl Canvas {
       );
     };
 
-    let layer_pixmap = std::mem::replace(&mut self.pixmap, record.pixmap);
+    let mut layer_pixmap = std::mem::replace(&mut self.pixmap, record.pixmap);
     self.state_stack.truncate(record.saved_state_depth);
     self.current_state.opacity = record.parent_opacity;
     self.current_state.blend_mode = record.parent_blend_mode;
     self.current_state.transform = record.parent_transform;
     self.current_state.clip_rect = record.parent_clip_rect;
     self.current_state.clip_mask = record.parent_clip_mask;
+    if record.init_from_backdrop {
+      uncomposite_layer_source_over_backdrop(
+        &mut layer_pixmap,
+        &self.pixmap,
+        record.origin,
+        record.source_alpha.as_ref().map(|alpha| (alpha, (0, 0))),
+      )?;
+    }
     let opacity = (record.opacity * self.current_state.opacity).clamp(0.0, 1.0);
     Ok((layer_pixmap, record.origin, opacity, record.composite_blend))
   }
@@ -833,14 +990,18 @@ impl Canvas {
     composite_blend: Option<SkiaBlendMode>,
     origin: (i32, i32),
   ) {
-    composite_layer_into_pixmap(
-      &mut self.pixmap,
-      layer,
-      opacity,
-      composite_blend.unwrap_or(self.current_state.blend_mode),
-      origin,
-      self.current_state.clip_mask.as_deref(),
-    );
+    let blend_mode = composite_blend.unwrap_or(self.current_state.blend_mode);
+    let clip_mask = self.current_state.clip_mask.clone();
+    self.mirror_to_source_alpha(|canvas| {
+      composite_layer_into_pixmap(
+        &mut canvas.pixmap,
+        layer,
+        opacity,
+        blend_mode,
+        origin,
+        clip_mask.as_deref(),
+      );
+    });
   }
 
   #[inline]
@@ -976,7 +1137,15 @@ impl Canvas {
           origin_in_parent.0.saturating_add(record.origin.0),
           origin_in_parent.1.saturating_add(record.origin.1),
         );
-        uncomposite_layer_source_over_backdrop(region, &record.pixmap, origin_in_backdrop)?;
+        uncomposite_layer_source_over_backdrop(
+          region,
+          &record.pixmap,
+          origin_in_backdrop,
+          record
+            .source_alpha
+            .as_ref()
+            .map(|alpha| (alpha, origin_in_parent)),
+        )?;
       }
       return Ok(());
     }
@@ -1012,7 +1181,15 @@ impl Canvas {
         start_src_x.saturating_add(record.origin.0),
         start_src_y.saturating_add(record.origin.1),
       );
-      uncomposite_layer_source_over_backdrop(region, &record.pixmap, origin_in_backdrop)?;
+      uncomposite_layer_source_over_backdrop(
+        region,
+        &record.pixmap,
+        origin_in_backdrop,
+        record
+          .source_alpha
+          .as_ref()
+          .map(|alpha| (alpha, (start_src_x, start_src_y))),
+      )?;
     }
 
     // Composite intermediate layer surfaces onto the region in order.
@@ -1461,6 +1638,10 @@ impl Canvas {
   /// canvas.draw_rect(rect, Rgba::rgb(255, 0, 0));
   /// ```
   pub fn draw_rect(&mut self, rect: Rect, color: Rgba) {
+    self.mirror_to_source_alpha(|canvas| canvas.draw_rect_impl(rect, color));
+  }
+
+  fn draw_rect_impl(&mut self, rect: Rect, color: Rgba) {
     // Skip fully transparent colors
     if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
@@ -1711,6 +1892,10 @@ impl Canvas {
   /// canvas.stroke_rect(rect, Rgba::BLACK, 2.0);
   /// ```
   pub fn stroke_rect(&mut self, rect: Rect, color: Rgba, width: f32) {
+    self.mirror_to_source_alpha(|canvas| canvas.stroke_rect_impl(rect, color, width));
+  }
+
+  fn stroke_rect_impl(&mut self, rect: Rect, color: Rgba, width: f32) {
     if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
@@ -1734,6 +1919,16 @@ impl Canvas {
 
   /// Draws a stroked rectangle outline using an explicit blend mode override.
   pub fn stroke_rect_with_blend(
+    &mut self,
+    rect: Rect,
+    color: Rgba,
+    width: f32,
+    blend_mode: BlendMode,
+  ) {
+    self.mirror_to_source_alpha(|canvas| canvas.stroke_rect_with_blend_impl(rect, color, width, blend_mode));
+  }
+
+  fn stroke_rect_with_blend_impl(
     &mut self,
     rect: Rect,
     color: Rgba,
@@ -1778,6 +1973,10 @@ impl Canvas {
   /// canvas.draw_rounded_rect(rect, radii, Rgba::BLUE);
   /// ```
   pub fn draw_rounded_rect(&mut self, rect: Rect, radii: BorderRadii, color: Rgba) {
+    self.mirror_to_source_alpha(|canvas| canvas.draw_rounded_rect_impl(rect, radii, color));
+  }
+
+  fn draw_rounded_rect_impl(&mut self, rect: Rect, radii: BorderRadii, color: Rgba) {
     if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
@@ -2034,6 +2233,10 @@ impl Canvas {
 
   /// Draws a stroked rounded rectangle outline
   pub fn stroke_rounded_rect(&mut self, rect: Rect, radii: BorderRadii, color: Rgba, width: f32) {
+    self.mirror_to_source_alpha(|canvas| canvas.stroke_rounded_rect_impl(rect, radii, color, width));
+  }
+
+  fn stroke_rounded_rect_impl(&mut self, rect: Rect, radii: BorderRadii, color: Rgba, width: f32) {
     if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
@@ -2136,6 +2339,15 @@ impl Canvas {
   /// canvas.draw_shaped_run(run, Point::new(10.0, 50.0), Rgba::BLACK)?;
   /// ```
   pub fn draw_shaped_run(&mut self, run: &ShapedRun, position: Point, color: Rgba) -> Result<()> {
+    self.mirror_to_source_alpha_result(|canvas| canvas.draw_shaped_run_impl(run, position, color))
+  }
+
+  fn draw_shaped_run_impl(
+    &mut self,
+    run: &ShapedRun,
+    position: Point,
+    color: Rgba,
+  ) -> Result<()> {
     if run.glyphs.is_empty() || color.a == 0.0 || self.current_state.opacity == 0.0 {
       return Ok(());
     }
@@ -2238,6 +2450,42 @@ impl Canvas {
     palette_override_hash: u64,
     variations: &[FontVariation],
   ) -> Result<()> {
+    self.mirror_to_source_alpha_result(|canvas| {
+      canvas.draw_text_run_impl(
+        position,
+        glyphs,
+        font,
+        font_size,
+        run_scale,
+        rotation,
+        color,
+        synthetic_bold,
+        synthetic_oblique,
+        palette_index,
+        palette_overrides,
+        palette_override_hash,
+        variations,
+      )
+    })
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn draw_text_run_impl(
+    &mut self,
+    position: Point,
+    glyphs: &[GlyphInstance],
+    font: &LoadedFont,
+    font_size: f32,
+    run_scale: f32,
+    rotation: RunRotation,
+    color: Rgba,
+    synthetic_bold: f32,
+    synthetic_oblique: f32,
+    palette_index: u16,
+    palette_overrides: &[(u16, Rgba)],
+    palette_override_hash: u64,
+    variations: &[FontVariation],
+  ) -> Result<()> {
     if glyphs.is_empty() || color.a == 0.0 || self.current_state.opacity == 0.0 {
       return Ok(());
     }
@@ -2290,6 +2538,18 @@ impl Canvas {
     glyph_opacity: f32,
     glyph_transform: Option<Transform>,
   ) {
+    self.mirror_to_source_alpha(|canvas| {
+      canvas.draw_color_glyph_impl(position, glyph, glyph_opacity, glyph_transform);
+    });
+  }
+
+  fn draw_color_glyph_impl(
+    &mut self,
+    position: Point,
+    glyph: &ColorGlyphRaster,
+    glyph_opacity: f32,
+    glyph_transform: Option<Transform>,
+  ) {
     let combined_opacity = (glyph_opacity * self.current_state.opacity).clamp(0.0, 1.0);
     if combined_opacity == 0.0 {
       return;
@@ -2317,6 +2577,10 @@ impl Canvas {
   /// * `color` - Line color
   /// * `width` - Line width in pixels
   pub fn draw_line(&mut self, start: Point, end: Point, color: Rgba, width: f32) {
+    self.mirror_to_source_alpha(|canvas| canvas.draw_line_impl(start, end, color, width));
+  }
+
+  fn draw_line_impl(&mut self, start: Point, end: Point, color: Rgba, width: f32) {
     if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
@@ -2349,6 +2613,10 @@ impl Canvas {
   /// * `radius` - Circle radius in pixels
   /// * `color` - Fill color
   pub fn draw_circle(&mut self, center: Point, radius: f32, color: Rgba) {
+    self.mirror_to_source_alpha(|canvas| canvas.draw_circle_impl(center, radius, color));
+  }
+
+  fn draw_circle_impl(&mut self, center: Point, radius: f32, color: Rgba) {
     if color.a == 0.0 || radius <= 0.0 {
       return;
     }
@@ -2367,6 +2635,10 @@ impl Canvas {
 
   /// Strokes a circle outline
   pub fn stroke_circle(&mut self, center: Point, radius: f32, color: Rgba, width: f32) {
+    self.mirror_to_source_alpha(|canvas| canvas.stroke_circle_impl(center, radius, color, width));
+  }
+
+  fn stroke_circle_impl(&mut self, center: Point, radius: f32, color: Rgba, width: f32) {
     if color.a == 0.0 || radius <= 0.0 {
       return;
     }
@@ -2697,6 +2969,7 @@ pub(crate) fn uncomposite_layer_source_over_backdrop(
   layer: &mut Pixmap,
   backdrop: &Pixmap,
   origin: (i32, i32),
+  source_alpha: Option<(&Pixmap, (i32, i32))>,
 ) -> RenderResult<()> {
   #[inline]
   fn mul_div_255_round_u16(a: u16, b: u16) -> u16 {
@@ -2745,6 +3018,20 @@ pub(crate) fn uncomposite_layer_source_over_backdrop(
     return Ok(());
   }
 
+  let (alpha_pixels, alpha_stride, alpha_w, alpha_h, alpha_origin_x, alpha_origin_y) =
+    if let Some((alpha_pixmap, alpha_origin)) = source_alpha {
+      (
+        Some(alpha_pixmap.pixels()),
+        alpha_pixmap.width() as usize,
+        alpha_pixmap.width() as i32,
+        alpha_pixmap.height() as i32,
+        alpha_origin.0,
+        alpha_origin.1,
+      )
+    } else {
+      (None, 0, 0, 0, 0, 0)
+    };
+
   #[inline]
   fn ceil_div(numer: u32, denom: u32) -> u16 {
     if denom == 0 {
@@ -2773,7 +3060,15 @@ pub(crate) fn uncomposite_layer_source_over_backdrop(
       let ba = back_px.alpha() as u16;
       let oa = out_px.alpha() as u16;
 
-      let sa = if ba < 255 {
+      let sa = if let Some(alpha_pixels) = alpha_pixels {
+        let ax = (lx0.saturating_add(offset as i32)).saturating_add(alpha_origin_x);
+        let ay = ly.saturating_add(alpha_origin_y);
+        if ax < 0 || ay < 0 || ax >= alpha_w || ay >= alpha_h {
+          0
+        } else {
+          alpha_pixels[ay as usize * alpha_stride + ax as usize].alpha() as u16
+        }
+      } else if ba < 255 {
         let num = oa.saturating_sub(ba) as u32;
         if num == 0 {
           0

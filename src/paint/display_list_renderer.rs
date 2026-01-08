@@ -4886,14 +4886,9 @@ impl DisplayListRenderer {
     let frac_y = visible_rect.y() - dest_y as f32;
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask().cloned();
-    self.canvas.pixmap_mut().draw_pixmap(
-      dest_x,
-      dest_y,
-      pix.as_ref().as_ref(),
-      &paint,
-      transform,
-      clip.as_ref(),
-    );
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.draw_pixmap(dest_x, dest_y, pix.as_ref().as_ref(), &paint, transform, clip.as_ref());
+    });
     self.record_background_paint(background_timer);
     Ok(())
   }
@@ -5046,8 +5041,9 @@ impl DisplayListRenderer {
         };
         self
           .canvas
-          .pixmap_mut()
-          .fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+          .with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+          });
         self.record_background_paint(background_timer);
         return Ok(());
       };
@@ -5119,14 +5115,16 @@ impl DisplayListRenderer {
         blend_mode: self.canvas.blend_mode(),
         quality: tiny_skia::FilterQuality::Nearest,
       };
-      self.canvas.pixmap_mut().draw_pixmap(
-        x0_u32 as i32,
-        y0_u32 as i32,
-        tmp.as_ref(),
-        &paint,
-        Transform::identity(),
-        clip_mask.as_ref(),
-      );
+      self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+        pixmap.draw_pixmap(
+          x0_u32 as i32,
+          y0_u32 as i32,
+          tmp.as_ref(),
+          &paint,
+          Transform::identity(),
+          clip_mask.as_ref(),
+        );
+      });
 
       self.record_background_paint(background_timer);
       return Ok(());
@@ -5178,18 +5176,16 @@ impl DisplayListRenderer {
       let scratch_w_i64 = x1 - x0;
       let scratch_h_i64 = y1 - y0;
       let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
-        self
-          .canvas
-          .pixmap_mut()
-          .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        });
         self.record_background_paint(background_timer);
         return Ok(());
       };
       let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
-        self
-          .canvas
-          .pixmap_mut()
-          .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        });
         self.record_background_paint(background_timer);
         return Ok(());
       };
@@ -5210,10 +5206,9 @@ impl DisplayListRenderer {
       }
 
       let Some(mut tmp) = new_pixmap(scratch_w, scratch_h) else {
-        self
-          .canvas
-          .pixmap_mut()
-          .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        });
         self.record_background_paint(background_timer);
         return Ok(());
       };
@@ -5242,10 +5237,9 @@ impl DisplayListRenderer {
       let mut tmp_mask: Option<Mask> = None;
       let tmp_clip: Option<&Mask> = if let Some(clip_mask) = clip_mask.as_ref() {
         let Some(mut mask) = Mask::new(scratch_w, scratch_h) else {
-          self
-            .canvas
-            .pixmap_mut()
-            .fill_rect(skia_rect, &paint, transform, Some(clip_mask));
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.fill_rect(skia_rect, &paint, transform, Some(clip_mask));
+          });
           self.record_background_paint(background_timer);
           return Ok(());
         };
@@ -5284,30 +5278,31 @@ impl DisplayListRenderer {
       {
         let src = tmp.data();
         let src_stride = scratch_w as usize * 4;
-        let dst_stride = self.canvas.width() as usize * 4;
-        let dst = self.canvas.pixmap_mut().data_mut();
         let copy_w = (inter_x1 - inter_x0) as usize;
         let copy_h = (inter_y1 - inter_y0) as usize;
         let row_bytes = copy_w * 4;
         let src_x = (inter_x0 - x0) as usize * 4;
-        let dst_x = inter_x0 as usize * 4;
         let src_y = (inter_y0 - y0) as usize;
+        let dst_x = inter_x0 as usize * 4;
         let dst_y = inter_y0 as usize;
-        for row in 0..copy_h {
-          let src_off = (src_y + row) * src_stride + src_x;
-          let dst_off = (dst_y + row) * dst_stride + dst_x;
-          dst[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
-        }
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          let dst_stride = pixmap.width() as usize * 4;
+          let dst = pixmap.data_mut();
+          for row in 0..copy_h {
+            let src_off = (src_y + row) * src_stride + src_x;
+            let dst_off = (dst_y + row) * dst_stride + dst_x;
+            dst[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+          }
+        });
       }
 
       self.record_background_paint(background_timer);
       return Ok(());
     }
 
-    self
-      .canvas
-      .pixmap_mut()
-      .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+    });
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -5412,14 +5407,9 @@ impl DisplayListRenderer {
     let frac_y = visible_rect.y() - dest_y as f32;
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask().cloned();
-    self.canvas.pixmap_mut().draw_pixmap(
-      dest_x,
-      dest_y,
-      pix.as_ref().as_ref(),
-      &paint,
-      transform,
-      clip.as_ref(),
-    );
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.draw_pixmap(dest_x, dest_y, pix.as_ref().as_ref(), &paint, transform, clip.as_ref());
+    });
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -5639,14 +5629,16 @@ impl DisplayListRenderer {
         blend_mode: self.canvas.blend_mode(),
         quality: tiny_skia::FilterQuality::Nearest,
       };
-      self.canvas.pixmap_mut().draw_pixmap(
-        x0_u32 as i32,
-        y0_u32 as i32,
-        tmp.as_ref(),
-        &paint,
-        Transform::identity(),
-        clip_mask.as_ref(),
-      );
+      self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+        pixmap.draw_pixmap(
+          x0_u32 as i32,
+          y0_u32 as i32,
+          tmp.as_ref(),
+          &paint,
+          Transform::identity(),
+          clip_mask.as_ref(),
+        );
+      });
 
       self.record_background_paint(background_timer);
       return Ok(());
@@ -5673,8 +5665,9 @@ impl DisplayListRenderer {
     };
     self
       .canvas
-      .pixmap_mut()
-      .fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+      .with_mirrored_pixmap_mut(|pixmap| {
+        pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+      });
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -5743,14 +5736,9 @@ impl DisplayListRenderer {
     let frac_y = visible_rect.y() - dest_y as f32;
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask().cloned();
-    self.canvas.pixmap_mut().draw_pixmap(
-      dest_x,
-      dest_y,
-      pix.as_ref().as_ref(),
-      &paint,
-      transform,
-      clip.as_ref(),
-    );
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.draw_pixmap(dest_x, dest_y, pix.as_ref().as_ref(), &paint, transform, clip.as_ref());
+    });
     self.record_background_paint(background_timer);
     Ok(())
   }
@@ -5849,10 +5837,9 @@ impl DisplayListRenderer {
     };
     let transform = self.canvas.transform();
     let clip_mask = self.canvas.clip_mask().cloned();
-    self
-      .canvas
-      .pixmap_mut()
-      .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+    });
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -6361,13 +6348,13 @@ impl DisplayListRenderer {
       return;
     };
 
-    let pixmap = self.canvas.pixmap_mut();
-
     match side.style {
       CssBorderStyle::Double => {
         // When the stroke is too thin to draw two lines and a gap, fall back to a solid stroke.
         if side.width < 3.0 {
-          pixmap.stroke_path(&base_path, &paint, &stroke, transform, clip);
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.stroke_path(&base_path, &paint, &stroke, transform, clip);
+          });
           return;
         }
 
@@ -6381,10 +6368,14 @@ impl DisplayListRenderer {
         stroke.width = third;
 
         if let Some(outer) = outer_path {
-          pixmap.stroke_path(&outer, &paint, &stroke, transform, clip);
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.stroke_path(&outer, &paint, &stroke, transform, clip);
+          });
         }
         if let Some(inner) = inner_path {
-          pixmap.stroke_path(&inner, &paint, &inner_stroke, transform, clip);
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.stroke_path(&inner, &paint, &inner_stroke, transform, clip);
+          });
         }
       }
       CssBorderStyle::Groove | CssBorderStyle::Ridge => {
@@ -6404,19 +6395,27 @@ impl DisplayListRenderer {
         set_paint_color(&mut second_paint, &second_color, opacity);
 
         if let Some(first) = first_path {
-          pixmap.stroke_path(&first, &first_paint, &first_stroke, transform, clip);
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.stroke_path(&first, &first_paint, &first_stroke, transform, clip);
+          });
         }
         if let Some(second) = second_path {
-          pixmap.stroke_path(&second, &second_paint, &second_stroke, transform, clip);
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.stroke_path(&second, &second_paint, &second_stroke, transform, clip);
+          });
         }
       }
       CssBorderStyle::Inset | CssBorderStyle::Outset => {
         let shaded = edge.inset_outset_color(&side.color, side.style);
         set_paint_color(&mut paint, &shaded, opacity);
-        pixmap.stroke_path(&base_path, &paint, &stroke, transform, clip);
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.stroke_path(&base_path, &paint, &stroke, transform, clip);
+        });
       }
       _ => {
-        pixmap.stroke_path(&base_path, &paint, &stroke, transform, clip);
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.stroke_path(&base_path, &paint, &stroke, transform, clip);
+        });
       }
     }
   }
@@ -6654,8 +6653,9 @@ impl DisplayListRenderer {
         paint.blend_mode = self.canvas.blend_mode();
         self
           .canvas
-          .pixmap_mut()
-          .fill_rect(src_rect, &paint, transform, clip);
+          .with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.fill_rect(src_rect, &paint, transform, clip);
+          });
       }
     }
   }
@@ -7360,14 +7360,9 @@ impl DisplayListRenderer {
     let frac_y = clipped_bounds.y() - dest_y as f32;
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask().cloned();
-    self.canvas.pixmap_mut().draw_pixmap(
-      dest_x,
-      dest_y,
-      temp.as_ref(),
-      &paint,
-      transform,
-      clip.as_ref(),
-    );
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.draw_pixmap(dest_x, dest_y, temp.as_ref(), &paint, transform, clip.as_ref());
+    });
     Ok(())
   }
 
@@ -7379,14 +7374,9 @@ impl DisplayListRenderer {
     origin: (i32, i32),
     region: Option<&Rect>,
   ) -> Result<()> {
-    let result = composite_manual_layer_pixmap(
-      self.canvas.pixmap_mut(),
-      layer,
-      opacity,
-      mode,
-      origin,
-      region,
-    );
+    let result = self.canvas.with_mirrored_pixmap_mut_result(|dest| {
+      composite_manual_layer_pixmap(dest, layer, opacity, mode, origin, region)
+    });
     if result.is_ok() {
       self.mark_current_pixmap_mutated();
     }
@@ -7659,6 +7649,7 @@ impl DisplayListRenderer {
             &mut pixmap,
             &root_record.pixmap,
             root_record.origin,
+            root_record.source_alpha().map(|alpha| (alpha, (0, 0))),
           )?;
           root_uncomposited = Some(pixmap);
           root_uncomposited.as_ref().unwrap()
@@ -8692,24 +8683,25 @@ impl DisplayListRenderer {
   }
 
   fn blit_tile(&mut self, work: &TileWork, pixmap: &Pixmap) -> Result<()> {
-    let dest = self.canvas.pixmap_mut();
-    let dest_bpr = dest.width() as usize * 4;
-    let src_bpr = pixmap.width() as usize * 4;
-    let start_x = work.tile_x.saturating_sub(work.render_x) as usize;
-    let start_y = work.tile_y.saturating_sub(work.render_y) as usize;
+    self.canvas.with_mirrored_pixmap_mut_result(|dest| {
+      let dest_bpr = dest.width() as usize * 4;
+      let src_bpr = pixmap.width() as usize * 4;
+      let start_x = work.tile_x.saturating_sub(work.render_x) as usize;
+      let start_y = work.tile_y.saturating_sub(work.render_y) as usize;
 
-    let mut deadline_counter = 0usize;
-    for row in 0..work.tile_h as usize {
-      check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
-        .map_err(Error::Render)?;
-      let dest_offset = (work.tile_y as usize + row) * dest_bpr + work.tile_x as usize * 4;
-      let src_offset = (start_y + row) * src_bpr + start_x * 4;
-      let len = work.tile_w as usize * 4;
-      dest.data_mut()[dest_offset..dest_offset + len]
-        .copy_from_slice(&pixmap.data()[src_offset..src_offset + len]);
-    }
+      let mut deadline_counter = 0usize;
+      for row in 0..work.tile_h as usize {
+        check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+          .map_err(Error::Render)?;
+        let dest_offset = (work.tile_y as usize + row) * dest_bpr + work.tile_x as usize * 4;
+        let src_offset = (start_y + row) * src_bpr + start_x * 4;
+        let len = work.tile_w as usize * 4;
+        dest.data_mut()[dest_offset..dest_offset + len]
+          .copy_from_slice(&pixmap.data()[src_offset..src_offset + len]);
+      }
 
-    Ok(())
+      Ok(())
+    })
   }
 
   fn render_parallel(
@@ -10172,8 +10164,9 @@ impl DisplayListRenderer {
       let skia_transform = concat_transforms(parent_transform, t);
       self
         .canvas
-        .pixmap_mut()
-        .draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
+        .with_mirrored_pixmap_mut(|dest| {
+          dest.draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
+        });
       return Ok(());
     }
 
@@ -10225,14 +10218,16 @@ impl DisplayListRenderer {
     };
 
     if let Some(warped) = warped {
-      self.canvas.pixmap_mut().draw_pixmap(
-        warped.offset.0,
-        warped.offset.1,
-        warped.pixmap.as_ref(),
-        &paint,
-        Transform::identity(),
-        None,
-      );
+      self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+        pixmap.draw_pixmap(
+          warped.offset.0,
+          warped.offset.1,
+          warped.pixmap.as_ref(),
+          &paint,
+          Transform::identity(),
+          None,
+        );
+      });
       return Ok(());
     }
 
@@ -10249,8 +10244,9 @@ impl DisplayListRenderer {
     let skia_transform = concat_transforms(parent_transform, t);
     self
       .canvas
-      .pixmap_mut()
-      .draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
+      .with_mirrored_pixmap_mut(|dest| {
+        dest.draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
+      });
     Ok(())
   }
 
@@ -10505,6 +10501,7 @@ impl DisplayListRenderer {
     });
 
     if init_stacking_backdrop {
+      self.canvas.ensure_current_layer_source_alpha()?;
       let Some(active_origin) = self.canvas.layer_stack().last().map(|layer| layer.origin) else {
         return Ok(());
       };
@@ -10541,6 +10538,7 @@ impl DisplayListRenderer {
     });
 
     if init_opacity_backdrop {
+      self.canvas.ensure_current_layer_source_alpha()?;
       let Some(active_origin) = self.canvas.layer_stack().last().map(|layer| layer.origin) else {
         return Ok(());
       };
@@ -11128,16 +11126,8 @@ impl DisplayListRenderer {
             record.mix_blend_mode, root_depth, parent_depth, false
           );
         }
-          if record.needs_layer {
-            let (mut layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
-            if record.init_from_backdrop {
-              crate::paint::canvas::uncomposite_layer_source_over_backdrop(
-                &mut layer,
-                self.canvas.pixmap(),
-                origin,
-              )
-              .map_err(Error::Render)?;
-            }
+        if record.needs_layer {
+          let (mut layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
 
           let (out_l, out_t, out_r, out_b) =
             filter_outset_with_bounds(&record.filters, self.scale, Some(record.css_bounds))
@@ -11346,14 +11336,16 @@ impl DisplayListRenderer {
                 let mut paint = PixmapPaint::default();
                 paint.opacity = opacity;
                 paint.blend_mode = composite_blend.unwrap_or(self.canvas.blend_mode());
-                self.canvas.pixmap_mut().draw_pixmap(
-                  warped.offset.0,
-                  warped.offset.1,
-                  warped.pixmap.as_ref(),
-                  &paint,
-                  Transform::identity(),
-                  None,
-                );
+                self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                  pixmap.draw_pixmap(
+                    warped.offset.0,
+                    warped.offset.1,
+                    warped.pixmap.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    None,
+                  );
+                });
               }
             } else if let Some(mode) = record.manual_blend {
               if let Some(mask) = self.canvas.clip_mask().cloned() {
@@ -11487,19 +11479,8 @@ impl DisplayListRenderer {
         } else {
           (0, false)
         };
-        let opacity_record = self.opacity_stack.pop().unwrap_or_default();
-        if opacity_record.init_from_backdrop {
-          let (mut layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
-          crate::paint::canvas::uncomposite_layer_source_over_backdrop(
-            &mut layer,
-            self.canvas.pixmap(),
-            origin,
-          )
-          .map_err(Error::Render)?;
-          self.composite_layer_tracked(&layer, opacity, composite_blend, origin);
-        } else {
-          self.pop_layer_tracked()?;
-        }
+        let _opacity_record = self.opacity_stack.pop().unwrap_or_default();
+        self.pop_layer_tracked()?;
         if self.trace_backdrop_stack {
           let depth_after = self.canvas.layer_stack_len();
           eprintln!(
@@ -11693,7 +11674,6 @@ impl DisplayListRenderer {
     let clip = self.canvas.clip_mask().cloned();
     let transform = self.canvas.transform();
     let blend_mode = self.canvas.blend_mode();
-    let pixmap = self.canvas.pixmap_mut();
 
     let draw_solid_line = |pixmap: &mut Pixmap,
                            paint: &tiny_skia::Paint,
@@ -11858,101 +11838,103 @@ impl DisplayListRenderer {
       TextDecorationStyle::Wavy => draw_wavy_line(pixmap, paint, start, len, center, thickness),
     };
 
-    for deco in &item.decorations {
-      let mut paint = tiny_skia::Paint::default();
-      paint.anti_alias = true;
-      let alpha = (deco.color.a * 255.0).round().clamp(0.0, 255.0) as u8;
-      paint.set_color_rgba8(deco.color.r, deco.color.g, deco.color.b, alpha);
-      paint.blend_mode = blend_mode;
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      for deco in &item.decorations {
+        let mut paint = tiny_skia::Paint::default();
+        paint.anti_alias = true;
+        let alpha = (deco.color.a * 255.0).round().clamp(0.0, 255.0) as u8;
+        paint.set_color_rgba8(deco.color.r, deco.color.g, deco.color.b, alpha);
+        paint.blend_mode = blend_mode;
 
-      if let Some(underline) = &deco.underline {
-        if let Some(segments) = &underline.segments {
-          for (start, end) in segments {
-            let len = end - start;
-            if len <= 0.0 {
-              continue;
+        if let Some(underline) = &deco.underline {
+          if let Some(segments) = &underline.segments {
+            for (start, end) in segments {
+              let len = end - start;
+              if len <= 0.0 {
+                continue;
+              }
+              render_line(
+                pixmap,
+                &paint,
+                deco.style,
+                item.line_start + *start,
+                len,
+                underline.center,
+                underline.thickness,
+              );
             }
+          } else {
             render_line(
               pixmap,
               &paint,
               deco.style,
-              item.line_start + *start,
-              len,
+              inline_start,
+              inline_len,
               underline.center,
               underline.thickness,
             );
           }
-        } else {
-          render_line(
-            pixmap,
-            &paint,
-            deco.style,
-            inline_start,
-            inline_len,
-            underline.center,
-            underline.thickness,
-          );
         }
-      }
-      if let Some(overline) = &deco.overline {
-        if let Some(segments) = &overline.segments {
-          for (start, end) in segments {
-            let len = end - start;
-            if len <= 0.0 {
-              continue;
+        if let Some(overline) = &deco.overline {
+          if let Some(segments) = &overline.segments {
+            for (start, end) in segments {
+              let len = end - start;
+              if len <= 0.0 {
+                continue;
+              }
+              render_line(
+                pixmap,
+                &paint,
+                deco.style,
+                item.line_start + *start,
+                len,
+                overline.center,
+                overline.thickness,
+              );
             }
+          } else {
             render_line(
               pixmap,
               &paint,
               deco.style,
-              item.line_start + *start,
-              len,
+              inline_start,
+              inline_len,
               overline.center,
               overline.thickness,
             );
           }
-        } else {
-          render_line(
-            pixmap,
-            &paint,
-            deco.style,
-            inline_start,
-            inline_len,
-            overline.center,
-            overline.thickness,
-          );
         }
-      }
-      if let Some(strike) = &deco.line_through {
-        if let Some(segments) = &strike.segments {
-          for (start, end) in segments {
-            let len = end - start;
-            if len <= 0.0 {
-              continue;
+        if let Some(strike) = &deco.line_through {
+          if let Some(segments) = &strike.segments {
+            for (start, end) in segments {
+              let len = end - start;
+              if len <= 0.0 {
+                continue;
+              }
+              render_line(
+                pixmap,
+                &paint,
+                deco.style,
+                item.line_start + *start,
+                len,
+                strike.center,
+                strike.thickness,
+              );
             }
+          } else {
             render_line(
               pixmap,
               &paint,
               deco.style,
-              item.line_start + *start,
-              len,
+              inline_start,
+              inline_len,
               strike.center,
               strike.thickness,
             );
           }
-        } else {
-          render_line(
-            pixmap,
-            &paint,
-            deco.style,
-            inline_start,
-            inline_len,
-            strike.center,
-            strike.thickness,
-          );
         }
       }
-    }
+    });
 
     Ok(())
   }
@@ -12262,14 +12244,16 @@ impl DisplayListRenderer {
       let clip = self.canvas.clip_mask().cloned();
       let transform =
         Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
-      self.canvas.pixmap_mut().draw_pixmap(
-        dest_x,
-        dest_y,
-        shadow_pixmap.as_ref(),
-        &pixmap_paint,
-        transform,
-        clip.as_ref(),
-      );
+      self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+        pixmap.draw_pixmap(
+          dest_x,
+          dest_y,
+          shadow_pixmap.as_ref(),
+          &pixmap_paint,
+          transform,
+          clip.as_ref(),
+        );
+      });
     }
 
     Ok(())
@@ -12366,24 +12350,22 @@ impl DisplayListRenderer {
           {
             match fill {
               TextEmphasisFill::Filled => {
-                self.canvas.pixmap_mut().fill_path(
-                  &path,
-                  &paint,
-                  tiny_skia::FillRule::EvenOdd,
-                  transform,
-                  clip.as_ref(),
-                );
+                self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                  pixmap.fill_path(
+                    &path,
+                    &paint,
+                    tiny_skia::FillRule::EvenOdd,
+                    transform,
+                    clip.as_ref(),
+                  );
+                });
               }
               TextEmphasisFill::Open => {
                 let mut stroke = tiny_skia::Stroke::default();
                 stroke.width = (emphasis.size * 0.18).max(0.5);
-                self.canvas.pixmap_mut().stroke_path(
-                  &path,
-                  &paint,
-                  &stroke,
-                  transform,
-                  clip.as_ref(),
-                );
+                self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+                });
               }
             }
           }
@@ -12395,24 +12377,22 @@ impl DisplayListRenderer {
           {
             match fill {
               TextEmphasisFill::Filled => {
-                self.canvas.pixmap_mut().fill_path(
-                  &path,
-                  &paint,
-                  tiny_skia::FillRule::EvenOdd,
-                  transform,
-                  clip.as_ref(),
-                );
+                self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                  pixmap.fill_path(
+                    &path,
+                    &paint,
+                    tiny_skia::FillRule::EvenOdd,
+                    transform,
+                    clip.as_ref(),
+                  );
+                });
               }
               TextEmphasisFill::Open => {
                 let mut stroke = tiny_skia::Stroke::default();
                 stroke.width = (emphasis.size * 0.18).max(0.5);
-                self.canvas.pixmap_mut().stroke_path(
-                  &path,
-                  &paint,
-                  &stroke,
-                  transform,
-                  clip.as_ref(),
-                );
+                self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+                });
               }
             }
           }
@@ -12425,13 +12405,9 @@ impl DisplayListRenderer {
             if let Some(path) =
               tiny_skia::PathBuilder::from_circle(mark.center.x, mark.center.y, radius)
             {
-              self.canvas.pixmap_mut().stroke_path(
-                &path,
-                &paint,
-                &stroke,
-                transform,
-                clip.as_ref(),
-              );
+              self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+              });
             }
           }
         }
@@ -12448,24 +12424,22 @@ impl DisplayListRenderer {
           if let Some(path) = builder.finish() {
             match fill {
               TextEmphasisFill::Filled => {
-                self.canvas.pixmap_mut().fill_path(
-                  &path,
-                  &paint,
-                  tiny_skia::FillRule::EvenOdd,
-                  transform,
-                  clip.as_ref(),
-                );
+                self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                  pixmap.fill_path(
+                    &path,
+                    &paint,
+                    tiny_skia::FillRule::EvenOdd,
+                    transform,
+                    clip.as_ref(),
+                  );
+                });
               }
               TextEmphasisFill::Open => {
                 let mut stroke = tiny_skia::Stroke::default();
                 stroke.width = (emphasis.size * 0.18).max(0.5);
-                self.canvas.pixmap_mut().stroke_path(
-                  &path,
-                  &paint,
-                  &stroke,
-                  transform,
-                  clip.as_ref(),
-                );
+                self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+                });
               }
             }
           }
@@ -12483,8 +12457,9 @@ impl DisplayListRenderer {
             stroke.line_cap = tiny_skia::LineCap::Round;
             self
               .canvas
-              .pixmap_mut()
-              .stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+              .with_mirrored_pixmap_mut(|pixmap| {
+                pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+              });
           }
         }
       }
@@ -12547,14 +12522,9 @@ impl DisplayListRenderer {
       .post_concat(self.canvas.transform());
     let clip_mask = self.canvas.clip_mask().cloned();
     let pixmap_ref = pixmap.as_ref();
-    self.canvas.pixmap_mut().draw_pixmap(
-      0,
-      0,
-      pixmap_ref.as_ref(),
-      &paint,
-      transform,
-      clip_mask.as_ref(),
-    );
+    self.canvas.with_mirrored_pixmap_mut(|dest| {
+      dest.draw_pixmap(0, 0, pixmap_ref.as_ref(), &paint, transform, clip_mask.as_ref());
+    });
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -12661,12 +12631,9 @@ impl DisplayListRenderer {
           dest_rect.width(),
           dest_rect.height(),
         ) {
-          self.canvas.pixmap_mut().fill_rect(
-            skia_rect,
-            &paint,
-            canvas_transform,
-            clip_mask.as_ref(),
-          );
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+          });
         }
         self.record_background_paint(background_timer);
         return Ok(());
@@ -12833,14 +12800,16 @@ impl DisplayListRenderer {
         blend_mode: self.canvas.blend_mode(),
         quality: item.filter_quality.into(),
       };
-      self.canvas.pixmap_mut().draw_pixmap(
-        x0_u32 as i32,
-        y0_u32 as i32,
-        tmp.as_ref(),
-        &paint,
-        Transform::identity(),
-        clip_mask.as_ref(),
-      );
+      self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+        pixmap.draw_pixmap(
+          x0_u32 as i32,
+          y0_u32 as i32,
+          tmp.as_ref(),
+          &paint,
+          Transform::identity(),
+          clip_mask.as_ref(),
+        );
+      });
 
       self.record_background_paint(background_timer);
       return Ok(());
@@ -12869,8 +12838,9 @@ impl DisplayListRenderer {
     };
     self
       .canvas
-      .pixmap_mut()
-      .fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+      .with_mirrored_pixmap_mut(|pixmap| {
+        pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+      });
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -18249,8 +18219,9 @@ mod tests {
     let transform = renderer.canvas.transform();
     renderer
       .canvas
-      .pixmap_mut()
-      .draw_pixmap(0, 0, temp.as_ref(), &paint, transform, clip.as_ref());
+      .with_mirrored_pixmap_mut(|pixmap| {
+        pixmap.draw_pixmap(0, 0, temp.as_ref(), &paint, transform, clip.as_ref());
+      });
     Ok(())
   }
 
