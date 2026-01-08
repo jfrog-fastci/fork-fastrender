@@ -177,6 +177,7 @@ pub mod geometry;
 // ============================================================================
 
 pub mod accessibility;
+pub mod interaction;
 pub mod layout;
 pub mod math;
 pub mod paint;
@@ -270,6 +271,8 @@ pub use debug::tree_printer::{
 pub use error::{Error, Result};
 // Geometry primitives
 pub use geometry::{EdgeOffsets, Point, Rect, Size};
+// Interaction helpers
+pub use interaction::scroll_offset_for_fragment_target;
 // Image output
 pub use image_output::OutputFormat;
 // Layout
