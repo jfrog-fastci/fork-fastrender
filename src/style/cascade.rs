@@ -1454,6 +1454,73 @@ fn cq_required_bases_from_value(value: &str) -> u8 {
   scan(&mut parser)
 }
 
+fn cq_required_bases_from_property_value(value: &PropertyValue) -> u8 {
+  use crate::css::types::PropertyValue as PV;
+  match value {
+    PV::Length(length) => cq_required_bases_from_length(length),
+    PV::Multiple(values) => values
+      .iter()
+      .fold(0u8, |mask, value| mask | cq_required_bases_from_property_value(value)),
+    PV::BoxShadow(shadows) => shadows.iter().fold(0u8, |mask, shadow| {
+      mask
+        | cq_required_bases_from_length(&shadow.offset_x)
+        | cq_required_bases_from_length(&shadow.offset_y)
+        | cq_required_bases_from_length(&shadow.blur_radius)
+        | cq_required_bases_from_length(&shadow.spread_radius)
+    }),
+    PV::TextShadow(shadows) => shadows.iter().fold(0u8, |mask, shadow| {
+      mask
+        | cq_required_bases_from_length(&shadow.offset_x)
+        | cq_required_bases_from_length(&shadow.offset_y)
+        | cq_required_bases_from_length(&shadow.blur_radius)
+    }),
+    PV::Translate(value) => match value {
+      crate::css::types::TranslateValue::None => 0,
+      crate::css::types::TranslateValue::Values { x, y, z } => {
+        cq_required_bases_from_length(x) | cq_required_bases_from_length(y) | cq_required_bases_from_length(z)
+      }
+    },
+    PV::Transform(transforms) => transforms.iter().fold(0u8, |mask, transform| {
+      use crate::css::types::Transform as T;
+      mask
+        | match transform {
+          T::Translate(x, y) => cq_required_bases_from_length(x) | cq_required_bases_from_length(y),
+          T::TranslateX(x) => cq_required_bases_from_length(x),
+          T::TranslateY(y) => cq_required_bases_from_length(y),
+          T::TranslateZ(z) => cq_required_bases_from_length(z),
+          T::Translate3d(x, y, z) => {
+            cq_required_bases_from_length(x) | cq_required_bases_from_length(y) | cq_required_bases_from_length(z)
+          }
+          T::Perspective(p) => cq_required_bases_from_length(p),
+          // Remaining transform components do not contain lengths.
+          _ => 0,
+        }
+    }),
+    PV::RadialGradient { size, position, .. } | PV::RepeatingRadialGradient { size, position, .. } => {
+      use crate::css::types::RadialGradientSize;
+      let mut mask = 0u8;
+      mask |= cq_required_bases_from_length(&position.x.offset);
+      mask |= cq_required_bases_from_length(&position.y.offset);
+      if let RadialGradientSize::Explicit { x, y } = size {
+        mask |= cq_required_bases_from_length(x);
+        if let Some(y) = y.as_ref() {
+          mask |= cq_required_bases_from_length(y);
+        }
+      }
+      mask
+    }
+    PV::ConicGradient { position, .. } | PV::RepeatingConicGradient { position, .. } => {
+      cq_required_bases_from_length(&position.x.offset) | cq_required_bases_from_length(&position.y.offset)
+    }
+    // Keyword strings may represent token streams for properties that defer parsing. Scan these so
+    // `style()` queries don't treat unresolved cq* bases as a definitive mismatch.
+    PV::Keyword(text) | PV::Custom(text) => cq_required_bases_from_value(text),
+    // String/URL values are CSS string tokens; their content should not be treated as dimensions.
+    PV::String(_) | PV::Url(_) | PV::FontFamily(_) => 0,
+    _ => 0,
+  }
+}
+
 fn cq_required_bases_from_length(length: &Length) -> u8 {
   let mut mask = 0u8;
   if let Some(calc) = length.calc {
@@ -1603,7 +1670,7 @@ fn eval_plain_style_feature(
 
   // Ensure container query units can be resolved for this query container. Otherwise treat the
   // entire style feature as unknown so `not style(...)` doesn't incorrectly match.
-  let required = cq_required_bases_from_value(&value);
+  let required = cq_required_bases_from_property_value(&decl.value);
   if required != 0 {
     let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
     if (required & CQ_VALUE_BASE_CQW) != 0 && !cqw.is_finite()
