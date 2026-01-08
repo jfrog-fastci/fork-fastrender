@@ -3249,6 +3249,14 @@ fn http_referer_header_value(
   if policy == ReferrerPolicy::NoReferrer {
     return None;
   }
+  // Guard against header injection: if the referrer URL contains raw control characters, treat it
+  // as invalid and suppress the `Referer` header (matching browser behavior for invalid referrers).
+  if raw_referrer
+    .chars()
+    .any(|c| matches!(c, '\r' | '\n' | '\0'))
+  {
+    return None;
+  }
 
   // We only synthesize `Referer` for network referrers. For `file://` fixtures and other
   // opaque-origin schemes, browsers generally omit `Referer` while still sending `Origin: null`

@@ -28,4 +28,16 @@ fn referer_header_strips_url_credentials() {
     };
     assert_eq!(referer, expected);
   }
+
+  // Referrer URLs that contain raw control characters must not be reflected into headers.
+  let req = FetchRequest::new("https://example.com/img.png", FetchDestination::Image)
+    .with_referrer_url("https://user:pass@example.com/path/page.html?q=1\r\nInjected: x")
+    .with_referrer_policy(ReferrerPolicy::NoReferrerWhenDowngrade);
+  let referer = fetcher
+    .request_header_value(req, "Referer")
+    .expect("HttpFetcher should deterministically construct Referer");
+  assert_eq!(
+    referer, "",
+    "expected control characters to suppress the Referer header"
+  );
 }
