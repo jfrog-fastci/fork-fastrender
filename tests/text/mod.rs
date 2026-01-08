@@ -17,6 +17,7 @@ pub(super) fn text_diagnostics_guard() -> std::sync::MutexGuard<'static, ()> {
 
 mod bidi;
 mod bidi_visual_order;
+mod bundled_emoji_glyph_coverage_test;
 mod bundled_emoji_last_resort;
 mod bundled_emoji_render;
 mod bundled_multiscript_render;

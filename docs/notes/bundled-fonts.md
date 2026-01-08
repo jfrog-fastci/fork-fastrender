@@ -97,10 +97,9 @@ updated as the pageset changes.
 
 ### Follow-ups (keep pageset-driven)
 
-If pageset diffs show that the remaining missing DOM-text emoji are significant, extend
-`FastRenderEmoji.ttf`/its generator to cover them (at the time of writing: `🍌`, `⚾`, `💎`, `💜`,
-`💩`, `🔴`, `🙏`, `🤣`, `🤮`, `🥳`, `🧵`, `🪬`). Note that the remaining non-emoji uncovered codepoints are
-emoji-related marks (`U+20E3`, `U+FE0F`) which are not meaningful standalone glyphs.
+If pageset diffs show that new missing DOM-text emoji are significant, extend
+`FastRenderEmoji.ttf`/its generator to cover them. Note that the remaining non-emoji uncovered
+codepoints are emoji-related marks (`U+20E3`, `U+FE0F`) which are not meaningful standalone glyphs.
 
 For `--include-css-content`, large runs of PUA codepoints typically imply an icon font; they should
 only be addressed if we confirm that the pageset run is not fetching/using the page’s webfonts.

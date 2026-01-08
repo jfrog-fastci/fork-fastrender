@@ -214,6 +214,7 @@ def main() -> None:
     0x2602,  # ☂ (emoji variant ☂️)
     0x2636,  # ☶
     0x26A0,  # ⚠ (emoji variant ⚠️)
+    0x26BE,  # ⚾
     0x25B6,  # ▶ (emoji variant ▶️)
     0x2705,  # ✅
     0x2714,  # ✔
@@ -228,6 +229,7 @@ def main() -> None:
     0x2B50,  # ⭐
     0x1F31F,  # 🌟
     0x1F30E,  # 🌎
+    0x1F34C,  # 🍌
     0x1F381,  # 🎁
     0x1F382,  # 🎂
     0x1F386,  # 🎆
@@ -252,6 +254,7 @@ def main() -> None:
     0x1F4CD,  # 📍
     0x1F58C,  # 🖌
     0x1F602,  # 😂
+    0x1F4A9,  # 💩
     0x1F621,  # 😡
     0x1F62C,  # 😬
     0x1F62D,  # 😭
@@ -262,10 +265,15 @@ def main() -> None:
     0x1F919,  # 🤙
     0x1F920,  # 🤠
     0x1F929,  # 🤩
+    0x1F923,  # 🤣
+    0x1F92E,  # 🤮
     0x1F92F,  # 🤯
+    0x1F973,  # 🥳
     0x1F52E,  # 🔮
     0x1F9C3,  # 🧃
     0x1F9E3,  # 🧣
+    0x1F9F5,  # 🧵
+    0x1FAAC,  # 🪬
   ]:
     cmap[codepoint] = "grin"
   # Pageset-derived icon/codepoint regressions (typically inserted via CSS `content:`) mapped onto
@@ -285,10 +293,14 @@ def main() -> None:
   for codepoint in [
     0x1F4AA,  # 💪
     0x1F937,  # 🤷
+    0x1F64F,  # 🙏
   ]:
     cmap[codepoint] = "thumb"
   cmap[0x1F497] = "heart"  # 💗
+  cmap[0x1F49C] = "heart"  # 💜
+  cmap[0x1F48E] = "heart"  # 💎
   cmap[0x1F525] = "heart"  # 🔥
+  cmap[0x1F534] = "heart"  # 🔴
   for codepoint in range(0x1F3FB, 0x1F400):
     cmap[codepoint] = "emoji_modifier"
   fb.setupCharacterMap(cmap)
