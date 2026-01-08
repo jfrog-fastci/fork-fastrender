@@ -1022,6 +1022,30 @@ fn abspos_static_position_respects_align_self_self_start_with_different_directio
 }
 
 #[test]
+fn abspos_static_position_respects_align_self_self_end_with_different_direction() {
+  // Like the test above, but for `self-end`. With an RTL abspos child, the inline-end edge is
+  // physical left, so `self-end` should align to x≈0.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.direction = Direction::Rtl;
+  child_style.align_self = Some(AlignItems::SelfEnd);
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
+}
+
+#[test]
 fn abspos_static_position_respects_align_items_self_start_with_different_direction() {
   // Same as above, but with `align-items: self-start` (so `align-self: auto` on the child inherits
   // a self-alignment value).
