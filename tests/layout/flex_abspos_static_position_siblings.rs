@@ -20,6 +20,16 @@ fn abspos_child(order: i32) -> BoxNode {
   BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
 }
 
+fn abspos_child_with_width(order: i32, width: f32) -> BoxNode {
+  let mut style = ComputedStyle::default();
+  style.display = Display::Block;
+  style.position = Position::Absolute;
+  style.width = Some(Length::px(width));
+  style.height = Some(Length::px(10.0));
+  style.order = order;
+  BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+}
+
 fn inflow_child() -> BoxNode {
   let mut style = ComputedStyle::default();
   style.display = Display::Block;
@@ -45,6 +55,30 @@ fn abspos_x(fragment: &fastrender::tree::fragment_tree::FragmentNode) -> f32 {
     .iter()
     .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
     .expect("absolute fragment present")
+    .bounds
+    .x()
+}
+
+fn abspos_x_by_order(fragment: &fastrender::tree::fragment_tree::FragmentNode, order: i32) -> f32 {
+  fragment
+    .children
+    .iter()
+    .filter(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|child| child.style.as_ref().is_some_and(|s| s.order == order))
+    .unwrap_or_else(|| {
+      let debug_orders: Vec<i32> = fragment
+        .children
+        .iter()
+        .filter_map(|child| {
+          child
+            .style
+            .as_ref()
+            .filter(|s| matches!(s.position, Position::Absolute))
+            .map(|s| s.order)
+        })
+        .collect();
+      panic!("absolute fragment with order {order} present; saw orders={debug_orders:?}");
+    })
     .bounds
     .x()
 }
@@ -86,3 +120,26 @@ fn abspos_static_position_is_independent_of_siblings_and_order() {
   );
 }
 
+#[test]
+fn abspos_static_position_is_independent_of_abspos_siblings() {
+  let fc = FlexFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 40.0);
+
+  let container = flex_container(vec![
+    abspos_child_with_width(1, 10.0),
+    abspos_child_with_width(2, 50.0),
+  ]);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let x_small = abspos_x_by_order(&fragment, 1);
+  let x_large = abspos_x_by_order(&fragment, 2);
+
+  assert!(
+    (x_small - 45.0).abs() < 0.1,
+    "expected 10px abspos child to center at x≈45, got {x_small}"
+  );
+  assert!(
+    (x_large - 25.0).abs() < 0.1,
+    "expected 50px abspos child to center at x≈25, got {x_large}"
+  );
+}
