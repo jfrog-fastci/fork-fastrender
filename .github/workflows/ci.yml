@@ -127,7 +127,7 @@ jobs:
       - name: Validate generated emoji tables
         run: cargo xtask generate-emoji-tables --check
 
-      - name: Lint: no panics in production code
+      - name: "Lint: no panics in production code"
         run: cargo xtask lint-no-panics
 
       - name: Build browser binary
