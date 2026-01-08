@@ -1,3 +1,5 @@
+#![cfg(feature = "browser_ui")]
+
 use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::messages::{TabId, WorkerToUi};
 use fastrender::ui::worker::RenderWorker;
@@ -106,4 +108,3 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
     "expected stage listener to be cleared after jobs"
   );
 }
-

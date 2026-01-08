@@ -1,3 +1,5 @@
+#![cfg(feature = "browser_ui")]
+
 use fastrender::ui::messages::WorkerToUi;
 use fastrender::ui::worker::spawn_render_worker_thread;
 use fastrender::FastRender;
@@ -22,4 +24,3 @@ fn browser_render_worker_thread_is_spawned_via_thread_builder() {
   let observed = handle.join().expect("join render worker thread");
   assert_eq!(observed, expected_name);
 }
-
