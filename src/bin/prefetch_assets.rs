@@ -1091,6 +1091,13 @@ mod disk_cache_main {
   struct PrefetchImportLoader<'a> {
     fetcher: &'a dyn ResourceFetcher,
     document_referrer: &'a str,
+    /// The document base URL used for resolving relative URLs (including `<base href>`).
+    ///
+    /// The CSS import resolver passes its `base_url` as the `importer_url` when fetching nested
+    /// stylesheets. For inline `<style>` blocks this base URL may differ from the document URL,
+    /// but the request referrer should still be the document URL. When set, we treat
+    /// `importer_url == document_base_url` as a signal to fall back to `document_referrer`.
+    document_base_url: Option<&'a str>,
     client_origin: Option<&'a DocumentOrigin>,
     destination: FetchDestination,
     credentials_mode: FetchCredentialsMode,
@@ -1106,6 +1113,7 @@ mod disk_cache_main {
     fn new(
       fetcher: &'a dyn ResourceFetcher,
       document_referrer: &'a str,
+      document_base_url: Option<&'a str>,
       client_origin: Option<&'a DocumentOrigin>,
       destination: FetchDestination,
       credentials_mode: FetchCredentialsMode,
@@ -1118,6 +1126,7 @@ mod disk_cache_main {
       Self {
         fetcher,
         document_referrer,
+        document_base_url,
         client_origin,
         destination,
         credentials_mode,
@@ -1145,7 +1154,19 @@ mod disk_cache_main {
         return Ok(cached);
       }
 
-      let referrer_url = importer_url.unwrap_or(self.document_referrer);
+      let referrer_url = match importer_url {
+        Some(importer_url) => {
+          if self
+            .document_base_url
+            .is_some_and(|base_url| base_url == importer_url)
+          {
+            self.document_referrer
+          } else {
+            importer_url
+          }
+        }
+        None => self.document_referrer,
+      };
       let mut request = FetchRequest::new(url, self.destination)
         .with_referrer_url(referrer_url)
         .with_referrer_policy(self.referrer_policy)
@@ -1870,6 +1891,7 @@ mod disk_cache_main {
               let import_loader = PrefetchImportLoader::new(
                 fetcher.as_ref(),
                 base_hint,
+                Some(base_url),
                 document_origin.as_ref(),
                 destination,
                 credentials_mode,
@@ -1971,6 +1993,7 @@ mod disk_cache_main {
                   let import_loader = PrefetchImportLoader::new(
                     fetcher.as_ref(),
                     base_hint,
+                    None,
                     document_origin.as_ref(),
                     destination,
                     credentials_mode,
