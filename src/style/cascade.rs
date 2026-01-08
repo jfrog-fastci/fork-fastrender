@@ -264,8 +264,17 @@ thread_local! {
   static ANCESTOR_BLOOM_HASH_INSERTS: std::cell::Cell<u64> = std::cell::Cell::new(0);
 }
 
+#[inline]
+fn is_ascii_whitespace_html_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_html_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
 fn attr_truthy_value(value: &str) -> bool {
-  let value = value.trim();
+  let value = trim_ascii_whitespace_html_css(value);
   value == "1"
     || value.eq_ignore_ascii_case("true")
     || value.eq_ignore_ascii_case("yes")
@@ -281,7 +290,7 @@ fn attr_truthy(node: &DomNode, name: &str) -> bool {
 }
 
 fn data_fastr_open(node: &DomNode) -> Option<(bool, bool)> {
-  let value = node.get_attribute_ref("data-fastr-open")?.trim();
+  let value = trim_ascii_whitespace_html_css(node.get_attribute_ref("data-fastr-open")?);
   if value.eq_ignore_ascii_case("false") {
     return Some((false, false));
   }
@@ -1368,7 +1377,9 @@ fn eval_style_feature(
 }
 
 fn normalize_query_value(value: &str) -> String {
-  value.trim().trim_end_matches(';').trim().to_string()
+  let trimmed = trim_ascii_whitespace_html_css(value);
+  let trimmed = trimmed.trim_end_matches(';');
+  trim_ascii_whitespace_html_css(trimmed).to_string()
 }
 
 fn contains_cascade_dependent_keyword(value: &str) -> bool {
@@ -1607,7 +1618,7 @@ fn eval_plain_style_feature(
   } else {
     Cow::Borrowed(value)
   };
-  let resolved_value = resolved_value.as_ref().trim();
+  let resolved_value = trim_ascii_whitespace_html_css(resolved_value.as_ref());
 
   if contains_cascade_dependent_keyword(resolved_value) {
     return QueryResult::False;
@@ -1633,7 +1644,9 @@ fn eval_plain_style_feature(
 
     // Prefer typed comparisons for registered properties when possible.
     if let Some(rule) = registry_entry {
-      if let Some(expected_typed) = rule.syntax.parse_value(expected_resolved.trim()) {
+      if let Some(expected_typed) =
+        rule.syntax.parse_value(trim_ascii_whitespace_html_css(&expected_resolved))
+      {
         if let crate::style::values::CustomPropertyTypedValue::Length(expected_len) = &expected_typed
         {
           let mut required = cq_required_bases_from_length(expected_len);
@@ -2996,7 +3009,7 @@ fn parse_numeric_value(
   container: &ContainerQueryInfo,
   ctx: &ContainerQueryContext,
 ) -> Option<NumericValue> {
-  let trimmed = raw.trim();
+  let trimmed = trim_ascii_whitespace_html_css(raw);
   if trimmed.is_empty() || contains_cascade_dependent_keyword(trimmed) {
     return None;
   }
@@ -3025,7 +3038,7 @@ fn parse_numeric_value(
   };
   // `var()` resolution preserves custom-property token streams, including leading whitespace; trim
   // outer whitespace so numeric parsing behaves like normal CSS tokenization.
-  let resolved = resolved.as_ref().trim();
+  let resolved = trim_ascii_whitespace_html_css(resolved.as_ref());
 
   if resolved.is_empty() || contains_cascade_dependent_keyword(resolved) {
     return None;
@@ -3053,7 +3066,7 @@ fn parse_numeric_value(
 
   // Percentage.
   if let Some(percent) = resolved.strip_suffix('%') {
-    if let Ok(num) = percent.trim().parse::<f32>() {
+    if let Ok(num) = trim_ascii_whitespace_html_css(percent).parse::<f32>() {
       if num.is_finite() {
         return Some(NumericValue {
           ty: NumericType::Percentage,
@@ -3117,28 +3130,32 @@ fn parse_numeric_value(
 }
 
 fn parse_resolution_dppx(raw: &str) -> Option<f32> {
-  let lower = raw.trim().to_ascii_lowercase();
+  let lower = trim_ascii_whitespace_html_css(raw).to_ascii_lowercase();
   if let Some(rest) = lower.strip_suffix("dppx") {
-    return rest.trim().parse::<f32>().ok().filter(|v| *v > 0.0);
+    return trim_ascii_whitespace_html_css(rest)
+      .parse::<f32>()
+      .ok()
+      .filter(|v| *v > 0.0);
   }
   if let Some(rest) = lower.strip_suffix("dpi") {
-    return rest
-      .trim()
+    return trim_ascii_whitespace_html_css(rest)
       .parse::<f32>()
       .ok()
       .filter(|v| *v > 0.0)
       .map(|dpi| dpi / 96.0);
   }
   if let Some(rest) = lower.strip_suffix("dpcm") {
-    return rest
-      .trim()
+    return trim_ascii_whitespace_html_css(rest)
       .parse::<f32>()
       .ok()
       .filter(|v| *v > 0.0)
       .map(|dpcm| (dpcm * 2.54) / 96.0);
   }
   if let Some(rest) = lower.strip_suffix('x') {
-    return rest.trim().parse::<f32>().ok().filter(|v| *v > 0.0);
+    return trim_ascii_whitespace_html_css(rest)
+      .parse::<f32>()
+      .ok()
+      .filter(|v| *v > 0.0);
   }
   None
 }
@@ -4768,7 +4785,7 @@ fn build_form_validity_index(root: &DomNode, dom_maps: &DomMaps) -> FormValidity
         // - Otherwise fall back to the nearest ancestor `<form>`.
         let mut owner: Option<*const DomNode> = None;
         if let Some(attr) = frame.node.get_attribute_ref("form") {
-          let attr = attr.trim();
+          let attr = trim_ascii_whitespace_html_css(attr);
           if !attr.is_empty() {
             let tree_scope_id = dom_maps.containing_shadow_root(frame.node_id).unwrap_or(0);
             owner = forms_by_tree_scope
@@ -13919,6 +13936,22 @@ mod tests {
   fn cascade_global_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+  }
+
+  #[test]
+  fn non_ascii_whitespace_attr_truthy_value_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      !attr_truthy_value(&format!("{nbsp}1")),
+      "NBSP must not be treated as HTML whitespace"
+    );
+    assert!(attr_truthy_value(" 1 "));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_normalize_query_value_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(normalize_query_value(&format!("{nbsp}10px;")), format!("{nbsp}10px"));
   }
 
   #[test]
@@ -30391,7 +30424,7 @@ fn dir_presentational_hint(
   layer_order: &Arc<[u32]>,
   order: usize,
 ) -> Option<MatchedRule<'static>> {
-  let dir = node.get_attribute_ref("dir")?.trim();
+  let dir = trim_ascii_whitespace_html_css(node.get_attribute_ref("dir")?);
   let is_bdo = node
     .tag_name()
     .map(|tag| tag.eq_ignore_ascii_case("bdo"))
@@ -30482,7 +30515,7 @@ fn list_type_presentational_hint(
 }
 
 fn map_ol_type(value: &str) -> Option<&'static str> {
-  match value.trim() {
+  match trim_ascii_whitespace_html_css(value) {
     "1" => Some("decimal"),
     "a" => Some("lower-alpha"),
     "A" => Some("upper-alpha"),
@@ -30493,7 +30526,7 @@ fn map_ol_type(value: &str) -> Option<&'static str> {
 }
 
 fn map_ul_type(value: &str) -> Option<&'static str> {
-  let value = value.trim();
+  let value = trim_ascii_whitespace_html_css(value);
   if value.eq_ignore_ascii_case("disc") {
     Some("disc")
   } else if value.eq_ignore_ascii_case("circle") {
@@ -31843,7 +31876,7 @@ fn cellpadding_presentational_hint(
 }
 
 fn map_align(value: &str) -> Option<&'static str> {
-  let value = value.trim();
+  let value = trim_ascii_whitespace_html_css(value);
   if value.eq_ignore_ascii_case("left") {
     Some("left")
   } else if value.eq_ignore_ascii_case("center") {
@@ -31858,7 +31891,7 @@ fn map_align(value: &str) -> Option<&'static str> {
 }
 
 fn map_valign(value: &str) -> Option<&'static str> {
-  let value = value.trim();
+  let value = trim_ascii_whitespace_html_css(value);
   if value.eq_ignore_ascii_case("top") {
     Some("top")
   } else if value.eq_ignore_ascii_case("middle") {
@@ -31900,7 +31933,7 @@ fn replaced_alignment_presentational_hint(
   }
 
   let align = node.get_attribute_ref("align")?;
-  let align = align.trim();
+  let align = trim_ascii_whitespace_html_css(align);
   let float = if align.eq_ignore_ascii_case("left") {
     Some("left")
   } else if align.eq_ignore_ascii_case("right") {
