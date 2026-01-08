@@ -2635,6 +2635,58 @@ fn footnote_counter_increment_can_override_implicit_footnote_numbering() {
 }
 
 #[test]
+fn footnote_body_images_resolve_intrinsic_sizes() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          img { display: block; }
+          .note { float: footnote; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6XWcJAAAAAASUVORK5CYII="></span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+
+  let page_roots = pages(&tree);
+  assert_eq!(
+    page_roots.len(),
+    1,
+    "expected the single page to accommodate a 1x1 intrinsic image footnote"
+  );
+  let page1 = page_roots[0];
+  assert_eq!(
+    page1.children.len(),
+    2,
+    "page with footnote should have content + footnote area"
+  );
+
+  let footnote_area = page1.children.get(1).expect("footnote area");
+  let image = find_replaced_image(footnote_area).expect("expected image fragment in footnote area");
+  assert!(
+    (image.bounds.width() - 1.0).abs() < 0.1,
+    "expected intrinsic 1px image width (got {})",
+    image.bounds.width()
+  );
+  assert!(
+    (image.bounds.height() - 1.0).abs() < 0.1,
+    "expected intrinsic 1px image height (got {})",
+    image.bounds.height()
+  );
+}
+
+#[test]
 fn footnote_float_generates_call_and_page_footnote_area() {
   let html = r#"
     <html>

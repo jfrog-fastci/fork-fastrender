@@ -10419,6 +10419,15 @@ impl FastRender {
         jobs,
       );
     }
+    if let Some(body) = node.footnote_body.as_deref() {
+      self.collect_image_intrinsic_probe_jobs_for_node(
+        body,
+        viewport,
+        media_ctx,
+        profile_enabled,
+        jobs,
+      );
+    }
   }
 
   fn execute_image_intrinsic_probe_jobs(
@@ -10827,6 +10836,15 @@ impl FastRender {
     for child in &mut node.children {
       self.apply_replaced_intrinsic_sizes_with_image_probes(
         child,
+        viewport,
+        media_type,
+        probe_results,
+        profile_enabled,
+      );
+    }
+    if let Some(body) = node.footnote_body.as_deref_mut() {
+      self.apply_replaced_intrinsic_sizes_with_image_probes(
+        body,
         viewport,
         media_type,
         probe_results,
