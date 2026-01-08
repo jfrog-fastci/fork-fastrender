@@ -15,9 +15,9 @@ use crate::layout::formatting_context::{
 };
 use crate::layout::fragmentation::{
   apply_grid_parallel_flow_forced_break_shifts, clip_node, collect_atomic_ranges_with_axes,
-  collect_forced_boundaries_for_pagination_with_axes, fragmentation_axis, FragmentAxis,
+  collect_forced_boundaries_for_pagination_with_axes, fragmentation_axis,
   normalize_atomic_ranges, normalize_fragment_margins, parallel_flow_content_extent,
-  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentationContext,
+  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentAxis, FragmentationContext,
 };
 use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
 use crate::style::content::{
@@ -455,12 +455,6 @@ pub fn paginate_fragment_tree(
         }
       }
 
-      let axes = {
-        let default_style = ComputedStyle::default();
-        let root_style = layout.root.style.as_deref().unwrap_or(&default_style);
-        FragmentAxes::from_writing_mode_and_direction(root_style.writing_mode, root_style.direction)
-      };
-
       let mut end = end_candidate;
       let mut clipped = clip_node(
         &layout.root,
@@ -475,7 +469,7 @@ pub fn paginate_fragment_tree(
         0,
         FragmentationContext::Page,
         page_block,
-        axes,
+        root_axes,
       )?;
       let mut page_footnotes: Vec<FootnoteOccurrence> = Vec::new();
 
@@ -519,7 +513,7 @@ pub fn paginate_fragment_tree(
           0,
           FragmentationContext::Page,
           page_block,
-          axes,
+          root_axes,
         )?;
       }
 
@@ -1708,7 +1702,7 @@ fn layout_for_style<'a>(
     let mut config = LayoutConfig::for_viewport(style.content_size);
     config.enable_cache = enable_layout_cache;
     let engine = LayoutEngine::with_font_context(config, font_ctx.clone());
-    let block_size_hint = if block_axis_is_horizontal(style.page_style.writing_mode) {
+    let block_size_hint = if root_axes.block_axis() == PhysicalAxis::X {
       style.content_size.width
     } else {
       style.content_size.height

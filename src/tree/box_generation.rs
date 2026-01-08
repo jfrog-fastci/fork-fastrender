@@ -494,8 +494,35 @@ pub fn generate_box_tree_with_options(
   options: &BoxGenerationOptions,
 ) -> Result<BoxTree> {
   let mut deadline_counter = 0usize;
-  let root = build_box_tree_root(styled, options, &mut deadline_counter)?;
+  let mut root = build_box_tree_root(styled, options, &mut deadline_counter)?;
+  propagate_root_axes_from_root_element(styled, &mut root);
   Ok(BoxTree::new(root))
+}
+
+fn root_element_axes(styled: &StyledNode) -> Option<(usize, WritingMode, Direction)> {
+  let mut stack: Vec<&StyledNode> = styled.children.iter().rev().collect();
+  while let Some(node) = stack.pop() {
+    if matches!(node.node.node_type, DomNodeType::Element { .. }) {
+      return Some((node.node_id, node.styles.writing_mode, node.styles.direction));
+    }
+
+    stack.extend(node.children.iter().rev());
+  }
+  None
+}
+
+fn propagate_root_axes_from_root_element(styled_root: &StyledNode, root: &mut BoxNode) {
+  let Some((root_element_id, writing_mode, direction)) = root_element_axes(styled_root) else {
+    return;
+  };
+
+  if root.styled_node_id == Some(root_element_id) {
+    return;
+  }
+
+  let style = Arc::make_mut(&mut root.style);
+  style.writing_mode = writing_mode;
+  style.direction = direction;
 }
 
 /// Generates a BoxTree from a StyledNode tree and applies CSS-mandated anonymous box fixup.
@@ -526,8 +553,9 @@ pub fn generate_box_tree_with_anonymous_fixup_with_options(
     eprintln!("timing:box_gen_anon_fixup {:?}", start.elapsed());
   }
   let table_start = timings_enabled.then(Instant::now);
-  let fixed_root =
+  let mut fixed_root =
     TableStructureFixer::fixup_tree_internals_with_deadline(fixed_root, &mut deadline_counter)?;
+  propagate_root_axes_from_root_element(styled, &mut fixed_root);
   if let Some(start) = table_start {
     eprintln!("timing:box_gen_table_fixup {:?}", start.elapsed());
   }

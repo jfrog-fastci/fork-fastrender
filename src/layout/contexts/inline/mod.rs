@@ -506,6 +506,7 @@ impl InlineFormattingContext {
     snapshot_style.running_position = None;
     snapshot_style.position = crate::style::position::Position::Static;
     snapshot_node.style = Arc::new(snapshot_style);
+    crate::layout::running_elements::clear_running_position_in_box_tree(&mut snapshot_node);
 
     let inline_size = if available_width.is_finite() {
       available_width.max(0.0)

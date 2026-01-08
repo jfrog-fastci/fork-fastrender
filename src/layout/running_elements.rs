@@ -1,6 +1,7 @@
 use crate::geometry::Point;
 use crate::layout::axis::FragmentAxes;
 use crate::style::content::{RunningElementSelect, RunningElementValues};
+use crate::tree::box_tree::BoxNode;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,6 +26,22 @@ pub struct RunningElementState {
   pub first: HashMap<String, FragmentNode>,
   /// Last occurrence seen so far (up to the start of the current page).
   pub last: HashMap<String, FragmentNode>,
+}
+
+/// Clears `running_position` flags from a cloned box subtree.
+///
+/// Text and anonymous boxes in the box tree can share the same computed style as their parent
+/// element. When a `position: running(<name>)` element is snapshotted for margin boxes, those
+/// descendants must not be treated as nested running elements during the snapshot layout pass.
+pub(crate) fn clear_running_position_in_box_tree(node: &mut BoxNode) {
+  if node.style.running_position.is_some() {
+    let mut owned = node.style.as_ref().clone();
+    owned.running_position = None;
+    node.style = Arc::new(owned);
+  }
+  for child in node.children.iter_mut() {
+    clear_running_position_in_box_tree(child);
+  }
 }
 
 /// Collect all running element occurrences from the laid-out fragment tree.
