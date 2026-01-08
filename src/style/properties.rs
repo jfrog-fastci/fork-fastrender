@@ -2853,6 +2853,7 @@ fn parse_animation_shorthand(
   Vec<AnimationComposition>,
 )> {
   let mut names = Vec::new();
+  let mut names_are_none_keywords = Vec::new();
   let mut durations = Vec::new();
   let mut delays = Vec::new();
   let mut timings = Vec::new();
@@ -2865,7 +2866,7 @@ fn parse_animation_shorthand(
   let mut saw_any = false;
 
   for part in split_top_level_commas(raw) {
-    let mut name: Option<String> = None;
+    let mut name: Option<(String, bool)> = None;
     let mut duration: Option<f32> = None;
     let mut delay: Option<f32> = None;
     let mut timing: Option<TransitionTimingFunction> = None;
@@ -2905,13 +2906,14 @@ fn parse_animation_shorthand(
         }
       }
 
-      if let Some(tf) = parse_transition_timing_function(&token) {
-        if timing.is_none() {
+      if timing.is_none() {
+        if let Some(tf) = parse_transition_timing_function(&token) {
           timing = Some(tf);
           continue;
         }
-        invalid = true;
-        break;
+      } else if parse_transition_timing_function(&token).is_some() {
+        // If we've already matched a timing-function, treat subsequent timing-function keywords as
+        // the animation-name if possible.
       }
 
       if iteration.is_none() {
@@ -2920,8 +2922,7 @@ fn parse_animation_shorthand(
           continue;
         }
       } else if parse_animation_iteration_count(&token).is_some() {
-        invalid = true;
-        break;
+        // Allow additional iteration-count keywords to be interpreted as animation-name.
       }
 
       if direction.is_none() {
@@ -2930,21 +2931,7 @@ fn parse_animation_shorthand(
           continue;
         }
       } else if parse_animation_direction(&token).is_some() {
-        invalid = true;
-        break;
-      }
-
-      if token.trim().eq_ignore_ascii_case("none") {
-        if name.is_none() {
-          name = Some(token.trim().to_string());
-          continue;
-        }
-        if fill_mode.is_none() {
-          fill_mode = Some(AnimationFillMode::None);
-          continue;
-        }
-        invalid = true;
-        break;
+        // Allow additional direction keywords to be interpreted as animation-name.
       }
 
       if fill_mode.is_none() {
@@ -2953,8 +2940,7 @@ fn parse_animation_shorthand(
           continue;
         }
       } else if parse_animation_fill_mode(&token).is_some() {
-        invalid = true;
-        break;
+        // Allow additional fill-mode keywords to be interpreted as animation-name.
       }
 
       if play_state.is_none() {
@@ -2963,8 +2949,7 @@ fn parse_animation_shorthand(
           continue;
         }
       } else if parse_animation_play_state(&token).is_some() {
-        invalid = true;
-        break;
+        // Allow additional play-state keywords to be interpreted as animation-name.
       }
 
       if composition.is_none() {
@@ -2973,8 +2958,7 @@ fn parse_animation_shorthand(
           continue;
         }
       } else if parse_animation_composition(&token).is_some() {
-        invalid = true;
-        break;
+        // Allow additional composition keywords to be interpreted as animation-name.
       }
 
       if name.is_none() {
@@ -2983,23 +2967,27 @@ fn parse_animation_shorthand(
           invalid = true;
           break;
         }
-        let unquoted = trimmed
-          .strip_prefix('"')
-          .and_then(|s| s.strip_suffix('"'))
-          .or_else(|| {
-            trimmed
-              .strip_prefix('\'')
-              .and_then(|s| s.strip_suffix('\''))
-          });
-        if let Some(unquoted) = unquoted {
-          name = Some(unquoted.to_string());
-        } else {
-          if trimmed.contains('(') || trimmed.contains(')') {
+        let mut input = ParserInput::new(trimmed);
+        let mut parser = Parser::new(&mut input);
+        parser.skip_whitespace();
+        let token = match parser.next_including_whitespace() {
+          Ok(token) => token,
+          Err(_) => {
             invalid = true;
             break;
           }
-          name = Some(trimmed.to_string());
+        };
+        let (parsed, is_none_keyword) = match token {
+          Token::Ident(ident) => (Some(ident.to_string()), ident.eq_ignore_ascii_case("none")),
+          Token::QuotedString(s) => (Some(s.to_string()), false),
+          _ => (None, false),
+        };
+        parser.skip_whitespace();
+        if parsed.is_none() || !parser.is_exhausted() {
+          invalid = true;
+          break;
         }
+        name = parsed.map(|value| (value, is_none_keyword));
       } else {
         invalid = true;
         break;
@@ -3007,11 +2995,16 @@ fn parse_animation_shorthand(
     }
 
     if invalid {
-      continue;
+      return None;
     }
 
     saw_any = true;
-    names.push(name.unwrap_or_else(|| "none".to_string()));
+    let (name_value, is_none_keyword) = match name {
+      Some((value, is_none)) => (value, is_none),
+      None => ("none".to_string(), true),
+    };
+    names.push(name_value);
+    names_are_none_keywords.push(is_none_keyword);
     durations.push(duration.unwrap_or(0.0));
     delays.push(delay.unwrap_or(0.0));
     timings.push(timing.unwrap_or(TransitionTimingFunction::Ease));
@@ -3026,7 +3019,11 @@ fn parse_animation_shorthand(
     return None;
   }
 
-  if names.len() == 1 && names[0].eq_ignore_ascii_case("none") {
+  if names.len() == 1
+    && names_are_none_keywords.len() == 1
+    && names_are_none_keywords[0]
+    && names[0].eq_ignore_ascii_case("none")
+  {
     names.clear();
   }
 

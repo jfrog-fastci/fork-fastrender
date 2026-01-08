@@ -853,6 +853,70 @@ fn animation_shorthand_rejects_negative_duration() {
 }
 
 #[test]
+fn animation_shorthand_disambiguates_none_and_backwards() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "animation".into(),
+    value: PropertyValue::Keyword("3s none backwards".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(styles.animation_names, vec!["backwards".to_string()]);
+  assert_eq!(styles.animation_durations, vec![3000.0].into());
+  assert_eq!(
+    styles.animation_fill_modes,
+    vec![AnimationFillMode::None].into()
+  );
+}
+
+#[test]
+fn animation_shorthand_quoted_none_name_is_not_cleared() {
+  let mut styles = ComputedStyle::default();
+  let parent = ComputedStyle::default();
+
+  let decl = Declaration {
+    property: "animation".into(),
+    value: PropertyValue::Keyword("\"none\" 1s linear".into()),
+    contains_var: false,
+    raw_value: String::new(),
+    important: false,
+  };
+  apply_declaration_with_base(
+    &mut styles,
+    &decl,
+    &parent,
+    &ComputedStyle::default(),
+    None,
+    parent.font_size,
+    parent.root_font_size,
+    DEFAULT_VIEWPORT,
+    false,
+  );
+
+  assert_eq!(styles.animation_names, vec!["none".to_string()]);
+  assert_eq!(styles.animation_durations, vec![1000.0].into());
+  assert_eq!(
+    styles.animation_timing_functions,
+    vec![TransitionTimingFunction::Linear].into()
+  );
+}
+
+#[test]
 fn animation_name_ignores_invalid_value() {
   let mut styles = ComputedStyle::default();
   let parent = ComputedStyle::default();
