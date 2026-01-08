@@ -2013,6 +2013,18 @@ fn eval_style_range_value(
         .perspective
         .as_ref()
         .and_then(|len| length_to_numeric(len, container, ctx)),
+      "stroke-miterlimit" => styles.svg_stroke_miterlimit.map(|value| NumericValue {
+        ty: NumericType::Number,
+        value,
+      }),
+      "fill-opacity" => styles.svg_fill_opacity.map(|value| NumericValue {
+        ty: NumericType::Number,
+        value,
+      }),
+      "stroke-opacity" => styles.svg_stroke_opacity.map(|value| NumericValue {
+        ty: NumericType::Number,
+        value,
+      }),
       "image-resolution" => {
         // `image-resolution: from-image` depends on the referenced image's metadata, which isn't
         // available during style query evaluation.

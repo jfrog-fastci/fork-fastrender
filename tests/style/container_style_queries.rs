@@ -1122,6 +1122,84 @@ fn container_style_query_range_feature_matches_perspective() {
 }
 
 #[test]
+fn container_style_query_range_feature_matches_stroke_miterlimit() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; stroke-miterlimit: 2; }
+      .container-high { container-type: inline-size; stroke-miterlimit: 6; }
+      .child { color: rgb(0 0 255); }
+      @container style(stroke-miterlimit > 4) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_fill_opacity() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; fill-opacity: 0.25; }
+      .container-high { container-type: inline-size; fill-opacity: 0.75; }
+      .child { color: rgb(0 0 255); }
+      @container style(fill-opacity > 0.5) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches_stroke_opacity() {
+  let html = r#"
+    <style>
+      .container-low { container-type: inline-size; stroke-opacity: 0.25; }
+      .container-high { container-type: inline-size; stroke-opacity: 0.75; }
+      .child { color: rgb(0 0 255); }
+      @container style(stroke-opacity > 0.5) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-low">
+      <div id="low" class="child">hello</div>
+    </div>
+    <div class="container-high">
+      <div id="high" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let low = find_by_id(&styled, "low").expect("low element");
+  let high = find_by_id(&styled, "high").expect("high element");
+  assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_widows() {
   let html = r#"
     <style>
