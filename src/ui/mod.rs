@@ -1,3 +1,4 @@
+pub mod cancel;
 pub mod messages;
 pub mod worker;
 
