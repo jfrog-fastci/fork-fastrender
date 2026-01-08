@@ -653,6 +653,28 @@ fn abspos_static_position_respects_justify_content_start_in_column_reverse() {
 }
 
 #[test]
+fn abspos_static_position_respects_justify_content_end_in_column_reverse() {
+  // `justify-content: end` resolves against the block-end edge and is not affected by
+  // `flex-direction: column-reverse`.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::ColumnReverse;
+  container_style.justify_content = JustifyContent::End;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_rtl_row_reverse_flex_start() {
   // In RTL, `flex-direction: row-reverse` makes the main axis physical direction left-to-right.
   // `justify-content: flex-start` aligns to the main-start edge (left).
@@ -973,6 +995,30 @@ fn abspos_static_position_respects_wrap_in_negative_cross_axis_writing_mode() {
 
   let (x, y) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_respects_wrap_in_negative_cross_axis_writing_mode_for_flex_end() {
+  // Same as `abspos_static_position_respects_wrap_in_negative_cross_axis_writing_mode`, but with
+  // `align-items:flex-end` which aligns to the cross-end edge (physical left) after the mirror.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.writing_mode = WritingMode::VerticalRl;
+  container_style.flex_wrap = FlexWrap::Wrap;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexEnd;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 0.0).abs() < 0.1, "expected x≈0, got {}", x);
   assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
 }
 
