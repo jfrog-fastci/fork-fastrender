@@ -124,8 +124,11 @@ pub enum RunUntilIdleOutcome {
   Stopped(RunUntilIdleStopReason),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TimerId(u64);
+/// JS-visible timer ID returned by `setTimeout`/`setInterval`.
+///
+/// The HTML Standard uses integer handles for timers; we use `i32` so this can be exposed to JS
+/// without lossy conversions.
+pub type TimerId = i32;
 
 type TimerCallback<Host> =
   Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
@@ -153,7 +156,7 @@ pub struct EventLoop<Host: 'static> {
   next_task_seq: u64,
   timers: HashMap<TimerId, TimerState<Host>>,
   timer_queue: BinaryHeap<Reverse<(Duration, u64, TimerId)>>,
-  next_timer_id: u64,
+  next_timer_id: TimerId,
   next_timer_seq: u64,
   timer_nesting_level: u32,
   performing_microtask_checkpoint: bool,
@@ -495,8 +498,19 @@ impl<Host: 'static> EventLoop<Host> {
       )));
     }
 
-    let id = TimerId(self.next_timer_id);
-    self.next_timer_id = self.next_timer_id.wrapping_add(1);
+    let id: TimerId = loop {
+      if self.next_timer_id == 0 {
+        self.next_timer_id = 1;
+      }
+      let id = self.next_timer_id;
+      self.next_timer_id = self.next_timer_id.wrapping_add(1);
+      if self.next_timer_id == 0 {
+        self.next_timer_id = 1;
+      }
+      if !self.timers.contains_key(&id) {
+        break id;
+      }
+    };
 
     let delay = self.clamp_timer_delay(requested_delay);
     let due = self.clock.now() + delay;

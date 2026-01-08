@@ -11,6 +11,7 @@ pub mod dom_scripts;
 pub mod clock;
 pub mod event_loop;
 pub mod script_scheduler;
+pub mod window_timers;
 
 pub use dom_scripts::extract_script_elements;
 pub use clock::{Clock, RealClock, VirtualClock};
@@ -19,6 +20,9 @@ pub use event_loop::{
   TimerId,
 };
 pub use script_scheduler::{ClassicScriptScheduler, ScriptExecutor, ScriptLoader};
+pub use window_timers::{
+  clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
+};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
