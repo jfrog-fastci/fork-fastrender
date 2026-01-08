@@ -3369,6 +3369,7 @@ pub fn view_timeline_progress(
 pub fn axis_scroll_state(
   axis: TimelineAxis,
   writing_mode: WritingMode,
+  direction: Direction,
   scroll_x: f32,
   scroll_y: f32,
   view_width: f32,
@@ -3384,19 +3385,48 @@ pub fn axis_scroll_state(
     }
   };
 
+  // Scroll timelines measure offsets from the scroll origin. The scroll origin can flip depending
+  // on writing-mode/direction, even for physical axes (x/y). See the note in Scroll Animations 1
+  // under the `scroll()` notation.
+  let inline_horizontal = inline_axis_is_horizontal(writing_mode);
+  let axis_positive = match axis {
+    TimelineAxis::Inline => crate::style::inline_axis_positive(writing_mode, direction),
+    TimelineAxis::Block => crate::style::block_axis_positive(writing_mode),
+    TimelineAxis::X => {
+      if inline_horizontal {
+        crate::style::inline_axis_positive(writing_mode, direction)
+      } else {
+        crate::style::block_axis_positive(writing_mode)
+      }
+    }
+    TimelineAxis::Y => {
+      if inline_horizontal {
+        crate::style::block_axis_positive(writing_mode)
+      } else {
+        crate::style::inline_axis_positive(writing_mode, direction)
+      }
+    }
+  };
+
   let horizontal = axis_is_horizontal(axis, writing_mode);
   if horizontal {
     let view_width = sanitize(view_width);
     let content_width = sanitize(content_width);
     let range = (content_width - view_width).max(0.0);
-    let scroll_x = sanitize(scroll_x);
-    (scroll_x.min(range), range, view_width)
+    let mut pos = sanitize(scroll_x).min(range);
+    if !axis_positive {
+      pos = range - pos;
+    }
+    (pos.clamp(0.0, range), range, view_width)
   } else {
     let view_height = sanitize(view_height);
     let content_height = sanitize(content_height);
     let range = (content_height - view_height).max(0.0);
-    let scroll_y = sanitize(scroll_y);
-    (scroll_y.min(range), range, view_height)
+    let mut pos = sanitize(scroll_y).min(range);
+    if !axis_positive {
+      pos = range - pos;
+    }
+    (pos.clamp(0.0, range), range, view_height)
   }
 }
 
@@ -4718,6 +4748,7 @@ fn named_timeline_states_for_export(
     let (scroll_pos, scroll_range, viewport_size) = axis_scroll_state(
       tl.axis,
       scroll_timeline_context.writing_mode,
+      scroll_timeline_context.direction,
       scroll_timeline_context.scroll.x,
       scroll_timeline_context.scroll.y,
       scroll_timeline_context.viewport.width,
@@ -5043,6 +5074,7 @@ fn scroll_progress_for_function(
   let (scroll_pos, scroll_range, viewport_size) = axis_scroll_state(
     func.axis,
     scroll_container.writing_mode,
+    scroll_container.direction,
     scroll_container.scroll.x,
     scroll_container.scroll.y,
     scroll_container.viewport.width,
@@ -5210,6 +5242,7 @@ fn apply_animations_to_node_scoped(
         let (scroll_pos, scroll_range, viewport_size) = axis_scroll_state(
           tl.axis,
           scroll_timeline_context.writing_mode,
+          scroll_timeline_context.direction,
           scroll_timeline_context.scroll.x,
           scroll_timeline_context.scroll.y,
           scroll_timeline_context.viewport.width,
@@ -5363,6 +5396,7 @@ fn apply_animations_to_node_scoped(
                 let (_, scroll_range, _) = axis_scroll_state(
                   func.axis,
                   scroll_container.writing_mode,
+                  scroll_container.direction,
                   0.0,
                   0.0,
                   scroll_container.viewport.width,
@@ -6634,6 +6668,7 @@ mod tests {
     let (pos, range, view_size) = axis_scroll_state(
       TimelineAxis::Block,
       WritingMode::HorizontalTb,
+      Direction::Ltr,
       0.0,
       50.0,
       100.0,

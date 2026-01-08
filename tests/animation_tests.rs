@@ -19,7 +19,7 @@ use fastrender::style::types::{
   AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize, BackgroundSizeComponent,
   BasicShape, BorderStyle, ClipComponent, FilterFunction, OutlineColor, OutlineStyle, Overflow,
   RangeOffset, ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis,
-  TimelineOffset, TransformOrigin, ViewTimeline, ViewTimelinePhase, WritingMode,
+  TimelineOffset, TransformOrigin, ViewTimeline, ViewTimelinePhase, WritingMode, Direction,
 };
 use fastrender::Rgba;
 use fastrender::{
@@ -1212,6 +1212,7 @@ fn inline_axis_uses_writing_mode_direction() {
   let (scroll_pos, scroll_range, view_size) = axis_scroll_state(
     timeline.axis,
     WritingMode::VerticalRl,
+    Direction::Ltr,
     10.0,
     30.0,
     100.0,
@@ -1224,6 +1225,89 @@ fn inline_axis_uses_writing_mode_direction() {
   assert!((scroll_pos - 30.0).abs() < 1e-6);
   assert!((scroll_range - 200.0).abs() < 1e-6);
   assert!(progress > 0.0 && progress < 1.0);
+}
+
+#[test]
+fn axis_scroll_state_flips_scroll_origin_for_rtl_inline_axis() {
+  let (pos0, range, _) = axis_scroll_state(
+    TimelineAxis::Inline,
+    WritingMode::HorizontalTb,
+    Direction::Rtl,
+    0.0,
+    0.0,
+    100.0,
+    100.0,
+    200.0,
+    100.0,
+  );
+  assert!((range - 100.0).abs() < 1e-6, "range={range}");
+  assert!((pos0 - 100.0).abs() < 1e-6, "pos0={pos0}");
+
+  let (pos_end, _, _) = axis_scroll_state(
+    TimelineAxis::Inline,
+    WritingMode::HorizontalTb,
+    Direction::Rtl,
+    100.0,
+    0.0,
+    100.0,
+    100.0,
+    200.0,
+    100.0,
+  );
+  assert!((pos_end - 0.0).abs() < 1e-6, "pos_end={pos_end}");
+
+  // Physical x axis should also flip for horizontal writing modes, because the scroll origin is
+  // tied to the writing mode even when `scroll-timeline-axis: x` is specified.
+  let (pos_x0, _, _) = axis_scroll_state(
+    TimelineAxis::X,
+    WritingMode::HorizontalTb,
+    Direction::Rtl,
+    0.0,
+    0.0,
+    100.0,
+    100.0,
+    200.0,
+    100.0,
+  );
+  assert!((pos_x0 - 100.0).abs() < 1e-6, "pos_x0={pos_x0}");
+}
+
+#[test]
+fn scroll_timeline_progress_is_reversed_for_rtl_inline_axis() {
+  let timeline = ScrollTimeline {
+    axis: TimelineAxis::Inline,
+    ..ScrollTimeline::default()
+  };
+  let range = AnimationRange::default();
+
+  let (pos0, scroll_range, view_size) = axis_scroll_state(
+    timeline.axis,
+    WritingMode::HorizontalTb,
+    Direction::Rtl,
+    0.0,
+    0.0,
+    100.0,
+    100.0,
+    200.0,
+    100.0,
+  );
+  let progress0 = scroll_timeline_progress(&timeline, pos0, scroll_range, view_size, &range).unwrap();
+  assert!((progress0 - 1.0).abs() < 1e-6, "progress0={progress0}");
+
+  let (pos_end, scroll_range, view_size) = axis_scroll_state(
+    timeline.axis,
+    WritingMode::HorizontalTb,
+    Direction::Rtl,
+    100.0,
+    0.0,
+    100.0,
+    100.0,
+    200.0,
+    100.0,
+  );
+  let progress_end =
+    scroll_timeline_progress(&timeline, pos_end, scroll_range, view_size, &range).unwrap();
+  assert!((progress_end - 0.0).abs() < 1e-6, "progress_end={progress_end}");
 }
 
 #[test]
@@ -1241,6 +1325,7 @@ fn nested_scroll_timelines_progress_independently() {
   let (outer_pos, outer_range, outer_size) = axis_scroll_state(
     outer.axis,
     WritingMode::HorizontalTb,
+    Direction::Ltr,
     0.0,
     120.0,
     240.0,
@@ -1251,6 +1336,7 @@ fn nested_scroll_timelines_progress_independently() {
   let (inner_pos, inner_range, inner_size) = axis_scroll_state(
     inner.axis,
     WritingMode::HorizontalTb,
+    Direction::Ltr,
     80.0,
     0.0,
     180.0,
@@ -1695,6 +1781,7 @@ fn scroll_timeline_drives_animation_during_render() {
   let (pos, range, view_size) = axis_scroll_state(
     timeline_check.axis,
     WritingMode::HorizontalTb,
+    Direction::Ltr,
     0.0,
     max_scroll,
     tree.viewport_size().width,
