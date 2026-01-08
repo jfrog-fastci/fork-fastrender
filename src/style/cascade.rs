@@ -13320,6 +13320,17 @@ fn apply_styles_internal_with_ancestors<'a>(
       };
     }
 
+    if !has_starting_styles {
+      if let Some(reuse_map) = reuse_map {
+        if let Some(ptr) = reuse_map.get(&node_id) {
+          // Safety: `reuse_map` pointers are constructed from the previous styled tree, which the
+          // caller keeps alive for the duration of this cascade pass (see `PreparedCascade::apply`
+          // and the container-query fixpoint iteration in `api.rs`).
+          starting_styles = unsafe { (&**ptr).starting_styles.clone() };
+        }
+      }
+    }
+
     let cache_flat_inheritance_parent = slot_assignment.slot_to_nodes.contains_key(&node_id);
     let cached_starting_styles = cache_flat_inheritance_parent
       .then(|| starting_styles.base.clone())
@@ -16989,6 +17000,79 @@ mod tests {
     // - both base + @starting-style cascades, and
     // - both container-query passes.
     assert_eq!(inline_style_declaration_parse_count(), 2);
+  }
+
+  #[test]
+  fn prepared_cascade_preserves_attached_starting_styles_when_recascading_scoped_nodes() {
+    let _lock = cascade_global_test_lock();
+
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "root".to_string())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "inner".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r#"
+        #root { color: rgb(1, 2, 3); }
+        @starting-style {
+          #root { color: rgb(4, 5, 6); }
+        }
+      "#,
+    )
+    .expect("parse stylesheet");
+    let style_set = StyleSet::from_document(stylesheet);
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let starting_tree = apply_starting_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,
+    )
+    .expect("starting style cascade");
+
+    let mut prepared =
+      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
+        .expect("build prepared cascade");
+    let mut styled = prepared
+      .apply(None, None, None, None, None)
+      .expect("base cascade");
+    attach_starting_styles(&mut styled, &starting_tree);
+
+    assert!(
+      styled.starting_styles.base.is_some(),
+      "expected attached starting styles to be present before recascade"
+    );
+
+    fn collect_reuse_map(node: &StyledNode, out: &mut HashMap<usize, *const StyledNode>) {
+      out.insert(node.node_id, node as *const StyledNode);
+      for child in node.children.iter() {
+        collect_reuse_map(child, out);
+      }
+    }
+
+    let mut reuse_map = HashMap::new();
+    collect_reuse_map(&styled, &mut reuse_map);
+
+    // Force a recascade of the root node (which will allocate a new `StyledNode`) while allowing
+    // descendants to reuse cached subtrees.
+    let container_scope = HashSet::from([1usize]);
+    let recascaded = prepared
+      .apply(None, None, Some(&container_scope), Some(&reuse_map), None)
+      .expect("scoped recascade");
+
+    assert!(
+      recascaded.starting_styles.base.is_some(),
+      "expected starting-style snapshots to be preserved when recascading scoped nodes"
+    );
   }
 
   #[test]
