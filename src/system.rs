@@ -6,6 +6,13 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
+/// Default stack size for threads that execute the full render pipeline.
+///
+/// Deeply nested documents can overflow the default per-thread stack (often 2–8 MiB on many
+/// platforms) and abort the process. CLI render binaries therefore run each render on a dedicated
+/// large-stack worker thread; the browser UI should do the same.
+pub const DEFAULT_RENDER_STACK_SIZE: usize = 128 * 1024 * 1024; // 128MiB
+
 /// Determine a conservative CPU budget for default parallelism.
 ///
 /// This is primarily used by pageset tooling to pick sane defaults for:

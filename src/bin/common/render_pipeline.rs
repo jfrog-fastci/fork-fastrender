@@ -35,8 +35,11 @@ use std::time::Duration;
 /// Stack size for CLI worker threads running the full render pipeline.
 ///
 /// Large pages (or deeply nested DOM/style trees) can otherwise overflow the default thread stack
-/// and abort the process. Keep this in sync across CLI binaries.
-pub const CLI_RENDER_STACK_SIZE: usize = 128 * 1024 * 1024; // 128MB
+/// and abort the process.
+///
+/// This aliases [`fastrender::system::DEFAULT_RENDER_STACK_SIZE`] so CLI tools and the browser UI
+/// share the same value.
+pub const CLI_RENDER_STACK_SIZE: usize = fastrender::system::DEFAULT_RENDER_STACK_SIZE;
 
 /// Bundle of renderer configuration and per-render options parsed from CLI flags.
 #[derive(Debug, Clone)]

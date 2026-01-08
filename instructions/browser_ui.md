@@ -137,6 +137,9 @@ Keep this strictly spec-shaped and incremental: don’t invent page-specific beh
 - The renderer already produces pixel output; the UI layer should consume an **RGBA buffer** directly (avoid PNG encode/decode).
 - Prefer a stable “render to buffer” API (e.g. `render_html_to_rgba(...)`) even if initially implemented by refactoring the PNG path.
 - Renders must be cancellable: when the user types a new URL or scrolls rapidly, cancel/skip stale work.
+- The render pipeline can recurse deeply on complex pages; spawn the render worker thread via
+  `std::thread::Builder::new().stack_size(fastrender::system::DEFAULT_RENDER_STACK_SIZE)` (128MiB)
+  to avoid stack overflow aborts on platforms with small default thread stacks.
 
 ## Where code should live (suggested)
 
