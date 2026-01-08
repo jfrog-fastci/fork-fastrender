@@ -33,8 +33,6 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-#[cfg(test)]
-use std::sync::LazyLock;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use taffy::style::Style as TaffyStyle;
@@ -234,11 +232,11 @@ pub fn taffy_perf_counters() -> TaffyPerfCounters {
   }
 }
 
-static TAFFY_COUNTERS_ENABLED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(test)]
-static TAFFY_COUNTERS_TEST_LOCK: LazyLock<parking_lot::ReentrantMutex<()>> =
-  LazyLock::new(|| parking_lot::ReentrantMutex::new(()));
+thread_local! {
+  // Keep usage counters opt-in on a per-thread basis so diagnostic/test scopes don't get polluted by
+  // unrelated work executing on other threads.
+  static TAFFY_COUNTERS_THREAD_ENABLED: Cell<bool> = const { Cell::new(false) };
+}
 
 struct TaffyUsageAtomicCounters {
   flex: AtomicU64,
@@ -309,35 +307,33 @@ impl TaffyUsageAtomicCounters {
 static TAFFY_COUNTERS: TaffyUsageAtomicCounters = TaffyUsageAtomicCounters::new();
 
 pub struct TaffyUsageCountersGuard {
-  previous: bool,
-  #[cfg(test)]
-  _lock: Option<parking_lot::ReentrantMutexGuard<'static, ()>>,
+  prev_enabled: bool,
 }
 
 impl Drop for TaffyUsageCountersGuard {
   fn drop(&mut self) {
-    TAFFY_COUNTERS_ENABLED.store(self.previous, Ordering::Relaxed);
+    TAFFY_COUNTERS_THREAD_ENABLED.with(|cell| cell.set(self.prev_enabled));
   }
 }
 
 pub fn enable_taffy_counters(enabled: bool) -> TaffyUsageCountersGuard {
-  #[cfg(test)]
-  let lock = enabled.then(|| TAFFY_COUNTERS_TEST_LOCK.lock());
-  let previous = TAFFY_COUNTERS_ENABLED.swap(enabled, Ordering::Relaxed);
+  let prev_enabled = TAFFY_COUNTERS_THREAD_ENABLED.with(|cell| {
+    let prev = cell.get();
+    cell.set(enabled);
+    prev
+  });
   TaffyUsageCountersGuard {
-    previous,
-    #[cfg(test)]
-    _lock: lock,
+    prev_enabled,
   }
 }
 
 pub fn set_taffy_counters_enabled(enabled: bool) {
-  TAFFY_COUNTERS_ENABLED.store(enabled, Ordering::Relaxed);
+  TAFFY_COUNTERS_THREAD_ENABLED.with(|cell| cell.set(enabled));
 }
 
 #[inline]
-fn taffy_counters_enabled() -> bool {
-  TAFFY_COUNTERS_ENABLED.load(Ordering::Relaxed)
+pub(crate) fn taffy_counters_enabled() -> bool {
+  TAFFY_COUNTERS_THREAD_ENABLED.with(|cell| cell.get())
 }
 
 /// Records that a Taffy layout was executed.
@@ -346,11 +342,6 @@ pub(crate) fn record_taffy_invocation(kind: TaffyAdapterKind) {
   if !taffy_counters_enabled() {
     return;
   }
-  #[cfg(test)]
-  let _lock = match TAFFY_COUNTERS_TEST_LOCK.try_lock() {
-    Some(guard) => guard,
-    None => return,
-  };
   match kind {
     TaffyAdapterKind::Flex => {
       TAFFY_COUNTERS.flex.fetch_add(1, Ordering::Relaxed);
@@ -366,11 +357,6 @@ pub(crate) fn record_taffy_node_cache_hit(kind: TaffyAdapterKind, count: u64) {
   if !taffy_counters_enabled() || count == 0 {
     return;
   }
-  #[cfg(test)]
-  let _lock = match TAFFY_COUNTERS_TEST_LOCK.try_lock() {
-    Some(guard) => guard,
-    None => return,
-  };
   match kind {
     TaffyAdapterKind::Flex => {
       TAFFY_COUNTERS
@@ -390,11 +376,6 @@ pub(crate) fn record_taffy_node_cache_miss(kind: TaffyAdapterKind, count: u64) {
   if !taffy_counters_enabled() || count == 0 {
     return;
   }
-  #[cfg(test)]
-  let _lock = match TAFFY_COUNTERS_TEST_LOCK.try_lock() {
-    Some(guard) => guard,
-    None => return,
-  };
   match kind {
     TaffyAdapterKind::Flex => {
       TAFFY_COUNTERS
@@ -414,11 +395,6 @@ pub(crate) fn record_taffy_style_cache_hit(kind: TaffyAdapterKind, count: u64) {
   if !taffy_counters_enabled() || count == 0 {
     return;
   }
-  #[cfg(test)]
-  let _lock = match TAFFY_COUNTERS_TEST_LOCK.try_lock() {
-    Some(guard) => guard,
-    None => return,
-  };
   match kind {
     TaffyAdapterKind::Flex => {
       TAFFY_COUNTERS
@@ -438,11 +414,6 @@ pub(crate) fn record_taffy_style_cache_miss(kind: TaffyAdapterKind, count: u64) 
   if !taffy_counters_enabled() || count == 0 {
     return;
   }
-  #[cfg(test)]
-  let _lock = match TAFFY_COUNTERS_TEST_LOCK.try_lock() {
-    Some(guard) => guard,
-    None => return,
-  };
   match kind {
     TaffyAdapterKind::Flex => {
       TAFFY_COUNTERS
@@ -462,11 +433,6 @@ pub(crate) fn record_taffy_template_eviction(kind: TaffyAdapterKind, count: u64)
   if !taffy_counters_enabled() || count == 0 {
     return;
   }
-  #[cfg(test)]
-  let _lock = match TAFFY_COUNTERS_TEST_LOCK.try_lock() {
-    Some(guard) => guard,
-    None => return,
-  };
   match kind {
     TaffyAdapterKind::Flex => {
       TAFFY_COUNTERS

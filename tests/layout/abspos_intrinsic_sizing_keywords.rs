@@ -75,7 +75,7 @@ fn abspos_width_max_content_shrinkwraps_text() {
 }
 
 #[test]
-fn abspos_width_fit_content_clamps_to_available_between_insets() {
+fn abspos_width_fit_content_clamps_to_available_after_overconstraint() {
   let fc = BlockFormattingContext::new();
   let text = "lorem ipsum dolor sit amet";
 
@@ -101,7 +101,11 @@ fn abspos_width_fit_content_clamps_to_available_between_insets() {
 
   let left = 10.0;
   let right = 10.0;
-  let container_width = available + left + right;
+  // When `left`, `right`, and `width` are all specified on an absolutely positioned box, the
+  // resulting constraint equation can be overconstrained. In LTR, CSS 2.1 §10.3.7 resolves this by
+  // ignoring `right` and computing it from the remaining values. `width: fit-content` should
+  // resolve against the post-overconstraint available space (`containing_width - left`).
+  let container_width = available + left;
 
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
@@ -126,6 +130,6 @@ fn abspos_width_fit_content_clamps_to_available_between_insets() {
   assert_approx(
     fragment.children[0].bounds.width(),
     available,
-    "abspos width:fit-content should clamp to available size between insets",
+    "abspos width:fit-content should clamp to available size after overconstraint resolution",
   );
 }

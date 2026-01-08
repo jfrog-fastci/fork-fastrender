@@ -4382,7 +4382,7 @@ fn apply_sticky_offsets_with_context(
     }
   }
 
-  let (padding_rect, content_rect) = positioned
+  let (_padding_rect, content_rect) = positioned
     .as_ref()
     .map_or((abs_rect, abs_rect), |(positioned, _)| {
       let padding_rect = Rect::from_xywh(
@@ -4422,7 +4422,9 @@ fn apply_sticky_offsets_with_context(
       establishes_scrollport && overflow_establishes_sticky_scrollport(style.overflow_y);
     if is_scrollport_x || is_scrollport_y {
       let scrollport = StickyScrollport {
-        rect: padding_rect,
+        // Sticky positioning is relative to the scroll container's *content box* (inside padding),
+        // not the padding box. This ensures `top:0` clamps below scroll container padding.
+        rect: content_rect,
         screen_offset: context.cumulative_scroll,
         scroll_offset: self_scroll,
       };
@@ -9317,8 +9319,11 @@ impl FastRender {
     let _deadline_guard = DeadlineGuard::install(deadline);
     let toggles = runtime::runtime_toggles();
     let taffy_stats_enabled = stats.is_some() || toggles.truthy("FASTR_TAFFY_STATS");
-    let _taffy_stats_guard =
-      crate::layout::taffy_integration::enable_taffy_counters(taffy_stats_enabled);
+    // Avoid toggling the global Taffy counters off when statistics are disabled. In tests (and
+    // potentially concurrent renders) other callers may temporarily enable the counters and rely on
+    // them staying active for the duration of that scope.
+    let _taffy_stats_guard = taffy_stats_enabled
+      .then(|| crate::layout::taffy_integration::enable_taffy_counters(true));
     if taffy_stats_enabled {
       crate::layout::taffy_integration::reset_taffy_counters();
     }

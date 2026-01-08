@@ -476,6 +476,7 @@ impl BlockFormattingContext {
     let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
     if let BoxType::Replaced(replaced_box) = &child.box_type {
       let mut fragment = self.layout_replaced_child(
+        parent,
         child,
         replaced_box,
         containing_width,
@@ -724,6 +725,13 @@ impl BlockFormattingContext {
       if let Some(used_border_box) = used_border_box {
         specified_height = Some((used_border_box - vertical_edges).max(0.0));
       }
+    }
+    if specified_height.is_none()
+      && height_auto
+      && block_axis_is_horizontal(style.writing_mode)
+      && available_block_border_box.is_finite()
+    {
+      specified_height = Some((available_block_border_box - vertical_edges).max(0.0));
     }
     let child_height_space = specified_height
       .map(AvailableSpace::Definite)
@@ -2055,7 +2063,28 @@ impl BlockFormattingContext {
       }
     }
 
-    let bounds = Rect::from_xywh(computed_width.margin_left, box_y, box_width, box_height);
+    // Fragment bounds are stored in the coordinate system of the parent fragment. When a child
+    // establishes an orthogonal writing mode, its logical inline/block sizes swap relative to the
+    // parent's axes; map through physical space so in-flow layout and fragmentation observe the
+    // correct block progression extents.
+    let child_block_is_horizontal = block_axis_is_horizontal(style.writing_mode);
+    let (phys_w, phys_h) = if child_block_is_horizontal {
+      (box_height, box_width)
+    } else {
+      (box_width, box_height)
+    };
+    let parent_block_is_horizontal = block_axis_is_horizontal(parent.style.writing_mode);
+    let (inline_size_in_parent, block_size_in_parent) = if parent_block_is_horizontal {
+      (phys_h, phys_w)
+    } else {
+      (phys_w, phys_h)
+    };
+    let bounds = Rect::from_xywh(
+      computed_width.margin_left,
+      box_y,
+      inline_size_in_parent,
+      block_size_in_parent,
+    );
 
     let mut fragment = FragmentNode::new_with_style(
       bounds,
@@ -2283,6 +2312,7 @@ impl BlockFormattingContext {
 
   fn layout_replaced_child(
     &self,
+    parent: &BoxNode,
     child: &BoxNode,
     replaced_box: &ReplacedBox,
     containing_width: f32,
@@ -2396,7 +2426,28 @@ impl BlockFormattingContext {
       horizontal_padding_and_borders(style, containing_width, self.viewport_size, &self.font_context)
     };
     let box_height = (used_block + block_edges).max(0.0);
-    let bounds = Rect::from_xywh(computed_width.margin_left, box_y, box_width, box_height);
+    // Fragment bounds are stored in the coordinate system of the parent fragment. When the
+    // replaced element establishes an orthogonal writing mode, its logical inline/block sizes are
+    // swapped relative to the parent's axes; map through physical space so in-flow layout and
+    // fragmentation observe the correct block progression extents.
+    let child_block_is_horizontal = block_axis_is_horizontal(style.writing_mode);
+    let (phys_w, phys_h) = if child_block_is_horizontal {
+      (box_height, box_width)
+    } else {
+      (box_width, box_height)
+    };
+    let parent_block_is_horizontal = block_axis_is_horizontal(parent.style.writing_mode);
+    let (inline_size_in_parent, block_size_in_parent) = if parent_block_is_horizontal {
+      (phys_h, phys_w)
+    } else {
+      (phys_w, phys_h)
+    };
+    let bounds = Rect::from_xywh(
+      computed_width.margin_left,
+      box_y,
+      inline_size_in_parent,
+      block_size_in_parent,
+    );
 
     let mut fragment = FragmentNode::new_with_style(
       bounds,
@@ -3012,7 +3063,22 @@ impl BlockFormattingContext {
       let pending_margin = margin_ctx.consume_pending();
       *current_y += pending_margin;
 
-      let mut inline_container = BoxNode::new_inline(parent.style.clone(), std::mem::take(buffer));
+      // Inline formatting contexts should lay out the inline content area; padding/borders are
+      // applied by the surrounding block container. Clear edges on the synthetic inline container
+      // to avoid double-counting them in block layout.
+      let mut inline_style = parent.style.clone();
+      {
+        let s = Arc::make_mut(&mut inline_style);
+        s.padding_top = Length::px(0.0);
+        s.padding_right = Length::px(0.0);
+        s.padding_bottom = Length::px(0.0);
+        s.padding_left = Length::px(0.0);
+        s.border_top_width = Length::px(0.0);
+        s.border_right_width = Length::px(0.0);
+        s.border_bottom_width = Length::px(0.0);
+        s.border_left_width = Length::px(0.0);
+      }
+      let mut inline_container = BoxNode::new_inline(inline_style, std::mem::take(buffer));
       // If the inline container would start below the current cursor because of pending
       // margins, advance to that baseline first.
       let inline_y = *current_y;
@@ -7028,117 +7094,14 @@ fn convert_fragment_axes(
   parent_writing_mode: WritingMode,
   parent_direction: crate::style::types::Direction,
 ) -> FragmentNode {
-  let style_wm = fragment
-    .style
-    .as_ref()
-    .map(|s| s.writing_mode)
-    .unwrap_or(parent_writing_mode);
-  let dir = fragment
-    .style
-    .as_ref()
-    .map(|s| s.direction)
-    .unwrap_or(parent_direction);
-  let _inline_is_horizontal = inline_axis_is_horizontal(style_wm);
-  let block_is_horizontal = block_axis_is_horizontal(style_wm);
-  let inline_positive = inline_axis_positive(style_wm, dir);
-  let block_positive = block_axis_positive(style_wm);
-
-  let logical_inline_start = fragment.bounds.x();
-  let logical_block_start = fragment.bounds.y();
-  let inline_size = fragment.bounds.width();
-  let block_size = fragment.bounds.height();
-
-  if block_is_horizontal {
-    // Swap axes: logical block → physical x, logical inline → physical y.
-    //
-    // Note: `parent_inline_size`/`parent_block_size` are expressed in the parent's logical axes.
-    // When the parent is horizontal-tb, `parent_inline_size` is its physical width and
-    // `parent_block_size` is its physical height. When the parent is vertical, those swap.
-    //
-    // We need the parent's *physical* width/height here because we're mapping onto physical X/Y.
-    let parent_block_is_horizontal = block_axis_is_horizontal(parent_writing_mode);
-    let parent_physical_width = if parent_block_is_horizontal {
-      parent_block_size
-    } else {
-      parent_inline_size
-    };
-    let parent_physical_height = if parent_block_is_horizontal {
-      parent_inline_size
-    } else {
-      parent_block_size
-    };
-    let phys_x = if block_positive {
-      logical_block_start
-    } else {
-      parent_physical_width - logical_block_start - block_size
-    };
-    let phys_y = if inline_positive {
-      logical_inline_start
-    } else {
-      parent_physical_height - logical_inline_start - inline_size
-    };
-    fragment.bounds = Rect::from_xywh(phys_x, phys_y, block_size, inline_size);
-    if let Some(logical) = fragment.logical_override {
-      let logical_inline_start = logical.x();
-      let logical_block_start = logical.y();
-      let inline_size = logical.width();
-      let block_size = logical.height();
-      let phys_x = if block_positive {
-        logical_block_start
-      } else {
-        parent_physical_width - logical_block_start - block_size
-      };
-      let phys_y = if inline_positive {
-        logical_inline_start
-      } else {
-        parent_physical_height - logical_inline_start - inline_size
-      };
-      fragment.logical_override = Some(Rect::from_xywh(phys_x, phys_y, block_size, inline_size));
-    }
-    let child_inline = inline_size;
-    let child_block = block_size;
-    let mapped_children: Vec<_> = std::mem::take(&mut fragment.children)
-      .into_iter()
-      .map(|c| convert_fragment_axes(c, child_inline, child_block, style_wm, dir))
-      .collect();
-    fragment.children = mapped_children.into();
-    fragment
-  } else {
-    // Keep axes; only recurse.
-    let child_inline = inline_size;
-    let child_block = block_size;
-    let mapped_children: Vec<_> = std::mem::take(&mut fragment.children)
-      .into_iter()
-      .map(|c| convert_fragment_axes(c, child_inline, child_block, style_wm, dir))
-      .collect();
-    fragment.children = mapped_children.into();
-    fragment
-  }
-}
-
-fn unconvert_fragment_axes(
-  mut fragment: FragmentNode,
-  parent_inline_size: f32,
-  parent_block_size: f32,
-  parent_writing_mode: WritingMode,
-  parent_direction: crate::style::types::Direction,
-) -> FragmentNode {
-  let style_wm = fragment
-    .style
-    .as_ref()
-    .map(|s| s.writing_mode)
-    .unwrap_or(parent_writing_mode);
-  let dir = fragment
-    .style
-    .as_ref()
-    .map(|s| s.direction)
-    .unwrap_or(parent_direction);
-  let _inline_is_horizontal = inline_axis_is_horizontal(style_wm);
-  let block_is_horizontal = block_axis_is_horizontal(style_wm);
-  let inline_positive = inline_axis_positive(style_wm, dir);
-  let block_positive = block_axis_positive(style_wm);
-
+  // Fragment bounds are always expressed in the coordinate system of their parent fragment.
+  // That coordinate system is determined by the parent's writing mode, not the child's.
+  //
+  // Writing-mode affects how a fragment lays out its *children*, but does not change how the
+  // fragment's own border box is positioned within its parent.
   let parent_block_is_horizontal = block_axis_is_horizontal(parent_writing_mode);
+  let parent_inline_positive = inline_axis_positive(parent_writing_mode, parent_direction);
+  let parent_block_positive = block_axis_positive(parent_writing_mode);
   let parent_physical_width = if parent_block_is_horizontal {
     parent_block_size
   } else {
@@ -7150,46 +7113,208 @@ fn unconvert_fragment_axes(
     parent_block_size
   };
 
-  if block_is_horizontal {
-    // Inverse of `convert_fragment_axes` for vertical writing modes:
-    // physical x/y → logical inline/block coordinates.
-    let phys_x = fragment.bounds.x();
-    let phys_y = fragment.bounds.y();
-    let block_size = fragment.bounds.width();
-    let inline_size = fragment.bounds.height();
+  let logical_inline_start = fragment.bounds.x();
+  let logical_block_start = fragment.bounds.y();
+  let inline_size = fragment.bounds.width();
+  let block_size = fragment.bounds.height();
 
-    let logical_block_start = if block_positive {
+  let (phys_x, phys_y, phys_w, phys_h) = if parent_block_is_horizontal {
+    let phys_x = if parent_block_positive {
+      logical_block_start
+    } else {
+      parent_physical_width - logical_block_start - block_size
+    };
+    let phys_y = if parent_inline_positive {
+      logical_inline_start
+    } else {
+      parent_physical_height - logical_inline_start - inline_size
+    };
+    (phys_x, phys_y, block_size, inline_size)
+  } else {
+    let phys_x = if parent_inline_positive {
+      logical_inline_start
+    } else {
+      parent_physical_width - logical_inline_start - inline_size
+    };
+    let phys_y = if parent_block_positive {
+      logical_block_start
+    } else {
+      parent_physical_height - logical_block_start - block_size
+    };
+    (phys_x, phys_y, inline_size, block_size)
+  };
+
+  fragment.bounds = Rect::from_xywh(phys_x, phys_y, phys_w, phys_h);
+  if let Some(logical) = fragment.logical_override {
+    let logical_inline_start = logical.x();
+    let logical_block_start = logical.y();
+    let inline_size = logical.width();
+    let block_size = logical.height();
+    let (phys_x, phys_y, phys_w, phys_h) = if parent_block_is_horizontal {
+      let phys_x = if parent_block_positive {
+        logical_block_start
+      } else {
+        parent_physical_width - logical_block_start - block_size
+      };
+      let phys_y = if parent_inline_positive {
+        logical_inline_start
+      } else {
+        parent_physical_height - logical_inline_start - inline_size
+      };
+      (phys_x, phys_y, block_size, inline_size)
+    } else {
+      let phys_x = if parent_inline_positive {
+        logical_inline_start
+      } else {
+        parent_physical_width - logical_inline_start - inline_size
+      };
+      let phys_y = if parent_block_positive {
+        logical_block_start
+      } else {
+        parent_physical_height - logical_block_start - block_size
+      };
+      (phys_x, phys_y, inline_size, block_size)
+    };
+    fragment.logical_override = Some(Rect::from_xywh(phys_x, phys_y, phys_w, phys_h));
+  }
+
+  let style_wm = fragment
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(parent_writing_mode);
+  let dir = fragment
+    .style
+    .as_ref()
+    .map(|s| s.direction)
+    .unwrap_or(parent_direction);
+  // Compute the parent's inline/block sizes in the fragment's coordinate system so children
+  // convert with the correct mirrored axes.
+  let phys_w = fragment.bounds.width();
+  let phys_h = fragment.bounds.height();
+  let child_inline = if block_axis_is_horizontal(style_wm) { phys_h } else { phys_w };
+  let child_block = if block_axis_is_horizontal(style_wm) { phys_w } else { phys_h };
+  let mapped_children: Vec<_> = fragment
+    .children
+    .into_iter()
+    .map(|c| convert_fragment_axes(c, child_inline, child_block, style_wm, dir))
+    .collect();
+  fragment.children = mapped_children.into();
+  fragment
+}
+
+fn unconvert_fragment_axes(
+  mut fragment: FragmentNode,
+  parent_inline_size: f32,
+  parent_block_size: f32,
+  parent_writing_mode: WritingMode,
+  parent_direction: crate::style::types::Direction,
+) -> FragmentNode {
+  // Inverse of `convert_fragment_axes`: map physical bounds back into the logical coordinate system
+  // of the parent fragment.
+  let parent_block_is_horizontal = block_axis_is_horizontal(parent_writing_mode);
+  let parent_inline_positive = inline_axis_positive(parent_writing_mode, parent_direction);
+  let parent_block_positive = block_axis_positive(parent_writing_mode);
+  let parent_physical_width = if parent_block_is_horizontal {
+    parent_block_size
+  } else {
+    parent_inline_size
+  };
+  let parent_physical_height = if parent_block_is_horizontal {
+    parent_inline_size
+  } else {
+    parent_block_size
+  };
+
+  let phys_x = fragment.bounds.x();
+  let phys_y = fragment.bounds.y();
+  let phys_w = fragment.bounds.width();
+  let phys_h = fragment.bounds.height();
+
+  let inline_size = if parent_block_is_horizontal { phys_h } else { phys_w };
+  let block_size = if parent_block_is_horizontal { phys_w } else { phys_h };
+
+  let logical_block_start = if parent_block_is_horizontal {
+    if parent_block_positive {
       phys_x
     } else {
       parent_physical_width - phys_x - block_size
-    };
-    let logical_inline_start = if inline_positive {
+    }
+  } else if parent_block_positive {
+    phys_y
+  } else {
+    parent_physical_height - phys_y - block_size
+  };
+
+  let logical_inline_start = if parent_block_is_horizontal {
+    if parent_inline_positive {
       phys_y
     } else {
       parent_physical_height - phys_y - inline_size
-    };
-
-    fragment.bounds =
-      Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size);
-    let child_inline = inline_size;
-    let child_block = block_size;
-    let mapped_children: Vec<_> = std::mem::take(&mut fragment.children)
-      .into_iter()
-      .map(|c| unconvert_fragment_axes(c, child_inline, child_block, style_wm, dir))
-      .collect();
-    fragment.children = mapped_children.into();
-    fragment
+    }
+  } else if parent_inline_positive {
+    phys_x
   } else {
-    // Keep axes; only recurse.
-    let inline_size = fragment.bounds.width();
-    let block_size = fragment.bounds.height();
-    let mapped_children: Vec<_> = std::mem::take(&mut fragment.children)
-      .into_iter()
-      .map(|c| unconvert_fragment_axes(c, inline_size, block_size, style_wm, dir))
-      .collect();
-    fragment.children = mapped_children.into();
-    fragment
+    parent_physical_width - phys_x - inline_size
+  };
+
+  fragment.bounds = Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size);
+  if let Some(logical) = fragment.logical_override {
+    let phys_x = logical.x();
+    let phys_y = logical.y();
+    let phys_w = logical.width();
+    let phys_h = logical.height();
+    let inline_size = if parent_block_is_horizontal { phys_h } else { phys_w };
+    let block_size = if parent_block_is_horizontal { phys_w } else { phys_h };
+    let logical_block_start = if parent_block_is_horizontal {
+      if parent_block_positive {
+        phys_x
+      } else {
+        parent_physical_width - phys_x - block_size
+      }
+    } else if parent_block_positive {
+      phys_y
+    } else {
+      parent_physical_height - phys_y - block_size
+    };
+    let logical_inline_start = if parent_block_is_horizontal {
+      if parent_inline_positive {
+        phys_y
+      } else {
+        parent_physical_height - phys_y - inline_size
+      }
+    } else if parent_inline_positive {
+      phys_x
+    } else {
+      parent_physical_width - phys_x - inline_size
+    };
+    fragment.logical_override = Some(Rect::from_xywh(
+      logical_inline_start,
+      logical_block_start,
+      inline_size,
+      block_size,
+    ));
   }
+
+  let style_wm = fragment
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(parent_writing_mode);
+  let dir = fragment
+    .style
+    .as_ref()
+    .map(|s| s.direction)
+    .unwrap_or(parent_direction);
+  let child_inline = if block_axis_is_horizontal(style_wm) { phys_h } else { phys_w };
+  let child_block = if block_axis_is_horizontal(style_wm) { phys_w } else { phys_h };
+  let mapped_children: Vec<_> = fragment
+    .children
+    .into_iter()
+    .map(|c| unconvert_fragment_axes(c, child_inline, child_block, style_wm, dir))
+    .collect();
+  fragment.children = mapped_children.into();
+  fragment
 }
 
 /// Converts a fragment subtree produced in physical coordinates back into logical coordinates.

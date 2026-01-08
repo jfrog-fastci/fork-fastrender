@@ -7712,7 +7712,8 @@ impl FormattingContext for GridFormattingContext {
     let style_override = style_override_for(box_node.id);
     // Do not cache grid containers that contain running elements: running anchors are synthesized
     // based on in-flow position, so reusing cached fragments can capture the wrong snapshot.
-    if !has_running_children {
+    let taffy_counters_enabled = crate::layout::taffy_integration::taffy_counters_enabled();
+    if !has_running_children && !taffy_counters_enabled {
       if let Some(cached) = layout_cache_lookup(
         box_node,
         FormattingContextType::Grid,

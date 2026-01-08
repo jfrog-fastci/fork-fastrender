@@ -667,8 +667,10 @@ impl FormattingContext for FlexFormattingContext {
     // Do not cache flex containers that contain running elements: running anchors are synthesized
     // based on in-flow position, so reusing cached fragments can capture the wrong snapshot.
     let toggles = crate::debug::runtime::runtime_toggles();
-    let disable_global_layout_cache =
-      toggles.truthy("FASTR_DISABLE_FLEX_CACHE") || has_running_children;
+    let taffy_counters_enabled = crate::layout::taffy_integration::taffy_counters_enabled();
+    let disable_global_layout_cache = taffy_counters_enabled
+      || toggles.truthy("FASTR_DISABLE_FLEX_CACHE")
+      || has_running_children;
     if !disable_global_layout_cache {
       if let Some(cached) = layout_cache_lookup(
         box_node,

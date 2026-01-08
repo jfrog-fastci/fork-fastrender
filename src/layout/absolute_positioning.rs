@@ -465,11 +465,28 @@ impl AbsoluteLayout {
       }
     };
 
+    // When `width` is an intrinsic sizing keyword like `fit-content`, its resolution may depend on
+    // the available space. If both `left` and `right` are specified, CSS 2.1 §10.3.7 resolves
+    // over-constrained values by ignoring the trailing inset (right in LTR, left in RTL). Compute
+    // the intrinsic keyword width against that "post-overconstraint" space so the keyword does not
+    // artificially satisfy the constraint equation by shrinking to the between-insets size.
+    let (probe_left, probe_right) = match width_value {
+      WidthValue::Keyword(IntrinsicSizeKeyword::FitContent { .. })
+        if left.is_some() && right.is_some() && !margin_left_auto && !margin_right_auto =>
+      {
+        match style.direction {
+          Direction::Ltr => (left, None),
+          Direction::Rtl => (None, right),
+        }
+      }
+      _ => (left, right),
+    };
+
     // Pre-resolve the width without applying overconstraint rules so we can detect when the
     // authored values actually satisfy the constraint equation (CSS 2.1 §10.3.7).
     let available_for_shrink_full = cb_width
-      - left.unwrap_or(0.0)
-      - right.unwrap_or(0.0)
+      - probe_left.unwrap_or(0.0)
+      - probe_right.unwrap_or(0.0)
       - margin_left
       - margin_right
       - total_horizontal_spacing;

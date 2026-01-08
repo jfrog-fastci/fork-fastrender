@@ -1523,6 +1523,9 @@ pub(crate) fn clip_node(
     }
   }
 
+  // Treat zero-length fragments (common for empty blocks that only contribute forced breaks) as a
+  // point at their start edge so they participate in clipping/fragmentation. Using the normal
+  // half-open overlap test (`end <= start`) would drop them from *both* adjacent fragmentainers.
   let bbox_is_zero = node_bbox_block_size <= BREAK_EPSILON;
   if node_bbox_flow_end < fragment_start
     || (node_bbox_flow_end <= fragment_start && !bbox_is_zero)
