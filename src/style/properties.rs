@@ -16928,7 +16928,8 @@ fn parse_filter_function_length<'i, 't>(
 }
 
 fn parse_mix_blend_mode(kw: &str) -> Option<MixBlendMode> {
-  match kw {
+  let lower = kw.to_ascii_lowercase();
+  match lower.as_str() {
     "normal" => Some(MixBlendMode::Normal),
     "multiply" => Some(MixBlendMode::Multiply),
     "screen" => Some(MixBlendMode::Screen),
