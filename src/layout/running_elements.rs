@@ -34,13 +34,26 @@ pub struct RunningElementState {
 /// element. When a `position: running(<name>)` element is snapshotted for margin boxes, those
 /// descendants must not be treated as nested running elements during the snapshot layout pass.
 pub(crate) fn clear_running_position_in_box_tree(node: &mut BoxNode) {
-  if node.style.running_position.is_some() {
-    let mut owned = node.style.as_ref().clone();
-    owned.running_position = None;
-    node.style = Arc::new(owned);
-  }
-  for child in node.children.iter_mut() {
-    clear_running_position_in_box_tree(child);
+  // Use an explicit stack to avoid recursion on pathological trees.
+  let mut stack: Vec<*mut BoxNode> = vec![node as *mut BoxNode];
+  while let Some(node_ptr) = stack.pop() {
+    // SAFETY: The stack only contains pointers to nodes owned by `node`. We never move those nodes
+    // during the traversal, and each pointer is used once to mutate the node before pushing its
+    // children.
+    unsafe {
+      let node = &mut *node_ptr;
+      if node.style.running_position.is_some() {
+        let mut owned = node.style.as_ref().clone();
+        owned.running_position = None;
+        node.style = Arc::new(owned);
+      }
+      if let Some(body) = node.footnote_body.as_deref_mut() {
+        stack.push(body as *mut BoxNode);
+      }
+      for child in node.children.iter_mut() {
+        stack.push(child as *mut BoxNode);
+      }
+    }
   }
 }
 
@@ -272,6 +285,27 @@ mod tests {
   use super::*;
   use crate::geometry::Rect;
   use crate::style::ComputedStyle;
+
+  #[test]
+  fn clear_running_position_visits_footnote_body() {
+    let mut style = ComputedStyle::default();
+    style.running_position = Some("header".to_string());
+    let style = Arc::new(style);
+
+    let body = BoxNode::new_inline(style.clone(), Vec::new());
+    let mut call = BoxNode::new_inline(style.clone(), Vec::new());
+    call.footnote_body = Some(Box::new(body));
+
+    clear_running_position_in_box_tree(&mut call);
+    assert!(call.style.running_position.is_none());
+    assert!(
+      call
+        .footnote_body
+        .as_ref()
+        .is_some_and(|body| body.style.running_position.is_none()),
+      "expected running_position to be cleared inside footnote body"
+    );
+  }
 
   #[test]
   fn clean_running_snapshot_strips_and_normalizes() {
