@@ -5540,9 +5540,13 @@ impl TableFormattingContext {
       return cell_bfc.layout(&cloned, &constraints);
     }
 
-    crate::layout::style_override::with_style_override(cell_box.id(), override_style, || {
-      cell_bfc.layout(cell_box, &constraints)
-    })
+    let mut fragment = crate::layout::style_override::with_style_override(
+      cell_box.id(),
+      override_style.clone(),
+      || cell_bfc.layout(cell_box, &constraints),
+    )?;
+    fragment.style = Some(override_style);
+    Ok(fragment)
   }
 
   fn collect_row_group_constraints(
