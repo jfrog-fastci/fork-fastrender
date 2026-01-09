@@ -6982,37 +6982,55 @@ mod tests {
 
   #[test]
   fn input_image_generates_image_replaced_box() {
-    let html =
-      "<html><body><input type=\"image\" src=\"https://example.com/a.png\" alt=\"Logo\"></body></html>";
+    let html = "<html><body><input type=\"image\" src=\"icon.png\" width=\"30\" height=\"40\" alt=\"Submit\"></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
 
-    fn collect_replaced(node: &BoxNode, out: &mut Vec<ReplacedType>) {
+    fn count_form_controls(node: &BoxNode) -> usize {
+      let mut count = 0;
       if let BoxType::Replaced(repl) = &node.box_type {
-        out.push(repl.replaced_type.clone());
+        if matches!(repl.replaced_type, ReplacedType::FormControl(_)) {
+          count += 1;
+        }
       }
       for child in node.children.iter() {
-        collect_replaced(child, out);
+        count += count_form_controls(child);
       }
+      count
     }
 
-    let mut replaced = Vec::new();
-    collect_replaced(&box_tree.root, &mut replaced);
-
-    assert!(
-      replaced.iter().any(|kind| matches!(
-        kind,
-        ReplacedType::Image { src, alt, .. }
-          if src == "https://example.com/a.png" && alt.as_deref() == Some("Logo")
-      )),
-      "expected `<input type=image>` to generate an Image replaced box"
-    );
-    assert!(
-      !replaced
+    fn find_image_with_src<'a>(node: &'a BoxNode, expected_src: &str) -> Option<&'a ReplacedBox> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Image { src, .. } = &repl.replaced_type {
+          if src == expected_src {
+            return Some(repl);
+          }
+        }
+      }
+      node
+        .children
         .iter()
-        .any(|kind| matches!(kind, ReplacedType::FormControl(_))),
-      "expected `<input type=image>` to not generate a FormControl replaced box"
+        .find_map(|child| find_image_with_src(child, expected_src))
+    }
+
+    assert_eq!(
+      count_form_controls(&box_tree.root),
+      0,
+      "<input type=image> should not be generated as a native form control"
+    );
+
+    let replaced = find_image_with_src(&box_tree.root, "icon.png").expect("expected image replaced box");
+    match &replaced.replaced_type {
+      ReplacedType::Image { alt, .. } => {
+        assert_eq!(alt.as_deref(), Some("Submit"));
+      }
+      other => panic!("expected image replaced type, got {other:?}"),
+    }
+    assert_eq!(
+      replaced.intrinsic_size,
+      Some(Size::new(30.0, 40.0)),
+      "<input type=image> width/height attributes should populate intrinsic size hints"
     );
   }
 

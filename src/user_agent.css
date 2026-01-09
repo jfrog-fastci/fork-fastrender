@@ -484,9 +484,16 @@ input[type="range"] {
 }
 
 input[type="image"] {
+    display: inline-block;
     padding: 0;
     border: none;
     background: transparent;
+    cursor: pointer;
+}
+
+input[type="image"]:disabled {
+    background: transparent;
+    cursor: default;
 }
 
 input[type="range"]::-webkit-slider-runnable-track,
