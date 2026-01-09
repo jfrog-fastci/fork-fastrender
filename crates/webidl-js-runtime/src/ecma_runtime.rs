@@ -435,7 +435,6 @@ impl VmJsRuntime {
   pub fn call_function(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
     <Self as JsRuntime>::call(self, callee, this, args)
   }
-
   fn find_own_property(&self, obj: GcObject, key: &PropertyKey) -> Option<PropertyDescriptor> {
     let host = self.objects.get(&obj)?;
     for (k, desc) in &host.properties {
@@ -648,7 +647,6 @@ impl JsRuntime for VmJsRuntime {
   fn alloc_string(&mut self, value: &str) -> Result<Value, VmError> {
     self.alloc_string_value(value)
   }
-
   fn property_key_from_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
     self.prop_key_str(s)
   }
