@@ -5,7 +5,7 @@ use crate::api::{
 use crate::geometry::{Point, Rect};
 use crate::html::find_document_title;
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
-use crate::interaction::{absolute_bounds_for_box_id, dom_mutation, hit_test_dom, InteractionAction, InteractionEngine};
+use crate::interaction::{dom_mutation, InteractionAction, InteractionEngine};
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::text::font_db::FontConfig;
