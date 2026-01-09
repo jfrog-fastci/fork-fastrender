@@ -4,6 +4,7 @@ use crate::geometry::{Point, Size};
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
+use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
@@ -311,7 +312,13 @@ impl BrowserWorkerRuntime {
     };
 
     if tab.renderer.is_none() {
-      match FastRender::new() {
+      // Browser UI integration tests should be deterministic and not depend on system-installed
+      // fonts. Using bundled-only font sources also avoids expensive font discovery on first use
+      // (which can cause tests to time out under CI load).
+      match FastRender::builder()
+        .font_sources(FontConfig::bundled_only())
+        .build()
+      {
         Ok(renderer) => tab.renderer = Some(renderer),
         Err(err) => {
           let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
@@ -578,7 +585,6 @@ impl BrowserWorkerRuntime {
       .as_deref()
       .or(tab.url.as_deref())
       .unwrap_or(about_pages::ABOUT_BASE_URL);
-    let document_url = tab.url.as_deref().unwrap_or("");
     let (Some(dom), Some(prepared)) = (tab.dom.as_mut(), tab.prepared.as_ref()) else {
       return;
     };
@@ -719,7 +725,13 @@ impl BrowserWorkerRuntime {
     // testing even when dirty; only replace it after we successfully re-prepare.
     if tab.prepared.is_none() || tab.dirty {
       if tab.renderer.is_none() {
-        match FastRender::new() {
+        // Browser UI integration tests should be deterministic and not depend on system-installed
+        // fonts. Using bundled-only font sources also avoids expensive font discovery on first use
+        // (which can cause tests to time out under CI load).
+        match FastRender::builder()
+          .font_sources(FontConfig::bundled_only())
+          .build()
+        {
           Ok(renderer) => tab.renderer = Some(renderer),
           Err(err) => {
             let _ = self.ui_tx.send(WorkerToUi::DebugLog {

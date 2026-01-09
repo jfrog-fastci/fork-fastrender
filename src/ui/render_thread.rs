@@ -601,10 +601,9 @@ impl BrowserRenderThread {
         .as_deref()
         .or_else(|| tab.url.as_deref())
         .unwrap_or("");
-      let document_url = tab.url.as_deref().unwrap_or("");
 
       let mut action = InteractionAction::None;
-       let changed = doc.mutate_dom(|dom| {
+      let changed = doc.mutate_dom(|dom| {
         let (dom_changed, act) = tab.interaction.pointer_up_with_scroll(
           dom,
           &box_tree,
