@@ -49,7 +49,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use winit::event_loop::ControlFlow;
   use winit::event_loop::EventLoopBuilder;
   use winit::window::WindowBuilder;
-  use std::time::{Duration, Instant};
 
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
@@ -57,8 +56,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_title("FastRender")
     .build(&event_loop)?;
 
-  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
-    fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
+  let worker = fastrender::ui::spawn_browser_worker()?;
+  let fastrender::ui::BrowserWorkerHandle {
+    tx: ui_to_worker_tx,
+    rx: worker_to_ui_rx,
+    join: worker_join,
+  } = worker;
 
   let mut app = pollster::block_on(App::new(
     window,
@@ -94,13 +97,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut app = Some(app);
   let mut bridge_join = Some(bridge_join);
 
-  // Drive JS/event-loop work at a modest cadence so pages with timers/microtasks can repaint even
-  // without user input.
-  let tick_interval = Duration::from_millis(16);
-  let mut next_tick = Instant::now() + tick_interval;
-
   event_loop.run(move |event, _, control_flow| {
-    *control_flow = ControlFlow::WaitUntil(next_tick);
+    // Keep the event loop idle when there is no work to do.
+    *control_flow = ControlFlow::Wait;
 
     // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
     // threads) explicitly when the loop is torn down.
@@ -176,14 +175,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
       Event::RedrawRequested(window_id) if window_id == app.window.id() => {
         app.render_frame(control_flow);
-      }
-      Event::MainEventsCleared => {
-        let now = Instant::now();
-        if now >= next_tick {
-          app.send_tick();
-          next_tick = now + tick_interval;
-        }
-        *control_flow = ControlFlow::WaitUntil(next_tick);
       }
       Event::NewEvents(StartCause::Init) => {
         // Ensure we draw at least one frame on startup.
@@ -628,7 +619,6 @@ impl App {
     };
     self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
   }
-
   fn set_pixels_per_point(&mut self, ppp: f32) {
     self.pixels_per_point = ppp;
     self.egui_ctx.set_pixels_per_point(ppp);
@@ -677,13 +667,13 @@ impl App {
       match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
-          eprintln!("ui worker thread panicked during shutdown");
+          eprintln!("browser worker thread panicked during shutdown");
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-          eprintln!("timed out waiting for ui worker thread to exit; shutting down anyway");
+          eprintln!("timed out waiting for browser worker thread to exit; shutting down anyway");
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-          eprintln!("ui worker join helper thread disconnected during shutdown");
+          eprintln!("browser worker join helper thread disconnected during shutdown");
         }
       }
     }
@@ -930,7 +920,6 @@ impl App {
       dpr,
     });
   }
-
   fn render_select_dropdown(&mut self, ctx: &egui::Context) {
     use fastrender::tree::box_tree::SelectItem;
     use fastrender::ui::UiToWorker;
@@ -1404,7 +1393,6 @@ impl App {
             self.browser_state.chrome.address_bar_text = url.clone();
           }
           self.page_has_focus = false;
-
           self.send_worker_msg(msg);
         }
         ChromeAction::Reload => {
