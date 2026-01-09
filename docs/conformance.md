@@ -15,6 +15,7 @@ FastRender is spec-first: correctness is defined by the HTML/CSS specifications 
 
 ### CSS
 - **Cascade & inheritance**: CSS Cascade 4, including origin ordering (UA stylesheet + author), `!important`, custom properties, cascade layers (`@layer`), `@import`, and scoped styles (`@scope`).
+- **UA defaults policy**: Element-specific default styles live in [`src/user_agent.css`](../src/user_agent.css) as UA-origin CSS rules (e.g. default `display` types, margins, table/list defaults). Rust-side defaults in [`src/style/defaults.rs`](../src/style/defaults.rs) are limited to CSS initial values plus non-CSS engine/presentation defaults (e.g. document/shadow-root container behavior, `<legend>` sizing, and opt-in compat toggles).
 - **Selectors**: CSS Selectors Level 4 (:is/:where/:has, nth-* families, :lang/:dir, :target-within, form state pseudoclasses, ::before/::after/::marker/::backdrop, etc.). User-action states are opt-in via `data-fastr-*` flags.
 - **Conditional rules**: @media (MQ4), @supports, size-only @container queries (Container Queries Level 1), and `@page`/page-margin rules.
 - **At-rules with data**: `@font-face`, `@counter-style`, `@keyframes`, `@view-timeline`/`@scroll-timeline` names, `@page` pseudos.

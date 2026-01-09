@@ -1,10 +1,15 @@
-//! Default styles for HTML elements
+//! Default computed style seed values.
 //!
-//! Provides initial/default computed style values for each HTML element type.
-//! These are applied before author styles in the cascade.
+//! `ComputedStyle::default()` represents the CSS initial values and is used as the base for the
+//! cascade.
 //!
-//! Reference: HTML5 Living Standard - Rendering
-//! <https://html.spec.whatwg.org/multipage/rendering.html>
+//! Element-specific user-agent defaults (e.g. `body { margin: 8px }`, `h1` sizing, table/list
+//! display types, etc.) live in [`src/user_agent.css`](../../user_agent.css) and are applied via the
+//! normal cascade as UA origin rules.
+//!
+//! This module is intentionally limited to defaults that cannot be expressed as UA CSS (internal
+//! nodes like the document and shadow roots) and a small number of compatibility/presentational
+//! mappings that are implemented in Rust.
 
 use crate::debug::runtime::runtime_toggles;
 use crate::dom::DomNode;
@@ -23,15 +28,16 @@ fn default_computed_style() -> &'static ComputedStyle {
   DEFAULT_COMPUTED_STYLE.get_or_init(ComputedStyle::default)
 }
 
-/// Get default styles for an HTML element
+/// Returns the initial computed style for a node.
 ///
-/// Returns a ComputedStyle with appropriate default values for the given element.
-/// These defaults generally match the user-agent stylesheet behavior for HTML elements.
-/// Some non-standard compatibility defaults are gated behind `FASTR_*` runtime toggles so we can
-/// A/B them against Chrome/pageset fixtures.
+/// This is the seed style used before applying the UA and author stylesheets.
 ///
-/// Note: All styling should come from CSS (user-agent.css or author styles),
-/// not from class-name checks in Rust code. This function only sets tag-based defaults.
+/// Policy:
+/// - Element-specific UA defaults MUST be expressed in `src/user_agent.css`.
+/// - This function should only contain:
+///   - defaults for non-element/internal node types (document/shadow root)
+///   - non-CSS defaults needed by the engine (e.g. `<legend>` sizing)
+///   - opt-in compatibility toggles that are intentionally not part of the UA stylesheet
 pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
   let mut styles = default_computed_style().clone();
 
@@ -49,114 +55,10 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
     return styles;
   }
 
-  // Set proper default display values for HTML elements (user-agent stylesheet defaults)
   if let Some(tag) = node.tag_name() {
-    styles.display = match tag {
-      // Document structure elements (must be block to establish formatting context)
-      "html" | "body" => Display::Block,
-
-      // Block-level elements
-      "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "blockquote"
-      | "pre" | "article" | "section" | "nav" | "aside" | "header" | "footer" | "main"
-      | "figure" | "figcaption" | "dl" | "dt" | "dd" | "form" | "fieldset" | "legend"
-      | "address" | "hr" => Display::Block,
-
-      // Lists
-      "li" => Display::ListItem,
-
-      // Center element - centers its contents
-      "center" => Display::Block,
-
-      // Table elements
-      "table" => Display::Table,
-      "caption" => Display::TableCaption,
-      "colgroup" => Display::TableColumnGroup,
-      "col" => Display::TableColumn,
-      "tr" => Display::TableRow,
-      "td" | "th" => Display::TableCell,
-      "thead" => Display::TableHeaderGroup,
-      "tbody" => Display::TableRowGroup,
-      "tfoot" => Display::TableFooterGroup,
-
-      // Inline elements (explicit for clarity, though it's the default)
-      "a" | "span" | "em" | "strong" | "code" | "b" | "i" | "u" | "small" | "sub" | "sup"
-      | "mark" | "abbr" | "cite" | "q" | "kbd" | "samp" | "var" | "time" | "label" => {
-        Display::Inline
-      }
-
-      // Replaced elements: keep them inline by default
-      "img" | "video" | "audio" | "canvas" | "svg" | "math" => Display::Inline,
-
-      // Hidden elements (display: none - not rendered)
-      "head" | "style" | "script" | "meta" | "link" | "title" | "template" => Display::None,
-
-      // Everything else defaults to inline
-      _ => Display::Inline,
-    };
-
-    // Force minimal spacing for table elements (consistent with user-agent.css)
     match tag {
-      "center" => {
-        styles.text_align = crate::style::types::TextAlign::Center;
-      }
-      "body" => {
-        // UA default margins: 8px on all sides
-        let default_margin = Some(Length::px(8.0));
-        styles.margin_top = default_margin;
-        styles.margin_right = default_margin;
-        styles.margin_bottom = default_margin;
-        styles.margin_left = default_margin;
-      }
-      "table" => {
-        // Remove all spacing from tables
-        styles.margin_top = Some(Length::px(0.0));
-        styles.margin_bottom = Some(Length::px(0.0));
-        styles.padding_top = Length::px(0.0);
-        styles.padding_bottom = Length::px(0.0);
-        // UA default border-spacing per HTML/CSS UA stylesheets (CSS2 §17.6.1).
-        styles.border_spacing_horizontal = Length::px(2.0);
-        styles.border_spacing_vertical = Length::px(2.0);
-      }
-      "tr" => {
-        // Minimal spacing between table rows
-        styles.margin_top = Some(Length::px(0.0));
-        styles.margin_bottom = Some(Length::px(0.0));
-        styles.padding_top = Length::px(0.0);
-        styles.padding_bottom = Length::px(0.0);
-      }
-      "td" => {
-        // Minimal padding for table cells
-        styles.padding_top = Length::px(1.0);
-        styles.padding_bottom = Length::px(1.0);
-        styles.padding_left = Length::px(1.0);
-        styles.padding_right = Length::px(1.0);
-        styles.margin_top = Some(Length::px(0.0));
-        styles.margin_bottom = Some(Length::px(0.0));
-        // CSS 2.1 §17.5.3: table cells default to middle alignment
-        styles.vertical_align = crate::style::types::VerticalAlign::Middle;
-      }
       "legend" => {
         styles.shrink_to_fit_inline_size = true;
-      }
-      "th" => {
-        // Header cells inherit td defaults plus bold/centered text
-        styles.padding_top = Length::px(1.0);
-        styles.padding_bottom = Length::px(1.0);
-        styles.padding_left = Length::px(1.0);
-        styles.padding_right = Length::px(1.0);
-        styles.margin_top = Some(Length::px(0.0));
-        styles.margin_bottom = Some(Length::px(0.0));
-        styles.vertical_align = crate::style::types::VerticalAlign::Middle;
-        styles.text_align = crate::style::types::TextAlign::Center;
-        styles.font_weight = crate::style::FontWeight::Bold;
-      }
-      "b" | "strong" => {
-        // Bold text
-        styles.font_weight = crate::style::FontWeight::Bold;
-      }
-      "i" | "em" => {
-        // Italic text - using Oblique since we may not have true italics
-        styles.font_style = crate::style::FontStyle::Oblique(None);
       }
       "img" | "video" | "audio" | "canvas" | "svg" | "iframe" | "embed" | "object" => {
         // Compatibility default (non-standard): `max-width: 100%` on replaced elements.
@@ -178,9 +80,6 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
             styles.display = Display::Block;
           }
         }
-      }
-      "slot" => {
-        styles.display = Display::Contents;
       }
       _ => {}
     }
@@ -268,8 +167,6 @@ pub fn parse_color_attribute(color_str: &str) -> Option<Rgba> {
 mod tests {
   use super::*;
   use crate::debug::runtime::{set_runtime_toggles, RuntimeToggles};
-  use crate::dom::HTML_NAMESPACE;
-  use crate::style::types::TextAlign;
   use crate::tree::box_tree::ReplacedType;
   use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
   use std::collections::HashMap;
@@ -345,22 +242,6 @@ mod tests {
     let mut objects = Vec::new();
     collect_embed_object_widths(&fragment_tree.root, &mut embeds, &mut objects);
     (embeds, objects)
-  }
-
-  #[test]
-  fn center_element_defaults_to_text_align_center() {
-    let node = DomNode {
-      node_type: DomNodeType::Element {
-        tag_name: "center".to_string(),
-        namespace: HTML_NAMESPACE.to_string(),
-        attributes: Vec::new(),
-      },
-      children: Vec::new(),
-    };
-
-    let styles = get_default_styles_for_element(&node);
-    assert_eq!(styles.display, Display::Block);
-    assert_eq!(styles.text_align, TextAlign::Center);
   }
 
   #[test]
