@@ -37,6 +37,7 @@ use crate::paint::display_list::StackingContextItem;
 use crate::paint::display_list::Transform3D;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::render_control::{check_active, check_active_periodic};
+use crate::style::types::BackfaceVisibility;
 use crate::style::types::TransformStyle;
 
 const DEADLINE_STRIDE: usize = 256;
@@ -854,6 +855,7 @@ impl DisplayListOptimizer {
     item.z_index == 0
       && !item.establishes_backdrop_root
       && matches!(item.transform_style, TransformStyle::Flat)
+      && item.backface_visibility == BackfaceVisibility::Visible
       && item.child_perspective.is_none()
       && item.transform.is_none()
       && item.filters.is_empty()
