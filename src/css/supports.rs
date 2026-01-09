@@ -174,6 +174,21 @@ mod tests {
   }
 
   #[test]
+  fn supports_alignment_auto_keywords_only_where_computed_style_accepts_them() {
+    // `auto` is valid for self-alignment, and FastRender also accepts it for `justify-items` as a
+    // compatibility alias (mapped to `stretch` during computed style resolution).
+    assert!(supports_declaration("align-self", "auto"));
+    assert!(supports_declaration("justify-self", "auto"));
+    assert!(supports_declaration("justify-items", "auto"));
+
+    // `auto` is not valid for the container-alignment properties we currently parse.
+    assert!(!supports_declaration("align-items", "auto"));
+
+    // Avoid claiming support for unsupported keywords in @supports queries.
+    assert!(!supports_declaration("justify-content", "baseline"));
+  }
+
+  #[test]
   fn supports_env_and_constant_in_calc_lengths() {
     assert!(supports_declaration(
       "padding-left",

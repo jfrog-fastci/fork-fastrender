@@ -2704,8 +2704,19 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       return keyword_in_list(parsed, &["row", "row-reverse", "column", "column-reverse"])
     }
     "flex-wrap" => return keyword_in_list(parsed, &["nowrap", "wrap", "wrap-reverse"]),
-    "align-items" | "align-self" | "align-content" | "justify-items" | "justify-self"
-    | "justify-content" => {
+    // CSS Box Alignment keywords.
+    //
+    // Keep this validator in sync with what the engine actually accepts during computed style
+    // resolution (see `style::properties`): `@supports` must reflect real parsing support or pages
+    // can flip entire style blocks on/off incorrectly.
+    "align-items" | "align-self" | "justify-items" | "justify-self" => {
+      // `auto` is only valid for self-alignment and (for compatibility) `justify-items`.
+      if let PropertyValue::Keyword(kw) = parsed {
+        if kw.eq_ignore_ascii_case("auto") {
+          return matches!(property, "align-self" | "justify-self" | "justify-items");
+        }
+      }
+
       return keyword_in_list(
         parsed,
         &[
@@ -2719,11 +2730,44 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "baseline",
           "normal",
           "stretch",
+          // Legacy aliases that our computed-style parser maps to start/end.
+          "left",
+          "right",
+        ],
+      );
+    }
+    "align-content" => {
+      return keyword_in_list(
+        parsed,
+        &[
+          "start",
+          "end",
+          "flex-start",
+          "flex-end",
+          "center",
+          "space-between",
+          "space-around",
+          "space-evenly",
+          "stretch",
+          "normal",
+        ],
+      );
+    }
+    "justify-content" => {
+      return keyword_in_list(
+        parsed,
+        &[
+          "start",
+          "end",
+          "flex-start",
+          "flex-end",
+          "center",
+          "normal",
           "space-between",
           "space-around",
           "space-evenly",
         ],
-      )
+      );
     }
     "text-align" => {
       return keyword_in_list(
