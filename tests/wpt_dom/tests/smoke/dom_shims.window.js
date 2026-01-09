@@ -4,9 +4,9 @@ test(() => {
   const el = document.createElement("div");
   assert_equals(el.tagName, "DIV");
 
-  el.innerHTML = "<span>hi</span>";
-  assert_equals(el.innerHTML, "<span>hi</span>");
-  assert_equals(el.outerHTML, "<div><span>hi</span></div>");
+  el.innerHTML = '<span id="x" class="y">hi</span>';
+  assert_equals(el.innerHTML, '<span id="x" class="y">hi</span>');
+  assert_equals(el.outerHTML, '<div><span id="x" class="y">hi</span></div>');
 }, "createElement + Element.innerHTML/outerHTML");
 
 test(() => {
@@ -15,6 +15,13 @@ test(() => {
   const returned = frag.appendChild(child);
   assert_equals(returned, child, "appendChild should return the inserted node");
 }, "document.createDocumentFragment");
+
+test(() => {
+  // Spec: if the element has no parent, `outerHTML = ...` is a no-op.
+  const el = document.createElement("div");
+  el.outerHTML = "<span>ignored</span>";
+  assert_equals(el.outerHTML, "<div></div>");
+}, "Element.outerHTML setter is a no-op on detached nodes");
 
 test(() => {
   const host = document.createElement("div");
@@ -42,6 +49,6 @@ test(() => {
   child.innerHTML = "x";
   container.appendChild(child);
 
-  child.outerHTML = "<p>y</p><p>z</p>";
-  assert_equals(container.innerHTML, "<p>y</p><p>z</p>");
+  child.outerHTML = '<p id="y">y</p><p>z</p>';
+  assert_equals(container.innerHTML, '<p id="y">y</p><p>z</p>');
 }, "Element.outerHTML setter replaces the node in its parent");

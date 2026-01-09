@@ -183,7 +183,6 @@ enum DomShimError {
   HierarchyRequestError,
   NotFoundError,
   InvalidNodeType,
-  SyntaxError,
 }
 
 impl DomShimError {
@@ -192,7 +191,6 @@ impl DomShimError {
       DomShimError::HierarchyRequestError => "HierarchyRequestError",
       DomShimError::NotFoundError => "NotFoundError",
       DomShimError::InvalidNodeType => "InvalidNodeType",
-      DomShimError::SyntaxError => "SyntaxError",
     }
   }
 }
@@ -208,7 +206,10 @@ struct NodeId(usize);
 enum NodeKind {
   Document,
   DocumentFragment,
-  Element { tag_name: String },
+  Element {
+    tag_name: String,
+    attributes: Vec<(String, String)>,
+  },
   Text { content: String },
 }
 
@@ -294,6 +295,7 @@ impl Dom {
     self.push_node(
       NodeKind::Element {
         tag_name: tag_name.to_ascii_lowercase(),
+        attributes: Vec::new(),
       },
       None,
     )
@@ -393,7 +395,7 @@ impl Dom {
 
   fn set_inner_html(&mut self, element: NodeId, html: &str) -> Result<(), DomShimError> {
     let tag_name = match &self.node_checked(element)?.kind {
-      NodeKind::Element { tag_name } => tag_name.clone(),
+      NodeKind::Element { tag_name, .. } => tag_name.clone(),
       _ => return Err(DomShimError::InvalidNodeType),
     };
 
@@ -425,12 +427,17 @@ impl Dom {
   }
 
   fn set_outer_html(&mut self, element: NodeId, html: &str) -> Result<(), DomShimError> {
-    let (parent, parent_tag) = match self.node_checked(element)?.parent {
-      Some(parent) => match &self.node_checked(parent)?.kind {
-        NodeKind::Element { tag_name } => (parent, tag_name.clone()),
-        _ => return Err(DomShimError::InvalidNodeType),
-      },
-      None => return Err(DomShimError::SyntaxError),
+    let Some(parent) = self.node_checked(element)?.parent else {
+      // Spec: if the element has no parent, `outerHTML = ...` is a no-op.
+      return Ok(());
+    };
+
+    // When possible, use the parent element tag name as the HTML fragment parsing context. For
+    // non-element parents (Document / DocumentFragment) fall back to a neutral `<div>` context.
+    let parent_tag = match &self.node_checked(parent)?.kind {
+      NodeKind::Element { tag_name, .. } => tag_name.clone(),
+      NodeKind::Document | NodeKind::DocumentFragment => "div".to_string(),
+      NodeKind::Text { .. } => return Err(DomShimError::HierarchyRequestError),
     };
 
     let replacement_idx = self
@@ -475,9 +482,19 @@ impl Dom {
             NodeKind::Text { content } => {
               escape_text(out, content);
             }
-            NodeKind::Element { tag_name } => {
+            NodeKind::Element {
+              tag_name,
+              attributes,
+            } => {
               out.push('<');
               out.push_str(tag_name);
+              for (name, value) in attributes {
+                out.push(' ');
+                out.push_str(name);
+                out.push_str("=\"");
+                escape_attr_value(out, value);
+                out.push('"');
+              }
               out.push('>');
               if is_void_html_element(tag_name) {
                 continue;
@@ -491,7 +508,7 @@ impl Dom {
         }
         Frame::Exit(id) => {
           let node = self.node_checked(id)?;
-          if let NodeKind::Element { tag_name } = &node.kind {
+          if let NodeKind::Element { tag_name, .. } = &node.kind {
             if is_void_html_element(tag_name) {
               continue;
             }
@@ -557,12 +574,21 @@ impl Dom {
         }
         NodeData::Element {
           name,
+          attrs,
           template_contents,
           ..
         } => {
+          let attrs_ref = attrs.borrow();
+          let mut attributes = Vec::with_capacity(attrs_ref.len());
+          for attr in attrs_ref.iter() {
+            // Keep this minimal: treat everything as HTML and ignore namespaces/prefixes.
+            attributes.push((attr.name.local.to_string(), attr.value.to_string()));
+          }
+
           let id = self.push_node(
             NodeKind::Element {
               tag_name: name.local.to_string(),
+              attributes,
             },
             item.parent,
           );
@@ -621,6 +647,18 @@ fn escape_text(out: &mut String, text: &str) {
   for ch in text.chars() {
     match ch {
       '&' => out.push_str("&amp;"),
+      '<' => out.push_str("&lt;"),
+      '>' => out.push_str("&gt;"),
+      _ => out.push(ch),
+    }
+  }
+}
+
+fn escape_attr_value(out: &mut String, value: &str) {
+  for ch in value.chars() {
+    match ch {
+      '&' => out.push_str("&amp;"),
+      '"' => out.push_str("&quot;"),
       '<' => out.push_str("&lt;"),
       '>' => out.push_str("&gt;"),
       _ => out.push(ch),
