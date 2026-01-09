@@ -1007,9 +1007,9 @@ fn find_xml_start_tag_end(svg_content: &str, start: usize, limit: usize) -> Opti
   None
 }
 
-/// Best-effort preprocessor that inlines external image references (`<image>` / `<feImage>`) by
-/// fetching the referenced resource and rewriting its href into a base64 `data:` URL.
-fn inline_svg_image_href_references<'a>(
+/// Best-effort preprocessor that inlines external raster image references (`<image>` / `<feImage>`)
+/// by fetching the referenced resource and rewriting its `href` into a base64 `data:` URL.
+fn inline_svg_image_references<'a>(
   svg_content: &'a str,
   svg_url: &str,
   fetcher: &dyn ResourceFetcher,
@@ -1139,8 +1139,7 @@ fn inline_svg_image_href_references<'a>(
         .map(|(_, local)| local)
         .unwrap_or(attr_name);
 
-      let is_candidate = local_name.eq_ignore_ascii_case("href")
-        || (is_image && local_name.eq_ignore_ascii_case("src"));
+      let is_candidate = local_name.eq_ignore_ascii_case("href");
 
       while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
@@ -1177,7 +1176,7 @@ fn inline_svg_image_href_references<'a>(
         let decoded = unescape_xml_attr_value(raw_value);
         let trimmed = trim_ascii_whitespace(decoded.as_ref());
         if trimmed.is_empty()
-          || trimmed.starts_with('#')
+          || trimmed.contains('#')
           || crate::resource::is_data_url(trimmed)
           || is_about_url(trimmed)
         {
@@ -1190,10 +1189,12 @@ fn inline_svg_image_href_references<'a>(
         else {
           continue;
         };
-        let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
+        let Ok(resolved_url) = Url::parse(&resolved_base) else {
           continue;
         };
-        resolved_url.set_fragment(None);
+        if resolved_url.scheme() != "http" && resolved_url.scheme() != "https" {
+          continue;
+        }
         let resolved_url = resolved_url.to_string();
 
         if let Some(ctx) = ctx {
@@ -1317,7 +1318,7 @@ fn inline_svg_image_href_references<'a>(
       let decoded = unescape_xml_attr_value(raw_value);
       let trimmed = trim_ascii_whitespace(decoded.as_ref());
       if trimmed.is_empty()
-        || trimmed.starts_with('#')
+        || trimmed.contains('#')
         || crate::resource::is_data_url(trimmed)
         || is_about_url(trimmed)
       {
@@ -1330,10 +1331,12 @@ fn inline_svg_image_href_references<'a>(
       else {
         continue;
       };
-      let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
+      let Ok(resolved_url) = Url::parse(&resolved_base) else {
         continue;
       };
-      resolved_url.set_fragment(None);
+      if resolved_url.scheme() != "http" && resolved_url.scheme() != "https" {
+        continue;
+      }
       let resolved_url = resolved_url.to_string();
 
       if let Some(ctx) = ctx {
@@ -4651,7 +4654,7 @@ impl ImageCache {
       self.fetcher.as_ref(),
       self.resource_context.as_ref(),
     )?;
-    let svg_images_inlined = inline_svg_image_href_references(
+    let svg_images_inlined = inline_svg_image_references(
       svg_use_inlined.as_ref(),
       url,
       self.fetcher.as_ref(),
@@ -6150,7 +6153,7 @@ impl ImageCache {
       self.fetcher.as_ref(),
       self.resource_context.as_ref(),
     )?;
-    let svg_images_inlined = inline_svg_image_href_references(
+    let svg_images_inlined = inline_svg_image_references(
       svg_use_inlined.as_ref(),
       url,
       self.fetcher.as_ref(),
@@ -9154,6 +9157,114 @@ mod tests {
     );
   }
 
+  #[test]
+  fn svg_external_image_href_renders() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+ 
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="/img.png" width="1" height="1"/></svg>"#;
+ 
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+ 
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+ 
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (img_url.to_string(), img_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+ 
+    let image = cache.load(main_url).expect("load main svg");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "external <image href> should inline into a data URL and render red pixel"
+    );
+  }
+ 
+  #[test]
+  fn svg_external_image_href_blocked_by_policy_not_fetched() {
+    let doc_url = "https://example.test/";
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://cross.test/img.png";
+ 
+    let main_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="{img_url}" width="1" height="1"/></svg>"#
+    );
+ 
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+ 
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+ 
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (img_url.to_string(), img_res),
+    ]);
+ 
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+ 
+    let load_err = match cache.load(main_url) {
+      Ok(_) => panic!("cross-origin SVG image href should be blocked"),
+      Err(err) => err,
+    };
+    match load_err {
+      Error::Image(ImageError::LoadFailed { reason, .. }) => {
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "unexpected policy reason: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+ 
+    let probe_err = match cache.probe(main_url) {
+      Ok(_) => panic!("cross-origin SVG image href should be blocked during probe"),
+      Err(err) => err,
+    };
+    match probe_err {
+      Error::Image(ImageError::LoadFailed { reason, .. }) => {
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "unexpected policy reason: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+ 
+    assert!(
+      fetcher.requests().iter().all(|(url, _)| url != img_url),
+      "blocked image should not be fetched"
+    );
+  }
+ 
   #[test]
   fn non_ascii_whitespace_inline_svg_use_references_does_not_trim_nbsp_in_sprite_id() {
     let nbsp = "\u{00A0}";
