@@ -10354,8 +10354,7 @@ impl FastRender {
     stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
     let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
-    if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get())
-    {
+    if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
       let deadline_stack = crate::render_control::deadline_stack_snapshot();
       let stage = crate::render_control::active_stage();
       return std::thread::scope(|scope| {
@@ -10424,29 +10423,31 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
-    let inherited_deadline = crate::render_control::active_deadline();
-    let deadline = deadline.or(inherited_deadline.as_ref());
-    let _deadline_guard = DeadlineGuard::install(deadline);
-    let clone_timer = stats.as_deref().and_then(|rec| rec.timer());
-    let (dom_with_state, needs_top_layer_state) =
-      dom::clone_dom_with_deadline_and_top_layer_hint(dom, RenderStage::DomParse)?;
-    if let Some(rec) = stats.as_deref_mut() {
-      RenderStatsRecorder::add_ms(&mut rec.stats.timings.dom_clone_ms, clone_timer);
-    }
-    self.layout_document_for_media_with_artifacts_owned(
-      dom_with_state,
-      needs_top_layer_state,
-      width,
-      height,
-      media_type,
-      options,
-      viewport_scroll,
-      deadline,
-      stage_mem_budget_bytes,
-      trace,
-      layout_parallelism,
-      stats,
-    )
+    runtime::with_thread_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
+      let inherited_deadline = crate::render_control::active_deadline();
+      let deadline = deadline.or(inherited_deadline.as_ref());
+      let _deadline_guard = DeadlineGuard::install(deadline);
+      let clone_timer = stats.as_deref().and_then(|rec| rec.timer());
+      let (dom_with_state, needs_top_layer_state) =
+        dom::clone_dom_with_deadline_and_top_layer_hint(dom, RenderStage::DomParse)?;
+      if let Some(rec) = stats.as_deref_mut() {
+        RenderStatsRecorder::add_ms(&mut rec.stats.timings.dom_clone_ms, clone_timer);
+      }
+      self.layout_document_for_media_with_artifacts_owned(
+        dom_with_state,
+        needs_top_layer_state,
+        width,
+        height,
+        media_type,
+        options,
+        viewport_scroll,
+        deadline,
+        stage_mem_budget_bytes,
+        trace,
+        layout_parallelism,
+        stats,
+      )
+    })
   }
 
   fn layout_document_for_media_with_artifacts_owned(
@@ -10474,8 +10475,8 @@ impl FastRender {
       return self.layout_document_for_media_with_artifacts_owned_single_pass(
         dom_with_state,
         needs_top_layer_state,
-        width,
-        height,
+        base_width,
+        base_height,
         media_type,
         options,
         viewport_scroll,
@@ -10483,7 +10484,7 @@ impl FastRender {
         stage_mem_budget_bytes,
         trace,
         layout_parallelism,
-        stats.as_deref_mut(),
+        stats,
       );
     }
 

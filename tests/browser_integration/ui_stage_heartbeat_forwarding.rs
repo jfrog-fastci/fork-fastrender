@@ -5,7 +5,7 @@ use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker::RenderWorker;
 use fastrender::ui::worker::spawn_ui_worker as spawn_history_ui_worker;
 use fastrender::ui::worker_loop::spawn_ui_worker as spawn_ui_worker_loop;
-use fastrender::{FastRender, PreparedPaintOptions, RenderOptions};
+use fastrender::{PreparedPaintOptions, RenderOptions};
 use tempfile::tempdir;
 
 use super::support::{
@@ -49,7 +49,8 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
     </html>
   "#;
 
-  let renderer = FastRender::builder().base_url(base_url).build().unwrap();
+  let mut renderer = super::support::deterministic_renderer();
+  renderer.set_base_url(base_url);
   let (tx, rx) = std::sync::mpsc::channel::<WorkerToUi>();
   let mut worker = RenderWorker::new(renderer, tx);
 

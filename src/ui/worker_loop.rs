@@ -5,6 +5,7 @@ use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelI
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::render_control::{GlobalStageListenerGuard, RenderDeadline, StageHeartbeat};
 use crate::scroll::ScrollState;
+use crate::text::font_db::FontConfig;
 use crate::ui::cancel::CancelGens;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::about_pages;
@@ -586,7 +587,10 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         ..
       }
       | UiToWorker::NewTab { tab_id, initial_url } => {
-        let renderer = match FastRender::builder().build() {
+        let renderer = match FastRender::builder()
+          .font_sources(FontConfig::bundled_only())
+          .build()
+        {
           Ok(renderer) => renderer,
           Err(err) => {
             let _ = ui_tx.send(WorkerToUi::DebugLog {
