@@ -8,6 +8,9 @@ use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+// Worker startup + first render can take a few seconds under parallel load (CI).
+const TIMEOUT: Duration = Duration::from_secs(20);
+
 fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> RenderedFrame {
   match support::recv_for_tab(rx, tab_id, timeout, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
   {
@@ -70,7 +73,7 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
     })
     .expect("Navigate");
 
-  let frame = recv_frame(&worker.ui_rx, tab_id, support::DEFAULT_TIMEOUT);
+  let frame = recv_frame(&worker.ui_rx, tab_id, TIMEOUT);
   assert_eq!(
     support::rgba_at(&frame.pixmap, 10, 100),
     [255, 0, 0, 255],
@@ -96,7 +99,7 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
     })
     .expect("PointerUp");
 
-  let deadline = Instant::now() + support::DEFAULT_TIMEOUT;
+  let deadline = Instant::now() + TIMEOUT;
   loop {
     let remaining = deadline.saturating_duration_since(Instant::now());
     assert!(

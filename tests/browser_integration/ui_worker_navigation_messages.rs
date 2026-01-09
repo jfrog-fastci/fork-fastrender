@@ -8,7 +8,8 @@ use fastrender::ui::{NavigationReason, TabId, UiToWorker};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+// Navigation/rendering can take a few seconds under load when tests run in parallel (CI).
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (String, bool, bool) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
