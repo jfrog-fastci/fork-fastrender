@@ -161,10 +161,9 @@ impl<State: 'static> EcmaVmRuntime<State> {
       scope.push_root(resolve_fn).map_err(map_vm_error)?;
       // Promise is a function in real JS; for MVP, an ordinary object with a `resolve` method is
       // sufficient for microtask coverage tests.
-      let obj =
-        scope
-          .alloc_object_with_prototype(Some(self.realm.intrinsics().object_prototype()))
-          .map_err(map_vm_error)?;
+      let obj = scope
+        .alloc_object_with_prototype(Some(self.realm.intrinsics().object_prototype()))
+        .map_err(map_vm_error)?;
       scope.push_root(Value::Object(obj)).map_err(map_vm_error)?;
 
       let resolve_key = prop_key(&mut scope, "resolve").map_err(map_vm_error)?;
@@ -207,13 +206,21 @@ impl<State: 'static> EcmaVmRuntime<State> {
 
   fn define_global_var(&mut self, name: &str, value: Value) -> Result<()> {
     // Store in the interpreter env (identifier lookups).
-    self.env.declare_var(&mut self.heap, name).map_err(map_vm_error)?;
-    self.env.set(&mut self.heap, name, value).map_err(map_vm_error)?;
+    self
+      .env
+      .declare_var(&mut self.heap, name)
+      .map_err(map_vm_error)?;
+    self
+      .env
+      .set(&mut self.heap, name, value)
+      .map_err(map_vm_error)?;
 
     // And on the realm global object for spec shape.
     let mut scope = self.heap.scope();
     let global = self.realm.global_object();
-    scope.push_root(Value::Object(global)).map_err(map_vm_error)?;
+    scope
+      .push_root(Value::Object(global))
+      .map_err(map_vm_error)?;
     scope.push_root(value).map_err(map_vm_error)?;
 
     let key = prop_key(&mut scope, name).map_err(map_vm_error)?;
@@ -267,7 +274,9 @@ impl<State: 'static> EcmaVmRuntime<State> {
 
     for stmt in &top.stx.body {
       let mut scope = self.heap.scope();
-      evaluator.eval_stmt(&mut scope, stmt).map_err(map_vm_error)?;
+      evaluator
+        .eval_stmt(&mut scope, stmt)
+        .map_err(map_vm_error)?;
       if let Some(err) = self.pending_host_error.take() {
         return Err(err);
       }
@@ -460,10 +469,7 @@ impl ExecCtxGuard {
   }
 
   fn with_current<State: 'static, R>(
-    f: impl FnOnce(
-      *mut EcmaVmRuntime<State>,
-      *mut EventLoop<EcmaVmRuntime<State>>,
-    ) -> R,
+    f: impl FnOnce(*mut EcmaVmRuntime<State>, *mut EventLoop<EcmaVmRuntime<State>>) -> R,
   ) -> R {
     EXEC_CTX.with(|cell| {
       let ctx = cell.get();
@@ -747,7 +753,10 @@ fn native_queue_microtask<State: 'static>(
     ));
   }
   if !scope.heap().is_callable(callback)? {
-    return Err(throw_type_error(scope, "queueMicrotask callback is not callable"));
+    return Err(throw_type_error(
+      scope,
+      "queueMicrotask callback is not callable",
+    ));
   }
 
   let callback_root = scope.heap_mut().add_root(callback)?;
@@ -804,7 +813,10 @@ fn native_set_timeout<State: 'static>(
     ));
   }
   if !scope.heap().is_callable(handler)? {
-    return Err(throw_type_error(scope, "setTimeout callback is not callable"));
+    return Err(throw_type_error(
+      scope,
+      "setTimeout callback is not callable",
+    ));
   }
 
   let timeout_ms = args.get(1).copied().map(to_timeout_ms).unwrap_or(0);
@@ -933,7 +945,10 @@ fn native_set_interval<State: 'static>(
     ));
   }
   if !scope.heap().is_callable(handler)? {
-    return Err(throw_type_error(scope, "setInterval callback is not callable"));
+    return Err(throw_type_error(
+      scope,
+      "setInterval callback is not callable",
+    ));
   }
 
   let timeout_ms = args.get(1).copied().map(to_timeout_ms).unwrap_or(0);
@@ -1051,8 +1066,9 @@ fn native_promise_resolve<State: 'static>(
   _this: Value,
   _args: &[Value],
 ) -> std::result::Result<Value, VmError> {
-  let then_call_id =
-    ExecCtxGuard::with_current::<State, _>(|host_ptr, _| unsafe { (*host_ptr).promise_then_call_id });
+  let then_call_id = ExecCtxGuard::with_current::<State, _>(|host_ptr, _| unsafe {
+    (*host_ptr).promise_then_call_id
+  });
 
   let then_key_s = scope.alloc_string("then")?;
   scope.push_root(Value::String(then_key_s))?;
@@ -1101,7 +1117,10 @@ fn native_promise_then<State: 'static>(
     ));
   }
   if !scope.heap().is_callable(callback)? {
-    return Err(throw_type_error(scope, "Promise.then callback is not callable"));
+    return Err(throw_type_error(
+      scope,
+      "Promise.then callback is not callable",
+    ));
   }
 
   // Root callback until the job runs.
@@ -1147,7 +1166,9 @@ fn native_promise_then<State: 'static>(
 
   if let Err(err) = enqueue_result {
     if let Some(job) = job_cell.borrow_mut().take() {
-      let mut ctx = HeapRootContext { heap: scope.heap_mut() };
+      let mut ctx = HeapRootContext {
+        heap: scope.heap_mut(),
+      };
       job.discard(&mut ctx);
     }
     ExecCtxGuard::with_current::<State, _>(|host_ptr, _| unsafe {
@@ -1376,7 +1397,10 @@ mod tests {
     ) -> std::result::Result<Value, VmError> {
       let (count, id) = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
         (*host_ptr).state.interval_count += 1;
-        ((*host_ptr).state.interval_count, (*host_ptr).state.interval_id)
+        (
+          (*host_ptr).state.interval_count,
+          (*host_ptr).state.interval_id,
+        )
       });
 
       if count == 3 {

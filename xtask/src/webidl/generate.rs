@@ -336,10 +336,14 @@ pub fn rustfmt(source: &str, rustfmt_config_path: &Path) -> Result<String> {
   }
 
   let mut formatted = String::from_utf8(output.stdout).context("decode rustfmt stdout as UTF-8")?;
-  // Newer rustfmt versions prefix `--emit stdout` output with a `<path>:` header line.
-  // Strip it to keep generated snapshots deterministic.
+  // Some rustfmt versions prefix `--emit stdout` output with a header line like:
+  //   <path>:
+  //
+  // which breaks consumers expecting valid Rust source on stdout. Strip it when detected.
   if let Some((maybe_path, rest)) = formatted.split_once("\n\n") {
-    if maybe_path.ends_with(':') && (maybe_path.contains('/') || maybe_path.contains('\\')) {
+    if maybe_path.ends_with(':')
+      && (maybe_path.contains('/') || maybe_path.contains('\\') || matches!(maybe_path, "stdin:" | "<stdin>:"))
+    {
       formatted = rest.to_string();
     }
   }

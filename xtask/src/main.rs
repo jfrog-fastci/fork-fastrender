@@ -154,7 +154,7 @@ enum Commands {
   /// Generate deterministic WebIDL metadata from vendored WHATWG specs.
   #[command(alias = "webidl")]
   WebIdlCodegen(webidl_codegen::WebIdlCodegenArgs),
-  /// Generate deterministic WebIDL-shaped JS binding glue from vendored WHATWG specs.
+  /// Generate deterministic WebIDL-shaped JS binding glue.
   #[command(alias = "webidl-bindings")]
   WebIdlBindingsCodegen(xtask::webidl_bindings_codegen::WebIdlBindingsCodegenArgs),
 }

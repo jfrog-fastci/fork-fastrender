@@ -234,6 +234,14 @@ impl VmJsRuntime {
       || self.symbol_data_symbol == Some(*sym)
   }
 
+  /// Create a property key for the given string.
+  ///
+  /// This interns and roots the underlying string so the returned key remains valid even if the
+  /// heap later runs GC.
+  pub fn prop_key(&mut self, s: &str) -> Result<PropertyKey, VmError> {
+    self.prop_key_str(s)
+  }
+
   pub fn alloc_string_value(&mut self, s: &str) -> Result<Value, VmError> {
     let handle = match s {
       "window" => self.intern_window_string()?,

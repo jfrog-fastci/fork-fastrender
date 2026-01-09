@@ -1,0 +1,38 @@
+# WebIDL bindings allowlist for `cargo xtask webidl-bindings`.
+#
+# This is intentionally tiny: we only generate a curated DOM core subset that the JS host can
+# install into a `VmJsRuntime` for early integration work.
+#
+# The generator treats this file as the source of truth for *what* gets generated and will fail if
+# any allowlisted interface/member is missing from `src/webidl/generated/mod.rs` (typo guard).
+
+[[interface]]
+name = "EventTarget"
+constructors = true
+attributes = []
+operations = ["addEventListener", "removeEventListener", "dispatchEvent"]
+
+[[interface]]
+name = "Node"
+constructors = false
+attributes = ["nodeType"]
+operations = ["cloneNode", "appendChild"]
+
+[[interface]]
+name = "Element"
+constructors = false
+attributes = []
+operations = ["querySelector"]
+
+[[interface]]
+name = "Document"
+constructors = true
+attributes = ["body"]
+operations = ["createElement", "querySelector"]
+
+[[interface]]
+name = "Window"
+constructors = false
+attributes = ["event"]
+operations = []
+

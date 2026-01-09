@@ -180,9 +180,9 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
         // as a no-op rather than panicking (FastRender must not panic in production code).
         return Ok(());
       };
-      let job_result =
-        job.run(&mut ctx, &mut hooks)
-          .map_err(|err| Error::Other(format!("vm-js job failed: {err}")));
+      let job_result = job
+        .run(&mut ctx, &mut hooks)
+        .map_err(|err| Error::Other(format!("vm-js job failed: {err}")));
       drop(ctx);
 
       let enqueue_err = hooks.finish(host);
@@ -230,8 +230,8 @@ mod tests {
   use crate::js::RunLimits;
   use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex};
-  use vm_js::VmJobContext as _;
   use vm_js::VmHostHooks as _;
+  use vm_js::VmJobContext as _;
 
   static JOB_CALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
 
@@ -328,7 +328,8 @@ mod tests {
   }
 
   #[test]
-  fn vm_js_promise_jobs_enqueued_by_jobs_run_in_the_same_microtask_checkpoint() -> crate::Result<()> {
+  fn vm_js_promise_jobs_enqueued_by_jobs_run_in_the_same_microtask_checkpoint() -> crate::Result<()>
+  {
     struct Host {
       log: Arc<Mutex<Vec<&'static str>>>,
       vm: vm_js::Vm,
@@ -421,9 +422,7 @@ mod tests {
         Ok(())
       });
       let mut ctx = VmJsJobContext::new(&mut host, None);
-      let root = job
-        .add_root(&mut ctx, vm_js::Value::Null)
-        .map_err(vm_err)?;
+      let root = job.add_root(&mut ctx, vm_js::Value::Null).map_err(vm_err)?;
       (root, job)
     };
     hooks.host_enqueue_promise_job(job1, None);

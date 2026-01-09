@@ -212,12 +212,16 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   };
 
   let Value::Object(global_obj) = this else {
-    return Err(throw_type_error("setTimeout called with invalid this value"));
+    return Err(throw_type_error(
+      "setTimeout called with invalid this value",
+    ));
   };
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(throw_type_error("setTimeout called without an active EventLoop"));
+    return Err(throw_type_error(
+      "setTimeout called without an active EventLoop",
+    ));
   };
 
   let id_cell = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -287,12 +291,16 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   let id = normalize_timer_id(scope.heap_mut(), id_value)?;
 
   let Value::Object(global_obj) = this else {
-    return Err(throw_type_error("clearTimeout called with invalid this value"));
+    return Err(throw_type_error(
+      "clearTimeout called with invalid this value",
+    ));
   };
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(throw_type_error("clearTimeout called without an active EventLoop"));
+    return Err(throw_type_error(
+      "clearTimeout called without an active EventLoop",
+    ));
   };
   event_loop.clear_timeout(id);
 
@@ -328,12 +336,16 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   };
 
   let Value::Object(global_obj) = this else {
-    return Err(throw_type_error("setInterval called with invalid this value"));
+    return Err(throw_type_error(
+      "setInterval called with invalid this value",
+    ));
   };
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(throw_type_error("setInterval called without an active EventLoop"));
+    return Err(throw_type_error(
+      "setInterval called without an active EventLoop",
+    ));
   };
 
   let id_cell = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -401,12 +413,16 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
   let id = normalize_timer_id(scope.heap_mut(), id_value)?;
 
   let Value::Object(global_obj) = this else {
-    return Err(throw_type_error("clearInterval called with invalid this value"));
+    return Err(throw_type_error(
+      "clearInterval called with invalid this value",
+    ));
   };
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(throw_type_error("clearInterval called without an active EventLoop"));
+    return Err(throw_type_error(
+      "clearInterval called without an active EventLoop",
+    ));
   };
   event_loop.clear_interval(id);
 
@@ -432,7 +448,9 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   }
 
   let Value::Object(_global_obj) = this else {
-    return Err(throw_type_error("queueMicrotask called with invalid this value"));
+    return Err(throw_type_error(
+      "queueMicrotask called with invalid this value",
+    ));
   };
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -440,7 +458,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
       "queueMicrotask called without an active EventLoop",
     ));
   };
- 
+
   // Keep the callback alive until the microtask runs.
   let root = scope.heap_mut().add_root(callback)?;
   event_loop
@@ -528,9 +546,10 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   scope.push_root(Value::String(clear_interval_name))?;
   let clear_interval =
     scope.alloc_native_function(clear_interval_id, None, clear_interval_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(clear_interval, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    clear_interval,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(clear_interval))?;
 
   let queue_microtask_id = vm.register_native_call(queue_microtask_native::<Host>)?;
@@ -538,9 +557,10 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   scope.push_root(Value::String(queue_microtask_name))?;
   let queue_microtask =
     scope.alloc_native_function(queue_microtask_id, None, queue_microtask_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(queue_microtask, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    queue_microtask,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(queue_microtask))?;
 
   let set_timeout_key = alloc_key(&mut scope, "setTimeout")?;
@@ -696,7 +716,9 @@ mod tests {
     name: &str,
     native: vm_js::NativeCall,
   ) -> vm_js::GcObject {
-    let id = vm.register_native_call(native).expect("register_native_call");
+    let id = vm
+      .register_native_call(native)
+      .expect("register_native_call");
     let name_s = scope.alloc_string(name).unwrap();
     scope.push_root(Value::String(name_s)).unwrap();
     scope.push_root(Value::Object(global)).unwrap();
@@ -1276,7 +1298,12 @@ mod tests {
         return Ok(Value::Undefined);
       };
       let is_undefined = matches!(this, Value::Undefined);
-      set_prop(scope, global, "__microtask_this_is_undefined", Value::Bool(is_undefined));
+      set_prop(
+        scope,
+        global,
+        "__microtask_this_is_undefined",
+        Value::Bool(is_undefined),
+      );
       Ok(Value::Undefined)
     }
 
@@ -1303,8 +1330,13 @@ mod tests {
       with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
         let mut scope = heap.scope();
         let queue_microtask = get_prop(&mut scope, global, "queueMicrotask");
-        let cb =
-          make_callback(vm, &mut scope, global, "micro_cb", cb_record_this_is_undefined);
+        let cb = make_callback(
+          vm,
+          &mut scope,
+          global,
+          "micro_cb",
+          cb_record_this_is_undefined,
+        );
         vm.call(
           &mut scope,
           queue_microtask,

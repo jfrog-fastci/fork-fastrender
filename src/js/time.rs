@@ -150,7 +150,11 @@ pub fn install_time_bindings(
     let date_now_key_s = scope.alloc_string("now")?;
     scope.push_root(Value::String(date_now_key_s))?;
     let date_now_key = PropertyKey::from_string(date_now_key_s);
-    scope.define_property(date, date_now_key, global_data_desc(Value::Object(date_now)))?;
+    scope.define_property(
+      date,
+      date_now_key,
+      global_data_desc(Value::Object(date_now)),
+    )?;
 
     let date_key_s = scope.alloc_string("Date")?;
     scope.push_root(Value::String(date_key_s))?;

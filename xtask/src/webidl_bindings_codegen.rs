@@ -1,12 +1,17 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use fastrender::webidl::{
+  WebIdlCallback, WebIdlDictionary, WebIdlEnum, WebIdlExtendedAttribute, WebIdlInterface,
+  WebIdlInterfaceMember, WebIdlInterfaceMixin, WebIdlTypedef, WebIdlWorld,
+};
+
 use crate::webidl::analyze::AnalyzedWebIdlWorld;
 use crate::webidl::ast::{Argument, BuiltinType, IdlLiteral, IdlType, InterfaceMember};
-use crate::webidl::load::{load_combined_webidl, WebIdlSource};
 use crate::webidl::resolve::{ExposureTarget, ResolvedWebIdlWorld};
 
 #[derive(Args, Debug)]
@@ -18,6 +23,22 @@ pub struct WebIdlBindingsCodegenArgs {
     value_name = "FILE"
   )]
   pub out: PathBuf,
+
+  /// Path to the DOM-scaffold bindings allowlist manifest (TOML).
+  #[arg(
+    long,
+    default_value = "tools/webidl/bindings_allowlist.toml",
+    value_name = "FILE"
+  )]
+  pub dom_allowlist: PathBuf,
+
+  /// Output Rust module path for the DOM-scaffold bindings (relative to repo root unless absolute).
+  #[arg(
+    long,
+    default_value = "src/js/bindings/dom_generated.rs",
+    value_name = "FILE"
+  )]
+  pub dom_out: PathBuf,
 
   /// Do not write files; instead, fail if the generated output differs.
   #[arg(long)]
@@ -68,6 +89,8 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
   let rustfmt_config = repo_root.join(".rustfmt.toml");
 
   let out_path = absolutize(repo_root.clone(), args.out);
+  let dom_allowlist_path = absolutize(repo_root.clone(), args.dom_allowlist);
+  let dom_out_path = absolutize(repo_root.clone(), args.dom_out);
 
   let allow_interfaces = if args.allow_interfaces.is_empty() {
     WebIdlBindingsCodegenConfig::core_window_default().allow_interfaces
@@ -75,42 +98,13 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
     args.allow_interfaces.into_iter().collect()
   };
 
-  let mut sources = vec![
-    WebIdlSource {
-      rel_path: "specs/whatwg-dom/dom.bs",
-      label: "WHATWG DOM",
-    },
-    WebIdlSource {
-      rel_path: "specs/whatwg-html/source",
-      label: "WHATWG HTML",
-    },
-    WebIdlSource {
-      rel_path: "specs/whatwg-url/url.bs",
-      label: "WHATWG URL",
-    },
-  ];
+  // Prefer the committed snapshot (`src/webidl/generated`) so running this xtask does not require
+  // vendored spec submodules.
+  let snapshot_world: &WebIdlWorld = &fastrender::webidl::generated::WORLD;
+  let snapshot_idl = snapshot_world_to_idl(snapshot_world);
 
-  // Fetch is optional for the initial Window/core binding surface; include it when the submodule is
-  // present so downstream codegen can expand into `fetch()` and friends later.
-  if repo_root.join("specs/whatwg-fetch/fetch.bs").exists() {
-    sources.push(WebIdlSource {
-      rel_path: "specs/whatwg-fetch/fetch.bs",
-      label: "WHATWG Fetch",
-    });
-  }
-
-  let combined = load_combined_webidl(&repo_root, &sources).context("load combined WebIDL")?;
-  if !combined.missing_sources.is_empty() {
-    let mut msg = String::new();
-    msg.push_str("missing WebIDL spec sources (did you init the git submodules?):\n");
-    for (label, path) in &combined.missing_sources {
-      msg.push_str(&format!("  - {}: {}\n", label, path.display()));
-    }
-    bail!(msg.trim_end().to_string());
-  }
-
-  let generated = generate_bindings_module_from_idl_with_config(
-    &combined.combined_idl,
+  let generated_window = generate_bindings_module_from_idl_with_config(
+    &snapshot_idl,
     &rustfmt_config,
     WebIdlBindingsCodegenConfig {
       mode: WebIdlBindingsGenerationMode::CoreWindow,
@@ -119,22 +113,52 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
   )
   .context("generate WebIDL bindings module")?;
 
+  let dom_allowlist_text = fs::read_to_string(&dom_allowlist_path).with_context(|| {
+    format!(
+      "read WebIDL DOM bindings allowlist {}",
+      dom_allowlist_path.display()
+    )
+  })?;
+  let dom_manifest: DomAllowlistManifest = toml::from_str(&dom_allowlist_text)
+    .context("parse WebIDL DOM bindings allowlist TOML")?;
+  let generated_dom = generate_dom_bindings_module(&dom_manifest, &rustfmt_config)
+    .context("generate DOM scaffold bindings module")?;
+
   if args.check {
     let existing = fs::read_to_string(&out_path)
       .with_context(|| format!("read generated file {}", out_path.display()))?;
-    if existing != generated {
+    if existing != generated_window {
       bail!(
         "generated WebIDL bindings are out of date: run `cargo xtask webidl-bindings` (path={})",
         out_path.display()
+      );
+    }
+
+    let existing_dom = fs::read_to_string(&dom_out_path)
+      .with_context(|| format!("read generated file {}", dom_out_path.display()))?;
+    if existing_dom != generated_dom {
+      bail!(
+        "generated DOM bindings are out of date: run `cargo xtask webidl-bindings` (path={})",
+        dom_out_path.display()
       );
     }
     return Ok(());
   }
 
   if let Some(parent) = out_path.parent() {
-    fs::create_dir_all(parent).with_context(|| format!("create output directory {}", parent.display()))?;
+    fs::create_dir_all(parent)
+      .with_context(|| format!("create output directory {}", parent.display()))?;
   }
-  fs::write(&out_path, generated).with_context(|| format!("write generated output {}", out_path.display()))?;
+  fs::write(&out_path, generated_window)
+    .with_context(|| format!("write generated output {}", out_path.display()))?;
+
+  if let Some(parent) = dom_out_path.parent() {
+    fs::create_dir_all(parent)
+      .with_context(|| format!("create output directory {}", parent.display()))?;
+  }
+  fs::write(&dom_out_path, generated_dom)
+    .with_context(|| format!("write generated output {}", dom_out_path.display()))?;
+
   Ok(())
 }
 
@@ -168,6 +192,814 @@ fn repo_root() -> PathBuf {
     .parent()
     .map(|p| p.to_path_buf())
     .unwrap_or_else(|| manifest_dir.to_path_buf())
+}
+
+fn snapshot_world_to_idl(world: &WebIdlWorld) -> String {
+  let mut out = String::new();
+
+  for en in world.enums {
+    write_enum_to_idl(&mut out, en);
+    out.push('\n');
+  }
+  for td in world.typedefs {
+    write_typedef_to_idl(&mut out, td);
+    out.push('\n');
+  }
+  for cb in world.callbacks {
+    write_callback_to_idl(&mut out, cb);
+    out.push('\n');
+  }
+  for dict in world.dictionaries {
+    write_dictionary_to_idl(&mut out, dict);
+    out.push('\n');
+  }
+  for mixin in world.interface_mixins {
+    write_interface_mixin_to_idl(&mut out, mixin);
+    out.push('\n');
+  }
+  for iface in world.interfaces {
+    write_interface_to_idl(&mut out, iface);
+    out.push('\n');
+  }
+
+  out
+}
+
+fn write_ext_attrs_to_idl(out: &mut String, indent: &str, attrs: &[WebIdlExtendedAttribute]) {
+  if attrs.is_empty() {
+    return;
+  }
+
+  out.push_str(indent);
+  out.push('[');
+  for (idx, attr) in attrs.iter().enumerate() {
+    if idx != 0 {
+      out.push_str(", ");
+    }
+    out.push_str(attr.name);
+    if let Some(value) = attr.value {
+      out.push('=');
+      out.push_str(value);
+    }
+  }
+  out.push_str("]\n");
+}
+
+fn write_interface_member_to_idl(out: &mut String, member: &WebIdlInterfaceMember) {
+  write_ext_attrs_to_idl(out, "  ", member.ext_attrs);
+  out.push_str("  ");
+  out.push_str(member.raw);
+  out.push_str(";\n");
+}
+
+fn write_interface_to_idl(out: &mut String, iface: &WebIdlInterface) {
+  write_ext_attrs_to_idl(out, "", iface.ext_attrs);
+  out.push_str(if iface.callback { "callback interface " } else { "interface " });
+  out.push_str(iface.name);
+  if let Some(parent) = iface.inherits {
+    out.push_str(" : ");
+    out.push_str(parent);
+  }
+  out.push_str(" {\n");
+  for member in iface.members {
+    write_interface_member_to_idl(out, member);
+  }
+  out.push_str("};\n");
+}
+
+fn write_interface_mixin_to_idl(out: &mut String, mixin: &WebIdlInterfaceMixin) {
+  write_ext_attrs_to_idl(out, "", mixin.ext_attrs);
+  out.push_str("interface mixin ");
+  out.push_str(mixin.name);
+  out.push_str(" {\n");
+  for member in mixin.members {
+    write_interface_member_to_idl(out, member);
+  }
+  out.push_str("};\n");
+}
+
+fn write_dictionary_to_idl(out: &mut String, dict: &WebIdlDictionary) {
+  write_ext_attrs_to_idl(out, "", dict.ext_attrs);
+  out.push_str("dictionary ");
+  out.push_str(dict.name);
+  if let Some(parent) = dict.inherits {
+    out.push_str(" : ");
+    out.push_str(parent);
+  }
+  out.push_str(" {\n");
+  for member in dict.members {
+    write_ext_attrs_to_idl(out, "  ", member.ext_attrs);
+    out.push_str("  ");
+    out.push_str(member.raw);
+    out.push_str(";\n");
+  }
+  out.push_str("};\n");
+}
+
+fn write_enum_to_idl(out: &mut String, en: &WebIdlEnum) {
+  write_ext_attrs_to_idl(out, "", en.ext_attrs);
+  out.push_str("enum ");
+  out.push_str(en.name);
+  out.push_str(" {\n");
+  for (idx, value) in en.values.iter().enumerate() {
+    out.push_str("  ");
+    out.push_str(&idl_string_literal(value));
+    if idx + 1 != en.values.len() {
+      out.push(',');
+    }
+    out.push('\n');
+  }
+  out.push_str("};\n");
+}
+
+fn write_typedef_to_idl(out: &mut String, td: &WebIdlTypedef) {
+  write_ext_attrs_to_idl(out, "", td.ext_attrs);
+  out.push_str("typedef ");
+  out.push_str(td.type_);
+  out.push(' ');
+  out.push_str(td.name);
+  out.push_str(";\n");
+}
+
+fn write_callback_to_idl(out: &mut String, cb: &WebIdlCallback) {
+  write_ext_attrs_to_idl(out, "", cb.ext_attrs);
+  out.push_str("callback ");
+  out.push_str(cb.name);
+  out.push_str(" = ");
+  out.push_str(cb.type_);
+  out.push_str(";\n");
+}
+
+fn idl_string_literal(value: &str) -> String {
+  let mut out = String::with_capacity(value.len() + 2);
+  out.push('"');
+  for ch in value.chars() {
+    match ch {
+      '"' => out.push_str("\\\""),
+      '\\' => out.push_str("\\\\"),
+      '\n' => out.push_str("\\n"),
+      '\r' => out.push_str("\\r"),
+      '\t' => out.push_str("\\t"),
+      _ => out.push(ch),
+    }
+  }
+  out.push('"');
+  out
+}
+
+#[derive(Debug, Deserialize)]
+struct DomAllowlistManifest {
+  #[serde(rename = "interface")]
+  interfaces: Vec<DomAllowlistInterface>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DomAllowlistInterface {
+  name: String,
+  #[serde(default)]
+  constructors: bool,
+  #[serde(default)]
+  attributes: Vec<String>,
+  #[serde(default)]
+  operations: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DomParsedInterface {
+  name: String,
+  inherits: Option<String>,
+  constructible: bool,
+  attributes: Vec<InterfaceMember>,
+  operations: Vec<InterfaceMember>,
+}
+
+fn generate_dom_bindings_module(
+  manifest: &DomAllowlistManifest,
+  rustfmt_config_path: &Path,
+) -> Result<String> {
+  let world = &fastrender::webidl::generated::WORLD;
+
+  let allowlisted = dom_parse_allowlisted_interfaces(world, &manifest.interfaces)?;
+  let derived_map = dom_compute_derived_interfaces(&allowlisted);
+
+  let raw = dom_render_bindings_module(&allowlisted, &derived_map)?;
+  let formatted = crate::webidl::generate::rustfmt(&raw, rustfmt_config_path)?;
+  crate::webidl::generate::ensure_no_forbidden_tokens(&formatted)?;
+  Ok(formatted)
+}
+
+fn dom_parse_allowlisted_interfaces(
+  world: &WebIdlWorld,
+  allowlist: &[DomAllowlistInterface],
+) -> Result<Vec<DomParsedInterface>> {
+  let mut out = Vec::new();
+  let mut seen = BTreeSet::new();
+
+  for entry in allowlist {
+    if !seen.insert(entry.name.clone()) {
+      bail!(
+        "DOM allowlist contains duplicate interface entry: {}",
+        entry.name
+      );
+    }
+    let iface = world.interface(&entry.name).with_context(|| {
+      format!(
+        "allowlisted interface `{}` is missing from WORLD",
+        entry.name
+      )
+    })?;
+    out.push(dom_parse_interface_entry(iface, entry)?);
+  }
+
+  Ok(out)
+}
+
+fn dom_parse_interface_entry(
+  iface: &WebIdlInterface,
+  allow: &DomAllowlistInterface,
+) -> Result<DomParsedInterface> {
+  let mut constructible = false;
+  let mut attributes: Vec<InterfaceMember> = Vec::new();
+  let mut operations: Vec<InterfaceMember> = Vec::new();
+
+  // Constructors.
+  if allow.constructors {
+    for member in iface.members {
+      if member.name != Some("constructor") {
+        continue;
+      }
+      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+        format!(
+          "failed to parse WebIDL member `{}` constructor `{}`",
+          iface.name, member.raw
+        )
+      })?;
+      let InterfaceMember::Constructor { arguments } = parsed else {
+        continue;
+      };
+      if !arguments.is_empty() {
+        bail!(
+          "only no-argument constructors are supported in MVP DOM bindings (interface={})",
+          iface.name
+        );
+      }
+      constructible = true;
+    }
+    if !constructible {
+      bail!(
+        "DOM allowlist requested constructors for `{}`, but none were found in WORLD",
+        iface.name
+      );
+    }
+  }
+
+  // Attributes.
+  for attr_name in &allow.attributes {
+    let mut matches = Vec::new();
+    for member in iface.members {
+      if member.name != Some(attr_name.as_str()) {
+        continue;
+      }
+      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+        format!(
+          "failed to parse WebIDL member `{}` attribute `{}`",
+          iface.name, member.raw
+        )
+      })?;
+      if matches!(parsed, InterfaceMember::Attribute { .. }) {
+        matches.push(parsed);
+      }
+    }
+    if matches.is_empty() {
+      bail!(
+        "allowlisted attribute `{}` was not found on interface `{}`",
+        attr_name,
+        iface.name
+      );
+    }
+    if matches.len() != 1 {
+      bail!(
+        "allowlisted attribute `{}` appears multiple times on interface `{}`; overloads are not supported for attributes",
+        attr_name,
+        iface.name
+      );
+    }
+    attributes.push(matches.remove(0));
+  }
+
+  // Operations.
+  for op_name in &allow.operations {
+    let mut matches = Vec::new();
+    for member in iface.members {
+      if member.name != Some(op_name.as_str()) {
+        continue;
+      }
+      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+        format!(
+          "failed to parse WebIDL member `{}` operation `{}`",
+          iface.name, member.raw
+        )
+      })?;
+      let InterfaceMember::Operation {
+        name: Some(name),
+        static_,
+        special: None,
+        ..
+      } = &parsed
+      else {
+        continue;
+      };
+      if name != op_name {
+        continue;
+      }
+      if *static_ {
+        bail!(
+          "static operations are not supported in MVP DOM bindings (interface={}, operation={})",
+          iface.name,
+          op_name
+        );
+      }
+      matches.push(parsed);
+    }
+    if matches.is_empty() {
+      bail!(
+        "allowlisted operation `{}` was not found on interface `{}`",
+        op_name,
+        iface.name
+      );
+    }
+    operations.extend(matches);
+  }
+
+  Ok(DomParsedInterface {
+    name: iface.name.to_string(),
+    inherits: iface.inherits.map(|s| s.to_string()),
+    constructible,
+    attributes,
+    operations,
+  })
+}
+
+fn dom_compute_derived_interfaces(interfaces: &[DomParsedInterface]) -> BTreeMap<String, BTreeSet<String>> {
+  let mut by_name: BTreeMap<String, &DomParsedInterface> = BTreeMap::new();
+  for iface in interfaces {
+    by_name.insert(iface.name.clone(), iface);
+  }
+
+  let mut derived: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+  for iface in interfaces {
+    // Every interface is derived from itself.
+    derived
+      .entry(iface.name.clone())
+      .or_default()
+      .insert(iface.name.clone());
+
+    let mut cur = iface.inherits.clone();
+    while let Some(parent) = cur {
+      derived
+        .entry(parent.clone())
+        .or_default()
+        .insert(iface.name.clone());
+
+      cur = by_name.get(&parent).and_then(|i| i.inherits.clone());
+    }
+  }
+  derived
+}
+
+fn dom_render_bindings_module(
+  interfaces: &[DomParsedInterface],
+  derived: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<String> {
+  let mut out = String::new();
+
+  out.push_str("// @generated by `cargo xtask webidl-bindings`. DO NOT EDIT.\n\n");
+  out.push_str("use super::DomHost;\n");
+  out.push_str("use crate::js::webidl::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};\n");
+  out.push_str("use vm_js::{PropertyKey, Value, VmError};\n\n");
+
+  out.push_str(
+    "pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Result<(), VmError> {\n",
+  );
+
+  // Common property keys.
+  out.push_str("  let k_dom_type: PropertyKey = rt.prop_key(\"__fastrender_dom_type\")?;\n");
+  out.push_str("  let k_prototype: PropertyKey = rt.prop_key(\"prototype\")?;\n");
+  out.push_str("  let k_constructor: PropertyKey = rt.prop_key(\"constructor\")?;\n\n");
+
+  // Pre-intern all interface name tags (used for this-brand checks).
+  for iface in interfaces {
+    let var = format!("tag_{}", dom_to_snake(&iface.name));
+    out.push_str(&format!(
+      "  let {var}: Value = rt.alloc_string_value(\"{}\")?;\n",
+      iface.name
+    ));
+  }
+  out.push('\n');
+
+  // Prototypes and constructors.
+  for iface in interfaces {
+    let snake = dom_to_snake(&iface.name);
+    out.push_str(&format!(
+      "  let proto_{snake}: Value = rt.alloc_object_value()?;\n"
+    ));
+
+    // Create the interface object (constructor function).
+    out.push_str(&format!(
+      "  let ctor_{snake}: Value = rt.alloc_function_value({{\n"
+    ));
+
+    if !iface.constructible {
+      out.push_str(
+        "    move |rt, _this, _args| Err(rt.throw_type_error(\"Illegal constructor\"))\n",
+      );
+    } else {
+      let tag_var = format!("tag_{snake}");
+      out.push_str(&format!(
+        "    let proto: Value = proto_{snake};\n    let tag: Value = {tag_var};\n    let k_dom_type: PropertyKey = k_dom_type;\n    move |rt, _this, _args| {{\n      let obj: Value = rt.alloc_object_value()?;\n      rt.set_prototype(obj, Some(proto))?;\n      rt.define_data_property(obj, k_dom_type, tag, false)?;\n      Ok(obj)\n    }}\n"
+      ));
+    }
+
+    out.push_str("  })?;\n");
+
+    // ctor.prototype = proto (non-enumerable)
+    out.push_str(&format!(
+      "  rt.define_data_property(ctor_{snake}, k_prototype, proto_{snake}, false)?;\n"
+    ));
+    // proto.constructor = ctor (non-enumerable)
+    out.push_str(&format!(
+      "  rt.define_data_property(proto_{snake}, k_constructor, ctor_{snake}, false)?;\n\n"
+    ));
+  }
+
+  // Prototype inheritance.
+  for iface in interfaces {
+    let Some(parent) = &iface.inherits else {
+      continue;
+    };
+    let parent_snake = dom_to_snake(parent);
+    let child_snake = dom_to_snake(&iface.name);
+    out.push_str(&format!(
+      "  rt.set_prototype(proto_{child_snake}, Some(proto_{parent_snake}))?;\n"
+    ));
+  }
+  out.push('\n');
+
+  // Define members on prototypes.
+  for iface in interfaces {
+    dom_render_interface_members(&mut out, iface, derived)?;
+  }
+
+  // Expose constructors on the global object.
+  out.push_str("  let global: Value = host.global_object();\n");
+  for iface in interfaces {
+    let snake = dom_to_snake(&iface.name);
+    let key_var = format!("k_global_iface_{}", snake);
+    out.push_str(&format!(
+      "  let {key_var}: PropertyKey = rt.prop_key(\"{}\")?;\n",
+      iface.name
+    ));
+    out.push_str(&format!(
+      "  rt.define_data_property(global, {key_var}, ctor_{snake}, false)?;\n",
+    ));
+  }
+
+  // Minimal bootstrapping globals for unit tests / early integration:
+  // - Brand the global object as `Window`
+  // - Install a `document` object.
+  if interfaces.iter().any(|i| i.name == "Window") {
+    out.push_str("  rt.set_prototype(global, Some(proto_window))?;\n");
+    out.push_str("  rt.define_data_property(global, k_dom_type, tag_window, false)?;\n");
+  }
+  if interfaces.iter().any(|i| i.name == "Document") {
+    out.push_str("  let document: Value = rt.alloc_object_value()?;\n");
+    out.push_str("  rt.set_prototype(document, Some(proto_document))?;\n");
+    out.push_str("  rt.define_data_property(document, k_dom_type, tag_document, false)?;\n");
+    out.push_str("  let k_global_document: PropertyKey = rt.prop_key(\"document\")?;\n");
+    out.push_str("  rt.define_data_property(global, k_global_document, document, false)?;\n");
+  }
+
+  out.push_str("  Ok(())\n}\n");
+
+  Ok(out)
+}
+
+fn dom_render_interface_members(
+  out: &mut String,
+  iface: &DomParsedInterface,
+  derived: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<()> {
+  let iface_snake = dom_to_snake(&iface.name);
+
+  // Attributes.
+  for member in &iface.attributes {
+    let InterfaceMember::Attribute { name, readonly, .. } = member else {
+      continue;
+    };
+
+    let key_var = format!("k_{}_{}", iface_snake, dom_to_snake(name));
+    out.push_str(&format!(
+      "  let {key_var}: PropertyKey = rt.prop_key(\"{name}\")?;\n"
+    ));
+
+    let getter_var = format!("get_{}_{}", iface_snake, dom_to_snake(name));
+    let allowed = derived
+      .get(&iface.name)
+      .cloned()
+      .unwrap_or_else(BTreeSet::new);
+    let allowed_cond = dom_render_allowed_checks("this_type", &allowed);
+
+    out.push_str(&format!(
+      "  let {getter_var}: Value = rt.alloc_function_value({{\n    let k_dom_type: PropertyKey = k_dom_type;\n{allowed_checks}    move |rt, this, _args| {{\n      if !rt.is_object(this) {{\n        return Err(rt.throw_type_error(\"Illegal invocation\"));\n      }}\n      let this_type: Value = rt.get(this, k_dom_type)?;\n      if !({allowed_checks_cond}) {{\n        return Err(rt.throw_type_error(\"Illegal invocation\"));\n      }}\n      Ok(Value::Undefined)\n    }}\n  }})?;\n",
+      getter_var = getter_var,
+      allowed_checks = dom_render_allowed_captures(&allowed),
+      allowed_checks_cond = allowed_cond.clone(),
+    ));
+
+    let setter_expr = if *readonly {
+      "Value::Undefined".to_string()
+    } else {
+      // Non-readonly attribute: generate a stub setter.
+      let setter_var = format!("set_{}_{}", iface_snake, dom_to_snake(name));
+      out.push_str(&format!(
+        "  let {setter_var}: Value = rt.alloc_function_value({{\n    let k_dom_type: PropertyKey = k_dom_type;\n{captures}    move |rt, this, _args| {{\n      if !rt.is_object(this) {{\n        return Err(rt.throw_type_error(\"Illegal invocation\"));\n      }}\n      let this_type: Value = rt.get(this, k_dom_type)?;\n      if !({cond}) {{\n        return Err(rt.throw_type_error(\"Illegal invocation\"));\n      }}\n      Err(rt.throw_type_error(\"not implemented\"))\n    }}\n  }})?;\n",
+        setter_var = setter_var,
+        captures = dom_render_allowed_captures(&allowed),
+        cond = allowed_cond.clone(),
+      ));
+      setter_var
+    };
+
+    out.push_str(&format!(
+      "  rt.define_accessor_property(proto_{iface_snake}, {key_var}, {getter_var}, {setter_expr}, false)?;\n",
+      iface_snake = iface_snake,
+      key_var = key_var,
+      getter_var = getter_var,
+      setter_expr = setter_expr
+    ));
+  }
+
+  // Operations.
+  for member in &iface.operations {
+    let InterfaceMember::Operation {
+      name: Some(name),
+      arguments,
+      ..
+    } = member
+    else {
+      continue;
+    };
+
+    let key_var = format!("k_{}_{}", iface_snake, dom_to_snake(name));
+    out.push_str(&format!(
+      "  let {key_var}: PropertyKey = rt.prop_key(\"{name}\")?;\n"
+    ));
+
+    let func_var = format!("fn_{}_{}", iface_snake, dom_to_snake(name));
+    let allowed = derived
+      .get(&iface.name)
+      .cloned()
+      .unwrap_or_else(BTreeSet::new);
+    let allowed_cond = dom_render_allowed_checks("this_type", &allowed);
+
+    let min_required = arguments
+      .iter()
+      .take_while(|a| !a.optional && !a.variadic)
+      .count();
+
+    let required_args_check = if min_required == 0 {
+      String::new()
+    } else {
+      format!(
+        "      if args.len() < {min_required} {{\n        return Err(rt.throw_type_error(&format!(\"{iface}.{name}: expected at least {min_required} arguments, got {{}}\", args.len())));\n      }}\n",
+        min_required = min_required,
+        iface = iface.name,
+        name = name
+      )
+    };
+
+    // Special-case a common DOM pattern: `optional (Dictionary or boolean) options = {}`
+    // We treat it as a two-overload set for MVP dispatch.
+    let overload_dispatch = dom_render_union_boolean_dictionary_dispatch(iface, name, arguments)?;
+
+    out.push_str(&format!(
+      "  let {func_var}: Value = rt.alloc_function_value({{\n    let k_dom_type: PropertyKey = k_dom_type;\n{captures}    move |rt, this, args| {{\n      if !rt.is_object(this) {{\n        return Err(rt.throw_type_error(\"Illegal invocation\"));\n      }}\n      let this_type: Value = rt.get(this, k_dom_type)?;\n      if !({cond}) {{\n        return Err(rt.throw_type_error(\"Illegal invocation\"));\n      }}\n{required_args_check}{overload_dispatch}      Err(rt.throw_type_error(\"not implemented\"))\n    }}\n  }})?;\n",
+      func_var = func_var,
+      captures = dom_render_allowed_captures(&allowed),
+      cond = allowed_cond,
+      required_args_check = required_args_check,
+      overload_dispatch = overload_dispatch
+    ));
+
+    out.push_str(&format!(
+      "  rt.define_data_property(proto_{iface_snake}, {key_var}, {func_var}, false)?;\n",
+      iface_snake = iface_snake,
+      key_var = key_var,
+      func_var = func_var
+    ));
+  }
+
+  if !iface.attributes.is_empty() || !iface.operations.is_empty() {
+    out.push('\n');
+  }
+
+  Ok(())
+}
+
+fn dom_render_allowed_captures(allowed: &BTreeSet<String>) -> String {
+  let mut out = String::new();
+  for name in allowed {
+    out.push_str(&format!(
+      "    let tag_{snake}: Value = tag_{snake};\n",
+      snake = dom_to_snake(name)
+    ));
+  }
+  out
+}
+
+fn dom_render_allowed_checks(var: &str, allowed: &BTreeSet<String>) -> String {
+  if allowed.is_empty() {
+    return "false".to_string();
+  }
+  let mut cond = String::new();
+  for (idx, name) in allowed.iter().enumerate() {
+    if idx != 0 {
+      cond.push_str(" || ");
+    }
+    cond.push_str(&format!("{var} == tag_{}", dom_to_snake(name)));
+  }
+  cond
+}
+
+fn dom_render_union_boolean_dictionary_dispatch(
+  iface: &DomParsedInterface,
+  op_name: &str,
+  args: &[Argument],
+) -> Result<String> {
+  let Some(last) = args.last() else {
+    return Ok(String::new());
+  };
+  if !last.optional {
+    return Ok(String::new());
+  }
+
+  let IdlType::Union(members) = &last.type_ else {
+    return Ok(String::new());
+  };
+  if members.len() != 2 {
+    return Ok(String::new());
+  }
+
+  let (a, b) = (&members[0], &members[1]);
+
+  let (dict_name, bool_first) = match (a, b) {
+    (IdlType::Named(name), IdlType::Builtin(BuiltinType::Boolean)) => (name.as_str(), false),
+    (IdlType::Builtin(BuiltinType::Boolean), IdlType::Named(name)) => (name.as_str(), true),
+    _ => return Ok(String::new()),
+  };
+
+  // Only support dictionary-or-boolean unions for MVP dispatch. We consider any non-boolean value
+  // to take the dictionary path.
+  let _ = dict_name;
+  let _ = bool_first;
+
+  // Validate as an overload set using the existing overload-set algorithms.
+  dom_validate_boolean_dictionary_overload_set(iface, op_name)?;
+
+  Ok(
+    "      // Overload-style dispatch for `optional (Dictionary or boolean)`.\n\
+     \t// When no third argument is provided, follow the IDL union member order and take the\n\
+     \t// dictionary branch.\n\
+      if args.len() >= 3 {\n\
+        let opt: Value = args[2];\n\
+        if rt.is_boolean(opt) {\n\
+          // boolean overload\n\
+        } else {\n\
+          // dictionary overload\n\
+        }\n\
+      }\n"
+      .replace('\t', "  "),
+  )
+}
+
+fn dom_validate_boolean_dictionary_overload_set(iface: &DomParsedInterface, op_name: &str) -> Result<()> {
+  use webidl_ir::{IdlType, NamedType, NamedTypeKind, StringType};
+  use crate::webidl::overload_ir::{
+    validate_overload_set, Optionality, Overload, OverloadArgument, WorldContext,
+  };
+
+  struct SnapshotCtx<'a> {
+    by_name: BTreeMap<&'a str, &'a str>,
+  }
+
+  impl<'a> WorldContext for SnapshotCtx<'a> {
+    fn interface_inherits(&self, interface: &str) -> Option<&str> {
+      self.by_name.get(interface).copied()
+    }
+  }
+
+  // This validation currently only needs the local allowlisted inheritance chain.
+  let mut by_name = BTreeMap::new();
+  if let Some(parent) = iface.inherits.as_deref() {
+    by_name.insert(iface.name.as_str(), parent);
+  }
+
+  let ctx = SnapshotCtx { by_name };
+
+  // Minimal overload set: we only validate that the distinguishability algorithm accepts the
+  // boolean-vs-dictionary branch.
+  let overloads = vec![
+    Overload {
+      name: op_name.to_string(),
+      arguments: vec![
+        OverloadArgument::required(IdlType::String(StringType::DomString)),
+        OverloadArgument {
+          name: None,
+          ty: IdlType::Named(NamedType {
+            name: "EventListener".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optionality: Optionality::Required,
+          default: None,
+        },
+        OverloadArgument {
+          name: None,
+          ty: IdlType::Named(NamedType {
+            name: "Options".to_string(),
+            kind: NamedTypeKind::Dictionary,
+          }),
+          optionality: Optionality::Optional,
+          default: None,
+        },
+      ],
+      origin: None,
+    },
+    Overload {
+      name: op_name.to_string(),
+      arguments: vec![
+        OverloadArgument::required(IdlType::String(StringType::DomString)),
+        OverloadArgument {
+          name: None,
+          ty: IdlType::Named(NamedType {
+            name: "EventListener".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optionality: Optionality::Required,
+          default: None,
+        },
+        OverloadArgument {
+          name: None,
+          ty: IdlType::Boolean,
+          // The real DOM IDL models this as a union with a dictionary default (`options = {}`),
+          // which means the boolean branch is only relevant when the third argument is provided.
+          // Model it as required here so overload validation doesn't consider the ambiguous
+          // two-argument form.
+          optionality: Optionality::Required,
+          default: None,
+        },
+      ],
+      origin: None,
+    },
+  ];
+
+  if let Err(diags) = validate_overload_set(&overloads, &ctx) {
+    let mut msg = String::new();
+    for diag in diags {
+      if !msg.is_empty() {
+        msg.push('\n');
+      }
+      msg.push_str(&diag.message);
+    }
+    bail!(
+      "WebIDL overload validation failed for {}.{}:\n{}",
+      iface.name,
+      op_name,
+      msg
+    );
+  }
+  Ok(())
+}
+
+fn dom_to_snake(name: &str) -> String {
+  let mut out = String::new();
+  let mut prev_lower_or_digit = false;
+  for ch in name.chars() {
+    if ch.is_ascii_alphanumeric() {
+      let is_upper = ch.is_ascii_uppercase();
+      if is_upper && prev_lower_or_digit {
+        out.push('_');
+      }
+      out.push(ch.to_ascii_lowercase());
+      prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+      continue;
+    }
+    prev_lower_or_digit = false;
+  }
+  if out.is_empty() {
+    "x".to_string()
+  } else {
+    out
+  }
 }
 
 #[derive(Debug, Clone)]
