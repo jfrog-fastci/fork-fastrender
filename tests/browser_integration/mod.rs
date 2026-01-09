@@ -60,12 +60,31 @@ mod worker_harness;
 mod worker_runtime;
 mod ui_worker_protocol_smoke;
 
+// -----------------------------------------------------------------------------
+// Global integration test environment
+// -----------------------------------------------------------------------------
+
+/// Ensure browser integration tests run with deterministic bundled fonts.
+///
+/// Many UI/worker tests spawn `FastRenderFactory` instances. `FontConfig::default` prefers system
+/// fonts unless `FASTR_USE_BUNDLED_FONTS`/`CI` is set, which can make first-render latency highly
+/// dependent on the host's installed fonts and lead to flaky timeouts. We set the bundled-fonts
+/// knob once for the whole test process.
+#[cfg(feature = "browser_ui")]
+fn ensure_browser_test_env() {
+  static INIT: std::sync::Once = std::sync::Once::new();
+  INIT.call_once(|| {
+    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+  });
+}
+
 // `GlobalStageListenerGuard` (used by stage heartbeat forwarding) is process-global. While it is
 // installed, *all* renders in the process will invoke the listener, which can leak stage messages
 // across tests and add overhead. Serialize browser UI integration tests with this lock to keep CI
 // runs deterministic under `cargo test`'s default parallelism.
 #[cfg(feature = "browser_ui")]
 pub(crate) fn stage_listener_test_lock() -> std::sync::MutexGuard<'static, ()> {
+  ensure_browser_test_env();
   // Pre-warm bundled font metadata so the first navigation in a freshly spawned UI worker does not
   // block on expensive font parsing while the test is waiting on UI messages.
   support::ensure_bundled_fonts_loaded();

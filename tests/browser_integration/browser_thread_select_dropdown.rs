@@ -101,7 +101,14 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
   assert_eq!(labels, vec!["One", "Two", "Three"]);
 
   let msg = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::SelectDropdownOpened { .. })
+    // `BrowserThread` emits a cursor-anchored `SelectDropdownOpened` first (1x1 rect at the click
+    // point) so UIs can open the popup immediately, then follows up with the actual `<select>`
+    // anchor rect once it is available. Assert on the anchored message.
+    matches!(
+      msg,
+      WorkerToUi::SelectDropdownOpened { anchor_css, .. }
+        if anchor_css.width() > 1.0 && anchor_css.height() > 1.0
+    )
   })
   .expect("expected SelectDropdownOpened message");
 
