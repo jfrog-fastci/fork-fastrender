@@ -103,13 +103,13 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   }
 
   fn add_root(&mut self, value: vm_js::Value) -> Result<vm_js::RootId, vm_js::VmError> {
-    let (_, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap.add_root(value)
+    // Route through `vm_js_heap_mut` so hosts can override which heap is exposed without forcing a
+    // `vm_js_vm_and_heap_mut` borrow.
+    self.host.vm_js_heap_mut().add_root(value)
   }
 
   fn remove_root(&mut self, id: vm_js::RootId) {
-    let (_, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap.remove_root(id);
+    self.host.vm_js_heap_mut().remove_root(id);
   }
 }
 
@@ -550,14 +550,14 @@ mod tests {
       heap_b: vm_js::Heap::new(limits),
     };
 
-    // `VmJsJobContext::heap_mut()` should route through `VmJsEngineHost::vm_js_heap_mut` so hosts
-    // can override which heap is exposed without forcing a `vm_js_vm_and_heap_mut` borrow.
+    // `VmJsJobContext::add_root` should route through `VmJsEngineHost::vm_js_heap_mut` so hosts can
+    // override which heap is exposed without forcing a `vm_js_vm_and_heap_mut` borrow.
     let root_id = {
       let mut ctx = VmJsJobContext {
         host: &mut host,
         realm: None,
       };
-      ctx.heap_mut().add_root(vm_js::Value::Null).map_err(vm_err)?
+      ctx.add_root(vm_js::Value::Null).map_err(vm_err)?
     };
 
     assert_eq!(host.heap_b.get_root(root_id), Some(vm_js::Value::Null));
@@ -633,10 +633,9 @@ mod tests {
       scope.push_root(argument).map_err(vm_err)?;
 
       let job_callback = hooks.host_make_job_callback(callback_obj);
-      let fulfill_reaction = vm_js::PromiseReaction {
-        capability: None,
+      let fulfill_reaction = vm_js::PromiseReactionRecord {
         reaction_type: vm_js::PromiseReactionType::Fulfill,
-        handler: Some(vm_js::PromiseHandler::JobCallback(job_callback)),
+        handler: Some(job_callback),
       };
 
       let job = vm_js::new_promise_reaction_job(scope.heap_mut(), fulfill_reaction, argument)

@@ -702,6 +702,7 @@ mod tests {
   fn cb_push_t(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -716,6 +717,7 @@ mod tests {
   fn cb_push_m(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::GcObject,
     this: Value,
     _args: &[Value],
@@ -736,6 +738,7 @@ mod tests {
   fn cb_capture_args(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     args: &[Value],
@@ -755,6 +758,7 @@ mod tests {
   fn cb_interval_tick(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1235,6 +1239,7 @@ mod tests {
     fn cb_record_this_is_undefined(
       _vm: &mut Vm,
       scope: &mut Scope<'_>,
+      _host: &mut dyn vm_js::VmHostHooks,
       callee: vm_js::GcObject,
       this: Value,
       _args: &[Value],

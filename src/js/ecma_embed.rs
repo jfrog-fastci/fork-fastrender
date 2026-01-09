@@ -173,12 +173,22 @@ struct Env {
 }
 
 impl Env {
+  fn is_read_only_global(name: &str) -> bool {
+    matches!(name, "undefined" | "NaN" | "Infinity")
+  }
+
   fn get(&self, heap: &Heap, name: &str) -> Option<Value> {
     let root = self.globals.get(name).copied()?;
     heap.get_root(root)
   }
 
   fn set(&mut self, heap: &mut Heap, name: &str, value: Value) -> Result<(), VmError> {
+    // The global properties `undefined`, `NaN`, and `Infinity` are non-writable in the ECMAScript
+    // global object. We model that by allowing initialization but ignoring subsequent writes.
+    if Self::is_read_only_global(name) && self.globals.contains_key(name) {
+      return Ok(());
+    }
+
     match self.globals.get(name).copied() {
       Some(root) => {
         heap.set_root(root, value);
@@ -232,12 +242,24 @@ impl VmJsScriptRealm {
       interrupt_flag: Some(Arc::clone(&interrupt_flag)),
     });
     let interrupt_handle = vm.interrupt_handle();
-    let heap = Heap::new(options.heap_limits);
+    let mut heap = Heap::new(options.heap_limits);
+    let mut env = Env::default();
+    // Populate a few well-known global constants so scripts can reference them by identifier.
+    // These are non-writable in the real ECMAScript global object; see `Env::set`.
+    env
+      .set(&mut heap, "undefined", Value::Undefined)
+      .map_err(vm_error_to_runtime)?;
+    env
+      .set(&mut heap, "NaN", Value::Number(f64::NAN))
+      .map_err(vm_error_to_runtime)?;
+    env
+      .set(&mut heap, "Infinity", Value::Number(f64::INFINITY))
+      .map_err(vm_error_to_runtime)?;
     Ok(Self {
       options,
       vm,
       heap,
-      env: Env::default(),
+      env,
       host_functions: HashMap::new(),
       interrupt_flag,
       interrupt_handle,
@@ -674,9 +696,100 @@ impl Evaluator<'_> {
           .map_err(|err| self.vm_error_at_loc(node.loc, err))?;
         add_operator(&mut rhs_scope, left, right).map_err(|err| self.vm_error_at_loc(node.loc, err))
       }
+      parse_js::operator::OperatorName::StrictEquality => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope
+          .push_root(left)
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        rhs_scope
+          .push_root(right)
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
+        let eq = strict_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+          message: err.to_string(),
+          stack_trace: self.stack_trace_at_loc(node.loc),
+        })?;
+        Ok(Value::Bool(eq))
+      }
+      parse_js::operator::OperatorName::StrictInequality => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope
+          .push_root(left)
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        rhs_scope
+          .push_root(right)
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
+        let eq = strict_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+          message: err.to_string(),
+          stack_trace: self.stack_trace_at_loc(node.loc),
+        })?;
+        Ok(Value::Bool(!eq))
+      }
+      parse_js::operator::OperatorName::Equality => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope
+          .push_root(left)
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        rhs_scope
+          .push_root(right)
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
+        let eq = abstract_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+          message: err.to_string(),
+          stack_trace: self.stack_trace_at_loc(node.loc),
+        })?;
+        Ok(Value::Bool(eq))
+      }
+      parse_js::operator::OperatorName::Inequality => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope
+          .push_root(left)
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        rhs_scope
+          .push_root(right)
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
+        let eq = abstract_equality(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+          message: err.to_string(),
+          stack_trace: self.stack_trace_at_loc(node.loc),
+        })?;
+        Ok(Value::Bool(!eq))
+      }
       parse_js::operator::OperatorName::Assignment => {
         let name = match &*expr.left.stx {
+          // `parse-js` models assignment targets as patterns, so `x = 1` uses `IdPat` rather than
+          // the expression form `Id`.
           Expr::Id(id) => id.stx.name.as_str(),
+          Expr::IdPat(id) => id.stx.name.as_str(),
           _ => {
             return Err(ScriptError::Runtime {
               message: "unimplemented assignment target".to_string(),
@@ -860,6 +973,78 @@ fn add_operator(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<Value, VmEr
   }
 }
 
+fn strict_equality(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<bool, VmError> {
+  use Value::*;
+  match (a, b) {
+    (Undefined, Undefined) => Ok(true),
+    (Null, Null) => Ok(true),
+    (Bool(x), Bool(y)) => Ok(x == y),
+    (Number(x), Number(y)) => Ok(x == y),
+    (String(x), String(y)) => Ok(scope.heap().get_string(x)? == scope.heap().get_string(y)?),
+    (Symbol(x), Symbol(y)) => Ok(x == y),
+    (Object(x), Object(y)) => Ok(x == y),
+    _ => Ok(false),
+  }
+}
+
+fn abstract_equality(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<bool, VmError> {
+  use Value::*;
+
+  // `==` can allocate when converting objects to primitives (via `ToPrimitive`), so root operands
+  // for the duration of the comparison.
+  let mut scope = scope.reborrow();
+  let mut a = scope.push_root(a)?;
+  let mut b = scope.push_root(b)?;
+
+  loop {
+    match (a, b) {
+      // Same-type comparisons use Strict Equality Comparison.
+      (Undefined, Undefined) => return Ok(true),
+      (Null, Null) => return Ok(true),
+      (Bool(x), Bool(y)) => return Ok(x == y),
+      (Number(x), Number(y)) => return Ok(x == y),
+      (String(x), String(y)) => return Ok(scope.heap().get_string(x)? == scope.heap().get_string(y)?),
+      (Symbol(x), Symbol(y)) => return Ok(x == y),
+      (Object(x), Object(y)) => return Ok(x == y),
+
+      // `null == undefined`
+      (Undefined, Null) | (Null, Undefined) => return Ok(true),
+
+      // Number/string conversions.
+      (Number(_), String(_)) => {
+        let bn = to_number(&mut scope, b)?;
+        b = scope.push_root(Number(bn))?;
+      }
+      (String(_), Number(_)) => {
+        let an = to_number(&mut scope, a)?;
+        a = scope.push_root(Number(an))?;
+      }
+
+      // Boolean conversions.
+      (Bool(_), _) => {
+        let an = to_number(&mut scope, a)?;
+        a = scope.push_root(Number(an))?;
+      }
+      (_, Bool(_)) => {
+        let bn = to_number(&mut scope, b)?;
+        b = scope.push_root(Number(bn))?;
+      }
+
+      // Object-to-primitive conversions.
+      (Object(_), String(_) | Number(_) | Symbol(_)) => {
+        let prim = to_primitive(&mut scope, a)?;
+        a = scope.push_root(prim)?;
+      }
+      (String(_) | Number(_) | Symbol(_), Object(_)) => {
+        let prim = to_primitive(&mut scope, b)?;
+        b = scope.push_root(prim)?;
+      }
+
+      _ => return Ok(false),
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -978,6 +1163,91 @@ mod tests {
     assert_eq!(
       realm.eval_script("add.js", "'1' + true").unwrap(),
       ScriptValue::String("1true".to_string())
+    );
+  }
+
+  #[test]
+  fn equality_operators_follow_ecmascript_coercions() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    // Abstract equality (`==`) performs type coercion.
+    assert_eq!(
+      realm.eval_script("eq.js", "0 == false").unwrap(),
+      ScriptValue::Bool(true)
+    );
+    assert_eq!(
+      realm.eval_script("eq.js", "'0' == 0").unwrap(),
+      ScriptValue::Bool(true)
+    );
+    assert_eq!(
+      realm.eval_script("eq.js", "null == undefined").unwrap(),
+      ScriptValue::Bool(true)
+    );
+    // `NaN` is never equal to itself, even with `==`.
+    assert_eq!(
+      realm.eval_script("eq.js", "NaN == NaN").unwrap(),
+      ScriptValue::Bool(false)
+    );
+
+    // Strict equality (`===`) does not coerce.
+    assert_eq!(
+      realm.eval_script("eq.js", "0 === false").unwrap(),
+      ScriptValue::Bool(false)
+    );
+    assert_eq!(
+      realm.eval_script("eq.js", "'0' === 0").unwrap(),
+      ScriptValue::Bool(false)
+    );
+    assert_eq!(
+      realm.eval_script("eq.js", "null === undefined").unwrap(),
+      ScriptValue::Bool(false)
+    );
+    assert_eq!(
+      realm.eval_script("eq.js", "NaN === NaN").unwrap(),
+      ScriptValue::Bool(false)
+    );
+
+    // Inequality operators are the negation of the corresponding equality.
+    assert_eq!(
+      realm.eval_script("eq.js", "1 != '1'").unwrap(),
+      ScriptValue::Bool(false)
+    );
+    assert_eq!(
+      realm.eval_script("eq.js", "1 !== '1'").unwrap(),
+      ScriptValue::Bool(true)
+    );
+  }
+
+  #[test]
+  fn read_only_globals_cannot_be_overwritten() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    // In sloppy mode, assignments to non-writable globals fail silently.
+    assert_eq!(
+      realm.eval_script("ro.js", "undefined = 1; undefined").unwrap(),
+      ScriptValue::Undefined
+    );
+    assert_eq!(
+      realm.eval_script("ro.js", "NaN = 1; NaN === NaN").unwrap(),
+      ScriptValue::Bool(false)
+    );
+    assert_eq!(
+      realm.eval_script("ro.js", "Infinity = 1; Infinity").unwrap(),
+      ScriptValue::Number(f64::INFINITY)
     );
   }
 
