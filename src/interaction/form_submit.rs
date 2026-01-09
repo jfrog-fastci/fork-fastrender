@@ -1,6 +1,5 @@
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE, SVG_NAMESPACE};
 use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
-use std::collections::HashMap;
 
 use url::Url;
 
@@ -40,7 +39,6 @@ fn resolve_url(base_url: &str, href: &str) -> Option<String> {
 struct DomIndex<'a> {
   id_to_node: Vec<*const DomNode>,
   parent: Vec<usize>,
-  id_by_element_id: HashMap<String, usize>,
   _root: std::marker::PhantomData<&'a DomNode>,
 }
 
@@ -48,12 +46,11 @@ impl<'a> DomIndex<'a> {
   fn new(root: &'a DomNode) -> Self {
     let mut id_to_node: Vec<*const DomNode> = vec![std::ptr::null()];
     let mut parent: Vec<usize> = vec![0];
-    let mut id_by_element_id: HashMap<String, usize> = HashMap::new();
 
-    // (node_ptr, parent_id, in_template_contents)
-    let mut stack: Vec<(*const DomNode, usize, bool)> = vec![(root as *const DomNode, 0, false)];
+    // (node_ptr, parent_id)
+    let mut stack: Vec<(*const DomNode, usize)> = vec![(root as *const DomNode, 0)];
 
-    while let Some((ptr, parent_id, in_template_contents)) = stack.pop() {
+    while let Some((ptr, parent_id)) = stack.pop() {
       let id = id_to_node.len();
       id_to_node.push(ptr);
       parent.push(parent_id);
@@ -61,23 +58,14 @@ impl<'a> DomIndex<'a> {
       // SAFETY: pointers are built from a live `DomNode` tree.
       let node = unsafe { &*ptr };
 
-      if !in_template_contents {
-        if let Some(element_id) = node.get_attribute_ref("id") {
-          // Keep the first occurrence to match typical getElementById behaviour.
-          id_by_element_id.entry(element_id.to_string()).or_insert(id);
-        }
-      }
-
-      let child_in_template_contents = in_template_contents || node.is_template_element();
       for child in node.children.iter().rev() {
-        stack.push((child as *const DomNode, id, child_in_template_contents));
+        stack.push((child as *const DomNode, id));
       }
     }
 
     Self {
       id_to_node,
       parent,
-      id_by_element_id,
       _root: std::marker::PhantomData,
     }
   }
@@ -179,58 +167,85 @@ fn is_disabled_or_inert(index: &DomIndex<'_>, mut node_id: usize) -> bool {
   false
 }
 
-fn find_form_owner(index: &DomIndex<'_>, submitter_node_id: usize) -> Option<usize> {
-  let submitter = index.node(submitter_node_id)?;
-  if !submitter.is_element() {
-    return None;
-  }
-
-  if let Some(form_attr) = submitter
-    .get_attribute_ref("form")
-    .map(trim_ascii_whitespace)
-    .filter(|v| !v.is_empty())
-  {
-    if let Some(id) = index.id_by_element_id.get(form_attr).copied() {
-      if index.node(id).is_some_and(is_form) {
-        return Some(id);
-      }
+fn find_ancestor_form(index: &DomIndex<'_>, mut node_id: usize) -> Option<usize> {
+  while node_id != 0 {
+    let node = index.node(node_id)?;
+    if is_form(node) {
+      return Some(node_id);
     }
-  }
-
-  let mut current = submitter_node_id;
-  while current != 0 {
-    current = *index.parent.get(current).unwrap_or(&0);
-    if current == 0 {
+    // Shadow roots are tree root boundaries for form owner resolution; do not walk out into the
+    // shadow host tree.
+    if matches!(node.node_type, DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. }) {
       break;
     }
-    if index.node(current).is_some_and(is_form) {
-      return Some(current);
-    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
   }
-
   None
 }
 
-fn is_ancestor_or_self(index: &DomIndex<'_>, ancestor: usize, mut node: usize) -> bool {
-  while node != 0 {
-    if node == ancestor {
+fn tree_root_boundary_id(index: &DomIndex<'_>, mut node_id: usize) -> Option<usize> {
+  while node_id != 0 {
+    let node = index.node(node_id)?;
+    if matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }) {
+      return Some(node_id);
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  None
+}
+
+fn node_or_ancestor_is_template(index: &DomIndex<'_>, mut node_id: usize) -> bool {
+  while node_id != 0 {
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+    if node.is_template_element() {
       return true;
     }
-    node = *index.parent.get(node).unwrap_or(&0);
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
   }
   false
 }
 
-fn subtree_end(index: &DomIndex<'_>, root_id: usize) -> usize {
-  let mut end = root_id;
-  for id in (root_id + 1)..=index.len() {
-    if is_ancestor_or_self(index, root_id, id) {
-      end = id;
-    } else {
-      break;
+fn find_element_by_id_attr_in_tree(
+  index: &DomIndex<'_>,
+  tree_root_id: usize,
+  html_id: &str,
+) -> Option<usize> {
+  for node_id in 1..index.id_to_node.len() {
+    let Some(node) = index.node(node_id) else {
+      continue;
+    };
+    if !node.is_element() {
+      continue;
+    }
+    if node_or_ancestor_is_template(index, node_id) {
+      continue;
+    }
+    if node.get_attribute_ref("id") != Some(html_id) {
+      continue;
+    }
+    if tree_root_boundary_id(index, node_id) == Some(tree_root_id) {
+      return Some(node_id);
     }
   }
-  end
+  None
+}
+
+fn resolve_form_owner(index: &DomIndex<'_>, control_node_id: usize) -> Option<usize> {
+  let control = index.node(control_node_id)?;
+
+  if let Some(form_attr) = control
+    .get_attribute_ref("form")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+  {
+    let tree_root = tree_root_boundary_id(index, control_node_id)?;
+    let referenced = find_element_by_id_attr_in_tree(index, tree_root, form_attr)?;
+    return index.node(referenced).is_some_and(is_form).then_some(referenced);
+  }
+
+  find_ancestor_form(index, control_node_id)
 }
 
 fn collect_descendant_text_content(node: &DomNode) -> String {
@@ -329,8 +344,9 @@ fn append_form_controls(
   submitter_node_id: usize,
   params: &WebUrlSearchParams,
 ) -> Option<()> {
-  let end = subtree_end(index, form_node_id);
-  for node_id in (form_node_id + 1)..=end {
+  // Spec-ish: successful controls are collected in tree order (document order), including form-
+  // associated elements outside the `<form>` subtree.
+  for node_id in 1..index.id_to_node.len() {
     let Some(node) = index.node(node_id) else {
       continue;
     };
@@ -344,8 +360,16 @@ fn append_form_controls(
       continue;
     }
 
+    if !(is_input(node) || is_textarea(node) || is_select(node)) {
+      continue;
+    }
+    if resolve_form_owner(index, node_id) != Some(form_node_id) {
+      continue;
+    }
+
     let Some(name) = node
       .get_attribute_ref("name")
+      .map(trim_ascii_whitespace)
       .filter(|name| !name.is_empty())
     else {
       continue;
@@ -477,7 +501,7 @@ pub fn form_submission_get_url(
     return None;
   }
 
-  let form_id = find_form_owner(&index, submitter_node_id)?;
+  let form_id = resolve_form_owner(&index, submitter_node_id)?;
   let form = index.node(form_id)?;
 
   let method = trim_ascii_whitespace(form.get_attribute_ref("method").unwrap_or("get"));
@@ -503,7 +527,6 @@ pub fn form_submission_get_url(
   };
 
   let mut url = Url::parse(&action_url).ok()?;
-  url.set_fragment(None);
 
   let limits = WebUrlLimits::default();
   let params = WebUrlSearchParams::new(&limits);

@@ -121,6 +121,65 @@ fn action_query_is_replaced() {
 }
 
 #[test]
+fn includes_form_associated_controls_outside_form_subtree() {
+  let dom = parse_html(
+    r#"
+    <html><body>
+      <form id="f" action="/search">
+        <input name="a" value="1">
+        <button id="submit" type="submit">Go</button>
+      </form>
+      <input name="b" value="2" form="f">
+    </body></html>
+    "#,
+  )
+  .unwrap();
+  let submitter_id = node_id(&dom, "submit");
+
+  let got = form_submission_get_url(
+    &dom,
+    submitter_id,
+    "https://example.com/doc",
+    "https://example.com/base/",
+  )
+  .unwrap();
+  assert_eq!(got, "https://example.com/search?a=1&b=2");
+}
+
+#[test]
+fn form_attribute_does_not_cross_shadow_root_boundary() {
+  // Submitter is inside a shadow root and references `form="f"`. A light-DOM form with the same id
+  // exists, but `form` associations are scoped to the submitter's tree root boundary (shadow root),
+  // so the association should be ignored and submission should not occur.
+  let dom = parse_html(
+    r#"
+    <html><body>
+      <form id="f" action="/search">
+        <input name="q" value="light">
+      </form>
+      <div>
+        <template shadowrootmode="open">
+          <button id="submit" type="submit" form="f">Go</button>
+        </template>
+      </div>
+    </body></html>
+    "#,
+  )
+  .unwrap();
+  let submitter_id = node_id(&dom, "submit");
+
+  assert_eq!(
+    form_submission_get_url(
+      &dom,
+      submitter_id,
+      "https://example.com/doc",
+      "https://example.com/base/",
+    ),
+    None
+  );
+}
+
+#[test]
 fn post_method_returns_none_mvp() {
   let dom = parse_html(
     r#"
@@ -140,4 +199,3 @@ fn post_method_returns_none_mvp() {
     None
   );
 }
-
