@@ -307,6 +307,61 @@ fn vertical_writing_mode_inline_start_end_flip_in_rtl() {
 }
 
 #[test]
+fn vertical_writing_mode_left_right_floats_use_line_left_right_in_rtl() {
+  let writing_mode = WritingMode::VerticalRl;
+  let direction = Direction::Rtl;
+
+  let mut root_style = block_style();
+  root_style.writing_mode = writing_mode;
+  root_style.direction = direction;
+  root_style.width = Some(Length::px(200.0));
+  root_style.width_keyword = None;
+  root_style.height = Some(Length::px(200.0));
+  root_style.height_keyword = None;
+  root_style.margin_top = Some(Length::px(0.0));
+  root_style.margin_bottom = Some(Length::px(0.0));
+  root_style.margin_left = Some(Length::px(0.0));
+  root_style.margin_right = Some(Length::px(0.0));
+  let root_style = Arc::new(root_style);
+
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![
+      float_block_with_writing_mode(Float::Left, writing_mode, direction),
+      float_block_with_writing_mode(Float::Right, writing_mode, direction),
+    ],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let float_left = find_by_style(&fragment, &|s| s.float == Float::Left).expect("float:left");
+  let float_right = find_by_style(&fragment, &|s| s.float == Float::Right).expect("float:right");
+
+  let container_height = fragment.bounds.height();
+  let float_height = float_left.bounds.height();
+
+  // Per CSS Writing Modes, `float:left/right` is mapped to the line-left/line-right sides. In
+  // vertical writing modes those are physical top/bottom and should not flip with `direction`.
+  assert!(
+    float_left.bounds.y().abs() <= EPS,
+    "expected float:left to align with physical top in vertical writing mode RTL (y={:.2})",
+    float_left.bounds.y()
+  );
+  assert!(
+    (float_right.bounds.y() - (container_height - float_height)).abs() <= EPS,
+    "expected float:right to align with physical bottom in vertical writing mode RTL (y={:.2}, container_h={:.2}, float_h={:.2})",
+    float_right.bounds.y(),
+    container_height,
+    float_height
+  );
+}
+
+#[test]
 fn vertical_writing_mode_clear_inline_start_clears_inline_start_floats() {
   let writing_mode = WritingMode::VerticalRl;
   let direction = Direction::Ltr;
@@ -438,6 +493,252 @@ fn vertical_writing_mode_clear_inline_start_does_not_clear_inline_end_floats() {
   assert!(
     (cleared.bounds.x() - expected_x).abs() <= EPS,
     "expected clear:inline-start not to clear an inline-end float in vertical writing mode (got x={:.2}, expected {:.2})",
+    cleared.bounds.x(),
+    expected_x,
+  );
+}
+
+#[test]
+fn vertical_writing_mode_clear_left_clears_left_floats_in_rtl() {
+  let writing_mode = WritingMode::VerticalRl;
+  let direction = Direction::Rtl;
+
+  let mut root_style = block_style();
+  root_style.writing_mode = writing_mode;
+  root_style.direction = direction;
+  root_style.width = Some(Length::px(200.0));
+  root_style.width_keyword = None;
+  root_style.height = Some(Length::px(200.0));
+  root_style.height_keyword = None;
+  root_style.margin_top = Some(Length::px(0.0));
+  root_style.margin_bottom = Some(Length::px(0.0));
+  root_style.margin_left = Some(Length::px(0.0));
+  root_style.margin_right = Some(Length::px(0.0));
+  let root_style = Arc::new(root_style);
+
+  let mut float_style = block_style();
+  float_style.writing_mode = writing_mode;
+  float_style.direction = direction;
+  float_style.float = Float::Left;
+  float_style.clear = Clear::None;
+  float_style.width = Some(Length::px(50.0));
+  float_style.width_keyword = None;
+  float_style.height = Some(Length::px(20.0));
+  float_style.height_keyword = None;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let mut clear_style = block_style();
+  clear_style.writing_mode = writing_mode;
+  clear_style.direction = direction;
+  clear_style.clear = Clear::Left;
+  clear_style.height = Some(Length::px(10.0));
+  clear_style.height_keyword = None;
+  let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let float_left = find_by_style(&fragment, &|s| s.float == Float::Left).expect("float:left");
+  let cleared = find_by_style(&fragment, &|s| s.clear == Clear::Left).expect("clear:left");
+
+  let container_width = fragment.bounds.width();
+  let float_block_size = float_left.bounds.width();
+  let cleared_block_size = cleared.bounds.width();
+  let expected_x = container_width - float_block_size - cleared_block_size;
+
+  assert!(
+    (cleared.bounds.x() - expected_x).abs() <= EPS,
+    "expected clear:left to clear a float:left in vertical writing mode RTL (got x={:.2}, expected {:.2}; container_w={:.2}, float_w={:.2}, cleared_w={:.2})",
+    cleared.bounds.x(),
+    expected_x,
+    container_width,
+    float_block_size,
+    cleared_block_size
+  );
+}
+
+#[test]
+fn vertical_writing_mode_clear_left_does_not_clear_right_floats_in_rtl() {
+  let writing_mode = WritingMode::VerticalRl;
+  let direction = Direction::Rtl;
+
+  let mut root_style = block_style();
+  root_style.writing_mode = writing_mode;
+  root_style.direction = direction;
+  root_style.width = Some(Length::px(200.0));
+  root_style.width_keyword = None;
+  root_style.height = Some(Length::px(200.0));
+  root_style.height_keyword = None;
+  root_style.margin_top = Some(Length::px(0.0));
+  root_style.margin_bottom = Some(Length::px(0.0));
+  root_style.margin_left = Some(Length::px(0.0));
+  root_style.margin_right = Some(Length::px(0.0));
+  let root_style = Arc::new(root_style);
+
+  let mut float_style = block_style();
+  float_style.writing_mode = writing_mode;
+  float_style.direction = direction;
+  float_style.float = Float::Right;
+  float_style.clear = Clear::None;
+  float_style.width = Some(Length::px(50.0));
+  float_style.width_keyword = None;
+  float_style.height = Some(Length::px(20.0));
+  float_style.height_keyword = None;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let mut clear_style = block_style();
+  clear_style.writing_mode = writing_mode;
+  clear_style.direction = direction;
+  clear_style.clear = Clear::Left;
+  clear_style.height = Some(Length::px(10.0));
+  clear_style.height_keyword = None;
+  let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let cleared = find_by_style(&fragment, &|s| s.clear == Clear::Left).expect("clear:left");
+
+  let container_width = fragment.bounds.width();
+  let cleared_block_size = cleared.bounds.width();
+  let expected_x = container_width - cleared_block_size;
+
+  assert!(
+    (cleared.bounds.x() - expected_x).abs() <= EPS,
+    "expected clear:left not to clear a float:right in vertical writing mode RTL (got x={:.2}, expected {:.2})",
+    cleared.bounds.x(),
+    expected_x,
+  );
+}
+
+#[test]
+fn vertical_writing_mode_clear_right_clears_right_floats_in_rtl() {
+  let writing_mode = WritingMode::VerticalRl;
+  let direction = Direction::Rtl;
+
+  let mut root_style = block_style();
+  root_style.writing_mode = writing_mode;
+  root_style.direction = direction;
+  root_style.width = Some(Length::px(200.0));
+  root_style.width_keyword = None;
+  root_style.height = Some(Length::px(200.0));
+  root_style.height_keyword = None;
+  root_style.margin_top = Some(Length::px(0.0));
+  root_style.margin_bottom = Some(Length::px(0.0));
+  root_style.margin_left = Some(Length::px(0.0));
+  root_style.margin_right = Some(Length::px(0.0));
+  let root_style = Arc::new(root_style);
+
+  let mut float_style = block_style();
+  float_style.writing_mode = writing_mode;
+  float_style.direction = direction;
+  float_style.float = Float::Right;
+  float_style.clear = Clear::None;
+  float_style.width = Some(Length::px(50.0));
+  float_style.width_keyword = None;
+  float_style.height = Some(Length::px(20.0));
+  float_style.height_keyword = None;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let mut clear_style = block_style();
+  clear_style.writing_mode = writing_mode;
+  clear_style.direction = direction;
+  clear_style.clear = Clear::Right;
+  clear_style.height = Some(Length::px(10.0));
+  clear_style.height_keyword = None;
+  let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let float_right = find_by_style(&fragment, &|s| s.float == Float::Right).expect("float:right");
+  let cleared = find_by_style(&fragment, &|s| s.clear == Clear::Right).expect("clear:right");
+
+  let container_width = fragment.bounds.width();
+  let float_block_size = float_right.bounds.width();
+  let cleared_block_size = cleared.bounds.width();
+  let expected_x = container_width - float_block_size - cleared_block_size;
+
+  assert!(
+    (cleared.bounds.x() - expected_x).abs() <= EPS,
+    "expected clear:right to clear a float:right in vertical writing mode RTL (got x={:.2}, expected {:.2}; container_w={:.2}, float_w={:.2}, cleared_w={:.2})",
+    cleared.bounds.x(),
+    expected_x,
+    container_width,
+    float_block_size,
+    cleared_block_size
+  );
+}
+
+#[test]
+fn vertical_writing_mode_clear_right_does_not_clear_left_floats_in_rtl() {
+  let writing_mode = WritingMode::VerticalRl;
+  let direction = Direction::Rtl;
+
+  let mut root_style = block_style();
+  root_style.writing_mode = writing_mode;
+  root_style.direction = direction;
+  root_style.width = Some(Length::px(200.0));
+  root_style.width_keyword = None;
+  root_style.height = Some(Length::px(200.0));
+  root_style.height_keyword = None;
+  root_style.margin_top = Some(Length::px(0.0));
+  root_style.margin_bottom = Some(Length::px(0.0));
+  root_style.margin_left = Some(Length::px(0.0));
+  root_style.margin_right = Some(Length::px(0.0));
+  let root_style = Arc::new(root_style);
+
+  let mut float_style = block_style();
+  float_style.writing_mode = writing_mode;
+  float_style.direction = direction;
+  float_style.float = Float::Left;
+  float_style.clear = Clear::None;
+  float_style.width = Some(Length::px(50.0));
+  float_style.width_keyword = None;
+  float_style.height = Some(Length::px(20.0));
+  float_style.height_keyword = None;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let mut clear_style = block_style();
+  clear_style.writing_mode = writing_mode;
+  clear_style.direction = direction;
+  clear_style.clear = Clear::Right;
+  clear_style.height = Some(Length::px(10.0));
+  clear_style.height_keyword = None;
+  let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![float_box, clear_box]);
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let cleared = find_by_style(&fragment, &|s| s.clear == Clear::Right).expect("clear:right");
+
+  let container_width = fragment.bounds.width();
+  let cleared_block_size = cleared.bounds.width();
+  let expected_x = container_width - cleared_block_size;
+
+  assert!(
+    (cleared.bounds.x() - expected_x).abs() <= EPS,
+    "expected clear:right not to clear a float:left in vertical writing mode RTL (got x={:.2}, expected {:.2})",
     cleared.bounds.x(),
     expected_x,
   );

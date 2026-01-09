@@ -45,7 +45,6 @@ use crate::layout::formatting_context::LayoutError;
 use crate::render_control::check_active_periodic;
 use crate::style::float::Float;
 use crate::style::types::{Direction, WritingMode};
-use crate::style::inline_axis_is_horizontal;
 use crate::style::inline_axis_positive;
 use std::cell::{Cell, RefCell};
 use std::cmp::{Ordering, Reverse};
@@ -115,17 +114,10 @@ pub(crate) fn resolve_float_side(float: Float, writing_mode: WritingMode, direct
     Float::InlineStart => Some(FloatSide::Left),
     Float::InlineEnd => Some(FloatSide::Right),
     Float::Left | Float::Right => {
-      // Physical `left`/`right` only map cleanly to inline sides when the inline axis is
-      // horizontal. For vertical writing modes, FastRender currently treats physical `left/right`
-      // as if they were `inline-start/inline-end` (legacy behavior).
-      if !inline_axis_is_horizontal(writing_mode) {
-        return Some(match float {
-          Float::Left => FloatSide::Left,
-          Float::Right => FloatSide::Right,
-          _ => unreachable!(),
-        });
-      }
-
+      // In CSS Writing Modes, `left`/`right` in properties like `float` are line-relative
+      // (`line-left`/`line-right`), not tied to the element's inline-start/inline-end. In vertical
+      // writing modes this maps to physical top/bottom, so `direction` must be consulted to map
+      // the physical line side back into the flow-relative inline sides used by `FloatContext`.
       let inline_positive = inline_axis_positive(writing_mode, direction);
       match float {
         // physical left == inline-start when inline axis is positive, otherwise inline-end.
@@ -160,15 +152,6 @@ pub(crate) fn resolve_clear_side(
     CssClear::InlineStart => ClearSide::Left,
     CssClear::InlineEnd => ClearSide::Right,
     CssClear::Left | CssClear::Right => {
-      // See `resolve_float_side` for rationale around vertical writing modes.
-      if !inline_axis_is_horizontal(writing_mode) {
-        return match clear {
-          CssClear::Left => ClearSide::Left,
-          CssClear::Right => ClearSide::Right,
-          _ => unreachable!(),
-        };
-      }
-
       let inline_positive = inline_axis_positive(writing_mode, direction);
       match clear {
         CssClear::Left => {
