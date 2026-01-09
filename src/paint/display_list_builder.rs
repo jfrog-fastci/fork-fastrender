@@ -16537,31 +16537,24 @@ mod tests {
 
   #[test]
   fn background_tiling_aborts_on_deadline() {
-    struct EnvVarGuard {
-      key: &'static str,
-      prev: Option<String>,
-    }
+    struct TestRenderDelayGuard;
 
-    impl EnvVarGuard {
-      fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var(key).ok();
-        std::env::set_var(key, value);
-        Self { key, prev }
+    impl TestRenderDelayGuard {
+      fn set(ms: Option<u64>) -> Self {
+        crate::render_control::set_test_render_delay_ms(ms);
+        Self
       }
     }
 
-    impl Drop for EnvVarGuard {
+    impl Drop for TestRenderDelayGuard {
       fn drop(&mut self) {
-        match &self.prev {
-          Some(prev) => std::env::set_var(self.key, prev),
-          None => std::env::remove_var(self.key),
-        }
+        crate::render_control::set_test_render_delay_ms(None);
       }
     }
 
     // Make each deadline check take 10ms so we can deterministically force the render deadline to
     // expire mid-way through background tiling (as opposed to at fragment traversal boundaries).
-    let _delay_guard = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "10");
+    let _delay_guard = TestRenderDelayGuard::set(Some(10));
     let deadline = RenderDeadline::new(Some(Duration::from_millis(35)), None);
 
     let mut style = ComputedStyle::default();
