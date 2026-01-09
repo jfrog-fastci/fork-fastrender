@@ -38,7 +38,7 @@ impl<Host> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     _args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
     Err(vm_js::VmError::Unimplemented(
-      "VmJsJobContext::call (FastRender job context)",
+      "VmJsJobContext::call (FastRender microtask context: no JS evaluator)",
     ))
   }
 
@@ -49,7 +49,7 @@ impl<Host> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     _new_target: vm_js::Value,
   ) -> Result<vm_js::Value, vm_js::VmError> {
     Err(vm_js::VmError::Unimplemented(
-      "VmJsJobContext::construct (FastRender job context)",
+      "VmJsJobContext::construct (FastRender microtask context: no JS evaluator)",
     ))
   }
 
