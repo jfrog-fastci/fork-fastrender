@@ -5808,11 +5808,7 @@ impl<'a> ElementRef<'a> {
         return false;
       }
 
-      return self
-        .node
-        .get_attribute_ref("value")
-        .unwrap_or("")
-        .is_empty();
+      return self.control_value().unwrap_or_default().is_empty();
     }
 
     if tag.eq_ignore_ascii_case("textarea") {
@@ -11630,6 +11626,41 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&input, &[], &PseudoClass::PlaceholderShown));
+
+    let number_invalid = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "number".to_string()),
+          ("placeholder".to_string(), "Quantity".to_string()),
+          ("value".to_string(), "abc".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(
+      matches(&number_invalid, &[], &PseudoClass::PlaceholderShown),
+      "invalid number values sanitize to empty and should show placeholder"
+    );
+
+    let number_with_value = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "number".to_string()),
+          ("placeholder".to_string(), "Quantity".to_string()),
+          ("value".to_string(), "5".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(!matches(
+      &number_with_value,
+      &[],
+      &PseudoClass::PlaceholderShown
+    ));
 
     let with_value = DomNode {
       node_type: DomNodeType::Element {
