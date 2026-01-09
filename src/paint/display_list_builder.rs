@@ -5775,9 +5775,11 @@ impl DisplayListBuilder {
           // payloads, ...).
           //
           // For CSS `background-image` / masks, treating those as transparent is correct. For
-          // replaced `<img>`, Chrome renders a UA "broken image" placeholder (a light gray box with
-          // a subtle border), so we must *reject* the internal placeholder here and fall back to
-          // `emit_replaced_placeholder`.
+          // replaced elements we generally want to treat placeholder images as "missing" so we can
+          // fall back to UA-defined missing-content behavior (alt text for `<img>`, iframe-ish
+          // fallback for `<embed>`/`<object>`, etc.). Note that we intentionally avoid flood-filling
+          // missing `<img>` boxes (see `emit_replaced_placeholder`) because browsers paint only a
+          // small broken-image icon, and large opaque placeholders dominate fixture diffs.
           let reject_placeholder_image = matches!(
             replaced_type,
             ReplacedType::Image { .. } | ReplacedType::Embed { .. } | ReplacedType::Object { .. }
@@ -9199,15 +9201,23 @@ impl DisplayListBuilder {
     fragment: &FragmentNode,
     rect: Rect,
   ) {
-    // Chrome (and friends) do not draw a UA placeholder for `<video>` when there is no poster and
-    // no video frame available. Keeping this transparent is important for real pages (e.g. when
-    // a thumbnail image sits behind the video element until it loads).
+    // Replaced fallback rendering is UA-defined and varies between browsers; we only want to emit
+    // a placeholder when it is unlikely to obscure real content.
+    //
+    // Chrome does not flood-fill the element box for missing `<img>` content; instead it paints a
+    // small broken-image icon (and possibly alt text). Large opaque placeholders dominate fixture
+    // diffs when the upstream capture missed some images, and they can incorrectly cover whatever
+    // sits behind the element.
+    //
+    // Similarly, Chrome (and friends) do not draw a UA placeholder for `<video>` when there is no
+    // poster and no video frame available. Keeping this transparent is important for real pages
+    // (e.g. when a thumbnail image sits behind the video element until it loads).
     //
     // Likewise, `<canvas>` is transparent when nothing has been drawn (and we don't execute JS),
     // so a placeholder would incorrectly obscure background content.
     if matches!(
       replaced_type,
-      ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
+      ReplacedType::Image { .. } | ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
     ) {
       return;
     }
@@ -9220,11 +9230,8 @@ impl DisplayListBuilder {
       self.list.push(DisplayItem::PushClip(clip.clone()));
     }
 
-    // Keep the placeholder styling stable and browser-like. Chrome's broken image placeholder is
-    // very light; using a darker fill makes large missing images on dark-themed pages appear as
-    // empty/black, which materially hurts offline fixture diffs.
+    // Keep the placeholder styling stable and browser-like.
     let (placeholder_color, stroke_color) = match replaced_type {
-      ReplacedType::Image { .. } => (Rgba::rgb(233, 233, 233), Rgba::rgb(206, 206, 206)),
       _ => (Rgba::rgb(200, 200, 200), Rgba::rgb(150, 150, 150)),
     };
     self.list.push(DisplayItem::FillRect(FillRectItem {
