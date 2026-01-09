@@ -1083,7 +1083,7 @@ impl fmt::Display for BoxType {
 ///
 /// assert!(box_node.is_block_level());
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BoxNode {
   /// Computed style for this box (shared with fragments)
   ///
@@ -1140,6 +1140,89 @@ pub struct BoxNode {
 
   /// Optional computed style overrides for `::first-letter`.
   pub first_letter_style: Option<Arc<ComputedStyle>>,
+}
+
+impl Clone for BoxNode {
+  fn clone(&self) -> Self {
+    fn clone_shallow(node: &BoxNode) -> BoxNode {
+      BoxNode {
+        style: Arc::clone(&node.style),
+        starting_style: node.starting_style.clone(),
+        box_type: node.box_type.clone(),
+        children: Vec::with_capacity(node.children.len()),
+        footnote_body: None,
+        id: node.id,
+        debug_info: node.debug_info.clone(),
+        styled_node_id: node.styled_node_id,
+        generated_pseudo: node.generated_pseudo,
+        table_cell_span: node.table_cell_span,
+        table_column_span: node.table_column_span,
+        first_line_style: node.first_line_style.clone(),
+        first_letter_style: node.first_letter_style.clone(),
+      }
+    }
+
+    struct Frame<'a> {
+      src: &'a BoxNode,
+      dst: *mut BoxNode,
+      next_child: usize,
+      footnote_done: bool,
+    }
+
+    let mut root = clone_shallow(self);
+    let mut stack = vec![Frame {
+      src: self,
+      dst: &mut root as *mut BoxNode,
+      next_child: 0,
+      footnote_done: false,
+    }];
+
+    while let Some(mut frame) = stack.pop() {
+      // Safety: destination nodes are owned by `root` and its descendants, and we never mutate a
+      // node's `children` vec (or `footnote_body`) while a frame borrowing that node is active. This
+      // keeps raw pointers stable for the duration of the DFS clone.
+      let dst = unsafe { &mut *frame.dst };
+      let src = frame.src;
+
+      if frame.next_child < src.children.len() {
+        let child_src = &src.children[frame.next_child];
+        frame.next_child += 1;
+
+        dst.children.push(clone_shallow(child_src));
+        let child_dst = dst.children.last_mut().expect("child was just pushed") as *mut BoxNode;
+
+        stack.push(frame);
+        stack.push(Frame {
+          src: child_src,
+          dst: child_dst,
+          next_child: 0,
+          footnote_done: false,
+        });
+        continue;
+      }
+
+      if !frame.footnote_done {
+        frame.footnote_done = true;
+        if let Some(body_src) = src.footnote_body.as_deref() {
+          dst.footnote_body = Some(Box::new(clone_shallow(body_src)));
+          let body_dst = dst
+            .footnote_body
+            .as_deref_mut()
+            .expect("footnote body was just assigned") as *mut BoxNode;
+
+          stack.push(frame);
+          stack.push(Frame {
+            src: body_src,
+            dst: body_dst,
+            next_child: 0,
+            footnote_done: false,
+          });
+        }
+      }
+    }
+
+    root
+  }
 }
 
 /// Generated pseudo-elements that create their own boxes in the box tree.
@@ -1862,6 +1945,38 @@ mod tests {
 
     assert_eq!(tree.count_boxes(), 3); // root + text + block
     assert_eq!(tree.count_text_boxes(), 1);
+  }
+
+  #[test]
+  fn box_node_clone_handles_deep_trees_without_stack_overflow() {
+    let depth = 5000;
+
+    let mut node = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    for _ in 0..depth {
+      node = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![node]);
+    }
+
+    let mut footnote = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    for _ in 0..depth {
+      footnote = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![footnote]);
+    }
+
+    node.footnote_body = Some(Box::new(footnote));
+    let cloned = node.clone();
+
+    let mut cursor = &cloned;
+    for _ in 0..depth {
+      assert_eq!(cursor.children.len(), 1);
+      cursor = &cursor.children[0];
+    }
+    assert!(cursor.children.is_empty());
+
+    let mut cursor = cloned.footnote_body.as_deref().expect("footnote body");
+    for _ in 0..depth {
+      assert_eq!(cursor.children.len(), 1);
+      cursor = &cursor.children[0];
+    }
+    assert!(cursor.children.is_empty());
   }
 
   #[test]

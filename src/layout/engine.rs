@@ -200,21 +200,24 @@ pub fn layout_parallelism_workload(
   min_fanout: usize,
 ) -> LayoutParallelismWorkload {
   let mut workload = LayoutParallelismWorkload::default();
-  fn walk(node: &BoxNode, min_fanout: usize, workload: &mut LayoutParallelismWorkload) {
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
     workload.nodes += 1;
     let child_len = node.children.len();
     workload.max_fanout = workload.max_fanout.max(child_len);
     if child_len >= min_fanout {
       workload.parallel_children += child_len;
     }
-    for child in &node.children {
-      walk(child, min_fanout, workload);
-    }
+
+    // Preserve the recursive traversal order (children first, then footnote body) so the workload
+    // is deterministic even if we later attach additional diagnostics to the walk.
     if let Some(body) = node.footnote_body.as_deref() {
-      walk(body, min_fanout, workload);
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
-  walk(&box_tree.root, min_fanout, &mut workload);
   workload
 }
 
@@ -1416,6 +1419,21 @@ mod tests {
     );
     assert_eq!(workload.max_fanout, 2);
     assert_eq!(workload.parallel_children, 2);
+  }
+
+  #[test]
+  fn parallelism_workload_handles_deep_trees_without_stack_overflow() {
+    let depth = 5000;
+    let mut root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    for _ in 0..depth {
+      root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![root]);
+    }
+    let tree = BoxTree::new(root);
+
+    let workload = layout_parallelism_workload(&tree, 2);
+    assert_eq!(workload.nodes, depth + 1);
+    assert_eq!(workload.max_fanout, 1);
+    assert_eq!(workload.parallel_children, 0);
   }
 
   #[test]

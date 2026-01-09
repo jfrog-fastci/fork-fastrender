@@ -3,6 +3,7 @@ use fastrender::cli_utils as common;
 use clap::Parser;
 use common::args::{parse_viewport, CompatArgs, DiskCacheArgs, MediaPreferenceArgs, MediaTypeArg};
 use common::media_prefs::MediaPreferences;
+use common::render_pipeline::CLI_RENDER_STACK_SIZE;
 use fastrender::api::FastRender;
 use fastrender::debug::runtime::{self, RuntimeToggles};
 use fastrender::dom::DomNodeType;
@@ -14,7 +15,7 @@ use fastrender::resource::CachingFetcher;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::{
-  CachingFetcherConfig, HttpFetcher, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  CachingFetcherConfig, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -31,6 +32,8 @@ use url::Url;
 
 const DEFAULT_HTML_DIR: &str = fastrender::pageset::CACHE_HTML_DIR;
 const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
+
+type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Inspect fragment/box trees for a given HTML file.
 #[derive(Parser, Debug)]
@@ -703,19 +706,23 @@ fn format_debug_info(node: &BoxNode) -> String {
 }
 
 fn collect_box_debug(node: &BoxNode, out: &mut HashMap<usize, String>) {
-  out.insert(node.id, format_debug_info(node));
-  for child in node.children.iter() {
-    collect_box_debug(child, out);
+  let mut stack: Vec<&BoxNode> = vec![node];
+  while let Some(node) = stack.pop() {
+    out.insert(node.id, format_debug_info(node));
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
   }
 }
 
 fn find_box_by_id<'a>(node: &'a BoxNode, target: usize) -> Option<&'a BoxNode> {
-  if node.id == target {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_box_by_id(child, target) {
-      return Some(found);
+  let mut stack: Vec<&'a BoxNode> = vec![node];
+  while let Some(node) = stack.pop() {
+    if node.id == target {
+      return Some(node);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
   None
@@ -802,14 +809,15 @@ fn find_styled_element_by_tag<'a>(
   node: &'a fastrender::style::cascade::StyledNode,
   tag: &str,
 ) -> Option<&'a fastrender::style::cascade::StyledNode> {
-  if let DomNodeType::Element { tag_name, .. } = &node.node.node_type {
-    if tag_name.eq_ignore_ascii_case(tag) {
-      return Some(node);
+  let mut stack: Vec<&'a fastrender::style::cascade::StyledNode> = vec![node];
+  while let Some(node) = stack.pop() {
+    if let DomNodeType::Element { tag_name, .. } = &node.node.node_type {
+      if tag_name.eq_ignore_ascii_case(tag) {
+        return Some(node);
+      }
     }
-  }
-  for child in &node.children {
-    if let Some(found) = find_styled_element_by_tag(child, tag) {
-      return Some(found);
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
   None
@@ -889,21 +897,46 @@ fn find_fragment_path_for_text(
   box_debug: &HashMap<usize, String>,
   out_path: &mut Vec<String>,
 ) -> bool {
-  let (abs, next_offset) = absolute_rect(fragment, offset);
-  let label = label_fragment(fragment, abs, box_debug);
-
-  if let FragmentContent::Text { text, .. } = &fragment.content {
-    if text.contains(needle) {
-      out_path.push(label);
-      return true;
-    }
+  struct Frame<'a> {
+    node: &'a FragmentNode,
+    next_child: usize,
+    label: String,
+    child_offset: Point,
   }
 
-  for child in fragment.children.iter() {
-    if find_fragment_path_for_text(child, next_offset, needle, box_debug, out_path) {
-      out_path.insert(0, label);
-      return true;
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+  let (abs, child_offset) = absolute_rect(fragment, offset);
+  stack.push(Frame {
+    node: fragment,
+    next_child: 0,
+    label: label_fragment(fragment, abs, box_debug),
+    child_offset,
+  });
+
+  while let Some(frame) = stack.last_mut() {
+    if let FragmentContent::Text { text, .. } = &frame.node.content {
+      if text.contains(needle) {
+        out_path.clear();
+        out_path.extend(stack.iter().map(|f| f.label.clone()));
+        return true;
+      }
     }
+
+    if frame.next_child >= frame.node.children.len() {
+      stack.pop();
+      continue;
+    }
+
+    let child_offset = frame.child_offset;
+    let child = &frame.node.children[frame.next_child];
+    frame.next_child += 1;
+    let (abs, child_offset) = absolute_rect(child, child_offset);
+    stack.push(Frame {
+      node: child,
+      next_child: 0,
+      label: label_fragment(child, abs, box_debug),
+      child_offset,
+    });
   }
 
   false
@@ -916,19 +949,44 @@ fn find_fragment_path_for_box_id(
   box_debug: &HashMap<usize, String>,
   out_path: &mut Vec<String>,
 ) -> bool {
-  let (abs, next_offset) = absolute_rect(fragment, offset);
-  let label = label_fragment(fragment, abs, box_debug);
-
-  if fragment_box_id(fragment) == Some(target) {
-    out_path.push(label);
-    return true;
+  struct Frame<'a> {
+    node: &'a FragmentNode,
+    next_child: usize,
+    label: String,
+    child_offset: Point,
   }
 
-  for child in fragment.children.iter() {
-    if find_fragment_path_for_box_id(child, next_offset, target, box_debug, out_path) {
-      out_path.insert(0, label);
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+  let (abs, child_offset) = absolute_rect(fragment, offset);
+  stack.push(Frame {
+    node: fragment,
+    next_child: 0,
+    label: label_fragment(fragment, abs, box_debug),
+    child_offset,
+  });
+
+  while let Some(frame) = stack.last_mut() {
+    if fragment_box_id(frame.node) == Some(target) {
+      out_path.clear();
+      out_path.extend(stack.iter().map(|f| f.label.clone()));
       return true;
     }
+
+    if frame.next_child >= frame.node.children.len() {
+      stack.pop();
+      continue;
+    }
+
+    let child_offset = frame.child_offset;
+    let child = &frame.node.children[frame.next_child];
+    frame.next_child += 1;
+    let (abs, child_offset) = absolute_rect(child, child_offset);
+    stack.push(Frame {
+      node: child,
+      next_child: 0,
+      label: label_fragment(child, abs, box_debug),
+      child_offset,
+    });
   }
 
   false
@@ -939,13 +997,14 @@ fn find_fragment_node_for_box_id<'a>(
   offset: Point,
   target: usize,
 ) -> Option<(&'a FragmentNode, Rect)> {
-  let (abs, next_offset) = absolute_rect(fragment, offset);
-  if fragment_box_id(fragment) == Some(target) {
-    return Some((fragment, abs));
-  }
-  for child in fragment.children.iter() {
-    if let Some(found) = find_fragment_node_for_box_id(child, next_offset, target) {
-      return Some(found);
+  let mut stack: Vec<(Point, &'a FragmentNode)> = vec![(offset, fragment)];
+  while let Some((offset, node)) = stack.pop() {
+    let (abs, child_offset) = absolute_rect(node, offset);
+    if fragment_box_id(node) == Some(target) {
+      return Some((node, abs));
+    }
+    for child in node.children.iter().rev() {
+      stack.push((child_offset, child));
     }
   }
   None
@@ -964,26 +1023,46 @@ fn print_fragment_tree(node: &FragmentNode, indent: usize, max_lines: usize) {
     }
   }
 
-  fn walk(node: &FragmentNode, indent: usize, remaining: &mut usize) {
-    if *remaining == 0 {
-      return;
-    }
-    *remaining -= 1;
-    println!(
-      "{space}{desc}",
-      space = " ".repeat(indent * 2),
-      desc = fmt_content(node)
-    );
-    for child in node.children.iter() {
-      walk(child, indent + 1, remaining);
-      if *remaining == 0 {
-        break;
-      }
-    }
+  struct Frame<'a> {
+    node: &'a FragmentNode,
+    indent: usize,
+    next_child: usize,
   }
 
   let mut remaining = max_lines;
-  walk(node, indent, &mut remaining);
+  let mut stack: Vec<Frame<'_>> = vec![Frame {
+    node,
+    indent,
+    next_child: 0,
+  }];
+  while let Some(frame) = stack.last_mut() {
+    if remaining == 0 {
+      break;
+    }
+
+    if frame.next_child == 0 {
+      remaining -= 1;
+      println!(
+        "{space}{desc}",
+        space = " ".repeat(frame.indent * 2),
+        desc = fmt_content(frame.node)
+      );
+    }
+
+    if frame.next_child >= frame.node.children.len() {
+      stack.pop();
+      continue;
+    }
+
+    let child = &frame.node.children[frame.next_child];
+    let child_indent = frame.indent + 1;
+    frame.next_child += 1;
+    stack.push(Frame {
+      node: child,
+      indent: child_indent,
+      next_child: 0,
+    });
+  }
 }
 
 #[derive(Debug)]
@@ -1001,7 +1080,7 @@ fn inspect_pipeline(
   renderer: &mut FastRender,
   doc: &InputDocument,
   args: &Args,
-) -> Result<InspectionOutput, Box<dyn std::error::Error>> {
+) -> Result<InspectionOutput, DynError> {
   if args.filter_id.is_some() && args.filter_selector.is_some() {
     return Err(
       io::Error::new(
@@ -1171,33 +1250,8 @@ fn inspect_pipeline(
   })
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  // Avoid panicking on SIGPIPE/BrokenPipe when piped through tools like `head`.
-  let default_hook = std::panic::take_hook();
-  std::panic::set_hook(Box::new(move |info| {
-    let mut msg = info.to_string();
-    if let Some(s) = info.payload().downcast_ref::<&str>() {
-      msg = (*s).to_string();
-    } else if let Some(s) = info.payload().downcast_ref::<String>() {
-      msg = s.clone();
-    }
-    if msg.contains("Broken pipe") {
-      std::process::exit(0);
-    }
-    default_hook(info);
-  }));
-
-  let args = Args::parse();
+fn run(args: Args) -> Result<(), DynError> {
   let media_prefs = MediaPreferences::from(&args.media_prefs);
-
-  if let Some(sec) = args.timeout {
-    std::thread::spawn(move || {
-      std::thread::sleep(Duration::from_secs(sec));
-      eprintln!("inspect_frag: timed out after {}s", sec);
-      std::process::exit(1);
-    });
-  }
-
   let input = load_input_document(&args)?;
 
   media_prefs.apply_env();
@@ -1488,6 +1542,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   Ok(())
 }
 
+fn main() -> Result<(), DynError> {
+  // Avoid panicking on SIGPIPE/BrokenPipe when piped through tools like `head`.
+  let default_hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    let mut msg = info.to_string();
+    if let Some(s) = info.payload().downcast_ref::<&str>() {
+      msg = (*s).to_string();
+    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+      msg = s.clone();
+    }
+    if msg.contains("Broken pipe") {
+      std::process::exit(0);
+    }
+    default_hook(info);
+  }));
+
+  let args = Args::parse();
+
+  if let Some(sec) = args.timeout {
+    std::thread::spawn(move || {
+      std::thread::sleep(Duration::from_secs(sec));
+      eprintln!("inspect_frag: timed out after {}s", sec);
+      std::process::exit(1);
+    });
+  }
+
+  let handle = std::thread::Builder::new()
+    .name("inspect_frag-worker".to_string())
+    .stack_size(CLI_RENDER_STACK_SIZE)
+    .spawn(move || run(args))?;
+
+  match handle.join() {
+    Ok(result) => result,
+    Err(payload) => std::panic::resume_unwind(payload),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1685,5 +1776,38 @@ mod tests {
 
     stop.store(true, Ordering::SeqCst);
     let _ = handle.join();
+  }
+
+  #[test]
+  fn trace_helpers_handle_deep_fragment_trees_without_stack_overflow() {
+    use fastrender::geometry::Rect;
+    use std::sync::Arc;
+
+    let needle = "needle";
+    let mut node = FragmentNode::new(
+      Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+      FragmentContent::Text {
+        text: Arc::<str>::from(needle),
+        box_id: None,
+        source_range: None,
+        baseline_offset: 0.0,
+        shaped: None,
+        is_marker: false,
+        emphasis_offset: Default::default(),
+      },
+      vec![],
+    );
+
+    let depth = 5000;
+    for _ in 0..depth {
+      node = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![node]);
+    }
+
+    let mut path = Vec::new();
+    let ok = find_fragment_path_for_text(&node, Point::ZERO, needle, &HashMap::new(), &mut path);
+    assert!(ok);
+    assert_eq!(path.len(), depth + 1);
+    assert!(path.first().is_some_and(|l| l.starts_with("block")));
+    assert!(path.last().is_some_and(|l| l.starts_with("text")));
   }
 }
