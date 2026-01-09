@@ -132,4 +132,45 @@ mod tests {
       "expected Document to contain body (from HTML spec partial): {member_names:?}"
     );
   }
+
+  #[test]
+  fn generated_world_includes_whatwg_url_interfaces() {
+    let url = WORLD
+      .interface("URL")
+      .expect("generated world should include URL interface (WHATWG URL)");
+    let url_member_names = url.members.iter().filter_map(|m| m.name).collect::<Vec<_>>();
+    assert!(
+      url_member_names.contains(&"href"),
+      "expected URL to contain href: {url_member_names:?}"
+    );
+    assert!(
+      url_member_names.contains(&"origin"),
+      "expected URL to contain origin: {url_member_names:?}"
+    );
+    assert!(
+      url_member_names.contains(&"searchParams"),
+      "expected URL to contain searchParams: {url_member_names:?}"
+    );
+
+    let params = WORLD
+      .interface("URLSearchParams")
+      .expect("generated world should include URLSearchParams interface (WHATWG URL)");
+    let params_member_names = params.members.iter().filter_map(|m| m.name).collect::<Vec<_>>();
+    assert!(
+      params_member_names.contains(&"append"),
+      "expected URLSearchParams to contain append: {params_member_names:?}"
+    );
+    assert!(
+      params_member_names.contains(&"getAll"),
+      "expected URLSearchParams to contain getAll: {params_member_names:?}"
+    );
+    assert!(
+      params_member_names.contains(&"sort"),
+      "expected URLSearchParams to contain sort: {params_member_names:?}"
+    );
+    assert!(
+      params_member_names.contains(&"size"),
+      "expected URLSearchParams to contain size: {params_member_names:?}"
+    );
+  }
 }

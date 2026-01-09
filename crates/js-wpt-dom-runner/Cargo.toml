@@ -5,11 +5,18 @@ edition = "2021"
 publish = false
 
 [features]
+# Default to shipping URL + URLSearchParams so the WPT harness and curated tests behave like a
+# browser environment.
+default = ["url_bindings"]
+
+# Provide WHATWG URL + URLSearchParams bindings backed by FastRender's bounded URL core.
+url_bindings = ["dep:fastrender"]
+
 # Optional backend that runs tests on FastRender's in-tree JS runtime integration (vm-js + EventLoop).
 #
 # This is feature-gated so CI can keep building the QuickJS backend while the vm-js embedding is
 # still in flux.
-backend_vmjs = ["dep:fastrender", "dep:vm-js"]
+backend_vmjs = ["url_bindings", "dep:vm-js"]
 
 [dependencies]
 anyhow = "1"

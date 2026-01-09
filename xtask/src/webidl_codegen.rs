@@ -20,7 +20,6 @@ pub struct WebIdlCodegenArgs {
   /// Path to the WHATWG Fetch Bikeshed source (`fetch.bs`).
   #[arg(long, default_value = "specs/whatwg-fetch/fetch.bs", value_name = "FILE")]
   pub fetch_source: PathBuf,
-
   /// Output Rust module path (relative to repo root unless absolute).
   #[arg(
     long,

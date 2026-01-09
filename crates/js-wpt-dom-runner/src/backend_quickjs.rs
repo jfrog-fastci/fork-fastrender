@@ -2,6 +2,8 @@ use crate::backend::{Backend, BackendInit, BackendReport};
 use crate::dom_bindings::install_dom_bindings;
 use crate::timer_event_loop::{QueueLimits, TimerEventLoop, TimerExecution};
 use crate::RunError;
+#[cfg(feature = "url_bindings")]
+use crate::url_bindings::install_url_bindings;
 use rquickjs::{Context, Function, Object, Runtime};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -79,7 +81,11 @@ impl Backend for QuickJsBackend {
       let globals = ctx.globals();
       install_window_shims(ctx.clone(), &globals, &test_url)?;
       install_timer_host_fns(ctx.clone(), &globals, Rc::clone(&timer_loop))?;
- 
+
+      // URL + URLSearchParams are used by the WPT harness and many DOM tests.
+      #[cfg(feature = "url_bindings")]
+      install_url_bindings(ctx.clone(), &globals).map_err(|e| RunError::Js(e.to_string()))?;
+
       // Install JS shims for timers + EventTarget.
       ctx
         .eval::<(), _>(HOST_SHIMS)

@@ -4410,6 +4410,7 @@ version = "0.1.0"
 dependencies = [
  "diagnostics",
  "parse-js",
+ "ryu",
  "thiserror",
 ]
 

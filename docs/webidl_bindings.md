@@ -33,8 +33,8 @@ The `cargo xtask webidl` command runs the full pipeline end-to-end:
    - URL: `specs/whatwg-url/url.bs` (Bikeshed source)
    - Fetch: `specs/whatwg-fetch/fetch.bs` (Bikeshed source)
 2. **Parse + resolve** into a consolidated world:
-   - Merge partial definitions.
-   - Apply `includes` statements.
+    - Merge partial definitions.
+    - Apply `includes` statements.
 3. **Generate** deterministic Rust data into:
    - `src/webidl/generated/mod.rs`
 
@@ -102,6 +102,14 @@ significantly or we accidentally introduced nondeterminism.
 
 ## Adding new IDL sources / interfaces
 
+The current generator snapshots IDL from:
+
+- DOM (`specs/whatwg-dom/dom.bs`)
+- HTML (`specs/whatwg-html/source`)
+- URL (`specs/whatwg-url/url.bs`)
+- Fetch (`specs/whatwg-fetch/fetch.bs`)
+
+To pull in additional WebIDL sources beyond these, you will need to:
 The current generator snapshots IDL from:
 
 - DOM (`specs/whatwg-dom/dom.bs`)

@@ -567,6 +567,15 @@ fn find_html_tag_end(input: &str, start: usize) -> Option<usize> {
   if bytes.get(start)? != &b'<' {
     return None;
   }
+
+  // HTML comments (`<!-- ... -->`) are not normal tags and can contain arbitrary `'`/`"` chars.
+  // Treat them specially so quote scanning doesn't skip past the real end.
+  if input[start..].starts_with("<!--") {
+    let after_start = start + "<!--".len();
+    let rel_end = input.get(after_start..)?.find("-->")?;
+    return Some(after_start + rel_end + "-->".len() - 1);
+  }
+
   let mut i = start + 1;
   let mut in_quote: Option<u8> = None;
   while i < bytes.len() {
@@ -685,6 +694,22 @@ fn strip_html_tags_preserve_text(input: &str) -> String {
     }
 
     // Skip the tag itself (forgiving).
+    //
+    // Important: HTML IDL blocks sometimes contain HTML comments (`<!-- ... -->`) for spec notes.
+    // Comment bodies can contain `'`/`"` characters that are *not* attribute quotes; treating them
+    // as quotes would cause us to scan past the closing `-->` and potentially drop large parts of
+    // the IDL block (e.g. `HTMLSelectElement` in WHATWG HTML).
+    if input[i..].starts_with("<!--") {
+      if let Some(end_rel) = input[i + "<!--".len()..].find("-->") {
+        i = i + "<!--".len() + end_rel + "-->".len();
+      } else {
+        // Unterminated comment; drop the rest.
+        i = bytes.len();
+      }
+      last_text = i;
+      continue;
+    }
+
     i += 1;
     let mut in_quote: Option<u8> = None;
     while i < bytes.len() {

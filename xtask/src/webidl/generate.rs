@@ -64,8 +64,8 @@ fn generate_rust_module_unformatted(world: &ResolvedWebIdlWorld) -> String {
      // - specs/whatwg-dom/dom.bs\n\
      // - specs/whatwg-html/source\n\
      // - specs/whatwg-url/url.bs\n\
-     // - specs/whatwg-fetch/fetch.bs\n\
-     \n\
+      // - specs/whatwg-fetch/fetch.bs\n\
+      \n\
      use super::*;\n"
   );
 
@@ -307,14 +307,16 @@ pub fn rustfmt(source: &str, rustfmt_config_path: &Path) -> Result<String> {
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .spawn()
-    .context("run rustfmt")?;
+    .context("spawn rustfmt")?;
 
-  let stdin = child.stdin.as_mut().context("open rustfmt stdin")?;
-  stdin
-    .write_all(source.as_bytes())
-    .context("write rustfmt stdin")?;
+  {
+    let mut stdin = child.stdin.take().context("take rustfmt stdin")?;
+    stdin.write_all(source.as_bytes()).context("write rustfmt stdin")?;
+  }
 
-  let output = child.wait_with_output().context("wait for rustfmt")?;
+  let output = child
+    .wait_with_output()
+    .context("wait for rustfmt output")?;
 
   if !output.status.success() {
     bail!(

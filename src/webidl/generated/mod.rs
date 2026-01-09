@@ -475,6 +475,30 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "undefined resetTransform()",
       },
       WebIdlInterfaceMember {
+        name: Some("globalAlpha"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double globalAlpha",
+      },
+      WebIdlInterfaceMember {
+        name: Some("globalCompositeOperation"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString globalCompositeOperation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("imageSmoothingEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute boolean imageSmoothingEnabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("imageSmoothingQuality"),
+        ext_attrs: &[
+        ],
+        raw: "attribute ImageSmoothingQuality imageSmoothingQuality",
+      },
+      WebIdlInterfaceMember {
         name: Some("strokeStyle"),
         ext_attrs: &[
         ],
@@ -1436,28 +1460,10 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "undefined getAsString(FunctionStringCallback? _callback)",
       },
       WebIdlInterfaceMember {
-        name: Some("getAsBlob"),
-        ext_attrs: &[
-        ],
-        raw: "Blob getAsBlob()",
-      },
-      WebIdlInterfaceMember {
         name: Some("getAsFile"),
         ext_attrs: &[
         ],
-        raw: "-->\n  File? getAsFile()",
-      },
-      WebIdlInterfaceMember {
-        name: Some("getAsObject"),
-        ext_attrs: &[
-        ],
-        raw: "getAsObject(FunctionObjectCallback _callback)",
-      },
-      WebIdlInterfaceMember {
-        name: None,
-        ext_attrs: &[
-        ],
-        raw: "-->",
+        raw: "File? getAsFile()",
       },
     ],
   },
@@ -1490,31 +1496,13 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         name: Some("add"),
         ext_attrs: &[
         ],
-        raw: "DataTransferItem? add(Blob data)",
-      },
-      WebIdlInterfaceMember {
-        name: Some("add"),
-        ext_attrs: &[
-        ],
-        raw: "-->\n  DataTransferItem? add(File data)",
-      },
-      WebIdlInterfaceMember {
-        name: Some("add"),
-        ext_attrs: &[
-        ],
-        raw: "DataTransferItem? add(any data, DOMString type)",
-      },
-      WebIdlInterfaceMember {
-        name: Some("add"),
-        ext_attrs: &[
-        ],
-        raw: "-->DataTransferItem? add(DataTransferPromise data)",
+        raw: "DataTransferItem? add(File data)",
       },
       WebIdlInterfaceMember {
         name: Some("remove"),
         ext_attrs: &[
         ],
-        raw: "-->\n  undefined remove(unsigned long index)",
+        raw: "undefined remove(unsigned long index)",
       },
       WebIdlInterfaceMember {
         name: Some("clear"),
@@ -7545,22 +7533,10 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "attribute DOMString preload",
       },
       WebIdlInterfaceMember {
-        name: Some("bufferingRate"),
-        ext_attrs: &[
-        ],
-        raw: "bufferingRate",
-      },
-      WebIdlInterfaceMember {
-        name: Some("bufferingThrottled"),
-        ext_attrs: &[
-        ],
-        raw: "readonly attribute boolean bufferingThrottled",
-      },
-      WebIdlInterfaceMember {
         name: Some("buffered"),
         ext_attrs: &[
         ],
-        raw: "-->  readonly attribute TimeRanges buffered",
+        raw: "readonly attribute TimeRanges buffered",
       },
       WebIdlInterfaceMember {
         name: Some("load"),
@@ -8760,6 +8736,204 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "Reflect", value: Some("\"for\"") },
         ],
         raw: "attribute DOMString htmlFor",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLSelectElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("autocomplete"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute DOMString autocomplete",
+      },
+      WebIdlInterfaceMember {
+        name: Some("disabled"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean disabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("form"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLFormElement? form",
+      },
+      WebIdlInterfaceMember {
+        name: Some("multiple"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean multiple",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("required"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean required",
+      },
+      WebIdlInterfaceMember {
+        name: Some("size"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+          WebIdlExtendedAttribute { name: "ReflectDefault", value: Some("0") },
+        ],
+        raw: "attribute unsigned long size",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("options"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute HTMLOptionsCollection options",
+      },
+      WebIdlInterfaceMember {
+        name: Some("length"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute unsigned long length",
+      },
+      WebIdlInterfaceMember {
+        name: Some("item"),
+        ext_attrs: &[
+        ],
+        raw: "getter HTMLOptionElement? item(unsigned long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("namedItem"),
+        ext_attrs: &[
+        ],
+        raw: "HTMLOptionElement? namedItem(DOMString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("add"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined add((HTMLOptionElement or HTMLOptGroupElement) element, optional (HTMLElement or long)? before = null)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("remove"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined remove()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("remove"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined remove(long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("undefined"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "setter undefined (unsigned long index, HTMLOptionElement? option)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("selectedOptions"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute HTMLCollection selectedOptions",
+      },
+      WebIdlInterfaceMember {
+        name: Some("selectedIndex"),
+        ext_attrs: &[
+        ],
+        raw: "attribute long selectedIndex",
+      },
+      WebIdlInterfaceMember {
+        name: Some("value"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString value",
+      },
+      WebIdlInterfaceMember {
+        name: Some("willValidate"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean willValidate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validity"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ValidityState validity",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validationMessage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString validationMessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("checkValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean checkValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reportValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean reportValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setCustomValidity"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setCustomValidity(DOMString error)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("showPicker"),
+        ext_attrs: &[
+        ],
+        raw: "undefined showPicker()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("labels"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NodeList labels",
       },
     ],
   },
@@ -12075,6 +12249,30 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "undefined resetTransform()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("globalAlpha"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double globalAlpha",
+      },
+      WebIdlInterfaceMember {
+        name: Some("globalCompositeOperation"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString globalCompositeOperation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("imageSmoothingEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute boolean imageSmoothingEnabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("imageSmoothingQuality"),
+        ext_attrs: &[
+        ],
+        raw: "attribute ImageSmoothingQuality imageSmoothingQuality",
       },
       WebIdlInterfaceMember {
         name: Some("strokeStyle"),
@@ -16229,6 +16427,25 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterfaceMixin {
+    name: "CanvasCompositing",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("globalAlpha"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double globalAlpha",
+      },
+      WebIdlInterfaceMember {
+        name: Some("globalCompositeOperation"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString globalCompositeOperation",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
     name: "CanvasDrawImage",
     ext_attrs: &[
     ],
@@ -16416,6 +16633,25 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "undefined putImageData(ImageData imageData, [EnforceRange] long dx, [EnforceRange] long dy, [EnforceRange] long dirtyX, [EnforceRange] long dirtyY, [EnforceRange] long dirtyWidth, [EnforceRange] long dirtyHeight)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasImageSmoothing",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("imageSmoothingEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute boolean imageSmoothingEnabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("imageSmoothingQuality"),
+        ext_attrs: &[
+        ],
+        raw: "attribute ImageSmoothingQuality imageSmoothingQuality",
       },
     ],
   },

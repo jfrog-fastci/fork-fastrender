@@ -13,6 +13,8 @@ pub enum WebUrlLimitKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebUrlError {
   OutOfMemory,
+  /// The URL (or base URL) could not be parsed.
+  ParseError,
   LimitExceeded {
     kind: WebUrlLimitKind,
     limit: usize,
@@ -31,6 +33,7 @@ impl std::fmt::Display for WebUrlError {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       WebUrlError::OutOfMemory => write!(f, "out of memory"),
+      WebUrlError::ParseError => write!(f, "failed to parse URL"),
       WebUrlError::InvalidUtf8 => write!(f, "invalid UTF-8"),
       WebUrlError::LimitExceeded {
         kind,
@@ -45,4 +48,3 @@ impl std::fmt::Display for WebUrlError {
 }
 
 impl std::error::Error for WebUrlError {}
-
