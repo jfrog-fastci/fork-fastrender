@@ -233,6 +233,7 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
 
 #[test]
 fn scroll_with_pointer_after_viewport_scroll_targets_element() {
+  let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page_scroller_far_down();
 
   let handle = spawn_ui_worker("fastr-ui-worker-scroll-with-pointer-after-viewport-scroll")
@@ -345,6 +346,7 @@ fn scroll_clamps_to_zero() {
 
 #[test]
 fn pointer_hit_testing_uses_element_scroll_offsets() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html = r#"<!doctype html>
     <html>

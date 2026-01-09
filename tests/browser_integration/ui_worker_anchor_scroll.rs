@@ -12,6 +12,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 
 #[test]
 fn fragment_navigation_scrolls_viewport_to_target() {
+  let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let base_url = site.write(
     "index.html",

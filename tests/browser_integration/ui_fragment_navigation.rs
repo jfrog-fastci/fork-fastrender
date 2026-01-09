@@ -29,6 +29,7 @@ fn recv_until_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId, d
 
 #[test]
 fn same_document_fragment_navigation_scrolls_without_fetching() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");
   let html = r##"<!doctype html>

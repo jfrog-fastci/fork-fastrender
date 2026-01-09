@@ -36,6 +36,7 @@ fn wait_for_frame(
 
 #[test]
 fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 
   let tab1_dir = dir.path().join("tab1");
