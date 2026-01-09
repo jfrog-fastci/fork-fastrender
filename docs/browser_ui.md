@@ -203,9 +203,9 @@ The browser UI includes generation-counter cancellation helpers in [`src/ui/canc
 - `CancelGens::bump_nav()` invalidates in-flight **prepare** and **paint** work (new navigation).
 - `CancelGens::bump_paint()` invalidates only in-flight **paint** work (e.g. scroll/resize).
 
-Note: both the browser worker thread (`spawn_browser_worker`) and the render-thread worker
-(`spawn_browser_render_thread`) use these helpers. Some older headless worker loops are mostly
-synchronous and may not use them.
+Note: the canonical browser UI worker loop (`spawn_browser_worker` / `spawn_ui_worker*`) uses these
+helpers to cancel stale prepares/paints. The browser integration suite serializes tests that depend
+on deterministic cancellation timing (see `stage_listener_test_lock`).
 
 The typical pattern is:
 

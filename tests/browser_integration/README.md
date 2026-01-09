@@ -113,11 +113,14 @@ let _lock = crate::browser_integration::stage_listener_test_lock();
 
 Some cancellation/timeout tests need to slow down render stages to make races deterministic.
 
-Prefer the *per-worker-thread* TLS delay helpers over the process-global env var:
+Prefer the scoped programmatic delay helpers over mutating the process environment variable:
 
 - `spawn_ui_worker_for_test(..., Some(ms))`
 - `spawn_browser_worker_for_test(Some(ms))`
-- `spawn_browser_render_thread_for_test(..., Some(ms))`
+
+These helpers use `render_control::set_test_render_delay_ms`, which is **process-global**. Keep the
+delay scoped to the worker lifetime and serialize these tests with `stage_listener_test_lock` to
+avoid leaking the setting across unrelated tests.
 
 Avoid mutating the legacy render-delay environment variable from within these integration tests:
 the browser integration suite is compiled into a single test binary, so changing a process env var
