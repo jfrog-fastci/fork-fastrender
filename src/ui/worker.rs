@@ -1,3 +1,9 @@
+//! Render-thread utilities (not a UI worker loop).
+//!
+//! The production browser UI worker loop lives in [`crate::ui::render_worker`]. This module
+//! contains small helpers used by the UI and tests (e.g. a large-stack render thread wrapper) but
+//! intentionally does not implement `UiToWorker` / `WorkerToUi` message handling.
+
 use crate::api::{FastRender, PreparedDocument, PreparedPaintOptions};
 use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGuard};
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
@@ -67,4 +73,3 @@ pub fn spawn_render_worker_thread<T: Send + 'static>(
       f(worker)
     })
 }
-

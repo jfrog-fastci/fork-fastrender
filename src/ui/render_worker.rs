@@ -1,3 +1,10 @@
+//! Canonical message-driven browser UI worker.
+//!
+//! This module contains the single production implementation of the UI↔worker protocol used by the
+//! windowed `browser` app (`src/bin/browser.rs`) and the browser UI integration tests. It owns
+//! per-tab state (document, interaction engine, history, cancellation) and renders on a dedicated
+//! large-stack thread.
+
 use crate::api::{
   BrowserDocument, FastRender, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig,
   PreparedDocumentReport, RenderOptions,
