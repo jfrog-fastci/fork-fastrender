@@ -4293,24 +4293,53 @@ impl HttpFetcher {
           deadline,
           started,
         ),
-        HttpBackendMode::Ureq => self.fetch_http_with_accept_inner_ureq(
-          kind,
-          destination,
-          effective_url.as_ref(),
-          None,
-          None,
-          method,
-          redirect,
-          user_headers,
-          body,
-          client_origin,
-          referrer_url,
-          referrer_policy,
-          credentials_mode,
-          deadline,
-          started,
-          false,
-        ),
+        HttpBackendMode::Ureq => {
+          // `ureq` only supports GET/HEAD/POST. For other methods (e.g. PUT/PATCH/DELETE) fall back
+          // to the reqwest backend so Fetch API requests can still use custom methods even when the
+          // process is configured to prefer ureq.
+          if method.eq_ignore_ascii_case("GET")
+            || method.eq_ignore_ascii_case("HEAD")
+            || method.eq_ignore_ascii_case("POST")
+          {
+            self.fetch_http_with_accept_inner_ureq(
+              kind,
+              destination,
+              effective_url.as_ref(),
+              None,
+              None,
+              method,
+              redirect,
+              user_headers,
+              body,
+              client_origin,
+              referrer_url,
+              referrer_policy,
+              credentials_mode,
+              deadline,
+              started,
+              false,
+            )
+          } else {
+            self.fetch_http_with_accept_inner_reqwest(
+              kind,
+              destination,
+              effective_url.as_ref(),
+              None,
+              None,
+              method,
+              redirect,
+              user_headers,
+              body,
+              client_origin,
+              referrer_url,
+              referrer_policy,
+              credentials_mode,
+              deadline,
+              started,
+              false,
+            )
+          }
+        }
         HttpBackendMode::Reqwest => self.fetch_http_with_accept_inner_reqwest(
           kind,
           destination,

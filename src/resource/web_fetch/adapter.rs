@@ -116,13 +116,7 @@ pub fn execute_web_fetch<'a>(
   }
 
   let referrer_url = effective_referrer_url(request, ctx);
-
-  let referrer_origin = ctx
-    .client_origin
-    .is_none()
-    .then(|| referrer_url.and_then(origin_from_url))
-    .flatten();
-  let client_origin = ctx.client_origin.or(referrer_origin.as_ref());
+  let client_origin = ctx.client_origin;
 
   let mut requested_url_storage: Option<String> = None;
   let requested_url = resolve_request_url(
