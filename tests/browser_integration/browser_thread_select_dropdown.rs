@@ -102,7 +102,7 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
   .collect();
   assert_eq!(labels, vec!["One", "Two", "Three"]);
 
-  let msg = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
+  let anchored = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
     // `BrowserThread` emits a cursor-anchored `SelectDropdownOpened` first (1x1 rect at the click
     // point) so UIs can open the popup immediately, then follows up with the actual `<select>`
     // anchor rect once it is available. Assert on the anchored message.
@@ -119,9 +119,9 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
     select_node_id: anchored_select_node_id,
     control: anchored_control,
     anchor_css: anchor_rect_css,
-  } = msg
+  } = anchored
   else {
-    unreachable!("filtered above");
+    unreachable!();
   };
 
   assert_eq!(msg_tab, tab_id);

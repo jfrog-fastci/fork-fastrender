@@ -8,7 +8,7 @@ use fastrender::ui::spawn_browser_worker;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
-const TIMEOUT: Duration = Duration::from_secs(10);
+const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
 struct BrowserWorkerFixture {
   tx: Option<Sender<UiToWorker>>,

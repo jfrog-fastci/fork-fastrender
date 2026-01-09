@@ -85,20 +85,20 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
       [`src/bin/browser.rs`](../src/bin/browser.rs) (see `App::render_chrome_ui`), but reuses the
       `ChromeAction` type.
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
-    - Used by the canonical browser UI worker loop ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs))
-      and the synchronous `BrowserWorker` helper (used by some unit tests/helpers).
+    - Used by the browser UI worker loop ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs))
+      and the synchronous `BrowserWorker` helper ([`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
-  - Canonical browser UI worker loop (navigation/history + interaction + cancellation): [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
+  - Browser UI worker loop (navigation/history + interaction + cancellation): [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
     - `spawn_browser_worker` is the main worker used by the windowed `browser` app.
     - `spawn_ui_worker` exposes the same message-driven worker loop for headless integration tests.
     - `spawn_browser_ui_worker` is a small std::io wrapper around `spawn_browser_worker_with_name`.
   - Render-thread utilities (stage heartbeat forwarding, large-stack thread helper): [`src/ui/worker.rs`](../src/ui/worker.rs)
   - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
     - Mostly used by unit tests and small helpers.
-  - Headless worker tests exercise the same `UiToWorker`/`WorkerToUi` protocol via the canonical
+  - Headless worker tests exercise the same `UiToWorker`/`WorkerToUi` protocol via the browser UI
     worker loop (`spawn_ui_worker` in `render_worker.rs`).
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)
   - Pixmap → egui texture helpers:
@@ -176,11 +176,9 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
 Note: not all worker implementations emit every message variant. For example, the windowed `browser`
-app uses `spawn_browser_worker` and emits `FrameReady`, select dropdown open messages
-(`OpenSelectDropdown`/`SelectDropdownOpened`), and navigation/scroll/loading events. The current GUI
-handles both dropdown-open message variants; when both are emitted the `SelectDropdownOpened`
-positioning data takes precedence. Stage heartbeats are only sent when a stage listener is installed
-by the worker.
+app's worker thread (`spawn_browser_worker` via `spawn_browser_ui_worker`) emits `FrameReady`, select
+dropdown open messages (`OpenSelectDropdown`/`SelectDropdownOpened`), and navigation/scroll/loading
+events. Stage heartbeats are only sent when a stage listener is installed by the worker.
 
 Implementation detail: stage listeners are stored in a **thread-local stack** (see
 `push_stage_listener` / `StageListenerGuard` in [`src/render_control.rs`](../src/render_control.rs)).
