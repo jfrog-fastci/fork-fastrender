@@ -7001,6 +7001,22 @@ mod tests {
     assert_eq!(resolved, "https://example.com/dir/a%C2%A0b.svg");
   }
 
+  #[test]
+  fn resolve_against_base_percent_encodes_pipe() {
+    let base = "https://example.com/a/";
+    let reference = "b|c.png";
+    let resolved = resolve_against_base(base, reference).expect("resolved");
+    assert_eq!(resolved, "https://example.com/a/b%7Cc.png");
+  }
+
+  #[test]
+  fn resolve_against_base_percent_encodes_spaces() {
+    let base = "https://example.com/a/";
+    let reference = "b c.png";
+    let resolved = resolve_against_base(base, reference).expect("resolved");
+    assert_eq!(resolved, "https://example.com/a/b%20c.png");
+  }
+
   #[derive(Clone, Default)]
   struct MapFetcher {
     responses: Arc<HashMap<String, FetchedResource>>,

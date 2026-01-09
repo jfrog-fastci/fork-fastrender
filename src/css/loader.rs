@@ -3213,6 +3213,41 @@ mod tests {
   }
 
   #[test]
+  fn resolves_relative_links_with_pipe_by_percent_encoding() {
+    let base = "https://example.com/a/";
+    let href = "img|1.png";
+    let resolved = resolve_href(base, href).expect("resolved");
+    assert_eq!(resolved, "https://example.com/a/img%7C1.png");
+  }
+
+  #[test]
+  fn resolves_relative_links_with_spaces_by_percent_encoding() {
+    let base = "https://example.com/a/";
+    let href = "img 1.png";
+    let resolved = resolve_href(base, href).expect("resolved");
+    assert_eq!(resolved, "https://example.com/a/img%201.png");
+  }
+
+  #[test]
+  fn resolves_absolute_links_with_pipe_by_percent_encoding() {
+    let base = "https://example.com/a/";
+    let href = "https://static.example.com/img|1.png?x=1|2";
+    let resolved = resolve_href(base, href).expect("resolved");
+    assert_eq!(
+      resolved,
+      "https://static.example.com/img%7C1.png?x=1%7C2"
+    );
+  }
+
+  #[test]
+  fn does_not_double_encode_existing_percent_escapes() {
+    let base = "https://example.com/a/";
+    let href = "img%7C1.png";
+    let resolved = resolve_href(base, href).expect("resolved");
+    assert_eq!(resolved, "https://example.com/a/img%7C1.png");
+  }
+
+  #[test]
   fn resolves_data_urls_case_insensitively() {
     let base = "https://example.com/index.html";
     let href = "DATA:text/plain;base64,aGk=";
