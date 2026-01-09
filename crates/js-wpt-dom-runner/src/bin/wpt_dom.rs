@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use conformance_harness::{FailOn, Shard};
-use js_wpt_dom_runner::{run_suite, SuiteConfig};
+use js_wpt_dom_runner::{run_suite, BackendSelection, SuiteConfig};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -138,6 +138,7 @@ fn main() -> Result<()> {
     timeout: Duration::from_secs(cli.timeout_secs),
     long_timeout: Duration::from_secs(cli.long_timeout_secs),
     fail_on: cli.fail_on,
+    backend: BackendSelection::Auto,
   })?;
 
   if let Some(parent) = cli.report.parent() {
