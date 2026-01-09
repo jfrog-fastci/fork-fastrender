@@ -1131,6 +1131,10 @@ impl ContentContext {
     if self.quotes.is_empty() {
       return "";
     }
+    if self.quote_depth == 0 {
+      // Per CSS Generated Content, a `close-quote` at depth 0 renders no quote.
+      return "";
+    }
     // Use current depth minus 1 (since open quote incremented it)
     let depth = self.quote_depth.saturating_sub(1);
     let index = depth.min(self.quotes.len().saturating_sub(1));
@@ -1154,6 +1158,14 @@ impl ContentContext {
   /// Gets the current quote depth
   pub fn quote_depth(&self) -> usize {
     self.quote_depth
+  }
+
+  /// Sets the current quote depth.
+  ///
+  /// This is used by layout/box generation code that needs to carry quote nesting state across
+  /// multiple generated content runs.
+  pub fn set_quote_depth(&mut self, depth: usize) {
+    self.quote_depth = depth;
   }
 }
 

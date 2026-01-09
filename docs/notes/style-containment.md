@@ -19,26 +19,31 @@ Spec references:
 
 When a styled element has `containment.style == true`:
 
-1. **CSS counters** are contained at the subtree boundary.
-   - `counter-reset`, `counter-increment`, `counter-set`
+1. **CSS counters** are scoped at the subtree boundary.
+   - `counter-increment`, `counter-set` (scoped per CSS Containment)
+   - `counter-reset` (already creates a new counter instance on the element, so it does not leak)
    - Implicit counter instantiation when incrementing/setting an undefined counter
    - Built-in list item counter behavior (`list-item`, including `<ol reversed>` semantics)
    - The predefined paged-media `footnote` counter used by `float: footnote`
 
-   Semantics: counter state is snapshotted on entry to the style-contained subtree; updates inside
-   the subtree do not affect the counter state visible outside.
+   Semantics: the style-contained element itself still participates in the surrounding counter
+   state, but counter increments/sets inside its subtree create fresh counters that do not affect
+   siblings outside the subtree (matching the “scoped to a sub-tree” definition in CSS Containment).
 
-2. **Paged media running strings** are contained.
+2. **Quote depth** (`open-quote`/`close-quote`) is scoped.
+   - Quote depth changes inside a style-contained subtree do not affect quote nesting outside the
+     subtree.
+
+3. **Paged media running strings** are contained.
    - `string-set` assignments inside a style-contained subtree are ignored when computing the
      per-page running string values used by `string(...)` in `@page` margin boxes.
 
-3. **Paged media running elements** are contained.
+4. **Paged media running elements** are contained.
    - Running element occurrences inside a style-contained subtree are ignored when resolving
      `element(...)` in `@page` margin boxes.
 
 ## Not yet implemented
 
 Style containment in the spec covers additional cross-subtree effects that FastRender either does
-not implement yet, or does not currently model as a leaking global state. Notably, **quote depth**
-(`open-quote`/`close-quote`) is not yet scoped by `contain: style` in FastRender.
-
+not implement yet, or does not currently model as a leaking global state. As more generated content
+features land, additional style-scoped state may need to be modeled here.

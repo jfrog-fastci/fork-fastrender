@@ -419,9 +419,10 @@ fn test_context_quotes_basic() {
   assert_eq!(ctx.open_quote(), "\u{2018}"); // '
 
   // Close
+  assert_eq!(ctx.close_quote(), "\u{201D}"); // "
   ctx.pop_quote();
   assert_eq!(ctx.quote_depth(), 0);
-  assert_eq!(ctx.close_quote(), "\u{201D}"); // "
+  assert_eq!(ctx.close_quote(), "");
 }
 
 #[test]
@@ -438,8 +439,9 @@ fn test_context_quotes_custom() {
   assert_eq!(ctx.open_quote(), "<<");
   ctx.push_quote();
   assert_eq!(ctx.open_quote(), "<");
-  ctx.pop_quote();
   assert_eq!(ctx.close_quote(), ">>");
+  ctx.pop_quote();
+  assert_eq!(ctx.close_quote(), "");
 }
 
 #[test]

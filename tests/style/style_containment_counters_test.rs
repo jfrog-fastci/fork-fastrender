@@ -93,3 +93,54 @@ fn counter_leakage_is_blocked_by_content_visibility_implied_style_containment() 
   assert_eq!(run_counter_leakage_case("content-visibility: hidden;"), "0");
 }
 
+#[test]
+fn style_containment_is_ignored_when_element_has_no_principal_box() {
+  // Per CSS Containment, style containment has no effect when the element does not generate a
+  // principal box (e.g., `display: contents`).
+  assert_eq!(run_counter_leakage_case("contain: style; display: contents;"), "1");
+}
+
+#[test]
+fn style_containment_scopes_counter_increments_and_creates_new_counter() {
+  // Mirrors the example in CSS Containment Level 2: the style-contained element's own
+  // counter-increment affects the outside counter, but increments in its subtree create a new
+  // nested counter that does not affect siblings outside the subtree.
+  let dom = dom::parse_html(
+    r#"
+      <div id="root">
+        <div id="container">
+          <div id="a"></div>
+          <div id="b"></div>
+        </div>
+        <div id="sibling"></div>
+      </div>
+    "#,
+  )
+  .unwrap();
+
+  let css = r#"
+    #root { counter-reset: c; }
+    #container { contain: style; counter-increment: c; }
+    #a { counter-increment: c; }
+    #b { counter-increment: c; }
+    #container::before { content: counters(c, "."); }
+    #a::before { content: counters(c, "."); }
+    #b::before { content: counters(c, "."); }
+    #sibling::before { content: counter(c); }
+  "#;
+
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let container = find_by_id(&styled, "container").expect("expected #container node");
+  let a = find_by_id(&styled, "a").expect("expected #a node");
+  let b = find_by_id(&styled, "b").expect("expected #b node");
+  let sibling = find_by_id(&styled, "sibling").expect("expected #sibling node");
+
+  let tree = generate_box_tree(&styled).unwrap();
+
+  assert_eq!(generated_before_text(&tree, container.node_id), "1");
+  assert_eq!(generated_before_text(&tree, a.node_id), "1.1");
+  assert_eq!(generated_before_text(&tree, b.node_id), "1.2");
+  assert_eq!(generated_before_text(&tree, sibling.node_id), "1");
+}

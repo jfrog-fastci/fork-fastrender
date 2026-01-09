@@ -363,6 +363,18 @@ pub struct CounterManager {
   scopes: Vec<CounterScope>,
   /// Default increment for the `list-item` counter in the current scope (e.g., `reversed` lists).
   list_item_increments: Vec<i32>,
+  /// Stack of active style containment boundaries.
+  ///
+  /// When `contain: style` applies, the spec scopes the effects of `counter-increment` and
+  /// `counter-set` to the element's subtree (excluding the element itself) and requires the first
+  /// use inside the subtree to create a new counter.
+  ///
+  /// We model this by inserting an extra counter scope at the containment boundary and recording
+  /// its scope index here. While a boundary is active, `apply_increment`/`apply_set` will only
+  /// search scopes at or below the innermost recorded index; if no counter is found, the new
+  /// counter is instantiated in the boundary scope so it persists across sibling elements inside
+  /// the subtree.
+  style_containment_roots: Vec<usize>,
   /// Available counter styles for formatting counters/markers.
   counter_styles: Arc<CounterStyleRegistry>,
 }
@@ -379,6 +391,7 @@ impl CounterManager {
       // Start with a root scope for implicit counters
       scopes: vec![CounterScope::new()],
       list_item_increments: vec![1],
+      style_containment_roots: Vec::new(),
       counter_styles,
     };
     // CSS GCPM defines a predefined `footnote` counter. Model that by instantiating the counter in
@@ -412,6 +425,43 @@ impl CounterManager {
     if self.list_item_increments.len() > 1 {
       self.list_item_increments.pop();
     }
+    // Callers must leave style containment scopes explicitly; assert in debug builds that a plain
+    // scope pop never invalidates a containment root.
+    debug_assert!(
+      self
+        .style_containment_roots
+        .last()
+        .map_or(true, |idx| *idx < self.scopes.len()),
+      "style containment root index outlived its scope"
+    );
+  }
+
+  /// Enters a style containment boundary (`contain: style`).
+  ///
+  /// This pushes an extra counter scope that acts as the root of the contained subtree for the
+  /// purposes of `counter-increment` and `counter-set`.
+  pub fn enter_style_containment(&mut self) {
+    self.enter_scope();
+    let idx = self
+      .scopes
+      .len()
+      .checked_sub(1)
+      .expect("enter_scope always leaves at least one scope");
+    self.style_containment_roots.push(idx);
+  }
+
+  /// Leaves a style containment boundary entered by `enter_style_containment`.
+  pub fn leave_style_containment(&mut self) {
+    let Some(idx) = self.style_containment_roots.pop() else {
+      debug_assert!(false, "leave_style_containment called with no active boundary");
+      return;
+    };
+    debug_assert_eq!(
+      idx,
+      self.scopes.len().saturating_sub(1),
+      "style containment scope must be left after all descendant scopes"
+    );
+    self.leave_scope();
   }
 
   /// Applies a counter-reset specification
@@ -475,7 +525,9 @@ impl CounterManager {
     for item in &counter_set.items {
       // Find the innermost scope that has this counter
       let mut found = false;
-      for scope in self.scopes.iter_mut().rev() {
+      let containment_root = self.style_containment_roots.last().copied();
+      let start_idx = containment_root.unwrap_or(0);
+      for scope in self.scopes.iter_mut().skip(start_idx).rev() {
         if let Some(value) = scope.counters.get_mut(&item.name) {
           *value += item.value;
           found = true;
@@ -488,6 +540,12 @@ impl CounterManager {
       // the element instantiates a new counter of the given name with a starting
       // value of 0 before incrementing"
       if !found {
+        if let Some(root_idx) = containment_root {
+          if let Some(scope) = self.scopes.get_mut(root_idx) {
+            scope.counters.insert(item.name.clone(), item.value);
+            continue;
+          }
+        }
         if let Some(scope) = self.scopes.last_mut() {
           scope.counters.insert(item.name.clone(), item.value);
         }
@@ -506,7 +564,9 @@ impl CounterManager {
     for item in &counter_set.items {
       // Find the innermost scope that has this counter
       let mut found = false;
-      for scope in self.scopes.iter_mut().rev() {
+      let containment_root = self.style_containment_roots.last().copied();
+      let start_idx = containment_root.unwrap_or(0);
+      for scope in self.scopes.iter_mut().skip(start_idx).rev() {
         if let Some(value) = scope.counters.get_mut(&item.name) {
           *value = item.value;
           found = true;
@@ -516,6 +576,12 @@ impl CounterManager {
 
       // If counter doesn't exist, create it in current scope
       if !found {
+        if let Some(root_idx) = containment_root {
+          if let Some(scope) = self.scopes.get_mut(root_idx) {
+            scope.counters.insert(item.name.clone(), item.value);
+            continue;
+          }
+        }
         if let Some(scope) = self.scopes.last_mut() {
           scope.counters.insert(item.name.clone(), item.value);
         }
@@ -714,6 +780,7 @@ impl CounterManager {
     self.scopes.push(CounterScope::new());
     self.list_item_increments.clear();
     self.list_item_increments.push(1);
+    self.style_containment_roots.clear();
     if let Some(root) = self.scopes.first_mut() {
       root.counters.insert("footnote".to_string(), 0);
     }

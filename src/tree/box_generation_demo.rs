@@ -667,7 +667,8 @@ impl BoxGenerator {
       slotted_node_ids: Vec::new(),
       children: vec![],
     };
-    let marker_content = marker_content_from_style(&dummy_styled, &style, counters);
+    let mut quote_depth = 0usize;
+    let marker_content = marker_content_from_style(&dummy_styled, &style, counters, &mut quote_depth);
     if let Some(content) = marker_content {
       let mut marker_style = (*style).clone();
       marker_style.display = Display::Inline;

@@ -2809,7 +2809,8 @@ fn generate_boxes_for_styled_into(
     styled: &'a StyledNode,
     state: FrameState,
     entered_counter_scope: bool,
-    counter_containment_snapshot: Option<CounterManager>,
+    entered_style_containment_scope: bool,
+    quote_containment_snapshot: Option<usize>,
     in_footnote: bool,
     force_position_relative: bool,
     composed_children: Option<ComposedChildren<'a>>,
@@ -2824,7 +2825,8 @@ fn generate_boxes_for_styled_into(
         styled,
         state: FrameState::Enter,
         entered_counter_scope: false,
-        counter_containment_snapshot: None,
+        entered_style_containment_scope: false,
+        quote_containment_snapshot: None,
         in_footnote,
         force_position_relative: false,
         composed_children: None,
@@ -2836,6 +2838,7 @@ fn generate_boxes_for_styled_into(
   }
 
   let site_compat = options.site_compat_hacks_enabled();
+  let mut quote_depth = 0usize;
   let mut stack: Vec<Frame<'_>> = Vec::new();
   stack.push(Frame::new(styled, false));
 
@@ -2934,15 +2937,6 @@ fn generate_boxes_for_styled_into(
           .map(|frame| frame.in_footnote)
           .unwrap_or(false);
 
-        // CSS Containment: `contain: style` (including implied style containment from
-        // `content-visibility:auto|hidden`) must prevent counter-like effects from escaping the
-        // contained subtree. Snapshot counter state on entry and restore it after leaving.
-        if styled.styles.containment.style {
-          let snapshot = counters.clone();
-          if let Some(frame) = stack.last_mut() {
-            frame.counter_containment_snapshot = Some(snapshot);
-          }
-        }
         counters.enter_scope();
         apply_counter_properties_from_style(styled, counters, in_footnote, options.enable_footnote_floats);
         if let Some(frame) = stack.last_mut() {
@@ -2957,11 +2951,8 @@ fn generate_boxes_for_styled_into(
                 || class_attr.contains("ad__slot")
                 || class_attr.contains("should-hold-space"))
             {
-              let frame = stack.pop().expect("frame exists");
+              stack.pop().expect("frame exists");
               counters.leave_scope();
-              if let Some(snapshot) = frame.counter_containment_snapshot {
-                *counters = snapshot;
-              }
               continue;
             }
           }
@@ -2969,11 +2960,8 @@ fn generate_boxes_for_styled_into(
 
         // display:none suppresses box generation entirely.
         if styled.styles.display == Display::None {
-          let frame = stack.pop().expect("frame exists");
+          stack.pop().expect("frame exists");
           counters.leave_scope();
-          if let Some(snapshot) = frame.counter_containment_snapshot {
-            *counters = snapshot;
-          }
           continue;
         }
 
@@ -2982,11 +2970,8 @@ fn generate_boxes_for_styled_into(
         // newline character that could be collapsed to a space).
         if let Some(tag) = styled.node.tag_name() {
           if tag.eq_ignore_ascii_case("br") {
-            let frame = stack.pop().expect("frame exists");
+            stack.pop().expect("frame exists");
             counters.leave_scope();
-            if let Some(snapshot) = frame.counter_containment_snapshot {
-              *counters = snapshot;
-            }
             let mut box_node = BoxNode::new_line_break(Arc::clone(&styled.styles));
             box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
             let box_node = attach_debug_info(box_node, styled);
@@ -3004,11 +2989,8 @@ fn generate_boxes_for_styled_into(
             let dom_subtree = dom_subtree_from_styled(styled);
             let math_root = crate::math::parse_mathml(&dom_subtree)
               .unwrap_or_else(|| crate::math::MathNode::Row(Vec::new()));
-            let frame = stack.pop().expect("frame exists");
+            stack.pop().expect("frame exists");
             counters.leave_scope();
-            if let Some(snapshot) = frame.counter_containment_snapshot {
-              *counters = snapshot;
-            }
             let box_node = BoxNode::new_replaced(
               Arc::clone(&styled.styles),
               ReplacedType::Math(MathReplaced {
@@ -3032,15 +3014,9 @@ fn generate_boxes_for_styled_into(
 
         let mut appearance_none_form_control: Option<FormControl> = None;
         if let Some(form_control) = create_form_control_replaced(styled) {
-          if !matches!(
-            form_control.appearance,
-            crate::style::types::Appearance::None
-          ) {
-            let frame = stack.pop().expect("frame exists");
+          if !matches!(form_control.appearance, crate::style::types::Appearance::None) {
+            stack.pop().expect("frame exists");
             counters.leave_scope();
-            if let Some(snapshot) = frame.counter_containment_snapshot {
-              *counters = snapshot;
-            }
             let box_node = BoxNode::new_replaced(
               Arc::clone(&styled.styles),
               ReplacedType::FormControl(form_control),
@@ -3066,11 +3042,8 @@ fn generate_boxes_for_styled_into(
             || tag.eq_ignore_ascii_case("option")
             || tag.eq_ignore_ascii_case("optgroup")
           {
-            let frame = stack.pop().expect("frame exists");
+            stack.pop().expect("frame exists");
             counters.leave_scope();
-            if let Some(snapshot) = frame.counter_containment_snapshot {
-              *counters = snapshot;
-            }
             continue;
           }
 
@@ -3088,11 +3061,8 @@ fn generate_boxes_for_styled_into(
               picture_sources_for_img,
               site_compat,
             ) {
-              let frame = stack.pop().expect("frame exists");
+              stack.pop().expect("frame exists");
               counters.leave_scope();
-              if let Some(snapshot) = frame.counter_containment_snapshot {
-                *counters = snapshot;
-              }
               let mut box_node = box_node;
               box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
               let box_node = attach_debug_info(box_node, styled);
@@ -3111,14 +3081,33 @@ fn generate_boxes_for_styled_into(
         //
         // NOTE: `::marker` and `::before` are both before the element's DOM children. `::after` is
         // generated in `FrameState::Finish` after children have been processed.
+        //
+        // CSS Containment: `contain: style` (including implied style containment from
+        // `content-visibility:auto|hidden`) scopes counter increments/sets and quote depth changes
+        // to the element's subtree. For subtree scoping, the element itself is considered outside
+        // the boundary; we enter the containment scope after applying the element's own counter
+        // properties and keep it active for pseudo-elements and children.
+        if styled.styles.containment.style && styled.styles.display != Display::Contents {
+          let frame = stack.last_mut().expect("frame exists");
+          counters.enter_style_containment();
+          frame.entered_style_containment_scope = true;
+          frame.quote_containment_snapshot = Some(quote_depth);
+        }
         let marker_box = if styled.styles.display == Display::ListItem {
-          create_marker_box(styled, counters)
+          create_marker_box(styled, counters, &mut quote_depth)
         } else {
           None
         };
         let before_box = if let Some(before_styles) = &styled.before_styles {
           let before_start = clone_starting_style(&styled.starting_styles.before);
-          create_pseudo_element_box(styled, before_styles, before_start, "before", counters)
+          create_pseudo_element_box(
+            styled,
+            before_styles,
+            before_start,
+            "before",
+            counters,
+            &mut quote_depth,
+          )
         } else {
           None
         };
@@ -3228,22 +3217,31 @@ fn generate_boxes_for_styled_into(
         let force_position_relative = frame.force_position_relative;
         let styled = frame.styled;
         let mut children = frame.children;
-        let counter_containment_snapshot = frame.counter_containment_snapshot;
+        let entered_style_containment_scope = frame.entered_style_containment_scope;
+        let quote_containment_snapshot = frame.quote_containment_snapshot;
         if let Some(after_styles) = &styled.after_styles {
           let after_start = clone_starting_style(&styled.starting_styles.after);
-          if let Some(after_box) =
-            create_pseudo_element_box(styled, after_styles, after_start, "after", counters)
-          {
+          if let Some(after_box) = create_pseudo_element_box(
+            styled,
+            after_styles,
+            after_start,
+            "after",
+            counters,
+            &mut quote_depth,
+          ) {
             children.push(after_box);
           }
         }
 
         // display: contents contributes its children directly.
         if styled.styles.display == Display::Contents {
-          counters.leave_scope();
-          if let Some(snapshot) = counter_containment_snapshot {
-            *counters = snapshot;
+          if entered_style_containment_scope {
+            counters.leave_style_containment();
+            if let Some(snapshot) = quote_containment_snapshot {
+              quote_depth = snapshot;
+            }
           }
+          counters.leave_scope();
           if let Some(backdrop_box) = create_backdrop_box(styled) {
             if let Some(parent) = stack.last_mut() {
               parent.children.push(backdrop_box);
@@ -3325,16 +3323,17 @@ fn generate_boxes_for_styled_into(
 
           if let Some(marker_styles) = &styled.footnote_marker_styles {
             let marker_start = clone_starting_style(&styled.starting_styles.footnote_marker);
-            if let Some(marker_box) = create_pseudo_element_box(
-              styled,
-              marker_styles,
-              marker_start,
-              "footnote-marker",
-              counters,
-            ) {
-              let mut combined = Vec::with_capacity(body_box.children.len() + 1);
-              combined.push(marker_box);
-              combined.append(&mut body_box.children);
+          if let Some(marker_box) = create_pseudo_element_box(
+            styled,
+            marker_styles,
+            marker_start,
+            "footnote-marker",
+            counters,
+            &mut quote_depth,
+          ) {
+            let mut combined = Vec::with_capacity(body_box.children.len() + 1);
+            combined.push(marker_box);
+            combined.append(&mut body_box.children);
               body_box.children = combined;
             }
           }
@@ -3352,6 +3351,7 @@ fn generate_boxes_for_styled_into(
                 call_start.clone(),
                 "footnote-call",
                 counters,
+                &mut quote_depth,
               )
             })
             .unwrap_or_else(|| {
@@ -3368,10 +3368,13 @@ fn generate_boxes_for_styled_into(
             });
           call_box.footnote_body = Some(Box::new(body_box));
 
-          counters.leave_scope();
-          if let Some(snapshot) = counter_containment_snapshot {
-            *counters = snapshot;
+          if entered_style_containment_scope {
+            counters.leave_style_containment();
+            if let Some(snapshot) = quote_containment_snapshot {
+              quote_depth = snapshot;
+            }
           }
+          counters.leave_scope();
           if let Some(parent) = stack.last_mut() {
             parent.children.push(call_box);
           } else {
@@ -3380,10 +3383,13 @@ fn generate_boxes_for_styled_into(
           continue;
         }
 
-        counters.leave_scope();
-        if let Some(snapshot) = counter_containment_snapshot {
-          *counters = snapshot;
+        if entered_style_containment_scope {
+          counters.leave_style_containment();
+          if let Some(snapshot) = quote_containment_snapshot {
+            quote_depth = snapshot;
+          }
         }
+        counters.leave_scope();
         let box_node = attach_debug_info(box_node, styled);
         if let Some(parent) = stack.last_mut() {
           if let Some(backdrop_box) = create_backdrop_box(styled) {
@@ -3584,6 +3590,7 @@ fn create_pseudo_element_box(
   starting_style: Option<Arc<ComputedStyle>>,
   pseudo_name: &str,
   counters: &mut CounterManager,
+  quote_depth: &mut usize,
 ) -> Option<BoxNode> {
   let content_value = effective_content_value(styles);
   if matches!(content_value, ContentValue::None | ContentValue::Normal) {
@@ -3593,7 +3600,6 @@ fn create_pseudo_element_box(
     return None;
   }
 
-  let counter_containment_snapshot = styles.containment.style.then(|| counters.clone());
   counters.enter_scope();
   styles.counters.apply_to(counters);
 
@@ -3615,6 +3621,7 @@ fn create_pseudo_element_box(
     context.set_counter_stack(&name, stack);
   }
   context.set_quotes(styles.quotes.clone());
+  context.set_quote_depth(*quote_depth);
 
   // Build children based on content items, supporting both text and replaced content.
   let mut children: Vec<BoxNode> = Vec::new();
@@ -3733,6 +3740,7 @@ fn create_pseudo_element_box(
     generated_pseudo,
     &mut children,
   );
+  *quote_depth = context.quote_depth();
 
   // Determine the box type based on display property
   let fc_type = styles
@@ -3795,9 +3803,6 @@ fn create_pseudo_element_box(
   pseudo_box.starting_style = starting_style;
 
   counters.leave_scope();
-  if let Some(snapshot) = counter_containment_snapshot {
-    *counters = snapshot;
-  }
   Some(pseudo_box)
 }
 
@@ -4029,7 +4034,11 @@ fn build_appearance_none_form_control_fallback(
   (children, suppress_dom_children, force_position_relative)
 }
 
-fn create_marker_box(styled: &StyledNode, counters: &mut CounterManager) -> Option<BoxNode> {
+fn create_marker_box(
+  styled: &StyledNode,
+  counters: &mut CounterManager,
+  quote_depth: &mut usize,
+) -> Option<BoxNode> {
   // Prefer authored ::marker styles; fall back to the originating style when absent.
   let (mut marker_style, has_pseudo_styles) = if let Some(styles) = styled.marker_styles.as_deref()
   {
@@ -4052,15 +4061,16 @@ fn create_marker_box(styled: &StyledNode, counters: &mut CounterManager) -> Opti
   }
 
   let has_explicit_content = !matches!(content_value, ContentValue::Normal | ContentValue::None);
-  if !has_explicit_content && marker_content_from_style(styled, &marker_style, counters).is_none() {
+  if !has_explicit_content
+    && marker_content_from_style(styled, &marker_style, counters, quote_depth).is_none()
+  {
     return None;
   }
 
-  let counter_containment_snapshot = marker_style.containment.style.then(|| counters.clone());
   counters.enter_scope();
   marker_style.counters.apply_to(counters);
 
-  let content = marker_content_from_style(styled, &marker_style, counters)
+  let content = marker_content_from_style(styled, &marker_style, counters, quote_depth)
     .unwrap_or_else(|| MarkerContent::Text(String::new()));
   marker_style.list_style_type = ListStyleType::None;
   marker_style.list_style_image = crate::style::types::ListStyleImage::None;
@@ -4073,9 +4083,6 @@ fn create_marker_box(styled: &StyledNode, counters: &mut CounterManager) -> Opti
   node.styled_node_id = Some(styled.node_id);
   node.starting_style = clone_starting_style(&styled.starting_styles.marker);
   counters.leave_scope();
-  if let Some(snapshot) = counter_containment_snapshot {
-    *counters = snapshot;
-  }
   Some(node)
 }
 
@@ -4083,6 +4090,7 @@ pub(crate) fn marker_content_from_style(
   styled: &StyledNode,
   marker_style: &ComputedStyle,
   counters: &CounterManager,
+  quote_depth: &mut usize,
 ) -> Option<MarkerContent> {
   let content_value = effective_content_value(marker_style);
   if matches!(content_value, ContentValue::None) || marker_style.content == "none" {
@@ -4098,6 +4106,7 @@ pub(crate) fn marker_content_from_style(
       context.set_counter_stack(&name, stack);
     }
     context.set_quotes(marker_style.quotes.clone());
+    context.set_quote_depth(*quote_depth);
 
     let mut text = String::new();
     let mut image: Option<String> = None;
@@ -4175,9 +4184,11 @@ pub(crate) fn marker_content_from_style(
     }
 
     if !text.is_empty() {
+      *quote_depth = context.quote_depth();
       return Some(MarkerContent::Text(text));
     }
     if let Some(src) = image {
+      *quote_depth = context.quote_depth();
       let replaced = ReplacedBox {
         replaced_type: ReplacedType::Image {
           src,
@@ -4194,6 +4205,7 @@ pub(crate) fn marker_content_from_style(
       };
       return Some(MarkerContent::Image(replaced));
     }
+    *quote_depth = context.quote_depth();
     return None;
   }
 
@@ -7946,7 +7958,8 @@ mod tests {
       children: vec![],
     };
 
-    let marker_box = create_marker_box(&styled, &mut CounterManager::default())
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut CounterManager::default(), &mut quote_depth)
       .expect("marker should be generated");
     let style = marker_box.style.as_ref();
     assert!(style
@@ -8014,7 +8027,8 @@ mod tests {
       children: vec![],
     };
 
-    let marker_box = create_marker_box(&styled, &mut CounterManager::default())
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut CounterManager::default(), &mut quote_depth)
       .expect("marker should be generated");
     assert!(matches!(marker_box.box_type, BoxType::Marker(_)));
     assert_eq!(
@@ -8067,12 +8081,14 @@ mod tests {
 
     let mut counters = CounterManager::new();
     counters.enter_scope();
+    let mut quote_depth = 0usize;
     let before_box = create_pseudo_element_box(
       &styled,
       styled.before_styles.as_ref().unwrap(),
       clone_starting_style(&styled.starting_styles.before),
       "before",
       &mut counters,
+      &mut quote_depth,
     )
     .expect("before box");
     counters.leave_scope();
@@ -8140,12 +8156,14 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("item", 3));
 
+    let mut quote_depth = 0usize;
     let before_box = create_pseudo_element_box(
       &styled,
       styled.before_styles.as_ref().unwrap(),
       clone_starting_style(&styled.starting_styles.before),
       "before",
       &mut counters,
+      &mut quote_depth,
     )
     .expect("before box");
     counters.leave_scope();
@@ -8207,12 +8225,14 @@ mod tests {
 
     let mut counters = CounterManager::new();
     counters.enter_scope();
+    let mut quote_depth = 0usize;
     let before_box = create_pseudo_element_box(
       &styled,
       styled.before_styles.as_ref().unwrap(),
       clone_starting_style(&styled.starting_styles.before),
       "before",
       &mut counters,
+      &mut quote_depth,
     )
     .expect("before box");
     counters.leave_scope();
@@ -8264,7 +8284,9 @@ mod tests {
       children: vec![],
     };
 
-    let marker_box = create_marker_box(&styled, &mut CounterManager::default()).expect("marker box");
+    let mut quote_depth = 0usize;
+    let marker_box =
+      create_marker_box(&styled, &mut CounterManager::default(), &mut quote_depth).expect("marker box");
     let BoxType::Marker(marker) = &marker_box.box_type else {
       panic!("expected marker box");
     };
@@ -9182,7 +9204,8 @@ mod tests {
     counters.apply_reset(&CounterSet::single("item", 2));
     counters.apply_increment(&CounterSet::single("item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9232,7 +9255,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9285,7 +9309,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9338,7 +9363,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9388,7 +9414,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9447,7 +9474,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9498,7 +9526,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9559,7 +9588,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9625,7 +9655,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -9688,7 +9719,8 @@ mod tests {
     counters.enter_scope();
     counters.apply_reset(&CounterSet::single("list-item", 1));
 
-    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
     counters.leave_scope();
 
     match &marker_box.box_type {
@@ -11993,13 +12025,14 @@ mod tests {
   fn pseudo_element_content_ignores_empty_url() {
     let styled = styled_element("div");
     let mut counters = CounterManager::new();
+    let mut quote_depth = 0usize;
 
     let mut pseudo_style = ComputedStyle::default();
     pseudo_style.content_value = ContentValue::Items(vec![ContentItem::Url(String::new())]);
     let pseudo_style = Arc::new(pseudo_style);
 
     let pseudo_box =
-      create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters).expect(
+      create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters, &mut quote_depth).expect(
         "pseudo-element boxes should still be generated when content isn't none/normal, even if the resolved url is empty",
       );
     assert!(
@@ -12012,13 +12045,14 @@ mod tests {
   fn pseudo_element_content_generates_box_for_empty_string() {
     let styled = styled_element("div");
     let mut counters = CounterManager::new();
+    let mut quote_depth = 0usize;
 
     let mut pseudo_style = ComputedStyle::default();
     pseudo_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
     let pseudo_style = Arc::new(pseudo_style);
 
     let pseudo_box =
-      create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters)
+      create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters, &mut quote_depth)
         .expect("empty string content should still generate the pseudo-element box");
     assert!(
       pseudo_box.children.is_empty(),
@@ -12030,12 +12064,13 @@ mod tests {
   fn marker_content_ignores_empty_url() {
     let styled = styled_element("li");
     let counters = CounterManager::new();
+    let mut quote_depth = 0usize;
 
     let mut marker_style = ComputedStyle::default();
     marker_style.content_value = ContentValue::Items(vec![ContentItem::Url(String::new())]);
 
     assert!(
-      marker_content_from_style(&styled, &marker_style, &counters).is_none(),
+      marker_content_from_style(&styled, &marker_style, &counters, &mut quote_depth).is_none(),
       "empty url() content items should not generate marker images"
     );
   }
