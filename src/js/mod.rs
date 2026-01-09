@@ -37,6 +37,7 @@ pub mod page_load;
 pub mod script_blocking_stylesheets;
 pub mod script_scheduler;
 pub mod promise;
+pub mod script_loader_resource;
 pub mod runtime;
 pub mod time;
 pub mod url;
@@ -87,6 +88,7 @@ pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader,
   ScriptScheduler, ScriptSchedulerAction,
 };
+pub use script_loader_resource::ResourceScriptLoader;
 pub use page_load::{
   HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
 };
