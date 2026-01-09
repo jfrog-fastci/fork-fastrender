@@ -1,5 +1,6 @@
 use crate::api::{FastRender, PreparedDocument, PreparedPaintOptions};
 use crate::geometry::Point;
+use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::scroll::ScrollState;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
@@ -136,9 +137,9 @@ impl UiWorker {
       UiToWorker::Scroll {
         tab_id,
         delta_css,
-        pointer_css: _,
+        pointer_css,
       } => {
-        let _ = self.scroll(tab_id, delta_css);
+        let _ = self.scroll(tab_id, delta_css, pointer_css);
       }
       UiToWorker::PointerMove { .. }
       | UiToWorker::PointerDown { .. }
@@ -256,22 +257,40 @@ impl UiWorker {
     Ok(())
   }
 
-  fn scroll(&mut self, tab_id: TabId, delta_css: (f32, f32)) -> Result<()> {
+  fn scroll(
+    &mut self,
+    tab_id: TabId,
+    delta_css: (f32, f32),
+    pointer_css: Option<(f32, f32)>,
+  ) -> Result<()> {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return Ok(());
     };
-    if tab.document.is_none() {
+    let Some(doc) = tab.document.as_ref() else {
       return Ok(());
+    };
+
+    let delta_x = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
+    let delta_y = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
+
+    let pointer = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite());
+
+    if let Some((x, y)) = pointer {
+      let page_point = Point::new(x, y).translate(tab.scroll_state.viewport);
+      tab.scroll_state = apply_wheel_scroll_at_point(
+        doc.fragment_tree(),
+        &tab.scroll_state,
+        doc.layout_viewport(),
+        page_point,
+        ScrollWheelInput { delta_x, delta_y },
+      );
+    } else {
+      let mut desired = tab.scroll_state.clone();
+      desired.viewport.x = (desired.viewport.x + delta_x).max(0.0);
+      desired.viewport.y = (desired.viewport.y + delta_y).max(0.0);
+      tab.scroll_state = desired;
     }
 
-    let mut desired = tab.scroll_state.clone();
-    if delta_css.0.is_finite() {
-      desired.viewport.x += delta_css.0;
-    }
-    if delta_css.1.is_finite() {
-      desired.viewport.y += delta_css.1;
-    }
-    tab.scroll_state = desired;
     self.paint_current(tab_id, false)?;
     Ok(())
   }

@@ -1,10 +1,9 @@
 use crate::api::{BrowserDocument, FastRenderFactory, RenderOptions};
 use crate::error::{Error, RenderError};
-use crate::geometry::{Point, Size};
-use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
+use crate::geometry::Point;
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::render_control::{DeadlineGuard, GlobalStageListenerGuard, RenderDeadline, StageHeartbeat};
-use crate::scroll::{apply_scroll_offsets, ScrollState};
+use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::about_pages;
 use crate::ui::cancel::CancelGens;
@@ -465,39 +464,26 @@ impl BrowserRenderThread {
 
     let delta_x = sanitize_delta(delta_css.0);
     let delta_y = sanitize_delta(delta_css.1);
+    let delta = (delta_x, delta_y);
 
-    let current = doc.scroll_state();
-    let mut next = current.clone();
-
-    let mut element_scrolled = false;
-    if let Some(pointer_css) = pointer_css {
-      if let Some(prepared) = doc.prepared() {
-        let mut fragments = prepared.fragment_tree().clone();
-        apply_scroll_offsets(&mut fragments, &current);
-        let page_point = Point::new(pointer_css.0 + current.viewport.x, pointer_css.1 + current.viewport.y);
-        let updated = apply_wheel_scroll_at_point(
-          &fragments,
-          &current,
-          Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32),
-          page_point,
-          ScrollWheelInput {
-            delta_x,
-            delta_y,
-          },
-        );
-        if updated != current {
-          next = updated;
-          element_scrolled = true;
-        }
+    if let Some((x, y)) = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite()) {
+      // Prefer pointer-based wheel scrolling when we have a cached layout; this enables nested
+      // overflow container scrolling, scroll chaining, and viewport fallback.
+      if doc
+        .wheel_scroll_at_viewport_point(Point::new(x, y), delta)
+        .is_err()
+      {
+        let mut next = doc.scroll_state();
+        next.viewport.x = (next.viewport.x + delta_x).max(0.0);
+        next.viewport.y = (next.viewport.y + delta_y).max(0.0);
+        doc.set_scroll_state(next);
       }
+    } else {
+      let mut next = doc.scroll_state();
+      next.viewport.x = (next.viewport.x + delta_x).max(0.0);
+      next.viewport.y = (next.viewport.y + delta_y).max(0.0);
+      doc.set_scroll_state(next);
     }
-
-    if !element_scrolled {
-      next.viewport.x += delta_x;
-      next.viewport.y += delta_y;
-    }
-
-    doc.set_scroll_state(next);
     tab.cancel.bump_paint();
     repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Scroll);
   }
