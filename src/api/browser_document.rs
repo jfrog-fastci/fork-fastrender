@@ -539,6 +539,23 @@ impl BrowserDocument {
     Ok(Some(frame))
   }
 
+  /// Renders a new frame if anything has been invalidated since the last successful frame,
+  /// applying an optional deadline to the *paint* phase.
+  ///
+  /// This mirrors [`render_if_needed_with_scroll_state`](Self::render_if_needed_with_scroll_state)
+  /// while allowing callers (such as the browser UI worker loop) to provide a cooperative
+  /// cancellation deadline for repainting.
+  pub fn render_if_needed_with_deadlines(
+    &mut self,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<Option<super::PaintedFrame>> {
+    if !self.is_dirty() && self.prepared.is_some() {
+      return Ok(None);
+    }
+    let frame = self.render_frame_with_deadlines(paint_deadline)?;
+    Ok(Some(frame))
+  }
+
   /// Renders one frame.
   ///
   /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from

@@ -1,12 +1,14 @@
 use crate::api::{BrowserDocument, FastRender, PreparedDocument, PreparedPaintOptions};
+use crate::error::{Error, RenderError};
 use crate::geometry::{Point, Rect, Size};
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::interaction::scroll_offset_for_fragment_target;
-use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use crate::render_control::{GlobalStageListenerGuard, RenderDeadline, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
+use crate::ui::cancel::CancelGens;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
@@ -167,6 +169,7 @@ pub fn spawn_ui_worker(name: impl Into<String>) -> std::io::Result<UiWorkerHandl
 }
 
 struct TabState {
+  cancel: CancelGens,
   viewport_css: (u32, u32),
   dpr: f32,
   scroll_state: ScrollState,
@@ -177,8 +180,9 @@ struct TabState {
 }
 
 impl TabState {
-  fn new() -> Self {
+  fn new(cancel: CancelGens) -> Self {
     Self {
+      cancel,
       viewport_css: (800, 600),
       dpr: 1.0,
       scroll_state: ScrollState::default(),
@@ -283,10 +287,25 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
       UiToWorker::CreateTab {
         tab_id,
         initial_url,
-        ..
+        cancel,
+      } => {
+        let entry = tabs
+          .entry(tab_id)
+          .or_insert_with(|| TabState::new(cancel.clone()));
+        entry.cancel = cancel;
+        entry.history = TabHistory::new();
+        entry.document = None;
+        entry.current_url = None;
+        entry.interaction = InteractionEngine::new();
+
+        if let Some(url) = initial_url {
+          navigate_tab(tab_id, entry, url, NavigationReason::TypedUrl, None, &tx);
+        }
       }
-      | UiToWorker::NewTab { tab_id, initial_url } => {
-        let entry = tabs.entry(tab_id).or_insert_with(TabState::new);
+      UiToWorker::NewTab { tab_id, initial_url } => {
+        let entry = tabs
+          .entry(tab_id)
+          .or_insert_with(|| TabState::new(CancelGens::new()));
         entry.history = TabHistory::new();
         entry.document = None;
         entry.current_url = None;
@@ -307,7 +326,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         url,
         reason,
       } => {
-        let tab = tabs.entry(tab_id).or_insert_with(TabState::new);
+        let tab = tabs
+          .entry(tab_id)
+          .or_insert_with(|| TabState::new(CancelGens::new()));
         tab
           .history
           .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
@@ -401,7 +422,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         viewport_css,
         dpr,
       } => {
-        let tab = tabs.entry(tab_id).or_insert_with(TabState::new);
+        let tab = tabs
+          .entry(tab_id)
+          .or_insert_with(|| TabState::new(CancelGens::new()));
         tab.viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
         tab.dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
         if let Some(doc) = tab.document.as_mut() {
@@ -800,10 +823,19 @@ fn navigate_tab(
     }
   }
 
+  // Any navigation should cancel in-flight work for this tab (scroll, hover highlights, etc).
+  //
+  // The UI also bumps this generation before sending explicit `Navigate`/`GoBack`/`Reload`
+  // messages. We still bump here so worker-initiated navigations (link clicks) cancel correctly.
+  tab.cancel.bump_nav();
+
+  let snapshot_prepare = tab.cancel.snapshot_prepare();
+  let cancel_prepare = snapshot_prepare.cancel_callback_for_prepare(&tab.cancel);
+
   // Allow Reload to fully reload the document even if the URL only differs by fragment.
   if reason != NavigationReason::Reload {
     if let Some(nav) = same_document_fragment_navigation(tab.current_url.as_deref(), &url) {
-      if handle_fragment_navigation(tab_id, tab, nav, reason, tx) {
+      if handle_fragment_navigation(tab_id, tab, nav, reason, snapshot_prepare, tx) {
         return;
       }
     }
@@ -852,7 +884,8 @@ fn navigate_tab(
     .with_viewport(tab.viewport_css.0, tab.viewport_css.1)
     .with_device_pixel_ratio(tab.dpr)
     .with_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y)
-    .with_element_scroll_offsets(tab.scroll_state.elements.clone());
+    .with_element_scroll_offsets(tab.scroll_state.elements.clone())
+    .with_cancel_callback(Some(cancel_prepare.clone()));
 
   let final_url = if about_pages::is_about_url(&url) {
     let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
@@ -864,6 +897,10 @@ fn navigate_tab(
       doc.set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
       doc.set_document_url(Some(url.clone()));
       if let Err(err) = doc.reset_with_html(&html, options) {
+        doc.set_cancel_callback(None);
+        if is_cancel_timeout(&err) || !snapshot_prepare.is_still_current_for_prepare(&tab.cancel) {
+          return;
+        }
         let err = err.to_string();
         let _ = tx.send(WorkerToUi::NavigationFailed {
           tab_id,
@@ -875,6 +912,7 @@ fn navigate_tab(
         render_navigation_error_page(tab_id, tab, tx, &err);
         return;
       }
+      doc.set_cancel_callback(None);
       url.clone()
     } else {
       let mut renderer = match FastRender::new() {
@@ -912,6 +950,9 @@ fn navigate_tab(
       let report = match renderer.prepare_dom_with_options(dom, Some(&url), options.clone()) {
         Ok(report) => report,
         Err(err) => {
+          if is_cancel_timeout(&err) || !snapshot_prepare.is_still_current_for_prepare(&tab.cancel) {
+            return;
+          }
           let _ = tx.send(WorkerToUi::NavigationFailed {
             tab_id,
             url,
@@ -946,6 +987,10 @@ fn navigate_tab(
     match doc.navigate_url(&url, options) {
       Ok(report) => report.final_url.clone().unwrap_or_else(|| url.clone()),
       Err(err) => {
+        doc.set_cancel_callback(None);
+        if is_cancel_timeout(&err) || !snapshot_prepare.is_still_current_for_prepare(&tab.cancel) {
+          return;
+        }
         let err = err.to_string();
         let _ = tx.send(WorkerToUi::NavigationFailed {
           tab_id,
@@ -980,6 +1025,9 @@ fn navigate_tab(
     let report = match renderer.prepare_url(&url, options.clone()) {
       Ok(report) => report,
       Err(err) => {
+        if is_cancel_timeout(&err) || !snapshot_prepare.is_still_current_for_prepare(&tab.cancel) {
+          return;
+        }
         let err = err.to_string();
         let _ = tx.send(WorkerToUi::NavigationFailed {
           tab_id,
@@ -1015,6 +1063,10 @@ fn navigate_tab(
   let Some(doc) = tab.document.as_mut() else {
     return;
   };
+  if !snapshot_prepare.is_still_current_for_prepare(&tab.cancel) {
+    doc.set_cancel_callback(None);
+    return;
+  }
   doc.set_scroll_state(tab.scroll_state.clone());
   if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
     if let Some(fragment) = url_fragment(&final_url) {
@@ -1049,16 +1101,28 @@ fn navigate_tab(
   if let Some(title) = title.clone() {
     tab.history.set_title(title);
   }
+  let committed_url = final_url;
 
+  let painted = render_frame_force_with_cancel(tab_id, tab, tx);
+
+  if !snapshot_prepare.is_still_current_for_prepare(&tab.cancel) {
+    return;
+  }
   let _ = tx.send(WorkerToUi::NavigationCommitted {
     tab_id,
-    url: final_url,
+    url: committed_url,
     title,
     can_go_back: tab.history.can_go_back(),
     can_go_forward: tab.history.can_go_forward(),
   });
 
-  repaint_force(tab_id, tab, tx);
+  if let Some(painted) = painted {
+    emit_painted_frame(tab_id, tab, tx, painted);
+  }
+}
+
+fn is_cancel_timeout(err: &Error) -> bool {
+  matches!(err, Error::Render(RenderError::Timeout { .. }))
 }
 
 fn handle_fragment_navigation(
@@ -1066,69 +1130,89 @@ fn handle_fragment_navigation(
   tab: &mut TabState,
   nav: SameDocumentFragmentNavigation,
   reason: NavigationReason,
+  snapshot_prepare: crate::ui::cancel::CancelSnapshot,
   tx: &Sender<WorkerToUi>,
 ) -> bool {
-  let Some(doc) = tab.document.as_mut() else {
-    return false;
-  };
-  if doc.prepared().is_none() {
-    return false;
-  }
+  let mut committed_url_for_event: Option<String> = None;
 
   // Preserve scroll offset for the current history entry before we potentially push a new one.
   tab
     .history
     .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
 
-  if nav.url_changed {
-    let committed_url = nav.target_url.to_string();
-    if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
-      tab.history.push(committed_url.clone());
+  {
+    let Some(doc) = tab.document.as_mut() else {
+      return false;
+    };
+    if doc.prepared().is_none() {
+      return false;
     }
-    tab.current_url = Some(committed_url.clone());
-    // Update document URL so `:target` / `:target-within` can respond to the new fragment.
-    //
-    // Note: this marks the document dirty (style/layout) so the next repaint reflects the new
-    // selector state. We still avoid a full navigation fetch by reusing the existing DOM/layout
-    // artifacts for scroll target resolution.
-    doc.set_document_url(Some(committed_url.clone()));
-    let title = crate::html::title::find_document_title(doc.dom());
+
+    if nav.url_changed {
+      let committed_url = nav.target_url.to_string();
+      if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
+        tab.history.push(committed_url.clone());
+      }
+      tab.current_url = Some(committed_url.clone());
+      committed_url_for_event = Some(committed_url.clone());
+      // Update document URL so `:target` / `:target-within` can respond to the new fragment.
+      //
+      // Note: this marks the document dirty (style/layout) so the next repaint reflects the new
+      // selector state. We still avoid a full navigation fetch by reusing the existing DOM/layout
+      // artifacts for scroll target resolution.
+      doc.set_document_url(Some(committed_url.clone()));
+      // We'll emit NavigationCommitted after painting to avoid sending stale commits when this
+      // navigation is cancelled by a subsequent `bump_nav`.
+    }
+
+    // Typed URL / link clicks should scroll to the fragment target (or top for an empty fragment).
+    // Back/forward navigations should restore the stored scroll offset for the history entry, so do
+    // not override `tab.scroll_state.viewport` here.
+    if !matches!(reason, NavigationReason::BackForward) {
+      let viewport_size = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+      let desired_scroll = match nav.fragment.as_deref() {
+        None | Some("") => Some(Point::ZERO),
+        Some(fragment) => {
+          let Some(prepared) = doc.prepared() else {
+            return false;
+          };
+          scroll_offset_for_fragment_target(
+            doc.dom(),
+            prepared.box_tree(),
+            prepared.fragment_tree(),
+            fragment,
+            viewport_size,
+          )
+        }
+      };
+
+      if let Some(point) = desired_scroll {
+        tab.scroll_state.viewport = point;
+      }
+    }
+    doc.set_scroll_state(tab.scroll_state.clone());
+  }
+  let painted = render_frame_force_with_cancel(tab_id, tab, tx);
+
+  if let Some(committed_url) = committed_url_for_event {
+    if !snapshot_prepare.is_still_current_for_prepare(&tab.cancel) {
+      return true;
+    }
     let _ = tx.send(WorkerToUi::NavigationCommitted {
       tab_id,
       url: committed_url,
-      title,
+      title: tab
+        .document
+        .as_ref()
+        .and_then(|doc| crate::html::title::find_document_title(doc.dom())),
       can_go_back: tab.history.can_go_back(),
       can_go_forward: tab.history.can_go_forward(),
     });
   }
 
-  // Typed URL / link clicks should scroll to the fragment target (or top for an empty fragment).
-  // Back/forward navigations should restore the stored scroll offset for the history entry, so do
-  // not override `tab.scroll_state.viewport` here.
-  if !matches!(reason, NavigationReason::BackForward) {
-    let viewport_size = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
-    let desired_scroll = match nav.fragment.as_deref() {
-      None | Some("") => Some(Point::ZERO),
-      Some(fragment) => {
-        let Some(prepared) = doc.prepared() else {
-          return false;
-        };
-        scroll_offset_for_fragment_target(
-          doc.dom(),
-          prepared.box_tree(),
-          prepared.fragment_tree(),
-          fragment,
-          viewport_size,
-        )
-      }
-    };
-
-    if let Some(point) = desired_scroll {
-      tab.scroll_state.viewport = point;
-    }
+  if let Some(painted) = painted {
+    emit_painted_frame(tab_id, tab, tx, painted);
   }
-  doc.set_scroll_state(tab.scroll_state.clone());
-  repaint_force(tab_id, tab, tx);
 
   true
 }
@@ -1138,10 +1222,54 @@ fn repaint_if_needed(tab_id: TabId, tab: &mut TabState, tx: &Sender<WorkerToUi>)
     return;
   };
 
-  let Ok(Some(painted)) = doc.render_if_needed_with_scroll_state() else {
+  // Prepare/layout should only be cancelable by new navigations. Painting should cancel on any
+  // bump (including scroll and hover/input highlights).
+  let snapshot_prepare = tab.cancel.snapshot_prepare();
+  let prepare_cancel_cb = snapshot_prepare.cancel_callback_for_prepare(&tab.cancel);
+  doc.set_cancel_callback(Some(prepare_cancel_cb));
+  let snapshot_paint = tab.cancel.snapshot_paint();
+  let paint_cancel_cb = snapshot_paint.cancel_callback_for_paint(&tab.cancel);
+  let paint_deadline = RenderDeadline::new(None, Some(paint_cancel_cb));
+
+  let painted = match doc.render_if_needed_with_deadlines(Some(&paint_deadline)) {
+    Ok(Some(painted)) => painted,
+    Ok(None) => {
+      doc.set_cancel_callback(None);
+      return;
+    }
+    Err(err) => {
+      doc.set_cancel_callback(None);
+      if is_cancel_timeout(&err) {
+        return;
+      }
+      let _ = tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!("render_if_needed failed: {err}"),
+      });
+      return;
+    }
+  };
+  doc.set_cancel_callback(None);
+
+  if !snapshot_paint.is_still_current_for_paint(&tab.cancel) {
+    return;
+  }
+  emit_painted_frame(tab_id, tab, tx, painted);
+}
+
+fn repaint_force(tab_id: TabId, tab: &mut TabState, tx: &Sender<WorkerToUi>) {
+  let Some(painted) = render_frame_force_with_cancel(tab_id, tab, tx) else {
     return;
   };
+  emit_painted_frame(tab_id, tab, tx, painted);
+}
 
+fn emit_painted_frame(
+  tab_id: TabId,
+  tab: &mut TabState,
+  tx: &Sender<WorkerToUi>,
+  painted: crate::PaintedFrame,
+) {
   tab.scroll_state = painted.scroll_state.clone();
   tab
     .history
@@ -1161,31 +1289,41 @@ fn repaint_if_needed(tab_id: TabId, tab: &mut TabState, tx: &Sender<WorkerToUi>)
   });
 }
 
-fn repaint_force(tab_id: TabId, tab: &mut TabState, tx: &Sender<WorkerToUi>) {
+fn render_frame_force_with_cancel(
+  tab_id: TabId,
+  tab: &mut TabState,
+  tx: &Sender<WorkerToUi>,
+) -> Option<crate::PaintedFrame> {
   let Some(doc) = tab.document.as_mut() else {
-    return;
+    return None;
   };
 
-  let painted = match doc.render_frame_with_scroll_state() {
+  let snapshot_prepare = tab.cancel.snapshot_prepare();
+  let prepare_cancel_cb = snapshot_prepare.cancel_callback_for_prepare(&tab.cancel);
+  doc.set_cancel_callback(Some(prepare_cancel_cb));
+  let snapshot_paint = tab.cancel.snapshot_paint();
+  let paint_cancel_cb = snapshot_paint.cancel_callback_for_paint(&tab.cancel);
+  let paint_deadline = RenderDeadline::new(None, Some(paint_cancel_cb));
+
+  let painted = match doc.render_frame_with_deadlines(Some(&paint_deadline)) {
     Ok(frame) => frame,
-    Err(_) => return,
+    Err(err) => {
+      doc.set_cancel_callback(None);
+      if is_cancel_timeout(&err) {
+        return None;
+      }
+      let _ = tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!("render_frame failed: {err}"),
+      });
+      return None;
+    }
   };
+  doc.set_cancel_callback(None);
 
-  tab.scroll_state = painted.scroll_state.clone();
-  tab
-    .history
-    .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
-  let _ = tx.send(WorkerToUi::FrameReady {
-    tab_id,
-    frame: RenderedFrame {
-      pixmap: painted.pixmap,
-      viewport_css: tab.viewport_css,
-      dpr: tab.dpr,
-      scroll_state: painted.scroll_state.clone(),
-    },
-  });
-  let _ = tx.send(WorkerToUi::ScrollStateUpdated {
-    tab_id,
-    scroll: painted.scroll_state,
-  });
+  if !snapshot_paint.is_still_current_for_paint(&tab.cancel) {
+    return None;
+  }
+
+  Some(painted)
 }

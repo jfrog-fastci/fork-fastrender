@@ -11,10 +11,10 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-// Default per-wait timeout used by helpers/tests that don't define their own.
-//
-// These integration tests do real rendering work and run in parallel by default, so allow some
-// slack to avoid flakes under CPU contention.
+/// Default per-wait timeout used by integration-test helpers/tests that don't define their own.
+///
+/// This is intentionally generous: these tests do real rendering work and can run in parallel,
+/// contending for CPU.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.
