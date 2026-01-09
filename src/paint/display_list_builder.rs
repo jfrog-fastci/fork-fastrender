@@ -2021,11 +2021,12 @@ impl DisplayListBuilder {
       }
     }
 
-    // `backface-visibility` is not a stacking-context trigger, but we still need to cull the
-    // element when an ancestor 3D transform flips it away from the viewer.
+    // `backface-visibility: hidden` establishes a stacking context. In the stacking-context-aware
+    // pipeline, the value is carried on `StackingContextItem` and culled by the renderer at
+    // `PushStackingContext`.
     //
-    // Stacking contexts already carry `backface_visibility` on `StackingContextItem` and are
-    // culled in the renderer at `PushStackingContext`. Wrap only elements that would otherwise
+    // When painting without stacking contexts, we still need to cull the element when an ancestor
+    // 3D transform flips it away from the viewer, so wrap only elements that would otherwise
     // *not* create a stacking context.
     let push_backface_visibility = style_opt.is_some_and(|style| {
       matches!(style.backface_visibility, BackfaceVisibility::Hidden)
