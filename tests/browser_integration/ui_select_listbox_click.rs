@@ -12,11 +12,29 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> RenderedFrame {
-  match support::recv_for_tab(rx, tab_id, timeout, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-  {
-    Some(WorkerToUi::FrameReady { frame, .. }) => frame,
-    Some(other) => panic!("expected FrameReady, got {other:?}"),
-    None => panic!("timed out waiting for FrameReady"),
+  let start = Instant::now();
+  let mut seen = Vec::new();
+  loop {
+    let remaining = timeout.saturating_sub(start.elapsed());
+    assert!(
+      !remaining.is_zero(),
+      "timed out waiting for FrameReady\n{}",
+      support::format_messages(&seen)
+    );
+    let msg = support::recv_for_tab(rx, tab_id, remaining.min(Duration::from_millis(200)), |_| true);
+    let Some(msg) = msg else {
+      continue;
+    };
+    match msg {
+      WorkerToUi::FrameReady { frame, .. } => return frame,
+      WorkerToUi::NavigationFailed { url, error, .. } => {
+        panic!(
+          "navigation failed while waiting for FrameReady ({url}): {error}\n{}",
+          support::format_messages(&seen)
+        );
+      }
+      other => seen.push(other),
+    }
   }
 }
 
@@ -29,7 +47,7 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
       <head>
         <style>
           html, body { margin: 0; padding: 0; }
-          select { display: block; width: 90px; height: 90px; padding: 0; border: 0; }
+          select { display: block; width: 90px; height: 90px; padding: 0; border: 0; line-height: 30px; }
           #marker { width: 64px; height: 64px; background: rgb(255, 0, 0); }
           /* React to option[selected] mutation via :has so we can assert via pixels. */
           select:has(option#opt2[selected]) + #marker { background: rgb(0, 255, 0); }
