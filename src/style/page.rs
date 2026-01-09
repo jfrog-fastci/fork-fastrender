@@ -302,10 +302,71 @@ pub fn resolve_page_style(
   .unwrap_or(0.0)
   .max(0.0);
 
-  let content_width = (page_width - 2.0 * trim - margin_left - margin_right).max(0.0);
-  let content_height = (page_height - 2.0 * trim - margin_top - margin_bottom).max(0.0);
+  let page_box_width = (page_width - 2.0 * trim - margin_left - margin_right).max(0.0);
+  let page_box_height = (page_height - 2.0 * trim - margin_top - margin_bottom).max(0.0);
 
-  let content_origin = Point::new(bleed + trim + margin_left, bleed + trim + margin_top);
+  // The page box's border/padding further reduce the available size for laying out the document
+  // contents. These properties participate in the page box model the same way as for regular
+  // block boxes: the document is laid out inside the page box's content box (inside padding).
+  let border_left = resolve_length_on_axis(
+    &page_style.used_border_left_width(),
+    page_width,
+    fallback_size,
+    root_font_size,
+  )
+  .unwrap_or(0.0)
+  .max(0.0);
+  let border_right = resolve_length_on_axis(
+    &page_style.used_border_right_width(),
+    page_width,
+    fallback_size,
+    root_font_size,
+  )
+  .unwrap_or(0.0)
+  .max(0.0);
+  let border_top = resolve_length_on_axis(
+    &page_style.used_border_top_width(),
+    page_height,
+    fallback_size,
+    root_font_size,
+  )
+  .unwrap_or(0.0)
+  .max(0.0);
+  let border_bottom = resolve_length_on_axis(
+    &page_style.used_border_bottom_width(),
+    page_height,
+    fallback_size,
+    root_font_size,
+  )
+  .unwrap_or(0.0)
+  .max(0.0);
+
+  let padding_left =
+    resolve_length_on_axis(&page_style.padding_left, page_width, fallback_size, root_font_size)
+      .unwrap_or(0.0)
+      .max(0.0);
+  let padding_right =
+    resolve_length_on_axis(&page_style.padding_right, page_width, fallback_size, root_font_size)
+      .unwrap_or(0.0)
+      .max(0.0);
+  let padding_top =
+    resolve_length_on_axis(&page_style.padding_top, page_height, fallback_size, root_font_size)
+      .unwrap_or(0.0)
+      .max(0.0);
+  let padding_bottom =
+    resolve_length_on_axis(&page_style.padding_bottom, page_height, fallback_size, root_font_size)
+      .unwrap_or(0.0)
+      .max(0.0);
+
+  let content_width = (page_box_width - border_left - border_right - padding_left - padding_right)
+    .max(0.0);
+  let content_height =
+    (page_box_height - border_top - border_bottom - padding_top - padding_bottom).max(0.0);
+
+  let content_origin = Point::new(
+    bleed + trim + margin_left + border_left + padding_left,
+    bleed + trim + margin_top + border_top + padding_top,
+  );
   let total_size = Size::new(page_width + 2.0 * bleed, page_height + 2.0 * bleed);
 
   ResolvedPageStyle {

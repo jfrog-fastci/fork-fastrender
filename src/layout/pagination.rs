@@ -1075,13 +1075,34 @@ pub fn paginate_fragment_tree(
       page_style.total_size.width,
       page_style.total_size.height,
     );
+    let page_box_origin = Point::new(
+      page_style.bleed + page_style.trim + page_style.margin_left,
+      page_style.bleed + page_style.trim + page_style.margin_top,
+    );
+    let page_box_size = Size::new(
+      (page_style.page_size.width
+        - 2.0 * page_style.trim
+        - page_style.margin_left
+        - page_style.margin_right)
+        .max(0.0),
+      (page_style.page_size.height
+        - 2.0 * page_style.trim
+        - page_style.margin_top
+        - page_style.margin_bottom)
+        .max(0.0),
+    );
+    let page_box_bounds = Rect::new(page_box_origin, page_box_size);
+    let content_offset = Point::new(
+      page_style.content_origin.x - page_box_origin.x,
+      page_style.content_origin.y - page_box_origin.y,
+    );
     let mut page_root = FragmentNode::new_block_styled(
       page_bounds,
       Vec::new(),
       Arc::new(page_background_style),
     );
     let mut document_wrapper = FragmentNode::new_block_styled(
-      page_bounds,
+      page_box_bounds,
       Vec::new(),
       Arc::new(document_wrapper_style),
     );
@@ -1099,8 +1120,8 @@ pub fn paginate_fragment_tree(
         // remaining footnote content. This ensures pagination makes forward progress instead of
         // endlessly deferring the overflowing footnote call.
         let content_bounds = Rect::from_xywh(
-          page_style.content_origin.x,
-          page_style.content_origin.y,
+          content_offset.x,
+          content_offset.y,
           page_style.content_size.width,
           page_style.content_size.height,
         );
@@ -1174,7 +1195,9 @@ pub fn paginate_fragment_tree(
           }
         }
 
-        if let Some(footnote_area) = build_footnote_area_fragment(&page_style, &axis, &slices) {
+        if let Some(footnote_area) =
+          build_footnote_area_fragment(&page_style, &axis, content_offset, &slices)
+        {
           document_wrapper.children_mut().push(footnote_area);
         }
       } else {
@@ -1364,7 +1387,8 @@ pub fn paginate_fragment_tree(
           }
         }
 
-        let footnote_area = build_footnote_area_fragment(&page_style, &axis, &footnote_slices);
+        let footnote_area =
+          build_footnote_area_fragment(&page_style, &axis, content_offset, &footnote_slices);
 
         let clipped_block_size = axis.block_size(&content.bounds);
         let page_block_size = if axis.block_is_horizontal {
@@ -1405,8 +1429,8 @@ pub fn paginate_fragment_tree(
         }
         translate_fragment(
           &mut content,
-          page_style.content_origin.x,
-          page_style.content_origin.y,
+          content_offset.x,
+          content_offset.y,
         );
         page_running_elements = running_elements_for_page_fragment(&content, root_axes, &mut running_element_state);
         if log_running_elements {
@@ -1500,8 +1524,8 @@ pub fn paginate_fragment_tree(
     for mut fixed in fixed_fragments {
       translate_fragment(
         &mut fixed,
-        page_style.content_origin.x,
-        page_style.content_origin.y,
+        content_offset.x,
+        content_offset.y,
       );
       document_wrapper.children_mut().push(fixed);
     }
@@ -2083,6 +2107,7 @@ fn adjust_end_for_footnotes(
 fn build_footnote_area_fragment(
   page_style: &ResolvedPageStyle,
   axis: &crate::layout::fragmentation::FragmentAxis,
+  content_origin: Point,
   slices: &[FragmentNode],
 ) -> Option<FragmentNode> {
   if slices.is_empty() {
@@ -2137,15 +2162,15 @@ fn build_footnote_area_fragment(
 
   let bounds = if axis.block_is_horizontal {
     Rect::from_xywh(
-      page_style.content_origin.x + physical_block_start,
-      page_style.content_origin.y,
+      content_origin.x + physical_block_start,
+      content_origin.y,
       footnote_block,
       page_inline,
     )
   } else {
     Rect::from_xywh(
-      page_style.content_origin.x,
-      page_style.content_origin.y + physical_block_start,
+      content_origin.x,
+      content_origin.y + physical_block_start,
       page_inline,
       footnote_block,
     )

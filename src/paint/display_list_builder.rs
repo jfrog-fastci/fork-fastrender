@@ -6500,13 +6500,11 @@ impl DisplayListBuilder {
   }
 
   fn paged_media_document_canvas_rect(page_root: &FragmentNode, origin: Point) -> Option<Rect> {
-    // Locate the synthetic paged-media document wrapper (forced z-index: 0) and use the bounds of
-    // its first non-fixed child as the document canvas area.
+    // Locate the synthetic paged-media document wrapper (forced z-index: 0) and use its bounds as
+    // the document canvas area (CSS Page 3 §3.1: the canvas is drawn as the page box background).
     //
-    // The wrapper itself spans the full page box (including the @page margin area), while the
-    // translated page content subtree is positioned inside the margins. We want propagated HTML
-    // canvas backgrounds to paint only within that translated subtree, leaving the margins to show
-    // the @page background.
+    // Pagination positions the wrapper inside the @page margins, so this automatically excludes
+    // the margin box areas while still covering the page box's border/padding/content.
     let mut wrapper: Option<&FragmentNode> = None;
     let mut wrapper_area = -1.0f32;
     for child in page_root.children.iter() {
@@ -6521,15 +6519,7 @@ impl DisplayListBuilder {
     }
     let wrapper = wrapper?;
     let wrapper_origin = origin.translate(wrapper.bounds.origin);
-
-    let content = wrapper.children.iter().find(|child| {
-      !child
-        .style
-        .as_deref()
-        .is_some_and(|style| style.position == Position::Fixed)
-    })?;
-    let content_origin = wrapper_origin.translate(content.bounds.origin);
-    Some(Rect::new(content_origin, content.bounds.size))
+    Some(Rect::new(wrapper_origin, wrapper.bounds.size))
   }
 
   fn build_text_clip_runs(

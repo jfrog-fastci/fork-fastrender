@@ -22,6 +22,10 @@ fn page_content<'a>(page: &'a FragmentNode) -> &'a FragmentNode {
     .expect("page content")
 }
 
+fn page_content_start_y(page: &FragmentNode) -> f32 {
+  page.bounds.y() + page_document_wrapper(page).bounds.y() + page_content(page).bounds.y()
+}
+
 fn find_text<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
   if let FragmentContent::Text { text, .. } = &node.content {
     if text.contains(needle) {
@@ -336,10 +340,15 @@ fn page_rule_sets_size_and_margins() {
   assert!((page_roots[0].bounds.width() - 200.0).abs() < 0.1);
   assert!((page_roots[0].bounds.height() - 400.0).abs() < 0.1);
 
+  let wrapper = page_document_wrapper(page_roots[0]);
+  assert!((wrapper.bounds.x() - 50.0).abs() < 0.1);
+  assert!((wrapper.bounds.y() - 20.0).abs() < 0.1);
+  assert!((wrapper.bounds.height() - 340.0).abs() < 0.1);
   let content = page_content(page_roots[0]);
-  assert!((content.bounds.x() - 50.0).abs() < 0.1);
-  assert!((content.bounds.y() - 20.0).abs() < 0.1);
-  assert!((content.bounds.height() - 340.0).abs() < 0.1);
+  assert!(
+    (content.bounds.height() - 340.0).abs() < 0.1,
+    "content bounds should be local to the wrapper"
+  );
 }
 
 #[test]
@@ -363,11 +372,11 @@ fn page_rule_important_overrides_non_important() {
   let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page = pages(&tree)[0];
 
-  let content = page_content(page);
+  let wrapper = page_document_wrapper(page);
   assert!(
-    (content.bounds.y() - 10.0).abs() < 0.1,
+    (wrapper.bounds.y() - 10.0).abs() < 0.1,
     "expected margin-top=10px from !important declaration; got {}",
-    content.bounds.y()
+    wrapper.bounds.y()
   );
 }
 
@@ -390,11 +399,11 @@ fn page_rule_layers_invert_for_important() {
   let dom = renderer.parse_html(html_normal).unwrap();
   let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page = pages(&tree)[0];
-  let content = page_content(page);
+  let wrapper = page_document_wrapper(page);
   assert!(
-    (content.bounds.y() - 20.0).abs() < 0.1,
+    (wrapper.bounds.y() - 20.0).abs() < 0.1,
     "expected later layer b to win for normal declarations; got {}",
-    content.bounds.y()
+    wrapper.bounds.y()
   );
 
   let html_important = r#"
@@ -413,11 +422,11 @@ fn page_rule_layers_invert_for_important() {
   let dom = renderer.parse_html(html_important).unwrap();
   let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page = pages(&tree)[0];
-  let content = page_content(page);
+  let wrapper = page_document_wrapper(page);
   assert!(
-    (content.bounds.y() - 10.0).abs() < 0.1,
+    (wrapper.bounds.y() - 10.0).abs() < 0.1,
     "expected earlier layer a to win for !important declarations; got {}",
-    content.bounds.y()
+    wrapper.bounds.y()
   );
 }
 
@@ -446,8 +455,8 @@ fn page_rule_left_and_right_offsets_differ() {
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
-  let first = page_content(page_roots[0]);
-  let second = page_content(page_roots[1]);
+  let first = page_document_wrapper(page_roots[0]);
+  let second = page_document_wrapper(page_roots[1]);
 
   assert!((first.bounds.x() - 10.0).abs() < 0.1);
   assert!((second.bounds.x() - 40.0).abs() < 0.1);
@@ -1080,8 +1089,7 @@ fn margin_box_content_is_positioned_in_margins() {
   let page_roots = pages(&tree);
   let page = page_roots[0];
 
-  let content = page_content(page);
-  let content_y = page.bounds.y() + content.bounds.y();
+  let content_y = page_content_start_y(page);
   let header_y = find_text_position(page, "Header", (0.0, 0.0))
     .expect("header margin box")
     .1;
@@ -1287,7 +1295,7 @@ fn running_element_in_flex_is_out_of_flow_and_available_to_margin_boxes() {
   let header_y = find_text_position(first_page, "Flex", (0.0, 0.0))
     .expect("running header in margin box")
     .1;
-  let content_y = first_page.bounds.y() + content.bounds.y();
+  let content_y = page_content_start_y(first_page);
   assert!(
     header_y < content_y,
     "header should appear in the page margin area"
@@ -1348,7 +1356,7 @@ fn running_element_in_grid_is_available_to_margin_boxes() {
   let header_y = find_text_position(first_page, "Grid", (0.0, 0.0))
     .expect("running header in margin box")
     .1;
-  let content_y = first_page.bounds.y() + content.bounds.y();
+  let content_y = page_content_start_y(first_page);
   assert!(
     header_y < content_y,
     "header should appear in the page margin area"
@@ -1479,7 +1487,7 @@ fn header_repeats_across_pages() {
   assert!(page_roots.len() >= 2);
 
   for page in page_roots {
-    let content_y = page.bounds.y() + page_content(page).bounds.y();
+    let content_y = page_content_start_y(page);
 
     let header_pos =
       find_text_position_matching(page, "Title", (0.0, 0.0), &|pos| pos.1 < content_y)
@@ -1766,8 +1774,7 @@ fn string_set_from_split_inline_updates_once() {
   let page = page_roots.first().expect("page");
   let expected = "Very long header text that wraps across lines";
 
-  let content = page_content(page);
-  let content_y = page.bounds.y() + content.bounds.y();
+  let content_y = page_content_start_y(page);
 
   let mut texts = Vec::new();
   collect_text_fragments(page, (0.0, 0.0), &mut texts);
@@ -1829,7 +1836,7 @@ fn start_vs_first() {
   let mut content_y = f32::MAX;
   for page in &page_roots {
     let candidate = *page;
-    let candidate_content_y = candidate.bounds.y() + page_content(candidate).bounds.y();
+    let candidate_content_y = page_content_start_y(candidate);
     let has_chapter_2_in_content =
       find_text_position_matching(candidate, "2", (0.0, 0.0), &|pos| {
         pos.1 >= candidate_content_y
@@ -1906,7 +1913,7 @@ fn running_strings_follow_page_relayout_left_right() {
   let mut content_y = f32::MAX;
   for page in &page_roots {
     let candidate = *page;
-    let candidate_content_y = candidate.bounds.y() + page_content(candidate).bounds.y();
+    let candidate_content_y = page_content_start_y(candidate);
     let has_chapter_2_in_content =
       find_text_position_matching(candidate, "Chapter2", (0.0, 0.0), &|pos| {
         pos.1 >= candidate_content_y
@@ -1985,7 +1992,7 @@ fn running_strings_update_across_named_page_width_change() {
     .find(|page| find_text(*page, "ChapterWide").is_some())
     .copied()
     .expect("page containing ChapterWide");
-  let content_y = wide_page.bounds.y() + page_content(wide_page).bounds.y();
+  let content_y = page_content_start_y(wide_page);
 
   assert!(
     find_text_position_matching(wide_page, "ChapterWide", (0.0, 0.0), &|pos| pos.1
@@ -4090,8 +4097,7 @@ fn var_in_string_set_is_used_in_running_header() {
   );
 
   for (idx, page) in page_roots.iter().take(2).enumerate() {
-    let content = page_content(page);
-    let content_y = page.bounds.y() + content.bounds.y();
+    let content_y = page_content_start_y(page);
 
     let mut texts = Vec::new();
     collect_text_fragments(page, (0.0, 0.0), &mut texts);
@@ -4170,8 +4176,7 @@ fn var_in_string_argument_selects_last_running_string() {
   );
 
   let page = page_roots[1];
-  let content = page_content(page);
-  let content_y = page.bounds.y() + content.bounds.y();
+  let content_y = page_content_start_y(page);
 
   let mut texts = Vec::new();
   collect_text_fragments(page, (0.0, 0.0), &mut texts);
@@ -4293,8 +4298,8 @@ fn document_canvas_background_does_not_paint_into_page_margins() {
 #[test]
 fn page_border_is_painted() {
   let html = r#"
-    <html>
-      <head>
+     <html>
+       <head>
         <style>
           @page {
             size: 200px 200px;
@@ -4327,10 +4332,94 @@ fn page_border_is_painted() {
 }
 
 #[test]
-fn margin_boxes_paint_above_fixed_high_z_content_by_default() {
+fn page_border_insets_document_contents() {
   let html = r#"
     <html>
       <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 0;
+            background: rgb(180, 190, 200);
+            border: 12px solid rgb(20, 40, 60);
+          }
+          html, body { margin: 0; background: transparent; }
+          #cover {
+            position: absolute;
+            inset: 0;
+            background: rgb(0, 0, 255);
+          }
+        </style>
+      </head>
+      <body>
+        <div id="cover"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render page border + absolute content");
+
+  assert_eq!(
+    pixel(&pixmap, 5, 5),
+    [20, 40, 60, 255],
+    "document contents should not overlap the page border"
+  );
+  assert_eq!(pixel(&pixmap, 100, 100), [0, 0, 255, 255]);
+}
+
+#[test]
+fn document_canvas_background_paints_under_page_padding() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 0;
+            background: rgb(180, 190, 200);
+            border: 10px solid rgb(20, 40, 60);
+            padding: 20px;
+          }
+          html { margin: 0; background: transparent; }
+          body { margin: 0; background: rgb(0, 0, 255); }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render page padding with document canvas background");
+
+  assert_eq!(pixel(&pixmap, 5, 5), [20, 40, 60, 255]);
+  assert_eq!(
+    pixel(&pixmap, 15, 15),
+    [0, 0, 255, 255],
+    "page padding area should be filled by the document canvas background"
+  );
+  assert_eq!(pixel(&pixmap, 100, 100), [0, 0, 255, 255]);
+}
+
+#[test]
+fn margin_boxes_paint_above_fixed_high_z_content_by_default() {
+  let html = r#"
+     <html>
+       <head>
         <style>
           @page {
             size: 200px 200px;
