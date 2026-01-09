@@ -1,6 +1,7 @@
 use super::util::{
   create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
 };
+use fastrender::api::RenderOptions;
 use tiny_skia::Pixmap;
 
 fn rgba_at(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
@@ -31,6 +32,24 @@ fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
   let mut legacy = create_stacking_context_bounds_renderer_legacy();
   let legacy_pixmap = legacy
     .render_html(html, width, height)
+    .expect("render legacy");
+
+  (dl_pixmap, legacy_pixmap)
+}
+
+fn render_both_with_dpr(html: &str, width: u32, height: u32, dpr: f32) -> (Pixmap, Pixmap) {
+  let options = RenderOptions::new()
+    .with_viewport(width, height)
+    .with_device_pixel_ratio(dpr);
+
+  let mut dl = create_stacking_context_bounds_renderer();
+  let dl_pixmap = dl
+    .render_html_with_options(html, options.clone())
+    .expect("render display_list");
+
+  let mut legacy = create_stacking_context_bounds_renderer_legacy();
+  let legacy_pixmap = legacy
+    .render_html_with_options(html, options)
     .expect("render legacy");
 
   (dl_pixmap, legacy_pixmap)
@@ -118,3 +137,42 @@ fn clip_path_url_accepts_reference_box_and_respects_content_box() {
   }
 }
 
+#[test]
+fn clip_path_url_clips_at_high_device_pixel_ratio() {
+  let html = r#"
+    <style>
+      body { margin: 0; background: white; }
+      #target {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100px;
+        height: 100px;
+        background: rgb(255, 0, 0);
+        clip-path: url(#clip);
+      }
+      #defs { position: absolute; width: 0; height: 0; }
+    </style>
+    <svg id="defs" width="0" height="0">
+      <defs>
+        <clipPath id="clip">
+          <circle cx="50" cy="50" r="50"></circle>
+        </clipPath>
+      </defs>
+    </svg>
+    <div id="target"></div>
+  "#;
+
+  let dpr = 2.0;
+  let (dl, legacy) = render_both_with_dpr(html, 110, 110, dpr);
+  for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+    assert_is_red(
+      rgba_at(&pixmap, 100, 100),
+      &format!("{backend}: expected circle center to remain visible at dpr={dpr}"),
+    );
+    assert_is_white(
+      rgba_at(&pixmap, 10, 10),
+      &format!("{backend}: expected corner outside circle to be clipped at dpr={dpr}"),
+    );
+  }
+}

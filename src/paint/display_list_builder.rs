@@ -3992,9 +3992,32 @@ impl DisplayListBuilder {
 
   fn inline_svg_for_svg_clip_path(&self, clip_id: &str, bounds: Rect) -> Option<String> {
     let defs = self.svg_id_defs.as_ref()?;
-    let width = bounds.width().ceil().max(1.0) as u32;
-    let height = bounds.height().ceil().max(1.0) as u32;
-    crate::paint::svg_mask_image::inline_svg_for_clip_path_id(defs, clip_id, width, height)
+    let view_w = if bounds.width().is_finite() && bounds.width() > 0.0 {
+      bounds.width()
+    } else {
+      1.0
+    };
+    let view_h = if bounds.height().is_finite() && bounds.height() > 0.0 {
+      bounds.height()
+    } else {
+      1.0
+    };
+
+    let dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+      self.device_pixel_ratio
+    } else {
+      1.0
+    };
+    let width = (view_w * dpr).ceil().max(1.0) as u32;
+    let height = (view_h * dpr).ceil().max(1.0) as u32;
+    crate::paint::svg_mask_image::inline_svg_for_clip_path_id_with_view_box(
+      defs,
+      clip_id,
+      view_w,
+      view_h,
+      width,
+      height,
+    )
   }
 
   fn decode_mask_image_url(

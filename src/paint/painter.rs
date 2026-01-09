@@ -3545,11 +3545,17 @@ impl Painter {
                   return Ok(());
                 };
 
+                // Rasterize the SVG clip-path at device resolution so the alpha mask isn't later
+                // upscaled by `device_pixel_ratio`.
+                let rect_device = base_painter.device_rect(*reference_rect);
+                let render_w = rect_device.width().ceil().max(1.0) as u32;
+                let render_h = rect_device.height().ceil().max(1.0) as u32;
+
                 let cache_key = format!("svg-clip-path-fragment:{id}");
                 let clip_pixmap = match base_painter.image_cache.render_svg_pixmap_at_size(
                   &svg,
-                  view_w,
-                  view_h,
+                  render_w,
+                  render_h,
                   &cache_key,
                   self.scale,
                 ) {
@@ -3560,7 +3566,6 @@ impl Painter {
                   Err(_) => return Ok(()),
                 };
 
-                let rect_device = base_painter.device_rect(*reference_rect);
                 let dirty = clip_mask_dirty_bounds(rect_device, canvas_w, canvas_h);
 
                 let Some(mut scratch) = new_pixmap(canvas_w, canvas_h) else {

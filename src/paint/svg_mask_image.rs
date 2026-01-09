@@ -142,20 +142,15 @@ fn collect_svg_fragment_ids(fragment: &str) -> HashSet<String> {
   ids
 }
 
-pub(crate) fn inline_svg_for_mask_id(
-  defs: &HashMap<String, String>,
-  mask_id: &str,
-  width: u32,
-  height: u32,
-) -> Option<String> {
-  if !defs.contains_key(mask_id) {
+fn svg_ids_to_inline(defs: &HashMap<String, String>, root_id: &str) -> Option<Vec<String>> {
+  if !defs.contains_key(root_id) {
     return None;
   }
 
   let mut required: HashSet<String> = HashSet::new();
   let mut queue: VecDeque<String> = VecDeque::new();
-  required.insert(mask_id.to_string());
-  queue.push_back(mask_id.to_string());
+  required.insert(root_id.to_string());
+  queue.push_back(root_id.to_string());
 
   while let Some(id) = queue.pop_front() {
     let Some(fragment) = defs.get(&id) else {
@@ -183,11 +178,21 @@ pub(crate) fn inline_svg_for_mask_id(
     }
   }
 
-  let mut include: Vec<&String> = required
-    .iter()
-    .filter(|id| !nested.contains(*id))
+  let mut include: Vec<String> = required
+    .into_iter()
+    .filter(|id| !nested.contains(id))
     .collect();
   include.sort();
+  Some(include)
+}
+
+pub(crate) fn inline_svg_for_mask_id(
+  defs: &HashMap<String, String>,
+  mask_id: &str,
+  width: u32,
+  height: u32,
+) -> Option<String> {
+  let include = svg_ids_to_inline(defs, mask_id)?;
 
   let mut out = String::new();
   out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
@@ -200,12 +205,51 @@ pub(crate) fn inline_svg_for_mask_id(
   out.push_str(&height.to_string());
   out.push_str("\"><defs>");
   for id in include {
-    if let Some(serialized) = defs.get(id) {
+    if let Some(serialized) = defs.get(&id) {
       out.push_str(serialized);
     }
   }
   out.push_str("</defs><rect width=\"100%\" height=\"100%\" fill=\"white\" mask=\"url(#");
   out.push_str(mask_id);
+  out.push_str(")\"/></svg>");
+  Some(out)
+}
+
+pub(crate) fn inline_svg_for_clip_path_id_with_view_box(
+  defs: &HashMap<String, String>,
+  clip_id: &str,
+  view_width: f32,
+  view_height: f32,
+  render_width: u32,
+  render_height: u32,
+) -> Option<String> {
+  if !view_width.is_finite() || !view_height.is_finite() || view_width <= 0.0 || view_height <= 0.0
+  {
+    return None;
+  }
+  if render_width == 0 || render_height == 0 {
+    return None;
+  }
+
+  let include = svg_ids_to_inline(defs, clip_id)?;
+
+  let mut out = String::new();
+  out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+  out.push_str(&render_width.to_string());
+  out.push_str("\" height=\"");
+  out.push_str(&render_height.to_string());
+  out.push_str("\" viewBox=\"0 0 ");
+  out.push_str(&view_width.to_string());
+  out.push(' ');
+  out.push_str(&view_height.to_string());
+  out.push_str("\"><defs>");
+  for id in include {
+    if let Some(serialized) = defs.get(&id) {
+      out.push_str(serialized);
+    }
+  }
+  out.push_str("</defs><rect width=\"100%\" height=\"100%\" fill=\"white\" clip-path=\"url(#");
+  out.push_str(clip_id);
   out.push_str(")\"/></svg>");
   Some(out)
 }
@@ -216,73 +260,21 @@ pub(crate) fn inline_svg_for_clip_path_id(
   width: u32,
   height: u32,
 ) -> Option<String> {
-  if !defs.contains_key(clip_id) {
-    return None;
-  }
-
-  let mut required: HashSet<String> = HashSet::new();
-  let mut queue: VecDeque<String> = VecDeque::new();
-  required.insert(clip_id.to_string());
-  queue.push_back(clip_id.to_string());
-
-  while let Some(id) = queue.pop_front() {
-    let Some(fragment) = defs.get(&id) else {
-      continue;
-    };
-    for reference in collect_svg_fragment_references(fragment) {
-      if !defs.contains_key(&reference) {
-        continue;
-      }
-      if required.insert(reference.clone()) {
-        queue.push_back(reference);
-      }
-    }
-  }
-
-  let mut nested: HashSet<String> = HashSet::new();
-  for id in required.iter() {
-    let Some(fragment) = defs.get(id) else {
-      continue;
-    };
-    for contained_id in collect_svg_fragment_ids(fragment) {
-      if contained_id != *id && required.contains(&contained_id) {
-        nested.insert(contained_id);
-      }
-    }
-  }
-
-  let mut include: Vec<&String> = required
-    .iter()
-    .filter(|id| !nested.contains(*id))
-    .collect();
-  include.sort();
-
-  let mut out = String::new();
-  out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
-  out.push_str(&width.to_string());
-  out.push_str("\" height=\"");
-  out.push_str(&height.to_string());
-  out.push_str("\" viewBox=\"0 0 ");
-  out.push_str(&width.to_string());
-  out.push(' ');
-  out.push_str(&height.to_string());
-  out.push_str("\"><defs>");
-  for id in include {
-    if let Some(serialized) = defs.get(id) {
-      out.push_str(serialized);
-    }
-  }
-  out.push_str("</defs><rect width=\"100%\" height=\"100%\" fill=\"white\" clip-path=\"url(#");
-  out.push_str(clip_id);
-  out.push_str(")\"/></svg>");
-  Some(out)
+  inline_svg_for_clip_path_id_with_view_box(
+    defs,
+    clip_id,
+    width.max(1) as f32,
+    height.max(1) as f32,
+    width.max(1),
+    height.max(1),
+  )
 }
 
 #[cfg(test)]
 mod tests {
   use super::{
     collect_svg_fragment_ids, collect_svg_fragment_references, inline_svg_for_clip_path_id,
-    inline_svg_for_mask_id,
+    inline_svg_for_clip_path_id_with_view_box, inline_svg_for_mask_id,
   };
   use std::collections::HashMap;
 
@@ -400,6 +392,29 @@ mod tests {
       svg.matches("EXTRA").count(),
       1,
       "expected nested def to only appear once in output: {svg}"
+    );
+  }
+
+  #[test]
+  fn svg_clip_path_image_supports_separate_view_box_and_render_size() {
+    let clip =
+      r##"<clipPath xmlns="http://www.w3.org/2000/svg" id="clip"><rect x="0" y="0" width="10" height="10"/></clipPath>"##;
+    let defs = HashMap::from([("clip".to_string(), clip.to_string())]);
+
+    let svg = inline_svg_for_clip_path_id_with_view_box(&defs, "clip", 10.5, 20.25, 21, 41)
+      .expect("expected svg");
+
+    assert!(
+      svg.contains("width=\"21\""),
+      "expected render width in root <svg>, got: {svg}"
+    );
+    assert!(
+      svg.contains("height=\"41\""),
+      "expected render height in root <svg>, got: {svg}"
+    );
+    assert!(
+      svg.contains("viewBox=\"0 0 10.5 20.25\""),
+      "expected viewBox to use unscaled CSS dimensions, got: {svg}"
     );
   }
 }
