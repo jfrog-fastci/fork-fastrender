@@ -6244,7 +6244,6 @@ impl DisplayListRenderer {
     }
 
     let transform = self.canvas.transform();
-    let clip = self.canvas.clip_mask().cloned();
     let blend_mode = self.canvas.blend_mode();
     let rect = self.ds_rect(item.rect);
     let radii = self.ds_radii(item.radii);
@@ -6268,13 +6267,23 @@ impl DisplayListRenderer {
       ..item.left.clone()
     };
 
-    let pushed_clip = if radii.has_radius() {
+    // Dotted borders use round caps, which can extend outside the border box. Clip to the border
+    // rect (and any corner radii) so the stroke stays within the border box.
+    let wants_stroke_clip = matches!(
+      (top.style, right.style, bottom.style, left.style),
+      (CssBorderStyle::Dotted, _, _, _)
+        | (_, CssBorderStyle::Dotted, _, _)
+        | (_, _, CssBorderStyle::Dotted, _)
+        | (_, _, _, CssBorderStyle::Dotted)
+    );
+    let mut pushed_clip = false;
+    if radii.has_radius() {
       self.canvas.save();
       self.canvas.set_clip_with_radii(rect, Some(radii))?;
-      true
-    } else {
-      false
-    };
+      pushed_clip = true;
+    }
+
+    let mut clip = self.canvas.clip_mask_rc();
 
     if let Some(border_image) = item.image.as_ref() {
       if self.render_border_image(
@@ -6285,7 +6294,7 @@ impl DisplayListRenderer {
         bottom.width,
         left.width,
         opacity,
-        clip.as_ref(),
+        clip.as_deref(),
         transform,
       )? {
         if pushed_clip {
@@ -6295,29 +6304,46 @@ impl DisplayListRenderer {
       }
     }
 
+    if wants_stroke_clip && !pushed_clip {
+      self.canvas.save();
+      self.canvas.set_clip(rect)?;
+      pushed_clip = true;
+      clip = self.canvas.clip_mask_rc();
+    }
+
     let top_center = rect.y() + top.width * 0.5;
     let bottom_center = rect.y() + rect.height() - bottom.width * 0.5;
     let left_center = rect.x() + left.width * 0.5;
     let right_center = rect.x() + rect.width() - right.width * 0.5;
-
-    // Use the adjacent edge center coordinates as endpoints so stroke caps remain within the
-    // border box. This matters for dotted borders (round caps) and any other stroke styles that
-    // extend beyond their endpoints.
+    let outer_left = rect.x();
+    let outer_top = rect.y();
+    let outer_right = rect.x() + rect.width();
+    let outer_bottom = rect.y() + rect.height();
     let edges: [(_, _, _, _); 4] = [
-      (BorderEdge::Top, &top, (left_center, top_center), (right_center, top_center)),
+      (
+        BorderEdge::Top,
+        &top,
+        (outer_left, top_center),
+        (outer_right, top_center),
+      ),
       (
         BorderEdge::Right,
         &right,
-        (right_center, top_center),
-        (right_center, bottom_center),
+        (right_center, outer_top),
+        (right_center, outer_bottom),
       ),
       (
         BorderEdge::Bottom,
         &bottom,
-        (left_center, bottom_center),
-        (right_center, bottom_center),
+        (outer_left, bottom_center),
+        (outer_right, bottom_center),
       ),
-      (BorderEdge::Left, &left, (left_center, top_center), (left_center, bottom_center)),
+      (
+        BorderEdge::Left,
+        &left,
+        (left_center, outer_top),
+        (left_center, outer_bottom),
+      ),
     ];
 
     for (edge, side, (x1, y1), (x2, y2)) in edges {
@@ -6349,7 +6375,7 @@ impl DisplayListRenderer {
                   side,
                   blend_mode,
                   opacity,
-                  clip.as_ref(),
+                  clip.as_deref(),
                   transform,
                 );
               }
@@ -6363,7 +6389,7 @@ impl DisplayListRenderer {
                   side,
                   blend_mode,
                   opacity,
-                  clip.as_ref(),
+                  clip.as_deref(),
                   transform,
                 );
               }
@@ -6386,7 +6412,7 @@ impl DisplayListRenderer {
                   side,
                   blend_mode,
                   opacity,
-                  clip.as_ref(),
+                  clip.as_deref(),
                   transform,
                 );
               }
@@ -6400,7 +6426,7 @@ impl DisplayListRenderer {
                   side,
                   blend_mode,
                   opacity,
-                  clip.as_ref(),
+                  clip.as_deref(),
                   transform,
                 );
               }
@@ -6419,7 +6445,7 @@ impl DisplayListRenderer {
         side,
         blend_mode,
         opacity,
-        clip.as_ref(),
+        clip.as_deref(),
         transform,
       );
     }
@@ -20123,6 +20149,33 @@ mod tests {
     assert_eq!(pixel(&pixmap, 2, 0), (255, 255, 255, 255));
     // Border still paints along the edges of the box.
     assert_eq!(pixel(&pixmap, 3, 2), (0, 0, 0, 255));
+  }
+
+  #[test]
+  fn border_respects_corner_radii_clip() {
+    let renderer = DisplayListRenderer::new(20, 20, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+    let side = BorderSide {
+      width: 4.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::BLACK,
+    };
+    list.push(DisplayItem::Border(Box::new(BorderItem {
+      rect: Rect::from_xywh(2.0, 2.0, 16.0, 16.0),
+      top: side.clone(),
+      right: side.clone(),
+      bottom: side.clone(),
+      left: side,
+      image: None,
+      radii: BorderRadii::uniform(6.0),
+      gap: None,
+    })));
+
+    let pixmap = renderer.render(&list).unwrap();
+    // Rounded border corners should not paint outside the rounded border box.
+    assert_eq!(pixel(&pixmap, 2, 2), (255, 255, 255, 255));
+    // Border still paints within the clipped region.
+    assert_eq!(pixel(&pixmap, 10, 4), (0, 0, 0, 255));
   }
 
   #[test]
