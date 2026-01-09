@@ -50,6 +50,7 @@ pub mod window_animation_frame;
 pub mod vm_dom;
 pub mod window_fetch;
 pub mod window_timers;
+pub mod window_url;
 pub mod vm_host;
 pub mod streaming;
 pub mod streaming_dom2;
@@ -113,6 +114,7 @@ pub use window_fetch::{
   WindowFetchBindings, WindowFetchEnv,
 };
 pub use window_timers::install_window_timers_bindings;
+pub use window_url::install_window_url_bindings;
 pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 pub use window::{WindowHost, WindowHostState};
 pub use vm_host::JsVmHost;

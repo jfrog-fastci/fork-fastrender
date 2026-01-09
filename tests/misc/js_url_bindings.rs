@@ -1,5 +1,6 @@
 use fastrender::js::{
   install_url_bindings, install_url_bindings_with_limits, webidl::VmJsRuntime, UrlLimits,
+  WindowRealm, WindowRealmConfig,
 };
 use vm_js::{PropertyKey, Value, VmError};
 use webidl_js_runtime::runtime::JsPropertyKind;
@@ -210,4 +211,114 @@ fn urlsearchparams_to_string_enforces_output_limit() {
   };
   let name = get(&mut rt, thrown, "name");
   assert_eq!(as_rust_string(&rt, name), "TypeError");
+}
+
+fn as_vm_js_heap_string(heap: &vm_js::Heap, v: Value) -> String {
+  let Value::String(s) = v else {
+    panic!("expected string, got {v:?}");
+  };
+  heap.get_string(s).unwrap().to_utf8_lossy()
+}
+
+fn vm_js_error_debug(realm: &mut WindowRealm, err: VmError) -> String {
+  let VmError::Throw(thrown) = err else {
+    return format!("{err:?}");
+  };
+  let Value::Object(obj) = thrown else {
+    return format!("throw {thrown:?}");
+  };
+
+  let heap = realm.heap_mut();
+  let mut scope = heap.scope();
+  scope.push_root(thrown).unwrap();
+
+  let name_key = PropertyKey::from_string(scope.alloc_string("name").unwrap());
+  let message_key = PropertyKey::from_string(scope.alloc_string("message").unwrap());
+  let stack_key = PropertyKey::from_string(scope.alloc_string("stack").unwrap());
+
+  let name = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &name_key)
+    .ok()
+    .flatten()
+    .map(|v| as_vm_js_heap_string(scope.heap(), v))
+    .unwrap_or_else(|| "<unknown>".to_string());
+  let message = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &message_key)
+    .ok()
+    .flatten()
+    .map(|v| as_vm_js_heap_string(scope.heap(), v))
+    .unwrap_or_else(|| "<unknown>".to_string());
+  let stack = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &stack_key)
+    .ok()
+    .flatten()
+    .and_then(|v| {
+      if matches!(v, Value::String(_)) {
+        Some(as_vm_js_heap_string(scope.heap(), v))
+      } else {
+        None
+      }
+    })
+    .unwrap_or_else(|| "<no stack>".to_string());
+
+  format!("{name}: {message}\n{stack}")
+}
+
+#[test]
+fn window_realm_exec_script_url_constructor_smoke() {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
+
+  let href = realm
+    .exec_script(r#"new URL("https://example.com/path?x=1#y").href"#)
+    .unwrap_or_else(|err| panic!("exec_script failed:\n{}", vm_js_error_debug(&mut realm, err)));
+  assert_eq!(
+    as_vm_js_heap_string(realm.heap(), href),
+    "https://example.com/path?x=1#y"
+  );
+
+  // Base resolution with a URL object exercises object-to-string coercion fallback logic.
+  let resolved = realm
+    .exec_script(
+      r#"
+        var base = new URL("https://example.com/dir/");
+        new URL("a", base).href
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    as_vm_js_heap_string(realm.heap(), resolved),
+    "https://example.com/dir/a"
+  );
+}
+
+#[test]
+fn window_realm_exec_script_url_searchparams_is_live_and_cached() {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
+
+  let href = realm
+    .exec_script(
+      r#"
+        globalThis.u = new URL("https://example.com/?a=b%20~");
+        globalThis.u.searchParams.append("c", "d");
+        globalThis.u.href
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    as_vm_js_heap_string(realm.heap(), href),
+    "https://example.com/?a=b+%7E&c=d"
+  );
+
+  let cached = realm
+    .exec_script(r#"globalThis.u.searchParams === globalThis.u.searchParams"#)
+    .unwrap();
+  assert_eq!(cached, Value::Bool(true));
+
+  let params = realm
+    .exec_script(r#"globalThis.u.searchParams.toString()"#)
+    .unwrap();
+  assert_eq!(as_vm_js_heap_string(realm.heap(), params), "a=b+%7E&c=d");
 }

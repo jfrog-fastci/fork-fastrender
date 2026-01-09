@@ -101,7 +101,6 @@ impl WindowRealmUserData {
 
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
-    let realm_id = RealmId::from_raw(NEXT_WINDOW_REALM_ID.fetch_add(1, Ordering::Relaxed));
     let mut vm_options = VmOptions::default();
     // Window realms should be interruptible even before full script execution is wired up.
     // This is separate from the renderer-level interrupt flag; callers can wire it up as needed.
@@ -111,6 +110,7 @@ impl WindowRealm {
 
     let mut runtime = VmJsRuntime::new(vm, heap)?;
     runtime.vm.set_user_data(WindowRealmUserData::new());
+    let realm_id = runtime.realm().id();
 
     // `vm-js::JsRuntime` does not expose a borrow-splitting accessor for `(vm, realm, heap)`. Use a
     // raw pointer to the realm to allow simultaneously borrowing `vm`/`heap` mutably.
@@ -183,6 +183,10 @@ impl WindowRealm {
     if let Some(id) = self.match_media_env_id.take() {
       unregister_match_media_env(id);
     }
+    crate::js::window_url::teardown_window_url_bindings_for_realm(
+      self.runtime.realm().id(),
+      &mut self.runtime.heap,
+    );
   }
 
   /// Execute a classic script in this window realm.
@@ -308,7 +312,6 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
 }
 
 static NEXT_CONSOLE_SINK_ID: AtomicU64 = AtomicU64::new(1);
-static NEXT_WINDOW_REALM_ID: AtomicU64 = AtomicU64::new(1);
 static CONSOLE_SINKS: OnceLock<Mutex<HashMap<u64, ConsoleSink>>> = OnceLock::new();
 
 fn console_sinks() -> &'static Mutex<HashMap<u64, ConsoleSink>> {
@@ -3988,6 +3991,11 @@ fn init_window_globals(
     window_env,
     match_media_guard.id(),
   )?;
+
+  // Install WHATWG URL bindings (`URL`/`URLSearchParams`) so real-world scripts can parse and
+  // manipulate URLs. This must happen after `scope` is dropped because it borrows `heap` mutably.
+  drop(scope);
+  crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
 
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),
