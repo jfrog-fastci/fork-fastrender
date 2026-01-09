@@ -106,6 +106,21 @@ fn explicit_no_namespace_selector_does_not_match_html() {
 }
 
 #[test]
+fn explicit_no_namespace_selector_does_not_match_svg() {
+  let html = r#"<svg><rect id="r"></rect></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    rect { display: block; }
+    |rect { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let rect = find_by_id(&styled, "r").expect("rect");
+  assert_eq!(display(rect), "block");
+}
+
+#[test]
 fn wildcard_namespace_prefix_matches_any_namespace() {
   let html = r#"<div id="h"></div><svg><rect id="s"></rect></svg>"#;
   let dom = dom::parse_html(html).unwrap();

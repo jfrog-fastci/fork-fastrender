@@ -6662,20 +6662,18 @@ impl<'a> Element for ElementRef<'a> {
   fn has_namespace(&self, ns: &str) -> bool {
     match &self.node.node_type {
       DomNodeType::Element { namespace, .. } | DomNodeType::Slot { namespace, .. } => {
-        // The selectors crate uses an empty namespace URL to represent the explicit "no namespace"
-        // selector form (`|E`).
-        //
-        // FastRender represents the HTML namespace using an empty string (see `convert_handle_to_node`)
-        // and some constructed DOMs may use the literal HTML namespace URL. Treat an empty selector
-        // namespace as matching only the empty/HTML namespaces, not as a wildcard across SVG/MathML/etc.
+        // Namespace semantics:
+        // - selectors uses an empty namespace URL to represent the explicit "no namespace" selector
+        //   form (`|E`), which must *not* match HTML/SVG/MathML elements.
+        // - FastRender stores HTML elements with an empty string namespace to save memory; treat
+        //   that empty element namespace as equivalent to `HTML_NAMESPACE` (some constructed DOMs
+        //   may use the literal HTML namespace URL) for non-empty namespace selectors.
         if ns.is_empty() {
-          return namespace.is_empty() || namespace == HTML_NAMESPACE;
+          return false;
         }
         if namespace == ns {
           return true;
         }
-        // FastRender internal convention: treat the empty namespace as equivalent to the HTML
-        // namespace for selector matching.
         namespace.is_empty() && ns == HTML_NAMESPACE
       }
       _ => false,
@@ -8799,6 +8797,10 @@ mod tests {
     );
 
     let div_ref = ElementRef::new(div);
+    assert!(
+      !div_ref.has_namespace(""),
+      "selectors with an empty namespace URL (`|E`) must not match HTML elements"
+    );
     assert!(
       div_ref.has_namespace(HTML_NAMESPACE),
       "namespace matching should treat the empty namespace as HTML"
@@ -11053,7 +11055,10 @@ mod tests {
     let node = element("div", vec![]);
     let element_ref = ElementRef::new(&node);
 
-    assert!(element_ref.has_namespace(""));
+    assert!(
+      !element_ref.has_namespace(""),
+      "empty namespace URLs represent explicit no-namespace selectors (`|E`)"
+    );
     assert!(element_ref.has_namespace(HTML_NAMESPACE));
     assert!(!element_ref.has_namespace("http://www.w3.org/2000/svg"));
   }
@@ -11136,7 +11141,10 @@ mod tests {
     let svg = svg_element("svg");
     let svg_ref = ElementRef::new(&svg);
 
-    assert!(svg_ref.has_namespace(""));
+    assert!(
+      !svg_ref.has_namespace(""),
+      "empty namespace URLs represent explicit no-namespace selectors (`|E`)"
+    );
     assert!(svg_ref.has_namespace(SVG_NAMESPACE));
     assert!(!svg_ref.has_namespace(HTML_NAMESPACE));
   }
