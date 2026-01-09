@@ -102,6 +102,7 @@ mod text_justify_inter_word_no_fragment_churn;
 mod intrinsic_sizing_keywords;
 mod legend_shrink_to_fit;
 mod line_height_normal_metrics;
+mod list_marker_outside_whitespace;
 mod manual_multicol_breaks;
 mod multicol;
 mod nested_absolute;

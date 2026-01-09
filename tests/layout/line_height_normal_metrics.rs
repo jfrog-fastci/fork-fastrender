@@ -74,3 +74,34 @@ fn line_height_normal_uses_fallback_font_metrics_for_text_fragments() {
     "expected text fragment height to match fallback font line-height (expected={expected}, actual={actual})"
   );
 }
+
+#[test]
+fn bundled_sans_serif_normal_line_height_is_reasonable() {
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+  let font = font_ctx.get_sans_serif().expect("bundled sans-serif font");
+  let face = ttf_parser::Face::parse(font.data.as_slice(), font.index)
+    .expect("parse bundled sans-serif font");
+  assert!(
+    face.glyph_index('a').is_some(),
+    "expected bundled sans-serif font to cover basic Latin; got {}",
+    font.family
+  );
+  let metrics = font_ctx
+    .get_scaled_metrics(&font, 16.0)
+    .expect("scaled metrics");
+  let line_height = metrics.line_height;
+
+  // Our fixtures compare against Chrome. If the bundled sans-serif has unusually tall line
+  // metrics, "line-height: normal" becomes much larger than Chrome's default fonts and produces
+  // massive vertical drift in text-heavy pages.
+  assert!(
+    line_height.is_finite() && line_height > 0.0,
+    "expected finite, positive line-height; got {line_height} for {}",
+    font.family
+  );
+  assert!(
+    line_height <= 20.0,
+    "expected bundled sans-serif normal line-height <= 20px at 16px font-size; got {line_height} for {}",
+    font.family
+  );
+}

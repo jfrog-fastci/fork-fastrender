@@ -77,6 +77,15 @@ struct BundledFont {
 
 // Ordered from general text to narrower script fallbacks so generic families stay stable.
 const BUNDLED_FONTS: &[BundledFont] = &[
+  // Roboto Flex provides a modern variable sans face with sane line metrics, helping pages that
+  // fall back to generic `sans-serif` (e.g. sites that request Helvetica/Arial but ship no web
+  // fonts in offline fixtures). It is not necessarily the default generic fallback (see
+  // `set_bundled_generic_fallbacks`), but serves as a high-quality option when the preferred face
+  // is unavailable.
+  BundledFont {
+    name: "Roboto Flex",
+    data: include_bytes!("../../tests/fonts/RobotoFlex-VF.ttf"),
+  },
   BundledFont {
     name: "Noto Sans",
     data: include_bytes!("../../tests/fixtures/fonts/NotoSans-subset.ttf"),
@@ -391,31 +400,42 @@ fn set_bundled_generic_fallbacks(db: &mut FontDbDatabase) {
     return;
   };
 
-  let first_matching_family = |candidates: &[&str]| -> Option<String> {
-    for face in faces.iter().filter(|face| {
+  let non_emoji_faces: Vec<&fontdb::FaceInfo> = faces
+    .iter()
+    .copied()
+    .filter(|face| {
       face
         .families
         .iter()
         .all(|(name, _)| !FontDatabase::family_name_is_emoji_font(name))
-    }) {
-      for (name, _) in &face.families {
-        if candidates
-          .iter()
-          .any(|candidate| candidate.eq_ignore_ascii_case(name))
-        {
-          return Some(name.clone());
+    })
+    .collect();
+
+  let first_matching_family = |candidates: &[&str]| -> Option<String> {
+    // Honor candidate priority order (instead of font load order). This matters because we insert
+    // a large font fallback chain into the bundled fontdb, and callers expect:
+    // - `first_matching_family(&["DejaVu Sans", "Noto Sans"])` to pick DejaVu when present, even if
+    //   Noto was loaded earlier.
+    let find_candidate = |candidate: &str, faces: &[&fontdb::FaceInfo]| -> Option<String> {
+      for face in faces {
+        for (name, _) in &face.families {
+          if candidate.eq_ignore_ascii_case(name) {
+            return Some(name.clone());
+          }
         }
+      }
+      None
+    };
+
+    for candidate in candidates {
+      if let Some(name) = find_candidate(candidate, &non_emoji_faces) {
+        return Some(name);
       }
     }
 
-    for face in &faces {
-      for (name, _) in &face.families {
-        if candidates
-          .iter()
-          .any(|candidate| candidate.eq_ignore_ascii_case(name))
-        {
-          return Some(name.clone());
-        }
+    for candidate in candidates {
+      if let Some(name) = find_candidate(candidate, &faces) {
+        return Some(name);
       }
     }
 
@@ -424,7 +444,10 @@ fn set_bundled_generic_fallbacks(db: &mut FontDbDatabase) {
 
   // Prefer stable bundled defaults; fall back to the first bundled family if those are missing.
   let serif = first_matching_family(&["Noto Serif"]).unwrap_or_else(|| primary_family.clone());
-  let sans = first_matching_family(&["Noto Sans"]).unwrap_or_else(|| primary_family.clone());
+  // Prefer Noto Sans for determinism; its glyph shapes are reasonably close to common Linux
+  // sans-serif defaults used by Chrome in our screenshot baselines.
+  let sans = first_matching_family(&["Noto Sans", "DejaVu Sans", "Roboto Flex"])
+    .unwrap_or_else(|| primary_family.clone());
   let monospace =
     first_matching_family(&["Noto Sans Mono"]).unwrap_or_else(|| primary_family.clone());
 
@@ -1648,17 +1671,39 @@ impl FontDatabase {
     data: Arc<Vec<u8>>,
     face_info: &fontdb::FaceInfo,
   ) -> LoadedFont {
+    let family = face_info
+      .families
+      .first()
+      .map(|(name, _)| name.clone())
+      .unwrap_or_else(|| "Unknown".to_string());
+
+    // The offline fixture evidence loop diffs FastRender output against headless Chrome baselines.
+    // In CI those FastRender renders use bundled fonts for determinism, but Chrome uses system
+    // fonts. The bundled Noto Latin faces have notably taller ascent/descent than Chrome's default
+    // Linux sans/serif fonts, causing large vertical drift on text-heavy pages (e.g. lite.cnn.com).
+    //
+    // CSS Fonts 4 provides `size-adjust`/`ascent-override`/`descent-override` descriptors to align
+    // fallback font metrics. Apply a small built-in override to the bundled Noto Latin families so
+    // `line-height: normal` behaves closer to Chrome when no web fonts are available.
+    let mut face_metrics_overrides = FontFaceMetricsOverrides::default();
+    if Arc::ptr_eq(&self.db, &shared_bundled_fontdb()) {
+      match family.as_str() {
+        "Noto Sans" | "Noto Serif" | "Noto Sans Mono" => {
+          face_metrics_overrides.ascent_override = Some(0.875);
+          face_metrics_overrides.descent_override = Some(0.25);
+          face_metrics_overrides.line_gap_override = Some(0.0);
+        }
+        _ => {}
+      }
+    }
+
     LoadedFont {
       id: Some(FontId::new(id)),
       data,
       index: face_info.index,
-      face_metrics_overrides: FontFaceMetricsOverrides::default(),
+      face_metrics_overrides,
       face_settings: FontFaceShapingDescriptors::default(),
-      family: face_info
-        .families
-        .first()
-        .map(|(name, _)| name.clone())
-        .unwrap_or_else(|| "Unknown".to_string()),
+      family,
       weight: FontWeight(face_info.weight.0),
       style: face_info.style.into(),
       stretch: face_info.stretch.into(),

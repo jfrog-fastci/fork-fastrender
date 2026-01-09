@@ -1,4 +1,5 @@
 use encoding_rs::Encoding;
+use encoding_rs::UTF_8;
 use encoding_rs::WINDOWS_1252;
 
 /// Decode raw HTML bytes into a string using HTML encoding sniffing rules.
@@ -28,6 +29,23 @@ pub fn decode_html_bytes(bytes: &[u8], content_type: Option<&str>) -> String {
 
   if let Some(enc) = sniff_html_meta_charset(bytes) {
     return enc.decode_with_bom_removal(bytes).0.into_owned();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Undeclared encoding heuristic
+  // ---------------------------------------------------------------------------
+  // Many modern documents (including offline fixtures loaded via `file://`) are UTF-8 but omit an
+  // explicit encoding declaration (HTTP `Content-Type` charset parameter or `<meta charset>`).
+  //
+  // The HTML sniffing algorithm has a configurable "fallback encoding" parameter; browsers tend to
+  // treat UTF-8 as a safe fallback when the byte stream is valid UTF-8. Without this, UTF-8
+  // punctuation like U+2019 RIGHT SINGLE QUOTATION MARK (’), encoded as `E2 80 99`, renders as the
+  // classic Windows-1252 mojibake sequence `â€™`.
+  //
+  // Prefer UTF-8 when the entire byte stream is valid UTF-8; otherwise fall back to the HTML
+  // default (Windows-1252).
+  if std::str::from_utf8(bytes).is_ok() {
+    return UTF_8.decode_without_bom_handling(bytes).0.into_owned();
   }
 
   // HTML default encoding is Windows-1252 per HTML Living Standard.
@@ -348,6 +366,7 @@ fn trim_ascii_quotes(mut bytes: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
   use super::decode_html_bytes;
+  use encoding_rs::UTF_8;
 
   #[test]
   fn decode_html_uses_content_type_charset() {
@@ -509,5 +528,23 @@ mod tests {
     let bytes = vec![0xa3]; // U+00A3 in Windows-1252
     let decoded = decode_html_bytes(&bytes, None);
     assert_eq!(decoded, "£");
+  }
+
+  #[test]
+  fn decode_html_prefers_utf8_when_valid_and_undeclared() {
+    // This fixture-like HTML has no BOM, no Content-Type charset, and no meta charset. The byte
+    // stream is valid UTF-8, so we should avoid the common Windows-1252 mojibake.
+    let bytes = UTF_8
+      .encode("<html><body>Here’s what we know</body></html>")
+      .0;
+    let decoded = decode_html_bytes(&bytes, None);
+    assert!(
+      decoded.contains("Here’s what we know"),
+      "expected UTF-8 curly apostrophe, got: {decoded}"
+    );
+    assert!(
+      !decoded.contains("â€™"),
+      "decoded text should not contain mojibake sequence, got: {decoded}"
+    );
   }
 }

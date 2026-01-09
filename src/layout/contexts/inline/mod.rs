@@ -863,7 +863,13 @@ impl InlineFormattingContext {
               boundary,
             )?;
             current_items.append(&mut produced);
-            whitespace.note_content();
+            // Outside markers have zero advance-for-layout; treat them as ignorable so indentation
+            // whitespace between the marker and first content does not introduce an extra space.
+            if matches!(child.style.list_style_position, ListStylePosition::Outside) {
+              whitespace.note_ignorable();
+            } else {
+              whitespace.note_content();
+            }
           }
           MarkerContent::Image(replaced_box) => {
             self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
@@ -872,7 +878,11 @@ impl InlineFormattingContext {
             let gap = marker_inline_gap(&child.style, &self.font_context, self.viewport_size);
             item = item.as_marker(gap, child.style.list_style_position, child.style.direction);
             current_items.push(InlineItem::Replaced(item));
-            whitespace.note_content();
+            if matches!(child.style.list_style_position, ListStylePosition::Outside) {
+              whitespace.note_ignorable();
+            } else {
+              whitespace.note_content();
+            }
           }
         },
         BoxType::Inline(_) => {
@@ -1735,7 +1745,21 @@ impl InlineFormattingContext {
               boundary,
             )?;
             items.append(&mut produced);
-            whitespace.note_content();
+            // `::marker` boxes participate in the inline item stream, but when the marker is
+            // `list-style-position: outside` its advance-for-layout is zero and it behaves like a
+            // placeholder that should not prevent leading whitespace from being suppressed.
+            //
+            // This matters for common HTML like:
+            //   <li>
+            //     <a>Item</a>
+            //   </li>
+            // where the indentation whitespace should not introduce an extra space between the
+            // marker and the first inline content.
+            if matches!(child.style.list_style_position, ListStylePosition::Outside) {
+              whitespace.note_ignorable();
+            } else {
+              whitespace.note_content();
+            }
           }
           MarkerContent::Image(replaced_box) => {
             self.flush_pending_collapsible_space(whitespace, &mut items)?;
@@ -1762,7 +1786,11 @@ impl InlineFormattingContext {
             };
             item = item.as_marker(gap, child.style.list_style_position, child.style.direction);
             items.push(InlineItem::Replaced(item));
-            whitespace.note_content();
+            if matches!(child.style.list_style_position, ListStylePosition::Outside) {
+              whitespace.note_ignorable();
+            } else {
+              whitespace.note_content();
+            }
           }
         },
         BoxType::Inline(_) => {
