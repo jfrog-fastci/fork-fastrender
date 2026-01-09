@@ -90,6 +90,7 @@ mod float_shrink_to_min;
 mod intrinsic_float_children;
 mod button_inline_flex_children;
 mod form_control_baseline;
+mod form_control_pseudo_elements;
 mod progress_meter_intrinsic_sizing;
 mod field_sizing_intrinsic_sizing;
 mod fragmentation;

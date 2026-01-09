@@ -3027,7 +3027,7 @@ fn compute_collapsed_borders(
     //
     // Rule 1: `hidden` suppresses all other borders at that edge.
     // Rule 2: `none` is lowest priority.
-    // Rule 3: styles win; widths break ties when the styles are equal.
+    // Rule 3: after `hidden`/`none`, wider borders win; styles break width ties.
     // Rule 4: if only color differs, prefer origin; then left/right (LTR/RTL) and top.
 
     match (a.style, b.style) {
@@ -3044,15 +3044,15 @@ fn compute_collapsed_borders(
       _ => {}
     }
 
+    let width_epsilon = 1e-6f32;
+    if (a.width - b.width).abs() > width_epsilon {
+      return a.width > b.width;
+    }
+
     let a_style = style_rank(a.style);
     let b_style = style_rank(b.style);
     if a_style != b_style {
       return a_style > b_style;
-    }
-
-    let width_epsilon = 1e-6f32;
-    if (a.width - b.width).abs() > width_epsilon {
-      return a.width > b.width;
     }
 
     let a_origin = origin_priority(a.origin);
@@ -11964,8 +11964,8 @@ mod tests {
   }
 
   #[test]
-  fn collapsed_borders_prefer_style_over_width() {
-    // Dotted 5px vs solid 1px: solid wins due to style priority, even though dotted is wider.
+  fn collapsed_borders_prefer_wider_over_style() {
+    // Dotted 5px vs solid 1px: the wider dotted border wins; style only breaks width ties.
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.border_collapse = BorderCollapse::Collapse;
@@ -12013,16 +12013,12 @@ mod tests {
       .and_then(|col| col.first())
       .copied()
       .unwrap_or_else(ResolvedBorder::none);
-    assert_eq!(
-      border.style,
-      BorderStyle::Solid,
-      "higher-priority style should win"
-    );
+    assert_eq!(border.style, BorderStyle::Dotted);
     assert!(
-      (border.width - 1.0).abs() < 0.01,
+      (border.width - 5.0).abs() < 0.01,
       "winning border keeps its own width"
     );
-    assert_eq!(border.color, Rgba::from_rgba8(0, 0, 200, 255));
+    assert_eq!(border.color, Rgba::from_rgba8(200, 0, 0, 255));
   }
 
   #[test]
@@ -12901,10 +12897,10 @@ mod tests {
     let borders = compute_collapsed_borders(&table, &structure).unwrap();
 
     let middle_border = &borders.vertical[1][0];
-    // Style precedence wins: double outranks solid even when slightly thinner.
-    assert_eq!(middle_border.style, BorderStyle::Double);
-    assert!((middle_border.width - 3.0).abs() < 0.0001);
-    assert_eq!(middle_border.color, Rgba::from_rgba8(255, 0, 0, 255));
+    // Wider borders win even when their style has a lower rank.
+    assert_eq!(middle_border.style, BorderStyle::Solid);
+    assert!((middle_border.width - 3.005).abs() < 0.0001);
+    assert_eq!(middle_border.color, Rgba::from_rgba8(0, 0, 255, 255));
   }
 
   #[test]

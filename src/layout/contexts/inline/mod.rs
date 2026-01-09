@@ -1630,6 +1630,24 @@ impl InlineFormattingContext {
           maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
         }
         BoxType::Replaced(replaced_box) => {
+          // Replaced boxes are usually treated as leaves, but form controls can have generated
+          // ::before/::after pseudo-element children. Collect any out-of-flow descendants so the
+          // absolute positioning pass lays them out against the replaced element.
+          let replaced_box_id = ensure_box_id(child);
+          let replaced_parent_box_id = Some(replaced_box_id);
+          for positioned_child in child.children.iter().filter(|desc| {
+            desc
+              .style
+              .position
+              .is_absolutely_positioned()
+          }) {
+            positioned_children.push(PositionedChild {
+              node: BoxNodeRef::new(positioned_child),
+              box_id: ensure_box_id(positioned_child),
+              containing_block_id: Some(replaced_box_id),
+              parent_box_id: replaced_parent_box_id,
+            });
+          }
           self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
           if float {
             let metrics = self.compute_strut_metrics(&child.style);
@@ -2741,6 +2759,24 @@ impl InlineFormattingContext {
           }
         }
         BoxType::Replaced(replaced_box) => {
+          // Replaced boxes are usually treated as leaves, but form controls can have generated
+          // ::before/::after pseudo-element children. Collect any out-of-flow descendants so the
+          // absolute positioning pass lays them out against the replaced element.
+          let replaced_box_id = ensure_box_id(child);
+          let replaced_parent_box_id = Some(replaced_box_id);
+          for positioned_child in child.children.iter().filter(|desc| {
+            desc
+              .style
+              .position
+              .is_absolutely_positioned()
+          }) {
+            positioned_children.push(PositionedChild {
+              node: BoxNodeRef::new(positioned_child),
+              box_id: ensure_box_id(positioned_child),
+              containing_block_id: Some(replaced_box_id),
+              parent_box_id: replaced_parent_box_id,
+            });
+          }
           self.flush_pending_collapsible_space(whitespace, &mut items)?;
           if child.style.float.is_floating() {
             let metrics = self.compute_strut_metrics(&child.style);
@@ -6788,6 +6824,78 @@ impl InlineFormattingContext {
             replaced_item.height,
             replaced_item.width,
           );
+          if let Some(id) = box_id {
+            if replaced_item.style.establishes_abs_containing_block()
+              || replaced_item.style.establishes_fixed_containing_block()
+            {
+              if let Some(map) = positioned_containing_blocks.as_deref_mut() {
+                let percentage_base_px = bounds.width().max(0.0);
+                let border_left = resolve_length_for_width(
+                  replaced_item.style.used_border_left_width(),
+                  percentage_base_px,
+                  replaced_item.style.as_ref(),
+                  &self.font_context,
+                  self.viewport_size,
+                );
+                let border_right = resolve_length_for_width(
+                  replaced_item.style.used_border_right_width(),
+                  percentage_base_px,
+                  replaced_item.style.as_ref(),
+                  &self.font_context,
+                  self.viewport_size,
+                );
+                let border_top = resolve_length_for_width(
+                  replaced_item.style.used_border_top_width(),
+                  percentage_base_px,
+                  replaced_item.style.as_ref(),
+                  &self.font_context,
+                  self.viewport_size,
+                );
+                let border_bottom = resolve_length_for_width(
+                  replaced_item.style.used_border_bottom_width(),
+                  percentage_base_px,
+                  replaced_item.style.as_ref(),
+                  &self.font_context,
+                  self.viewport_size,
+                );
+                let padding_rect = Rect::from_xywh(
+                  bounds.x() + border_left,
+                  bounds.y() + border_top,
+                  (bounds.width() - border_left - border_right).max(0.0),
+                  (bounds.height() - border_top - border_bottom).max(0.0),
+                );
+                let cb_block_base = Some(padding_rect.size.height);
+                let new_cb = ContainingBlock::with_viewport_and_bases(
+                  padding_rect,
+                  self.viewport_size,
+                  Some(padding_rect.size.width),
+                  cb_block_base,
+                );
+                map
+                  .entry(id)
+                  .and_modify(|existing| {
+                    let union = Rect::from_points(
+                      Point::new(
+                        existing.rect.min_x().min(padding_rect.min_x()),
+                        existing.rect.min_y().min(padding_rect.min_y()),
+                      ),
+                      Point::new(
+                        existing.rect.max_x().max(padding_rect.max_x()),
+                        existing.rect.max_y().max(padding_rect.max_y()),
+                      ),
+                    );
+                    let block_base = Some(union.size.height);
+                    *existing = ContainingBlock::with_viewport_and_bases(
+                      union,
+                      existing.viewport_size(),
+                      Some(union.size.width),
+                      block_base,
+                    );
+                  })
+                  .or_insert(new_cb);
+              }
+            }
+          }
           FragmentNode::new_with_style(
             bounds,
             FragmentContent::Replaced {
@@ -6804,6 +6912,78 @@ impl InlineFormattingContext {
             replaced_item.width,
             replaced_item.height,
           );
+          if let Some(id) = box_id {
+            if replaced_item.style.establishes_abs_containing_block()
+              || replaced_item.style.establishes_fixed_containing_block()
+            {
+              if let Some(map) = positioned_containing_blocks.as_deref_mut() {
+                let percentage_base_px = bounds.width().max(0.0);
+                let border_left = resolve_length_for_width(
+                  replaced_item.style.used_border_left_width(),
+                  percentage_base_px,
+                  replaced_item.style.as_ref(),
+                  &self.font_context,
+                  self.viewport_size,
+                );
+                let border_right = resolve_length_for_width(
+                  replaced_item.style.used_border_right_width(),
+                  percentage_base_px,
+                  replaced_item.style.as_ref(),
+                  &self.font_context,
+                  self.viewport_size,
+                );
+                let border_top = resolve_length_for_width(
+                  replaced_item.style.used_border_top_width(),
+                  percentage_base_px,
+                  replaced_item.style.as_ref(),
+                  &self.font_context,
+                  self.viewport_size,
+                );
+                let border_bottom = resolve_length_for_width(
+                  replaced_item.style.used_border_bottom_width(),
+                  percentage_base_px,
+                  replaced_item.style.as_ref(),
+                  &self.font_context,
+                  self.viewport_size,
+                );
+                let padding_rect = Rect::from_xywh(
+                  bounds.x() + border_left,
+                  bounds.y() + border_top,
+                  (bounds.width() - border_left - border_right).max(0.0),
+                  (bounds.height() - border_top - border_bottom).max(0.0),
+                );
+                let cb_block_base = Some(padding_rect.size.height);
+                let new_cb = ContainingBlock::with_viewport_and_bases(
+                  padding_rect,
+                  self.viewport_size,
+                  Some(padding_rect.size.width),
+                  cb_block_base,
+                );
+                map
+                  .entry(id)
+                  .and_modify(|existing| {
+                    let union = Rect::from_points(
+                      Point::new(
+                        existing.rect.min_x().min(padding_rect.min_x()),
+                        existing.rect.min_y().min(padding_rect.min_y()),
+                      ),
+                      Point::new(
+                        existing.rect.max_x().max(padding_rect.max_x()),
+                        existing.rect.max_y().max(padding_rect.max_y()),
+                      ),
+                    );
+                    let block_base = Some(union.size.height);
+                    *existing = ContainingBlock::with_viewport_and_bases(
+                      union,
+                      existing.viewport_size(),
+                      Some(union.size.width),
+                      block_base,
+                    );
+                  })
+                  .or_insert(new_cb);
+              }
+            }
+          }
           FragmentNode::new_with_style(
             bounds,
             FragmentContent::Replaced {
@@ -11796,32 +11976,32 @@ impl InlineFormattingContext {
       } else {
         base_factory.with_fixed_cb(default_fixed_cb)
       };
-      let mut custom_abs_factories: HashMap<usize, FormattingContextFactory> = HashMap::new();
-      let mut custom_fixed_factories: HashMap<usize, FormattingContextFactory> = HashMap::new();
-      for positioned_child in &positioned_children {
-        let Some(id) = positioned_child.containing_block_id else {
-          continue;
-        };
-        let Some(custom_cb) = positioned_containing_blocks.get(&id).copied() else {
-          continue;
-        };
-        if custom_cb != abs_cb && !custom_abs_factories.contains_key(&id) {
-          custom_abs_factories.insert(id, base_factory.with_positioned_cb(custom_cb));
-        }
-        if custom_cb != default_fixed_cb && !custom_fixed_factories.contains_key(&id) {
-          custom_fixed_factories.insert(id, base_factory.with_fixed_cb(custom_cb));
-        }
-      }
-        let layout_positioned_child = |positioned_child: &PositionedChild| {
-          let PositionedChild {
-            node: child_ref,
-            box_id,
-            containing_block_id,
-            parent_box_id,
-          } = *positioned_child;
-        // SAFETY: `PositionedChild` stores pointers into the (immutable) box tree owned by the
-        // current layout run. The tree is not moved while `layout_with_floats` executes.
-        let child = unsafe { child_ref.get() };
+       let mut custom_abs_factories: HashMap<usize, FormattingContextFactory> = HashMap::new();
+       let mut custom_fixed_factories: HashMap<usize, FormattingContextFactory> = HashMap::new();
+       for positioned_child in &positioned_children {
+         let Some(id) = positioned_child.containing_block_id else {
+           continue;
+         };
+         let Some(custom_cb) = positioned_containing_blocks.get(&id).copied() else {
+           continue;
+         };
+         if custom_cb != abs_cb && !custom_abs_factories.contains_key(&id) {
+           custom_abs_factories.insert(id, base_factory.with_positioned_cb(custom_cb));
+         }
+         if custom_cb != default_fixed_cb && !custom_fixed_factories.contains_key(&id) {
+           custom_fixed_factories.insert(id, base_factory.with_fixed_cb(custom_cb));
+         }
+       }
+       let layout_positioned_child = |positioned_child: &PositionedChild| {
+         let PositionedChild {
+           node: child_ref,
+           box_id,
+           containing_block_id,
+           parent_box_id,
+         } = *positioned_child;
+         // SAFETY: `PositionedChild` stores pointers into the (immutable) box tree owned by the
+         // current layout run. The tree is not moved while `layout_with_floats` executes.
+         let child = unsafe { child_ref.get() };
         let custom_cb = containing_block_id
           .and_then(|id| positioned_containing_blocks.get(&id))
           .copied();
@@ -11840,10 +12020,16 @@ impl InlineFormattingContext {
           (abs_cb, false)
         };
 
-        let mut child_static_position = anchor_positions
-          .get(&box_id)
-          .copied()
-          .unwrap_or(default_static_position);
+        let mut child_static_position = if let Some(anchor) = anchor_positions.get(&box_id).copied() {
+          anchor
+        } else if let Some(id) = containing_block_id {
+          positioned_containing_blocks
+            .get(&id)
+            .map(|cb| cb.origin())
+            .unwrap_or(default_static_position)
+        } else {
+          default_static_position
+        };
         if !adjust_static_position && child_cb == cb && root_establishes_abs_cb {
           // Static positions are tracked in the inline formatting context's content coordinate space.
           // When the positioned containing block is the padding box (bounded by the padding edge),
@@ -12072,6 +12258,68 @@ impl InlineFormattingContext {
         Ok(child_fragment)
       };
 
+      fn attach_positioned_fragment_to_replaced(
+        merged_children: &mut Vec<FragmentNode>,
+        containing_block_id: Option<usize>,
+        mut fragment: FragmentNode,
+      ) {
+        let Some(containing_block_id) = containing_block_id else {
+          merged_children.push(fragment);
+          return;
+        };
+
+        fn find_replaced_path_and_origin(
+          nodes: &[FragmentNode],
+          target_id: usize,
+        ) -> Option<(Vec<usize>, Point)> {
+          let mut stack: Vec<(Vec<usize>, Point, &FragmentNode)> = Vec::new();
+          for (index, node) in nodes.iter().enumerate().rev() {
+            stack.push((vec![index], node.bounds.origin, node));
+          }
+          while let Some((path, origin, node)) = stack.pop() {
+            if matches!(
+              node.content,
+              FragmentContent::Replaced {
+                box_id: Some(id),
+                ..
+              } if id == target_id
+            ) {
+              return Some((path, origin));
+            }
+            for (index, child) in node.children.iter().enumerate().rev() {
+              let mut child_path = path.clone();
+              child_path.push(index);
+              let child_origin = Point::new(
+                origin.x + child.bounds.origin.x,
+                origin.y + child.bounds.origin.y,
+              );
+              stack.push((child_path, child_origin, child));
+            }
+          }
+          None
+        }
+
+        let Some((path, origin)) =
+          find_replaced_path_and_origin(merged_children.as_slice(), containing_block_id)
+        else {
+          merged_children.push(fragment);
+          return;
+        };
+
+        let offset = Point::new(-origin.x, -origin.y);
+        fragment.bounds = fragment.bounds.translate(offset);
+        if let Some(logical) = fragment.logical_override {
+          fragment.logical_override = Some(logical.translate(offset));
+        }
+
+        let mut cursor: &mut Vec<FragmentNode> = merged_children;
+        for &index in &path[..path.len() - 1] {
+          cursor = &mut *cursor[index].children_mut();
+        }
+        let target_index = *path.last().unwrap();
+        cursor[target_index].children_mut().push(fragment);
+      }
+
       if self
         .parallelism
         .should_parallelize(positioned_children.len())
@@ -12090,13 +12338,18 @@ impl InlineFormattingContext {
             })
           })
           .collect::<Vec<_>>();
-        for result in positioned_results {
+        for (positioned_child, result) in positioned_children.iter().zip(positioned_results) {
           if let Err(RenderError::Timeout { elapsed, .. }) =
             check_active_periodic(&mut deadline_counter, 32, RenderStage::Layout)
           {
             return Err(LayoutError::Timeout { elapsed });
           }
-          merged_children.push(result?);
+          let fragment = result?;
+          attach_positioned_fragment_to_replaced(
+            &mut merged_children,
+            positioned_child.containing_block_id,
+            fragment,
+          );
         }
       } else {
         for child in &positioned_children {
@@ -12105,7 +12358,12 @@ impl InlineFormattingContext {
           {
             return Err(LayoutError::Timeout { elapsed });
           }
-          merged_children.push(layout_positioned_child(child)?);
+          let fragment = layout_positioned_child(child)?;
+          attach_positioned_fragment_to_replaced(
+            &mut merged_children,
+            child.containing_block_id,
+            fragment,
+          );
         }
       }
     }

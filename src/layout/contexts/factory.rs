@@ -40,11 +40,10 @@ use crate::style::display::FormattingContextType;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::BoxNode;
-use std::sync::Arc;
-use std::sync::OnceLock;
-
 #[cfg(any(test, debug_assertions))]
 use std::cell::Cell;
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 #[cfg(any(test, debug_assertions))]
 thread_local! {

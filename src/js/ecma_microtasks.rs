@@ -892,28 +892,21 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
 
     struct Host {
       vm: vm_js::Vm,
-      heap_a: vm_js::Heap,
-      heap_b: vm_js::Heap,
+      heap: vm_js::Heap,
     }
 
     impl VmJsEngineHost for Host {
       fn vm_js_heap(&self) -> &vm_js::Heap {
-        &self.heap_a
+        &self.heap
       }
-
-      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-        &mut self.heap_b
-      }
-
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
-        (&mut self.vm, &mut self.heap_a)
+        (&mut self.vm, &mut self.heap)
       }
     }
 
     let mut host = Host {
       vm: vm_js::Vm::new(vm_js::VmOptions::default()),
-      heap_a: vm_js::Heap::new(limits),
-      heap_b: vm_js::Heap::new(limits),
+      heap: vm_js::Heap::new(limits),
     };
 
     // `VmJsJobContext::add_root` / `remove_root` should route through
@@ -927,12 +920,7 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       ctx.add_root(vm_js::Value::Null).map_err(vm_err)?
     };
 
-    assert_eq!(host.heap_b.get_root(root_id), Some(vm_js::Value::Null));
-    assert_eq!(
-      host.heap_a.get_root(root_id),
-      None,
-      "root should not be stored in heap_a when vm_js_heap_mut is overridden"
-    );
+    assert_eq!(host.heap.get_root(root_id), Some(vm_js::Value::Null));
 
     {
       let mut ctx = VmJsJobContext {
@@ -941,7 +929,7 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       };
       ctx.remove_root(root_id);
     }
-    assert_eq!(host.heap_b.get_root(root_id), None);
+    assert_eq!(host.heap.get_root(root_id), None);
     Ok(())
   }
 
@@ -1217,12 +1205,12 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     }
 
     impl VmJsEngineHost for Host {
-      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
-        (&mut self.vm, &mut self.heap)
-      }
-
       fn vm_js_heap(&self) -> &vm_js::Heap {
         &self.heap
+      }
+
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
       }
     }
 

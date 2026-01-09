@@ -1495,7 +1495,14 @@ pub fn paginate_fragment_tree(
         &mut containing_line,
       );
       if let Some(line_start) = containing_line {
+        // When the page boundary lands inside an oversized line box (one that is taller than the
+        // fragmentainer), snapping the continuation token back to the line start can prevent
+        // pagination from making forward progress (the next page would start at the same position).
+        //
+        // Only snap to the line start when it advances beyond the current page start.
+        if line_start > start + EPSILON {
         token_pos = line_start;
+        }
       }
 
       let mut best_next: Option<(f32, BreakToken)> = None;

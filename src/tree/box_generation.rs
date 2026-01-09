@@ -3291,16 +3291,55 @@ fn generate_boxes_for_styled_into(
         let mut appearance_none_form_control: Option<FormControl> = None;
         if let Some(form_control) = create_form_control_replaced(styled) {
           if !matches!(form_control.appearance, crate::style::types::Appearance::None) {
+            // Form controls short-circuit box generation as replaced elements, but we still need to
+            // honor authored ::before/::after pseudo-elements so real-world patterns like styled
+            // search icons render. To keep layout complexity manageable, only attach out-of-flow
+            // pseudo elements (position:absolute/fixed) since we do not run in-flow layout inside a
+            // replaced element.
+            let mut pseudo_children = Vec::new();
+            if let Some(before_styles) = styled
+              .before_styles
+              .as_ref()
+              .filter(|s| s.position.is_absolutely_positioned())
+            {
+              let before_start = clone_starting_style(&styled.starting_styles.before);
+              if let Some(before_box) = create_pseudo_element_box(
+                styled,
+                before_styles,
+                before_start,
+                "before",
+                counters,
+                &mut quote_depth,
+              ) {
+                pseudo_children.push(before_box);
+              }
+            }
+            if let Some(after_styles) = styled
+              .after_styles
+              .as_ref()
+              .filter(|s| s.position.is_absolutely_positioned())
+            {
+              let after_start = clone_starting_style(&styled.starting_styles.after);
+              if let Some(after_box) = create_pseudo_element_box(
+                styled,
+                after_styles,
+                after_start,
+                "after",
+                counters,
+                &mut quote_depth,
+              ) {
+                pseudo_children.push(after_box);
+              }
+            }
+
             let popped = stack.pop();
             debug_assert!(popped.is_some(), "frame exists");
             counters.leave_scope();
             let style = blockify_style_for_flex_or_grid_item_if_needed(&styled.styles, &stack);
-            let box_node = BoxNode::new_replaced(
-              style,
-              ReplacedType::FormControl(form_control),
-              None,
-              None,
-            );
+            let mut box_node =
+              BoxNode::new_replaced(style, ReplacedType::FormControl(form_control), None, None);
+            box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
+            box_node.children = pseudo_children;
             let box_node = attach_debug_info(box_node, styled);
             if let Some(parent) = stack.last_mut() {
               parent.children.push(box_node);

@@ -365,11 +365,11 @@ fn subtree_contains_out_of_flow_positioned(
     if matches!(node.style.position, Position::Absolute | Position::Fixed) {
       return Ok(true);
     }
-    if let Some(body) = node.footnote_body.as_deref() {
-      stack.push(body);
-    }
     for child in node.children.iter() {
       stack.push(child);
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
     }
   }
   Ok(false)
@@ -1199,9 +1199,13 @@ impl FormattingContext for FlexFormattingContext {
     let factory = base_factory.clone();
     let viewport_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
     let mut scroll_sensitive_items: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let mut positioned_sensitive_items: FxHashSet<*const BoxNode> = FxHashSet::default();
     for child in in_flow_children.iter() {
       if subtree_contains_content_visibility_auto(child, &mut deadline_counter)? {
         scroll_sensitive_items.insert(*child as *const BoxNode);
+      }
+      if subtree_contains_out_of_flow_positioned(child, &mut deadline_counter)? {
+        positioned_sensitive_items.insert(*child as *const BoxNode);
       }
     }
     let flex_item_block_fc: Arc<dyn FormattingContext> = Arc::new(
@@ -3746,6 +3750,7 @@ impl FormattingContext for FlexFormattingContext {
       &constraints,
       auto_unskipped,
       &scroll_sensitive_items,
+      &positioned_sensitive_items,
     )?;
     // Taffy occasionally underestimates the block-size of multi-line flex containers with
     // `height:auto`, reporting only the last line's cross size. This results in in-flow children
@@ -8363,6 +8368,7 @@ impl FlexFormattingContext {
     constraints: &LayoutConstraints,
     auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     scroll_sensitive: &FxHashSet<*const BoxNode>,
+    positioned_sensitive: &FxHashSet<*const BoxNode>,
   ) -> Result<FragmentNode, LayoutError> {
     // Get layout from Taffy
     let layout = taffy_tree
@@ -8508,9 +8514,12 @@ impl FlexFormattingContext {
       /// Used to translate the viewport scroll offset into the child's local coordinate system so
       /// nested formatting contexts can make correct `content-visibility:auto` culling decisions.
       origin: Point,
-      /// Whether the item contains `content-visibility:auto` in its subtree, meaning we need to
-      /// translate the viewport scroll offset into this item's coordinate space.
+      /// Whether this subtree contains `content-visibility:auto` and therefore needs viewport
+      /// scroll translated into its local coordinate space during layout.
       scroll_sensitive: bool,
+      /// Whether this subtree contains out-of-flow positioned descendants and therefore needs
+      /// containing blocks translated into its local coordinate space during layout.
+      positioned_sensitive: bool,
       constraints: LayoutConstraints,
       used_border_box_width: Option<f32>,
       used_border_box_height: Option<f32>,
@@ -8853,6 +8862,7 @@ impl FlexFormattingContext {
 
       let child_ptr = child_box as *const BoxNode;
       let is_scroll_sensitive = scroll_sensitive.contains(&child_ptr);
+      let is_positioned_sensitive = positioned_sensitive.contains(&child_ptr);
 
       if !needs_intrinsic_main {
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
@@ -8998,16 +9008,15 @@ impl FlexFormattingContext {
       } else {
         base_constraints
       };
-      let child_scroll_sensitive = is_scroll_sensitive;
-      let needs_translated_factory = child_scroll_sensitive
-        || subtree_contains_out_of_flow_positioned(child_box, &mut deadline_counter)?;
+      let needs_translated_factory = is_scroll_sensitive || is_positioned_sensitive;
       layout_work.push(ChildLayoutWorkItem {
         dom_idx,
         child_box,
         fc_type,
         needs_translated_factory,
         origin: Point::new(child_loc_x, child_loc_y),
-        scroll_sensitive: child_scroll_sensitive,
+        scroll_sensitive: is_scroll_sensitive,
+        positioned_sensitive: is_positioned_sensitive,
         constraints,
         used_border_box_width,
         used_border_box_height,
@@ -9026,36 +9035,38 @@ impl FlexFormattingContext {
         && layout_work_count >= self.parallelism.min_fanout;
       let deadline = active_deadline();
       let run_layout = |deadline_counter: &mut usize,
-                        work: &ChildLayoutWorkItem<'_>|
+                         work: &ChildLayoutWorkItem<'_>|
        -> Result<(usize, ChildLayoutWorkOutput), LayoutError> {
-        let fc: Arc<dyn FormattingContext> =
-          if work.needs_translated_factory {
-            // Translate viewport-relative state into the child's coordinate system so nested
-            // formatting contexts can correctly decide which `content-visibility:auto` descendants
-            // intersect the viewport and so absolute/fixed positioning resolves against the correct
-            // containing blocks.
-            //
-            // The flex container receives state already translated into its own coordinate space by
-            // its parent (block/grid/flex); do the same for each child formatting context using the
-            // Taffy placement origin.
-            let child_factory = factory.translated_for_child(work.origin);
-            if matches!(work.fc_type, FormattingContextType::Block) {
-              // Flex items establish an independent formatting context. Block flex items need the
-              // flex-item block formatting context so:
-              // - auto margins resolve per flexbox rules, and
-              // - parent/child margin collapsing is prevented (flex items behave like a BFC).
-              Arc::new(
-                BlockFormattingContext::for_flex_item_with_factory(child_factory.clone())
-                  .with_parallelism(self.parallelism),
-              )
-            } else {
-              child_factory.get(work.fc_type)
-            }
-          } else if matches!(work.fc_type, FormattingContextType::Block) {
-            flex_item_block_fc.clone()
+        let fc: Arc<dyn FormattingContext> = if work.needs_translated_factory {
+          // Translate viewport-relative state into the child's coordinate system so nested
+          // formatting contexts can correctly decide which `content-visibility:auto` descendants
+          // intersect the viewport and so absolute/fixed positioning resolves against the correct
+          // containing blocks.
+          //
+          // Translating the factory resets its cached formatting contexts; avoid doing so unless the
+          // subtree actually needs viewport/cb translation.
+          //
+          // The flex container receives state already translated into its own coordinate space by
+          // its parent (block/grid/flex); do the same for each child formatting context using the
+          // Taffy placement origin.
+          let child_factory = factory.translated_for_child(work.origin);
+          if matches!(work.fc_type, FormattingContextType::Block) {
+            // Flex items establish an independent formatting context. Block flex items need the
+            // flex-item block formatting context so:
+            // - auto margins resolve per flexbox rules, and
+            // - parent/child margin collapsing is prevented (flex items behave like a BFC).
+            Arc::new(
+              BlockFormattingContext::for_flex_item_with_factory(child_factory.clone())
+                .with_parallelism(self.parallelism),
+            )
           } else {
-            factory.get(work.fc_type)
-          };
+            child_factory.get(work.fc_type)
+          }
+        } else if matches!(work.fc_type, FormattingContextType::Block) {
+          flex_item_block_fc.clone()
+        } else {
+          factory.get(work.fc_type)
+        };
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
         let basis_content_override = work.layout_child_storage.is_none()
           && matches!(
@@ -9575,7 +9586,7 @@ impl FlexFormattingContext {
               Point::new(child_loc_x, child_loc_y),
               Size::new(layout_width, layout_height),
             );
-            let fragment = FragmentNode::new_with_style(
+            let mut fragment = FragmentNode::new_with_style(
               bounds,
               crate::tree::fragment_tree::FragmentContent::Replaced {
                 replaced_type: replaced_box.replaced_type.clone(),
@@ -9584,6 +9595,173 @@ impl FlexFormattingContext {
               vec![],
               child_box.style.clone(),
             );
+            // Replaced boxes are usually treated as leaves, but form controls can have generated
+            // ::before/::after pseudo-element children. Only out-of-flow pseudos are generated, so
+            // lay them out here against the replaced element's padding box.
+            if !child_box.children.is_empty() {
+              let style = &child_box.style;
+              let percentage_base_px = bounds.width().max(0.0);
+              let border_left =
+                self.resolve_length_for_width(style.used_border_left_width(), percentage_base_px, style);
+              let border_right = self.resolve_length_for_width(
+                style.used_border_right_width(),
+                percentage_base_px,
+                style,
+              );
+              let border_top =
+                self.resolve_length_for_width(style.used_border_top_width(), percentage_base_px, style);
+              let border_bottom = self.resolve_length_for_width(
+                style.used_border_bottom_width(),
+                percentage_base_px,
+                style,
+              );
+              let padding_rect = Rect::from_xywh(
+                bounds.x() + border_left,
+                bounds.y() + border_top,
+                (bounds.width() - border_left - border_right).max(0.0),
+                (bounds.height() - border_top - border_bottom).max(0.0),
+              );
+              let cb = ContainingBlock::with_viewport_and_bases(
+                padding_rect,
+                self.viewport_size,
+                Some(padding_rect.size.width),
+                Some(padding_rect.size.height),
+              );
+
+              let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
+              let font_context = self.font_context.clone();
+              let base_factory = self.factory.clone();
+              let abs_factory = if cb == base_factory.nearest_positioned_cb() {
+                base_factory.clone()
+              } else {
+                base_factory.with_positioned_cb(cb)
+              };
+              for positioned_child in child_box.children.iter().filter(|desc| {
+                desc
+                  .style
+                  .position
+                  .is_absolutely_positioned()
+              }) {
+                let original_style = positioned_child.style.clone();
+                let mut layout_child = positioned_child.clone();
+                let mut child_style = layout_child.style.clone();
+                {
+                  let s = Arc::make_mut(&mut child_style);
+                  s.position = Position::Relative;
+                  s.top = crate::style::types::InsetValue::Auto;
+                  s.right = crate::style::types::InsetValue::Auto;
+                  s.bottom = crate::style::types::InsetValue::Auto;
+                  s.left = crate::style::types::InsetValue::Auto;
+                }
+                layout_child.style = child_style;
+
+                let fc_type = layout_child
+                  .formatting_context()
+                  .unwrap_or(FormattingContextType::Block);
+                let fc = abs_factory.get(fc_type);
+                let child_constraints = LayoutConstraints::new(
+                  CrateAvailableSpace::Definite(cb.rect.size.width),
+                  cb
+                    .block_percentage_base()
+                    .map(CrateAvailableSpace::Definite)
+                    .unwrap_or(CrateAvailableSpace::Indefinite),
+                );
+                let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
+                let mut positioned_style = resolve_positioned_style_with_anchors(
+                  &original_style,
+                  &cb,
+                  self.viewport_size,
+                  &font_context,
+                  None,
+                  Some(child_box.id),
+                );
+                positioned_style.width_keyword = original_style.width_keyword;
+                positioned_style.min_width_keyword = original_style.min_width_keyword;
+                positioned_style.max_width_keyword = original_style.max_width_keyword;
+                positioned_style.height_keyword = original_style.height_keyword;
+                positioned_style.min_height_keyword = original_style.min_height_keyword;
+                positioned_style.max_height_keyword = original_style.max_height_keyword;
+
+                let actual_horizontal = positioned_style.padding.left
+                  + positioned_style.padding.right
+                  + positioned_style.border_width.left
+                  + positioned_style.border_width.right;
+                let actual_vertical = positioned_style.padding.top
+                  + positioned_style.padding.bottom
+                  + positioned_style.border_width.top
+                  + positioned_style.border_width.bottom;
+                let content_offset = Point::new(
+                  positioned_style.border_width.left + positioned_style.padding.left,
+                  positioned_style.border_width.top + positioned_style.padding.top,
+                );
+                let intrinsic_size = Size::new(
+                  (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
+                  (child_fragment.bounds.size.height - actual_vertical).max(0.0),
+                );
+                let input = AbsoluteLayoutInput::new(positioned_style, intrinsic_size, Point::ZERO);
+                let result = abs.layout_absolute(&input, &cb)?;
+                let border_size = Size::new(
+                  result.size.width + actual_horizontal,
+                  result.size.height + actual_vertical,
+                );
+                let border_origin = Point::new(
+                  result.position.x - content_offset.x,
+                  result.position.y - content_offset.y,
+                );
+                let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+                  || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+                if needs_relayout {
+                  let supports_used_border_box = matches!(
+                    fc_type,
+                    FormattingContextType::Block
+                      | FormattingContextType::Flex
+                      | FormattingContextType::Grid
+                      | FormattingContextType::Inline
+                  );
+                  let relayout_constraints = child_constraints
+                    .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
+                  let width_auto =
+                    layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none();
+                  let height_auto = layout_child.style.height.is_none()
+                    && layout_child.style.height_keyword.is_none();
+                  if supports_used_border_box && width_auto && height_auto {
+                    child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
+                  } else {
+                    let mut relayout_style = layout_child.style.clone();
+                    {
+                      let s = Arc::make_mut(&mut relayout_style);
+                      s.width = Some(Length::px(border_size.width));
+                      s.height = Some(Length::px(border_size.height));
+                      s.width_keyword = None;
+                      s.height_keyword = None;
+                      s.min_width_keyword = None;
+                      s.max_width_keyword = None;
+                      s.min_height_keyword = None;
+                      s.max_height_keyword = None;
+                    }
+                    layout_child.style = relayout_style;
+                    child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
+                  }
+                }
+                child_fragment.bounds = Rect::new(border_origin, border_size);
+                child_fragment.style = Some(original_style);
+                match &mut child_fragment.content {
+                  FragmentContent::Block { box_id: id } => *id = Some(positioned_child.id),
+                  FragmentContent::Inline { box_id: id, .. } => *id = Some(positioned_child.id),
+                  FragmentContent::Text { box_id: id, .. } => *id = Some(positioned_child.id),
+                  FragmentContent::Replaced { box_id: id, .. } => *id = Some(positioned_child.id),
+                  FragmentContent::Line { .. }
+                  | FragmentContent::RunningAnchor { .. }
+                  | FragmentContent::FootnoteAnchor { .. } => {}
+                }
+                let offset = Point::new(-bounds.x(), -bounds.y());
+                child_fragment.bounds = child_fragment.bounds.translate(offset);
+                if let Some(logical) = child_fragment.logical_override {
+                  child_fragment.logical_override = Some(logical.translate(offset));
+                }
+                fragment.children_mut().push(child_fragment);
+              }
+            }
             final_fragment = Some(fragment);
           }
         }

@@ -3,6 +3,24 @@ use fastrender::geometry::Rect;
 use fastrender::style::display::Display;
 use fastrender::tree::fragment_tree::FragmentNode;
 
+fn with_large_stack<F, R>(f: F) -> R
+where
+  F: FnOnce() -> R + Send + 'static,
+  R: Send + 'static,
+{
+  // Some layout tests (especially those involving nested table/grid layout) can recurse deeply
+  // enough to overflow the default Rust test thread stack.
+  const STACK_SIZE: usize = 8 * 1024 * 1024;
+  let handle = std::thread::Builder::new()
+    .stack_size(STACK_SIZE)
+    .spawn(f)
+    .expect("failed to spawn test thread");
+  match handle.join() {
+    Ok(result) => result,
+    Err(payload) => std::panic::resume_unwind(payload),
+  }
+}
+
 fn find_table<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
   // Avoid recursive traversal: fragment trees can be deep enough to overflow the default Rust test
   // thread stack on some platforms.
@@ -58,10 +76,11 @@ fn collect_cell_rects(node: &FragmentNode, origin: (f32, f32), out: &mut Vec<Rec
 
 #[test]
 fn grid_item_table_layout_fixed_width_auto_uses_auto_layout() {
+  with_large_stack(|| {
   let html = r#"
-    <html>
-      <head>
-        <style>
+     <html>
+       <head>
+         <style>
           body { margin: 0; }
           .grid {
             display: grid;
@@ -113,14 +132,16 @@ fn grid_item_table_layout_fixed_width_auto_uses_auto_layout() {
     max_cell_width > 250.0,
     "expected wide second-row content to influence column width in grid context (max cell width {max_cell_width:.2})"
   );
+  });
 }
 
 #[test]
 fn grid_item_table_layout_fixed_width_auto_uses_auto_layout_rtl() {
+  with_large_stack(|| {
   let html = r#"
-    <html>
-      <head>
-        <style>
+     <html>
+       <head>
+         <style>
           body { margin: 0; }
           .grid {
             display: grid;
@@ -209,10 +230,12 @@ fn grid_item_table_layout_fixed_width_auto_uses_auto_layout_rtl() {
   );
   let gap = wide.x() - (narrow.x() + narrow.width());
   assert!(gap.abs() < 0.1, "expected columns to be adjacent in RTL (gap={gap})");
+  });
 }
 
 #[test]
 fn grid_item_table_layout_fixed_width_auto_uses_auto_layout_collapsed_border_model() {
+  with_large_stack(|| {
   let html = r#"
     <html>
       <head>
@@ -267,10 +290,12 @@ fn grid_item_table_layout_fixed_width_auto_uses_auto_layout_collapsed_border_mod
     max_cell_width > 250.0,
     "expected wide second-row content to influence column width in grid collapsed model (max cell width {max_cell_width:.2})"
   );
+  });
 }
 
 #[test]
 fn grid_item_table_layout_fixed_width_auto_uses_auto_layout_collapsed_border_model_rtl() {
+  with_large_stack(|| {
   let html = r#"
     <html>
       <head>
@@ -362,4 +387,5 @@ fn grid_item_table_layout_fixed_width_auto_uses_auto_layout_collapsed_border_mod
   );
   let gap = wide.x() - (narrow.x() + narrow.width());
   assert!(gap.abs() < 0.1, "expected columns to be adjacent in RTL (gap={gap})");
+  });
 }

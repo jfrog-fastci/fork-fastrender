@@ -3034,6 +3034,168 @@ impl BlockFormattingContext {
       ..BlockFragmentMetadata::default()
     });
 
+    // Replaced elements are usually treated as layout leaves, but form controls can have generated
+    // ::before/::after pseudo-element children. Only out-of-flow pseudo boxes are generated, so
+    // lay them out here against the replaced element's padding box.
+    if !child.children.is_empty() {
+      let border_top = resolve_border_side(
+        style,
+        block_sides.0,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let border_bottom = resolve_border_side(
+        style,
+        block_sides.1,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let padding_rect = Rect::from_xywh(
+        computed_width.border_left,
+        border_top,
+        (box_width - computed_width.border_left - computed_width.border_right).max(0.0),
+        (box_height - border_top - border_bottom).max(0.0),
+      );
+      let cb = ContainingBlock::with_viewport_and_bases(
+        padding_rect,
+        self.viewport_size,
+        Some(padding_rect.size.width),
+        Some(padding_rect.size.height),
+      );
+
+      let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
+        self.font_context.clone(),
+      );
+      let factory = self.child_factory_for_cb(cb);
+      for positioned_child in child.children.iter().filter(|desc| {
+        desc
+          .style
+          .position
+          .is_absolutely_positioned()
+      }) {
+        let original_style = positioned_child.style.clone();
+        let mut layout_child = positioned_child.clone();
+        let mut child_style = layout_child.style.clone();
+        {
+          let s = Arc::make_mut(&mut child_style);
+          s.position = Position::Relative;
+          s.top = crate::style::types::InsetValue::Auto;
+          s.right = crate::style::types::InsetValue::Auto;
+          s.bottom = crate::style::types::InsetValue::Auto;
+          s.left = crate::style::types::InsetValue::Auto;
+        }
+        layout_child.style = child_style;
+
+        let fc_type = layout_child
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let fc = factory.get(fc_type);
+        let child_constraints = LayoutConstraints::new(
+          AvailableSpace::Definite(cb.rect.size.width),
+          cb
+            .block_percentage_base()
+            .map(AvailableSpace::Definite)
+            .unwrap_or(AvailableSpace::Indefinite),
+        );
+        let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
+        let mut positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
+          &original_style,
+          &cb,
+          self.viewport_size,
+          &self.font_context,
+          None,
+          Some(child.id),
+        );
+        positioned_style.width_keyword = original_style.width_keyword;
+        positioned_style.min_width_keyword = original_style.min_width_keyword;
+        positioned_style.max_width_keyword = original_style.max_width_keyword;
+        positioned_style.height_keyword = original_style.height_keyword;
+        positioned_style.min_height_keyword = original_style.min_height_keyword;
+        positioned_style.max_height_keyword = original_style.max_height_keyword;
+
+        let actual_horizontal = positioned_style.padding.left
+          + positioned_style.padding.right
+          + positioned_style.border_width.left
+          + positioned_style.border_width.right;
+        let actual_vertical = positioned_style.padding.top
+          + positioned_style.padding.bottom
+          + positioned_style.border_width.top
+          + positioned_style.border_width.bottom;
+        let content_offset = Point::new(
+          positioned_style.border_width.left + positioned_style.padding.left,
+          positioned_style.border_width.top + positioned_style.padding.top,
+        );
+        let intrinsic_size = Size::new(
+          (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
+          (child_fragment.bounds.size.height - actual_vertical).max(0.0),
+        );
+
+        let input = crate::layout::absolute_positioning::AbsoluteLayoutInput::new(
+          positioned_style,
+          intrinsic_size,
+          Point::ZERO,
+        );
+        let result = abs.layout_absolute(&input, &cb)?;
+        let border_size = Size::new(
+          result.size.width + actual_horizontal,
+          result.size.height + actual_vertical,
+        );
+        let border_origin = Point::new(
+          result.position.x - content_offset.x,
+          result.position.y - content_offset.y,
+        );
+        let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+        if needs_relayout {
+          let supports_used_border_box = matches!(
+            fc_type,
+            FormattingContextType::Block
+              | FormattingContextType::Flex
+              | FormattingContextType::Grid
+              | FormattingContextType::Inline
+          );
+          let relayout_constraints = child_constraints
+            .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
+          let width_auto =
+            layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none();
+          let height_auto =
+            layout_child.style.height.is_none() && layout_child.style.height_keyword.is_none();
+          if supports_used_border_box && width_auto && height_auto {
+            child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
+          } else {
+            let mut relayout_style = layout_child.style.clone();
+            {
+              let s = Arc::make_mut(&mut relayout_style);
+              s.width = Some(Length::px(border_size.width));
+              s.height = Some(Length::px(border_size.height));
+              s.width_keyword = None;
+              s.height_keyword = None;
+              s.min_width_keyword = None;
+              s.max_width_keyword = None;
+              s.min_height_keyword = None;
+              s.max_height_keyword = None;
+            }
+            layout_child.style = relayout_style;
+            child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
+          }
+        }
+        child_fragment.bounds = Rect::new(border_origin, border_size);
+        child_fragment.style = Some(original_style);
+        match &mut child_fragment.content {
+          FragmentContent::Block { box_id: id } => *id = Some(positioned_child.id),
+          FragmentContent::Inline { box_id: id, .. } => *id = Some(positioned_child.id),
+          FragmentContent::Text { box_id: id, .. } => *id = Some(positioned_child.id),
+          FragmentContent::Replaced { box_id: id, .. } => *id = Some(positioned_child.id),
+          FragmentContent::Line { .. }
+          | FragmentContent::RunningAnchor { .. }
+          | FragmentContent::FootnoteAnchor { .. } => {}
+        }
+        fragment.children_mut().push(child_fragment);
+      }
+    }
+
     Ok(fragment)
   }
 
@@ -5331,6 +5493,11 @@ impl BlockFormattingContext {
             }
             continue;
           };
+          clipped_content.slice_info =
+            crate::tree::fragment_tree::FragmentSliceInfo::single(set_content_total);
+
+          // `clip_node_with_axes` retains the original fragment slice metadata. Reset it so the
+          // analyzer's `content_extent` is bounded to the clipped range.
           clipped_content.slice_info =
             crate::tree::fragment_tree::FragmentSliceInfo::single(set_content_total);
 
@@ -7948,6 +8115,13 @@ impl FormattingContext for BlockFormattingContext {
     let mut float_line_width = 0.0f32;
     let mut float_line_has_left = false;
     let mut float_line_has_right = false;
+    // Floats only contribute to intrinsic widths for shrink-to-fit containers (e.g. inline-block).
+    // For normal block containers, floats are out-of-flow and should not affect min/max-content.
+    let include_floats = style.shrink_to_fit_inline_size
+      || matches!(
+        &box_node.box_type,
+        BoxType::Inline(inline) if inline.formatting_context.is_some()
+      );
     let mut inline_run: Vec<&BoxNode> = Vec::new();
     let flush_inline_run = |run: &mut Vec<&BoxNode>,
                             widest_min: &mut f32,
@@ -7986,6 +8160,9 @@ impl FormattingContext for BlockFormattingContext {
       }
 
       if child.style.float.is_floating() {
+        if !include_floats {
+          continue;
+        }
         // Floats still affect the shrink-to-fit width of block containers (including inline-block)
         // because they take up inline-axis space and can force subsequent content onto new lines.
         //

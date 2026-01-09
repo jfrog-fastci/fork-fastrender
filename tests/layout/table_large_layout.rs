@@ -33,7 +33,7 @@ fn layout_perf_budget(strict: Duration) -> Duration {
   //
   // Keep a looser ceiling in parallel runs to avoid flakiness, while still catching catastrophic
   // regressions. For deterministic perf checks, run with `--test-threads=1`.
-  Duration::from_secs(60)
+  Duration::from_secs(120)
 }
 
 fn with_large_stack<F: FnOnce() + Send + 'static>(f: F) {

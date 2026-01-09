@@ -828,7 +828,28 @@ pub(crate) fn parallel_flow_content_extent(
 
       bbox_extent.max(original_extent)
     }
-    FragmentationContext::Page => axis.block_size(&root.logical_bounding_box()),
+    FragmentationContext::Page => {
+      // Fragment roots are sometimes given a synthetic block-size (e.g. to satisfy a definite
+      // fragmentainer size hint). When that size is non-finite, it can poison pagination by making
+      // the computed content extent infinite, causing boundary generation to allocate until OOM.
+      //
+      // Prefer the logical bounding box (which includes the root) when finite, but fall back to the
+      // union of descendants when the root bounds are non-finite.
+      let bbox = root.logical_bounding_box();
+      let mut extent = axis.block_size(&bbox);
+      if !extent.is_finite() || extent < 0.0 {
+        let mut child_bbox = Rect::from_xywh(0.0, 0.0, 0.0, 0.0);
+        for child in root.children.iter() {
+          child_bbox = child_bbox.union(child.logical_bounding_box());
+        }
+        extent = axis.block_size(&child_bbox);
+      }
+      if !extent.is_finite() || extent < 0.0 {
+        0.0
+      } else {
+        extent
+      }
+    }
   };
 
   if !matches!(context, FragmentationContext::Page) {
@@ -2237,10 +2258,25 @@ pub(crate) fn clip_node(
     let fragment_contains_line_start =
       node_flow_start >= fragment_start && node_flow_start < fragment_end;
     let fully_contained = node_flow_start >= fragment_start && node_flow_end <= fragment_end;
-    if !overlaps
-      || (!fully_contained
-        && !fragment_starts_inside
-        && !(fragment_is_last && fragment_contains_line_start))
+    if !overlaps {
+      return Ok(None);
+    }
+
+    // If the line itself is larger than the fragmentainer, the "move the whole line to the
+    // fragment that starts within the line box" rule would skip it entirely on the fragment that
+    // contains its start edge (leading to blank pages + infinite pagination loops). In this case,
+    // keep the line on the fragment that contains its start and allow it to overflow.
+    let oversized = fragmentainer_size.is_finite()
+      && fragmentainer_size > 0.0
+      && node_block_size.is_finite()
+      && node_block_size > fragmentainer_size + BREAK_EPSILON;
+    if oversized {
+      if !fragment_contains_line_start {
+        return Ok(None);
+      }
+    } else if !fully_contained
+      && !fragment_starts_inside
+      && !(fragment_is_last && fragment_contains_line_start)
     {
       return Ok(None);
     }
