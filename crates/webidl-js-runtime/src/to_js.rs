@@ -491,14 +491,17 @@ fn to_js_record<R: WebIdlJsRuntime>(
     rt.throw_type_error("record key type is not supported (expected a string type)")
   })?;
 
-  let obj = rt.alloc_object()?;
-  for (key, v) in entries {
+  for key in entries.keys() {
     if key.len() > limits.max_string_bytes {
       return Err(rt.throw_range_error("record key exceeds maximum length"));
     }
     if string_type == StringType::ByteString && key.chars().any(|c| (c as u32) > 0xFF) {
       return Err(rt.throw_type_error(BYTESTRING_INVALID_CODE_UNITS));
     }
+  }
+
+  let obj = rt.alloc_object()?;
+  for (key, v) in entries {
     let js_value = to_js_with_limits_inner(rt, ctx, value_ty, v, limits, typedef_stack)?;
     let prop_key = rt.property_key_from_str(key)?;
     rt.define_data_property(obj, prop_key, js_value, true)?;
