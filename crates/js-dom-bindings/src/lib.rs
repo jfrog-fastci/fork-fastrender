@@ -881,6 +881,78 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return obj;
   }
 
+  // Convert arguments for `(Node or DOMString)...`.
+  function isNodeLike(v) {
+    return (
+      v &&
+      (typeof v === "object" || typeof v === "function") &&
+      v.__node_id != null
+    );
+  }
+
+  function coerceNode(v) {
+    if (isNodeLike(v)) return v;
+    // DOM Standard: non-Nodes are stringified and inserted as Text nodes.
+    return doc.createTextNode(String(v));
+  }
+
+  function coerceNodes(args) {
+    var out = [];
+    for (var i = 0; i < args.length; i++) {
+      out.push(coerceNode(args[i]));
+    }
+    return out;
+  }
+
+  // Build a set of node ids for fast exclusion checks. Used to keep reference node selection
+  // stable when some inserted nodes already exist in the target parent (spec: nodes are detached
+  // during "convert nodes into a node" before insertion).
+  function buildNodeIdSet(nodes) {
+    var set = Object.create(null);
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n && n.__node_id != null) set[n.__node_id] = true;
+    }
+    return set;
+  }
+
+  function firstChildExcluding(parent, excluded) {
+    if (!parent || !Array.isArray(parent.childNodes)) return null;
+    for (var i = 0; i < parent.childNodes.length; i++) {
+      var n = parent.childNodes[i];
+      if (!n || n.__node_id == null) continue;
+      if (!excluded[n.__node_id]) return n;
+    }
+    return null;
+  }
+
+  function nextSiblingExcluding(parent, node, excluded) {
+    if (!parent || !Array.isArray(parent.childNodes)) return null;
+    var idx = parent.childNodes.indexOf(node);
+    if (idx < 0) return null;
+    for (var i = idx + 1; i < parent.childNodes.length; i++) {
+      var n = parent.childNodes[i];
+      if (!n || n.__node_id == null) continue;
+      if (!excluded[n.__node_id]) return n;
+    }
+    return null;
+  }
+
+  function resolveParentWrapper(node, parentId) {
+    // Prefer the JS-side parent pointer for nodes created/inserted via the shim.
+    var jsParent = node.parentNode;
+    if (
+      jsParent &&
+      (typeof jsParent === "object" || typeof jsParent === "function") &&
+      jsParent.__node_id != null &&
+      typeof jsParent.insertBefore === "function"
+    ) {
+      return jsParent;
+    }
+    // Fall back to wrapper cache or (as a last resort) create a wrapper for the parent id.
+    return getCachedNode(parentId) || g.__fastrender_wrap_node_id(parentId, "element");
+  }
+
   // --- Prototypes ------------------------------------------------------------
 
   function Node() {}
@@ -1159,6 +1231,76 @@ const DOM_BINDINGS_SHIM: &str = r##"
       if (idx >= 0) parentObj.childNodes.splice(idx, 1);
     }
     this.parentNode = null;
+  };
+
+  // --- DOM Standard convenience mutation APIs --------------------------------
+  //
+  // Many real-world scripts use `ParentNode.append/prepend/replaceChildren` and
+  // `ChildNode.before/after/replaceWith/remove`. We implement these in terms of the
+  // `appendChild/insertBefore/removeChild` primitives above.
+
+  Node.prototype.before = function () {
+    if (this.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+    if (arguments.length === 0) return;
+    var parentId = g.__fastrender_dom_get_parent_node(this.__node_id);
+    if (parentId == null) return;
+    var parent = resolveParentWrapper(this, parentId);
+
+    var nodes = coerceNodes(arguments);
+    if (nodes.length === 0) return;
+    var excluded = buildNodeIdSet(nodes);
+
+    // If `this` is in the nodes list, insert at its next-sibling position.
+    var reference = excluded[this.__node_id] ? nextSiblingExcluding(parent, this, excluded) : this;
+    for (var i = 0; i < nodes.length; i++) {
+      parent.insertBefore(nodes[i], reference);
+    }
+  };
+
+  Node.prototype.after = function () {
+    if (this.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+    if (arguments.length === 0) return;
+    var parentId = g.__fastrender_dom_get_parent_node(this.__node_id);
+    if (parentId == null) return;
+    var parent = resolveParentWrapper(this, parentId);
+
+    var nodes = coerceNodes(arguments);
+    if (nodes.length === 0) return;
+    var excluded = buildNodeIdSet(nodes);
+
+    var reference = nextSiblingExcluding(parent, this, excluded);
+    for (var i = 0; i < nodes.length; i++) {
+      parent.insertBefore(nodes[i], reference);
+    }
+  };
+
+  Node.prototype.replaceWith = function () {
+    if (this.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+    var parentId = g.__fastrender_dom_get_parent_node(this.__node_id);
+    if (parentId == null) return;
+    if (arguments.length === 0) {
+      this.remove();
+      return;
+    }
+    var parent = resolveParentWrapper(this, parentId);
+
+    var nodes = coerceNodes(arguments);
+    var excluded = buildNodeIdSet(nodes);
+    var reference = nextSiblingExcluding(parent, this, excluded);
+    for (var i = 0; i < nodes.length; i++) {
+      parent.insertBefore(nodes[i], reference);
+    }
+
+    // If `this` was not part of the inserted nodes list, remove it.
+    if (!excluded[this.__node_id]) {
+      parent.removeChild(this);
+    }
   };
 
   try {
@@ -1652,6 +1794,70 @@ const DOM_BINDINGS_SHIM: &str = r##"
     var found = g.__fastrender_dom_get_element_by_id(String(id));
     if (found == null) return null;
     return g.__fastrender_wrap_node_id(found, "element");
+  };
+
+  // ParentNode convenience methods (`append`, `prepend`, `replaceChildren`).
+  //
+  // These accept `(Node or DOMString)...` and are implemented in terms of the core mutation
+  // primitives above.
+  function parentNodeAppend(target, args) {
+    var nodes = coerceNodes(args);
+    for (var i = 0; i < nodes.length; i++) {
+      target.appendChild(nodes[i]);
+    }
+  }
+  function parentNodePrepend(target, args) {
+    var nodes = coerceNodes(args);
+    if (nodes.length === 0) return;
+    var excluded = buildNodeIdSet(nodes);
+    var reference = firstChildExcluding(target, excluded);
+    for (var i = 0; i < nodes.length; i++) {
+      target.insertBefore(nodes[i], reference);
+    }
+  }
+  function parentNodeReplaceChildren(target, args) {
+    var nodes = coerceNodes(args);
+    ensureArrayProp(target, "childNodes");
+    if (Array.isArray(target.childNodes)) {
+      // Copy so we can mutate in place.
+      var existing = target.childNodes.slice();
+      for (var i = 0; i < existing.length; i++) {
+        try {
+          target.removeChild(existing[i]);
+        } catch (_e) {
+          // Ignore; the JS-side view can be partial for pre-existing DOM nodes.
+        }
+      }
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      target.appendChild(nodes[i]);
+    }
+  }
+
+  Element.prototype.append = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodeAppend(this, arguments);
+  };
+  Element.prototype.prepend = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodePrepend(this, arguments);
+  };
+  Element.prototype.replaceChildren = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodeReplaceChildren(this, arguments);
+  };
+
+  Document.prototype.append = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodeAppend(this, arguments);
+  };
+  Document.prototype.prepend = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodePrepend(this, arguments);
+  };
+  Document.prototype.replaceChildren = function () {
+    if (this.__node_id == null) throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    parentNodeReplaceChildren(this, arguments);
   };
 
   // --- Wrapper constructor ---------------------------------------------------
@@ -2791,6 +2997,84 @@ const DOM_BINDINGS_SHIM: &str = r##"
       "expected removed element to be absent from the DOM tree"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn parentnode_and_childnode_convenience_mutation_methods() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            function assert(cond) { if (!cond) throw new Error("assert"); }
+
+            // ParentNode.append: document.head.append(node)
+            var meta = document.createElement("meta");
+            document.head.append(meta);
+            assert(document.head.childNodes.length === 1);
+            assert(document.head.childNodes[0] === meta);
+
+            // ParentNode.prepend + replaceChildren ordering.
+            var a = document.createElement("a");
+            var b = document.createElement("b");
+            document.body.replaceChildren(a);
+            document.body.prepend(b);
+            assert(document.body.childNodes.length === 2);
+            assert(document.body.childNodes[0] === b);
+            assert(document.body.childNodes[1] === a);
+
+            // ChildNode.before/after ordering.
+            var x = document.createElement("x");
+            var y = document.createElement("y");
+            var z = document.createElement("z");
+            document.body.replaceChildren(x, y);
+            y.before(z);
+            assert(document.body.childNodes[0] === x);
+            assert(document.body.childNodes[1] === z);
+            assert(document.body.childNodes[2] === y);
+
+            var w = document.createElement("w");
+            z.after(w);
+            assert(document.body.childNodes[0] === x);
+            assert(document.body.childNodes[1] === z);
+            assert(document.body.childNodes[2] === w);
+            assert(document.body.childNodes[3] === y);
+
+            // ChildNode.replaceWith + DOMString conversion.
+            var t = document.createElement("t");
+            document.body.replaceChildren(t);
+            t.replaceWith("hello", " ", "world");
+            assert(document.body.textContent === "hello world");
+
+            // Detached nodes: before/after/replaceWith/remove are no-ops.
+            var d = document.createElement("d");
+            d.before("x");
+            d.after("y");
+            d.replaceWith("z");
+            d.remove();
+            assert(d.parentNode === null);
+
+            // remove() is idempotent.
+            var r = document.createElement("r");
+            document.body.append(r);
+            r.remove();
+            r.remove();
+            assert(r.parentNode === null);
+
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok);
     Ok(())
   }
 
