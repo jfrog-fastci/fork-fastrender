@@ -859,6 +859,44 @@ fn normalize_attr_value(value: &str) -> String {
 fn parse_refresh_content(content: &str) -> Option<String> {
   let decoded = decode_refresh_entities(content);
   let bytes = decoded.as_bytes();
+
+  // Only treat *immediate* refreshes as navigations. Browsers delay navigations when the leading
+  // delay token is non-zero (e.g. `5; url=/next`). FastRender URL renders should only follow the
+  // common `0; url=...` / `url=...` patterns.
+  //
+  // The refresh "delay" token is optional; when missing (e.g. `url=/next`) we treat it as `0`.
+  let trimmed = trim_ascii_whitespace(&decoded);
+  if !trimmed.is_empty() {
+    let bytes = trimmed.as_bytes();
+    let mut i = 0usize;
+    // Accept an optional sign to avoid treating `-1; url=...` as the missing-delay form.
+    if bytes[i] == b'+' || bytes[i] == b'-' {
+      i += 1;
+    }
+    if i < bytes.len() {
+      let mut saw_digit = false;
+      while i < bytes.len() && bytes[i].is_ascii_digit() {
+        saw_digit = true;
+        i += 1;
+      }
+      if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+          saw_digit = true;
+          i += 1;
+        }
+      }
+      if saw_digit {
+        let token = &trimmed[..i];
+        let Ok(delay) = token.parse::<f64>() else {
+          return None;
+        };
+        if !delay.is_finite() || delay > 0.0 {
+          return None;
+        }
+      }
+    }
+  }
   let lower: Vec<u8> = bytes.iter().map(|b| b.to_ascii_lowercase()).collect();
 
   let mut i = 0usize;
@@ -1089,6 +1127,18 @@ mod tests {
 
     let html = r#"<meta http-equiv="refresh" content=" 0 ;  URL =  '/spaced'  ">"#;
     assert_eq!(extract_meta_refresh_url(html), Some("/spaced".to_string()));
+  }
+
+  #[test]
+  fn ignores_non_immediate_meta_refresh() {
+    let html = r#"<meta http-equiv="refresh" content="5; url=/later">"#;
+    assert_eq!(extract_meta_refresh_url(html), None);
+
+    let html = r#"<meta http-equiv="refresh" content="0.25; url=/later">"#;
+    assert_eq!(extract_meta_refresh_url(html), None);
+
+    let html = r#"<meta http-equiv="refresh" content=".25; url=/later">"#;
+    assert_eq!(extract_meta_refresh_url(html), None);
   }
 
   #[test]

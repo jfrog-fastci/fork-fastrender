@@ -46,6 +46,7 @@ mod logical_shorthand_parsing_test;
 mod map_hidden;
 mod margin_invalid_values_ignored_test;
 mod meta_viewport_test;
+mod url_client_redirects;
 mod mix_blend_mode_case_insensitive_test;
 mod motion_path_case_insensitive_test;
 mod no_merge_markers;

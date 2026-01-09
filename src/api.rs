@@ -91,6 +91,8 @@ use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::html::encoding::decode_html_bytes;
+use crate::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
+use crate::html::referrer_policy::extract_referrer_policy_from_html;
 use crate::html::image_prefetch::{discover_image_prefetch_requests, ImagePrefetchLimits};
 use crate::html::content_security_policy::{CspDirective, CspPolicy};
 use crate::html::viewport::ViewportLength;
@@ -956,6 +958,17 @@ pub struct RenderOptions {
   pub capture_accessibility: bool,
   /// When true, document fetch failures will return a placeholder pixmap with diagnostics instead of an error.
   pub allow_partial: bool,
+  /// When true, follow eligible client-side redirects (e.g. immediate meta refresh) when rendering
+  /// a URL.
+  ///
+  /// Defaults to false to preserve existing behavior.
+  pub follow_client_redirects: bool,
+  /// Maximum number of eligible client-side redirect hops to follow when `follow_client_redirects`
+  /// is enabled.
+  pub max_client_redirect_hops: usize,
+  /// When true, also follow best-effort early inline JavaScript redirects (e.g.
+  /// `location.replace(...)`) when `follow_client_redirects` is enabled.
+  pub follow_js_location_redirects: bool,
   /// When Some(true), expand the paint canvas to fit the laid-out content bounds for this render.
   pub fit_canvas_to_content: Option<bool>,
   /// Optional hard timeout for the render.
@@ -992,6 +1005,9 @@ impl Default for RenderOptions {
       css_limit: None,
       capture_accessibility: false,
       allow_partial: false,
+      follow_client_redirects: false,
+      max_client_redirect_hops: 3,
+      follow_js_location_redirects: false,
       fit_canvas_to_content: None,
       timeout: None,
       stage_mem_budget_bytes: None,
@@ -1018,6 +1034,12 @@ impl std::fmt::Debug for RenderOptions {
       .field("css_limit", &self.css_limit)
       .field("capture_accessibility", &self.capture_accessibility)
       .field("allow_partial", &self.allow_partial)
+      .field("follow_client_redirects", &self.follow_client_redirects)
+      .field("max_client_redirect_hops", &self.max_client_redirect_hops)
+      .field(
+        "follow_js_location_redirects",
+        &self.follow_js_location_redirects,
+      )
       .field("fit_canvas_to_content", &self.fit_canvas_to_content)
       .field("timeout", &self.timeout)
       .field("stage_mem_budget_bytes", &self.stage_mem_budget_bytes)
@@ -1117,6 +1139,25 @@ impl RenderOptions {
     self
   }
 
+  /// Follow eligible client-side redirects (e.g. immediate meta refresh) when rendering a URL.
+  pub fn with_follow_client_redirects(mut self, enabled: bool) -> Self {
+    self.follow_client_redirects = enabled;
+    self
+  }
+
+  /// Set the maximum number of eligible client-side redirect hops to follow.
+  pub fn with_max_client_redirect_hops(mut self, max_hops: usize) -> Self {
+    self.max_client_redirect_hops = max_hops;
+    self
+  }
+
+  /// Follow best-effort early inline JavaScript redirects (e.g. `location.replace(...)`) when
+  /// `follow_client_redirects` is enabled.
+  pub fn with_follow_js_location_redirects(mut self, enabled: bool) -> Self {
+    self.follow_js_location_redirects = enabled;
+    self
+  }
+
   /// Expand the paint canvas to the laid-out content bounds for this render.
   pub fn with_fit_canvas_to_content(mut self, enabled: bool) -> Self {
     self.fit_canvas_to_content = Some(enabled);
@@ -1194,6 +1235,25 @@ pub struct ContainerQueryDiagnostics {
   pub max_iterations: u32,
 }
 
+fn is_false(value: &bool) -> bool {
+  !*value
+}
+
+/// Client-side redirect mechanism followed during URL renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientRedirectKind {
+  MetaRefresh,
+  JsLocation,
+}
+
+/// A single client-side redirect hop followed during URL renders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientRedirectHop {
+  pub kind: ClientRedirectKind,
+  pub from_url: String,
+  pub to_url: String,
+}
+
 /// A captured uncaught JavaScript exception.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsException {
@@ -1249,6 +1309,13 @@ pub struct RenderDiagnostics {
   pub invalid_images: Vec<String>,
   /// Document-level fetch failure message when a placeholder render is produced.
   pub document_error: Option<String>,
+  /// Client-side redirects (meta refresh, JS location) followed before rendering a URL.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub client_redirects: Vec<ClientRedirectHop>,
+  /// True when `max_client_redirect_hops` was reached while another eligible redirect was still
+  /// present.
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub client_redirect_hop_limit_exhausted: bool,
   /// Stage at which rendering timed out, when allow_partial is used.
   pub timeout_stage: Option<RenderStage>,
   /// Stage at which rendering encountered a failure but still produced output.
@@ -7498,6 +7565,240 @@ impl FastRender {
     result
   }
 
+  fn follow_client_redirects_for_url_render(
+    &mut self,
+    mut resource: crate::resource::FetchedResource,
+    requested_url: &str,
+    options: &RenderOptions,
+    mut stats: Option<&mut RenderStatsRecorder>,
+    diagnostics: &Arc<Mutex<RenderDiagnostics>>,
+  ) -> crate::resource::FetchedResource {
+    const MAX_CLIENT_REDIRECT_SCAN_BYTES: usize = 256 * 1024;
+    const CLIENT_REDIRECT_SCAN_BODY_PREFIX_BYTES: usize = 32 * 1024;
+    const MAX_JS_LOCATION_REDIRECT_LEN: usize = 2048;
+
+    fn scan_prefix<'a>(html: &'a str) -> &'a str {
+      if html.len() <= MAX_CLIENT_REDIRECT_SCAN_BYTES {
+        return html;
+      }
+
+      let mut limit = MAX_CLIENT_REDIRECT_SCAN_BYTES.min(html.len());
+      while limit > 0 && !html.is_char_boundary(limit) {
+        limit -= 1;
+      }
+
+      let prefix = &html[..limit];
+      let mut end = limit;
+
+      if let Some(pos) =
+        crate::html::find_tag_case_insensitive_outside_templates(prefix, "body", false)
+      {
+        end = (pos + CLIENT_REDIRECT_SCAN_BODY_PREFIX_BYTES).min(limit);
+      } else if let Some(pos) =
+        crate::html::find_tag_case_insensitive_outside_templates(prefix, "head", true)
+      {
+        end = pos.min(limit);
+      }
+
+      while end > 0 && !html.is_char_boundary(end) {
+        end -= 1;
+      }
+      &html[..end]
+    }
+
+    fn scan_head_prefix<'a>(html: &'a str) -> &'a str {
+      if html.len() <= MAX_CLIENT_REDIRECT_SCAN_BYTES {
+        if let Some(pos) = crate::html::find_tag_case_insensitive_outside_templates(html, "body", false)
+        {
+          return &html[..pos];
+        }
+        if let Some(pos) = crate::html::find_tag_case_insensitive_outside_templates(html, "head", true)
+        {
+          return &html[..pos];
+        }
+        return html;
+      }
+
+      let mut limit = MAX_CLIENT_REDIRECT_SCAN_BYTES.min(html.len());
+      while limit > 0 && !html.is_char_boundary(limit) {
+        limit -= 1;
+      }
+
+      let prefix = &html[..limit];
+      let mut end = limit;
+      if let Some(pos) =
+        crate::html::find_tag_case_insensitive_outside_templates(prefix, "body", false)
+      {
+        end = pos.min(limit);
+      } else if let Some(pos) =
+        crate::html::find_tag_case_insensitive_outside_templates(prefix, "head", true)
+      {
+        end = pos.min(limit);
+      }
+
+      while end > 0 && !html.is_char_boundary(end) {
+        end -= 1;
+      }
+      &html[..end]
+    }
+
+    fn client_redirect_base_url(html: &str, document_url: &str) -> String {
+      let Ok(dom) = dom::parse_html(html) else {
+        return document_url.to_string();
+      };
+      crate::html::document_base_url(&dom, Some(document_url))
+        .unwrap_or_else(|| document_url.to_string())
+    }
+
+    if !options.follow_client_redirects || options.max_client_redirect_hops == 0 {
+      return resource;
+    }
+    if resource.bytes.is_empty() {
+      return resource;
+    }
+
+    let mut current_url = resource
+      .final_url
+      .clone()
+      .unwrap_or_else(|| requested_url.to_string());
+    resource.final_url.get_or_insert(current_url.clone());
+    let mut visited: HashSet<String> = HashSet::new();
+    visited.insert(current_url.clone());
+
+    let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+    crate::render_control::with_deadline(Some(&deadline), || {
+      let mut hops_followed = 0usize;
+
+      for _ in 0..options.max_client_redirect_hops {
+        let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
+        let html_scan = scan_prefix(&html);
+        let head_scan = scan_head_prefix(&html);
+
+        let mut base_url: Option<String> = None;
+        let mut referrer_policy: Option<ReferrerPolicy> = None;
+        let mut redirected = false;
+
+        for kind in [ClientRedirectKind::MetaRefresh, ClientRedirectKind::JsLocation] {
+          if kind == ClientRedirectKind::JsLocation && !options.follow_js_location_redirects {
+            continue;
+          }
+
+          let raw = match kind {
+            ClientRedirectKind::MetaRefresh => extract_meta_refresh_url(html_scan),
+            ClientRedirectKind::JsLocation => extract_js_location_redirect(head_scan),
+          };
+          let Some(raw) = raw else {
+            continue;
+          };
+
+          if kind == ClientRedirectKind::JsLocation && raw.len() > MAX_JS_LOCATION_REDIRECT_LEN {
+            continue;
+          }
+
+          let base_url = base_url.get_or_insert_with(|| client_redirect_base_url(head_scan, &current_url));
+          let referrer_policy = referrer_policy.get_or_insert_with(|| {
+            extract_referrer_policy_from_html(head_scan)
+              .or(resource.response_referrer_policy)
+              .unwrap_or_default()
+          });
+
+          let Some(target) = resolve_href(base_url, &raw) else {
+            continue;
+          };
+
+          if visited.contains(&target) {
+            continue;
+          }
+
+          if let Some(stats) = stats.as_deref_mut() {
+            stats.record_fetch(ResourceKind::Document);
+          }
+
+          match self.fetcher.fetch_with_request(
+            FetchRequest::document_no_user(&target)
+              .with_referrer_url(current_url.as_str())
+              .with_referrer_policy(*referrer_policy),
+          ) {
+            Ok(mut res) => {
+              if res.bytes.is_empty() {
+                continue;
+              }
+
+              let new_url = res.final_url.clone().unwrap_or_else(|| target.clone());
+              if visited.contains(&new_url) {
+                continue;
+              }
+
+              visited.insert(target);
+              visited.insert(new_url.clone());
+              res.final_url.get_or_insert(new_url.clone());
+
+              if let Ok(mut guard) = diagnostics.lock() {
+                guard.client_redirects.push(ClientRedirectHop {
+                  kind,
+                  from_url: current_url.clone(),
+                  to_url: new_url.clone(),
+                });
+              }
+
+              current_url = new_url;
+              resource = res;
+              hops_followed += 1;
+              redirected = true;
+              break;
+            }
+            Err(err) => {
+              if let Ok(mut guard) = diagnostics.lock() {
+                guard.record_error(ResourceKind::Document, target, &err);
+              }
+            }
+          }
+        }
+
+        if !redirected {
+          break;
+        }
+      }
+
+      if hops_followed == options.max_client_redirect_hops && !resource.bytes.is_empty() {
+        let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
+        let html_scan = scan_prefix(&html);
+        let head_scan = scan_head_prefix(&html);
+        let mut base_url: Option<String> = None;
+
+        for kind in [ClientRedirectKind::MetaRefresh, ClientRedirectKind::JsLocation] {
+          if kind == ClientRedirectKind::JsLocation && !options.follow_js_location_redirects {
+            continue;
+          }
+          let raw = match kind {
+            ClientRedirectKind::MetaRefresh => extract_meta_refresh_url(html_scan),
+            ClientRedirectKind::JsLocation => extract_js_location_redirect(head_scan),
+          };
+          let Some(raw) = raw else {
+            continue;
+          };
+          if kind == ClientRedirectKind::JsLocation && raw.len() > MAX_JS_LOCATION_REDIRECT_LEN {
+            continue;
+          }
+
+          let base_url = base_url.get_or_insert_with(|| client_redirect_base_url(head_scan, &current_url));
+          let Some(target) = resolve_href(base_url, &raw) else {
+            continue;
+          };
+          if visited.contains(&target) {
+            continue;
+          }
+          if let Ok(mut guard) = diagnostics.lock() {
+            guard.client_redirect_hop_limit_exhausted = true;
+          }
+          break;
+        }
+      }
+
+      resource
+    })
+  }
+
   /// Fetches and prepares a document from a URL with explicit options.
   pub fn prepare_url(
     &mut self,
@@ -7532,6 +7833,8 @@ impl FastRender {
           }));
         }
       };
+      let resource =
+        self.follow_client_redirects_for_url_render(resource, url, &options, None, &diagnostics);
       let hint = resource.final_url.as_deref().unwrap_or(url);
       self.set_document_url(hint);
       self.set_base_url(hint);
@@ -7667,6 +7970,13 @@ impl FastRender {
           }
         };
 
+        let resource = self.follow_client_redirects_for_url_render(
+          resource,
+          url,
+          &options,
+          stats_recorder.as_mut(),
+          &diagnostics,
+        );
         self.set_document_url(resource.final_url.as_deref().unwrap_or(url));
         let mut report = self.render_fetched_html_with_options_report_internal(
           &resource,
