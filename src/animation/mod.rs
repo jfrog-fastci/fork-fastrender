@@ -10840,4 +10840,37 @@ mod tests {
       .1;
     assert_eq!(idx, 1, "outline should override earlier outline-width");
   }
+
+  #[test]
+  fn transition_pairs_all_sorts_custom_properties_deterministically() {
+    let mut start_style = ComputedStyle::default();
+    start_style.custom_properties.insert(
+      Arc::from("--b"),
+      CustomPropertyValue::new("1", None),
+    );
+    start_style.custom_properties.insert(
+      Arc::from("--a"),
+      CustomPropertyValue::new("1", None),
+    );
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![TransitionProperty::All].into();
+    style.custom_properties.insert(
+      Arc::from("--a"),
+      CustomPropertyValue::new("2", None),
+    );
+    style.custom_properties.insert(
+      Arc::from("--b"),
+      CustomPropertyValue::new("2", None),
+    );
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+    let custom: Vec<&str> = pairs
+      .into_iter()
+      .map(|(name, _)| name)
+      .filter(|name| name.starts_with("--"))
+      .collect();
+    assert_eq!(custom, vec!["--a", "--b"]);
+  }
 }
