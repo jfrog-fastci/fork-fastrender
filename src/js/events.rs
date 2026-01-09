@@ -7,7 +7,8 @@ use vm_js::{PropertyKey, RootId, Value, VmError};
 
 use crate::dom2;
 use crate::dom2::events::{
-  Event, EventListenerInvoker, EventListenerOptions, EventPhase, EventTargetId, ListenerId,
+  Event, EventListenerContext, EventListenerInvoker, EventListenerOptions, EventPhase, EventTargetId,
+  ListenerId,
 };
 use crate::error::{Error, Result};
 use crate::js::webidl::{JsRuntime as WebIdlJsRuntime, VmJsRuntime, WebIdlJsRuntime as WebIdlHooks};
@@ -366,7 +367,7 @@ impl EventListenerInvoker for JsDomEvents {
     &mut self,
     listener_id: ListenerId,
     event: &mut Event,
-    _ctx: &mut dyn dom2::events::EventListenerContext,
+    _ctx: &mut dyn EventListenerContext,
   ) -> Result<()> {
     let entry = self.listeners.get(&listener_id).copied().ok_or_else(|| {
       Error::Other(format!(

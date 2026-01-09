@@ -8,3 +8,12 @@
 
 pub use crate::dom2::events::*;
 
+/// `dom2::events` currently uses a single options struct (`EventListenerOptions`) for both
+/// `addEventListener` and `removeEventListener`.
+///
+/// The DOM/Web IDL spec names the dictionary accepted by `addEventListener` as
+/// `AddEventListenerOptions`, so provide this alias for web-facing code.
+pub type AddEventListenerOptions = EventListenerOptions;
+
+#[cfg(test)]
+mod tests;
