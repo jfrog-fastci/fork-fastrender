@@ -141,15 +141,18 @@ impl VmJsRuntime {
         }
         return Err(VmError::InvalidHandle);
       }
-      match self.heap.add_root(v) {
-        Ok(id) => root_ids.push(id),
-        Err(e) => {
-          for id in root_ids {
+      let id = match self.heap.add_root(v) {
+        Ok(id) => id,
+        Err(err) => {
+          // Roll back any roots we successfully added so callers don't leak persistent roots when
+          // we hit an allocation failure.
+          for id in root_ids.drain(..) {
             self.heap.remove_root(id);
           }
-          return Err(e);
+          return Err(err);
         }
-      }
+      };
+      root_ids.push(id);
     }
 
     let result = f(self);
