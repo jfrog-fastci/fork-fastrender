@@ -1194,6 +1194,17 @@ mod tests {
 
   #[test]
   fn runtime_toggles_recovers_from_poisoned_lock() {
+    // `runtime_toggles()` is a read-only accessor and does not synchronize with the global override
+    // lock. In the full test harness, other tests can hold a `set_runtime_toggles` guard on another
+    // thread while this test runs, meaning a pre-override snapshot could observe a transient
+    // override value that has already been restored by the time we install our own override.
+    //
+    // Acquire the override lock for the duration of this test so the observed "previous" value is
+    // stable and we deterministically restore it.
+    let _override_lock = ACTIVE_TOGGLES_OVERRIDE_LOCK
+      .get_or_init(|| ReentrantMutex::new(()))
+      .lock();
+
     let result = std::panic::catch_unwind(|| {
       let lock = ACTIVE_TOGGLES.get_or_init(|| RwLock::new(default_toggles()));
       let _guard = lock.write().expect("lock should be acquired");
