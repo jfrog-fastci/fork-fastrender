@@ -102,6 +102,8 @@ impl<Host: 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Host> {
 
     let result = self.event_loop.queue_microtask(move |host, event_loop| {
       let mut ctx = VmJsJobContext { host, realm };
+      // Promise jobs can enqueue additional Promise jobs (e.g. thenable chains). Provide a fresh
+      // host hook adapter for each run so nested jobs are queued onto the same microtask queue.
       let mut hooks = VmJsHostHooks::new(event_loop);
       job.run(&mut ctx, &mut hooks)
         .map_err(|err| Error::Other(format!("vm-js job failed: {err}")))?;

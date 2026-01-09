@@ -221,6 +221,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         );
         tab.scroll_state.viewport.x = if next.x.is_finite() { next.x.max(0.0) } else { 0.0 };
         tab.scroll_state.viewport.y = if next.y.is_finite() { next.y.max(0.0) } else { 0.0 };
+        tab
+          .history
+          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
 
         if let Some(doc) = tab.document.as_mut() {
           doc.set_scroll_state(tab.scroll_state.clone());
@@ -316,12 +319,24 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
+        let base_url = tab.effective_base_url().unwrap_or("").to_string();
+        let document_url = tab.current_url.clone().unwrap_or_default();
         let Some(doc) = tab.document.as_mut() else {
           continue;
         };
         let engine = &mut tab.interaction;
-        let _ = doc.mutate_dom(|dom| engine.key_action(dom, key));
-        repaint_if_needed(tab_id, tab, &tx);
+        let mut action = InteractionAction::None;
+        let _ = doc.mutate_dom(|dom| {
+          let (changed, a) = engine.key_activate(dom, key, &document_url, &base_url);
+          action = a;
+          changed
+        });
+        match action {
+          InteractionAction::Navigate { href } => {
+            navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, &tx);
+          }
+          _ => repaint_if_needed(tab_id, tab, &tx),
+        }
       }
       UiToWorker::RequestRepaint { tab_id, .. } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
@@ -402,11 +417,18 @@ fn navigate_tab(
   // New navigation resets interaction state. This avoids leaking focus/hover chain ids across DOM
   // trees.
   tab.interaction = InteractionEngine::new();
-  tab.scroll_state = ScrollState::default();
+  match reason {
+    NavigationReason::TypedUrl | NavigationReason::LinkClick => {
+      tab.scroll_state = ScrollState::default();
+    }
+    NavigationReason::BackForward | NavigationReason::Reload => {}
+  }
 
   let options = RenderOptions::new()
     .with_viewport(tab.viewport_css.0, tab.viewport_css.1)
-    .with_device_pixel_ratio(tab.dpr);
+    .with_device_pixel_ratio(tab.dpr)
+    .with_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y)
+    .with_element_scroll_offsets(tab.scroll_state.elements.clone());
 
   let mut renderer = match FastRender::new() {
     Ok(renderer) => renderer,
@@ -498,6 +520,9 @@ fn repaint_if_needed(tab_id: TabId, tab: &mut TabState, tx: &Sender<WorkerToUi>)
   };
 
   tab.scroll_state = painted.scroll_state.clone();
+  tab
+    .history
+    .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
   let _ = tx.send(WorkerToUi::FrameReady {
     tab_id,
     frame: RenderedFrame {
@@ -524,6 +549,9 @@ fn repaint_force(tab_id: TabId, tab: &mut TabState, tx: &Sender<WorkerToUi>) {
   };
 
   tab.scroll_state = painted.scroll_state.clone();
+  tab
+    .history
+    .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
   let _ = tx.send(WorkerToUi::FrameReady {
     tab_id,
     frame: RenderedFrame {

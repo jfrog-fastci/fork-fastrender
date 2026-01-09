@@ -871,6 +871,7 @@ impl App {
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
+          VirtualKeyCode::Space => Some(fastrender::interaction::KeyAction::Space),
           VirtualKeyCode::Tab => Some(fastrender::interaction::KeyAction::Tab),
           _ => None,
         };

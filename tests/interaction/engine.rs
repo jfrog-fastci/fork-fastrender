@@ -1565,3 +1565,115 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
   assert!(has_attr(&dom, "o2", "selected"));
   assert!(!has_attr(&dom, "o3", "selected"));
 }
+
+#[test]
+fn focused_link_enter_activates_navigation_and_marks_visited() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("a", vec![("id", "link"), ("href", "foo")], vec![])],
+    )],
+  )]);
+
+  let link_id = node_id(&dom, "link");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(link_id), false);
+
+  let (changed, action) = engine.key_activate(
+    &mut dom,
+    KeyAction::Enter,
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+  assert!(changed);
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/base/foo".to_string()
+    }
+  );
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn focused_checkbox_space_toggles_checked() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![("id", "cb"), ("type", "checkbox")],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let cb_id = node_id(&dom, "cb");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(cb_id), false);
+
+  let (changed, action) =
+    engine.key_activate(&mut dom, KeyAction::Space, "https://x/", "https://x/");
+  assert!(changed);
+  assert_eq!(action, InteractionAction::None);
+  assert!(has_attr(&dom, "cb", "checked"));
+  assert_eq!(
+    attr_value(&dom, "cb", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn enter_on_text_input_submits_get_form() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "form"), ("action", "/search")],
+        vec![el(
+          "input",
+          vec![("id", "q"), ("name", "q"), ("value", "abc")],
+          vec![],
+        )],
+      )],
+    )],
+  )]);
+
+  let input_id = node_id(&dom, "q");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(input_id), false);
+
+  let (_, action) = engine.key_activate(
+    &mut dom,
+    KeyAction::Enter,
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?q=abc".to_string()
+    }
+  );
+}

@@ -11,6 +11,7 @@ use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SelectControl;
 use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
+use url::form_urlencoded;
 use url::Url;
 
 use super::dom_mutation;
@@ -37,6 +38,7 @@ pub enum InteractionAction {
 pub enum KeyAction {
   Backspace,
   Enter,
+  Space,
   Tab,
 }
 
@@ -241,6 +243,12 @@ fn is_select(node: &DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
 }
 
+fn is_form(node: &DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+}
+
 fn is_button(node: &DomNode) -> bool {
   node
     .tag_name()
@@ -269,6 +277,10 @@ fn button_type(node: &DomNode) -> &str {
 
 fn is_submit_button(node: &DomNode) -> bool {
   is_button(node) && button_type(node).eq_ignore_ascii_case("submit")
+}
+
+fn is_submit_control(node: &DomNode) -> bool {
+  is_submit_input(node) || is_submit_button(node)
 }
 
 fn is_text_input(node: &DomNode) -> bool {
@@ -740,9 +752,119 @@ fn select_control_snapshot_from_box_tree(
   None
 }
 
+fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
+  while node_id != 0 {
+    let node = index.node(node_id)?;
+    if is_form(node) {
+      return Some(node_id);
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  None
+}
+
 // `SelectControl` uses Strings/Vecs and does not contain floats, so its derived `PartialEq` is a
 // full equivalence relation. Mark it as `Eq` so interaction actions can remain `Eq` as well.
 impl Eq for SelectControl {}
+
+fn form_control_value(node: &DomNode) -> Option<(String, String)> {
+  let name = node
+    .get_attribute_ref("name")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())?;
+
+  if is_checkbox_input(node) || is_radio_input(node) {
+    let checked = node.get_attribute_ref("checked").is_some();
+    if !checked {
+      return None;
+    }
+    let value = node.get_attribute_ref("value").unwrap_or("on");
+    return Some((name.to_string(), value.to_string()));
+  }
+
+  if is_input(node) {
+    // Skip button-ish inputs.
+    let t = input_type(node);
+    if t.eq_ignore_ascii_case("submit")
+      || t.eq_ignore_ascii_case("button")
+      || t.eq_ignore_ascii_case("reset")
+      || t.eq_ignore_ascii_case("image")
+      || t.eq_ignore_ascii_case("file")
+    {
+      return None;
+    }
+    let value = node.get_attribute_ref("value").unwrap_or("");
+    return Some((name.to_string(), value.to_string()));
+  }
+
+  if is_textarea(node) {
+    let value = collect_text_children_value(node);
+    return Some((name.to_string(), value));
+  }
+
+  None
+}
+
+fn build_get_form_submission_url(
+  index: &DomIndexMut,
+  form_id: usize,
+  document_url: &str,
+  base_url: &str,
+) -> Option<String> {
+  let form = index.node(form_id)?;
+
+  let method = form.get_attribute_ref("method").unwrap_or("get");
+  if !method.is_empty() && !method.eq_ignore_ascii_case("get") {
+    return None;
+  }
+
+  let action_attr = form
+    .get_attribute_ref("action")
+    .map(trim_ascii_whitespace)
+    .unwrap_or("");
+
+  let action_url = if action_attr.is_empty() {
+    let doc = trim_ascii_whitespace(document_url);
+    if doc.is_empty() {
+      return None;
+    }
+    doc.to_string()
+  } else {
+    resolve_url(base_url, action_attr)?
+  };
+
+  let mut url = Url::parse(&action_url).ok()?;
+
+  // GET submissions set the query to the encoded form data.
+  url.set_query(None);
+  let mut serializer = form_urlencoded::Serializer::new(String::new());
+
+  for id in 1..index.id_to_node.len() {
+    if !is_ancestor_or_self(index, form_id, id) {
+      continue;
+    }
+    let Some(node) = index.node(id) else {
+      continue;
+    };
+    if !node.is_element() {
+      continue;
+    }
+    if node_or_ancestor_is_inert(index, id) || node_is_disabled(index, id) {
+      continue;
+    }
+
+    if let Some((name, value)) = form_control_value(node) {
+      serializer.append_pair(&name, &value);
+    }
+  }
+
+  let query = serializer.finish();
+  if !query.is_empty() {
+    url.set_query(Some(&query));
+  }
+
+  Some(url.to_string())
+}
 
 impl InteractionEngine {
   pub fn new() -> Self {
@@ -776,6 +898,39 @@ impl InteractionEngine {
 
     self.focused = new_focused;
     changed
+  }
+
+  /// Programmatically update focus state for the given DOM node id.
+  ///
+  /// This is useful for implementing keyboard focus traversal (e.g. Tab) and for tests that need to
+  /// set up a focused element without synthesizing pointer events.
+  pub fn focus_node_id(
+    &mut self,
+    dom: &mut DomNode,
+    node_id: Option<usize>,
+    focus_visible: bool,
+  ) -> (bool, InteractionAction) {
+    self.modality = if focus_visible {
+      InputModality::Keyboard
+    } else {
+      InputModality::Pointer
+    };
+
+    let prev_focus = self.focused;
+    let mut index = DomIndexMut::new(dom);
+
+    let node_id = node_id.filter(|&id| index.node(id).is_some_and(DomNode::is_element));
+    let changed = self.set_focus(&mut index, node_id, focus_visible);
+
+    let action = if self.focused != prev_focus {
+      InteractionAction::FocusChanged {
+        node_id: self.focused,
+      }
+    } else {
+      InteractionAction::None
+    };
+
+    (changed, action)
   }
 
   /// Update hover state (data-fastr-hover on target + ancestors).
@@ -1091,7 +1246,10 @@ impl InteractionEngine {
     changed
   }
 
-  /// Handle special keys: Backspace, Enter (textarea newline only), Tab (optional: focus traversal stub).
+  /// Handle special keys that mutate focused text controls:
+  /// - Backspace
+  /// - Enter (textarea newline only)
+  /// - Tab (optional focus traversal stub)
   pub fn key_action(&mut self, dom: &mut DomNode, key: KeyAction) -> bool {
     self.modality = InputModality::Keyboard;
     let Some(focused) = self.focused else {
@@ -1187,11 +1345,128 @@ impl InteractionEngine {
           }
         }
       }
+      KeyAction::Space => {
+        // Keyboard activation (Space/Enter) can trigger navigation, so it's handled by
+        // `InteractionEngine::key_activate`.
+      }
       KeyAction::Tab => {
         // Focus traversal is intentionally left as a stub for MVP.
       }
     }
 
     changed
+  }
+
+  /// Handle keyboard activation for the currently focused element.
+  ///
+  /// This is similar to `pointer_up` but uses the focused element as the target.
+  ///
+  /// - Backspace edits text controls (input/textarea).
+  /// - Enter inserts a newline in a focused textarea; otherwise it activates the element.
+  /// - Space activates/toggles choice controls (checkbox/radio).
+  pub fn key_activate(
+    &mut self,
+    dom: &mut DomNode,
+    key: KeyAction,
+    document_url: &str,
+    base_url: &str,
+  ) -> (bool, InteractionAction) {
+    let prev_focus = self.focused;
+
+    self.modality = InputModality::Keyboard;
+    let Some(focused) = self.focused else {
+      return (false, InteractionAction::None);
+    };
+
+    // Delegate text-editing keys to `key_action` so behaviour stays consistent.
+    match key {
+      KeyAction::Backspace => {
+        return (self.key_action(dom, KeyAction::Backspace), InteractionAction::None);
+      }
+      KeyAction::Tab => {
+        let dom_changed = self.key_action(dom, KeyAction::Tab);
+        let action = if self.focused != prev_focus {
+          InteractionAction::FocusChanged {
+            node_id: self.focused,
+          }
+        } else {
+          InteractionAction::None
+        };
+        return (dom_changed, action);
+      }
+      KeyAction::Enter => {
+        let index = DomIndexMut::new(dom);
+        if index.node(focused).is_some_and(is_textarea) {
+          return (self.key_action(dom, KeyAction::Enter), InteractionAction::None);
+        }
+      }
+      KeyAction::Space => {}
+    }
+
+    // Ensure focus-visible when activation is driven by the keyboard.
+    let mut index = DomIndexMut::new(dom);
+    let mut changed = false;
+    changed |= self.set_focus(&mut index, Some(focused), true);
+
+    let mut action = InteractionAction::None;
+
+    match key {
+      KeyAction::Enter => {
+        if node_or_ancestor_is_inert(&index, focused) {
+          // Inert subtrees are not interactive.
+        } else if let Some(href) = index
+          .node(focused)
+          .filter(|node| is_anchor_with_href(node))
+          .and_then(|node| node.get_attribute_ref("href"))
+        {
+          if let Some(resolved) = resolve_url(base_url, href) {
+            changed |= set_data_flag(&mut index, focused, "data-fastr-visited", true);
+            action = InteractionAction::Navigate { href: resolved };
+          }
+        } else if index.node(focused).is_some_and(is_submit_control) {
+          if node_is_disabled(&index, focused) {
+            // Disabled submit controls do not submit.
+          } else if let Some(form_id) = find_ancestor_form(&index, focused) {
+            if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
+              action = InteractionAction::Navigate { href: url };
+            }
+          }
+        } else if index.node(focused).is_some_and(is_text_input) {
+          if node_is_disabled(&index, focused) {
+            // Disabled controls do not submit.
+          } else if let Some(form_id) = find_ancestor_form(&index, focused) {
+            if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
+              action = InteractionAction::Navigate { href: url };
+            }
+          }
+        }
+      }
+      KeyAction::Space => {
+        if node_or_ancestor_is_inert(&index, focused) {
+          // Inert subtrees are not interactive.
+        } else if index.node(focused).is_some_and(is_checkbox_input) {
+          if !node_is_disabled(&index, focused) {
+            if let Some(node_mut) = index.node_mut(focused) {
+              changed |= dom_mutation::toggle_checkbox(node_mut);
+            }
+          }
+        } else if index.node(focused).is_some_and(is_radio_input) {
+          if !node_is_disabled(&index, focused) {
+            changed |= dom_mutation::activate_radio(dom, focused);
+          }
+        } else if index.node(focused).is_some_and(is_button) {
+          // MVP: no-op for non-submit buttons (no JS event dispatch yet).
+        }
+      }
+      _ => {}
+    }
+
+    if !matches!(action, InteractionAction::Navigate { .. }) && self.focused != prev_focus {
+      action = InteractionAction::FocusChanged {
+        node_id: self.focused,
+      };
+    }
+
+    (changed, action)
   }
 }
