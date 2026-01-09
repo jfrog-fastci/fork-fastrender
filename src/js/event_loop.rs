@@ -452,6 +452,38 @@ impl<Host: 'static> EventLoop<Host> {
     }
   }
 
+  /// Runs the event loop until it is idle, invoking `hook` after each task turn or standalone
+  /// microtask checkpoint.
+  ///
+  /// This is intended for embeddings that need to interleave extra per-turn work with JS execution
+  /// (for example: re-style/re-layout/repaint after JS-driven DOM mutations).
+  ///
+  /// The hook is called after:
+  /// - draining the microtask queue when the event loop starts a microtask checkpoint, and
+  /// - executing a single task (including its post-task microtask checkpoint).
+  ///
+  /// The hook is **not** called when the event loop is already idle (no pending tasks/microtasks).
+  pub fn run_until_idle_with_hook(
+    &mut self,
+    host: &mut Host,
+    limits: RunLimits,
+    mut hook: impl FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
+  ) -> Result<RunUntilIdleOutcome> {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
+
+    let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
+
+    match self.run_until_idle_inner_with_hook(host, &mut run_state, &mut hook) {
+      Ok(outcome) => Ok(outcome),
+      Err(RunStepError::Stop(reason)) => Ok(RunUntilIdleOutcome::Stopped(reason)),
+      Err(RunStepError::Error(err)) => Err(err),
+    }
+  }
+
   /// Run until there are no more queued tasks/microtasks, but treat task errors as uncaught
   /// exceptions that are surfaced via `on_error` and do not abort the run.
   ///
@@ -497,6 +529,31 @@ impl<Host: 'static> EventLoop<Host> {
       }
 
       if self.run_next_task_limited(host, run_state)? {
+        continue;
+      }
+
+      return Ok(RunUntilIdleOutcome::Idle);
+    }
+  }
+
+  fn run_until_idle_inner_with_hook(
+    &mut self,
+    host: &mut Host,
+    run_state: &mut RunState,
+    hook: &mut impl FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
+  ) -> RunStepResult<RunUntilIdleOutcome> {
+    loop {
+      run_state.check_deadline()?;
+      self.queue_due_timers().map_err(RunStepError::Error)?;
+
+      if !self.microtask_queue.is_empty() {
+        self.perform_microtask_checkpoint_limited(host, run_state)?;
+        hook(host, self).map_err(RunStepError::Error)?;
+        continue;
+      }
+
+      if self.run_next_task_limited(host, run_state)? {
+        hook(host, self).map_err(RunStepError::Error)?;
         continue;
       }
 
@@ -1173,6 +1230,47 @@ mod tests {
     );
     assert_eq!(host.observed, vec![Some(RenderStage::Script)]);
     assert_eq!(render_control::active_stage(), None);
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_idle_with_hook_runs_after_checkpoint_and_task() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.log.push("microtask");
+      Ok(())
+    })?;
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      host.log.push("task");
+      event_loop.queue_microtask(|host, _event_loop| {
+        host.log.push("nested_microtask");
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    let mut hooks = 0usize;
+    assert_eq!(
+      event_loop.run_until_idle_with_hook(&mut host, RunLimits::unbounded(), |host, _event_loop| {
+        hooks += 1;
+        host.log.push("hook");
+        Ok(())
+      })?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(hooks, 2);
+    assert_eq!(
+      host.log,
+      vec!["microtask", "hook", "task", "nested_microtask", "hook"]
+    );
     Ok(())
   }
 
