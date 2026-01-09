@@ -47,7 +47,7 @@ fn make_listener(
   keys: ListenerKeys,
 ) -> Value {
   js.runtime_mut()
-    .alloc_function_value(move |rt, _this, args| {
+    .alloc_function_value(move |rt, this, args| {
       let event = args.get(0).copied().unwrap_or(Value::Undefined);
       log.borrow_mut().push(label);
 
@@ -59,6 +59,8 @@ fn make_listener(
 
       let got_current = rt.get(event, keys.current_target)?;
       assert_js_value_eq(rt, got_current, keys.expected_current_target);
+      // Callable listeners are invoked with `this = event.currentTarget`.
+      assert_js_value_eq(rt, this, keys.expected_current_target);
 
       let got_phase = rt.get(event, keys.event_phase)?;
       assert_eq!(got_phase, Value::Number(keys.expected_phase));
@@ -613,9 +615,11 @@ fn js_prevent_default_sets_default_prevented_property() -> Result<()> {
   let key_prevent_default = key(js.runtime_mut(), "preventDefault");
 
   let log_for_cb = log.clone();
+  let expected_this = Value::Number(target.index() as f64);
   let listener = js
     .runtime_mut()
-    .alloc_function_value(move |rt, _this, args| {
+    .alloc_function_value(move |rt, this, args| {
+      assert_eq!(this, expected_this);
       let event = args.get(0).copied().unwrap_or(Value::Undefined);
       log_for_cb.borrow_mut().push("listener");
 
@@ -649,5 +653,83 @@ fn js_prevent_default_sets_default_prevented_property() -> Result<()> {
   assert!(!dispatch_ok, "dispatchEvent should return false when canceled");
   assert!(event.default_prevented);
   assert_eq!(*log.borrow(), vec!["listener"]);
+  Ok(())
+}
+
+#[test]
+fn js_callback_interface_listener_object_invokes_handle_event() -> Result<()> {
+  let (mut doc, _parent, target) = build_doc();
+  let mut js = JsDomEvents::new()?;
+
+  let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+  let key_type = key(js.runtime_mut(), "type");
+  let key_target = key(js.runtime_mut(), "target");
+  let key_current_target = key(js.runtime_mut(), "currentTarget");
+  let key_event_phase = key(js.runtime_mut(), "eventPhase");
+
+  let target_value = Value::Number(target.index() as f64);
+
+  // Listener object implements the EventListener callback interface by exposing a callable
+  // `handleEvent` method.
+  let listener_obj = js.runtime_mut().alloc_object_value().expect("alloc listener object");
+  let listener_obj_for_assert = listener_obj;
+  let log_for_cb = log.clone();
+
+  let keys = ListenerKeys {
+    type_: key_type,
+    target: key_target,
+    current_target: key_current_target,
+    event_phase: key_event_phase,
+    // Unused for this test, but required by the struct.
+    stop_propagation: key(js.runtime_mut(), "stopPropagation"),
+    stop_immediate_propagation: key(js.runtime_mut(), "stopImmediatePropagation"),
+    prevent_default: key(js.runtime_mut(), "preventDefault"),
+    expected_target: target_value,
+    expected_current_target: target_value,
+    expected_phase: 2.0,
+  };
+
+  let handle_event = js
+    .runtime_mut()
+    .alloc_function_value(move |rt, this, args| {
+      // Per WebIDL "call a user object's operation", handleEvent is called with `this = listener`.
+      assert_eq!(this, listener_obj_for_assert);
+
+      let event = args.get(0).copied().unwrap_or(Value::Undefined);
+      log_for_cb.borrow_mut().push("handleEvent");
+
+      let got_type = rt.get(event, keys.type_)?;
+      assert_eq!(as_utf8_lossy(rt, got_type), "test");
+      let got_target = rt.get(event, keys.target)?;
+      assert_eq!(got_target, keys.expected_target);
+      let got_current = rt.get(event, keys.current_target)?;
+      assert_eq!(got_current, keys.expected_current_target);
+      let got_phase = rt.get(event, keys.event_phase)?;
+      assert_eq!(got_phase, Value::Number(keys.expected_phase));
+
+      Ok(Value::Undefined)
+    })
+    .expect("alloc handleEvent");
+
+  let handle_event_key = js
+    .runtime_mut()
+    .property_key_from_str("handleEvent")
+    .expect("intern handleEvent key");
+  js.runtime_mut()
+    .define_data_property(listener_obj, handle_event_key, handle_event, true)
+    .expect("define handleEvent");
+
+  let _ = js.add_js_event_listener(
+    EventTargetId::Node(target),
+    "test",
+    listener_obj,
+    AddEventListenerOptions::default(),
+  )?;
+
+  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
+
+  assert_eq!(*log.borrow(), vec!["handleEvent"]);
   Ok(())
 }

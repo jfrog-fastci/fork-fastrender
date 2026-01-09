@@ -467,9 +467,39 @@ impl EventListenerInvoker for JsDomEvents {
       .wrap_event(&mut self.runtime, event_id, event)
       .map_err(|e| EventsDomError::new(self.vm_error_to_error(e).to_string()))?;
 
-    let call = self
-      .runtime
-      .call_function(entry.callback, Value::Undefined, &[js_event]);
+    // DOM dispatch uses WebIDL's "call a user object's operation" algorithm for `EventListener`,
+    // passing `event.currentTarget` as the callback this value.
+    //
+    // - If the listener is callable (function), invoke it with `this = currentTarget`.
+    // - Otherwise, treat it as a callback interface object and invoke `listener.handleEvent(event)`
+    //   with `this = listener`.
+    let call = if self.runtime.is_callable(entry.callback) {
+      let this_arg = self.event_wrapper.js_value_for_target(event.current_target);
+      self.runtime.call_function(entry.callback, this_arg, &[js_event])
+    } else if self.runtime.is_object(entry.callback) {
+      // Root the event object while we look up and call handleEvent, since `get_method` may
+      // allocate and trigger a GC.
+      (|| -> std::result::Result<Value, VmError> {
+        let event_root = self.runtime.heap_mut().add_root(js_event)?;
+        let res = (|| {
+          let handle_event_key = self.runtime.property_key_from_str("handleEvent")?;
+          let Some(handle_event) = self.runtime.get_method(entry.callback, handle_event_key)? else {
+            return Err(self.runtime.throw_type_error(
+              "Callback interface object is missing a callable handleEvent method",
+            ));
+          };
+          self
+            .runtime
+            .call_function(handle_event, entry.callback, &[js_event])
+        })();
+        self.runtime.heap_mut().remove_root(event_root);
+        res
+      })()
+    } else {
+      Err(self
+        .runtime
+        .throw_type_error("Event listener is not callable and not an object"))
+    };
 
     // Drop JS roots for listeners that are no longer registered (including `once` listeners, which
     // the registry removes before invoking). This must run even if the callback throws.
