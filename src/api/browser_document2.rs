@@ -43,6 +43,35 @@ impl BrowserDocument2 {
     })
   }
 
+  /// Fetches and prepares a URL using the internal renderer, replacing the live `dom2` document
+  /// in-place.
+  pub fn navigate_url(
+    &mut self,
+    url: &str,
+    options: RenderOptions,
+  ) -> Result<super::BrowserNavigationReport> {
+    let super::PreparedDocumentReport {
+      document,
+      diagnostics,
+      final_url,
+      base_url,
+    } = self.renderer.prepare_url(url, options.clone())?;
+
+    self.dom = Document::from_renderer_dom(&document.dom);
+    self.options = options;
+    self.prepared = Some(document);
+    self.last_dom_mapping = None;
+    self.style_dirty = false;
+    self.layout_dirty = false;
+    self.paint_dirty = true;
+
+    Ok(super::BrowserNavigationReport {
+      diagnostics,
+      final_url,
+      base_url,
+    })
+  }
+
   /// Returns an immutable reference to the live `dom2` document.
   pub fn dom(&self) -> &Document {
     &self.dom
@@ -183,25 +212,29 @@ impl BrowserDocument2 {
     let renderer = &mut self.renderer;
 
     let toggles = renderer.resolve_runtime_toggles(&options);
-    let _toggles_guard = super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
+    let _toggles_guard =
+      super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
     crate::debug::runtime::with_runtime_toggles(toggles, || {
       let trace = super::TraceSession::from_options(Some(&options));
       let trace_handle = trace.handle();
       let _root_span = trace_handle.span("browser_document2_prepare", "pipeline");
 
-      let shared_diagnostics = renderer
-        .diagnostics
-        .as_ref()
-        .map(|diag| super::SharedRenderDiagnostics {
-          inner: std::sync::Arc::clone(diag),
-        });
+      let shared_diagnostics =
+        renderer
+          .diagnostics
+          .as_ref()
+          .map(|diag| super::SharedRenderDiagnostics {
+            inner: std::sync::Arc::clone(diag),
+          });
       let context = Some(renderer.build_resource_context(
         renderer.document_url_hint(),
         shared_diagnostics,
         ReferrerPolicy::default(),
       ));
-      let (prev_self, prev_image, prev_layout_image, prev_font) = renderer.push_resource_context(context);
-      let result = super::browser_document::prepare_dom_inner(renderer, dom, options.clone(), trace_handle);
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        renderer.push_resource_context(context);
+      let result =
+        super::browser_document::prepare_dom_inner(renderer, dom, options.clone(), trace_handle);
       renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
       trace.finalize(result)

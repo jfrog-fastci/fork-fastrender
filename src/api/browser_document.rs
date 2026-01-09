@@ -10,6 +10,17 @@ use super::{
   resolve_viewport, LayoutDocumentOptions, PreparedDocument, PreparedPaintOptions, RenderOptions,
 };
 
+/// Result of a navigation performed via [`BrowserDocument::navigate_url`].
+#[derive(Debug, Clone)]
+pub struct BrowserNavigationReport {
+  /// Diagnostics captured while fetching resources.
+  pub diagnostics: super::RenderDiagnostics,
+  /// Final document URL after redirects, when available.
+  pub final_url: Option<String>,
+  /// Effective base URL used to resolve relative subresources (after `<base href>`).
+  pub base_url: Option<String>,
+}
+
 /// Mutable, multi-frame renderer that caches the most recent layout result.
 ///
 /// `BrowserDocument` owns a [`super::FastRender`] instance and a live DOM tree. DOM mutations
@@ -80,14 +91,64 @@ impl BrowserDocument {
   /// - `document_url` is used for referrer/origin semantics (after redirects).
   /// - `base_url` is used for resolving relative URLs (and can be overridden by `<base href>`).
   pub fn set_navigation_urls(&mut self, document_url: Option<String>, base_url: Option<String>) {
-    match document_url {
-      Some(url) => self.renderer.set_document_url(url),
-      None => self.renderer.clear_document_url(),
+    // Normalize empty/whitespace-only inputs so we avoid unnecessary state churn.
+    let document_url =
+      document_url.and_then(|url| (!super::trim_ascii_whitespace(&url).is_empty()).then_some(url));
+    let base_url = match base_url {
+      Some(url) if !super::trim_ascii_whitespace(&url).is_empty() => Some(url),
+      _ => None,
+    };
+
+    if self.renderer.document_url != document_url {
+      match document_url {
+        Some(url) => self.renderer.set_document_url(url),
+        None => self.renderer.clear_document_url(),
+      }
     }
-    match base_url {
-      Some(url) if !super::trim_ascii_whitespace(&url).is_empty() => self.renderer.set_base_url(url),
-      _ => self.renderer.clear_base_url(),
+    if self.renderer.base_url != base_url {
+      match base_url {
+        Some(url) => self.renderer.set_base_url(url),
+        None => self.renderer.clear_base_url(),
+      }
     }
+  }
+
+  /// Fetches and prepares a URL using the internal renderer, replacing the live document in-place.
+  ///
+  /// This enables UIs to keep a long-lived `BrowserDocument` (and its internal caches) across
+  /// navigations without constructing a new [`super::FastRender`] instance per load.
+  pub fn navigate_url(
+    &mut self,
+    url: &str,
+    options: RenderOptions,
+  ) -> Result<BrowserNavigationReport> {
+    let super::PreparedDocumentReport {
+      document,
+      diagnostics,
+      final_url,
+      base_url,
+    } = self.renderer.prepare_url(url, options.clone())?;
+
+    // Keep the renderer's URL hints consistent with the navigation result. (This is typically a
+    // no-op because `prepare_url` already updates the hints, but it ensures callers that manually
+    // tweaked them don't drift out of sync.)
+    self.set_navigation_urls(final_url.clone(), base_url.clone());
+
+    // Preserve the post-navigation document URL hint so later `<base href>` changes do not alter
+    // origin/referrer semantics for subsequent resource fetches.
+    let stable_document_url = final_url
+      .clone()
+      .or_else(|| self.renderer.document_url_hint().map(|url| url.to_string()));
+    self.set_document_url(stable_document_url);
+
+    // Swap the live DOM while retaining the renderer instance and its caches.
+    self.reset_with_prepared(document, options);
+
+    Ok(BrowserNavigationReport {
+      diagnostics,
+      final_url,
+      base_url,
+    })
   }
 
   /// Replaces the live DOM, clears any cached preparation state, and marks the document dirty.
@@ -173,7 +234,8 @@ impl BrowserDocument {
   /// This is intentionally distinct from the effective base URL derived from `<base href>`, which
   /// is allowed to change as the DOM mutates.
   pub fn set_document_url(&mut self, url: Option<String>) {
-    let sanitized = url.and_then(|url| (!super::trim_ascii_whitespace(&url).is_empty()).then_some(url));
+    let sanitized =
+      url.and_then(|url| (!super::trim_ascii_whitespace(&url).is_empty()).then_some(url));
     if sanitized != self.document_url {
       self.document_url = sanitized;
       self.invalidate_all();
@@ -316,9 +378,11 @@ impl BrowserDocument {
   ///
   /// Returns `Ok(None)` when no dirty flags are set.
   pub fn render_if_needed(&mut self) -> Result<Option<super::Pixmap>> {
-    Ok(self
-      .render_if_needed_with_scroll_state()?
-      .map(|frame| frame.pixmap))
+    Ok(
+      self
+        .render_if_needed_with_scroll_state()?
+        .map(|frame| frame.pixmap),
+    )
   }
 
   /// Renders a new frame if anything has been invalidated since the last successful frame,
@@ -437,7 +501,8 @@ impl BrowserDocument {
     let renderer = &mut self.renderer;
 
     let toggles = renderer.resolve_runtime_toggles(&options);
-    let _toggles_guard = super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
+    let _toggles_guard =
+      super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
     crate::debug::runtime::with_runtime_toggles(toggles, || {
       let trace = super::TraceSession::from_options(Some(&options));
       let trace_handle = trace.handle();
@@ -451,9 +516,13 @@ impl BrowserDocument {
         renderer.clear_document_url();
       }
 
-      let shared_diagnostics = renderer.diagnostics.as_ref().map(|diag| super::SharedRenderDiagnostics {
-        inner: std::sync::Arc::clone(diag),
-      });
+      let shared_diagnostics =
+        renderer
+          .diagnostics
+          .as_ref()
+          .map(|diag| super::SharedRenderDiagnostics {
+            inner: std::sync::Arc::clone(diag),
+          });
       let context = Some(renderer.build_resource_context(
         renderer.document_url_hint(),
         shared_diagnostics,
@@ -503,7 +572,8 @@ pub(super) fn prepare_dom_inner(
     }));
   }
 
-  let deadline = crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+  let deadline =
+    crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
   let _deadline_guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
 
   // Ensure cooperative cancellation is observable even if the subsequent stage preamble (base URL
@@ -527,7 +597,9 @@ pub(super) fn prepare_dom_inner(
   }
 
   let requested_viewport = Size::new(width as f32, height as f32);
-  let base_dpr = options.device_pixel_ratio.unwrap_or(renderer.device_pixel_ratio);
+  let base_dpr = options
+    .device_pixel_ratio
+    .unwrap_or(renderer.device_pixel_ratio);
   let meta_viewport = if renderer.apply_meta_viewport {
     crate::html::viewport::extract_viewport_with_deadline(dom)?
   } else {
@@ -797,6 +869,43 @@ mod tests {
 
     let _ = document.render_frame_with_deadlines(None)?;
     assert_eq!(document.base_url(), Some("https://example.com/next/"));
+    Ok(())
+  }
+
+  #[test]
+  fn navigate_url_updates_live_document_in_place() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let file_path = temp_dir.path().join("index.html");
+    std::fs::write(
+      &file_path,
+      "<!doctype html><html><head><title>New Title</title></head><body>hello</body></html>",
+    )?;
+    let file_url = url::Url::from_file_path(&file_path)
+      .expect("file url")
+      .to_string();
+
+    let renderer = super::super::FastRender::builder()
+      .font_sources(crate::text::font_db::FontConfig::bundled_only())
+      .build()?;
+
+    let mut document = BrowserDocument::new(
+      renderer,
+      "<!doctype html><html><head><title>Old Title</title></head><body>old</body></html>",
+      RenderOptions::new().with_viewport(64, 64),
+    )?;
+
+    let report = document.navigate_url(&file_url, RenderOptions::new().with_viewport(64, 64))?;
+
+    // Ensure we can paint the newly navigated document from the prepared cache.
+    document.render_frame()?;
+    assert_eq!(
+      crate::html::title::find_document_title(document.dom()),
+      Some("New Title".to_string())
+    );
+
+    assert_eq!(report.final_url.as_deref(), Some(file_url.as_str()));
+    assert_eq!(report.base_url.as_deref(), Some(file_url.as_str()));
+    assert_eq!(document.document_url(), Some(file_url.as_str()));
     Ok(())
   }
 }

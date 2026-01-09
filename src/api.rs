@@ -144,8 +144,8 @@ use crate::render_control::{
 use crate::resource::CachingFetcherConfig;
 use crate::resource::{
   cors_enforcement_enabled, ensure_http_success, ensure_stylesheet_mime_sane, origin_from_url,
-  validate_cors_allow_origin, CachingFetcher, CorsMode, DocumentOrigin, FetchDestination,
-  FetchCredentialsMode, FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy,
+  validate_cors_allow_origin, CachingFetcher, CorsMode, DocumentOrigin, FetchCredentialsMode,
+  FetchDestination, FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy,
   ResourceFetcher, ResourcePolicy,
 };
 use crate::scroll::ScrollState;
@@ -217,7 +217,7 @@ pub use crate::text::font_db::FontCacheConfig;
 pub use tiny_skia::Pixmap;
 
 mod browser_document;
-pub use browser_document::BrowserDocument;
+pub use browser_document::{BrowserDocument, BrowserNavigationReport};
 
 mod browser_document_dom2;
 pub use browser_document_dom2::BrowserDocumentDom2;
@@ -3672,7 +3672,10 @@ mod pool_prepare_tests {
     let options = RenderOptions::new().with_viewport(10, 10);
     for idx in 0..2 {
       let report = pool
-        .prepare_html("<!doctype html><html><body>Hello</body></html>", options.clone())
+        .prepare_html(
+          "<!doctype html><html><body>Hello</body></html>",
+          options.clone(),
+        )
         .unwrap_or_else(|err| panic!("prepare #{idx} failed: {err:?}"));
       let pixmap = report.document.paint_default().expect("paint");
       assert_eq!(pixmap.width(), 10);
@@ -3790,8 +3793,7 @@ fn build_shared_renderer_resources(
   } = config;
   let pool_size = pool_size.max(1);
   let fetcher = resolve_fetcher(&renderer, fetcher);
-  let shared_image_cache =
-    build_image_cache(&renderer.base_url, Arc::clone(&fetcher), image_cache);
+  let shared_image_cache = build_image_cache(&renderer.base_url, Arc::clone(&fetcher), image_cache);
   let font_db = font_db_for_pool(&renderer.font_config);
 
   (
@@ -3941,7 +3943,11 @@ impl FastRenderPool {
   }
 
   /// Prepare an HTML string into a [`PreparedDocument`] using a pooled renderer.
-  pub fn prepare_html_document(&self, html: &str, options: RenderOptions) -> Result<PreparedDocument> {
+  pub fn prepare_html_document(
+    &self,
+    html: &str,
+    options: RenderOptions,
+  ) -> Result<PreparedDocument> {
     self.with_renderer(move |renderer| renderer.prepare_html(html, options))
   }
 
@@ -4456,24 +4462,26 @@ fn apply_sticky_offsets_with_context(
     }
   }
 
-  let (_padding_rect, content_rect) = positioned
-    .as_ref()
-    .map_or((abs_rect, abs_rect), |(positioned, _)| {
-      let padding_rect = Rect::from_xywh(
-        abs_rect.x() + positioned.border_width.left,
-        abs_rect.y() + positioned.border_width.top,
-        (abs_rect.width() - positioned.border_width.left - positioned.border_width.right)
-          .max(0.0),
-        (abs_rect.height() - positioned.border_width.top - positioned.border_width.bottom).max(0.0),
-      );
-      let content_rect = Rect::from_xywh(
-        padding_rect.x() + positioned.padding.left,
-        padding_rect.y() + positioned.padding.top,
-        (padding_rect.width() - positioned.padding.left - positioned.padding.right).max(0.0),
-        (padding_rect.height() - positioned.padding.top - positioned.padding.bottom).max(0.0),
-      );
-      (padding_rect, content_rect)
-    });
+  let (_padding_rect, content_rect) =
+    positioned
+      .as_ref()
+      .map_or((abs_rect, abs_rect), |(positioned, _)| {
+        let padding_rect = Rect::from_xywh(
+          abs_rect.x() + positioned.border_width.left,
+          abs_rect.y() + positioned.border_width.top,
+          (abs_rect.width() - positioned.border_width.left - positioned.border_width.right)
+            .max(0.0),
+          (abs_rect.height() - positioned.border_width.top - positioned.border_width.bottom)
+            .max(0.0),
+        );
+        let content_rect = Rect::from_xywh(
+          padding_rect.x() + positioned.padding.left,
+          padding_rect.y() + positioned.padding.top,
+          (padding_rect.width() - positioned.padding.left - positioned.padding.right).max(0.0),
+          (padding_rect.height() - positioned.padding.top - positioned.padding.bottom).max(0.0),
+        );
+        (padding_rect, content_rect)
+      });
 
   let self_scroll = fragment
     .box_id()
@@ -4608,13 +4616,7 @@ fn animation_time_ms_to_duration(animation_time: Option<f32>) -> Option<Duration
 }
 
 fn sanitize_animation_time_ms(animation_time: Option<f32>) -> Option<f32> {
-  animation_time.map(|ms| {
-    if ms.is_finite() {
-      ms.max(0.0)
-    } else {
-      0.0
-    }
-  })
+  animation_time.map(|ms| if ms.is_finite() { ms.max(0.0) } else { 0.0 })
 }
 
 fn paint_fragment_tree_with_state(
@@ -5480,7 +5482,8 @@ impl FastRender {
       );
       built.csp = initial_csp;
       let context = Some(built);
-      let (prev_self_ctx, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+      let (prev_self_ctx, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
 
       let result = (|| -> Result<PrepareResult> {
         // Inline linked stylesheets (respecting `<base href>`, `options.media_type`, and
@@ -5509,7 +5512,9 @@ impl FastRender {
           self.parse_html(&inlined_html)?
         };
         self.update_base_url_from_dom(&dom);
-        if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)? {
+        if let Some(policy) =
+          crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)?
+        {
           let needs_update = self
             .resource_context
             .as_ref()
@@ -5569,9 +5574,9 @@ impl FastRender {
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("rel"))
                 .map(|(_, v)| v.clone());
-              let href_present = attributes
-                .iter()
-                .any(|(k, v)| k.eq_ignore_ascii_case("href") && !trim_ascii_whitespace(v).is_empty());
+              let href_present = attributes.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("href") && !trim_ascii_whitespace(v).is_empty()
+              });
               if let (Some(rel_value), true) = (rel_value, href_present) {
                 let rel_tokens = crate::css::parser::tokenize_rel_list(&rel_value);
                 let as_attr = attributes
@@ -5585,7 +5590,10 @@ impl FastRender {
                   modulepreload_stylesheets_enabled,
                   alternate_stylesheets_enabled,
                 ) {
-                  if !attributes.iter().any(|(k, _)| k.eq_ignore_ascii_case("disabled")) {
+                  if !attributes
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("disabled"))
+                  {
                     attributes.push(("disabled".to_string(), String::new()));
                   }
                 }
@@ -5734,9 +5742,12 @@ impl FastRender {
         self.set_document_url(url);
       }
 
-      let shared_diagnostics = self.diagnostics.as_ref().map(|diag| SharedRenderDiagnostics {
-        inner: Arc::clone(diag),
-      });
+      let shared_diagnostics = self
+        .diagnostics
+        .as_ref()
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
       let context = Some(self.build_resource_context(
         sanitized_document_url.or_else(|| self.document_url_hint()),
         shared_diagnostics,
@@ -5803,8 +5814,9 @@ impl FastRender {
 
     // Parse HTML to DOM
     record_stage(StageHeartbeat::DomParse);
-    let dom_parse_rss_start =
-      memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    let dom_parse_rss_start = memory_sampling_enabled
+      .then(crate::memory::current_rss_bytes)
+      .flatten();
     if let Some(rec) = stats.as_deref_mut() {
       rec
         .stats
@@ -5817,7 +5829,8 @@ impl FastRender {
       self.parse_html(html)?
     };
     self.update_base_url_from_dom(&dom);
-    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)? {
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)?
+    {
       let needs_update = self
         .resource_context
         .as_ref()
@@ -5892,15 +5905,20 @@ impl FastRender {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
       self.pending_device_size = Some(resolved_viewport.visual_viewport);
       let needs_top_layer_state = needs_top_layer_state(&dom)?;
-      let dom_parse_rss_end =
-        memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+      let dom_parse_rss_end = memory_sampling_enabled
+        .then(crate::memory::current_rss_bytes)
+        .flatten();
       if let Some(rec) = stats.as_deref_mut() {
         rec
           .stats
           .memory
           .record_end(RenderStage::DomParse, dom_parse_rss_end);
       }
-      check_stage_mem_budget(RenderStage::DomParse, dom_parse_rss_end, stage_mem_budget_bytes)?;
+      check_stage_mem_budget(
+        RenderStage::DomParse,
+        dom_parse_rss_end,
+        stage_mem_budget_bytes,
+      )?;
       let layout_artifacts = self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
@@ -6234,8 +6252,9 @@ impl FastRender {
 
       // Paint to pixmap
       let offset = Point::new(-scroll.x, -scroll.y);
-      let paint_rss_start =
-        memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+      let paint_rss_start = memory_sampling_enabled
+        .then(crate::memory::current_rss_bytes)
+        .flatten();
       if let Some(rec) = stats.as_deref_mut() {
         rec
           .stats
@@ -6252,7 +6271,9 @@ impl FastRender {
         &scroll_state,
         trace,
       )?;
-      let paint_rss_end = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+      let paint_rss_end = memory_sampling_enabled
+        .then(crate::memory::current_rss_bytes)
+        .flatten();
       if let Some(rec) = stats.as_deref_mut() {
         rec
           .stats
@@ -6433,7 +6454,8 @@ impl FastRender {
       );
       built.csp = initial_csp;
       let context = Some(built);
-      let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
 
       let result = self.prepare_html_internal_inner(html, options, trace_handle);
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
@@ -6500,7 +6522,8 @@ impl FastRender {
     {
       let _span = trace.span("dom_parse", "prepare");
       self.update_base_url_from_dom(dom);
-      if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
+      if let Some(policy) =
+        crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
       {
         let needs_update = self
           .resource_context
@@ -6792,7 +6815,8 @@ impl FastRender {
       self.parse_html(html)?
     };
     self.update_base_url_from_dom(&dom);
-    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)? {
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)?
+    {
       let needs_update = self
         .resource_context
         .as_ref()
@@ -7257,7 +7281,11 @@ impl FastRender {
   }
 
   /// Fetches and prepares a document from a URL with explicit options.
-  pub fn prepare_url(&mut self, url: &str, options: RenderOptions) -> Result<PreparedDocumentReport> {
+  pub fn prepare_url(
+    &mut self,
+    url: &str,
+    options: RenderOptions,
+  ) -> Result<PreparedDocumentReport> {
     let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
     let previous_sink = self.diagnostics.take();
     self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
@@ -8203,7 +8231,9 @@ impl FastRender {
     }
 
     enum StylesheetTask {
-      Inline { css: String },
+      Inline {
+        css: String,
+      },
       External {
         url: String,
         cors_mode: Option<CorsMode>,
@@ -8227,7 +8257,7 @@ impl FastRender {
         let _deadline_guard = DeadlineGuard::install(deadline.as_ref());
         let mut local_media_cache = MediaQueryCache::default();
 
-          match self {
+        match self {
           StylesheetTask::Inline { css } => {
             let mut sheet =
               parse_stylesheet_with_media(&css, media_ctx, Some(&mut local_media_cache))?;
@@ -8377,8 +8407,9 @@ impl FastRender {
             )?;
             let mut sheet = sheet;
             sheet.set_font_face_source_stylesheet_url(&sheet_base);
-            let effective_referrer_policy =
-              resource.response_referrer_policy.unwrap_or(request_referrer_policy);
+            let effective_referrer_policy = resource
+              .response_referrer_policy
+              .unwrap_or(request_referrer_policy);
             sheet.set_font_face_source_referrer_policy(effective_referrer_policy);
             let resolved = if sheet.contains_imports() {
               let loader = CssImportFetcher::new(
@@ -8719,9 +8750,10 @@ impl FastRender {
                 continue;
               }
               if cors_enforcement_enabled() {
-                if let (Some(mode), Some(origin)) =
-                  (cors_mode, resource_context.and_then(|ctx| ctx.policy.document_origin.as_ref()))
-                {
+                if let (Some(mode), Some(origin)) = (
+                  cors_mode,
+                  resource_context.and_then(|ctx| ctx.policy.document_origin.as_ref()),
+                ) {
                   if let Err(reason) =
                     validate_cors_allow_origin(origin, &resource, &stylesheet_url, mode)
                   {
@@ -8748,8 +8780,9 @@ impl FastRender {
               let mut sheet =
                 parse_stylesheet_with_media(css_text.as_ref(), media_ctx, Some(media_query_cache))?;
               sheet.set_font_face_source_stylesheet_url(&sheet_base);
-              let effective_referrer_policy =
-                resource.response_referrer_policy.unwrap_or(request_referrer_policy);
+              let effective_referrer_policy = resource
+                .response_referrer_policy
+                .unwrap_or(request_referrer_policy);
               sheet.set_font_face_source_referrer_policy(effective_referrer_policy);
               if sheet.contains_imports() {
                 let loader = CssImportFetcher::new(
@@ -9303,7 +9336,8 @@ impl FastRender {
       ReferrerPolicy::default(),
     ));
     let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
-    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)? {
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
+    {
       let needs_update = self
         .resource_context
         .as_ref()
@@ -9384,7 +9418,8 @@ impl FastRender {
       ReferrerPolicy::default(),
     ));
     let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
-    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)? {
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
+    {
       let needs_update = self
         .resource_context
         .as_ref()
@@ -9444,8 +9479,7 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
-    if matches!(media_type, MediaType::Print)
-      && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get())
+    if matches!(media_type, MediaType::Print) && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get())
     {
       let deadline_stack = crate::render_control::deadline_stack_snapshot();
       let stage = crate::render_control::active_stage();
@@ -9568,8 +9602,8 @@ impl FastRender {
     // Avoid toggling the global Taffy counters off when statistics are disabled. In tests (and
     // potentially concurrent renders) other callers may temporarily enable the counters and rely on
     // them staying active for the duration of that scope.
-    let _taffy_stats_guard = taffy_stats_enabled
-      .then(|| crate::layout::taffy_integration::enable_taffy_counters(true));
+    let _taffy_stats_guard =
+      taffy_stats_enabled.then(|| crate::layout::taffy_integration::enable_taffy_counters(true));
     if taffy_stats_enabled {
       crate::layout::taffy_integration::reset_taffy_counters();
     }
@@ -9604,9 +9638,14 @@ impl FastRender {
     // CSS fetching/parsing happens before cascade; keep the stage heartbeat in sync so
     // render runners can attribute stalls/timeouts correctly.
     record_stage(StageHeartbeat::CssInline);
-    let css_rss_start = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    let css_rss_start = memory_sampling_enabled
+      .then(crate::memory::current_rss_bytes)
+      .flatten();
     if let Some(rec) = stats.as_deref_mut() {
-      rec.stats.memory.record_start(RenderStage::Css, css_rss_start);
+      rec
+        .stats
+        .memory
+        .record_start(RenderStage::Css, css_rss_start);
     }
     let css_inlining_timer = stats.as_deref().and_then(|rec| rec.timer());
     let css_parse_start = timings_enabled.then(Instant::now);
@@ -9708,9 +9747,14 @@ impl FastRender {
       eprintln!("timing:style_prepare {:?}", start.elapsed());
     }
 
-    let cascade_rss_start = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    let cascade_rss_start = memory_sampling_enabled
+      .then(crate::memory::current_rss_bytes)
+      .flatten();
     if let Some(rec) = stats.as_deref_mut() {
-      rec.stats.memory.record_end(RenderStage::Css, cascade_rss_start);
+      rec
+        .stats
+        .memory
+        .record_end(RenderStage::Css, cascade_rss_start);
       rec
         .stats
         .memory
@@ -9876,7 +9920,9 @@ impl FastRender {
       *start = now;
     }
 
-    let box_tree_rss_start = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    let box_tree_rss_start = memory_sampling_enabled
+      .then(crate::memory::current_rss_bytes)
+      .flatten();
     if let Some(rec) = stats.as_deref_mut() {
       rec
         .stats
@@ -9887,7 +9933,11 @@ impl FastRender {
         .memory
         .record_start(RenderStage::BoxTree, box_tree_rss_start);
     }
-    check_stage_mem_budget(RenderStage::Cascade, box_tree_rss_start, stage_mem_budget_bytes)?;
+    check_stage_mem_budget(
+      RenderStage::Cascade,
+      box_tree_rss_start,
+      stage_mem_budget_bytes,
+    )?;
 
     // Generate box tree
     let box_tree_timer = stats.as_deref().and_then(|rec| rec.timer());
@@ -10152,7 +10202,9 @@ impl FastRender {
     }
 
     let mut layout_start = stage_start;
-    let layout_rss_start = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    let layout_rss_start = memory_sampling_enabled
+      .then(crate::memory::current_rss_bytes)
+      .flatten();
     if let Some(rec) = stats.as_deref_mut() {
       rec
         .stats
@@ -10163,7 +10215,11 @@ impl FastRender {
         .memory
         .record_start(RenderStage::Layout, layout_rss_start);
     }
-    check_stage_mem_budget(RenderStage::BoxTree, layout_rss_start, stage_mem_budget_bytes)?;
+    check_stage_mem_budget(
+      RenderStage::BoxTree,
+      layout_rss_start,
+      stage_mem_budget_bytes,
+    )?;
 
     // Perform initial layout
     record_stage(StageHeartbeat::Layout);
@@ -10709,9 +10765,14 @@ impl FastRender {
       }
     }
 
-    let layout_rss_end = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    let layout_rss_end = memory_sampling_enabled
+      .then(crate::memory::current_rss_bytes)
+      .flatten();
     if let Some(rec) = stats.as_deref_mut() {
-      rec.stats.memory.record_end(RenderStage::Layout, layout_rss_end);
+      rec
+        .stats
+        .memory
+        .record_end(RenderStage::Layout, layout_rss_end);
     }
     check_stage_mem_budget(RenderStage::Layout, layout_rss_end, stage_mem_budget_bytes)?;
 
@@ -10755,7 +10816,8 @@ impl FastRender {
       ReferrerPolicy::default(),
     ));
     let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
-    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)? {
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
+    {
       let needs_update = self
         .resource_context
         .as_ref()
@@ -10876,20 +10938,22 @@ impl FastRender {
           self.max_iframe_depth,
           TraceHandle::disabled(),
         ),
-        PaintBackend::DisplayList => paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
-          fragment_tree,
-          target_width,
-          target_height,
-          self.background_color,
-          self.font_context.clone(),
-          image_cache,
-          self.device_pixel_ratio,
-          Point::ZERO,
-          self.paint_parallelism,
-          &scroll_state,
-          self.max_iframe_depth,
-          TraceHandle::disabled(),
-        ),
+        PaintBackend::DisplayList => {
+          paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
+            fragment_tree,
+            target_width,
+            target_height,
+            self.background_color,
+            self.font_context.clone(),
+            image_cache,
+            self.device_pixel_ratio,
+            Point::ZERO,
+            self.paint_parallelism,
+            &scroll_state,
+            self.max_iframe_depth,
+            TraceHandle::disabled(),
+          )
+        }
       }
     })
   }
@@ -10941,20 +11005,22 @@ impl FastRender {
           self.max_iframe_depth,
           TraceHandle::disabled(),
         ),
-        PaintBackend::DisplayList => paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
-          fragment_tree,
-          target_width,
-          target_height,
-          self.background_color,
-          self.font_context.clone(),
-          image_cache,
-          self.device_pixel_ratio,
-          offset,
-          self.paint_parallelism,
-          &scroll_state,
-          self.max_iframe_depth,
-          TraceHandle::disabled(),
-        ),
+        PaintBackend::DisplayList => {
+          paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
+            fragment_tree,
+            target_width,
+            target_height,
+            self.background_color,
+            self.font_context.clone(),
+            image_cache,
+            self.device_pixel_ratio,
+            offset,
+            self.paint_parallelism,
+            &scroll_state,
+            self.max_iframe_depth,
+            TraceHandle::disabled(),
+          )
+        }
       }
     })
   }
@@ -10990,20 +11056,22 @@ impl FastRender {
         self.max_iframe_depth,
         trace.clone(),
       ),
-      PaintBackend::DisplayList => paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
-        fragment_tree,
-        width,
-        height,
-        self.background_color,
-        self.font_context.clone(),
-        self.image_cache.clone(),
-        self.device_pixel_ratio,
-        offset,
-        paint_parallelism,
-        scroll_state,
-        self.max_iframe_depth,
-        trace.clone(),
-      ),
+      PaintBackend::DisplayList => {
+        paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
+          fragment_tree,
+          width,
+          height,
+          self.background_color,
+          self.font_context.clone(),
+          self.image_cache.clone(),
+          self.device_pixel_ratio,
+          offset,
+          paint_parallelism,
+          scroll_state,
+          self.max_iframe_depth,
+          trace.clone(),
+        )
+      }
     }
   }
 
@@ -11118,9 +11186,12 @@ impl FastRender {
   /// document URL hint for policy/referrer purposes, while allowing [`FastRender::base_url`] to be
   /// overridden by `<base href>` for URL resolution.
   fn document_url_hint(&self) -> Option<&str> {
-    self
-      .document_url()
-      .or_else(|| self.base_url.as_deref().filter(|url| !trim_ascii_whitespace(url).is_empty()))
+    self.document_url().or_else(|| {
+      self
+        .base_url
+        .as_deref()
+        .filter(|url| !trim_ascii_whitespace(url).is_empty())
+    })
   }
 
   /// Attach or clear the diagnostics sink for downstream fetchers.
@@ -11718,8 +11789,8 @@ impl FastRender {
                         return Err(Error::Resource(ResourceError::new(u.to_string(), err.reason)));
                       }
                     }
-                    if let Err(err) =
-                      ensure_http_success(&res, u).and_then(|()| ensure_stylesheet_mime_sane(&res, u))
+                    if let Err(err) = ensure_http_success(&res, u)
+                      .and_then(|()| ensure_stylesheet_mime_sane(&res, u))
                     {
                       diagnostics.record_error(ResourceKind::Stylesheet, u, &err);
                       return Err(err);
@@ -12178,12 +12249,11 @@ impl FastRender {
       let _deadline_guard = DeadlineGuard::install(deadline.as_ref());
       let _stage_guard = StageGuard::install(Some(RenderStage::BoxTree));
       let probe_start = profile_enabled.then(Instant::now);
-      let probe_result =
-        image_cache.probe_resolved_with_crossorigin_and_referrer_policy(
-          key.url.as_str(),
-          key.crossorigin,
-          key.referrer_policy,
-        );
+      let probe_result = image_cache.probe_resolved_with_crossorigin_and_referrer_policy(
+        key.url.as_str(),
+        key.crossorigin,
+        key.referrer_policy,
+      );
       let probe_ms = probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
       let probe_ok = probe_result.is_ok();
 
@@ -12303,7 +12373,9 @@ impl FastRender {
     // without probing the resource.
     if let (Some(size), Some(ratio)) = (
       replaced_box.intrinsic_size,
-      replaced_box.aspect_ratio.filter(|r| aspect_ratio_is_usable(*r)),
+      replaced_box
+        .aspect_ratio
+        .filter(|r| aspect_ratio_is_usable(*r)),
     ) {
       if let Some(completed) = complete_intrinsic_size_with_ratio(size, ratio) {
         replaced_box.intrinsic_size = Some(completed);
@@ -12451,7 +12523,10 @@ impl FastRender {
       }
     }
 
-    if let Some(ratio) = replaced_box.aspect_ratio.filter(|r| aspect_ratio_is_usable(*r)) {
+    if let Some(ratio) = replaced_box
+      .aspect_ratio
+      .filter(|r| aspect_ratio_is_usable(*r))
+    {
       if let Some(size) = replaced_box.intrinsic_size {
         if let Some(completed) = complete_intrinsic_size_with_ratio(size, ratio) {
           replaced_box.intrinsic_size = Some(completed);
@@ -12460,7 +12535,8 @@ impl FastRender {
     }
 
     // If only intrinsic size is present, ensure aspect ratio is recorded.
-    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
+    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio
+    {
       if let Some(size) = replaced_box.intrinsic_size {
         if size.height > 0.0 {
           replaced_box.aspect_ratio = Some(size.width / size.height);
@@ -12470,7 +12546,8 @@ impl FastRender {
 
     // If probing failed (or returned no intrinsic dimensions), fall back to a width+height srcset
     // descriptor as an intrinsic ratio hint.
-    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
+    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio
+    {
       if let Some(ratio) = srcset_ratio_hint() {
         if needs_ratio_probe {
           if let Some(width) = authored_width {
@@ -12769,7 +12846,9 @@ impl FastRender {
                 .items
                 .iter()
                 .filter_map(|item| match item {
-                  SelectItem::OptGroupLabel { label, .. } if is_listbox => Some(label.chars().count()),
+                  SelectItem::OptGroupLabel { label, .. } if is_listbox => {
+                    Some(label.chars().count())
+                  }
                   SelectItem::Option { label, .. } => Some(label.chars().count()),
                   _ => None,
                 })
@@ -12839,8 +12918,8 @@ impl FastRender {
         // image-heavy pages while still honoring provided intrinsic sizes/aspect ratios. SVG images
         // are a notable exception because `preserveAspectRatio="none"` explicitly disables the
         // intrinsic ratio even when width/height are present.
-        let needs_no_ratio_probe =
-          !replaced_box.no_intrinsic_ratio && image_sources_might_be_svg(src, srcset, picture_sources);
+        let needs_no_ratio_probe = !replaced_box.no_intrinsic_ratio
+          && image_sources_might_be_svg(src, srcset, picture_sources);
         if !needs_ratio_probe && !needs_size_probe && !needs_no_ratio_probe {
           return;
         }
@@ -12860,8 +12939,9 @@ impl FastRender {
 
         let mut have_resource_dimensions = replaced_box.intrinsic_size.is_some();
 
-        let has_image_source =
-          !trim_ascii_whitespace(src).is_empty() || !srcset.is_empty() || !picture_sources.is_empty();
+        let has_image_source = !trim_ascii_whitespace(src).is_empty()
+          || !srcset.is_empty()
+          || !picture_sources.is_empty();
 
         let selected = if has_image_source {
           let select_start = profile_enabled.then(Instant::now);
@@ -12921,9 +13001,11 @@ impl FastRender {
         if let Some(selected) = selected {
           if !selected.url.is_empty() {
             let probe_start = profile_enabled.then(Instant::now);
-            let probe_result = self
-              .image_cache
-              .probe_with_crossorigin_and_referrer_policy(selected.url, crossorigin, referrer_policy);
+            let probe_result = self.image_cache.probe_with_crossorigin_and_referrer_policy(
+              selected.url,
+              crossorigin,
+              referrer_policy,
+            );
             if let Some(start) = probe_start {
               let ms = start.elapsed().as_secs_f64() * 1000.0;
               REPLACED_INTRINSIC_PROFILE.with(|state| {
@@ -13022,7 +13104,10 @@ impl FastRender {
           }
         }
 
-        if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
+        if replaced_box.aspect_ratio.is_none()
+          && !explicit_no_ratio
+          && !replaced_box.no_intrinsic_ratio
+        {
           if let Some(selected) = selected {
             if let Some(SrcsetDescriptor::WidthHeight { width, height }) = selected.descriptor {
               let ratio = width as f32 / height as f32;
@@ -13211,8 +13296,7 @@ impl FastRender {
             // about:blank is a browser-provided empty document; avoid probing it as an image source
             // (which would fail offline and record spurious fetch errors).
             if !is_about_blank {
-              let inline_svg =
-                src_trimmed.starts_with("<svg") || src_trimmed.starts_with("<?xml");
+              let inline_svg = src_trimmed.starts_with("<svg") || src_trimmed.starts_with("<?xml");
               let meta = if inline_svg {
                 self.image_cache.probe_svg_content(src, "embed")
               } else {
@@ -13253,7 +13337,8 @@ impl FastRender {
     }
 
     // If only intrinsic size is present, ensure aspect ratio is recorded
-    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
+    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio
+    {
       if let Some(size) = replaced_box.intrinsic_size {
         if size.height > 0.0 {
           replaced_box.aspect_ratio = Some(size.width / size.height);
@@ -13567,19 +13652,11 @@ impl CssImportFetcher {
 
 impl CssImportLoader for CssImportFetcher {
   fn load(&self, url: &str) -> Result<String> {
-    Ok(
-      self
-        .load_with_importer(url, self.base_url.as_deref())?
-        .css,
-    )
+    Ok(self.load_with_importer(url, self.base_url.as_deref())?.css)
   }
 
   fn referrer_policy_for_stylesheet(&self, url: &str) -> Option<ReferrerPolicy> {
-    self
-      .imported_stylesheet_policies
-      .borrow()
-      .get(url)
-      .copied()
+    self.imported_stylesheet_policies.borrow().get(url).copied()
   }
 
   fn load_with_importer(
@@ -13645,7 +13722,10 @@ impl CssImportLoader for CssImportFetcher {
       Ok(res) => res,
       Err(err) => {
         if should_suppress_stylesheet_network_error(&resolved, &err) {
-          return Ok(crate::css::loader::FetchedStylesheet::new(String::new(), None));
+          return Ok(crate::css::loader::FetchedStylesheet::new(
+            String::new(),
+            None,
+          ));
         }
         if let Some(ctx) = &self.resource_context {
           if let Some(diag) = &ctx.diagnostics {
@@ -13700,7 +13780,10 @@ impl CssImportLoader for CssImportFetcher {
 
     // Decode CSS bytes with charset handling
     let decoded = decode_css_bytes(&resource.bytes, resource.content_type.as_deref());
-    let sheet_base = resource.final_url.clone().unwrap_or_else(|| resolved.clone());
+    let sheet_base = resource
+      .final_url
+      .clone()
+      .unwrap_or_else(|| resolved.clone());
     let effective_policy = resource.response_referrer_policy.unwrap_or(referrer_policy);
     {
       let mut policies = self.imported_stylesheet_policies.borrow_mut();
@@ -13764,10 +13847,7 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut DefaultHasher) {
   }
 }
 
-fn hash_anchor_function(
-  func: &crate::style::types::AnchorFunction,
-  hasher: &mut DefaultHasher,
-) {
+fn hash_anchor_function(func: &crate::style::types::AnchorFunction, hasher: &mut DefaultHasher) {
   match &func.name {
     Some(name) => {
       1u8.hash(hasher);
@@ -14021,7 +14101,10 @@ fn hash_image_resolution(value: &crate::style::types::ImageResolution, hasher: &
   value.snap.hash(hasher);
 }
 
-fn hash_image_orientation(value: &crate::style::types::ImageOrientation, hasher: &mut DefaultHasher) {
+fn hash_image_orientation(
+  value: &crate::style::types::ImageOrientation,
+  hasher: &mut DefaultHasher,
+) {
   match value {
     crate::style::types::ImageOrientation::FromImage => 0u8.hash(hasher),
     crate::style::types::ImageOrientation::None => 1u8.hash(hasher),
@@ -14067,7 +14150,10 @@ fn hash_motion_position(value: &crate::style::types::MotionPosition, hasher: &mu
   hash_length(&value.y, hasher);
 }
 
-fn hash_motion_path_command(value: &crate::style::types::MotionPathCommand, hasher: &mut DefaultHasher) {
+fn hash_motion_path_command(
+  value: &crate::style::types::MotionPathCommand,
+  hasher: &mut DefaultHasher,
+) {
   match value {
     crate::style::types::MotionPathCommand::MoveTo(pos) => {
       0u8.hash(hasher);
@@ -14183,7 +14269,10 @@ fn hash_background_position_component(
   hash_length(&value.offset, hasher);
 }
 
-fn hash_background_position(value: &crate::style::types::BackgroundPosition, hasher: &mut DefaultHasher) {
+fn hash_background_position(
+  value: &crate::style::types::BackgroundPosition,
+  hasher: &mut DefaultHasher,
+) {
   match value {
     crate::style::types::BackgroundPosition::Position { x, y } => {
       0u8.hash(hasher);
@@ -14204,7 +14293,10 @@ fn hash_shape_radius(value: &crate::style::types::ShapeRadius, hasher: &mut Defa
   }
 }
 
-fn hash_border_corner_radius(value: &crate::style::types::BorderCornerRadius, hasher: &mut DefaultHasher) {
+fn hash_border_corner_radius(
+  value: &crate::style::types::BorderCornerRadius,
+  hasher: &mut DefaultHasher,
+) {
   hash_length(&value.x, hasher);
   hash_length(&value.y, hasher);
 }
@@ -14272,7 +14364,10 @@ fn hash_basic_shape(value: &crate::style::types::BasicShape, hasher: &mut Defaul
   }
 }
 
-fn hash_radial_gradient_size(value: &crate::css::types::RadialGradientSize, hasher: &mut DefaultHasher) {
+fn hash_radial_gradient_size(
+  value: &crate::css::types::RadialGradientSize,
+  hasher: &mut DefaultHasher,
+) {
   use crate::css::types::RadialGradientSize;
 
   match value {
@@ -14400,7 +14495,11 @@ fn hash_shape_outside_image(
   }
 }
 
-fn hash_shape_outside(value: &crate::style::types::ShapeOutside, style: &ComputedStyle, hasher: &mut DefaultHasher) {
+fn hash_shape_outside(
+  value: &crate::style::types::ShapeOutside,
+  style: &ComputedStyle,
+  hasher: &mut DefaultHasher,
+) {
   use crate::style::types::ShapeOutside;
 
   match value {
@@ -14539,7 +14638,10 @@ fn hash_content_value(value: &crate::style::content::ContentValue, hasher: &mut 
   }
 }
 
-fn hash_string_set_value(value: &crate::style::content::StringSetValue, hasher: &mut DefaultHasher) {
+fn hash_string_set_value(
+  value: &crate::style::content::StringSetValue,
+  hasher: &mut DefaultHasher,
+) {
   match value {
     crate::style::content::StringSetValue::Content => 0u8.hash(hasher),
     crate::style::content::StringSetValue::Literal(s) => {
@@ -14549,7 +14651,10 @@ fn hash_string_set_value(value: &crate::style::content::StringSetValue, hasher: 
   }
 }
 
-fn hash_string_set(assignments: &[crate::style::content::StringSetAssignment], hasher: &mut DefaultHasher) {
+fn hash_string_set(
+  assignments: &[crate::style::content::StringSetAssignment],
+  hasher: &mut DefaultHasher,
+) {
   assignments.len().hash(hasher);
   for assignment in assignments {
     assignment.name.hash(hasher);
@@ -14675,7 +14780,10 @@ fn hash_text_indent(indent: &crate::style::types::TextIndent, hasher: &mut Defau
   indent.each_line.hash(hasher);
 }
 
-fn hash_text_overflow_side(side: &crate::style::types::TextOverflowSide, hasher: &mut DefaultHasher) {
+fn hash_text_overflow_side(
+  side: &crate::style::types::TextOverflowSide,
+  hasher: &mut DefaultHasher,
+) {
   match side {
     crate::style::types::TextOverflowSide::Clip => 0u8.hash(hasher),
     crate::style::types::TextOverflowSide::Ellipsis => 1u8.hash(hasher),
@@ -14691,7 +14799,10 @@ fn hash_text_overflow(value: &crate::style::types::TextOverflow, hasher: &mut De
   hash_text_overflow_side(&value.inline_end, hasher);
 }
 
-fn hash_text_emphasis_style(value: &crate::style::types::TextEmphasisStyle, hasher: &mut DefaultHasher) {
+fn hash_text_emphasis_style(
+  value: &crate::style::types::TextEmphasisStyle,
+  hasher: &mut DefaultHasher,
+) {
   match value {
     crate::style::types::TextEmphasisStyle::None => 0u8.hash(hasher),
     crate::style::types::TextEmphasisStyle::Mark { fill, shape } => {
@@ -15126,7 +15237,10 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
     hash_shape_outside(&style.shape_outside, style, &mut h);
     if !matches!(style.shape_outside, crate::style::types::ShapeOutside::None) {
       hash_length(&style.shape_margin, &mut h);
-      if matches!(style.shape_outside, crate::style::types::ShapeOutside::Image(_)) {
+      if matches!(
+        style.shape_outside,
+        crate::style::types::ShapeOutside::Image(_)
+      ) {
         hash_f32(style.shape_image_threshold, &mut h);
       }
     }
@@ -15404,7 +15518,10 @@ fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
       out.insert(base | STYLE_KEY_MARKER, style_layout_fingerprint(marker));
     }
     if let Some(placeholder) = &node.placeholder_styles {
-      out.insert(base | STYLE_KEY_PLACEHOLDER, style_layout_fingerprint(placeholder));
+      out.insert(
+        base | STYLE_KEY_PLACEHOLDER,
+        style_layout_fingerprint(placeholder),
+      );
     }
     if let Some(file_button) = &node.file_selector_button_styles {
       out.insert(
@@ -15413,19 +15530,34 @@ fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
       );
     }
     if let Some(thumb) = &node.slider_thumb_styles {
-      out.insert(base | STYLE_KEY_SLIDER_THUMB, style_layout_fingerprint(thumb));
+      out.insert(
+        base | STYLE_KEY_SLIDER_THUMB,
+        style_layout_fingerprint(thumb),
+      );
     }
     if let Some(track) = &node.slider_track_styles {
-      out.insert(base | STYLE_KEY_SLIDER_TRACK, style_layout_fingerprint(track));
+      out.insert(
+        base | STYLE_KEY_SLIDER_TRACK,
+        style_layout_fingerprint(track),
+      );
     }
     if let Some(call) = &node.footnote_call_styles {
-      out.insert(base | STYLE_KEY_FOOTNOTE_CALL, style_layout_fingerprint(call));
+      out.insert(
+        base | STYLE_KEY_FOOTNOTE_CALL,
+        style_layout_fingerprint(call),
+      );
     }
     if let Some(marker) = &node.footnote_marker_styles {
-      out.insert(base | STYLE_KEY_FOOTNOTE_MARKER, style_layout_fingerprint(marker));
+      out.insert(
+        base | STYLE_KEY_FOOTNOTE_MARKER,
+        style_layout_fingerprint(marker),
+      );
     }
     if let Some(first_line) = &node.first_line_styles {
-      out.insert(base | STYLE_KEY_FIRST_LINE, style_layout_fingerprint(first_line));
+      out.insert(
+        base | STYLE_KEY_FIRST_LINE,
+        style_layout_fingerprint(first_line),
+      );
     }
     if let Some(first_letter) = &node.first_letter_styles {
       out.insert(
@@ -15643,9 +15775,16 @@ fn container_query_context_fingerprint(
                 crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value } => {
                   let no_substitution = matches!(
                     (&value, css_text.as_ref()),
-                    (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
+                    (
+                      crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_),
+                      ""
+                    )
                   );
-                  let resolved = if no_substitution { raw } else { css_text.as_ref() };
+                  let resolved = if no_substitution {
+                    raw
+                  } else {
+                    css_text.as_ref()
+                  };
                   trim_ascii_whitespace_and_trailing_semicolon(resolved).hash(&mut hasher);
                 }
                 crate::style::var_resolution::VarResolutionResult::InvalidSyntax(resolved) => {
@@ -16277,15 +16416,12 @@ fn refresh_fragment_styles(
       .as_ref()
       .is_some_and(|style| matches!(style.display, crate::style::display::Display::TableCaption))
   });
-  let is_table_wrapper_fragment = fragment
-    .style
-    .as_ref()
-    .is_some_and(|style| {
-      matches!(
-        style.display,
-        crate::style::display::Display::Table | crate::style::display::Display::InlineTable
-      ) && has_table_caption_child
-    });
+  let is_table_wrapper_fragment = fragment.style.as_ref().is_some_and(|style| {
+    matches!(
+      style.display,
+      crate::style::display::Display::Table | crate::style::display::Display::InlineTable
+    ) && has_table_caption_child
+  });
 
   if is_table_wrapper_fragment {
     if let Some(style) = fragment.style.as_ref() {
@@ -16309,16 +16445,12 @@ fn refresh_fragment_styles(
       wrapper_style.box_shadow.clear();
       fragment.style = Some(Arc::new(wrapper_style));
     }
-  } else if fragment
-    .style
-    .as_ref()
-    .is_some_and(|style| {
-      matches!(
-        style.display,
-        crate::style::display::Display::Table | crate::style::display::Display::InlineTable
-      )
-    })
-  {
+  } else if fragment.style.as_ref().is_some_and(|style| {
+    matches!(
+      style.display,
+      crate::style::display::Display::Table | crate::style::display::Display::InlineTable
+    )
+  }) {
     if let Some(style) = fragment.style.as_ref() {
       let mut table_style = style.as_ref().clone();
       if matches!(
@@ -16494,7 +16626,12 @@ fn build_container_query_context(
     let percentage_base = percentage_base
       .is_finite()
       .then_some(percentage_base.max(0.0))
-      .or_else(|| viewport.width.is_finite().then_some(viewport.width.max(0.0)));
+      .or_else(|| {
+        viewport
+          .width
+          .is_finite()
+          .then_some(viewport.width.max(0.0))
+      });
     length
       .resolve_with_context(
         percentage_base,
@@ -16636,7 +16773,12 @@ fn build_container_query_context(
       percentage_base
     };
 
-    if has_layout_size && matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize) {
+    if has_layout_size
+      && matches!(
+        style.container_type,
+        ContainerType::Size | ContainerType::InlineSize
+      )
+    {
       if let Some(styled_id) = styled_id {
         let (content_inline, content_block) = match style.writing_mode {
           WritingMode::HorizontalTb => (content_width, content_height),
@@ -16747,7 +16889,13 @@ fn build_container_scope(styled: &StyledNode, ctx: &ContainerQueryContext) -> Ha
         }
         // Safety: pointers come from `styled` and remain valid for the duration of this traversal.
         let slotted = unsafe { &*ptr };
-        if mark(slotted, containers, styled_lookup, child_in_container_subtree, scope) {
+        if mark(
+          slotted,
+          containers,
+          styled_lookup,
+          child_in_container_subtree,
+          scope,
+        ) {
           subtree_has_container = true;
         }
       }
@@ -17116,8 +17264,8 @@ pub(crate) fn render_html_with_shared_resources(
   .map(|out| out.pixmap)
 }
 
-  #[cfg(test)]
-  mod tests {
+#[cfg(test)]
+mod tests {
   use super::*;
   use crate::css::parser::extract_css;
   use crate::css::types::StyleSheet;
@@ -17129,8 +17277,8 @@ pub(crate) fn render_html_with_shared_resources(
   use crate::layout::formatting_context::intrinsic_cache_clear;
   use crate::render_control::RenderDeadline;
   use crate::resource::{
-    origin_from_url, FetchDestination, FetchRequest, FetchedResource, ResourceAccessPolicy,
-    ReferrerPolicy, ResourceFetcher,
+    origin_from_url, FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy,
+    ResourceAccessPolicy, ResourceFetcher,
   };
   use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
   use crate::style::cascade::ContainerQueryContext;
@@ -17421,7 +17569,9 @@ pub(crate) fn render_html_with_shared_resources(
     let mut filtered = base;
     filtered
       .filter
-      .push(crate::style::types::FilterFunction::Blur(crate::Length::px(1.0)));
+      .push(crate::style::types::FilterFunction::Blur(
+        crate::Length::px(1.0),
+      ));
     assert_ne!(
       base_fp,
       super::style_layout_fingerprint(&filtered),
@@ -17437,7 +17587,9 @@ pub(crate) fn render_html_with_shared_resources(
     let mut filtered = base;
     filtered
       .backdrop_filter
-      .push(crate::style::types::FilterFunction::Blur(crate::Length::px(1.0)));
+      .push(crate::style::types::FilterFunction::Blur(
+        crate::Length::px(1.0),
+      ));
     assert_ne!(
       base_fp,
       super::style_layout_fingerprint(&filtered),
@@ -17451,9 +17603,10 @@ pub(crate) fn render_html_with_shared_resources(
     let base_fp = super::style_layout_fingerprint(&base);
 
     let mut hinted = base;
-    hinted.will_change = crate::style::types::WillChange::Hints(vec![
-      crate::style::types::WillChangeHint::Property("transform".to_string()),
-    ]);
+    hinted.will_change =
+      crate::style::types::WillChange::Hints(vec![crate::style::types::WillChangeHint::Property(
+        "transform".to_string(),
+      )]);
     assert_ne!(
       base_fp,
       super::style_layout_fingerprint(&hinted),
@@ -17466,7 +17619,9 @@ pub(crate) fn render_html_with_shared_resources(
     let mut base = ComputedStyle::default();
     base
       .transform
-      .push(crate::css::types::Transform::TranslateX(crate::Length::px(1.0)));
+      .push(crate::css::types::Transform::TranslateX(crate::Length::px(
+        1.0,
+      )));
     let base_fp = super::style_layout_fingerprint(&base);
 
     let mut shifted = base;
@@ -17594,7 +17749,8 @@ pub(crate) fn render_html_with_shared_resources(
     let base_fp = super::style_layout_fingerprint(&base);
 
     let mut shaped = base;
-    shaped.shape_outside = crate::style::types::ShapeOutside::Box(crate::style::types::ReferenceBox::MarginBox);
+    shaped.shape_outside =
+      crate::style::types::ShapeOutside::Box(crate::style::types::ReferenceBox::MarginBox);
     assert_ne!(
       base_fp,
       super::style_layout_fingerprint(&shaped),
@@ -17845,7 +18001,8 @@ pub(crate) fn render_html_with_shared_resources(
     );
 
     let mut footnote_call = after.clone();
-    footnote_call.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::FootnoteCall);
+    footnote_call.generated_pseudo =
+      Some(crate::tree::box_tree::GeneratedPseudoElement::FootnoteCall);
     assert_eq!(
       super::box_style_key(&footnote_call),
       Some((7 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_FOOTNOTE_CALL)
@@ -18019,11 +18176,8 @@ pub(crate) fn render_html_with_shared_resources(
     let mut style_map = HashMap::new();
     style_map.insert(7 << super::STYLE_KEY_SHIFT, new_style.clone());
 
-    let mut snapshot = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
-      body_id,
-      vec![],
-    );
+    let mut snapshot =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), body_id, vec![]);
     snapshot.style = Some(old_style);
 
     let mut anchor =
@@ -18060,8 +18214,7 @@ pub(crate) fn render_html_with_shared_resources(
 
     let mut text = BoxNode::new_text(old_style.clone(), "Hello".to_string());
     text.styled_node_id = Some(1);
-    let mut root =
-      BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![text]);
+    let mut root = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![text]);
     root.styled_node_id = Some(1);
     let box_tree = BoxTree::new(root);
 
@@ -18094,11 +18247,8 @@ pub(crate) fn render_html_with_shared_resources(
       0.0,
       vec![text_fragment],
     );
-    let mut root_fragment = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
-      root_id,
-      vec![line],
-    );
+    let mut root_fragment =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), root_id, vec![line]);
     root_fragment.style = Some(old_style);
 
     super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None, false);
@@ -18140,7 +18290,10 @@ pub(crate) fn render_html_with_shared_resources(
     let mut style_map = HashMap::new();
     style_map.insert(base_key, base_style.clone());
     style_map.insert(base_key | super::STYLE_KEY_FIRST_LINE, first_line.clone());
-    style_map.insert(base_key | super::STYLE_KEY_FIRST_LETTER, first_letter.clone());
+    style_map.insert(
+      base_key | super::STYLE_KEY_FIRST_LETTER,
+      first_letter.clone(),
+    );
 
     const EPHEMERAL_ID_BASE: usize = 1usize << (usize::BITS - 1);
     let inline_box_id = EPHEMERAL_ID_BASE | 111;
@@ -18241,16 +18394,9 @@ pub(crate) fn render_html_with_shared_resources(
       vec![],
       old_style.clone(),
     );
-    let line = FragmentNode::new_line(
-      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
-      0.0,
-      vec![ellipsis],
-    );
-    let mut root_fragment = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
-      root_id,
-      vec![line],
-    );
+    let line = FragmentNode::new_line(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), 0.0, vec![ellipsis]);
+    let mut root_fragment =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), root_id, vec![line]);
     root_fragment.style = Some(old_style);
 
     super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None, false);
@@ -18288,7 +18434,8 @@ pub(crate) fn render_html_with_shared_resources(
     child_style.display = crate::style::display::Display::TableHeaderGroup;
     let child_style = Arc::new(child_style);
 
-    let mut root_box = BoxNode::new_block(inherited_old.clone(), FormattingContextType::Block, vec![]);
+    let mut root_box =
+      BoxNode::new_block(inherited_old.clone(), FormattingContextType::Block, vec![]);
     root_box.styled_node_id = Some(1);
     let box_tree = BoxTree::new(root_box);
     let root_id = box_tree.root.id;
@@ -18305,10 +18452,11 @@ pub(crate) fn render_html_with_shared_resources(
       vec![],
       child_style.clone(),
     );
-    let mut root_fragment =
-      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), root_id, vec![
-        child_fragment,
-      ]);
+    let mut root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      root_id,
+      vec![child_fragment],
+    );
     root_fragment.style = Some(inherited_old);
 
     super::refresh_fragment_styles(&mut root_fragment, &box_map, &style_map, None, false);
@@ -18488,7 +18636,10 @@ pub(crate) fn render_html_with_shared_resources(
       "expected effective display override to be preserved"
     );
     assert!(
-      matches!(style.border_top_style, crate::style::types::BorderStyle::None),
+      matches!(
+        style.border_top_style,
+        crate::style::types::BorderStyle::None
+      ),
       "expected table decoration borders to remain stripped"
     );
     assert!(style.border_top_width.to_px().abs() < f32::EPSILON);
@@ -18524,8 +18675,11 @@ pub(crate) fn render_html_with_shared_resources(
 
     let mut input = BoxNode::new_replaced(base_style.clone(), control.clone(), None, None);
     input.styled_node_id = Some(1);
-    let mut root =
-      BoxNode::new_block(base_style.clone(), FormattingContextType::Block, vec![input]);
+    let mut root = BoxNode::new_block(
+      base_style.clone(),
+      FormattingContextType::Block,
+      vec![input],
+    );
     root.styled_node_id = Some(1);
     let box_tree = BoxTree::new(root);
     let input_id = box_tree.root.children[0].id;
@@ -18536,7 +18690,10 @@ pub(crate) fn render_html_with_shared_resources(
     let base_key = 1 << super::STYLE_KEY_SHIFT;
     let mut style_map = HashMap::new();
     style_map.insert(base_key, base_style);
-    style_map.insert(base_key | super::STYLE_KEY_PLACEHOLDER, new_placeholder.clone());
+    style_map.insert(
+      base_key | super::STYLE_KEY_PLACEHOLDER,
+      new_placeholder.clone(),
+    );
 
     let mut fragment = FragmentNode::new_with_style(
       Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -18557,7 +18714,9 @@ pub(crate) fn render_html_with_shared_resources(
       panic!("expected form control replaced type");
     };
     match &control.control {
-      FormControlKind::Text { placeholder_style, .. } => {
+      FormControlKind::Text {
+        placeholder_style, ..
+      } => {
         assert!(
           placeholder_style
             .as_ref()
@@ -18590,8 +18749,7 @@ pub(crate) fn render_html_with_shared_resources(
 
     let mut child = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![]);
     child.styled_node_id = Some(2);
-    let mut root =
-      BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![child]);
+    let mut root = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![child]);
     root.styled_node_id = Some(1);
     let tree = BoxTree::new(root);
     let root_id = tree.root.id;
@@ -18641,8 +18799,11 @@ pub(crate) fn render_html_with_shared_resources(
     let mut container_style = ComputedStyle::default();
     container_style.container_type = crate::style::types::ContainerType::InlineSize;
     let container_style = Arc::new(container_style);
-    let mut container =
-      BoxNode::new_block(container_style.clone(), FormattingContextType::Block, vec![]);
+    let mut container = BoxNode::new_block(
+      container_style.clone(),
+      FormattingContextType::Block,
+      vec![],
+    );
     container.styled_node_id = Some(7);
 
     let mut root = BoxNode::new_block(
@@ -18713,13 +18874,16 @@ pub(crate) fn render_html_with_shared_resources(
       FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), root_id, vec![]),
       viewport,
     );
-    fragments.additional_fragments.push(FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 0.0, 100.0, 50.0),
-      container_id,
-      vec![],
-    ));
+    fragments
+      .additional_fragments
+      .push(FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 100.0, 50.0),
+        container_id,
+        vec![],
+      ));
 
-    let ctx = super::build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
+    let ctx =
+      super::build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
     let info = ctx
       .containers
       .get(&7)
@@ -18819,7 +18983,11 @@ pub(crate) fn render_html_with_shared_resources(
       FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 50.0), body_id, vec![]);
     let anchor = FragmentNode::new_footnote_anchor(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), snapshot);
     let fragments = FragmentTree::with_viewport(
-      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 800.0, 600.0), root_id, vec![anchor]),
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 800.0, 600.0),
+        root_id,
+        vec![anchor],
+      ),
       viewport,
     );
 
@@ -20079,7 +20247,9 @@ pub(crate) fn render_html_with_shared_resources(
         <body>Hello</body>
       </html>
     "#;
-    let _ = with_stage_listener(Some(listener), || renderer.render_html(html, 10, 10).unwrap());
+    let _ = with_stage_listener(Some(listener), || {
+      renderer.render_html(html, 10, 10).unwrap()
+    });
 
     let stages = stages.lock().unwrap().clone();
     let dom_idx = stages
@@ -20183,10 +20353,11 @@ pub(crate) fn render_html_with_shared_resources(
     let base_hint = "https://example.com/page.html";
     let stylesheet_url = "https://example.com/style.css";
 
-    let fetcher = Arc::new(
-      DeadlineAssertingFetcher::default()
-        .with_entry(stylesheet_url, "html, body { margin: 0; background: black; }", "text/css"),
-    );
+    let fetcher = Arc::new(DeadlineAssertingFetcher::default().with_entry(
+      stylesheet_url,
+      "html, body { margin: 0; background: black; }",
+      "text/css",
+    ));
     let config = FastRenderConfig::default()
       .with_font_sources(FontConfig::bundled_only())
       .with_paint_parallelism(PaintParallelism::disabled())
@@ -21928,9 +22099,10 @@ pub(crate) fn render_html_with_shared_resources(
 
   #[test]
   fn container_query_fingerprint_tracks_custom_props_used_by_size_query_vars() {
-    let stylesheet =
-      crate::css::parser::parse_stylesheet("@container (width > var(--query)) { .a { color: red; } }")
-        .expect("stylesheet parses");
+    let stylesheet = crate::css::parser::parse_stylesheet(
+      "@container (width > var(--query)) { .a { color: red; } }",
+    )
+    .expect("stylesheet parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
     let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
 
@@ -21992,7 +22164,10 @@ pub(crate) fn render_html_with_shared_resources(
     let ctx_b = ctx_with_query_value(&media_ctx, "20px");
     let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
     let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
-    assert_ne!(fp_a, fp_b, "fingerprint should change when var() inputs change");
+    assert_ne!(
+      fp_a, fp_b,
+      "fingerprint should change when var() inputs change"
+    );
 
     // Without a config, custom properties should not affect the fingerprint.
     let fp_a_untracked = container_query_context_fingerprint(&ctx_a, None);
@@ -22096,7 +22271,9 @@ pub(crate) fn render_html_with_shared_resources(
     let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
 
     assert!(
-      metadata.container_style_query_properties.contains("opacity"),
+      metadata
+        .container_style_query_properties
+        .contains("opacity"),
       "metadata should track style-query property"
     );
 
@@ -22164,15 +22341,16 @@ pub(crate) fn render_html_with_shared_resources(
 
   #[test]
   fn container_query_fingerprint_tracks_z_index_used_by_style_queries() {
-    let stylesheet = crate::css::parser::parse_stylesheet(
-      "@container style(z-index > 0) { .a { color: red; } }",
-    )
-    .expect("stylesheet parses");
+    let stylesheet =
+      crate::css::parser::parse_stylesheet("@container style(z-index > 0) { .a { color: red; } }")
+        .expect("stylesheet parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
     let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
 
     assert!(
-      metadata.container_style_query_properties.contains("z-index"),
+      metadata
+        .container_style_query_properties
+        .contains("z-index"),
       "metadata should track style-query property"
     );
 
@@ -22248,7 +22426,9 @@ pub(crate) fn render_html_with_shared_resources(
     let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
 
     assert!(
-      metadata.container_style_query_properties.contains("position"),
+      metadata
+        .container_style_query_properties
+        .contains("position"),
       "metadata should track style-query property"
     );
 
@@ -22327,7 +22507,9 @@ pub(crate) fn render_html_with_shared_resources(
     let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
 
     assert!(
-      metadata.container_style_query_properties.contains("overflow"),
+      metadata
+        .container_style_query_properties
+        .contains("overflow"),
       "metadata should track style-query property"
     );
 
@@ -22416,7 +22598,9 @@ pub(crate) fn render_html_with_shared_resources(
     let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
 
     assert!(
-      metadata.container_style_query_properties.contains("visibility"),
+      metadata
+        .container_style_query_properties
+        .contains("visibility"),
       "metadata should track style-query property"
     );
 
@@ -22490,10 +22674,9 @@ pub(crate) fn render_html_with_shared_resources(
     // Style queries against unregistered custom properties compare the authored token stream (with
     // no var() substitution). Ensure the fingerprint captures changes in that raw token stream even
     // when the var-resolved token stream would be identical.
-    let stylesheet = crate::css::parser::parse_stylesheet(
-      "@container style(--foo: 10px) { .a { color: red; } }",
-    )
-    .expect("stylesheet parses");
+    let stylesheet =
+      crate::css::parser::parse_stylesheet("@container style(--foo: 10px) { .a { color: red; } }")
+        .expect("stylesheet parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
     let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
 
@@ -22870,11 +23053,9 @@ pub(crate) fn render_html_with_shared_resources(
       urls: Arc::clone(&urls),
     });
     let config = FastRenderConfig::default().with_base_url("https://example.com/");
-    let renderer = FastRender::with_config_and_fetcher(
-      config,
-      Some(fetcher as Arc<dyn ResourceFetcher>),
-    )
-    .expect("init renderer");
+    let renderer =
+      FastRender::with_config_and_fetcher(config, Some(fetcher as Arc<dyn ResourceFetcher>))
+        .expect("init renderer");
 
     let mut node = BoxNode::new_replaced(
       Arc::new(ComputedStyle::default()),
@@ -22995,11 +23176,9 @@ pub(crate) fn render_html_with_shared_resources(
       urls: Arc::clone(&urls),
     });
     let config = FastRenderConfig::default().with_base_url("https://example.com/");
-    let renderer = FastRender::with_config_and_fetcher(
-      config,
-      Some(fetcher as Arc<dyn ResourceFetcher>),
-    )
-    .expect("init renderer");
+    let renderer =
+      FastRender::with_config_and_fetcher(config, Some(fetcher as Arc<dyn ResourceFetcher>))
+        .expect("init renderer");
 
     let mut node = BoxNode::new_replaced(
       Arc::new(ComputedStyle::default()),
@@ -23176,7 +23355,12 @@ pub(crate) fn render_html_with_shared_resources(
           None,
           None,
         ),
-        BoxNode::new_replaced(style.clone(), ReplacedType::Embed { src: "#".into() }, None, None),
+        BoxNode::new_replaced(
+          style.clone(),
+          ReplacedType::Embed { src: "#".into() },
+          None,
+          None,
+        ),
         BoxNode::new_replaced(
           style.clone(),
           ReplacedType::Object { data: "#".into() },
@@ -23285,7 +23469,8 @@ pub(crate) fn render_html_with_shared_resources(
     assert_eq!(replaced.intrinsic_size, Some(Size::new(100.0, 50.0)));
     assert_eq!(replaced.aspect_ratio, Some(2.0));
 
-    let used = crate::layout::utils::compute_replaced_size(style.as_ref(), replaced, None, viewport);
+    let used =
+      crate::layout::utils::compute_replaced_size(style.as_ref(), replaced, None, viewport);
     assert_eq!(used.width, 100.0);
     assert_eq!(used.height, 50.0);
   }
@@ -24686,8 +24871,14 @@ pub(crate) fn render_html_with_shared_resources(
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
-    assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
+    assert_eq!(
+      stylesheet_request.referrer_policy,
+      ReferrerPolicy::NoReferrer
+    );
   }
 
   #[test]
@@ -24735,8 +24926,14 @@ pub(crate) fn render_html_with_shared_resources(
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
-    assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
+    assert_eq!(
+      stylesheet_request.referrer_policy,
+      ReferrerPolicy::NoReferrer
+    );
   }
 
   #[test]
@@ -24784,8 +24981,14 @@ pub(crate) fn render_html_with_shared_resources(
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
-    assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
+    assert_eq!(
+      stylesheet_request.referrer_policy,
+      ReferrerPolicy::NoReferrer
+    );
   }
 
   #[test]
@@ -24834,7 +25037,10 @@ pub(crate) fn render_html_with_shared_resources(
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
     assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::Origin);
   }
 
@@ -24884,7 +25090,10 @@ pub(crate) fn render_html_with_shared_resources(
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
     assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::Origin);
   }
 
@@ -25724,7 +25933,8 @@ pub(crate) fn render_html_with_shared_resources(
       }
     }
 
-    let html = r#"<link rel="stylesheet" crossorigin href="https://cdn.test/a.css"><div>Inline</div>"#;
+    let html =
+      r#"<link rel="stylesheet" crossorigin href="https://cdn.test/a.css"><div>Inline</div>"#;
     let document_url = "https://example.com/page.html";
     let stylesheet_url = "https://cdn.test/a.css";
 
@@ -25776,7 +25986,10 @@ pub(crate) fn render_html_with_shared_resources(
     assert_eq!(requests[0].destination, FetchDestination::StyleCors);
     assert_eq!(requests[0].referrer.as_deref(), Some(document_url));
     assert_eq!(requests[0].client_origin, Some(expected_origin));
-    assert_eq!(requests[0].credentials_mode, FetchCredentialsMode::SameOrigin);
+    assert_eq!(
+      requests[0].credentials_mode,
+      FetchCredentialsMode::SameOrigin
+    );
 
     assert_eq!(diagnostics.fetch_errors.len(), 1);
     assert!(
@@ -26287,7 +26500,8 @@ pub(crate) fn render_html_with_shared_resources(
     let stylesheet = renderer
       .collect_document_stylesheet(&dom, &media_ctx, &mut media_query_cache, None)
       .unwrap();
-    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, Some(&mut media_query_cache));
+    let metadata =
+      stylesheet.collect_css_metadata_with_cache(&media_ctx, Some(&mut media_query_cache));
     assert_eq!(metadata.font_faces.len(), 1);
     assert_eq!(
       metadata.font_faces[0].source_stylesheet_url.as_deref(),

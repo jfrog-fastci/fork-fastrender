@@ -44,6 +44,34 @@ impl BrowserDocumentDom2 {
     })
   }
 
+  /// Fetches and prepares a URL using the internal renderer, replacing the live `dom2` document
+  /// in-place.
+  pub fn navigate_url(
+    &mut self,
+    url: &str,
+    options: RenderOptions,
+  ) -> Result<super::BrowserNavigationReport> {
+    let super::PreparedDocumentReport {
+      document,
+      diagnostics,
+      final_url,
+      base_url,
+    } = self.renderer.prepare_url(url, options.clone())?;
+
+    self.dom = crate::dom2::Document::from_renderer_dom(&document.dom);
+    self.options = options;
+    self.prepared = Some(document);
+    self.style_dirty = false;
+    self.layout_dirty = false;
+    self.paint_dirty = true;
+
+    Ok(super::BrowserNavigationReport {
+      diagnostics,
+      final_url,
+      base_url,
+    })
+  }
+
   /// Returns an immutable reference to the live `dom2` document.
   pub fn dom(&self) -> &crate::dom2::Document {
     &self.dom
