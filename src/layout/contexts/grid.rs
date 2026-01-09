@@ -3369,6 +3369,15 @@ impl GridFormattingContext {
 
   fn resolve_length_px(&self, len: &Length, style: &ComputedStyle) -> Option<f32> {
     use crate::style::values::LengthUnit;
+    // `Length::to_px()` intentionally falls back to summing raw coefficients when it can't resolve
+    // font/viewport-relative units inside calc(). That is fine for "best effort" debugging, but it
+    // breaks layout when we feed those values into Taffy as absolute track/sizing numbers.
+    //
+    // Use the full resolver for calc() values so expressions like `calc(5rem + 1px)` contribute the
+    // correct used size (e.g. MDN's `.page-layout__banner` height).
+    if len.calc.is_some() {
+      return self.resolve_length_px_with_base(*len, None, style);
+    }
     match len.unit {
       LengthUnit::Calc => {
         if len.has_percentage() {

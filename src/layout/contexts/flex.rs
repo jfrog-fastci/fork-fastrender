@@ -1414,11 +1414,12 @@ impl FormattingContext for FlexFormattingContext {
         taffy::style::FlexDirection::Row | taffy::style::FlexDirection::RowReverse
       );
       record_taffy_invocation(TaffyAdapterKind::Flex);
-      let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
-      let compute_result = taffy_tree.compute_layout_with_measure_and_cancel(
-        root_node,
-        available_space,
-         |mut known_dimensions, mut avail, _node_id, node_context, _style| {
+      let mut measure_fn =
+        |mut known_dimensions: taffy::geometry::Size<Option<f32>>,
+         mut avail: taffy::geometry::Size<AvailableSpace>,
+         _node_id: NodeId,
+         node_context: Option<&mut *const BoxNode>,
+         taffy_style: &taffy::style::Style| {
                     let mut measured_baseline_x: Option<f32> = None;
                     let mut measured_baseline_y: Option<f32> = None;
                     let measured = (|| {
@@ -1537,6 +1538,25 @@ impl FormattingContext for FlexFormattingContext {
                             || flex_basis_is_content)
                         {
                           avail.height = AvailableSpace::MaxContent;
+                        }
+
+                        // Taffy sometimes propagates a "known" height for nested flex containers even
+                        // when their physical `height` is `auto`. Treat that as a soft hint rather
+                        // than a hard used border-box size so the child formatting context can
+                        // determine its block-size from content (especially for multi-line `flex-wrap`
+                        // containers).
+                        //
+                        // Do not drop the known height when the flex item is being stretched in the
+                        // cross axis; in that case the parent's alignment algorithm has already
+                        // resolved a definite used cross size.
+                        if matches!(box_node.style.display, Display::Flex | Display::InlineFlex)
+                          && physical_height_is_auto(box_node.style.as_ref())
+                          && !matches!(
+                            taffy_style.align_self,
+                            Some(taffy::style::AlignItems::Stretch)
+                          )
+                        {
+                          known_dimensions.height = None;
                         }
                     }
                     // Fast path: when both dimensions are already known (typically from definite
@@ -1820,11 +1840,11 @@ impl FormattingContext for FlexFormattingContext {
                                 }
                             }
                         }
-                     }
-                      if trace_enabled {
-                          let mut remaining = TRACE_COUNT
-                            .get_or_init(|| Mutex::new(50))
-                            .lock()
+                      }
+                       if trace_enabled {
+                           let mut remaining = TRACE_COUNT
+                             .get_or_init(|| Mutex::new(50))
+                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
                           if *remaining > 0 {
                               let selector = box_node
@@ -1844,10 +1864,10 @@ impl FormattingContext for FlexFormattingContext {
                                 box_node.style.flex_shrink,
                                 box_node.style.flex_basis
                             );
-                            *remaining -= 1;
-                         }
-                     }
-
+                             *remaining -= 1;
+                          }
+                       }
+  
                     let constraints = this.constraints_from_taffy(known_dimensions, avail, None);
                     let skip_contents =
                       this.flex_item_should_skip_contents(box_node, auto_unskipped_for_pass);
@@ -2504,17 +2524,27 @@ impl FormattingContext for FlexFormattingContext {
                           };
                           let axis_override = override_for_axis(axis);
                           if let Some(style) = axis_override {
-                            crate::layout::style_override::with_style_override(
-                              measure_box.id,
-                              style,
-                              || {
-                                crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
-                                  fc.as_ref(),
-                                  measure_box,
-                                  physical_axis,
-                                )
-                              },
-                            )
+                            if measure_box.id != 0 {
+                              crate::layout::style_override::with_style_override(
+                                measure_box.id,
+                                style,
+                                || {
+                                  crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+                                    fc.as_ref(),
+                                    measure_box,
+                                    physical_axis,
+                                  )
+                                },
+                              )
+                            } else {
+                              let mut cloned = measure_box.clone();
+                              cloned.style = style;
+                              crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+                                fc.as_ref(),
+                                &cloned,
+                                physical_axis,
+                              )
+                            }
                           } else {
                             crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
                               fc.as_ref(),
@@ -2694,11 +2724,17 @@ impl FormattingContext for FlexFormattingContext {
                         let eps = 0.01;
                         if content_h <= eps {
                           let intrinsic_block_result = if let Some(style) = override_style.clone() {
-                            crate::layout::style_override::with_style_override(
-                              measure_box.id,
-                              style,
-                              || fc.compute_intrinsic_block_size(measure_box, mode),
-                            )
+                            if measure_box.id != 0 {
+                              crate::layout::style_override::with_style_override(
+                                measure_box.id,
+                                style,
+                                || fc.compute_intrinsic_block_size(measure_box, mode),
+                              )
+                            } else {
+                              let mut cloned = measure_box.clone();
+                              cloned.style = style;
+                              fc.compute_intrinsic_block_size(&cloned, mode)
+                            }
                           } else {
                             fc.compute_intrinsic_block_size(measure_box, mode)
                           };
@@ -2735,11 +2771,17 @@ impl FormattingContext for FlexFormattingContext {
                         record_flex_measure_inline_hint_call();
                       }
                       let intrinsic_result = if let Some(style) = override_style.clone() {
-                        crate::layout::style_override::with_style_override(
-                          measure_box.id,
-                          style,
-                          || fc.compute_intrinsic_inline_size(measure_box, mode),
-                        )
+                        if measure_box.id != 0 {
+                          crate::layout::style_override::with_style_override(
+                            measure_box.id,
+                            style,
+                            || fc.compute_intrinsic_inline_size(measure_box, mode),
+                          )
+                        } else {
+                          let mut cloned = measure_box.clone();
+                          cloned.style = style;
+                          fc.compute_intrinsic_inline_size(&cloned, mode)
+                        }
                       } else {
                         fc.compute_intrinsic_inline_size(measure_box, mode)
                       };
@@ -2837,11 +2879,17 @@ impl FormattingContext for FlexFormattingContext {
                           let eps = 0.01;
                           if content_h <= eps {
                             let intrinsic_block_result = if let Some(style) = override_style.clone() {
-                              crate::layout::style_override::with_style_override(
-                                measure_box.id,
-                                style,
-                                || fc.compute_intrinsic_block_size(measure_box, mode),
-                              )
+                              if measure_box.id != 0 {
+                                crate::layout::style_override::with_style_override(
+                                  measure_box.id,
+                                  style,
+                                  || fc.compute_intrinsic_block_size(measure_box, mode),
+                                )
+                              } else {
+                                let mut cloned = measure_box.clone();
+                                cloned.style = style;
+                                fc.compute_intrinsic_block_size(&cloned, mode)
+                              }
                             } else {
                               fc.compute_intrinsic_block_size(measure_box, mode)
                             };
@@ -2882,15 +2930,21 @@ impl FormattingContext for FlexFormattingContext {
                       .and_then(|_| measure_box.debug_info.as_ref().map(|d| d.to_selector()));
                     #[cfg(test)]
                     record_flex_measure_layout_call(measure_box.id);
-
+ 
                     let layout_with_constraints =
                       |constraints: &LayoutConstraints| -> Result<FragmentNode, LayoutError> {
                         if let Some(style) = override_style.clone() {
-                          crate::layout::style_override::with_style_override(
-                            measure_box.id,
-                            style,
-                            || fc.layout(measure_box, constraints),
-                          )
+                          if measure_box.id != 0 {
+                            crate::layout::style_override::with_style_override(
+                              measure_box.id,
+                              style,
+                              || fc.layout(measure_box, constraints),
+                            )
+                          } else {
+                            let mut cloned = measure_box.clone();
+                            cloned.style = style;
+                            fc.layout(&cloned, constraints)
+                          }
                         } else {
                           fc.layout(measure_box, constraints)
                         }
@@ -3348,7 +3402,12 @@ impl FormattingContext for FlexFormattingContext {
                         y: measured_baseline_y,
                       },
                     )
-        },
+        };
+      let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
+      let compute_result = taffy_tree.compute_layout_with_measure_and_cancel(
+        root_node,
+        available_space,
+        &mut measure_fn,
         cancel.clone(),
         TAFFY_ABORT_CHECK_STRIDE,
       );
@@ -3364,6 +3423,102 @@ impl FormattingContext for FlexFormattingContext {
         },
         _ => LayoutError::MissingContext(format!("Taffy layout failed: {:?}", e)),
       })?;
+
+      if auto_item_count == 0 || is_last_pass {
+        // Flex items with `align-self != stretch` should size themselves in the cross axis, but for
+        // nested wrapping flex containers the used cross size depends on the resolved main size.
+        //
+        // Taffy does not always remeasure leaf nodes after main-size flexing, so remeasure wrapping
+        // flex containers here and feed the content-sized cross size back into Taffy before
+        // converting to fragments.
+        if container_main_axis_is_horizontal {
+          let mut deadline_counter = 0usize;
+          let child_factory = self.child_factory();
+          let mut to_update: Vec<(NodeId, f32)> = Vec::new();
+          for child in in_flow_children.iter() {
+            check_layout_deadline(&mut deadline_counter)?;
+            if !matches!(child.style.display, Display::Flex | Display::InlineFlex) {
+              continue;
+            }
+            if matches!(child.style.flex_wrap, FlexWrap::NoWrap) {
+              continue;
+            }
+            if !physical_height_is_auto(child.style.as_ref()) {
+              continue;
+            }
+            let effective_align_self = child.style.align_self.unwrap_or(style.align_items);
+            if matches!(effective_align_self, AlignItems::Stretch) {
+              continue;
+            }
+            let Some(node_id) = node_map.get(&(*child as *const BoxNode)).copied() else {
+              continue;
+            };
+            let child_layout = taffy_tree.layout(node_id).map_err(|e| {
+              LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e))
+            })?;
+            let width = child_layout.size.width;
+            if !width.is_finite() || width <= 0.0 {
+              continue;
+            }
+
+            let child_constraints = LayoutConstraints::definite_width(width)
+              .with_used_border_box_size(Some(width), None);
+            let fc_type = child
+              .formatting_context()
+              .unwrap_or(FormattingContextType::Block);
+            let fc = child_factory.get(fc_type);
+            let measured = fc.layout(child, &child_constraints)?;
+            let measured_height = measured.bounds.height();
+            let current_height = child_layout.size.height;
+            if measured_height.is_finite()
+              && measured_height >= 0.0
+              && (measured_height - current_height).abs() > 0.5
+            {
+              to_update.push((node_id, measured_height));
+            }
+          }
+
+          if !to_update.is_empty() {
+            for (node_id, height) in to_update {
+              if let Ok(existing) = taffy_tree.style(node_id) {
+                let mut updated = existing.clone();
+                updated.size.height = Dimension::length(height);
+                taffy_tree
+                  .set_style(node_id, updated)
+                  .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+                taffy_tree
+                  .mark_dirty(node_id)
+                  .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+              }
+            }
+            taffy_tree
+              .mark_dirty(root_node)
+              .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+
+            record_taffy_invocation(TaffyAdapterKind::Flex);
+            let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
+            let compute_result = taffy_tree.compute_layout_with_measure_and_cancel(
+              root_node,
+              available_space,
+              &mut measure_fn,
+              cancel.clone(),
+              TAFFY_ABORT_CHECK_STRIDE,
+            );
+            if let Some(start) = taffy_compute_start {
+              record_taffy_compute(TaffyAdapterKind::Flex, start.elapsed());
+            }
+            compute_result.map_err(|e| match e {
+              taffy::TaffyError::LayoutAborted => match active_deadline() {
+                Some(deadline) => LayoutError::Timeout {
+                  elapsed: deadline.elapsed(),
+                },
+                None => LayoutError::MissingContext("Taffy layout aborted".to_string()),
+              },
+              _ => LayoutError::MissingContext(format!("Taffy layout failed: {:?}", e)),
+            })?;
+          }
+        }
+      }
 
       if auto_item_count == 0 || is_last_pass {
         break;
@@ -3592,6 +3747,47 @@ impl FormattingContext for FlexFormattingContext {
       auto_unskipped,
       &scroll_sensitive_items,
     )?;
+    // Taffy occasionally underestimates the block-size of multi-line flex containers with
+    // `height:auto`, reporting only the last line's cross size. This results in in-flow children
+    // overflowing the container and (critically for real pages) background/border painting
+    // stopping too early.
+    //
+    // When the parent did *not* force a used border-box height (i.e. this is a content-sized
+    // `height:auto` flex container), ensure the container is tall enough to enclose its in-flow
+    // children (plus its bottom padding/border).
+    if physical_height_is_auto(&box_node.style) && constraints.used_border_box_height.is_none() {
+      let mut max_child_bottom = 0.0f32;
+      let mut deadline_counter = 0usize;
+      for child in fragment.children.iter() {
+        check_layout_deadline(&mut deadline_counter)?;
+        if let Some(style) = child.style.as_deref() {
+          if style.running_position.is_some()
+            || matches!(style.position, Position::Absolute | Position::Fixed)
+          {
+            continue;
+          }
+        }
+        let bottom = child.bounds.max_y();
+        if bottom.is_finite() {
+          max_child_bottom = max_child_bottom.max(bottom);
+        }
+      }
+      if max_child_bottom.is_finite() {
+        let cb_width = fragment.bounds.width().max(0.0);
+        // Padding percentages resolve against the physical width, even for vertical edges.
+        let padding_bottom =
+          self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
+        let border_bottom = self.resolve_length_for_width(
+          box_node.style.used_border_bottom_width(),
+          cb_width,
+          &box_node.style,
+        );
+        let required = (max_child_bottom + padding_bottom + border_bottom).max(0.0);
+        if required > fragment.bounds.height() + 0.01 {
+          fragment.bounds.size.height = required;
+        }
+      }
+    }
     // Post-pass for cross-axis mirroring.
     //
     // We run Taffy with `FlexWrap::Wrap` for both `wrap` and `wrap-reverse` because Taffy's
@@ -4898,18 +5094,25 @@ impl FormattingContext for FlexFormattingContext {
         .collect::<Result<Vec<_>, _>>()?
     };
 
+    // For intrinsic inline sizing we can treat `flex-direction: row` containers as:
+    // - max-content (and nowrap min-content): a single line, so widths sum
+    // - wrapping min-content: items may be placed on separate lines, so min-content width is
+    //   driven by the largest item contribution rather than the sum.
+    let row_axis_sums_items = is_row_axis
+      && (mode == IntrinsicSizingMode::MaxContent || matches!(style.flex_wrap, FlexWrap::NoWrap));
+
     let mut contribution = 0.0f32;
     let mut in_flow_items = 0usize;
     for child_total in contributions.into_iter().flatten() {
       check_layout_deadline(&mut deadline_counter)?;
       in_flow_items += 1;
-      if is_row_axis {
+      if row_axis_sums_items {
         contribution += child_total;
       } else {
         contribution = contribution.max(child_total);
       }
     }
-    if is_row_axis && in_flow_items > 1 {
+    if row_axis_sums_items && in_flow_items > 1 {
       // Taffy's flexbox algorithm accounts for `gap` between items, but our intrinsic sizing fast
       // path approximates the inline size by summing child contributions. Include the column-gap
       // so that flex base-size resolution matches full layout and avoids spurious wrapping.
@@ -8305,6 +8508,9 @@ impl FlexFormattingContext {
       /// Used to translate the viewport scroll offset into the child's local coordinate system so
       /// nested formatting contexts can make correct `content-visibility:auto` culling decisions.
       origin: Point,
+      /// Whether the item contains `content-visibility:auto` in its subtree, meaning we need to
+      /// translate the viewport scroll offset into this item's coordinate space.
+      scroll_sensitive: bool,
       constraints: LayoutConstraints,
       used_border_box_width: Option<f32>,
       used_border_box_height: Option<f32>,
@@ -8465,19 +8671,26 @@ impl FlexFormattingContext {
       let mut layout_height = child_layout.size.height;
       let raw_layout_width = layout_width;
       let raw_layout_height = layout_height;
+      // For cache keys / fallback sizing, prefer the actual Taffy-resolved size. If Taffy reports
+      // 0px (common for auto/empty content), keep 0px unless the flex container itself has a
+      // definite non-zero size on that axis.
+      //
+      // Never fall back to the viewport here: a legitimate 0px flex item in an auto-sized
+      // container must not suddenly become viewport-sized (see
+      // `flex_item_border_box_width_uses_content_size`).
       let mut target_width = if raw_layout_width > eps {
         raw_layout_width
       } else if rect_w.is_finite() && rect_w > eps {
         rect_w
       } else {
-        self.viewport_size.width
+        0.0
       };
       let mut target_height = if raw_layout_height > eps {
         raw_layout_height
       } else if rect_h.is_finite() && rect_h > eps {
         rect_h
       } else {
-        self.viewport_size.height
+        0.0
       };
       if toggles.truthy("FASTR_DEBUG_FLEX_CHILD") {
         eprintln!(
@@ -8510,11 +8723,9 @@ impl FlexFormattingContext {
           .map(|l| l.unit.is_absolute() && l.value.abs() <= eps && !l.unit.is_percentage())
           .unwrap_or(false);
         if !explicit_zero_width {
-          let base = if rect_w.is_finite() && rect_w > eps {
-            rect_w
-          } else {
-            self.viewport_size.width
-          };
+          // Only use the container's own resolved cross size as a fallback base. Do not fall back
+          // to the viewport: auto-sized flex containers can legitimately have a 0px cross size.
+          let base = if rect_w.is_finite() { rect_w.max(0.0) } else { 0.0 };
           if let Some(specified) = child_box
             .style
             .width
@@ -8538,11 +8749,9 @@ impl FlexFormattingContext {
           .map(|l| l.unit.is_absolute() && l.value.abs() <= eps && !l.unit.is_percentage())
           .unwrap_or(false);
         if !explicit_zero_height {
-          let base = if rect_h.is_finite() && rect_h > eps {
-            rect_h
-          } else {
-            self.viewport_size.height
-          };
+          // Only use the container's own resolved cross size as a fallback base. Do not fall back
+          // to the viewport: auto-sized flex containers can legitimately have a 0px cross size.
+          let base = if rect_h.is_finite() { rect_h.max(0.0) } else { 0.0 };
           if let Some(specified) = child_box
             .style
             .height
@@ -8789,7 +8998,8 @@ impl FlexFormattingContext {
       } else {
         base_constraints
       };
-      let needs_translated_factory = is_scroll_sensitive
+      let child_scroll_sensitive = is_scroll_sensitive;
+      let needs_translated_factory = child_scroll_sensitive
         || subtree_contains_out_of_flow_positioned(child_box, &mut deadline_counter)?;
       layout_work.push(ChildLayoutWorkItem {
         dom_idx,
@@ -8797,6 +9007,7 @@ impl FlexFormattingContext {
         fc_type,
         needs_translated_factory,
         origin: Point::new(child_loc_x, child_loc_y),
+        scroll_sensitive: child_scroll_sensitive,
         constraints,
         used_border_box_width,
         used_border_box_height,

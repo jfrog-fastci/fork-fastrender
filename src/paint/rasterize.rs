@@ -1252,22 +1252,25 @@ fn render_outset_shadow(
   }
   crate::render_control::check_active(RenderStage::Paint)?;
 
-  // Outset shadows are only visible outside the element's border box. The element itself paints
-  // over any overlapping shadow pixels, even when its background is transparent. Many MDN styles
-  // rely on `box-shadow: -2px 0 0 <color>` to draw a left border stripe; if we don't clear the
-  // box interior, the shadow fill shows through and floods the element background.
+  // Outset shadows are painted outside the element's border box; they must not fill the box
+  // interior even if the element has a fully transparent background. The element itself paints
+  // over any overlapping shadow pixels, even when its background is transparent.
+  //
+  // Clear the original box (including border-radius) from the blurred shadow surface to form a
+  // ring: `shadow_shape - border_box`. This matches browser behavior for effects like
+  // `box-shadow: 0 0 0 10px red` and MDN's toc styling (`box-shadow: -2px 0 0 ...`).
   let cutout_w = width.max(0.0);
   let cutout_h = height.max(0.0);
   if cutout_w > 0.0 && cutout_h > 0.0 {
     let cutout_x = x - min_x;
     let cutout_y = y - min_y;
     let cutout_radii = box_radii.clamped(cutout_w, cutout_h);
+    let mut paint = Paint::default();
+    paint.blend_mode = tiny_skia::BlendMode::Clear;
+    paint.anti_alias = true;
     if cutout_radii.is_zero() {
       if let Some(rect) = tiny_skia::Rect::from_xywh(cutout_x, cutout_y, cutout_w, cutout_h) {
         let path = PathBuilder::from_rect(rect);
-        let mut paint = Paint::default();
-        paint.blend_mode = tiny_skia::BlendMode::Clear;
-        paint.anti_alias = true;
         tmp.fill_path(
           &path,
           &paint,
@@ -1279,9 +1282,6 @@ fn render_outset_shadow(
     } else if let Some(path) =
       build_rounded_rect_path(cutout_x, cutout_y, cutout_w, cutout_h, &cutout_radii)
     {
-      let mut paint = Paint::default();
-      paint.blend_mode = tiny_skia::BlendMode::Clear;
-      paint.anti_alias = true;
       tmp.fill_path(
         &path,
         &paint,

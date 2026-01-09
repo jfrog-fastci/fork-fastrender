@@ -1368,6 +1368,25 @@ fn run_chrome_with_timeout(
   cmd.env_remove("TMPDIR");
   cmd.env_remove("TMP");
   cmd.env_remove("TEMP");
+
+  // `scripts/cargo_agent.sh` runs cargo commands under RLIMIT_AS (virtual memory). Chrome tends to
+  // reserve large address-space ranges (V8/Oilpan), which can trip these limits even when the
+  // machine has plenty of actual RAM. Clear the address-space limit for the spawned Chrome process
+  // so fixture baselines don't spuriously crash under the agent wrapper.
+  #[cfg(target_os = "linux")]
+  unsafe {
+    use std::os::unix::process::CommandExt;
+    cmd.pre_exec(|| {
+      let lim = libc::rlimit {
+        rlim_cur: libc::RLIM_INFINITY,
+        rlim_max: libc::RLIM_INFINITY,
+      };
+      // Best-effort: if this fails (e.g. no CAP_SYS_RESOURCE), let Chrome run with the inherited
+      // limit and rely on its own crash logging.
+      let _ = libc::setrlimit(libc::RLIMIT_AS, &lim);
+      Ok(())
+    });
+  }
   cmd
     .stdout(Stdio::from(log_file))
     .stderr(Stdio::from(stderr));

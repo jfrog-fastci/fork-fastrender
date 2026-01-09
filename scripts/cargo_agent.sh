@@ -256,7 +256,7 @@ run_cargo() {
 
   # Invoke through `bash`:
   # - Some agent/CI environments mount repos with `noexec`, which prevents executing scripts directly.
-  # - Some checkouts (including CI artifact tars) may drop the executable bit on shell scripts.
+  # - Some environments check out scripts without the executable bit (e.g. CI artifact tars).
   bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}"
   return $?
 }
