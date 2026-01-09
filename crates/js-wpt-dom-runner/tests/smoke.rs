@@ -1,4 +1,6 @@
-use js_wpt_dom_runner::{discover_tests, BackendKind, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs};
+use js_wpt_dom_runner::{
+  discover_tests, BackendKind, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs,
+};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -66,24 +68,13 @@ fn runs_any_js_in_window_realm() {
 }
 
 #[test]
-fn runs_html_smoke_test() {
-  let corpus_root = corpus_root();
-  let tests_root = tests_root();
-  let tests = discover_tests(&tests_root).expect("discover tests");
-  let test = tests
-    .iter()
-    .find(|t| t.id == "smoke/sync-pass.html")
-    .expect("missing sync-pass.html");
-
-  let fs = WptFs::new(&corpus_root).expect("wpt fs");
-  let runner = Runner::new(fs, RunnerConfig::default());
-  let result = runner.run_test(test).expect("run test");
-  assert_eq!(result.outcome, RunOutcome::Pass);
+fn window_or_worker_global_scope_primitives() {
+  assert_wpt_pass("smoke/window_or_worker_global_scope.window.js");
 }
 
 #[test]
-fn window_or_worker_global_scope_primitives() {
-  assert_wpt_pass("smoke/window_or_worker_global_scope.window.js");
+fn runs_html_sync_test() {
+  assert_wpt_pass("smoke/sync-pass.html");
 }
 
 #[test]
@@ -231,6 +222,11 @@ fn runs_domparsing_innerhtml_outerhtml_test() {
 #[test]
 fn runs_domparsing_documentfragment_test() {
   assert_wpt_pass("domparsing/documentfragment.window.js");
+}
+
+#[test]
+fn runs_domparsing_outerhtml_fragment_test() {
+  assert_wpt_pass("domparsing/outerhtml-fragment.window.js");
 }
 
 #[test]
