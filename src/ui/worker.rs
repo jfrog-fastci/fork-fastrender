@@ -125,7 +125,6 @@ struct TabState {
   history: TabHistory,
   document: Option<BrowserDocument>,
   current_url: Option<String>,
-  base_url: Option<String>,
   interaction: InteractionEngine,
 }
 
@@ -138,7 +137,6 @@ impl TabState {
       history: TabHistory::new(),
       document: None,
       current_url: None,
-      base_url: None,
       interaction: InteractionEngine::new(),
     }
   }
@@ -152,8 +150,9 @@ impl TabState {
 
   fn effective_base_url(&self) -> Option<&str> {
     self
-      .base_url
-      .as_deref()
+      .document
+      .as_ref()
+      .and_then(|doc| doc.base_url())
       .or_else(|| self.current_url.as_deref())
   }
 }
@@ -168,7 +167,6 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         entry.history = TabHistory::new();
         entry.document = None;
         entry.current_url = None;
-        entry.base_url = None;
         entry.interaction = InteractionEngine::new();
 
         if let Some(url) = initial_url {
@@ -200,6 +198,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         tab.dpr = dpr;
         if let Some(doc) = tab.document.as_mut() {
           doc.set_viewport(viewport_css.0, viewport_css.1);
+          doc.set_device_pixel_ratio(dpr);
           repaint_if_needed(tab_id, tab, &tx);
         }
       }
@@ -379,10 +378,6 @@ fn navigate_tab(
   };
 
   let final_url = report.final_url.clone().unwrap_or_else(|| url.clone());
-  let base_url = report
-    .base_url
-    .clone()
-    .unwrap_or_else(|| final_url.clone());
 
   let doc = match BrowserDocument::from_prepared(renderer, report.document, options) {
     Ok(doc) => doc,
@@ -397,7 +392,6 @@ fn navigate_tab(
   };
 
   tab.current_url = Some(final_url.clone());
-  tab.base_url = Some(base_url);
   tab.document = Some(doc);
 
   // History bookkeeping (best-effort for MVP headless worker).

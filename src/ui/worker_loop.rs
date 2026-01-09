@@ -318,6 +318,9 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
       UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
         // History navigation is not implemented in this minimal worker loop.
       }
+      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
+        // Legacy headless worker loop does not model tab history beyond simple navigations.
+      }
       UiToWorker::Scroll {
         tab_id,
         delta_css,
