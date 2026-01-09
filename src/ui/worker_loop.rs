@@ -192,6 +192,12 @@ fn navigate_fragment_in_place(
   emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
 }
 
+fn non_empty_url_fragment(url: &str) -> Option<String> {
+  Url::parse(url)
+    .ok()
+    .and_then(|parsed| parsed.fragment().filter(|frag| !frag.is_empty()).map(str::to_string))
+}
+
 fn emit_frame(
   tab_id: TabId,
   tab: &mut TabState,
@@ -274,6 +280,9 @@ fn navigate_tab(
   url: String,
   _reason: NavigationReason,
 ) {
+  let fragment_target = non_empty_url_fragment(&url);
+  let viewport_size_css = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+
   let prepare_snapshot = cancel_gens.snapshot_prepare();
   let prepare_cancel_cb = prepare_snapshot.cancel_callback_for_prepare(cancel_gens);
 
@@ -353,7 +362,7 @@ fn navigate_tab(
   let paint_cancel_cb = paint_snapshot.cancel_callback_for_paint(cancel_gens);
   let paint_deadline = RenderDeadline::new(None, Some(paint_cancel_cb.clone()));
 
-  let painted = match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
+  let mut painted = match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
     Ok(frame) => frame,
     Err(err) => {
       tab.document.set_cancel_callback(None);
@@ -374,6 +383,34 @@ fn navigate_tab(
       return;
     }
   };
+
+  if let Some(fragment) = fragment_target.as_deref() {
+    if let Some(prepared) = tab.document.prepared() {
+      if let Some(point) = scroll_offset_for_fragment_target(
+        tab.document.dom(),
+        prepared.box_tree(),
+        prepared.fragment_tree(),
+        fragment,
+        viewport_size_css,
+      ) {
+        if point != painted.scroll_state.viewport {
+          tab.document.set_scroll_state(ScrollState::from_parts(
+            point,
+            painted.scroll_state.elements.clone(),
+          ));
+          match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
+            Ok(frame) => painted = frame,
+            Err(err) => {
+              let _ = ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("paint failed after anchor scroll: {err}"),
+              });
+            }
+          }
+        }
+      }
+    }
+  }
 
   tab.document.set_cancel_callback(None);
   if paint_cancel_cb() {

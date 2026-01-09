@@ -27,6 +27,7 @@ mod ui_worker_navigation_errors;
 mod ui_worker_navigation_messages;
 mod ui_worker_scroll;
 mod ui_worker_scroll_hit_test;
+mod ui_worker_anchor_scroll;
 mod ui_worker_shutdown;
 mod ui_worker_title;
 mod ui_worker_dpr;

@@ -131,11 +131,11 @@ impl crate::js::ecma_microtasks::VmJsEngineHost for WindowRealm {
 }
 
 impl vm_js::VmJobContext for WindowRealm {
-  fn heap(&self) -> &vm_js::Heap {
+  fn heap(&self) -> &Heap {
     &self.heap
   }
 
-  fn heap_mut(&mut self) -> &mut vm_js::Heap {
+  fn heap_mut(&mut self) -> &mut Heap {
     &mut self.heap
   }
 

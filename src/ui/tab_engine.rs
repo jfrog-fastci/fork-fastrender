@@ -1,7 +1,8 @@
 use crate::api::FastRender;
-use crate::geometry::Point;
+use crate::geometry::{Point, Size};
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use crate::interaction::scroll_offset_for_fragment_target;
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
@@ -10,6 +11,7 @@ use crate::{PreparedPaintOptions, RenderOptions, Result};
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use url::Url;
 
 fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> GlobalStageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
@@ -357,6 +359,10 @@ fn navigate(
     return Ok(());
   }
 
+  let fragment_target = Url::parse(&url_trimmed)
+    .ok()
+    .and_then(|parsed| parsed.fragment().filter(|frag| !frag.is_empty()).map(str::to_string));
+
   let _ = ui_tx.send(WorkerToUi::NavigationStarted {
     tab_id,
     url: url_trimmed.clone(),
@@ -407,9 +413,23 @@ fn navigate(
   let dpr = document.device_pixel_ratio();
   let title = crate::html::find_document_title(document.dom());
 
+  let mut scroll_state = tab.scroll_state.clone();
+  if let Some(fragment) = fragment_target.as_deref() {
+    let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+    if let Some(point) = scroll_offset_for_fragment_target(
+      document.dom(),
+      document.box_tree(),
+      document.fragment_tree(),
+      fragment,
+      viewport,
+    ) {
+      scroll_state.viewport = point;
+    }
+  }
+
   let painted = document.paint_with_options_frame(
     PreparedPaintOptions::new()
-      .with_scroll_state(tab.scroll_state.clone())
+      .with_scroll_state(scroll_state)
       .with_viewport(tab.viewport_css.0, tab.viewport_css.1),
   )?;
   tab.scroll_state = painted.scroll_state.clone();

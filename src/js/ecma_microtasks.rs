@@ -24,7 +24,6 @@ use std::rc::Rc;
 /// functions and manage persistent GC roots while queued.
 pub trait VmJsEngineHost {
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
-
   fn vm_js_heap(&self) -> &vm_js::Heap;
 
   fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {

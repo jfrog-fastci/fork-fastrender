@@ -1,6 +1,7 @@
 use crate::api::FastRender;
-use crate::geometry::Point;
+use crate::geometry::{Point, Size};
 use crate::html::title::find_document_title;
+use crate::interaction::scroll_offset_for_fragment_target;
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
@@ -11,6 +12,7 @@ use crate::{PreparedDocument, PreparedPaintOptions, RenderOptions, Result};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use url::Url;
 
 fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> GlobalStageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
@@ -35,6 +37,9 @@ impl BrowserWorker {
   /// On navigation errors, the worker tries to render `about:error` with the error message.
   pub fn navigate(&mut self, tab_id: TabId, url: &str, options: RenderOptions) -> Result<()> {
     let url = url.trim();
+    let fragment_target = Url::parse(url)
+      .ok()
+      .and_then(|parsed| parsed.fragment().filter(|frag| !frag.is_empty()).map(str::to_string));
     let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
 
     let report = if about_pages::is_about_url(url) {
@@ -73,17 +78,27 @@ impl BrowserWorker {
         ),
       });
     }
-
-    let painted = report.document.paint_with_options_frame(PreparedPaintOptions {
-      scroll: None,
-      viewport: None,
-      background: None,
-      animation_time: options.animation_time,
-    })?;
     let viewport_css = options.viewport.unwrap_or_else(|| {
       let size = report.document.layout_viewport();
       (size.width.round() as u32, size.height.round() as u32)
     });
+    let viewport_size_css = Size::new(viewport_css.0 as f32, viewport_css.1 as f32);
+    let scroll = fragment_target.as_deref().and_then(|fragment| {
+      scroll_offset_for_fragment_target(
+        report.document.dom(),
+        report.document.box_tree(),
+        report.document.fragment_tree(),
+        fragment,
+        viewport_size_css,
+      )
+    });
+
+    let painted = report.document.paint_with_options_frame(PreparedPaintOptions {
+      scroll: scroll.map(crate::scroll::ScrollState::with_viewport),
+      viewport: None,
+      background: None,
+      animation_time: options.animation_time,
+    })?;
 
     let _ = self.ui_tx.send(WorkerToUi::FrameReady {
       tab_id,

@@ -333,6 +333,32 @@ fn trim_ascii_whitespace_and_trailing_semicolon(value: &str) -> &str {
   trim_ascii_whitespace(trimmed.trim_end_matches(';'))
 }
 
+/// Preserve a non-empty fragment identifier from `fragment_source_url` onto `candidate_url`.
+///
+/// This is primarily used for browser-like navigation: URL fragments are not sent to servers, so
+/// they can be lost when we derive `final_url` from an HTTP response/redirect chain. We still need
+/// the fragment for `:target` / `:target-within` selector matching and browser UI history.
+fn merge_fragment_from_url(candidate_url: &str, fragment_source_url: &str) -> String {
+  let Ok(fragment_source) = Url::parse(fragment_source_url) else {
+    return candidate_url.to_string();
+  };
+  let Some(fragment) = fragment_source.fragment().filter(|f| !f.is_empty()) else {
+    return candidate_url.to_string();
+  };
+
+  if let Ok(mut parsed) = Url::parse(candidate_url) {
+    parsed.set_fragment(Some(fragment));
+    return parsed.to_string();
+  }
+
+  // Fall back to string surgery for opaque/invalid URLs.
+  let base = candidate_url
+    .split_once('#')
+    .map(|(before, _)| before)
+    .unwrap_or(candidate_url);
+  format!("{base}#{fragment}")
+}
+
 fn url_looks_like_svg_resource(url: &str) -> bool {
   let trimmed = trim_ascii_whitespace(url);
   if trimmed.is_empty() {
@@ -7837,7 +7863,8 @@ impl FastRender {
       let resource =
         self.follow_client_redirects_for_url_render(resource, url, &options, None, &diagnostics);
       let hint = resource.final_url.as_deref().unwrap_or(url);
-      self.set_document_url(hint);
+      let hint = merge_fragment_from_url(hint, url);
+      self.set_document_url(hint.clone());
       self.set_base_url(hint);
       let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
       let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
@@ -7978,7 +8005,8 @@ impl FastRender {
           stats_recorder.as_mut(),
           &diagnostics,
         );
-        self.set_document_url(resource.final_url.as_deref().unwrap_or(url));
+        let hint = resource.final_url.as_deref().unwrap_or(url);
+        self.set_document_url(merge_fragment_from_url(hint, url));
         let mut report = self.render_fetched_html_with_options_report_internal(
           &resource,
           Some(url),
@@ -8118,7 +8146,8 @@ impl FastRender {
       stats = Some(recorder);
     }
     let hint = resource.final_url.as_deref().or(base_hint).unwrap_or("");
-    self.set_document_url(hint);
+    let hint = merge_fragment_from_url(hint, base_hint.unwrap_or(""));
+    self.set_document_url(hint.clone());
     let decode_start = stats.as_deref().and_then(|rec| rec.timer());
     let html = {
       let _span = trace.span("html_decode", "parse");
@@ -8127,7 +8156,7 @@ impl FastRender {
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::record_ms(&mut rec.stats.timings.html_decode_ms, decode_start);
     }
-    let base_url = hint.to_string();
+    let base_url = hint.clone();
     self.set_base_url(base_url.clone());
     let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
     let mut captured = RenderArtifacts::new(artifacts);

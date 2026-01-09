@@ -1,5 +1,6 @@
 use crate::api::{FastRender, PreparedDocument, PreparedPaintOptions};
-use crate::geometry::Point;
+use crate::geometry::{Point, Size};
+use crate::interaction::scroll_offset_for_fragment_target;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::scroll::ScrollState;
 use crate::ui::history::TabHistory;
@@ -7,6 +8,7 @@ use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, Wo
 use crate::{RenderOptions, Result};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
+use url::Url;
 
 struct TabState {
   history: TabHistory,
@@ -243,6 +245,23 @@ impl UiWorker {
 
       tab.document = Some(report.document);
       tab.title = None;
+
+      if let Ok(parsed) = Url::parse(&nav_url) {
+        if let Some(fragment) = parsed.fragment().filter(|frag| !frag.is_empty()) {
+          if let Some(doc) = tab.document.as_ref() {
+            let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+            if let Some(point) = scroll_offset_for_fragment_target(
+              doc.dom(),
+              doc.box_tree(),
+              doc.fragment_tree(),
+              fragment,
+              viewport,
+            ) {
+              tab.scroll_state.viewport = point;
+            }
+          }
+        }
+      }
 
       let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
         tab_id,

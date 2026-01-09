@@ -180,7 +180,7 @@ impl VmJsRuntime {
     }
     let handle = self.alloc_string_handle("window")?;
     // Keep this handle alive for the lifetime of the runtime.
-    let _ = self.heap.add_root(Value::String(handle))?;
+    let _ = self.heap.add_root(Value::String(handle));
     self.interned_window = Some(handle);
     Ok(handle)
   }
@@ -191,7 +191,7 @@ impl VmJsRuntime {
     }
     let handle = self.alloc_string_handle("document")?;
     // Keep this handle alive for the lifetime of the runtime.
-    let _ = self.heap.add_root(Value::String(handle))?;
+    let _ = self.heap.add_root(Value::String(handle));
     self.interned_document = Some(handle);
     Ok(handle)
   }
