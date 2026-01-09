@@ -10,14 +10,24 @@ pub struct DomExceptionClass {
 
 impl DomExceptionClass {
   pub fn install(rt: &mut VmJsRuntime, global: Value) -> Result<Self, VmError> {
+    let prototype = rt.alloc_object_value()?;
+    Self::install_with_prototype(rt, global, prototype)
+  }
+
+  pub fn install_with_prototype(
+    rt: &mut VmJsRuntime,
+    global: Value,
+    prototype: Value,
+  ) -> Result<Self, VmError> {
     let key_dom_exception = prop_key(rt, "DOMException")?;
     let key_name = prop_key(rt, "name")?;
     let key_message = prop_key(rt, "message")?;
     let key_to_string = prop_key(rt, "toString")?;
     let key_constructor = prop_key(rt, "constructor")?;
     let key_prototype = prop_key(rt, "prototype")?;
-
-    let prototype = rt.alloc_object_value()?;
+    if !rt.is_object(prototype) {
+      return Err(rt.throw_type_error("DOMException prototype must be an object"));
+    }
 
     // Minimal `DOMException.prototype.toString()`.
     let to_string_fn = rt.alloc_function_value(move |rt, this, _args| {

@@ -965,7 +965,10 @@ fn install_constructors(
   let document_node_id = dom.borrow().root();
 
   // Minimal DOMException implementation needed for spec-shaped selector errors.
-  let dom_exception = DomExceptionClass::install(rt, global)?;
+  //
+  // Reuse the realm's `DOMException.prototype` so any DOMException objects thrown from either
+  // selector APIs or `dom2::DomError` mapping share the same prototype chain.
+  let dom_exception = DomExceptionClass::install_with_prototype(rt, global, prototypes.dom_exception)?;
 
   // EventTarget / Node / Element / Document constructors: non-constructable stubs.
   let event_target_ctor = rt.alloc_function_value(|rt, _this, _args| illegal_constructor(rt, "EventTarget"))?;
@@ -3153,7 +3156,14 @@ mod tests {
     let mut realm = DomJsRealm::new(dom).unwrap();
 
     let marker_value = realm.rt.alloc_string_value("marker").unwrap();
-    let dom_exception_proto = realm.dom_exception_prototype();
+    let dom_exception_ctor_key = pk(&mut realm.rt, "DOMException");
+    let dom_exception_ctor = realm.rt.get(realm.window(), dom_exception_ctor_key).unwrap();
+    let dom_exception_proto_key = pk(&mut realm.rt, "prototype");
+    let dom_exception_proto = realm
+      .rt
+      .get(dom_exception_ctor, dom_exception_proto_key)
+      .unwrap();
+    assert_eq!(dom_exception_proto, realm.dom_exception_prototype());
     define_data_property_str(
       &mut realm.rt,
       dom_exception_proto,
@@ -3188,6 +3198,10 @@ mod tests {
     let name_key = pk(&mut realm.rt, "name");
     let name = realm.rt.get(thrown, name_key).unwrap();
     assert_eq!(as_str(&realm.rt, name), "HierarchyRequestError");
+
+    let ctor_key = pk(&mut realm.rt, "constructor");
+    let ctor = realm.rt.get(thrown, ctor_key).unwrap();
+    assert_eq!(ctor, dom_exception_ctor);
 
     let marker_key = pk(&mut realm.rt, "__dom_exception_marker");
     let marker = realm.rt.get(thrown, marker_key).unwrap();

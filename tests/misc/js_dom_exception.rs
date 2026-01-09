@@ -32,6 +32,7 @@ fn query_selector_invalid_selector_throws_domexception_syntaxerror() {
 
   let expected_message = match doc.query_selector("[", None).unwrap_err() {
     DomException::SyntaxError { message } => message,
+    other => panic!("expected SyntaxError, got {other:?}"),
   };
 
   let doc = Rc::new(RefCell::new(doc));
