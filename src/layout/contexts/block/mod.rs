@@ -1310,7 +1310,19 @@ impl BlockFormattingContext {
       content_height_base + padding_top + padding_bottom,
     );
     let cb_block_base = specified_height.map(|h| h.max(0.0) + padding_top + padding_bottom);
-    let child_border_origin = Point::new(computed_width.margin_left, box_y);
+    // CSS 2.1 §9.5.1: boxes that establish a new block formatting context must not overlap the
+    // margin boxes of floats in the same formatting context. Real pages use this for clearfix
+    // patterns (`overflow:hidden`, `display: table`, etc.). Without applying float avoidance here,
+    // BFC roots can be laid out starting at x=0 and end up painting underneath floats.
+    let float_avoidance_offset = if establishes_bfc(style) {
+      external_float_ctx
+        .as_deref()
+        .map(|ctx| ctx.available_width_at_y(external_float_base_y + box_y).0)
+        .unwrap_or(0.0)
+    } else {
+      0.0
+    };
+    let child_border_origin = Point::new(float_avoidance_offset + computed_width.margin_left, box_y);
     // Translate viewport-relative containing blocks into the child's coordinate space. Without
     // this, absolute/fixed positioned descendants can mistakenly include the parent's placement
     // offset (e.g. after parent/child margin collapsing shifts the child).
@@ -1429,8 +1441,7 @@ impl BlockFormattingContext {
           });
 
         if let Some(block_size) = estimated_border_box_block_size {
-          let border_box =
-            Rect::from_xywh(computed_width.margin_left, box_y, box_width, block_size);
+          let border_box = Rect::from_xywh(child_border_origin.x, box_y, box_width, block_size);
           !viewport.intersects(border_box)
         } else {
           // Without a definite placeholder block-size (explicit height or a resolved
@@ -2266,7 +2277,7 @@ impl BlockFormattingContext {
       (phys_w, phys_h)
     };
     let bounds = Rect::from_xywh(
-      computed_width.margin_left,
+      child_border_origin.x,
       box_y,
       inline_size_in_parent,
       block_size_in_parent,
@@ -12745,6 +12756,97 @@ mod tests {
       "expected available width to shrink (≈{:.2}px), got {:.2}",
       viewport.width - 40.0,
       available_width
+    );
+  }
+
+  #[test]
+  fn bfc_roots_avoid_overlapping_external_floats() {
+    let viewport = Size::new(200.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let nearest_cb = ContainingBlock::viewport(viewport);
+    let constraints = LayoutConstraints::definite_width(viewport.width);
+
+    let mut outer_style = ComputedStyle::default();
+    outer_style.display = Display::Block;
+    let outer_style = Arc::new(outer_style);
+
+    let mut block_style = ComputedStyle::default();
+    block_style.display = Display::Block;
+    let block_style = Arc::new(block_style);
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+    float_style.width = Some(Length::px(40.0));
+    float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
+    let float_box = BoxNode::new_replaced(
+      Arc::new(float_style),
+      crate::tree::box_tree::ReplacedType::Canvas,
+      Some(Size::new(40.0, 20.0)),
+      None,
+    );
+    let float_container = BoxNode::new_block(
+      block_style.clone(),
+      FormattingContextType::Block,
+      vec![float_box],
+    );
+
+    let mut bfc_style = ComputedStyle::default();
+    bfc_style.display = Display::Block;
+    bfc_style.overflow_x = Overflow::Hidden;
+    bfc_style.width = Some(Length::px(20.0));
+    bfc_style.width_keyword = None;
+    bfc_style.height = Some(Length::px(10.0));
+    bfc_style.height_keyword = None;
+    let bfc_style = Arc::new(bfc_style);
+
+    let mut inner_text_style = ComputedStyle::default();
+    inner_text_style.display = Display::Inline;
+    let text = BoxNode::new_text(Arc::new(inner_text_style), "hi".to_string());
+    let bfc_container = BoxNode::new_block(bfc_style, FormattingContextType::Block, vec![text]);
+
+    let outer = BoxNode::new_block(
+      outer_style,
+      FormattingContextType::Block,
+      vec![float_container, bfc_container],
+    );
+
+    let paint_viewport =
+      paint_viewport_for(outer.style.writing_mode, outer.style.direction, viewport);
+    let mut float_ctx = FloatContext::new(viewport.width);
+    let (fragments, _height, _positioned) = fc
+      .layout_children_with_external_floats(
+        &outer,
+        &constraints,
+        &nearest_cb,
+        &nearest_cb,
+        paint_viewport,
+        Some(&mut float_ctx),
+        0.0,
+      )
+      .expect("layout children");
+
+    assert_eq!(fragments.len(), 2);
+    assert!(
+      fragments[0].bounds.height().abs() < 0.1,
+      "expected float container height to ignore floats, got {:.2}",
+      fragments[0].bounds.height()
+    );
+    assert!(
+      fragments[1].bounds.y().abs() < 0.1,
+      "expected following sibling to start at y=0, got {:.2}",
+      fragments[1].bounds.y()
+    );
+    assert!(
+      (fragments[1].bounds.x() - 40.0).abs() < 0.5,
+      "expected BFC root to be shifted past the float, got {:.2}",
+      fragments[1].bounds.x()
     );
   }
 
