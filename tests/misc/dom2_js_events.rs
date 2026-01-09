@@ -1,5 +1,5 @@
 use fastrender::dom2;
-use fastrender::dom2::events::{Event, EventListenerOptions, EventTargetId};
+use fastrender::dom2::events::{Event, EventInit, EventListenerOptions, EventTargetId};
 use fastrender::js::webidl::JsRuntime as WebIdlJsRuntime;
 use fastrender::js::JsDomEvents;
 use fastrender::Result;
@@ -307,7 +307,7 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
     EventListenerOptions::default(),
   );
 
-  let mut event = Event::new(type_);
+  let mut event = Event::new(type_, EventInit::default());
   event.bubbles = true;
   js.dispatch_dom_event(&mut doc, EventTargetId::Node(target), &mut event)?;
 
@@ -399,7 +399,7 @@ fn js_stop_propagation_is_observed_by_dispatch() -> Result<()> {
     EventListenerOptions::default(),
   );
 
-  let mut event = Event::new("test");
+  let mut event = Event::new("test", EventInit::default());
   event.bubbles = true;
   js.dispatch_dom_event(&mut doc, EventTargetId::Node(target), &mut event)?;
 
@@ -477,7 +477,7 @@ fn js_stop_immediate_propagation_skips_later_listeners_on_same_target() -> Resul
     EventListenerOptions::default(),
   );
 
-  let mut event = Event::new("test");
+  let mut event = Event::new("test", EventInit::default());
   event.bubbles = true;
   js.dispatch_dom_event(&mut doc, EventTargetId::Node(target), &mut event)?;
 
@@ -532,11 +532,11 @@ fn js_once_listener_runs_only_once() -> Result<()> {
     },
   );
 
-  let mut event = Event::new("test");
+  let mut event = Event::new("test", EventInit::default());
   event.bubbles = true;
   js.dispatch_dom_event(&mut doc, EventTargetId::Node(target), &mut event)?;
 
-  let mut event2 = Event::new("test");
+  let mut event2 = Event::new("test", EventInit::default());
   event2.bubbles = true;
   js.dispatch_dom_event(&mut doc, EventTargetId::Node(target), &mut event2)?;
 
@@ -591,7 +591,7 @@ fn js_passive_listener_cannot_prevent_default() -> Result<()> {
     },
   );
 
-  let mut event = Event::new("test");
+  let mut event = Event::new("test", EventInit::default());
   event.bubbles = true;
   event.cancelable = true;
   let res = js.dispatch_dom_event(&mut doc, EventTargetId::Node(target), &mut event)?;
@@ -640,7 +640,7 @@ fn js_prevent_default_sets_default_prevented_property() -> Result<()> {
     EventListenerOptions::default(),
   );
 
-  let mut event = Event::new("test");
+  let mut event = Event::new("test", EventInit::default());
   event.bubbles = true;
   event.cancelable = true;
   let dispatch_ok = js.dispatch_dom_event(&mut doc, EventTargetId::Node(target), &mut event)?;

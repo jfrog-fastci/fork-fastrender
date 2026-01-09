@@ -8,17 +8,44 @@ use selectors::OpaqueElement;
 mod attrs;
 mod class_list;
 mod error;
+pub use error::DomError;
+
+mod mutation;
+mod js_shims;
+mod style_attr;
 pub mod import;
 pub mod events;
 mod html5ever_tree_sink;
 mod traversal;
 mod shadow_dom;
 
-pub use error::DomError;
 pub use html5ever_tree_sink::Dom2TreeSink;
 
 #[cfg(test)]
 mod class_list_tests;
+
+/// Convenience helper mirroring `Document.getElementById`.
+///
+/// This is intentionally a very small utility used by integration tests and early JS plumbing.
+pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
+  if id.is_empty() {
+    return None;
+  }
+  for idx in 0..doc.nodes_len() {
+    let node_id = NodeId(idx);
+    if doc.get_attribute(node_id, "id") == Some(id) {
+      return Some(node_id);
+    }
+  }
+  None
+}
+
+/// Convenience helper for attribute reflection.
+///
+/// Returns `false` on invalid node types or when the attribute value is unchanged.
+pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) -> bool {
+  doc.set_attribute(node, name, value).unwrap_or(false)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
