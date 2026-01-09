@@ -155,7 +155,3 @@ default-features = false
 
 [dev-dependencies.serde_json]
 version = "1.0.93"
-
-[profile.release]
-lto = true
-panic = "abort"
