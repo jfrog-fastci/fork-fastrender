@@ -2973,9 +2973,12 @@ thread_local! {
 }
 
 thread_local! {
-  // Layout for paged media (pagination + fragmentation) is deeply recursive and can overflow the
-  // default 2MB Rust thread stack on debug builds. Run it on a larger-stack helper thread and use
-  // this flag to avoid recursively spawning further helper threads (e.g. nested iframe layout).
+  // Layout can be deeply recursive (notably pagination/fragmentation for print, but also some
+  // screen-layout combinations such as grid+tables during intrinsic sizing). This can overflow the
+  // default ~2MB Rust thread stack (particularly in debug builds).
+  //
+  // Run layout on a larger-stack helper thread and use this flag to avoid recursively spawning
+  // further helper threads (e.g. nested iframe layout).
   static LAYOUT_STACK_THREAD_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -10087,7 +10090,8 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
-    if matches!(media_type, MediaType::Print) && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get())
+    let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
+    if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get())
     {
       let deadline_stack = crate::render_control::deadline_stack_snapshot();
       let stage = crate::render_control::active_stage();
