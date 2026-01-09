@@ -807,6 +807,102 @@ fn checkbox_click_toggles_checked_attribute() {
 }
 
 #[test]
+fn range_drag_ignores_sentinel_pointer_positions() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![
+          ("id", "range"),
+          ("type", "range"),
+          ("min", "0"),
+          ("max", "100"),
+          ("value", "50"),
+        ],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let range_dom_id = node_id(&dom, "range");
+  let mut range_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  range_box.styled_node_id = Some(range_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![range_box],
+  ));
+
+  let range_box_id = find_box_id_for_styled_node(&box_tree, range_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(10.0, 10.0, 100.0, 20.0),
+      range_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  assert!(
+    engine.pointer_down(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(85.0, 15.0),
+    ),
+    "expected pointer_down to set active state and update range value"
+  );
+  let value_after_down = attr_value(&dom, "range", "value")
+    .and_then(|v| v.parse::<f64>().ok())
+    .expect("range value after pointer_down");
+  assert!(
+    (value_after_down - 75.0).abs() < 1e-6,
+    "expected pointer_down to set range value to ~75, got {value_after_down}"
+  );
+
+  // The browser UI uses a sentinel `(-1, -1)` pointer position when the cursor leaves the page.
+  // Range drags should ignore this rather than snapping to the minimum value.
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(-1.0, -1.0),
+  );
+  let value_after_move = attr_value(&dom, "range", "value")
+    .and_then(|v| v.parse::<f64>().ok())
+    .expect("range value after pointer_move");
+  assert!(
+    (value_after_move - value_after_down).abs() < 1e-6,
+    "expected sentinel pointer_move to keep range value at {value_after_down}, got {value_after_move}"
+  );
+
+  let (_changed, _action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(-1.0, -1.0),
+    "https://example.com/",
+    "https://example.com/",
+  );
+
+  let value_after_up = attr_value(&dom, "range", "value")
+    .and_then(|v| v.parse::<f64>().ok())
+    .expect("range value after pointer_up");
+  assert!(
+    (value_after_up - value_after_down).abs() < 1e-6,
+    "expected sentinel pointer_up to keep range value at {value_after_down}, got {value_after_up}"
+  );
+}
+
+#[test]
 fn space_key_toggles_focused_checkbox() {
   let mut dom = doc(vec![el(
     "html",

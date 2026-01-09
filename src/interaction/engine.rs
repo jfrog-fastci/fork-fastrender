@@ -1482,8 +1482,26 @@ impl InteractionEngine {
     let mut index = DomIndexMut::new(dom);
     let mut dom_changed = false;
     if let Some(state) = self.range_drag {
-      dom_changed |=
-        update_range_value_from_pointer(&mut index, fragment_tree, state.node_id, state.box_id, page_point);
+      // When the browser UI's cursor leaves the page image while dragging a range input, it sends a
+      // sentinel pointer position (translated by the worker to a negative page-point) to clear
+      // hover state.
+      //
+      // Feeding this sentinel into range dragging would clamp the slider to the minimum value,
+      // causing surprising jumps as soon as the cursor leaves the page. Ignore those sentinel
+      // points so the range value stays at its last in-page value until the cursor re-enters.
+      if page_point.x.is_finite()
+        && page_point.y.is_finite()
+        && page_point.x >= 0.0
+        && page_point.y >= 0.0
+      {
+        dom_changed |= update_range_value_from_pointer(
+          &mut index,
+          fragment_tree,
+          state.node_id,
+          state.box_id,
+          page_point,
+        );
+      }
     }
 
     let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
@@ -1655,13 +1673,22 @@ impl InteractionEngine {
     // Clear active chain unconditionally.
     let mut dom_changed = false;
     if let Some(state) = range_drag {
-      dom_changed |= update_range_value_from_pointer(
-        &mut index,
-        fragment_tree,
-        state.node_id,
-        state.box_id,
-        page_point,
-      );
+      // Mirror the sentinel handling in `pointer_move` for range drags: when the pointer leaves the
+      // page image the worker synthesizes a negative page-point. Do not treat that as dragging the
+      // slider to its minimum; keep the last in-page value instead.
+      if page_point.x.is_finite()
+        && page_point.y.is_finite()
+        && page_point.x >= 0.0
+        && page_point.y >= 0.0
+      {
+        dom_changed |= update_range_value_from_pointer(
+          &mut index,
+          fragment_tree,
+          state.node_id,
+          state.box_id,
+          page_point,
+        );
+      }
     }
     for id in self.active_chain.iter().copied() {
       dom_changed |= set_data_flag(&mut index, id, "data-fastr-active", false);
