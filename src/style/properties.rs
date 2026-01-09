@@ -9853,13 +9853,6 @@ fn apply_declaration_with_base_internal_with_order(
         return;
       }
 
-      // Shorthand supports `<position-try-order>` alone (resets fallbacks to `none`).
-      if let Some(order_value) = parse_position_try_order_value(raw) {
-        styles.position_try_order = order_value;
-        styles.position_try_fallbacks = Vec::new();
-        return;
-      }
-
       let mut input = ParserInput::new(raw);
       let mut parser = Parser::new(&mut input);
       parser.skip_whitespace();
@@ -9873,6 +9866,11 @@ fn apply_declaration_with_base_internal_with_order(
       };
 
       if let Some(order_value) = parse_position_try_order_value(first.as_ref()) {
+        parser.skip_whitespace();
+        // `position-try` shorthand requires fallbacks; order-only is invalid.
+        if parser.is_exhausted() {
+          return;
+        }
         let fallbacks_raw = parser.slice_from(parser.position());
         let Some(parsed) = parse_position_try_fallbacks_list(fallbacks_raw) else {
           return;
@@ -9880,44 +9878,6 @@ fn apply_declaration_with_base_internal_with_order(
         styles.position_try_order = order_value;
         styles.position_try_fallbacks = parsed;
       } else {
-        // Try the `<position-try-fallbacks> <position-try-order>` form.
-        let mut input = ParserInput::new(raw);
-        let mut parser = Parser::new(&mut input);
-        parser.skip_whitespace();
-        if parser.is_exhausted() {
-          return;
-        }
-
-        let mut last_ident: Option<(cssparser::SourcePosition, String)> = None;
-        loop {
-          parser.skip_whitespace();
-          if parser.is_exhausted() {
-            break;
-          }
-          let pos = parser.position();
-          let token = match parser.next_including_whitespace() {
-            Ok(token) => token,
-            Err(_) => return,
-          };
-          if let Token::Ident(ident) = token {
-            last_ident = Some((pos, ident.as_ref().to_string()));
-          }
-        }
-
-        if let Some((order_pos, order_ident)) = last_ident {
-          if let Some(order_value) = parse_position_try_order_value(&order_ident) {
-            let suffix = parser.slice_from(order_pos);
-            let prefix_len = raw.len().saturating_sub(suffix.len());
-            let prefix = raw.get(..prefix_len).unwrap_or("");
-            let Some(parsed) = parse_position_try_fallbacks_list(prefix) else {
-              return;
-            };
-            styles.position_try_order = order_value;
-            styles.position_try_fallbacks = parsed;
-            return;
-          }
-        }
-
         let Some(parsed) = parse_position_try_fallbacks_list(raw) else {
           return;
         };

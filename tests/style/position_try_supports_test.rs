@@ -216,14 +216,14 @@ fn supports_position_try_shorthand() {
 }
 
 #[test]
-fn supports_position_try_shorthand_order_last() {
+fn position_try_shorthand_does_not_support_order_last() {
   let target = styled_target(
     r#"
       @supports (position-try: flip-inline most-inline-size) {
-        #t { color: rgb(71, 72, 73); }
+        #t { color: rgb(1, 1, 1); }
       }
       @supports not (position-try: flip-inline most-inline-size) {
-        #t { color: rgb(1, 1, 1); }
+        #t { color: rgb(71, 72, 73); }
       }
     "#,
   );
@@ -232,18 +232,43 @@ fn supports_position_try_shorthand_order_last() {
 }
 
 #[test]
-fn position_try_shorthand_parses_order_last_with_comment_separator() {
+fn position_try_shorthand_rejects_order_last_with_comment_separator() {
   let target = styled_target(
     r#"
       #t { position-try: flip-inline/*comment*/most-width; }
     "#,
   );
 
-  assert_eq!(target.styles.position_try_order, PositionTryOrder::MostWidth);
-  assert_eq!(
-    target.styles.position_try_fallbacks,
-    vec!["flip-inline".to_string()]
+  assert_eq!(target.styles.position_try_order, PositionTryOrder::Normal);
+  assert!(target.styles.position_try_fallbacks.is_empty());
+}
+
+#[test]
+fn position_try_shorthand_does_not_support_order_only() {
+  let target = styled_target(
+    r#"
+      @supports (position-try: most-width) {
+        #t { color: rgb(1, 1, 1); }
+      }
+      @supports not (position-try: most-width) {
+        #t { color: rgb(81, 82, 83); }
+      }
+    "#,
   );
+
+  assert_eq!(target.styles.color, Rgba::rgb(81, 82, 83));
+}
+
+#[test]
+fn position_try_shorthand_rejects_order_only_in_declaration() {
+  let target = styled_target(
+    r#"
+      #t { position-try: most-width; }
+    "#,
+  );
+
+  assert_eq!(target.styles.position_try_order, PositionTryOrder::Normal);
+  assert!(target.styles.position_try_fallbacks.is_empty());
 }
 
 #[test]
