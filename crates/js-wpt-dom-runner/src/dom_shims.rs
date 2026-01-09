@@ -16,6 +16,7 @@ const DOM_SHIM: &str = r##"
   g.__fastrender_dom_installed = true;
 
   var NODE_ID = Symbol("fastrender_node_id");
+  var NODE_CACHE = new Map(); // node id -> JS wrapper
 
   function illegal() {
     throw new TypeError("Illegal constructor");
@@ -26,6 +27,7 @@ const DOM_SHIM: &str = r##"
   function DocumentFragment() { illegal(); }
   function Element() { illegal(); }
   function Text() { illegal(); }
+  function HTMLCollection() { illegal(); }
 
   Object.setPrototypeOf(Document.prototype, Node.prototype);
   Object.setPrototypeOf(DocumentFragment.prototype, Node.prototype);
@@ -51,6 +53,7 @@ const DOM_SHIM: &str = r##"
   g.document[NODE_ID] = 0;
   g.document.parentNode = null;
   g.document.childNodes = [];
+  NODE_CACHE.set(0, g.document);
 
   function ensureArray(o, key) {
     if (!o[key]) o[key] = [];
@@ -78,7 +81,18 @@ const DOM_SHIM: &str = r##"
   }
 
   function makeNode(proto, id, tagName) {
+    var cached = NODE_CACHE.get(id);
+    if (cached) {
+      if (Object.getPrototypeOf(cached) !== proto) {
+        Object.setPrototypeOf(cached, proto);
+      }
+      if (tagName !== undefined) {
+        cached.tagName = String(tagName);
+      }
+      return cached;
+    }
     var o = Object.create(proto);
+    NODE_CACHE.set(id, o);
     o[NODE_ID] = id;
     o.parentNode = null;
     o.childNodes = [];
@@ -86,6 +100,66 @@ const DOM_SHIM: &str = r##"
       o.tagName = String(tagName);
     }
     return o;
+  }
+
+  function elementFromId(id) {
+    id = Number(id);
+    var tag = g.__fastrender_dom_get_tag_name(id);
+    return makeNode(Element.prototype, id, String(tag).toUpperCase());
+  }
+
+  function isArrayIndex(prop) {
+    if (typeof prop !== "string") return false;
+    if (prop === "") return false;
+    var n = Number(prop);
+    if (!Number.isInteger(n)) return false;
+    if (n < 0) return false;
+    // Ensure canonical decimal representation ("01" is not an index property).
+    if (String(n) !== prop) return false;
+    // Max array index per spec.
+    return n < 4294967295;
+  }
+
+  function makeLiveElementCollection(getIds) {
+    var target = Object.create(HTMLCollection.prototype);
+
+    Object.defineProperty(target, "length", {
+      get: function () { return getIds().length; },
+      configurable: true,
+    });
+
+    target.item = function (index) {
+      var i = Number(index);
+      if (!isFinite(i) || isNaN(i)) i = 0;
+      i = Math.trunc(i);
+      var ids = getIds();
+      if (i < 0 || i >= ids.length) return null;
+      return elementFromId(ids[i]);
+    };
+
+    target[Symbol.iterator] = function () {
+      var ids = getIds();
+      var i = 0;
+      return {
+        next: function () {
+          if (i >= ids.length) return { done: true, value: undefined };
+          return { done: false, value: elementFromId(ids[i++]) };
+        },
+        [Symbol.iterator]: function () { return this; }
+      };
+    };
+
+    return new Proxy(target, {
+      get: function (t, prop, recv) {
+        if (isArrayIndex(prop)) {
+          var ids = getIds();
+          var idx = Number(prop);
+          if (idx < ids.length) return elementFromId(ids[idx]);
+          return undefined;
+        }
+        return Reflect.get(t, prop, recv);
+      }
+    });
   }
 
   Document.prototype.createElement = function (tagName) {
@@ -346,11 +420,50 @@ const DOM_SHIM: &str = r##"
     if (g.document.body) g.document.body.parentNode = g.document;
   }
 
+  Document.prototype.getElementsByTagName = function (qualifiedName) {
+    var rootId = nodeIdFromThis(this);
+    var q = String(qualifiedName);
+    return makeLiveElementCollection(function () {
+      return g.__fastrender_dom_get_elements_by_tag_name(rootId, q);
+    });
+  };
+  Element.prototype.getElementsByTagName = Document.prototype.getElementsByTagName;
+
+  Document.prototype.getElementsByTagNameNS = function (namespace, localName) {
+    var rootId = nodeIdFromThis(this);
+    var ns = (namespace === null || namespace === undefined) ? null : String(namespace);
+    var ln = String(localName);
+    return makeLiveElementCollection(function () {
+      return g.__fastrender_dom_get_elements_by_tag_name_ns(rootId, ns, ln);
+    });
+  };
+  Element.prototype.getElementsByTagNameNS = Document.prototype.getElementsByTagNameNS;
+
+  Document.prototype.getElementsByClassName = function (classNames) {
+    var rootId = nodeIdFromThis(this);
+    var cls = String(classNames);
+    return makeLiveElementCollection(function () {
+      return g.__fastrender_dom_get_elements_by_class_name(rootId, cls);
+    });
+  };
+  Element.prototype.getElementsByClassName = Document.prototype.getElementsByClassName;
+
+  Document.prototype.getElementsByName = function (name) {
+    if (this !== g.document) {
+      throw new TypeError("Illegal invocation");
+    }
+    var n = String(name);
+    return makeLiveElementCollection(function () {
+      return g.__fastrender_dom_get_elements_by_name(n);
+    });
+  };
+
   Object.defineProperty(g, "Node", { value: Node, configurable: true, writable: true });
   Object.defineProperty(g, "Document", { value: Document, configurable: true, writable: true });
   Object.defineProperty(g, "DocumentFragment", { value: DocumentFragment, configurable: true, writable: true });
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
   Object.defineProperty(g, "Text", { value: Text, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLCollection", { value: HTMLCollection, configurable: true, writable: true });
 })();
 "##;
 
@@ -751,6 +864,7 @@ impl Dom {
     Ok(())
   }
 
+
   fn clear_children(&mut self, parent: NodeId) -> Result<(), DomShimError> {
     self.node_checked(parent)?;
     let old_children = std::mem::take(&mut self.node_checked_mut(parent)?.children);
@@ -787,7 +901,11 @@ impl Dom {
     Ok(Some(out))
   }
 
-  fn set_text_content(&mut self, node: NodeId, data: &str) -> Result<Option<NodeId>, DomShimError> {
+  fn set_text_content(
+    &mut self,
+    node: NodeId,
+    data: &str,
+  ) -> Result<Option<NodeId>, DomShimError> {
     self.node_checked(node)?;
     match &self.nodes[node.0].kind {
       NodeKind::Document => return Ok(None),
@@ -806,6 +924,150 @@ impl Dom {
     Ok(Some(text))
   }
 
+  fn get_tag_name(&self, node: NodeId) -> Result<String, DomShimError> {
+    let node = self.node_checked(node)?;
+    let NodeKind::Element { tag_name, .. } = &node.kind else {
+      return Err(DomShimError::InvalidNodeType);
+    };
+    Ok(tag_name.clone())
+  }
+
+  fn collect_descendant_elements_matching(
+    &self,
+    root: NodeId,
+    mut matches: impl FnMut(&str, &[(String, String)]) -> bool,
+  ) -> Result<Vec<NodeId>, DomShimError> {
+    let root_node = self.node_checked(root)?;
+    if matches!(root_node.kind, NodeKind::Text { .. }) {
+      return Err(DomShimError::InvalidNodeType);
+    }
+
+    // Clone so we can traverse without holding a borrow on `root_node`.
+    let initial_children = root_node.children.clone();
+
+    let mut remaining = self.nodes.len().saturating_add(1);
+    let mut out: Vec<NodeId> = Vec::new();
+    let mut stack: Vec<(NodeId, NodeId)> = initial_children
+      .into_iter()
+      .rev()
+      .map(|child| (root, child))
+      .collect();
+
+    while let Some((expected_parent, node_id)) = stack.pop() {
+      if remaining == 0 {
+        break;
+      }
+      remaining -= 1;
+
+      let Some(node) = self.nodes.get(node_id.0) else {
+        continue;
+      };
+      if node.parent != Some(expected_parent) {
+        continue;
+      }
+
+      let mut descend = true;
+      if let NodeKind::Element {
+        tag_name,
+        attributes,
+      } = &node.kind
+      {
+        if matches(tag_name, attributes) {
+          out.push(node_id);
+        }
+        // Treat `<template>` contents as inert, mirroring real DOM tree traversal.
+        if tag_name.eq_ignore_ascii_case("template") {
+          descend = false;
+        }
+      }
+
+      if descend {
+        for &child in node.children.iter().rev() {
+          stack.push((node_id, child));
+        }
+      }
+    }
+
+    Ok(out)
+  }
+
+  fn get_elements_by_tag_name(
+    &self,
+    root: NodeId,
+    qualified_name: &str,
+  ) -> Result<Vec<NodeId>, DomShimError> {
+    if qualified_name.is_empty() {
+      return Ok(Vec::new());
+    }
+    if qualified_name == "*" {
+      return self.collect_descendant_elements_matching(root, |_, _| true);
+    }
+    let needle = qualified_name.to_ascii_lowercase();
+    self.collect_descendant_elements_matching(root, move |tag, _| tag.eq_ignore_ascii_case(&needle))
+  }
+
+  fn get_elements_by_tag_name_ns(
+    &self,
+    root: NodeId,
+    namespace: Option<&str>,
+    local_name: &str,
+  ) -> Result<Vec<NodeId>, DomShimError> {
+    if local_name.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    let namespace_ok = match namespace {
+      None => true,
+      Some("*") => true,
+      Some("") => true,
+      Some(HTML_NAMESPACE) => true,
+      Some(_) => false,
+    };
+    if !namespace_ok {
+      return Ok(Vec::new());
+    }
+
+    if local_name == "*" {
+      return self.collect_descendant_elements_matching(root, |_, _| true);
+    }
+    let needle = local_name.to_ascii_lowercase();
+    self.collect_descendant_elements_matching(root, move |tag, _| tag.eq_ignore_ascii_case(&needle))
+  }
+
+  fn get_elements_by_class_name(
+    &self,
+    root: NodeId,
+    class_names: &str,
+  ) -> Result<Vec<NodeId>, DomShimError> {
+    let required = split_dom_ascii_whitespace(class_names);
+    if required.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    self.collect_descendant_elements_matching(root, |_, attrs| {
+      let Some(class_attr) = attrs
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("class"))
+        .map(|(_, value)| value.as_str())
+      else {
+        return false;
+      };
+
+      let have = split_dom_ascii_whitespace(class_attr);
+      required
+        .iter()
+        .all(|required| have.iter().any(|token| token == required))
+    })
+  }
+
+  fn get_elements_by_name(&self, root: NodeId, name: &str) -> Result<Vec<NodeId>, DomShimError> {
+    self.collect_descendant_elements_matching(root, |_, attrs| {
+      attrs
+        .iter()
+        .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("name"))
+        .is_some_and(|(_, value)| value == name)
+    })
+  }
   fn serialize_node(&self, root: NodeId, out: &mut String) -> Result<(), DomShimError> {
     enum Frame {
       Enter(NodeId),
@@ -1009,6 +1271,30 @@ fn escape_attr_value(out: &mut String, value: &str) {
       _ => out.push(ch),
     }
   }
+}
+
+#[inline]
+fn is_dom_ascii_whitespace(byte: u8) -> bool {
+  // DOM "ASCII whitespace" excludes U+000B (vertical tab).
+  matches!(byte, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
+}
+
+fn split_dom_ascii_whitespace(input: &str) -> Vec<&str> {
+  let mut out: Vec<&str> = Vec::new();
+  let mut start: Option<usize> = None;
+  for (idx, byte) in input.bytes().enumerate() {
+    if is_dom_ascii_whitespace(byte) {
+      if let Some(start) = start.take() {
+        out.push(&input[start..idx]);
+      }
+    } else if start.is_none() {
+      start = Some(idx);
+    }
+  }
+  if let Some(start) = start {
+    out.push(&input[start..]);
+  }
+  out
 }
 
 fn handle_children(handle: &Handle) -> Vec<Handle> {
@@ -1252,6 +1538,7 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+
   let has_child_nodes = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
     move |node_id: i32| -> JsResult<bool> {
@@ -1262,6 +1549,76 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
         .borrow()
         .has_child_nodes(NodeId(node_id as usize))
         .map_err(dom_error_to_js_error)
+    }
+  })?;
+
+  let get_tag_name = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32| -> JsResult<String> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow()
+        .get_tag_name(NodeId(node_id as usize))
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
+  let get_elements_by_tag_name = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |root_id: i32, qualified_name: String| -> JsResult<Vec<i32>> {
+      if root_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      let ids = dom
+        .borrow()
+        .get_elements_by_tag_name(NodeId(root_id as usize), &qualified_name)
+        .map_err(dom_error_to_js_error)?;
+      Ok(ids.into_iter().map(|id| id.0 as i32).collect())
+    }
+  })?;
+
+  let get_elements_by_tag_name_ns = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |root_id: i32, namespace: Option<String>, local_name: String| -> JsResult<Vec<i32>> {
+      if root_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      let ids = dom
+        .borrow()
+        .get_elements_by_tag_name_ns(
+          NodeId(root_id as usize),
+          namespace.as_deref(),
+          &local_name,
+        )
+        .map_err(dom_error_to_js_error)?;
+      Ok(ids.into_iter().map(|id| id.0 as i32).collect())
+    }
+  })?;
+
+  let get_elements_by_class_name = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |root_id: i32, class_names: String| -> JsResult<Vec<i32>> {
+      if root_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      let ids = dom
+        .borrow()
+        .get_elements_by_class_name(NodeId(root_id as usize), &class_names)
+        .map_err(dom_error_to_js_error)?;
+      Ok(ids.into_iter().map(|id| id.0 as i32).collect())
+    }
+  })?;
+
+  let get_elements_by_name = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |name: String| -> JsResult<Vec<i32>> {
+      let ids = dom
+        .borrow()
+        .get_elements_by_name(NodeId(0), &name)
+        .map_err(dom_error_to_js_error)?;
+      Ok(ids.into_iter().map(|id| id.0 as i32).collect())
     }
   })?;
 
@@ -1285,7 +1642,236 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
   globals.set("__fastrender_dom_append_child", append_child)?;
   globals.set("__fastrender_dom_remove_child", remove_child)?;
   globals.set("__fastrender_dom_has_child_nodes", has_child_nodes)?;
-
+  globals.set("__fastrender_dom_get_tag_name", get_tag_name)?;
+  globals.set("__fastrender_dom_get_elements_by_tag_name", get_elements_by_tag_name)?;
+  globals.set(
+    "__fastrender_dom_get_elements_by_tag_name_ns",
+    get_elements_by_tag_name_ns,
+  )?;
+  globals.set(
+    "__fastrender_dom_get_elements_by_class_name",
+    get_elements_by_class_name,
+  )?;
+  globals.set("__fastrender_dom_get_elements_by_name", get_elements_by_name)?;
   ctx.eval::<(), _>(DOM_SHIM)?;
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::install_dom_shims;
+  use rquickjs::{Context, Runtime};
+
+  fn eval_json(ctx: rquickjs::Ctx<'_>, source: &str) -> serde_json::Value {
+    let json: String = ctx.eval(source).expect("js eval should succeed");
+    serde_json::from_str(&json).expect("js should return valid JSON")
+  }
+
+  #[test]
+  fn get_elements_by_tag_name_is_live_and_array_like() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var img1 = document.createElement("img");
+          img1.id = "a";
+          document.body.appendChild(img1);
+          var img2 = document.createElement("IMG");
+          img2.id = "b";
+          document.body.appendChild(img2);
+
+          var coll = document.getElementsByTagName("img");
+          var beforeLen = coll.length;
+          var firstId = coll[0].id;
+          var secondId = coll.item(1).id;
+          var itemNeg = coll.item(-1);
+          var idx99 = typeof coll[99];
+          var iter = Array.from(coll).map(function (n) { return n.id; }).join(",");
+
+          var img3 = document.createElement("img");
+          img3.id = "c";
+          document.body.appendChild(img3);
+          var afterLen = coll.length;
+          var afterIter = Array.from(coll).map(function (n) { return n.id; }).join(",");
+
+          return JSON.stringify({
+            beforeLen: beforeLen,
+            firstId: firstId,
+            secondId: secondId,
+            itemNeg: itemNeg,
+            idx99: idx99,
+            iter: iter,
+            afterLen: afterLen,
+            afterIter: afterIter,
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["beforeLen"], 2);
+      assert_eq!(v["firstId"], "a");
+      assert_eq!(v["secondId"], "b");
+      assert!(v["itemNeg"].is_null(), "item(-1) should return null");
+      assert_eq!(v["idx99"], "undefined");
+      assert_eq!(v["iter"], "a,b");
+      assert_eq!(v["afterLen"], 3);
+      assert_eq!(v["afterIter"], "a,b,c");
+    });
+  }
+
+  #[test]
+  fn get_elements_by_class_name_tokenizes_and_matches_all_tokens() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var d1 = document.createElement("div");
+          d1.id = "a";
+          d1.className = "foo bar";
+          document.body.appendChild(d1);
+
+          var d2 = document.createElement("div");
+          d2.id = "b";
+          d2.className = "foo";
+          document.body.appendChild(d2);
+
+          var d3 = document.createElement("div");
+          d3.id = "c";
+          d3.className = "bar\tfoo baz";
+          document.body.appendChild(d3);
+
+          var coll = document.getElementsByClassName("foo  bar");
+          return JSON.stringify({
+            len: coll.length,
+            ids: Array.from(coll).map(function (n) { return n.id; }).join(",")
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["len"], 2);
+      assert_eq!(v["ids"], "a,c");
+    });
+  }
+
+  #[test]
+  fn get_elements_by_name_matches_exact_name_attribute() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var i1 = document.createElement("input");
+          i1.id = "a";
+          i1.setAttribute("name", "n");
+          document.body.appendChild(i1);
+
+          var i2 = document.createElement("div");
+          i2.id = "b";
+          i2.setAttribute("name", "n");
+          document.body.appendChild(i2);
+
+          var coll = document.getElementsByName("n");
+          return JSON.stringify({
+            len: coll.length,
+            ids: Array.from(coll).map(function (n) { return n.id; }).join(",")
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["len"], 2);
+      assert_eq!(v["ids"], "a,b");
+    });
+  }
+
+  #[test]
+  fn get_elements_by_tag_name_skips_inert_template_contents() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var tmpl = document.createElement("template");
+          tmpl.id = "t";
+          document.body.appendChild(tmpl);
+
+          var inside = document.createElement("div");
+          inside.id = "inside";
+          tmpl.appendChild(inside);
+
+          var outside = document.createElement("div");
+          outside.id = "outside";
+          document.body.appendChild(outside);
+
+          var divs = document.getElementsByTagName("div");
+          var templates = document.getElementsByTagName("template");
+          return JSON.stringify({
+            divLen: divs.length,
+            divIds: Array.from(divs).map(function (n) { return n.id; }).join(","),
+            tmplLen: templates.length,
+            tmplId: templates[0].id,
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["divLen"], 1);
+      assert_eq!(v["divIds"], "outside");
+      assert_eq!(v["tmplLen"], 1);
+      assert_eq!(v["tmplId"], "t");
+    });
+  }
+
+  #[test]
+  fn get_elements_by_tag_name_ns_supports_html_namespace_and_wildcards() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          var d = document.createElement("div");
+          d.id = "a";
+          document.body.appendChild(d);
+
+          var coll = document.getElementsByTagNameNS("http://www.w3.org/1999/xhtml", "DIV");
+          var coll2 = document.getElementsByTagNameNS("*", "div");
+          return JSON.stringify({
+            len: coll.length,
+            first: coll[0].id,
+            len2: coll2.length,
+            first2: coll2[0].id,
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["len"], 1);
+      assert_eq!(v["first"], "a");
+      assert_eq!(v["len2"], 1);
+      assert_eq!(v["first2"], "a");
+    });
+  }
 }
