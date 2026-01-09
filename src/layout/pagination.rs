@@ -16,8 +16,9 @@ use crate::layout::formatting_context::{
 use crate::layout::fragmentation::{
   apply_float_parallel_flow_forced_break_shifts, apply_grid_parallel_flow_forced_break_shifts,
   clip_node, collect_atomic_ranges_with_axes, collect_forced_boundaries_for_pagination_with_axes,
-  normalize_atomic_ranges, normalize_fragment_margins, parallel_flow_content_extent,
-  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentAxis, FragmentationContext,
+  collect_table_repetition_info_with_axes, normalize_atomic_ranges, normalize_fragment_margins,
+  parallel_flow_content_extent, propagate_fragment_metadata, AtomicRange, ForcedBoundary,
+  FragmentAxis, FragmentationContext, TableRepetitionInfo,
 };
 use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
 use crate::style::content::{
@@ -326,6 +327,7 @@ struct CachedLayout {
   total_height: f32,
   forced_boundaries: Vec<ForcedBoundary>,
   atomic_ranges: Vec<AtomicRange>,
+  table_repetitions: Vec<TableRepetitionInfo>,
   page_name_transitions: Vec<PageNameTransition>,
   box_axis_ranges: HashMap<usize, BoxAxisRange>,
 }
@@ -393,6 +395,9 @@ impl CachedLayout {
     // over forced boundaries so pagination doesn't incorrectly skip mandated breaks.
     split_atomic_ranges_at_forced_boundaries(&mut atomic_ranges, &forced);
 
+    let table_repetitions =
+      collect_table_repetition_info_with_axes(&root, axes, FragmentationContext::Page);
+
     let mut box_axis_ranges = HashMap::new();
     collect_box_axis_ranges(
       &root,
@@ -407,6 +412,7 @@ impl CachedLayout {
       total_height,
       forced_boundaries: forced,
       atomic_ranges,
+      table_repetitions,
       page_name_transitions,
       box_axis_ranges,
     }
@@ -874,6 +880,19 @@ pub fn paginate_fragment_tree(
         }
       }
 
+      if !forced_break {
+        let adjusted = adjust_end_for_table_repetition(
+          start,
+          end_candidate,
+          page_block,
+          &layout.table_repetitions,
+        )
+        .min(total_height);
+        if adjusted < end_candidate - EPSILON {
+          end_candidate = adjust_for_atomic_ranges(start, adjusted, &layout.atomic_ranges).min(total_height);
+        }
+      }
+
       if end_candidate <= start + EPSILON {
         end_candidate = adjust_for_atomic_ranges(
           start,
@@ -1197,6 +1216,64 @@ fn adjust_for_atomic_ranges(start: f32, mut end: f32, ranges: &[AtomicRange]) ->
   }
 
   end
+}
+
+fn table_header_overhead_at(tables: &[TableRepetitionInfo], pos: f32) -> f32 {
+  tables
+    .iter()
+    .filter(|info| {
+      info.header_block_size > EPSILON
+        && pos > info.start + EPSILON
+        && pos < info.end - EPSILON
+    })
+    .map(|info| info.header_block_size)
+    .sum()
+}
+
+fn innermost_footer_table_at<'a>(
+  tables: &'a [TableRepetitionInfo],
+  pos: f32,
+) -> Option<&'a TableRepetitionInfo> {
+  tables
+    .iter()
+    .filter(|info| {
+      info.footer_block_size > EPSILON
+        && pos > info.start + EPSILON
+        && pos < info.end - EPSILON
+    })
+    .max_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(Ordering::Equal))
+}
+
+fn adjust_end_for_table_repetition(
+  start: f32,
+  end_candidate: f32,
+  fragmentainer_size: f32,
+  tables: &[TableRepetitionInfo],
+) -> f32 {
+  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+    return end_candidate;
+  }
+
+  let header_overhead = table_header_overhead_at(tables, start).min((fragmentainer_size - EPSILON).max(0.0));
+  let max_without_footer = (fragmentainer_size - header_overhead).max(EPSILON);
+  let mut max_len = max_without_footer;
+
+  if let Some(table) = innermost_footer_table_at(tables, end_candidate) {
+    let footer_overhead = table
+      .footer_block_size
+      .min((fragmentainer_size - header_overhead - EPSILON).max(0.0));
+    if footer_overhead > EPSILON {
+      let max_with_footer = (fragmentainer_size - header_overhead - footer_overhead).max(EPSILON);
+      if start + max_with_footer <= table.start + EPSILON {
+        // Not enough space to include any of the table while reserving the repeated footer. Break
+        // before the table instead so preceding content can still fill the page.
+        return table.start.min(start + max_without_footer).min(end_candidate);
+      }
+      max_len = max_with_footer;
+    }
+  }
+
+  end_candidate.min(start + max_len)
 }
 
 #[derive(Debug, Clone)]

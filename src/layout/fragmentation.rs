@@ -728,8 +728,17 @@ pub struct FragmentationAnalyzer {
   line_containers: Vec<LineContainer>,
   line_starts: Vec<usize>,
   atomic: Vec<AtomicRange>,
+  table_repetitions: Vec<TableRepetitionInfo>,
   content_extent: f32,
   deadline_counter: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TableRepetitionInfo {
+  pub(crate) start: f32,
+  pub(crate) end: f32,
+  pub(crate) header_block_size: f32,
+  pub(crate) footer_block_size: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -962,6 +971,13 @@ impl FragmentationAnalyzer {
     split_atomic_ranges_at_forced_break_opportunities(&mut atomic, &collection.opportunities);
 
     let content_extent = parallel_flow_content_extent(root, axes, fragmentainer_size_hint, context);
+    let table_repetitions = collect_table_repetition_info_with_axis(
+      root,
+      0.0,
+      &axis,
+      context,
+      root_writing_mode,
+    );
     let line_containers = collection.line_containers;
     let line_starts = vec![0; line_containers.len()];
     Self {
@@ -971,6 +987,7 @@ impl FragmentationAnalyzer {
       line_containers,
       line_starts,
       atomic,
+      table_repetitions,
       content_extent,
       deadline_counter: 0,
       enforce_fragmentainer_size,
@@ -1144,14 +1161,65 @@ impl FragmentationAnalyzer {
     total_extent: f32,
     opportunity_cursor: &mut usize,
   ) -> f32 {
-    let mut limit = (start + fragmentainer).min(total_extent);
-
     if let Some(range) = atomic_containing(start, &self.atomic) {
       let boundary = range.end.min(total_extent);
       self.advance_line_starts(boundary);
       return boundary;
     }
 
+    let header_overhead = table_header_overhead_at(&self.table_repetitions, start)
+      .min((fragmentainer - BREAK_EPSILON).max(0.0));
+    let max_without_footer = (fragmentainer - header_overhead).max(BREAK_EPSILON);
+    let limit = (start + max_without_footer).min(total_extent);
+
+    let mut chosen = self.select_next_boundary_with_limit(
+      start,
+      limit,
+      fragmentainer,
+      total_extent,
+      opportunity_cursor,
+    );
+
+    if let Some(table) = innermost_footer_table_at(&self.table_repetitions, chosen) {
+      let footer_overhead = table
+        .footer_block_size
+        .min((fragmentainer - header_overhead - BREAK_EPSILON).max(0.0));
+      if footer_overhead > BREAK_EPSILON {
+        let max_with_footer = (fragmentainer - header_overhead - footer_overhead).max(BREAK_EPSILON);
+        let limit_with_footer = (start + max_with_footer).min(total_extent);
+
+        // If reserving footer space leaves no room to show any of the table, push the entire table
+        // to the next fragmentainer by breaking at the table's start edge.
+        if limit_with_footer <= table.start + BREAK_EPSILON {
+          let boundary = table.start.min(total_extent);
+          self.advance_line_starts(boundary);
+          return boundary;
+        }
+
+        if chosen > limit_with_footer + BREAK_EPSILON {
+          chosen = self.select_next_boundary_with_limit(
+            start,
+            limit_with_footer,
+            fragmentainer,
+            total_extent,
+            opportunity_cursor,
+          );
+        }
+      }
+    }
+
+    self.advance_line_starts(chosen);
+    chosen
+  }
+
+  fn select_next_boundary_with_limit(
+    &mut self,
+    start: f32,
+    mut limit: f32,
+    fragmentainer: f32,
+    total_extent: f32,
+    opportunity_cursor: &mut usize,
+  ) -> f32 {
     // Avoid selecting a boundary that lands inside an atomic range. If the natural fragmentainer
     // limit would split an atomic range, clamp to the atomic start so the next fragment starts
     // before the atomic content.
@@ -1162,9 +1230,7 @@ impl FragmentationAnalyzer {
         // The fragment starts inside (or at the beginning of) an atomic range, and the current
         // fragmentainer limit falls within it. Prefer overflowing rather than producing an empty
         // fragmentainer that would never advance the cursor.
-        let boundary = range.end.min(total_extent);
-        self.advance_line_starts(boundary);
-        return boundary;
+        return range.end.min(total_extent);
       }
     }
 
@@ -1281,7 +1347,6 @@ impl FragmentationAnalyzer {
     } else {
       clamped
     };
-    self.advance_line_starts(next);
     next
   }
 
@@ -1972,6 +2037,132 @@ fn is_table_footer_fragment(node: &FragmentNode) -> bool {
     .is_some_and(|s| matches!(s.display, Display::TableFooterGroup))
 }
 
+fn collect_table_repetition_info_with_axis(
+  root: &FragmentNode,
+  abs_start: f32,
+  axis: &FragmentAxis,
+  context: FragmentationContext,
+  inherited_writing_mode: WritingMode,
+) -> Vec<TableRepetitionInfo> {
+  let mut out = Vec::new();
+  let default_style = default_style();
+
+  fn walk(
+    node: &FragmentNode,
+    abs_start: f32,
+    axis: &FragmentAxis,
+    context: FragmentationContext,
+    inherited_writing_mode: WritingMode,
+    default_style: &ComputedStyle,
+    out: &mut Vec<TableRepetitionInfo>,
+  ) {
+    let style = node
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let node_writing_mode = node
+      .style
+      .as_ref()
+      .map(|s| s.writing_mode)
+      .unwrap_or(inherited_writing_mode);
+    let node_block_size = axis.block_size(&node.bounds);
+
+    if matches!(style.display, Display::Table | Display::InlineTable) {
+      let mut header_block_size = 0.0f32;
+      let mut footer_block_size = 0.0f32;
+      for child in node.children.iter().filter(|c| is_table_header_fragment(c)) {
+        let (start, end) = axis.flow_range(abs_start, node_block_size, &child.bounds);
+        header_block_size += (end - start).max(0.0);
+      }
+      for child in node.children.iter().filter(|c| is_table_footer_fragment(c)) {
+        let (start, end) = axis.flow_range(abs_start, node_block_size, &child.bounds);
+        footer_block_size += (end - start).max(0.0);
+      }
+      if header_block_size > BREAK_EPSILON || footer_block_size > BREAK_EPSILON {
+        out.push(TableRepetitionInfo {
+          start: abs_start,
+          end: abs_start + node_block_size,
+          header_block_size,
+          footer_block_size,
+        });
+      }
+    }
+
+    for child in node.children.iter() {
+      let child_writing_mode = child
+        .style
+        .as_ref()
+        .map(|s| s.writing_mode)
+        .unwrap_or(node_writing_mode);
+      let child_axis =
+        axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
+      let child_abs_start = child_axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+      walk(
+        child,
+        child_abs_start,
+        &child_axis,
+        context,
+        child_writing_mode,
+        default_style,
+        out,
+      );
+    }
+  }
+
+  walk(
+    root,
+    abs_start,
+    axis,
+    context,
+    inherited_writing_mode,
+    default_style,
+    &mut out,
+  );
+  out
+}
+
+pub(crate) fn collect_table_repetition_info_with_axes(
+  root: &FragmentNode,
+  axes: FragmentAxes,
+  context: FragmentationContext,
+) -> Vec<TableRepetitionInfo> {
+  let axis = axis_from_fragment_axes(axes);
+  let default_style = default_style();
+  let root_writing_mode = root
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(default_style.writing_mode);
+  collect_table_repetition_info_with_axis(root, 0.0, &axis, context, root_writing_mode)
+}
+
+fn table_header_overhead_at(tables: &[TableRepetitionInfo], pos: f32) -> f32 {
+  tables
+    .iter()
+    .filter(|info| {
+      info.header_block_size > BREAK_EPSILON
+        && pos > info.start + BREAK_EPSILON
+        && pos < info.end - BREAK_EPSILON
+    })
+    .map(|info| info.header_block_size)
+    .sum()
+}
+
+fn innermost_footer_table_at<'a>(
+  tables: &'a [TableRepetitionInfo],
+  pos: f32,
+) -> Option<&'a TableRepetitionInfo> {
+  tables
+    .iter()
+    .filter(|info| {
+      info.footer_block_size > BREAK_EPSILON
+        && pos > info.start + BREAK_EPSILON
+        && pos < info.end - BREAK_EPSILON
+    })
+    .max_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal))
+}
+
 fn inject_table_headers_and_footers(
   original: &FragmentNode,
   clipped: &mut FragmentNode,
@@ -2029,7 +2220,7 @@ fn inject_table_headers_and_footers(
     Point::new(0.0, -clip_origin_phys)
   };
 
-  if !headers.is_empty() && (!has_header || fragment_index > 0) {
+  if !headers.is_empty() && !has_header && !clipped.slice_info.is_first {
     let mut regions = Vec::new();
     for header in &headers {
       let header_axis = axis_for_candidate(header);
@@ -2078,7 +2269,7 @@ fn inject_table_headers_and_footers(
     clipped.children_mut().splice(0..0, clones);
   }
 
-  if !footers.is_empty() && (!has_footer || fragment_index + 1 < fragment_count) {
+  if !footers.is_empty() && !has_footer && !clipped.slice_info.is_last {
     let mut regions = Vec::new();
     for footer in &footers {
       let footer_axis = axis_for_candidate(footer);
