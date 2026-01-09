@@ -166,6 +166,15 @@ pub fn execute_web_fetch<'a>(
   let method_is_get = method.eq_ignore_ascii_case("GET");
   let method_is_head = method.eq_ignore_ascii_case("HEAD");
 
+  // Fetch rejects `no-cors` requests whose redirect mode is not `follow`.
+  // https://fetch.spec.whatwg.org/#scheme-fetch
+  if request.mode == RequestMode::NoCors && request.redirect != RequestRedirect::Follow {
+    return Err(Error::Other(format!(
+      "web fetch no-cors requests require redirect mode \"follow\" (got {:?})",
+      request.redirect
+    )));
+  }
+
   if (method_is_get || method_is_head) && request.body.is_some() {
     return Err(Error::Other(
       "web fetch request body is not allowed for GET/HEAD".to_string(),
@@ -1336,6 +1345,21 @@ mod tests {
     assert!(!response.redirected);
     assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
     assert!(response.body.is_none());
+  }
+
+  #[test]
+  fn no_cors_requires_redirect_follow() {
+    let fetcher = PanicFetcher;
+    let mut request = Request::new("GET", "https://example.com/a");
+    request.set_mode(RequestMode::NoCors);
+    request.redirect = RequestRedirect::Manual;
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected error");
+    assert!(matches!(err, Error::Other(_)));
+    assert!(
+      err.to_string().contains("no-cors") && err.to_string().contains("follow"),
+      "unexpected error: {err}"
+    );
   }
 
   #[test]
