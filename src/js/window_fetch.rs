@@ -689,9 +689,22 @@ fn headers_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u8
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("Headers: illegal invocation"));
   };
-  let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
-  let kind = number_to_u64(get_data_prop(scope, obj, HEADERS_KIND_KEY)?)?;
-  let owner = number_to_u64(get_data_prop(scope, obj, HEADERS_OWNER_KEY)?)?;
+  let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
+  let kind_val = get_data_prop(scope, obj, HEADERS_KIND_KEY)?;
+  let owner_val = get_data_prop(scope, obj, HEADERS_OWNER_KEY)?;
+  if !matches!(env_val, Value::Number(_))
+    || !matches!(kind_val, Value::Number(_))
+    || !matches!(owner_val, Value::Number(_))
+  {
+    return Err(VmError::TypeError("Headers: illegal invocation"));
+  }
+
+  let env_id =
+    number_to_u64(env_val).map_err(|_| VmError::TypeError("Headers: illegal invocation"))?;
+  let kind =
+    number_to_u64(kind_val).map_err(|_| VmError::TypeError("Headers: illegal invocation"))?;
+  let owner =
+    number_to_u64(owner_val).map_err(|_| VmError::TypeError("Headers: illegal invocation"))?;
   let kind_u8: u8 = kind
     .try_into()
     .map_err(|_| VmError::TypeError("Headers: invalid kind"))?;
@@ -2407,6 +2420,43 @@ mod tests {
     .expect_err("expected illegal invocation TypeError");
     assert!(
       matches!(err, VmError::TypeError("Response: illegal invocation")),
+      "err={err}"
+    );
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn headers_get_rejects_non_headers_object() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let mut scope = heap.scope();
+
+    let this_obj = scope.alloc_object()?;
+    let callee = scope.alloc_object()?;
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = headers_get_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      callee,
+      Value::Object(this_obj),
+      &[],
+    )
+    .expect_err("expected illegal invocation TypeError");
+    assert!(
+      matches!(err, VmError::TypeError("Headers: illegal invocation")),
       "err={err}"
     );
 
