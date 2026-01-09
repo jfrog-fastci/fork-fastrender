@@ -1,4 +1,4 @@
-use super::{Document, NodeId};
+use super::{Document, NodeId, NodeKind};
 
 impl Document {
   #[inline]
@@ -82,6 +82,33 @@ impl Document {
       remaining: self.nodes.len() + 1,
     }
   }
+
+  /// Returns true when `node` is inside an inert `<template>` subtree.
+  ///
+  /// FastRender represents template contents by keeping descendants in the tree, but marking the
+  /// `<template>` element as `inert_subtree`. The HTML script preparation algorithm must treat such
+  /// scripts as "not connected" so they do not execute.
+  pub fn is_descendant_of_inert_template(&self, node: NodeId) -> bool {
+    self.ancestors(node).skip(1).any(|ancestor_id| {
+      let Some(ancestor) = self.get_node(ancestor_id) else {
+        return false;
+      };
+      ancestor.inert_subtree
+        && matches!(
+          &ancestor.kind,
+          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template")
+        )
+    })
+  }
+
+  /// Connectedness predicate for `<script>` preparation/execution.
+  ///
+  /// Returns `false` when:
+  /// - `node` is disconnected from the document root, or
+  /// - `node` is inside an inert `<template>` subtree.
+  pub fn is_connected_for_scripting(&self, node: NodeId) -> bool {
+    self.is_connected(node) && !self.is_descendant_of_inert_template(node)
+  }
 }
 
 struct Ancestors<'a> {
@@ -135,5 +162,86 @@ impl Iterator for SubtreePreorder<'_> {
       return Some(id);
     }
     None
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::dom::parse_html;
+
+  #[test]
+  fn connected_for_scripting_skips_inert_template_scripts() {
+    let root = parse_html(
+      r#"<!doctype html>
+      <html>
+        <body>
+          <template><script>inert</script></template>
+          <script>live</script>
+        </body>
+      </html>"#,
+    )
+    .unwrap();
+    let doc = Document::from_renderer_dom(&root);
+
+    let mut inert_script: Option<NodeId> = None;
+    let mut live_script: Option<NodeId> = None;
+
+    for (idx, node) in doc.nodes().iter().enumerate() {
+      let NodeKind::Element { tag_name, .. } = &node.kind else {
+        continue;
+      };
+      if !tag_name.eq_ignore_ascii_case("script") {
+        continue;
+      }
+
+      let id = NodeId(idx);
+      if doc.is_descendant_of_inert_template(id) {
+        inert_script = Some(id);
+      } else {
+        live_script = Some(id);
+      }
+    }
+
+    let inert_script = inert_script.expect("expected a <script> inside <template>");
+    let live_script = live_script.expect("expected a live <script>");
+
+    assert!(
+      !doc.is_connected_for_scripting(inert_script),
+      "template script should not be connected for scripting"
+    );
+    assert!(
+      doc.is_connected_for_scripting(live_script),
+      "light-DOM script should be connected for scripting"
+    );
+  }
+
+  #[test]
+  fn connected_for_scripting_detects_detached_subtrees() {
+    let root = parse_html(r#"<!doctype html><html><body><script>live</script></body></html>"#).unwrap();
+    let mut doc = Document::from_renderer_dom(&root);
+
+    let script_id = doc
+      .nodes()
+      .iter()
+      .enumerate()
+      .find_map(|(idx, node)| match &node.kind {
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script") => Some(NodeId(idx)),
+        _ => None,
+      })
+      .expect("script node not found");
+
+    assert!(
+      doc.is_connected_for_scripting(script_id),
+      "script should start connected"
+    );
+
+    // Detach by severing the parent pointer; this simulates DOM mutation logic that has removed the
+    // node from the document tree.
+    doc.node_mut(script_id).parent = None;
+    assert!(
+      !doc.is_connected_for_scripting(script_id),
+      "detached script should not be connected for scripting"
+    );
   }
 }
