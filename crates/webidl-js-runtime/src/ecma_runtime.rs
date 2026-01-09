@@ -1613,6 +1613,12 @@ mod tests {
     assert_eq!(as_utf8_lossy(&rt, s), "42");
     let s = rt.to_string(Value::Number(-0.0)).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "0");
+    let s = rt.to_string(Value::Number(f64::NAN)).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "NaN");
+    let s = rt.to_string(Value::Number(f64::INFINITY)).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "Infinity");
+    let s = rt.to_string(Value::Number(f64::NEG_INFINITY)).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "-Infinity");
     // `Number::toString` formatting differs from Rust's default float formatting in a few key
     // threshold cases:
     // - values >= 1e21 use exponential form
