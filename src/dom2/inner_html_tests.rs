@@ -340,6 +340,97 @@ fn inner_html_marks_script_elements_as_already_started() {
 }
 
 #[test]
+fn insert_adjacent_html_inserts_beforebegin_and_afterend() {
+  let root = parse_html(
+    "<!doctype html><html><body><div id=root><span id=target>hi</span></div></body></html>",
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let target = find_element_by_id(&doc, "target");
+  let root_div = find_element_by_id(&doc, "root");
+
+  doc
+    .insert_adjacent_html(target, "beforebegin", "<p>one</p>")
+    .unwrap();
+  doc
+    .insert_adjacent_html(target, "afterend", "<p>two</p>")
+    .unwrap();
+
+  assert_eq!(
+    doc.inner_html(root_div).unwrap(),
+    r#"<p>one</p><span id="target">hi</span><p>two</p>"#
+  );
+}
+
+#[test]
+fn insert_adjacent_html_inserts_afterbegin_and_beforeend() {
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  doc
+    .insert_adjacent_html(div, "afterbegin", "<b>first</b>")
+    .unwrap();
+  doc
+    .insert_adjacent_html(div, "beforeend", "<i>last</i>")
+    .unwrap();
+
+  assert_eq!(doc.inner_html(div).unwrap(), "<b>first</b><i>last</i>");
+}
+
+#[test]
+fn insert_adjacent_html_errors_on_invalid_position() {
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  assert_eq!(
+    doc.insert_adjacent_html(div, "nope", "<b>x</b>"),
+    Err(super::DomError::SyntaxError)
+  );
+}
+
+#[test]
+fn insert_adjacent_html_errors_when_element_has_no_parent() {
+  let mut doc = Document::new(selectors::context::QuirksMode::NoQuirks);
+  let div = doc.create_element("div", HTML_NAMESPACE);
+  assert_eq!(
+    doc.insert_adjacent_html(div, "beforebegin", "<span>nope</span>"),
+    Err(super::DomError::NoModificationAllowedError)
+  );
+}
+
+#[test]
+fn insert_adjacent_html_errors_when_parent_is_document() {
+  let root = parse_html("<!doctype html><html><body></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let html = find_first_element_by_tag(&doc, "html");
+  assert_eq!(
+    doc.insert_adjacent_html(html, "beforebegin", "<p>x</p>"),
+    Err(super::DomError::NoModificationAllowedError)
+  );
+}
+
+#[test]
+fn insert_adjacent_html_parses_in_body_context_when_parent_is_document_fragment() {
+  let root = parse_html("<!doctype html><html><body></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let frag = doc.create_document_fragment();
+  let div = doc.create_element("div", HTML_NAMESPACE);
+  doc.append_child(frag, div).unwrap();
+
+  doc
+    .insert_adjacent_html(div, "beforebegin", "<span>before</span>")
+    .unwrap();
+
+  assert_eq!(
+    super::serialization::serialize_children(&doc, frag),
+    "<span>before</span><div></div>"
+  );
+}
+
+#[test]
 fn inner_html_skips_shadow_root_children() {
   let html = r#"<div id=host><template shadowroot=open><span id=shadow>shadow</span></template><p id=light>light</p></div>"#;
   let root = parse_html(html).unwrap();
