@@ -769,6 +769,7 @@ struct JsWptRuntime {
   promise_job_runner: Option<GcObject>,
   promise_prototype: Option<GcObject>,
   array_prototype: Option<GcObject>,
+  error_prototype: Option<GcObject>,
   event_target_proto: Option<GcObject>,
   node_proto: Option<GcObject>,
   global_object: GcObject,
@@ -824,6 +825,7 @@ impl JsWptRuntime {
       promise_job_runner: None,
       promise_prototype: None,
       array_prototype: None,
+      error_prototype: None,
       event_target_proto: None,
       node_proto: None,
       global_object,
@@ -861,6 +863,7 @@ impl JsWptRuntime {
 
     rt.install_promise_shim().expect("install Promise");
     rt.install_array_shim().expect("install Array");
+    rt.install_error_shim().expect("install Error");
     rt
       .install_event_target_and_event()
       .expect("install EventTarget/Event");
@@ -1118,6 +1121,22 @@ impl JsWptRuntime {
     self.define_data_prop(proto, join_key, Value::Object(join_fn))?;
 
     self.array_prototype = Some(proto);
+    Ok(())
+  }
+
+  fn install_error_shim(&mut self) -> Result<(), JsError> {
+    let proto = self.alloc_object()?;
+
+    // Error constructor.
+    let ctor = self.alloc_native_function(native_error_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(ctor, prototype_key, Value::Object(proto))?;
+    self.env.set("Error", Value::Object(ctor));
+
+    self.error_prototype = Some(proto);
     Ok(())
   }
 
@@ -2652,6 +2671,37 @@ fn native_console_log(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Re
     .collect::<Vec<_>>();
   eprintln!("[wpt] {}", parts.join(" "));
   Ok(Value::Undefined)
+}
+
+fn native_error_ctor(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let proto = rt
+    .error_prototype
+    .ok_or_else(|| JsError::Vm(VmError::Unimplemented("Error prototype")))?;
+
+  let obj = rt.alloc_object()?;
+  rt.heap.object_set_prototype(obj, Some(proto))?;
+
+  let name_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("name")?)
+  };
+  let message_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("message")?)
+  };
+
+  let name_value = rt.alloc_string_value("Error")?;
+  rt.define_data_prop(obj, name_key, name_value)?;
+
+  let message_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let message_value = if message_value == Value::Undefined {
+    rt.alloc_string_value("")?
+  } else {
+    Value::String(rt.heap.to_string(message_value)?)
+  };
+  rt.define_data_prop(obj, message_key, message_value)?;
+
+  Ok(Value::Object(obj))
 }
 
 fn native_set_timeout(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
