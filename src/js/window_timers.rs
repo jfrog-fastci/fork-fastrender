@@ -658,7 +658,7 @@ mod tests {
     name: &str,
     native: vm_js::NativeCall,
   ) -> vm_js::GcObject {
-    let id = vm.register_native_call(native);
+    let id = vm.register_native_call(native).unwrap();
     let name_s = scope.alloc_string(name).unwrap();
     scope.push_root(Value::String(name_s));
     scope.alloc_native_function(id, None, name_s, 0).unwrap()
