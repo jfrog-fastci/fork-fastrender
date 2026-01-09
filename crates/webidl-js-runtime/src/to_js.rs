@@ -100,7 +100,18 @@ fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
       _ => Err(rt.throw_type_error("expected a boolean value")),
     },
     IdlType::Numeric(numeric_type) => to_js_numeric(rt, *numeric_type, value),
-    IdlType::BigInt => Err(rt.throw_type_error("BigInt return values are not supported yet")),
+    IdlType::BigInt => match value {
+      WebIdlValue::PlatformObject(obj) => {
+        let v = rt
+          .platform_object_to_js_value(obj)
+          .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.is_bigint(v) {
+          return Err(rt.throw_type_error("platform object is not a BigInt"));
+        }
+        Ok(v)
+      }
+      _ => Err(rt.throw_type_error("bigint return values require a platform object handle")),
+    },
     IdlType::String(string_ty) => match value {
       WebIdlValue::String(s) => to_js_string_type(rt, *string_ty, s, limits),
       _ => Err(rt.throw_type_error("expected a string value")),
@@ -119,7 +130,18 @@ fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
         "`object` return values require a platform object handle",
       )),
     },
-    IdlType::Symbol => Err(rt.throw_type_error("symbol return values are not supported")),
+    IdlType::Symbol => match value {
+      WebIdlValue::PlatformObject(obj) => {
+        let v = rt
+          .platform_object_to_js_value(obj)
+          .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.is_symbol(v) {
+          return Err(rt.throw_type_error("platform object is not a Symbol"));
+        }
+        Ok(v)
+      }
+      _ => Err(rt.throw_type_error("symbol return values require a platform object handle")),
+    },
     IdlType::Named(named) => to_js_named(rt, ctx, named, value, limits, typedef_stack),
 
     IdlType::Sequence(elem) | IdlType::FrozenArray(elem) => {
@@ -199,13 +221,7 @@ fn to_js_any<R: WebIdlJsRuntime>(
     }
     WebIdlValue::PlatformObject(obj) => rt
       .platform_object_to_js_value(obj)
-      .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))
-      .and_then(|v| {
-        if !rt.is_object(v) {
-          return Err(rt.throw_type_error("platform object is not an object"));
-        }
-        Ok(v)
-      }),
+      .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime")),
   }
 }
 
@@ -990,6 +1006,34 @@ mod tests {
       msg.contains("platform object is not an object"),
       "expected objectness error message, got {msg:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn any_return_allows_platform_non_object_values() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("any")?;
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(Value::Number(42.0)));
+    let out = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert_eq!(out, Value::Number(42.0));
+    Ok(())
+  }
+
+  #[test]
+  fn symbol_return_allows_platform_symbol_values() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("symbol")?;
+    let sym = {
+      let mut scope = rt.heap_mut().scope();
+      scope.alloc_symbol(Some("s"))?
+    };
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(Value::Symbol(sym)));
+    let out = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert!(rt.is_symbol(out));
     Ok(())
   }
 
