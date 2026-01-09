@@ -427,7 +427,7 @@ fn to_js_named<R: WebIdlJsRuntime>(
         if !rt.is_object(js_value) {
           return Err(rt.throw_type_error("platform object is not an object"));
         }
-        if !rt.implements_interface(js_value, &named.name) {
+        if !rt.implements_interface(js_value, crate::interface_id_from_name(&named.name)) {
           return Err(rt.throw_type_error("platform object does not implement the interface"));
         }
         Ok(js_value)

@@ -50,7 +50,11 @@ fn interface_conversion_rejects_non_platform_objects() {
   let ty = interface_type("Node");
   assert!(convert_to_interface(&mut rt, obj, &ty).is_err());
   assert!(convert_to_interface_opaque(&mut rt, obj, &ty).is_err());
-  assert!(!WebIdlJsRuntime::implements_interface(&rt, obj, "Node"));
+  assert!(!WebIdlJsRuntime::implements_interface(
+    &rt,
+    obj,
+    webidl_js_runtime::interface_id_from_name("Node")
+  ));
 }
 
 #[test]

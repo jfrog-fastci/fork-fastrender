@@ -753,7 +753,8 @@ pub fn to_interface<R: WebIdlJsRuntime>(
   value: R::JsValue,
   interface: &str,
 ) -> Result<R::JsValue, R::Error> {
-  if rt.implements_interface(value, interface) {
+  let interface_id = crate::interface_id_from_name(interface);
+  if rt.implements_interface(value, interface_id) {
     return Ok(value);
   }
   Err(rt.throw_type_error(&format!(
@@ -770,7 +771,8 @@ pub fn to_interface_opaque<R: WebIdlJsRuntime>(
   value: R::JsValue,
   interface: &str,
 ) -> Result<u64, R::Error> {
-  if !rt.implements_interface(value, interface) {
+  let interface_id = crate::interface_id_from_name(interface);
+  if !rt.implements_interface(value, interface_id) {
     return Err(rt.throw_type_error(&format!(
       "Value is not a platform object implementing interface `{interface}`"
     )));
@@ -812,7 +814,7 @@ fn convert_to_callback_internal<R: WebIdlJsRuntime>(
         // Callback interfaces are normally structural (`handleEvent`) or callable. However, bindings
         // generators may also treat embedding-defined platform objects as implementing callback
         // interfaces, so accept those first.
-        if rt.implements_interface(value, &named.name) {
+        if rt.implements_interface(value, crate::interface_id_from_name(&named.name)) {
           return Ok(value);
         }
         to_callback_interface(rt, value)
@@ -1162,7 +1164,9 @@ fn convert_to_union<R: WebIdlJsRuntime>(
     if let Some(opaque) = rt.platform_object_opaque(v) {
       for ty in &flattened {
         if let IdlType::Named(named) = ty {
-          if matches!(named.kind, NamedTypeKind::Interface) && rt.implements_interface(v, &named.name) {
+          if matches!(named.kind, NamedTypeKind::Interface)
+            && rt.implements_interface(v, crate::interface_id_from_name(&named.name))
+          {
             return Ok(ConvertedValue::Union {
               member_ty: Box::new(ty.clone()),
               value: Box::new(ConvertedValue::PlatformObject(PlatformObject::new(opaque))),

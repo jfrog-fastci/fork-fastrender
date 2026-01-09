@@ -1,6 +1,6 @@
 use crate::runtime::{
-  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime,
-  NativeHostFunction, WebIdlBindingsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
+  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, NativeHostFunction,
+  WebIdlBindingsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
 };
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -409,7 +409,7 @@ impl VmJsRuntime {
   }
 
   pub fn implements_interface(&self, v: Value, interface: &str) -> bool {
-    <Self as WebIdlJsRuntime>::implements_interface(self, v, interface)
+    <Self as WebIdlHooks<Value>>::implements_interface(self, v, crate::interface_id_from_name(interface))
   }
 
   pub fn set_prototype(&mut self, obj: Value, proto: Option<Value>) -> Result<(), VmError> {
@@ -1466,24 +1466,6 @@ impl WebIdlJsRuntime for VmJsRuntime {
     Ok(PropertyKey::Symbol(sym))
   }
 
-  fn implements_interface(&self, value: Value, interface: &str) -> bool {
-    let Value::Object(obj) = value else {
-      return false;
-    };
-    if !self.heap.is_valid_object(obj) {
-      return false;
-    }
-    let Some(HostObjectKind::PlatformObject {
-      primary_interface,
-      implements,
-      ..
-    }) = self.host_objects.get(&WeakGcObject::from(obj))
-    else {
-      return false;
-    };
-    *primary_interface == interface || implements.iter().any(|i| *i == interface)
-  }
-
   fn platform_object_opaque(&self, value: Value) -> Option<u64> {
     VmJsRuntime::platform_object_opaque(self, value)
   }
@@ -1496,19 +1478,6 @@ impl WebIdlJsRuntime for VmJsRuntime {
       return false;
     }
     matches!(self.string_object_data(obj), Ok(Some(_)))
-  }
-
-  fn is_platform_object(&self, value: Value) -> bool {
-    let Value::Object(obj) = value else {
-      return false;
-    };
-    if !self.heap.is_valid_object(obj) {
-      return false;
-    }
-    matches!(
-      self.host_objects.get(&WeakGcObject::from(obj)),
-      Some(HostObjectKind::PlatformObject { .. })
-    )
   }
 
   fn is_array_buffer(&self, value: Value) -> bool {
@@ -1955,6 +1924,7 @@ mod tests {
     assert!(got.is_some());
     assert_eq!(calls.get(), 1);
   }
+
   #[test]
   fn call_function_invokes_host_function_with_this_and_args() {
     let mut rt = VmJsRuntime::new();
@@ -2136,5 +2106,41 @@ mod tests {
     let _ = rt.get(instance, key)?;
     assert_eq!(seen_this.get(), instance);
     Ok(())
+  }
+
+  #[test]
+  fn platform_object_interface_checks() {
+    let mut rt = VmJsRuntime::new();
+
+    let a = crate::interface_id_from_name("A");
+    let b = crate::interface_id_from_name("B");
+    let c = crate::interface_id_from_name("C");
+
+    let obj = rt.alloc_platform_object_value("A", &["B"], 1).unwrap();
+    assert!(crate::runtime::WebIdlJsRuntime::is_platform_object(&rt, obj));
+    assert!(crate::runtime::WebIdlJsRuntime::implements_interface(&rt, obj, a));
+    assert!(crate::runtime::WebIdlJsRuntime::implements_interface(&rt, obj, b));
+    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(&rt, obj, c));
+  }
+
+  #[test]
+  fn ordinary_host_objects_are_not_platform_objects() {
+    let mut rt = VmJsRuntime::new();
+
+    let iface = crate::interface_id_from_name("A");
+
+    let obj = rt.alloc_object_value().unwrap();
+    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(&rt, obj));
+    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(&rt, obj, iface));
+
+    let string_obj = rt.alloc_string_object_value("hi").unwrap();
+    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(&rt, string_obj));
+    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(&rt, string_obj, iface));
+
+    let func_obj = rt
+      .alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))
+      .unwrap();
+    assert!(!crate::runtime::WebIdlJsRuntime::is_platform_object(&rt, func_obj));
+    assert!(!crate::runtime::WebIdlJsRuntime::implements_interface(&rt, func_obj, iface));
   }
 }

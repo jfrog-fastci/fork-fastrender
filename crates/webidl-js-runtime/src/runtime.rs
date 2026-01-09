@@ -170,9 +170,6 @@ pub trait WebIdlJsRuntime: JsRuntime {
   /// Converts a JavaScript `Symbol` value into a property key value suitable for `get`/`get_method`.
   fn symbol_to_property_key(&mut self, symbol: Self::JsValue) -> Result<Self::PropertyKey, Self::Error>;
 
-  /// Returns true if the value is a platform object that implements the given WebIDL interface.
-  fn implements_interface(&self, value: Self::JsValue, interface: &str) -> bool;
-
   /// If the value is a platform object, returns its embedding-defined opaque id.
   ///
   /// This is useful for bindings that need to map JS wrappers back to host objects.
@@ -180,11 +177,23 @@ pub trait WebIdlJsRuntime: JsRuntime {
     None
   }
 
+  /// Returns whether `value` is a platform object (an embedding-defined object that implements one
+  /// or more Web IDL interfaces).
+  ///
+  /// Spec: https://webidl.spec.whatwg.org/#dfn-platform-object
+  fn is_platform_object(&self, value: Self::JsValue) -> bool {
+    self.hooks().is_platform_object(value)
+  }
+
+  /// Returns whether `value` implements the Web IDL interface `interface`.
+  ///
+  /// If `value` is not a platform object, this must return false.
+  fn implements_interface(&self, value: Self::JsValue, interface: InterfaceId) -> bool {
+    self.hooks().implements_interface(value, interface)
+  }
+
   /// Returns true if the value is a String object (has `[[StringData]]`).
   fn is_string_object(&self, value: Self::JsValue) -> bool;
-
-  /// Returns true if the value is an embedding-defined platform object.
-  fn is_platform_object(&self, value: Self::JsValue) -> bool;
 
   /// Returns true if the value is an ArrayBuffer object (has `[[ArrayBufferData]]`).
   fn is_array_buffer(&self, value: Self::JsValue) -> bool;

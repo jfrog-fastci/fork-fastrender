@@ -15,17 +15,18 @@ fn platform_object_branding_and_opaque() {
   assert!(rt.implements_interface(obj, "EventTarget"));
   assert!(!rt.implements_interface(obj, "Document"));
 
+  let node = interface_id_from_name("Node");
+  let event_target = interface_id_from_name("EventTarget");
+  let document = interface_id_from_name("Document");
+
   // Ensure the trait hook is usable by generic WebIDL conversion code.
-  assert!(webidl_js_runtime::WebIdlJsRuntime::implements_interface(&rt, obj, "Node"));
+  assert!(webidl_js_runtime::WebIdlJsRuntime::implements_interface(&rt, obj, node));
   assert_eq!(
     webidl_js_runtime::WebIdlJsRuntime::platform_object_opaque(&rt, obj),
     Some(id)
   );
 
   // InterfaceId-based hooks (intended for generated bindings).
-  let node = interface_id_from_name("Node");
-  let event_target = interface_id_from_name("EventTarget");
-  let document = interface_id_from_name("Document");
   let hooks = webidl_js_runtime::WebIdlJsRuntime::hooks(&rt);
   assert!(hooks.is_platform_object(obj));
   assert!(hooks.implements_interface(obj, node));
@@ -41,11 +42,12 @@ fn non_platform_objects_are_not_branded() {
   let mut rt = VmJsRuntime::new();
 
   let obj = rt.alloc_object_value().unwrap();
+  let node = interface_id_from_name("Node");
   let hooks = webidl_js_runtime::WebIdlJsRuntime::hooks(&rt);
   assert!(!rt.implements_interface(obj, "Node"));
-  assert!(!webidl_js_runtime::WebIdlJsRuntime::implements_interface(&rt, obj, "Node"));
+  assert!(!webidl_js_runtime::WebIdlJsRuntime::implements_interface(&rt, obj, node));
   assert!(!hooks.is_platform_object(obj));
-  assert!(!hooks.implements_interface(obj, interface_id_from_name("Node")));
+  assert!(!hooks.implements_interface(obj, node));
   assert_eq!(rt.platform_object_primary_interface(obj), None);
   assert_eq!(rt.platform_object_opaque(obj), None);
   assert_eq!(
@@ -56,11 +58,9 @@ fn non_platform_objects_are_not_branded() {
   let str_obj = rt.alloc_string_object_value("hello").unwrap();
   let hooks = webidl_js_runtime::WebIdlJsRuntime::hooks(&rt);
   assert!(!rt.implements_interface(str_obj, "Node"));
-  assert!(!webidl_js_runtime::WebIdlJsRuntime::implements_interface(
-    &rt, str_obj, "Node"
-  ));
+  assert!(!webidl_js_runtime::WebIdlJsRuntime::implements_interface(&rt, str_obj, node));
   assert!(!hooks.is_platform_object(str_obj));
-  assert!(!hooks.implements_interface(str_obj, interface_id_from_name("Node")));
+  assert!(!hooks.implements_interface(str_obj, node));
   assert_eq!(rt.platform_object_primary_interface(str_obj), None);
   assert_eq!(rt.platform_object_opaque(str_obj), None);
   assert_eq!(
@@ -73,10 +73,10 @@ fn non_platform_objects_are_not_branded() {
   assert!(!webidl_js_runtime::WebIdlJsRuntime::implements_interface(
     &rt,
     Value::Undefined,
-    "Node"
+    node
   ));
   assert!(!hooks.is_platform_object(Value::Undefined));
-  assert!(!hooks.implements_interface(Value::Undefined, interface_id_from_name("Node")));
+  assert!(!hooks.implements_interface(Value::Undefined, node));
   assert_eq!(rt.platform_object_primary_interface(Value::Undefined), None);
   assert_eq!(rt.platform_object_opaque(Value::Undefined), None);
   assert_eq!(

@@ -787,7 +787,7 @@ fn type_matches_platform_object<R: WebIdlJsRuntime>(rt: &R, t: &IdlType, v: R::J
     IdlType::Named(webidl_ir::NamedType {
       kind: NamedTypeKind::Interface,
       name,
-    }) => rt.implements_interface(v, name),
+    }) => rt.implements_interface(v, crate::interface_id_from_name(name)),
     _ => false,
   }
 }
@@ -1107,7 +1107,7 @@ fn convert_named<R: WebIdlJsRuntime>(
       if !rt.is_platform_object(value) {
         return Err(rt.throw_type_error("value is not a platform object"));
       }
-      if !rt.implements_interface(value, &named.name) {
+      if !rt.implements_interface(value, crate::interface_id_from_name(&named.name)) {
         return Err(rt.throw_type_error(
           "platform object does not implement the required interface",
         ));
@@ -1188,7 +1188,7 @@ fn convert_union<R: WebIdlJsRuntime>(
       IdlType::Named(webidl_ir::NamedType {
         kind: NamedTypeKind::Interface,
         name,
-      }) if rt.implements_interface(value, name) => Some(t.clone()),
+      }) if rt.implements_interface(value, crate::interface_id_from_name(name)) => Some(t.clone()),
       _ => None,
     }) {
       return Ok(WebIdlValue::Union {
