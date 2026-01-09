@@ -214,13 +214,19 @@ pub struct BundleManifest {
 
 #[derive(Clone)]
 struct BundledResource {
+  manifest_kind: Option<FetchContextKind>,
   info: BundledResourceInfo,
   bytes: Arc<Vec<u8>>,
 }
 
 impl BundledResource {
-  fn from_parts(info: BundledResourceInfo, bytes: Arc<Vec<u8>>) -> Self {
-    Self { info, bytes }
+  fn from_parts(manifest_key: &str, info: BundledResourceInfo, bytes: Arc<Vec<u8>>) -> Self {
+    let manifest_kind = parse_request_partitioned_resource_kind(manifest_key);
+    Self {
+      manifest_kind,
+      info,
+      bytes,
+    }
   }
 
   fn as_fetched(&self) -> Result<FetchedResource> {
@@ -249,6 +255,49 @@ impl BundledResource {
 
 fn bundle_key_is_request_partitioned(key: &str) -> bool {
   key.contains("@@fastr:bundle:req_v1@@") || key.contains("@@fastr:bundle:req_v2@@")
+}
+
+fn parse_request_partitioned_resource_kind(key: &str) -> Option<FetchContextKind> {
+  let rest = if let Some((_, rest)) = key.split_once("@@fastr:bundle:req_v2@@") {
+    rest
+  } else {
+    key.split_once("@@fastr:bundle:req_v1@@")?.1
+  };
+
+  for part in rest.split("@@") {
+    let Some(kind) = part.strip_prefix("kind=") else {
+      continue;
+    };
+    return match kind {
+      "document" => Some(FetchContextKind::Document),
+      "iframe" => Some(FetchContextKind::Iframe),
+      "stylesheet" => Some(FetchContextKind::Stylesheet),
+      "stylesheet-cors" => Some(FetchContextKind::StylesheetCors),
+      "image" => Some(FetchContextKind::Image),
+      "image-cors" => Some(FetchContextKind::ImageCors),
+      "font" => Some(FetchContextKind::Font),
+      "other" => Some(FetchContextKind::Other),
+      _ => None,
+    };
+  }
+  None
+}
+
+fn vary_contains_header(vary: &str, header_name: &str) -> bool {
+  let header_name = super::trim_http_whitespace(header_name);
+  if header_name.is_empty() {
+    return false;
+  }
+  for part in vary.split(',') {
+    let part = super::trim_http_whitespace(part);
+    if part.is_empty() {
+      continue;
+    }
+    if part.eq_ignore_ascii_case(header_name) {
+      return true;
+    }
+  }
+  false
 }
 
 #[derive(Clone)]
@@ -455,7 +504,7 @@ impl Bundle {
     let mut vary_aliases: Vec<(String, String)> = Vec::new();
     for (original_url, info) in &manifest.resources {
       let data = fetch_file(&info.path)?;
-      let resource = BundledResource::from_parts(info.clone(), data);
+      let resource = BundledResource::from_parts(original_url, info.clone(), data);
 
       if let Some((base_url, vary_key)) = parse_vary_partitioned_resource_key(original_url) {
         let canonical = info.final_url.as_deref().unwrap_or(base_url).to_string();
@@ -542,6 +591,7 @@ impl BundledFetcher {
 
 impl ResourceFetcher for BundledFetcher {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    let lookup_is_request_partitioned = bundle_key_is_request_partitioned(url);
     let doc_matches =
       url == self.bundle.manifest.original_url || url == self.bundle.manifest.document.final_url;
 
@@ -585,7 +635,21 @@ impl ResourceFetcher for BundledFetcher {
           url
         )));
       }
-      let destination = super::http_browser_request_profile_for_url(url);
+      let destination = parse_request_partitioned_resource_kind(url)
+        .or_else(|| bucket.variants.values().find_map(|resource| resource.manifest_kind))
+        .map(super::FetchDestination::from)
+        .unwrap_or_else(|| super::http_browser_request_profile_for_url(url));
+      if !lookup_is_request_partitioned
+        && destination.sec_fetch_mode() == "cors"
+        && bucket
+          .vary
+          .as_deref()
+          .is_some_and(|vary| vary_contains_header(vary, "origin"))
+      {
+        return Err(Error::Other(format!(
+          "Bundle entry has unhandled Vary and cannot be replayed safely: {url}"
+        )));
+      }
       let request = FetchRequest::new(bucket.canonical_url.as_str(), destination);
       let Some(vary_key) =
         super::compute_vary_key_for_request(self, request, bucket.vary.as_deref())
@@ -612,7 +676,22 @@ impl ResourceFetcher for BundledFetcher {
 
     if let Some(resource) = self.bundle.resource_for_url(url) {
       let res = resource.as_fetched()?;
-      let kind: FetchContextKind = super::http_browser_request_profile_for_url(url).into();
+      let destination = resource
+        .manifest_kind
+        .map(super::FetchDestination::from)
+        .unwrap_or_else(|| super::http_browser_request_profile_for_url(url));
+      if !lookup_is_request_partitioned
+        && destination.sec_fetch_mode() == "cors"
+        && res
+          .vary
+          .as_deref()
+          .is_some_and(|vary| vary_contains_header(vary, "origin"))
+      {
+        return Err(Error::Other(format!(
+          "Bundle entry has unhandled Vary and cannot be replayed safely: {url}"
+        )));
+      }
+      let kind: FetchContextKind = destination.into();
       let origin_key = bundle_key_is_request_partitioned(url).then_some("bundled");
       if let Some(vary) = res.vary.as_deref() {
         if super::vary_contains_star(vary)
@@ -669,8 +748,9 @@ impl ResourceFetcher for BundledFetcher {
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
-    if let Some(partition_key) = super::cors_cache_partition_key(&req) {
-      let key = request_partitioned_resource_key_v2(kind, req.url, &partition_key);
+    let cors_partition_key = super::cors_cache_partition_key(&req);
+    if let Some(partition_key) = cors_partition_key.as_deref() {
+      let key = request_partitioned_resource_key_v2(kind, req.url, partition_key);
       if let Some(resource) = self.bundle.resource_for_url(&key) {
         let res = resource.as_fetched()?;
         if let Some(vary) = res.vary.as_deref() {
@@ -773,6 +853,22 @@ impl ResourceFetcher for BundledFetcher {
         "Resource not found in bundle (no matching Vary variant): {}",
         req.url
       )));
+    }
+
+    if cors_partition_key.is_some() {
+      if let Some(resource) = self.bundle.resource_for_url(req.url) {
+        if resource
+          .info
+          .vary
+          .as_deref()
+          .is_some_and(|vary| vary_contains_header(vary, "origin"))
+        {
+          return Err(Error::Other(format!(
+            "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
+            req.url
+          )));
+        }
+      }
     }
 
     self.fetch(req.url)
@@ -1944,6 +2040,227 @@ mod tests {
         )
         .expect("fetch request-partitioned entry");
       assert_eq!(res.bytes, b"ok");
+    });
+  }
+
+  #[test]
+  fn bundled_fetcher_fetch_rejects_vary_origin_for_cors_mode_image_and_stylesheet_entries() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("image.png"), b"img").expect("write image");
+    std::fs::write(tmp.path().join("style.css"), "body{}").expect("write css");
+
+    let image_url = "https://cdn.example/image.png";
+    let style_url = "https://cdn.example/style.css";
+
+    let image_key = request_partitioned_resource_key_v2(
+      FetchContextKind::ImageCors,
+      image_url,
+      "https://a.test",
+    );
+    let style_key = request_partitioned_resource_key_v2(
+      FetchContextKind::StylesheetCors,
+      style_url,
+      "https://a.test",
+    );
+
+    let image_info = BundledResourceInfo {
+      path: "image.png".to_string(),
+      content_type: Some("image/png".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(image_url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      vary: Some(" Origin ".to_string()),
+      access_control_allow_origin: Some("https://a.test".to_string()),
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+
+    let style_info = BundledResourceInfo {
+      path: "style.css".to_string(),
+      content_type: Some("text/css".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(style_url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      vary: Some("Origin".to_string()),
+      access_control_allow_origin: Some("https://a.test".to_string()),
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(image_key, image_info), (style_key, style_info)]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    for url in [image_url, style_url] {
+      let err = fetcher.fetch(url).unwrap_err();
+      match err {
+        Error::Other(message) => assert!(
+          message.contains("unhandled Vary"),
+          "unexpected error message: {message}"
+        ),
+        other => panic!("expected Error::Other, got {other:?}"),
+      }
+    }
+  }
+
+  #[test]
+  fn bundled_fetcher_rejects_vary_origin_when_partitioning_enabled_but_entry_unpartitioned() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("image.png"), b"img").expect("write image");
+    std::fs::write(tmp.path().join("style.css"), "body{}").expect("write css");
+
+    let image_url = "https://cdn.example/image.png";
+    let style_url = "https://cdn.example/style.css";
+
+    let image_info = BundledResourceInfo {
+      path: "image.png".to_string(),
+      content_type: Some("image/png".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(image_url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      vary: Some("origin".to_string()),
+      access_control_allow_origin: Some("https://a.test".to_string()),
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+
+    let style_info = BundledResourceInfo {
+      path: "style.css".to_string(),
+      content_type: Some("text/css".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(style_url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      vary: Some("origin".to_string()),
+      access_control_allow_origin: Some("https://a.test".to_string()),
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([
+        (image_url.to_string(), image_info),
+        (style_url.to_string(), style_info),
+      ]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "1".to_string(),
+      ),
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+    ])));
+
+    with_thread_runtime_toggles(toggles, || {
+      for (url, destination) in [
+        (image_url, FetchDestination::ImageCors),
+        (style_url, FetchDestination::StyleCors),
+      ] {
+        let err = fetcher
+          .fetch_with_request(
+            FetchRequest::new(url, destination).with_referrer_url("https://a.test/page.html"),
+          )
+          .unwrap_err();
+        match err {
+          Error::Other(message) => assert!(
+            message.contains("unhandled Vary"),
+            "unexpected error message: {message}"
+          ),
+          other => panic!("expected Error::Other, got {other:?}"),
+        }
+      }
     });
   }
 
