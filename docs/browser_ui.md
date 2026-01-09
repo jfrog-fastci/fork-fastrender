@@ -190,10 +190,15 @@ handles both dropdown-open message variants; when both are emitted the `SelectDr
 positioning data takes precedence. Stage heartbeats are only sent when a stage listener is installed
 by the worker.
 
-Implementation detail: stage listeners are currently **process-global** (see
-`GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
-All current browser worker implementations assume the renderer runs **at most one** render job at a
-time; concurrent renders would need per-job routing.
+Implementation detail: stage listeners are stored in a **thread-local stack** (see
+`push_stage_listener` / `StageListenerGuard` in [`src/render_control.rs`](../src/render_control.rs)).
+`record_stage` invokes the top-of-stack thread-local listener first, then (optionally) a
+process-global listener (`swap_stage_listener` / `GlobalStageListenerGuard`, mainly used by tests).
+
+Browser worker implementations typically install a stage listener for the duration of a specific
+job (navigation/tick/etc). Multiple worker threads can render concurrently without clobbering each
+other's stage forwarding, but overlapping render jobs on the *same* thread would still require
+per-job routing (e.g. tagging stage messages with a job identifier).
 
 ### Cancellation model (generations + cooperative cancel callbacks)
 
