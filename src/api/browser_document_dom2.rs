@@ -83,14 +83,7 @@ impl BrowserDocumentDom2 {
       }
     };
 
-    self.dom = crate::dom2::Document::from_renderer_dom(&document.dom);
-    self.options = options;
-    self.prepared = Some(document);
-    self.animation_state_store = crate::animation::AnimationStateStore::new();
-    self.style_dirty = false;
-    self.layout_dirty = false;
-    self.paint_dirty = true;
-    self.animation_timeline_origin = None;
+    self.reset_with_prepared(document, options);
 
     Ok(super::BrowserNavigationReport {
       diagnostics,
@@ -123,6 +116,47 @@ impl BrowserDocumentDom2 {
       self.animation_timeline_origin = None;
       self.animation_state_store = crate::animation::AnimationStateStore::new();
     }
+  }
+
+  pub(crate) fn renderer_mut(&mut self) -> &mut super::FastRender {
+    &mut self.renderer
+  }
+
+  pub(crate) fn fetcher(&self) -> std::sync::Arc<dyn crate::resource::ResourceFetcher> {
+    self.renderer.resource_fetcher()
+  }
+
+  /// Replaces the live DOM and clears any cached preparation state.
+  pub fn reset_with_dom(&mut self, dom: crate::dom2::Document, options: RenderOptions) {
+    self.dom = dom;
+    self.options = options;
+    self.prepared = None;
+    self.animation_state_store = crate::animation::AnimationStateStore::new();
+    self.animation_timeline_origin = None;
+    self.invalidate_all();
+  }
+
+  /// Replaces the live DOM with a prepared document's DOM and installs the prepared cache.
+  ///
+  /// The next `render_if_needed` call will paint using the prepared layout without re-running
+  /// cascade/layout.
+  pub fn reset_with_prepared(&mut self, prepared: PreparedDocument, options: RenderOptions) {
+    self.dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
+    self.options = options;
+    self.prepared = Some(prepared);
+    self.animation_state_store = crate::animation::AnimationStateStore::new();
+    self.style_dirty = false;
+    self.layout_dirty = false;
+    self.paint_dirty = true;
+    self.animation_timeline_origin = None;
+  }
+
+  /// Parses HTML using the internal renderer and resets the document state.
+  pub fn reset_with_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
+    let dom = self.renderer.parse_html(html)?;
+    let dom = crate::dom2::Document::from_renderer_dom(&dom);
+    self.reset_with_dom(dom, options);
+    Ok(())
   }
 
   /// Returns an immutable reference to the live `dom2` document.

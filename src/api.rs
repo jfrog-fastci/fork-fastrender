@@ -233,6 +233,9 @@ pub use browser_document_js::{BrowserDocumentJs, RunUntilStableOutcome, RunUntil
 mod browser_document2;
 pub use browser_document2::BrowserDocument2;
 
+mod browser_tab;
+pub use browser_tab::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor};
+
 #[derive(Default, Debug, Clone)]
 struct ReplacedIntrinsicProfileState {
   start: Option<Instant>,
@@ -5093,6 +5096,10 @@ impl Drop for RuntimeTogglesSwap {
 }
 
 impl FastRender {
+  pub(crate) fn resource_fetcher(&self) -> Arc<dyn ResourceFetcher> {
+    Arc::clone(&self.fetcher)
+  }
+
   fn resolve_scaled_metrics(&self, style: &ComputedStyle) -> Option<ScaledMetrics> {
     let italic = matches!(style.font_style, crate::style::types::FontStyle::Italic);
     let oblique = matches!(style.font_style, crate::style::types::FontStyle::Oblique(_));

@@ -12,6 +12,7 @@ mod select_listbox_hidden_option_click;
 mod select_listbox_wheel_scroll;
 mod js_rendering;
 mod support;
+mod tab;
 mod ui_input_routing;
 mod ui_render_thread;
 mod ui_fragment_navigation;
