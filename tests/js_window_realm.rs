@@ -2,21 +2,22 @@ use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
 use fastrender::js::runtime::with_event_loop;
 use fastrender::js::{
   EventLoop, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource,
-  VirtualClock, WindowHostState, WindowRealm, WindowRealmConfig,
+  VirtualClock, WindowFetchEnv, WindowHostState, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::resource::{
   FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
 };
+use fastrender::resource::web_fetch::WebFetchLimits;
 use fastrender::{Error, Result};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use vm_js::{Heap, PropertyKey, Scope, Value, Vm, VmError};
 
-fn install_vm_js_microtask_checkpoint_hook(event_loop: &mut EventLoop<WindowHostState>) {
-  fn drain(host: &mut WindowHostState, event_loop: &mut EventLoop<WindowHostState>) -> Result<()> {
+fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(event_loop: &mut EventLoop<Host>) {
+  fn drain<Host: WindowRealmHost>(host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
     with_event_loop(event_loop, || {
-      let realm = host.window_mut();
+      let realm = host.window_realm();
       realm.reset_interrupt();
       let (vm, heap) = realm.vm_and_heap_mut();
       vm.perform_microtask_checkpoint(heap)
@@ -25,7 +26,7 @@ fn install_vm_js_microtask_checkpoint_hook(event_loop: &mut EventLoop<WindowHost
     })
   }
 
-  event_loop.set_microtask_checkpoint_hook(Some(drain));
+  event_loop.set_microtask_checkpoint_hook(Some(drain::<Host>));
 }
 
 fn get_string(heap: &Heap, value: Value) -> String {
@@ -830,6 +831,17 @@ fn read_log_object(heap: &mut Heap, global: vm_js::GcObject) -> Result<Vec<Strin
   Ok(out)
 }
 
+struct FetchOnlyHost {
+  window: WindowRealm,
+  _fetch_bindings: fastrender::js::WindowFetchBindings,
+}
+
+impl WindowRealmHost for FetchOnlyHost {
+  fn window_realm(&mut self) -> &mut WindowRealm {
+    &mut self.window
+  }
+}
+
 #[test]
 fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
   let fetcher: Arc<InMemoryFetcher> = Arc::new(
@@ -1355,6 +1367,204 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
 
   assert_eq!(first, "hello");
   assert_eq!(second_err, "TypeError");
+  Ok(())
+}
+
+#[test]
+fn window_fetch_rejects_on_cors_failure() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://other.example/res", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://client.example/",
+    fetcher,
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  globalThis.__cors = "";
+  fetch("https://other.example/res")
+    .then(function () { globalThis.__cors = "resolved"; })
+    .catch(function (e) { globalThis.__cors = e && e.name; });
+  "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let cors = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    let value = get_data_prop(&mut scope, global, "__cors");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(cors, "TypeError");
+  Ok(())
+}
+
+#[test]
+fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://client.example/large", b"abcd", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<FetchOnlyHost>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  let document_url = "https://client.example/";
+  let mut window =
+    WindowRealm::new(WindowRealmConfig::new(document_url)).map_err(|e| Error::Other(e.to_string()))?;
+  let limits = WebFetchLimits {
+    max_response_body_bytes: 3,
+    ..WebFetchLimits::default()
+  };
+  let fetch_bindings = {
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    fastrender::js::install_window_fetch_bindings_with_guard::<FetchOnlyHost>(
+      vm,
+      realm,
+      heap,
+      WindowFetchEnv::for_document(fetcher, Some(document_url.to_string())).with_limits(limits),
+    )
+    .map_err(|e| Error::Other(e.to_string()))?
+  };
+  let mut host = FetchOnlyHost {
+    window,
+    _fetch_bindings: fetch_bindings,
+  };
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_realm();
+      let res = realm.exec_script(
+        r#"
+  globalThis.__size_err_name = "";
+  globalThis.__size_err_msg = "";
+  fetch("https://client.example/large")
+    .then(function () { globalThis.__size_err_name = "resolved"; })
+    .catch(function (e) {
+      globalThis.__size_err_name = e && e.name;
+      globalThis.__size_err_msg = e && e.message;
+    });
+  "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let (name, msg) = {
+    let realm = host.window_realm();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    let name = get_data_prop(&mut scope, global, "__size_err_name");
+    let msg = get_data_prop(&mut scope, global, "__size_err_msg");
+    (get_string(scope.heap(), name), get_string(scope.heap(), msg))
+  };
+  assert_eq!(name, "TypeError");
+  assert!(
+    msg.contains("response body exceeds configured limits"),
+    "unexpected error message: {msg}"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_fetch_response_text_rejects_second_consumption() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/once-text", b"hello", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher,
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  globalThis.__text1 = "";
+  globalThis.__text2_err = "";
+  globalThis.__text_body_used = false;
+  fetch("https://example.com/once-text")
+    .then(function (r) {
+      return r.text().then(function (t) {
+        globalThis.__text1 = t;
+        globalThis.__text_body_used = r.bodyUsed;
+        return r.text().then(
+          function () { globalThis.__text2_err = "no error"; },
+          function (e) { globalThis.__text2_err = e && e.name; }
+        );
+      });
+    });
+  "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let (text1, text2_err, body_used) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    let text1 = get_data_prop(&mut scope, global, "__text1");
+    let text2_err = get_data_prop(&mut scope, global, "__text2_err");
+    let body_used = get_data_prop(&mut scope, global, "__text_body_used");
+    (
+      get_string(scope.heap(), text1),
+      get_string(scope.heap(), text2_err),
+      body_used,
+    )
+  };
+
+  assert_eq!(text1, "hello");
+  assert_eq!(text2_err, "TypeError");
+  assert_eq!(body_used, Value::Bool(true));
   Ok(())
 }
 

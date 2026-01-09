@@ -59,6 +59,7 @@ pub struct WindowFetchEnv {
   pub document_url: Option<String>,
   pub document_origin: Option<DocumentOrigin>,
   pub referrer_policy: ReferrerPolicy,
+  pub limits: WebFetchLimits,
 }
 
 impl WindowFetchEnv {
@@ -69,7 +70,13 @@ impl WindowFetchEnv {
       document_url,
       document_origin,
       referrer_policy: ReferrerPolicy::default(),
+      limits: WebFetchLimits::default(),
     }
+  }
+
+  pub fn with_limits(mut self, limits: WebFetchLimits) -> Self {
+    self.limits = limits;
+    self
   }
 }
 
@@ -103,14 +110,9 @@ impl EnvState {
 
 static NEXT_ENV_ID: AtomicU64 = AtomicU64::new(1);
 static ENVS: OnceLock<Mutex<HashMap<u64, EnvState>>> = OnceLock::new();
-static DEFAULT_FETCH_LIMITS: OnceLock<WebFetchLimits> = OnceLock::new();
 
 fn envs() -> &'static Mutex<HashMap<u64, EnvState>> {
   ENVS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn default_fetch_limits() -> &'static WebFetchLimits {
-  DEFAULT_FETCH_LIMITS.get_or_init(WebFetchLimits::default)
 }
 
 pub fn unregister_window_fetch_env(env_id: u64) {
@@ -1281,8 +1283,9 @@ fn headers_ctor_construct(
   _new_target: Value,
 ) -> Result<Value, VmError> {
   let env_id = env_id_from_callee(scope, callee)?;
+  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
 
-  let mut core = CoreHeaders::new_with_guard(HeadersGuard::None);
+  let mut core = CoreHeaders::new_with_guard_and_limits(HeadersGuard::None, &limits);
   if let Some(init) = args.get(0).copied() {
     // Fill before installing into the env state so errors don't leave partial state behind.
     fill_headers_from_init(vm, scope, host_hooks, env_id, &mut core, init)?;
@@ -1341,6 +1344,7 @@ fn request_ctor_construct(
 ) -> Result<Value, VmError> {
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
+  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
@@ -1355,17 +1359,17 @@ fn request_ctor_construct(
         .ok_or(VmError::TypeError("Request: invalid backing request"))
       })?
   } else {
-    let url = to_rust_string_limited(
-      scope.heap_mut(),
-      input,
-      default_fetch_limits().max_url_bytes,
-      FETCH_URL_TOO_LONG_ERROR,
-    )?;
-    let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
-    let url = resolve_url(&url, base_url.as_deref())
-      .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
-    CoreRequest::new("GET", url)
-  };
+      let url = to_rust_string_limited(
+        scope.heap_mut(),
+        input,
+        limits.max_url_bytes,
+        FETCH_URL_TOO_LONG_ERROR,
+      )?;
+      let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+      let url = resolve_url(&url, base_url.as_deref())
+        .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
+      CoreRequest::new_with_limits("GET", url, &limits)
+    };
 
   if !matches!(init, Value::Undefined | Value::Null) {
     let Value::Object(init_obj) = init else {
@@ -1377,7 +1381,7 @@ fn request_ctor_construct(
       request.method = to_rust_string_limited(
         scope.heap_mut(),
         method_val,
-        default_fetch_limits().max_url_bytes,
+        limits.max_url_bytes,
         FETCH_METHOD_TOO_LONG_ERROR,
       )?;
     }
@@ -1850,11 +1854,12 @@ fn response_ctor_construct(
 ) -> Result<Value, VmError> {
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
+  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
 
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
   let mut status: u16 = 200;
   let mut status_text = String::new();
-  let mut headers = CoreHeaders::new_with_guard(HeadersGuard::Response);
+  let mut headers = CoreHeaders::new_with_guard_and_limits(HeadersGuard::Response, &limits);
 
   let body = args.get(0).copied().unwrap_or(Value::Undefined);
   let body_bytes = if matches!(body, Value::Undefined | Value::Null) {
@@ -1887,7 +1892,7 @@ fn response_ctor_construct(
       status_text = to_rust_string_limited(
         scope.heap_mut(),
         st_val,
-        default_fetch_limits().max_url_bytes,
+        limits.max_url_bytes,
         FETCH_STATUS_TEXT_TOO_LONG_ERROR,
       )?;
     }
@@ -1992,6 +1997,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
   let response_proto = response_proto_from_callee(scope, callee)?;
+  let limits = with_env_state(env_id, |state| Ok(state.env.limits.clone()))?;
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
@@ -2009,13 +2015,13 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       let url = to_rust_string_limited(
         scope.heap_mut(),
         input,
-        default_fetch_limits().max_url_bytes,
+        limits.max_url_bytes,
         FETCH_URL_TOO_LONG_ERROR,
       )?;
       let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
       let url = resolve_url(&url, base_url.as_deref())
         .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
-      let mut request = CoreRequest::new("GET", url);
+      let mut request = CoreRequest::new_with_limits("GET", url, &limits);
       request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
        request
      };
@@ -2030,7 +2036,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       request.method = to_rust_string_limited(
         scope.heap_mut(),
         method_val,
-        default_fetch_limits().max_url_bytes,
+        limits.max_url_bytes,
         FETCH_METHOD_TOO_LONG_ERROR,
       )?;
     }
