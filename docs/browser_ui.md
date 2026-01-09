@@ -60,12 +60,12 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
-  - Spawns the production browser UI worker thread via
-    [`spawn_browser_ui_worker`](../src/ui/browser_thread.rs) (large stack; wrapper around
-    `spawn_browser_worker`), which handles navigation/history, scrolling, and DOM interaction and
-    produces `WorkerToUi` updates.
-    - The windowed UI also maintains its own per-tab history model and currently drives
-      back/forward by sending `UiToWorker::Navigate { reason: BackForward }` to the worker.
+  - Spawns the production browser worker thread via
+    [`spawn_browser_worker`](../src/ui/browser_thread.rs) (large stack), which handles
+    navigation/history, scrolling, and DOM interaction and produces `WorkerToUi` updates.
+    - The worker owns navigation history; the windowed chrome sends `UiToWorker::{GoBack,GoForward,Reload}`.
+    - A std::io-friendly wrapper exists as [`spawn_browser_ui_worker`](../src/ui/browser_thread.rs)
+      for CLI-style callers.
   - Renders a small egui popup for `<select>` dropdowns. Workers can request a popup via:
     - `WorkerToUi::OpenSelectDropdown` (legacy cursor-anchored message)
     - `WorkerToUi::SelectDropdownOpened` (preferred; includes an explicit `anchor_css` rect)
@@ -90,8 +90,8 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
   - History-aware browser worker thread (navigation/history + interaction + cancellation): [`src/ui/browser_thread.rs`](../src/ui/browser_thread.rs)
-    - `spawn_browser_worker` is the main worker used by the windowed `browser` app (via
-      `spawn_browser_ui_worker`).
+    - `spawn_browser_worker` is the main worker used by the windowed `browser` app.
+    - `spawn_browser_ui_worker` is a small std::io wrapper around `spawn_browser_worker_with_name`.
   - Message-driven UI worker loop used by some integration tests: [`src/ui/worker.rs`](../src/ui/worker.rs)
     - Exercised by `tests/browser_integration/ui_worker_fragment_navigation.rs`,
       `tests/browser_integration/ui_worker_navigation_messages.rs`, etc.
@@ -141,7 +141,7 @@ The browser UI should run rendering on a dedicated large-stack thread:
 - Render recursion can be deep on real pages; see
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
 - The windowed `browser` app spawns its worker via
-  [`spawn_browser_ui_worker`](../src/ui/browser_thread.rs), which ultimately uses
+  [`spawn_browser_worker`](../src/ui/browser_thread.rs), which ultimately uses
   `std::thread::Builder`/`DEFAULT_RENDER_STACK_SIZE` (via `spawn_render_worker_thread`) to configure
   the stack size.
 - Headless UI worker loops used by integration tests also use dedicated large-stack threads (see

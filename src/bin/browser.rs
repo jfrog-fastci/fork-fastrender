@@ -613,12 +613,6 @@ impl App {
     let _ = self.ui_to_worker_tx.send(msg);
   }
 
-  fn send_tick(&mut self) {
-    let Some(tab_id) = self.browser_state.active_tab_id() else {
-      return;
-    };
-    self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
-  }
   fn set_pixels_per_point(&mut self, ppp: f32) {
     self.pixels_per_point = ppp;
     self.egui_ctx.set_pixels_per_point(ppp);
