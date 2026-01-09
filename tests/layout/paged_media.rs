@@ -2888,6 +2888,44 @@ fn print_pagination_honors_forced_breaks_even_when_content_fits() {
 }
 
 #[test]
+fn print_pagination_respects_break_inside_avoid() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 80px; margin: 0; }
+          body { margin: 0; }
+          .before { height: 40px; }
+          .container { break-inside: avoid; }
+          .item { height: 30px; }
+        </style>
+      </head>
+      <body>
+        <div class="before">Before</div>
+        <div class="container">
+          <div class="item">ITEM_A</div>
+          <div class="item">ITEM_B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 2);
+
+  assert!(find_text(page_roots[0], "Before").is_some());
+  assert!(find_text(page_roots[0], "ITEM_A").is_none());
+  assert!(find_text(page_roots[0], "ITEM_B").is_none());
+
+  assert!(find_text(page_roots[1], "ITEM_A").is_some());
+  assert!(find_text(page_roots[1], "ITEM_B").is_some());
+}
+
+#[test]
 fn margin_box_without_content_is_not_generated() {
   let html = r#"
     <html>
