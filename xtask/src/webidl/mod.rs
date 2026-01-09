@@ -142,71 +142,69 @@ pub fn extract_webidl_blocks(source: &str) -> Vec<String> {
 /// Returns raw IDL blocks with basic HTML entities decoded (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&#39;`).
 pub fn extract_webidl_blocks_from_bikeshed(source: &str) -> Vec<String> {
   let mut out = Vec::new();
-  let mut in_idl = false;
-  let mut current = String::new();
+  let mut i = 0usize;
 
-  for line in source.lines() {
-      if !in_idl {
-        if let Some(idx) = line.find("<pre") {
-          // Avoid matching tags like `<prefix>`.
-          let after_name = idx + "<pre".len();
-          if line
-            .get(after_name..)
-          .and_then(|s| s.chars().next())
-          .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
-          continue;
-        }
+  while let Some(rel_start) = source[i..].find("<pre") {
+    let start = i + rel_start;
 
-        // Prefer parsing the *actual* `<pre ...>` tag so we don't accidentally match nested
-        // `<code class="idl">` tags in `<pre><code class="idl">...</code></pre>` (WHATWG HTML
-        // sources).
-        if let Some(tag_end) = find_html_tag_end(line, idx) {
-          let tag = &line[idx..=tag_end];
-          if html_start_tag_has_class_token(tag, "idl") {
-            // Everything after the closing `>` is IDL content (some blocks place it on the same line).
-            let after = &line[tag_end + 1..];
-            if !after.is_empty() {
-              current.push_str(after);
-              current.push('\n');
-            }
-            in_idl = true;
-            continue;
-          }
-        } else {
-          // Bikeshed sources occasionally omit the closing `>` when the IDL begins immediately
-          // after the opening `<pre class=idl` tag, e.g.:
-          //   `<pre class=idl>[Exposed=(Window,Worker)]`
-          // In that case, capture from the first `[` onwards.
-          let tag = &line[idx..];
-          if tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\"")
-          {
-            let after = tag.find('[').map(|bracket| &tag[bracket..]);
-            if let Some(after) = after {
-              if !after.is_empty() {
-                current.push_str(after);
-                current.push('\n');
-              }
-            }
-            in_idl = true;
-            continue;
-          }
-        }
+    // Avoid matching tags like `<prefix>`.
+    let after_name = start + "<pre".len();
+    if source
+      .get(after_name..)
+      .and_then(|s| s.chars().next())
+      .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+      i = after_name;
+      continue;
+    }
+
+    // Bikeshed sources occasionally omit the closing `>` when the IDL begins immediately after the
+    // opening `<pre class=idl` tag, e.g.:
+    //   `<pre class=idl>[Exposed=(Window,Worker)]`
+    //
+    // In that case, Bikeshed typically places a `[` directly after the tag, so fall back to
+    // treating the first `[` as the start of the IDL content.
+    let content_start = if let Some(tag_end) = find_html_tag_end(source, start) {
+      // Prefer parsing the *actual* `<pre ...>` tag so we don't accidentally match nested
+      // `<code class="idl">` tags in `<pre><code class="idl">...</code></pre>` (WHATWG HTML
+      // sources).
+      let tag = &source[start..=tag_end];
+      if !html_start_tag_has_class_token(tag, "idl") {
+        i = tag_end + 1;
+        continue;
       }
+      tag_end + 1
+    } else {
+      let line_end = source[start..]
+        .find('\n')
+        .map(|rel| start + rel)
+        .unwrap_or(source.len());
+      let tag = &source[start..line_end];
+      if !(tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\""))
+      {
+        i = after_name;
+        continue;
+      }
+      let Some(rel_bracket) = tag.find('[') else {
+        i = after_name;
+        continue;
+      };
+      start + rel_bracket
+    };
+
+    let Some((content_end, close_end)) = find_matching_pre_close(source, content_start) else {
+      // Unterminated/unbalanced block; skip and keep scanning for later blocks.
+      i = content_start;
       continue;
+    };
+
+    let raw = &source[content_start..content_end];
+    let decoded = decode_basic_html_entities(raw.trim());
+    if !decoded.is_empty() {
+      out.push(decoded);
     }
 
-    if let Some(end) = line.find("</pre>") {
-      current.push_str(&line[..end]);
-      current.push('\n');
-      out.push(decode_basic_html_entities(current.trim()).to_string());
-      current.clear();
-      in_idl = false;
-      continue;
-    }
-
-    current.push_str(line);
-    current.push('\n');
+    i = close_end;
   }
 
   out
@@ -310,6 +308,70 @@ fn find_matching_code_close(source: &str, content_start: usize) -> Option<(usize
     if tail.starts_with("<code") {
       let after_name = start + "<code".len();
       // Avoid matching tags like `<codec>`.
+      if source
+        .get(after_name..)
+        .and_then(|s| s.chars().next())
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-')
+      {
+        let tag_end = find_html_tag_end(source, start)?;
+        scan = tag_end + 1;
+        continue;
+      }
+      let tag_end = find_html_tag_end(source, start)?;
+      depth += 1;
+      scan = tag_end + 1;
+      continue;
+    }
+
+    let tag_end = find_html_tag_end(source, start)?;
+    scan = tag_end + 1;
+  }
+
+  None
+}
+
+/// Find the outer `</pre>` closing tag corresponding to an opening `<pre ...>` tag.
+///
+/// Bikeshed IDL blocks are `<pre class=idl> ... </pre>`. While Bikeshed generally produces valid,
+/// well-nested HTML, the extractor should be resilient: a stray `<pre>` inside examples or a
+/// malformed/unclosed `<pre class=idl>` must not prevent later blocks from being discovered.
+///
+/// Returns `(close_start, close_end)`, where `close_start` is the start index of `</pre...>` and
+/// `close_end` is the index immediately after the closing `>`.
+fn find_matching_pre_close(source: &str, content_start: usize) -> Option<(usize, usize)> {
+  let mut depth = 1u32;
+  let mut scan = content_start;
+
+  while let Some(rel_lt) = source[scan..].find('<') {
+    let start = scan + rel_lt;
+    let tail = &source[start..];
+
+    // Closing `</pre>`.
+    if tail.starts_with("</pre") {
+      let after_name = start + "</pre".len();
+      // Avoid matching tags like `</prefix>`.
+      if source
+        .get(after_name..)
+        .and_then(|s| s.chars().next())
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-')
+      {
+        let tag_end = find_html_tag_end(source, start)?;
+        scan = tag_end + 1;
+        continue;
+      }
+      let tag_end = find_html_tag_end(source, start)?;
+      depth = depth.saturating_sub(1);
+      if depth == 0 {
+        return Some((start, tag_end + 1));
+      }
+      scan = tag_end + 1;
+      continue;
+    }
+
+    // Opening `<pre>`.
+    if tail.starts_with("<pre") {
+      let after_name = start + "<pre".len();
+      // Avoid matching tags like `<prefix>`.
       if source
         .get(after_name..)
         .and_then(|s| s.chars().next())

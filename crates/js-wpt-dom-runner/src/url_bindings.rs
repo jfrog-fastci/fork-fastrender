@@ -155,7 +155,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
 
   // URL setters.
   macro_rules! url_setter {
-    ($name:literal, $method:ident) => {{
+    ($name:literal, $method:ident, $ignore_setter_failure:expr) => {{
       globals.set(
         $name,
         Function::new(ctx.clone(), {
@@ -167,6 +167,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
             };
             match url.$method(&value) {
               Ok(()) => make_ok(ctx),
+              Err(WebUrlError::SetterFailure { .. }) if $ignore_setter_failure => make_ok(ctx),
               Err(err) => make_err_from_core(ctx, &err),
             }
           }
@@ -175,16 +176,16 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     }};
   }
 
-  url_setter!("__fr_url_set_href", set_href);
-  url_setter!("__fr_url_set_protocol", set_protocol);
-  url_setter!("__fr_url_set_username", set_username);
-  url_setter!("__fr_url_set_password", set_password);
-  url_setter!("__fr_url_set_host", set_host);
-  url_setter!("__fr_url_set_hostname", set_hostname);
-  url_setter!("__fr_url_set_port", set_port);
-  url_setter!("__fr_url_set_pathname", set_pathname);
-  url_setter!("__fr_url_set_search", set_search);
-  url_setter!("__fr_url_set_hash", set_hash);
+  url_setter!("__fr_url_set_href", set_href, false);
+  url_setter!("__fr_url_set_protocol", set_protocol, true);
+  url_setter!("__fr_url_set_username", set_username, true);
+  url_setter!("__fr_url_set_password", set_password, true);
+  url_setter!("__fr_url_set_host", set_host, true);
+  url_setter!("__fr_url_set_hostname", set_hostname, true);
+  url_setter!("__fr_url_set_port", set_port, true);
+  url_setter!("__fr_url_set_pathname", set_pathname, true);
+  url_setter!("__fr_url_set_search", set_search, true);
+  url_setter!("__fr_url_set_hash", set_hash, true);
 
   // --- URLSearchParams (standalone) ---
   globals.set(
@@ -251,8 +252,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     Function::new(ctx.clone(), {
       let state = state.clone();
       move |handle: u32, name: String, value: Option<String>| {
-        let mut state = state.borrow_mut();
-        let Some(params) = state.search_params.get_mut(&handle) else {
+        let state = state.borrow();
+        let Some(params) = state.search_params.get(&handle) else {
           return;
         };
         let _ = params.delete(&name, value.as_deref());
@@ -324,8 +325,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     Function::new(ctx.clone(), {
       let state = state.clone();
       move |handle: u32| {
-        let mut state = state.borrow_mut();
-        let Some(params) = state.search_params.get_mut(&handle) else {
+        let state = state.borrow();
+        let Some(params) = state.search_params.get(&handle) else {
           return;
         };
         let _ = params.sort();
