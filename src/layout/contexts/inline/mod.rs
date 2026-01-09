@@ -5628,7 +5628,42 @@ impl InlineFormattingContext {
       line.width
     };
     let total_width: f32 = items.iter().map(|p| p.item.width()).sum();
-    let extra_space = (usable_width - total_width).max(0.0);
+    let hanging_end_width = {
+      // CSS Text: preserved trailing spaces (e.g. `white-space: pre-wrap`) are "hanging" and must
+      // not affect alignment/justification calculations, even though they still paint.
+      //
+      // We currently only handle ASCII space hanging for `pre`/`pre-wrap`. This matches the most
+      // common cases and avoids treating `break-spaces` (which intentionally keeps spaces in flow)
+      // as hanging.
+      let mut hanging = 0.0f32;
+      for positioned in items.iter().rev() {
+        match &positioned.item {
+          InlineItem::StaticPositionAnchor(_) => continue,
+          InlineItem::Floating(_) => continue,
+          InlineItem::Text(t) => {
+            if t.is_marker {
+              break;
+            }
+            if !matches!(t.style.white_space, WhiteSpace::Pre | WhiteSpace::PreWrap) {
+              break;
+            }
+            let trimmed_len = t.text.trim_end_matches(' ').len();
+            if trimmed_len == t.text.len() {
+              break;
+            }
+            let before = t.advance_at_offset(trimmed_len);
+            hanging += (t.advance - before).max(0.0);
+            if trimmed_len > 0 {
+              break;
+            }
+          }
+          _ => break,
+        }
+      }
+      hanging.min(total_width)
+    };
+    let measured_width = (total_width - hanging_end_width).max(0.0);
+    let extra_space = (usable_width - measured_width).max(0.0);
     let (lead, gap_extra) = match line_align {
       TextAlign::Right => (extra_space, 0.0),
       TextAlign::Center => (extra_space * 0.5, 0.0),
@@ -5654,7 +5689,7 @@ impl InlineFormattingContext {
     }
 
     let mut cursor = if rtl {
-      indent_offset + lead + total_width
+      indent_offset + lead + measured_width
     } else {
       indent_offset + lead
     };
@@ -21625,6 +21660,58 @@ mod tests {
     let offset = child.bounds.x();
     let remaining = (line.bounds.width() - child.bounds.width()).abs();
     assert!((offset - remaining).abs() < 0.5);
+  }
+
+  #[test]
+  fn text_align_right_ignores_trailing_spaces_when_pre_wrap() {
+    let mut root_style = ComputedStyle::default();
+    root_style.font_size = 16.0;
+    root_style.text_align = TextAlign::Right;
+    root_style.white_space = WhiteSpace::PreWrap;
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    text_style.white_space = WhiteSpace::PreWrap;
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(Arc::new(text_style), "hi   ".to_string())],
+    );
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert_eq!(fragment.children.len(), 1, "single line expected");
+    let line = fragment.children.first().expect("line fragment");
+    let child = line.children.first().expect("text fragment");
+
+    // Trailing preserved spaces (white-space: pre-wrap) should not affect text alignment. The
+    // non-space content ("hi") should align against the right edge, with the spaces hanging past it.
+    let width_hi = {
+      let mut runs = ifc
+        .pipeline
+        .shape_with_direction(
+          "hi",
+          child
+            .style
+            .as_ref()
+            .expect("child style")
+            .as_ref(),
+          &ifc.font_context,
+          pipeline_direction(crate::style::types::Direction::Ltr),
+        )
+        .expect("shape");
+      let style = child.style.as_ref().expect("child style").as_ref();
+      TextItem::apply_spacing_to_runs(&mut runs, "hi", style.letter_spacing, style.word_spacing);
+      runs.iter().map(|run| run.advance).sum::<f32>()
+    };
+
+    let right_edge = child.bounds.x() + width_hi;
+    assert!(
+      (right_edge - line.bounds.width()).abs() < 1.0,
+      "expected right-aligned non-space text to end at the line edge; right_edge={right_edge:.2} line_width={:.2} child_x={:.2}",
+      line.bounds.width(),
+      child.bounds.x()
+    );
   }
 
   #[test]
