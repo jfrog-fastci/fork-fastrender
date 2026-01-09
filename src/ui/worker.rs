@@ -462,6 +462,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         reason,
       } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
+          // Robustness: ignore messages for unknown/closed tabs.
           continue;
         };
         tab
@@ -558,6 +559,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         dpr,
       } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
+          // Robustness: ignore messages for unknown/closed tabs.
           continue;
         };
         tab.viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));

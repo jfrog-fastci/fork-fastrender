@@ -159,6 +159,8 @@ impl BrowserTabJsExecutor for TimerMutationExecutor {
 
 #[test]
 fn browser_tab_timer_tasks_fire_after_clock_advance_and_rerender() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -249,6 +251,8 @@ impl BrowserTabJsExecutor for ParseTimeDomAssertionExecutor {
 
 #[test]
 fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let log = Arc::new(Mutex::new(Vec::<String>::new()));
   let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
   let options = RenderOptions::new().with_viewport(1, 1);
