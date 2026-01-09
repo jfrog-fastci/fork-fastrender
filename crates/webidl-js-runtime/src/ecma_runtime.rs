@@ -1568,6 +1568,9 @@ mod tests {
       Value::BigInt(JsBigInt::from_u128(16))
     );
 
+    let s = rt.alloc_string_value("   ").unwrap();
+    assert_eq!(rt.to_bigint(s).unwrap(), Value::BigInt(JsBigInt::zero()));
+
     let s = rt.alloc_string_value("-0x10").unwrap();
     let err = rt.to_bigint(s).unwrap_err();
     assert_eq!(thrown_error_name(&mut rt, err), "SyntaxError");
