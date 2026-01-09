@@ -5001,7 +5001,10 @@ impl BlockFormattingContext {
       if end > idx {
         let segment_viewport = paint_viewport.translate(Point::new(0.0, -physical_offset));
         let segment_column_fill = if next_span.is_some() {
-          ColumnFill::Balance
+          match parent.style.column_fill {
+            ColumnFill::Auto => ColumnFill::Balance,
+            fill => fill,
+          }
         } else {
           parent.style.column_fill
         };

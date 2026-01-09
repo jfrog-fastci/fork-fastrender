@@ -223,7 +223,7 @@ height = 100
 id = "css/multicol/column-span-all-001"
 path = "css/multicol/column-span-all-001.html"
 test_type = "visual"
-expected = "fail"
+expected = "pass"
 timeout_ms = 20000
 dpr = 1.0
 

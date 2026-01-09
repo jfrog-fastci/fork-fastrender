@@ -427,6 +427,103 @@ fn column_fill_auto_balances_segment_before_spanner() {
 }
 
 #[test]
+fn column_span_all_splits_column_sets_in_fixed_height_container() {
+  // Regression test for WPT `css/multicol/column-span-all-001`.
+  //
+  // The multicol container has a definite block-size (height). The column-set preceding a spanner
+  // must be balanced based on the *content* extent, not the container's fixed height, so the
+  // spanner is placed immediately after the balanced set.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(100.0));
+  parent_style.height = Some(Length::px(90.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(0.0);
+  parent_style.column_fill = ColumnFill::Balance;
+  let parent_style = Arc::new(parent_style);
+
+  let item_style = |height: f32| -> Arc<ComputedStyle> {
+    let mut style = ComputedStyle::default();
+    style.height = Some(Length::px(height));
+    Arc::new(style)
+  };
+
+  let mut before_left = BoxNode::new_block(item_style(20.0), FormattingContextType::Block, vec![]);
+  before_left.id = 1;
+  let mut before_right = BoxNode::new_block(item_style(20.0), FormattingContextType::Block, vec![]);
+  before_right.id = 2;
+
+  let mut span_style = ComputedStyle::default();
+  span_style.height = Some(Length::px(10.0));
+  span_style.column_span = ColumnSpan::All;
+  let mut span = BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![]);
+  span.id = 3;
+
+  let mut after_left = BoxNode::new_block(item_style(20.0), FormattingContextType::Block, vec![]);
+  after_left.id = 4;
+  let mut after_right = BoxNode::new_block(item_style(20.0), FormattingContextType::Block, vec![]);
+  after_right.id = 5;
+
+  let mut parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![
+      before_left.clone(),
+      before_right.clone(),
+      span.clone(),
+      after_left.clone(),
+      after_right.clone(),
+    ],
+  );
+  parent.id = 10;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite(100.0, 90.0))
+    .expect("layout");
+
+  let before_left_frag = find_fragment(&fragment, before_left.id).expect("before-left fragment");
+  assert!((before_left_frag.bounds.x() - 0.0).abs() < 0.1);
+  assert!((before_left_frag.bounds.y() - 0.0).abs() < 0.1);
+
+  let before_right_frag = find_fragment(&fragment, before_right.id).expect("before-right fragment");
+  assert!(
+    (before_right_frag.bounds.x() - 50.0).abs() < 0.2,
+    "expected before-right to be in the second column (x={})",
+    before_right_frag.bounds.x()
+  );
+  assert!((before_right_frag.bounds.y() - 0.0).abs() < 0.1);
+
+  let span_frag = find_fragment(&fragment, span.id).expect("spanner fragment");
+  assert!(
+    (span_frag.bounds.y() - 20.0).abs() < 0.3,
+    "spanner should start after the balanced first column set (got y={})",
+    span_frag.bounds.y()
+  );
+  assert!((span_frag.bounds.x()).abs() < 0.1);
+  assert!(span_frag.bounds.width() > 99.0);
+
+  let after_left_frag = find_fragment(&fragment, after_left.id).expect("after-left fragment");
+  assert!((after_left_frag.bounds.x() - 0.0).abs() < 0.1);
+  assert!(
+    (after_left_frag.bounds.y() - 30.0).abs() < 0.3,
+    "after-left should start below spanner (got y={})",
+    after_left_frag.bounds.y()
+  );
+
+  let after_right_frag = find_fragment(&fragment, after_right.id).expect("after-right fragment");
+  assert!(
+    (after_right_frag.bounds.x() - 50.0).abs() < 0.2,
+    "expected after-right to be in the second column (x={})",
+    after_right_frag.bounds.x()
+  );
+  assert!(
+    (after_right_frag.bounds.y() - 30.0).abs() < 0.3,
+    "after-right should start below spanner (got y={})",
+    after_right_frag.bounds.y()
+  );
+}
+
+#[test]
 fn column_rule_not_drawn_next_to_empty_columns() {
   let mut parent_style = ComputedStyle::default();
   parent_style.width = Some(Length::px(300.0));

@@ -766,7 +766,27 @@ pub(crate) fn parallel_flow_content_extent(
   context: FragmentationContext,
 ) -> f32 {
   let axis = axis_from_fragment_axes(axes);
-  let mut extent = axis.block_size(&root.logical_bounding_box());
+  let mut extent = match context {
+    FragmentationContext::Column => {
+      // In multi-column layout the synthetic flow root can be enlarged to satisfy a definite
+      // block-size on the multicol container (e.g. `height`). That trailing empty space must not
+      // participate in column balancing: spanners (`column-span: all`) and `column-fill: balance`
+      // depend on the *content* extent, not the container's fixed height.
+      //
+      // Use the union of descendants (plus the origin) rather than including the root bounds to
+      // ignore that inflated trailing space. However, descendant bounds do not include trailing
+      // margins, so also consider the fragment's original unfragmented block-size (`slice_info`)
+      // which is set before any synthetic enlargement.
+      let mut bbox = Rect::from_xywh(0.0, 0.0, 0.0, 0.0);
+      for child in root.children.iter() {
+        bbox = bbox.union(child.logical_bounding_box());
+      }
+      axis
+        .block_size(&bbox)
+        .max(root.slice_info.original_block_size)
+    }
+    FragmentationContext::Page => axis.block_size(&root.logical_bounding_box()),
+  };
 
   if !matches!(context, FragmentationContext::Page) {
     return extent;
