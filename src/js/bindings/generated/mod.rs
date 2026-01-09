@@ -413,6 +413,290 @@ where
 }
 
 #[allow(dead_code)]
+fn u_r_l_search_params_append<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      let s = rt.to_string(v0)?;
+      BindingValue::String(rt.js_string_to_rust_string(s)?)
+    });
+    let v1 = if args.len() > 1 {
+      args[1]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      let s = rt.to_string(v1)?;
+      BindingValue::String(rt.js_string_to_rust_string(s)?)
+    });
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "URLSearchParams",
+      "append",
+      0,
+      converted_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
+fn u_r_l_search_params_delete<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      let s = rt.to_string(v0)?;
+      BindingValue::String(rt.js_string_to_rust_string(s)?)
+    });
+    let v1 = if args.len() > 1 {
+      args[1]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push(if rt.is_undefined(v1) {
+      BindingValue::Undefined
+    } else {
+      {
+        let s = rt.to_string(v1)?;
+        BindingValue::String(rt.js_string_to_rust_string(s)?)
+      }
+    });
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "URLSearchParams",
+      "delete",
+      0,
+      converted_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
+fn u_r_l_search_params_get<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      let s = rt.to_string(v0)?;
+      BindingValue::String(rt.js_string_to_rust_string(s)?)
+    });
+    let result =
+      host.call_operation(rt, Some(this), "URLSearchParams", "get", 0, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
+fn u_r_l_search_params_get_all<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      let s = rt.to_string(v0)?;
+      BindingValue::String(rt.js_string_to_rust_string(s)?)
+    });
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "URLSearchParams",
+      "getAll",
+      0,
+      converted_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
+fn u_r_l_search_params_has<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      let s = rt.to_string(v0)?;
+      BindingValue::String(rt.js_string_to_rust_string(s)?)
+    });
+    let v1 = if args.len() > 1 {
+      args[1]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push(if rt.is_undefined(v1) {
+      BindingValue::Undefined
+    } else {
+      {
+        let s = rt.to_string(v1)?;
+        BindingValue::String(rt.js_string_to_rust_string(s)?)
+      }
+    });
+    let result =
+      host.call_operation(rt, Some(this), "URLSearchParams", "has", 0, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
+fn u_r_l_search_params_set<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      let s = rt.to_string(v0)?;
+      BindingValue::String(rt.js_string_to_rust_string(s)?)
+    });
+    let v1 = if args.len() > 1 {
+      args[1]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push({
+      let s = rt.to_string(v1)?;
+      BindingValue::String(rt.js_string_to_rust_string(s)?)
+    });
+    let result =
+      host.call_operation(rt, Some(this), "URLSearchParams", "set", 0, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
+fn u_r_l_search_params_sort<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let result =
+      host.call_operation(rt, Some(this), "URLSearchParams", "sort", 0, converted_args)?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
+fn u_r_l_search_params_constructor<Host, R>(
+  rt: &mut R,
+  host: &mut Host,
+  _this: R::JsValue,
+  args: &[R::JsValue],
+) -> Result<R::JsValue, R::Error>
+where
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  Host: WebHostBindings<R>,
+{
+  {
+    let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+    let v0 = if args.len() > 0 {
+      args[0]
+    } else {
+      rt.js_undefined()
+    };
+    converted_args.push(if rt.is_undefined(v0) {
+      BindingValue::String("".to_string())
+    } else {
+      BindingValue::Object(v0)
+    });
+    let result = host.call_operation(
+      rt,
+      None,
+      "URLSearchParams",
+      "constructor",
+      0,
+      converted_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+}
+
+#[allow(dead_code)]
 fn window_clear_interval<Host, R>(
   rt: &mut R,
   host: &mut Host,
@@ -578,6 +862,7 @@ where
   let global = rt.global_object()?;
   let proto_event_target = rt.create_object()?;
   let proto_u_r_l = rt.create_object()?;
+  let proto_u_r_l_search_params = rt.create_object()?;
   let func = rt.create_function(event_target_add_event_listener::<Host, R>)?;
   rt.define_data_property_str(proto_event_target, "addEventListener", func, true)?;
   let func = rt.create_function(event_target_dispatch_event::<Host, R>)?;
@@ -598,6 +883,34 @@ where
   rt.define_data_property_str(ctor_u_r_l, "canParse", func, true)?;
   let func = rt.create_function(u_r_l_parse::<Host, R>)?;
   rt.define_data_property_str(ctor_u_r_l, "parse", func, true)?;
+  let func = rt.create_function(u_r_l_search_params_append::<Host, R>)?;
+  rt.define_data_property_str(proto_u_r_l_search_params, "append", func, true)?;
+  let func = rt.create_function(u_r_l_search_params_delete::<Host, R>)?;
+  rt.define_data_property_str(proto_u_r_l_search_params, "delete", func, true)?;
+  let func = rt.create_function(u_r_l_search_params_get::<Host, R>)?;
+  rt.define_data_property_str(proto_u_r_l_search_params, "get", func, true)?;
+  let func = rt.create_function(u_r_l_search_params_get_all::<Host, R>)?;
+  rt.define_data_property_str(proto_u_r_l_search_params, "getAll", func, true)?;
+  let func = rt.create_function(u_r_l_search_params_has::<Host, R>)?;
+  rt.define_data_property_str(proto_u_r_l_search_params, "has", func, true)?;
+  let func = rt.create_function(u_r_l_search_params_set::<Host, R>)?;
+  rt.define_data_property_str(proto_u_r_l_search_params, "set", func, true)?;
+  let func = rt.create_function(u_r_l_search_params_sort::<Host, R>)?;
+  rt.define_data_property_str(proto_u_r_l_search_params, "sort", func, true)?;
+  let ctor_u_r_l_search_params = rt.create_function(u_r_l_search_params_constructor::<Host, R>)?;
+  rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, true)?;
+  rt.define_data_property_str(
+    ctor_u_r_l_search_params,
+    "prototype",
+    proto_u_r_l_search_params,
+    false,
+  )?;
+  rt.define_data_property_str(
+    proto_u_r_l_search_params,
+    "constructor",
+    ctor_u_r_l_search_params,
+    false,
+  )?;
   let func = rt.create_function(window_clear_interval::<Host, R>)?;
   rt.define_data_property_str(global, "clearInterval", func, true)?;
   let func = rt.create_function(window_clear_timeout::<Host, R>)?;

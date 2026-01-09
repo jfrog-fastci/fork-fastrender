@@ -76,6 +76,7 @@ impl WebIdlBindingsCodegenConfig {
         "EventTarget",
         "Event",
         "URL",
+        "URLSearchParams",
       ]
       .into_iter()
       .map(|s| s.to_string())
@@ -581,7 +582,7 @@ fn dom_render_bindings_module(
   );
   out.push_str("// - tools/webidl/bindings_allowlist.toml\n\n");
   out.push_str("use super::DomHost;\n");
-  out.push_str("use crate::js::webidl::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};\n");
+  out.push_str("use webidl_js_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};\n");
   out.push_str("use vm_js::{PropertyKey, Value, VmError};\n\n");
 
   out.push_str(
@@ -1308,6 +1309,7 @@ fn should_emit_member(mode: WebIdlBindingsGenerationMode, iface: &str, member_na
         "addEventListener" | "removeEventListener" | "dispatchEvent" | "constructor"
       ),
       "URL" => true,
+      "URLSearchParams" => true,
       "Window" => matches!(
         member_name,
         "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval" | "queueMicrotask"
@@ -1657,7 +1659,9 @@ fn emit_default_literal(lit: &IdlLiteral) -> String {
         "BindingValue::Number(0.0)".to_string()
       }
     }
-    IdlLiteral::String(s) => format!("BindingValue::String({})", rust_string_literal(s)),
+    IdlLiteral::String(s) => {
+      format!("BindingValue::String({}.to_string())", rust_string_literal(s))
+    }
     IdlLiteral::EmptyObject => "BindingValue::Dictionary(BTreeMap::new())".to_string(),
     IdlLiteral::EmptyArray => "BindingValue::Sequence(Vec::new())".to_string(),
     IdlLiteral::Identifier(_id) => "BindingValue::Undefined".to_string(),

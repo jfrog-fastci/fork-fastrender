@@ -5,8 +5,8 @@
 // - tools/webidl/bindings_allowlist.toml
 
 use super::DomHost;
-use webidl_js_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
 use vm_js::{PropertyKey, Value, VmError};
+use webidl_js_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
 
 pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Result<(), VmError> {
   let k_dom_type: PropertyKey = rt.prop_key("__fastrender_dom_type")?;
