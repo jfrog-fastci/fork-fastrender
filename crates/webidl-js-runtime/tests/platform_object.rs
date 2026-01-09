@@ -1,5 +1,5 @@
 use vm_js::Value;
-use webidl_js_runtime::{InterfaceId, VmJsRuntime};
+use webidl_js_runtime::{interface_id_from_name, VmJsRuntime};
 
 #[test]
 fn platform_object_branding_and_opaque() {
@@ -23,9 +23,9 @@ fn platform_object_branding_and_opaque() {
   );
 
   // InterfaceId-based hooks (intended for generated bindings).
-  let node = InterfaceId::from_name("Node");
-  let event_target = InterfaceId::from_name("EventTarget");
-  let document = InterfaceId::from_name("Document");
+  let node = interface_id_from_name("Node");
+  let event_target = interface_id_from_name("EventTarget");
+  let document = interface_id_from_name("Document");
   let hooks = webidl_js_runtime::WebIdlJsRuntime::hooks(&rt);
   assert!(hooks.is_platform_object(obj));
   assert!(hooks.implements_interface(obj, node));
@@ -45,7 +45,7 @@ fn non_platform_objects_are_not_branded() {
   assert!(!rt.implements_interface(obj, "Node"));
   assert!(!webidl_js_runtime::WebIdlJsRuntime::implements_interface(&rt, obj, "Node"));
   assert!(!hooks.is_platform_object(obj));
-  assert!(!hooks.implements_interface(obj, InterfaceId::from_name("Node")));
+  assert!(!hooks.implements_interface(obj, interface_id_from_name("Node")));
   assert_eq!(rt.platform_object_primary_interface(obj), None);
   assert_eq!(rt.platform_object_opaque(obj), None);
   assert_eq!(
@@ -60,7 +60,7 @@ fn non_platform_objects_are_not_branded() {
     &rt, str_obj, "Node"
   ));
   assert!(!hooks.is_platform_object(str_obj));
-  assert!(!hooks.implements_interface(str_obj, InterfaceId::from_name("Node")));
+  assert!(!hooks.implements_interface(str_obj, interface_id_from_name("Node")));
   assert_eq!(rt.platform_object_primary_interface(str_obj), None);
   assert_eq!(rt.platform_object_opaque(str_obj), None);
   assert_eq!(
@@ -76,7 +76,7 @@ fn non_platform_objects_are_not_branded() {
     "Node"
   ));
   assert!(!hooks.is_platform_object(Value::Undefined));
-  assert!(!hooks.implements_interface(Value::Undefined, InterfaceId::from_name("Node")));
+  assert!(!hooks.implements_interface(Value::Undefined, interface_id_from_name("Node")));
   assert_eq!(rt.platform_object_primary_interface(Value::Undefined), None);
   assert_eq!(rt.platform_object_opaque(Value::Undefined), None);
   assert_eq!(

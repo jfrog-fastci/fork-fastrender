@@ -4,61 +4,20 @@
 //! operations. This module defines the minimal operations that the binding layer needs from an
 //! embedded JS engine.
 
-/// A stable identifier for a WebIDL interface.
+pub use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
+
+/// Derive a stable [`InterfaceId`] from an interface name.
 ///
-/// Binding generators can assign unique IDs per interface and then use those IDs for fast runtime
-/// checks (e.g. `instanceof`-like checks for platform objects).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InterfaceId(pub u32);
-
-impl InterfaceId {
-  /// Derive a stable [`InterfaceId`] from an interface name.
-  ///
-  /// This uses the 32-bit FNV-1a hash of the UTF-8 bytes. It is primarily intended for unit tests
-  /// and scaffolding runtimes (like `VmJsRuntime`) that store interface names but still want to
-  /// participate in InterfaceId-based hooks.
-  pub fn from_name(name: &str) -> Self {
-    let mut hash: u32 = 0x811c_9dc5;
-    for &b in name.as_bytes() {
-      hash ^= b as u32;
-      hash = hash.wrapping_mul(0x0100_0193);
-    }
-    Self(hash)
+/// This uses the 32-bit FNV-1a hash of the UTF-8 bytes. It is primarily intended for unit tests and
+/// scaffolding runtimes (like `VmJsRuntime`) that store interface names but still want to
+/// participate in InterfaceId-based hooks.
+pub fn interface_id_from_name(name: &str) -> InterfaceId {
+  let mut hash: u32 = 0x811c_9dc5;
+  for &b in name.as_bytes() {
+    hash ^= b as u32;
+    hash = hash.wrapping_mul(0x0100_0193);
   }
-}
-
-/// Resource limits for WebIDL conversions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WebIdlLimits {
-  /// Maximum length (in UTF-16 code units) allowed for string conversions that allocate.
-  pub max_string_code_units: usize,
-  /// Maximum length allowed for list/sequence conversions that allocate.
-  pub max_sequence_length: usize,
-  /// Maximum number of entries allowed when converting WebIDL records to objects.
-  pub max_record_entries: usize,
-}
-
-impl Default for WebIdlLimits {
-  fn default() -> Self {
-    Self {
-      // Arbitrary but sane defaults for early scaffolding; embedders should set these explicitly.
-      max_string_code_units: 1 << 20,
-      max_sequence_length: 1 << 20,
-      max_record_entries: 1 << 20,
-    }
-  }
-}
-
-/// Runtime/embedding-provided hooks needed for WebIDL conversions.
-///
-/// In particular, WebIDL interface conversions need to detect "platform objects" (objects owned by
-/// the embedding, not the JS engine) and test whether they implement a given interface.
-pub trait WebIdlHooks<V> {
-  /// Returns whether `value` is an embedding-defined platform object.
-  fn is_platform_object(&self, value: V) -> bool;
-
-  /// Returns whether `value` implements the WebIDL interface `interface`.
-  fn implements_interface(&self, value: V, interface: InterfaceId) -> bool;
+  InterfaceId(hash)
 }
 
 /// A concrete own-property descriptor returned by [`JsRuntime::get_own_property`].

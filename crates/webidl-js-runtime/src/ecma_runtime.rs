@@ -804,10 +804,10 @@ impl WebIdlHooks<Value> for VmJsRuntime {
     else {
       return false;
     };
-    InterfaceId::from_name(primary_interface) == interface
+    crate::interface_id_from_name(primary_interface) == interface
       || implements
         .iter()
-        .any(|name| InterfaceId::from_name(name) == interface)
+        .any(|name| crate::interface_id_from_name(name) == interface)
   }
 }
 
