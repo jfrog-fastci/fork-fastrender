@@ -482,6 +482,8 @@ mod tests {
       None,
       Some("0 0 10 20"),
       Some("defer none"),
+      16.0,
+      16.0,
     );
     assert!(intrinsic.aspect_ratio_none);
     assert!(intrinsic.aspect_ratio.is_none());
