@@ -130,8 +130,7 @@ impl crate::js::ecma_microtasks::VmJsEngineHost for WindowRealm {
 impl vm_js::VmJobContext for WindowRealm {
   fn call(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
     let (vm, heap) = self.vm_and_heap_mut();
-    let mut scope = heap.scope();
-    vm.call(&mut scope, callee, this, args)
+    heap.call(vm, callee, this, args)
   }
 
   fn construct(&mut self, callee: Value, args: &[Value], new_target: Value) -> Result<Value, VmError> {

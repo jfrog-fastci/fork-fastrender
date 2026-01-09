@@ -49,7 +49,7 @@ fn web_url_search_params_failure_does_not_mutate_url_query() {
     max_total_query_bytes: 1024,
   };
 
-  let mut url = WebUrl::parse("https://example.com/?ok=1", &ok_limits).unwrap();
+  let mut url = WebUrl::parse("https://example.com/?ok=1", None, &ok_limits).unwrap();
 
   let failing_limits = WebUrlLimits {
     max_input_bytes: 1024,
@@ -57,5 +57,5 @@ fn web_url_search_params_failure_does_not_mutate_url_query() {
     max_total_query_bytes: 1024,
   };
   assert!(url.set_search("a=b&a=b&a=b", &failing_limits).is_err());
-  assert_eq!(url.query().unwrap().as_deref(), Some("ok=1"));
+  assert_eq!(url.query(), Some("ok=1"));
 }
