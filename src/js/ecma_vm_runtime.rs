@@ -754,20 +754,24 @@ fn native_queue_microtask<State: 'static>(
 
   let queued = ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
     match (&mut *event_loop_ptr).queue_microtask(move |host, event_loop| {
-        let _guard = ExecCtxGuard::install(host, event_loop);
-        host.reset_budget_for_run();
+      let _guard = ExecCtxGuard::install(host, event_loop);
+      host.reset_budget_for_run();
 
-        let global_this = Value::Object(host.realm.global_object());
+      let global_this = Value::Object(host.realm.global_object());
+      let callback = {
         let mut scope = host.heap.scope();
-        let callback = scope
+        scope
           .heap()
           .get_root(callback_root)
-          .unwrap_or(Value::Undefined);
-        let result = host.vm.call(&mut scope, callback, global_this, &[]);
-        scope.heap_mut().remove_root(callback_root);
-        result.map(|_| ()).map_err(map_vm_error)?;
-        Ok(())
-      }) {
+          .unwrap_or(Value::Undefined)
+      };
+
+      let mut ctx = FastRenderJobContext::new(host);
+      let result = ctx.call(host, callback, global_this, &[]);
+      host.heap.remove_root(callback_root);
+      result.map(|_| ()).map_err(map_vm_error)?;
+      Ok(())
+    }) {
       Ok(()) => true,
       Err(err) => {
         (*host_ptr).pending_host_error.get_or_insert(err);
@@ -837,22 +841,26 @@ fn native_set_timeout<State: 'static>(
       };
 
       let global_this = Value::Object(host.realm.global_object());
-      let mut scope = host.heap.scope();
-      let callback = scope
-        .heap()
-        .get_root(entry.callback)
-        .unwrap_or(Value::Undefined);
-      let call_args: Vec<Value> = entry
-        .args
-        .iter()
-        .map(|root| scope.heap().get_root(*root).unwrap_or(Value::Undefined))
-        .collect();
+      let (callback, call_args) = {
+        let mut scope = host.heap.scope();
+        let callback = scope
+          .heap()
+          .get_root(entry.callback)
+          .unwrap_or(Value::Undefined);
+        let call_args: Vec<Value> = entry
+          .args
+          .iter()
+          .map(|root| scope.heap().get_root(*root).unwrap_or(Value::Undefined))
+          .collect();
+        (callback, call_args)
+      };
 
-      let result = host.vm.call(&mut scope, callback, global_this, &call_args);
+      let mut ctx = FastRenderJobContext::new(host);
+      let result = ctx.call(host, callback, global_this, &call_args);
 
-      scope.heap_mut().remove_root(entry.callback);
+      host.heap.remove_root(entry.callback);
       for root in entry.args {
-        scope.heap_mut().remove_root(root);
+        host.heap.remove_root(root);
       }
 
       result.map(|_| ()).map_err(map_vm_error)?;
@@ -962,20 +970,23 @@ fn native_set_interval<State: 'static>(
       };
 
       let global_this = Value::Object(host.realm.global_object());
-      let mut scope = host.heap.scope();
-      let callback = scope
-        .heap()
-        .get_root(entry.callback)
-        .unwrap_or(Value::Undefined);
-      let call_args: Vec<Value> = entry
-        .args
-        .iter()
-        .map(|root| scope.heap().get_root(*root).unwrap_or(Value::Undefined))
-        .collect();
+      let (callback, call_args) = {
+        let mut scope = host.heap.scope();
+        let callback = scope
+          .heap()
+          .get_root(entry.callback)
+          .unwrap_or(Value::Undefined);
+        let call_args: Vec<Value> = entry
+          .args
+          .iter()
+          .map(|root| scope.heap().get_root(*root).unwrap_or(Value::Undefined))
+          .collect();
+        (callback, call_args)
+      };
 
-      host
-        .vm
-        .call(&mut scope, callback, global_this, &call_args)
+      let mut ctx = FastRenderJobContext::new(host);
+      ctx
+        .call(host, callback, global_this, &call_args)
         .map(|_| ())
         .map_err(map_vm_error)?;
 
