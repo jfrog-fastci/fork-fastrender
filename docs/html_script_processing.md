@@ -322,12 +322,13 @@ boundaries explicit.
    - accumulated inline text content (if no `src`),
    - the current base URL from `BaseUrlTracker`.
 3. The parser driver feeds that spec into the action-based scheduler:
-   `ScriptScheduler::discovered_parser_script(...)`.
+   `ScriptScheduler::discovered_parser_script(spec, node_id, base_url_at_discovery)`.
 4. The scheduler returns a `DiscoveredScript { id, actions }`, where `actions` can include:
-   - `StartFetch { url }` (external script),
-   - `BlockParserUntilExecuted` (parser-blocking external script),
-   - `ExecuteNow { source_text }` (inline scripts, or blocking externals after fetch completion),
-   - `QueueTask { source_text }` (async/defer execution).
+   - `StartFetch { script_id, node_id, url }` (external script),
+   - `BlockParserUntilExecuted { script_id, node_id }` (parser-blocking external script),
+   - `ExecuteNow { script_id, node_id, source_text }` (inline scripts, or blocking externals after
+     fetch completion),
+   - `QueueTask { script_id, node_id, source_text }` (async/defer execution).
 5. The orchestrator applies these actions:
    - starts fetches in the host networking layer,
    - pauses/resumes the parser as directed,
