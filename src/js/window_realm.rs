@@ -365,6 +365,8 @@ const NODE_WRAPPER_CACHE_KEY: &str = "__fastrender_node_wrapper_cache";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
+const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
 const ELEMENT_CLASS_NAME_GET_KEY: &str = "__fastrender_element_class_name_get";
 const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
@@ -1991,6 +1993,374 @@ fn document_create_element_native(
   get_or_create_node_wrapper(scope, document_obj, node_id)
 }
 
+fn event_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Note: for MVP, we do not enforce `new` (calling as a function also produces a new object), which
+  // matches `src/js/dom_bindings` behavior.
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &bubbles_key)? {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) =
+        scope
+          .heap()
+          .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &composed_key)? {
+        composed = scope.heap().to_boolean(value)?;
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  Ok(Value::Object(obj))
+}
+
+fn custom_event_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+  let mut detail = Value::Null;
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &bubbles_key)? {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) =
+        scope
+          .heap()
+          .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &composed_key)? {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let detail_key = alloc_key(scope, "detail")?;
+      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &detail_key)? {
+        if !matches!(value, Value::Undefined) {
+          detail = value;
+        }
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(obj, detail_key, data_desc(detail))?;
+
+  Ok(Value::Object(obj))
+}
+
+fn event_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
+fn custom_event_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  custom_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
+fn event_init_event_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "Event.initEvent must be called on an Event object",
+    ));
+  };
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bubbles = scope.heap().to_boolean(bubbles_arg)?;
+
+  let cancelable_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  let cancelable = scope.heap().to_boolean(cancelable_arg)?;
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  // `initEvent` does not expose `composed`; reset to false per DOM.
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(event_obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  Ok(Value::Undefined)
+}
+
+fn custom_event_init_custom_event_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "CustomEvent.initCustomEvent must be called on a CustomEvent object",
+    ));
+  };
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  let bubbles = scope.heap().to_boolean(bubbles_arg)?;
+
+  let cancelable_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  let cancelable = scope.heap().to_boolean(cancelable_arg)?;
+
+  let detail_arg = args.get(3).copied().unwrap_or(Value::Undefined);
+  let detail = if matches!(detail_arg, Value::Undefined) {
+    Value::Null
+  } else {
+    detail_arg
+  };
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  // `initCustomEvent` does not expose `composed`; reset to false per DOM.
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(event_obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(event_obj, detail_key, data_desc(detail))?;
+
+  Ok(Value::Undefined)
+}
+
+fn document_create_event_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createEvent must be called on a document object",
+    ));
+  };
+
+  let interface_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let interface_string = scope.heap_mut().to_string(interface_arg)?;
+  let interface_name = scope
+    .heap()
+    .get_string(interface_string)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+  let name = interface_name.trim();
+
+  enum Kind {
+    Event,
+    CustomEvent,
+  }
+
+  let kind = if name.eq_ignore_ascii_case("Event") {
+    Kind::Event
+  } else if name.eq_ignore_ascii_case("CustomEvent") {
+    Kind::CustomEvent
+  } else {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "NotSupportedError",
+      &format!("Unsupported event interface: {name}"),
+    )?));
+  };
+
+  let proto_key = match kind {
+    Kind::Event => EVENT_PROTOTYPE_KEY,
+    Kind::CustomEvent => CUSTOM_EVENT_PROTOTYPE_KEY,
+  };
+  let proto_key = alloc_key(scope, proto_key)?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &proto_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let empty = scope.alloc_string("")?;
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(empty)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(false)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(false)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  if matches!(kind, Kind::CustomEvent) {
+    let detail_key = alloc_key(scope, "detail")?;
+    scope.define_property(obj, detail_key, data_desc(Value::Null))?;
+  }
+
+  Ok(Value::Object(obj))
+}
+
 fn node_append_child_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3478,6 +3848,151 @@ fn init_window_globals(
     document_obj,
     create_element_key,
     data_desc(Value::Object(create_element_func)),
+  )?;
+
+  // --- DOM Events (MVP): Event / CustomEvent / document.createEvent -----------------------------
+  //
+  // Many real-world bundles include the "CustomEvent polyfill" pattern that calls
+  // `document.createEvent("CustomEvent")` + `initCustomEvent`. Install these legacy APIs so such
+  // scripts can run without immediately aborting.
+  let event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(event_proto))?;
+
+  let init_event_call_id = vm.register_native_call(event_init_event_native)?;
+  let init_event_name = scope.alloc_string("initEvent")?;
+  scope.push_root(Value::String(init_event_name))?;
+  let init_event_func = scope.alloc_native_function(init_event_call_id, None, init_event_name, 3)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(init_event_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(init_event_func))?;
+  let init_event_key = alloc_key(&mut scope, "initEvent")?;
+  scope.define_property(event_proto, init_event_key, data_desc(Value::Object(init_event_func)))?;
+
+  let custom_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(custom_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(custom_event_proto, Some(event_proto))?;
+
+  let init_custom_event_call_id = vm.register_native_call(custom_event_init_custom_event_native)?;
+  let init_custom_event_name = scope.alloc_string("initCustomEvent")?;
+  scope.push_root(Value::String(init_custom_event_name))?;
+  let init_custom_event_func =
+    scope.alloc_native_function(init_custom_event_call_id, None, init_custom_event_name, 4)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      init_custom_event_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(init_custom_event_func))?;
+  let init_custom_event_key = alloc_key(&mut scope, "initCustomEvent")?;
+  scope.define_property(
+    custom_event_proto,
+    init_custom_event_key,
+    data_desc(Value::Object(init_custom_event_func)),
+  )?;
+
+  // Constructors on the global object.
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+  let constructor_key = alloc_key(&mut scope, "constructor")?;
+
+  let event_ctor_call_id = vm.register_native_call(event_constructor_native)?;
+  let event_ctor_construct_id = vm.register_native_construct(event_constructor_construct_native)?;
+  let event_ctor_name = scope.alloc_string("Event")?;
+  scope.push_root(Value::String(event_ctor_name))?;
+  let event_ctor_func = scope.alloc_native_function(
+    event_ctor_call_id,
+    Some(event_ctor_construct_id),
+    event_ctor_name,
+    1,
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(event_ctor_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(event_ctor_func))?;
+  scope.define_property(
+    event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(event_proto)),
+  )?;
+  scope.define_property(
+    event_proto,
+    constructor_key,
+    data_desc(Value::Object(event_ctor_func)),
+  )?;
+  let event_ctor_key = alloc_key(&mut scope, "Event")?;
+  scope.define_property(global, event_ctor_key, data_desc(Value::Object(event_ctor_func)))?;
+
+  let custom_event_ctor_call_id = vm.register_native_call(custom_event_constructor_native)?;
+  let custom_event_ctor_construct_id =
+    vm.register_native_construct(custom_event_constructor_construct_native)?;
+  let custom_event_ctor_name = scope.alloc_string("CustomEvent")?;
+  scope.push_root(Value::String(custom_event_ctor_name))?;
+  let custom_event_ctor_func =
+    scope.alloc_native_function(
+      custom_event_ctor_call_id,
+      Some(custom_event_ctor_construct_id),
+      custom_event_ctor_name,
+      1,
+    )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      custom_event_ctor_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(custom_event_ctor_func))?;
+  scope.define_property(
+    custom_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(custom_event_proto)),
+  )?;
+  scope.define_property(
+    custom_event_proto,
+    constructor_key,
+    data_desc(Value::Object(custom_event_ctor_func)),
+  )?;
+  let custom_event_ctor_key = alloc_key(&mut scope, "CustomEvent")?;
+  scope.define_property(
+    global,
+    custom_event_ctor_key,
+    data_desc(Value::Object(custom_event_ctor_func)),
+  )?;
+
+  // Expose the prototypes on document for `document.createEvent`.
+  let event_proto_key = alloc_key(&mut scope, EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    event_proto_key,
+    data_desc(Value::Object(event_proto)),
+  )?;
+  let custom_event_proto_key = alloc_key(&mut scope, CUSTOM_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    custom_event_proto_key,
+    data_desc(Value::Object(custom_event_proto)),
+  )?;
+
+  // document.createEvent(interfaceName)
+  let create_event_key = alloc_key(&mut scope, "createEvent")?;
+  let create_event_call_id = vm.register_native_call(document_create_event_native)?;
+  let create_event_name = scope.alloc_string("createEvent")?;
+  scope.push_root(Value::String(create_event_name))?;
+  let create_event_func =
+    scope.alloc_native_function(create_event_call_id, None, create_event_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      create_event_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(create_event_func))?;
+  scope.define_property(
+    document_obj,
+    create_event_key,
+    data_desc(Value::Object(create_event_func)),
   )?;
 
   // Store shared Node.appendChild function on `document` so wrappers can reuse it.

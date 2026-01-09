@@ -713,7 +713,7 @@ mod tests {
       reject = vm_js::Value::Undefined;
 
       let then_job_callback = hooks.host_make_job_callback(then_func);
-      let realm = then_job_callback.realm();
+      let current_realm = then_job_callback.realm();
       let job = vm_js::new_promise_resolve_thenable_job(
         scope.heap_mut(),
         thenable,
@@ -722,7 +722,7 @@ mod tests {
         reject,
       )
       .map_err(vm_err)?;
-      hooks.host_enqueue_promise_job(job, realm);
+      hooks.host_enqueue_promise_job(job, current_realm);
       drop(scope);
       assert!(hooks.finish(&mut host).is_none());
     }
@@ -1154,10 +1154,10 @@ mod tests {
         handler: Some(job_callback),
       };
 
-      let realm = fulfill_reaction.handler.as_ref().and_then(|cb| cb.realm());
-      let job =
-        vm_js::new_promise_reaction_job(scope.heap_mut(), fulfill_reaction, argument).map_err(vm_err)?;
-      hooks.host_enqueue_promise_job(job, realm);
+      let current_realm = fulfill_reaction.handler.as_ref().and_then(|cb| cb.realm());
+      let job = vm_js::new_promise_reaction_job(scope.heap_mut(), fulfill_reaction, argument)
+        .map_err(vm_err)?;
+      hooks.host_enqueue_promise_job(job, current_realm);
       drop(scope);
       assert!(hooks.finish(&mut host).is_none());
     }

@@ -317,6 +317,21 @@ mod tests {
       .unwrap_or(Value::Undefined)
   }
 
+  fn get_global_prop_utf8(host: &mut WindowHost, name: &str) -> Option<String> {
+    let value = get_global_prop(host, name);
+    let window = host.host_mut().window_mut();
+    match value {
+      Value::String(s) => Some(
+        window
+          .heap()
+          .get_string(s)
+          .expect("get string")
+          .to_utf8_lossy(),
+      ),
+      _ => None,
+    }
+  }
+
   #[test]
   fn exec_script_installs_event_loop_for_queue_microtask() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
@@ -371,6 +386,76 @@ mod tests {
       .expect("heap should contain cookie string")
       .to_utf8_lossy();
     assert_eq!(got, "a=b; b=c");
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_supports_event_constructors_and_create_event() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      var e1 = document.createEvent("Event");
+      e1.initEvent("hello", true, false);
+      this.__e1_type = e1.type;
+      this.__e1_bubbles = e1.bubbles;
+      this.__e1_cancelable = e1.cancelable;
+
+      var e2 = document.createEvent("CustomEvent");
+      e2.initCustomEvent("world", false, true, 123);
+      this.__e2_type = e2.type;
+      this.__e2_detail = e2.detail;
+
+      var e3 = new CustomEvent("ctor", { detail: 456 });
+      this.__e3_type = e3.type;
+      this.__e3_detail = e3.detail;
+
+      try {
+        document.createEvent("NoSuchEvent");
+        this.__unsupported = "did_not_throw";
+      } catch (e) {
+        this.__unsupported = e && e.name;
+      }
+    "#,
+    )?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__e1_type").as_deref(),
+      Some("hello")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_bubbles"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__e1_cancelable"),
+      Value::Bool(false)
+    ));
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__e2_type").as_deref(),
+      Some("world")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__e2_detail"),
+      Value::Number(n) if n == 123.0
+    ));
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__e3_type").as_deref(),
+      Some("ctor")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__e3_detail"),
+      Value::Number(n) if n == 456.0
+    ));
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__unsupported").as_deref(),
+      Some("NotSupportedError")
+    );
+
     Ok(())
   }
 }
