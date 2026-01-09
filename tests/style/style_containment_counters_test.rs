@@ -101,6 +101,39 @@ fn style_containment_is_ignored_when_element_has_no_principal_box() {
 }
 
 #[test]
+fn counters_apply_through_display_contents_elements() {
+  // `display: contents` only affects the box tree; counters are defined over the element tree.
+  // In particular, counter-reset on a `display: contents` element must still create a nested
+  // counter scope for its descendants.
+  let dom = dom::parse_html(
+    r#"
+      <div id="root">
+        <div id="container">
+          <div id="a"></div>
+        </div>
+        <div id="b"></div>
+      </div>
+    "#,
+  )
+  .unwrap();
+
+  let css = r#"
+    #root { counter-reset: c; }
+    #container { display: contents; counter-reset: c; }
+    #a { counter-increment: c; }
+    #b::before { content: counter(c); }
+  "#;
+
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let b_node = find_by_id(&styled, "b").expect("expected #b node");
+  let tree = generate_box_tree(&styled).unwrap();
+
+  assert_eq!(generated_before_text(&tree, b_node.node_id), "0");
+}
+
+#[test]
 fn style_containment_scopes_counter_increments_and_creates_new_counter() {
   // Mirrors the example in CSS Containment Level 2: the style-contained element's own
   // counter-increment affects the outside counter, but increments in its subtree create a new

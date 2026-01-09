@@ -4295,9 +4295,13 @@ fn apply_counter_properties_from_style(
     return;
   }
 
-  // Counters are evaluated as part of box generation. Elements that do not generate
-  // boxes (e.g. `display:none` or `display:contents`) must not reset/set/increment counters.
-  if matches!(styled.styles.display, Display::None | Display::Contents) {
+  // Counters are evaluated as part of box generation. Elements that are fully removed from the
+  // box tree (`display:none`) must not reset/set/increment counters.
+  //
+  // Note that `display: contents` only removes the element's principal box; it does *not* remove
+  // the element from the element tree. Per the display spec, "semantics based on the document
+  // tree ... are not affected", and CSS counters are defined over the element tree.
+  if styled.styles.display == Display::None {
     return;
   }
 
@@ -4456,16 +4460,17 @@ fn list_item_count(styled: &StyledNode) -> usize {
     }) {
       continue;
     }
-    // Only treat list containers that generate boxes as nested list boundaries.
-    // `display: contents` lists do not generate a box, and their counter properties have no
-    // effect, so their list items contribute to the surrounding list-item counter scope.
-    let is_list = node.styles.display != Display::Contents
-      && tag.is_some_and(|tag| {
-        tag.eq_ignore_ascii_case("ol")
-          || tag.eq_ignore_ascii_case("ul")
-          || tag.eq_ignore_ascii_case("menu")
-          || tag.eq_ignore_ascii_case("dir")
-      });
+    // Treat list containers as nested list boundaries, even when they are `display: contents`.
+    //
+    // Although `display: contents` removes the list container's principal box, it does not remove
+    // the element from the element tree; list counter properties (notably the UA default
+    // `counter-reset: list-item`) still apply to its descendants.
+    let is_list = tag.is_some_and(|tag| {
+      tag.eq_ignore_ascii_case("ol")
+        || tag.eq_ignore_ascii_case("ul")
+        || tag.eq_ignore_ascii_case("menu")
+        || tag.eq_ignore_ascii_case("dir")
+    });
     let now_nested = in_nested_list || is_list;
     if !now_nested && node.styles.display == Display::ListItem {
       count += 1;
