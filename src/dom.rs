@@ -4608,6 +4608,66 @@ pub(crate) fn input_color_value_string(node: &DomNode) -> Option<String> {
   Some(format!("#{r:02x}{g:02x}{b:02x}"))
 }
 
+fn strip_ascii_line_breaks(value: &str) -> Cow<'_, str> {
+  if !value.as_bytes().iter().any(|b| matches!(*b, b'\n' | b'\r')) {
+    return Cow::Borrowed(value);
+  }
+
+  let mut out = String::with_capacity(value.len());
+  for ch in value.chars() {
+    if matches!(ch, '\n' | '\r') {
+      continue;
+    }
+    out.push(ch);
+  }
+  Cow::Owned(out)
+}
+
+pub(crate) fn input_text_like_value_string(node: &DomNode) -> Option<String> {
+  if !matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input")) {
+    return None;
+  }
+
+  let input_type = node.get_attribute_ref("type").unwrap_or("text");
+  let is_text_like = if input_type.eq_ignore_ascii_case("text")
+    || input_type.eq_ignore_ascii_case("search")
+    || input_type.eq_ignore_ascii_case("url")
+    || input_type.eq_ignore_ascii_case("tel")
+    || input_type.eq_ignore_ascii_case("email")
+    || input_type.eq_ignore_ascii_case("password")
+  {
+    true
+  } else if input_type.eq_ignore_ascii_case("hidden")
+    || input_type.eq_ignore_ascii_case("submit")
+    || input_type.eq_ignore_ascii_case("reset")
+    || input_type.eq_ignore_ascii_case("button")
+    || input_type.eq_ignore_ascii_case("image")
+    || input_type.eq_ignore_ascii_case("file")
+    || input_type.eq_ignore_ascii_case("checkbox")
+    || input_type.eq_ignore_ascii_case("radio")
+    || input_type.eq_ignore_ascii_case("range")
+    || input_type.eq_ignore_ascii_case("color")
+    || input_type.eq_ignore_ascii_case("number")
+    || input_type.eq_ignore_ascii_case("date")
+    || input_type.eq_ignore_ascii_case("datetime-local")
+    || input_type.eq_ignore_ascii_case("month")
+    || input_type.eq_ignore_ascii_case("week")
+    || input_type.eq_ignore_ascii_case("time")
+  {
+    false
+  } else {
+    // Unknown input types default to the text state, including value sanitization.
+    true
+  };
+
+  if !is_text_like {
+    return None;
+  }
+
+  let raw = node.get_attribute_ref("value").unwrap_or("");
+  Some(strip_ascii_line_breaks(raw).into_owned())
+}
+
 fn sanitize_input_value_string(
   node: &DomNode,
   expected_type: &str,
@@ -5277,18 +5337,23 @@ impl<'a> ElementRef<'a> {
     match self.node.get_attribute_ref("type") {
       None => true,
       Some(t) => {
-        t.eq_ignore_ascii_case("text")
-          || t.eq_ignore_ascii_case("search")
-          || t.eq_ignore_ascii_case("url")
-          || t.eq_ignore_ascii_case("tel")
-          || t.eq_ignore_ascii_case("email")
-          || t.eq_ignore_ascii_case("password")
-          || t.eq_ignore_ascii_case("number")
-          || t.eq_ignore_ascii_case("date")
-          || t.eq_ignore_ascii_case("datetime-local")
-          || t.eq_ignore_ascii_case("month")
-          || t.eq_ignore_ascii_case("week")
-          || t.eq_ignore_ascii_case("time")
+        if t.eq_ignore_ascii_case("hidden")
+          || t.eq_ignore_ascii_case("submit")
+          || t.eq_ignore_ascii_case("reset")
+          || t.eq_ignore_ascii_case("button")
+          || t.eq_ignore_ascii_case("image")
+          || t.eq_ignore_ascii_case("file")
+          || t.eq_ignore_ascii_case("checkbox")
+          || t.eq_ignore_ascii_case("radio")
+          || t.eq_ignore_ascii_case("range")
+          || t.eq_ignore_ascii_case("color")
+        {
+          return false;
+        }
+
+        // Most input types accept some form of user editing (text entry, date pickers, spinners,
+        // etc.). Unknown values default to the text state, so treat them as editable too.
+        true
       }
     }
   }
@@ -5546,6 +5611,9 @@ impl<'a> ElementRef<'a> {
         return Some(value);
       }
       if let Some(value) = input_week_value_string(self.node) {
+        return Some(value);
+      }
+      if let Some(value) = input_text_like_value_string(self.node) {
         return Some(value);
       }
       return Some(
@@ -11666,6 +11734,22 @@ mod tests {
     };
     assert!(matches(&input, &[], &PseudoClass::PlaceholderShown));
 
+    let newline_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("placeholder".to_string(), "Search".to_string()),
+          ("value".to_string(), "\n".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(
+      matches(&newline_input, &[], &PseudoClass::PlaceholderShown),
+      "text-like inputs sanitize newlines out of values, so a newline-only value should show placeholder"
+    );
+
     let number_invalid = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "input".to_string(),
@@ -13232,6 +13316,27 @@ mod tests {
     assert!(!matches(&required_empty, &[], &PseudoClass::Valid));
     assert!(!matches(&required_empty, &[], &PseudoClass::UserValid));
 
+    let required_newline_only = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("required".to_string(), "true".to_string()),
+          ("value".to_string(), "\n".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(
+      matches(&required_newline_only, &[], &PseudoClass::Invalid),
+      "text-like inputs must sanitize newlines, so a newline-only value behaves like missing for requiredness"
+    );
+    assert!(!matches(
+      &required_newline_only,
+      &[],
+      &PseudoClass::Valid
+    ));
+
     let required_empty_user_validity = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "input".to_string(),
@@ -13252,6 +13357,27 @@ mod tests {
       &required_empty_user_validity,
       &[],
       &PseudoClass::UserValid
+    ));
+
+    let email_newline_only = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "email".to_string()),
+          ("value".to_string(), "\n".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(
+      matches(&email_newline_only, &[], &PseudoClass::Valid),
+      "newline-only email values sanitize to empty and should not trigger type mismatch"
+    );
+    assert!(!matches(
+      &email_newline_only,
+      &[],
+      &PseudoClass::Invalid
     ));
 
     let number_in_range = DomNode {
@@ -13839,6 +13965,19 @@ mod tests {
     };
     assert!(matches(&text_input, &[], &PseudoClass::ReadWrite));
     assert!(!matches(&text_input, &[], &PseudoClass::ReadOnly));
+
+    let unknown_type_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("type".to_string(), "made-up".to_string())],
+      },
+      children: vec![],
+    };
+    assert!(
+      matches(&unknown_type_input, &[], &PseudoClass::ReadWrite),
+      "unknown input types should default to the text state for read-write matching"
+    );
 
     let readonly_input = DomNode {
       node_type: DomNodeType::Element {

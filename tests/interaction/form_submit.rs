@@ -199,3 +199,30 @@ fn post_method_returns_none_mvp() {
     None
   );
 }
+
+#[test]
+fn get_submission_sanitizes_input_values() {
+  let dom = parse_html(
+    r#"
+    <html><body>
+      <form action="/submit">
+        <input type="number" name="n" value="abc">
+        <input type="date" name="d" value="2020-13-01">
+        <input type="color" name="c" value="not-a-color">
+        <input name="t" value="a&#10;b">
+        <button id="submit" type="submit">Go</button>
+      </form>
+    </body></html>
+    "#,
+  )
+  .unwrap();
+  let submitter_id = node_id(&dom, "submit");
+
+  let got = form_submission_get_url(&dom, submitter_id, "https://example.com/doc", "https://example.com/")
+    .unwrap();
+  assert_eq!(
+    got,
+    "https://example.com/submit?n=&d=&c=%23000000&t=ab",
+    "HTML form submission uses each control's sanitized value"
+  );
+}

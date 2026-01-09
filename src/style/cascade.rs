@@ -16164,6 +16164,10 @@ fn placeholder_is_shown(node: &DomNode) -> bool {
         .is_empty();
     }
 
+    if let Some(value) = crate::dom::input_text_like_value_string(node) {
+      return value.is_empty();
+    }
+
     return node.get_attribute_ref("value").unwrap_or("").is_empty();
   }
 
@@ -17999,6 +18003,30 @@ mod tests {
       placeholder_styles.opacity, 0.6,
       "UA placeholder defaults should apply even when the number value attribute is invalid"
     );
+  }
+
+  #[test]
+  fn placeholder_pseudo_styles_use_sanitized_text_values() {
+    // Text-like inputs strip newlines from their value. A newline-only authored value should
+    // therefore behave like the empty string for placeholder rendering.
+    let text_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("placeholder".to_string(), "Search…".to_string()),
+          ("value".to_string(), "\n".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&text_dom, &StyleSheet::new());
+    let placeholder_styles = styled
+      .placeholder_styles
+      .as_deref()
+      .expect("expected ::placeholder pseudo styles");
+    assert_eq!(placeholder_styles.opacity, 0.6);
   }
 
   #[test]

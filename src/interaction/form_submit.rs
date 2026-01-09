@@ -408,8 +408,25 @@ fn append_form_controls(
         continue;
       }
 
-      let value = node.get_attribute_ref("value").unwrap_or("");
-      append_pair(params, name, value)?;
+      let value = if ty.eq_ignore_ascii_case("color") {
+        crate::dom::input_color_value_string(node).unwrap_or_default()
+      } else if ty.eq_ignore_ascii_case("number") {
+        crate::dom::input_number_value_string(node).unwrap_or_default()
+      } else if ty.eq_ignore_ascii_case("date") {
+        crate::dom::input_date_value_string(node).unwrap_or_default()
+      } else if ty.eq_ignore_ascii_case("time") {
+        crate::dom::input_time_value_string(node).unwrap_or_default()
+      } else if ty.eq_ignore_ascii_case("datetime-local") {
+        crate::dom::input_datetime_local_value_string(node).unwrap_or_default()
+      } else if ty.eq_ignore_ascii_case("month") {
+        crate::dom::input_month_value_string(node).unwrap_or_default()
+      } else if ty.eq_ignore_ascii_case("week") {
+        crate::dom::input_week_value_string(node).unwrap_or_default()
+      } else {
+        crate::dom::input_text_like_value_string(node)
+          .unwrap_or_else(|| node.get_attribute_ref("value").unwrap_or("").to_string())
+      };
+      append_pair(params, name, &value)?;
       continue;
     }
 

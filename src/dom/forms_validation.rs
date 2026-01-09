@@ -531,28 +531,29 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
   }
 
   // Text-like inputs (default to text for unknown types).
-  let value = element.node.get_attribute_ref("value").unwrap_or_default();
-  if required && value_is_empty(value) {
+  let value = super::input_text_like_value_string(element.node)
+    .unwrap_or_else(|| element.node.get_attribute_ref("value").unwrap_or_default().to_string());
+  if required && value_is_empty(&value) {
     state.value_missing = true;
     state.compute_validity();
     return state;
   }
 
-  apply_length_constraints(&mut state, value, element.node);
+  apply_length_constraints(&mut state, &value, element.node);
 
   if let Some(pattern) = element.node.get_attribute_ref("pattern") {
-    if pattern_mismatch(pattern, value) {
+    if pattern_mismatch(pattern, &value) {
       state.pattern_mismatch = true;
     }
   }
 
   if input_type.eq_ignore_ascii_case("email") {
     let multiple = element.node.get_attribute_ref("multiple").is_some();
-    if email_type_mismatch(value, multiple) {
+    if email_type_mismatch(&value, multiple) {
       state.type_mismatch = true;
     }
   } else if input_type.eq_ignore_ascii_case("url") {
-    if url_type_mismatch(value) {
+    if url_type_mismatch(&value) {
       state.type_mismatch = true;
     }
   }
