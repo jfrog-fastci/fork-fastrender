@@ -209,14 +209,11 @@ pub fn execute_web_fetch(
     Some(Body::new(std::mem::take(&mut resource.bytes)))
   };
 
-  Ok(Response {
-    // TODO: Implement `no-cors`/`same-origin` response tainting (opaque/basic). For now we return a
-    // normal response shape, but tag CORS-mode requests so JS bindings can distinguish them.
-    r#type: if request.mode == RequestMode::Cors {
-      ResponseType::Cors
-    } else {
-      ResponseType::Default
-    },
+  let mut response = Response {
+    // NOTE: Fetch uses response "tainting" to decide whether to expose a basic/cors/opaque response
+    // surface. We build the underlying response first, then apply the filtered response shape
+    // based on the request mode below.
+    r#type: ResponseType::Default,
     url,
     redirected,
     status,
@@ -227,7 +224,39 @@ pub fn execute_web_fetch(
       .to_string(),
     headers,
     body,
-  })
+  };
+
+  response.r#type = match request.mode {
+    RequestMode::Cors => ResponseType::Cors,
+    RequestMode::SameOrigin | RequestMode::Navigate => ResponseType::Basic,
+    RequestMode::NoCors => {
+      // Opaque response: hide status, headers, body, and URL.
+      //
+      // Note: This is a spec-shaped approximation of Fetch's "opaque filtered response". The
+      // renderer resource loader does not currently consume this API (it uses `ResourceFetcher`
+      // directly), so returning an inaccessible body here matches browser-visible `fetch()` behavior
+      // without impacting rendering.
+      let r#type = if (300..400).contains(&response.status)
+        && request.redirect == RequestRedirect::Manual
+      {
+        ResponseType::OpaqueRedirect
+      } else {
+        ResponseType::Opaque
+      };
+
+      return Ok(Response {
+        r#type,
+        url: String::new(),
+        redirected: response.redirected,
+        status: 0,
+        status_text: String::new(),
+        headers: Headers::new_with_guard(HeadersGuard::Immutable),
+        body: None,
+      });
+    }
+  };
+
+  Ok(response)
 }
 
 #[cfg(test)]
@@ -726,7 +755,33 @@ mod tests {
     request.mode = RequestMode::NoCors;
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
-    assert_eq!(response.r#type, ResponseType::Default);
+    assert_eq!(response.r#type, ResponseType::Opaque);
+    assert_eq!(response.status, 0);
+    assert_eq!(response.url, "");
+    assert!(!response.redirected);
+    assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
+    assert!(response.body.is_none());
+  }
+
+  #[test]
+  fn same_origin_mode_returns_basic_response_type() {
+    let fetcher = StaticFetcher {
+      resource: FetchedResource::new(b"ok".to_vec(), None),
+    };
+
+    let mut request = Request::new("GET", "https://client.example/res");
+    request.mode = RequestMode::SameOrigin;
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.r#type, ResponseType::Basic);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.url, "https://client.example/res");
+    assert!(response.body.is_some());
   }
 
   #[test]
@@ -1101,7 +1156,7 @@ mod tests {
   }
 
   #[test]
-  fn no_cors_skips_cors_validation_and_returns_default() {
+  fn no_cors_skips_cors_validation_and_returns_opaque() {
     let fetcher = StaticFetcher {
       resource: FetchedResource::new(b"ok".to_vec(), None),
     };
@@ -1113,6 +1168,8 @@ mod tests {
       ..WebFetchExecutionContext::default()
     };
     let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
-    assert_eq!(response.r#type, ResponseType::Default);
+    assert_eq!(response.r#type, ResponseType::Opaque);
+    assert_eq!(response.status, 0);
+    assert!(response.body.is_none());
   }
 }
