@@ -655,6 +655,52 @@ impl App {
     self.open_select_dropdown_rect = None;
   }
 
+  fn update_open_select_dropdown_selection_for_key(&mut self, key: fastrender::interaction::KeyAction) {
+    use fastrender::tree::box_tree::SelectItem;
+
+    let Some(dropdown) = self.open_select_dropdown.as_mut() else {
+      return;
+    };
+
+    let Some(selected_item_idx) =
+      fastrender::select_dropdown::next_enabled_option_item_index(&dropdown.control, key)
+    else {
+      return;
+    };
+
+    // Update the local `SelectControl` snapshot so the popup highlights the same option that the
+    // worker will select after handling the corresponding `UiToWorker::KeyAction`.
+    //
+    // This keeps the dropdown open while navigating with arrow keys, without requiring additional
+    // worker→UI protocol messages.
+    let mut items = (*dropdown.control.items).clone();
+    let mut selected = Vec::new();
+    for (idx, item) in items.iter_mut().enumerate() {
+      match item {
+        SelectItem::Option {
+          selected: is_selected,
+          disabled,
+          ..
+        } => {
+          if idx == selected_item_idx && !*disabled {
+            *is_selected = true;
+            selected.push(idx);
+          } else {
+            *is_selected = false;
+          }
+        }
+        SelectItem::OptGroupLabel { .. } => {}
+      }
+    }
+
+    if selected.is_empty() {
+      return;
+    }
+
+    dropdown.control.items = std::sync::Arc::new(items);
+    dropdown.control.selected = selected;
+  }
+
   fn shutdown(&mut self) {
     // Close the UI→worker channel so the worker can observe it and exit.
     //
@@ -1224,8 +1270,20 @@ impl App {
             self.window.request_redraw();
             return;
           }
-          self.close_select_dropdown();
-          self.window.request_redraw();
+
+          let dropdown_nav_key = match key {
+            VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
+            VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
+            VirtualKeyCode::Home => Some(fastrender::interaction::KeyAction::Home),
+            VirtualKeyCode::End => Some(fastrender::interaction::KeyAction::End),
+            _ => None,
+          };
+          if let Some(nav_key) = dropdown_nav_key {
+            self.update_open_select_dropdown_selection_for_key(nav_key);
+          } else {
+            self.close_select_dropdown();
+            self.window.request_redraw();
+          }
         }
 
         // If egui is actively editing text (e.g. the address bar), don't handle page-level key
