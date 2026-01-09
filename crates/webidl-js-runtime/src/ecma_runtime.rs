@@ -18,6 +18,9 @@ enum HostObjectKind {
   },
   Function(HostFn),
   StringObject { string_data: GcString },
+  BooleanObject { boolean_data: bool },
+  NumberObject { number_data: f64 },
+  SymbolObject { symbol_data: GcSymbol },
   Error { name: &'static str, message: GcString },
   // Built-in internal-slot stubs (not yet provided by `vm-js`).
   ArrayBuffer { shared: bool },
@@ -196,6 +199,10 @@ impl VmJsRuntime {
 
   pub fn alloc_string_object_value(&mut self, s: &str) -> Result<Value, VmError> {
     let string_data = self.intern_string(s)?;
+    self.alloc_string_object_from_handle(string_data)
+  }
+
+  fn alloc_string_object_from_handle(&mut self, string_data: GcString) -> Result<Value, VmError> {
     let obj = {
       let mut scope = self.heap.scope();
       scope.alloc_object()?
@@ -206,6 +213,58 @@ impl VmJsRuntime {
       obj,
       HostObject {
         kind: HostObjectKind::StringObject { string_data },
+        prototype: None,
+        properties: Vec::new(),
+      },
+    );
+    Ok(Value::Object(obj))
+  }
+
+  fn alloc_boolean_object_value(&mut self, boolean_data: bool) -> Result<Value, VmError> {
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    root_value(&mut self.heap, Value::Object(obj));
+    self.objects.insert(
+      obj,
+      HostObject {
+        kind: HostObjectKind::BooleanObject { boolean_data },
+        prototype: None,
+        properties: Vec::new(),
+      },
+    );
+    Ok(Value::Object(obj))
+  }
+
+  fn alloc_number_object_value(&mut self, number_data: f64) -> Result<Value, VmError> {
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    root_value(&mut self.heap, Value::Object(obj));
+    self.objects.insert(
+      obj,
+      HostObject {
+        kind: HostObjectKind::NumberObject { number_data },
+        prototype: None,
+        properties: Vec::new(),
+      },
+    );
+    Ok(Value::Object(obj))
+  }
+
+  fn alloc_symbol_object_value(&mut self, symbol_data: GcSymbol) -> Result<Value, VmError> {
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    root_value(&mut self.heap, Value::Object(obj));
+    root_value(&mut self.heap, Value::Symbol(symbol_data));
+    self.objects.insert(
+      obj,
+      HostObject {
+        kind: HostObjectKind::SymbolObject { symbol_data },
         prototype: None,
         properties: Vec::new(),
       },
@@ -319,21 +378,14 @@ impl VmJsRuntime {
     Ok(())
   }
 
-  /// Calls a callable value with a specific `this` value and argument list.
-  ///
-  /// This is currently only supported for host functions allocated via
-  /// [`VmJsRuntime::alloc_function_value`]. It is exposed so integration tests and forthcoming
-  /// WebIDL binding glue can invoke installed callables without requiring a full JS interpreter.
-  pub fn call_function(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
-    self.call(callee, this, args)
-  }
-
-  fn call(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+  fn call_internal(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
     let Value::Object(func) = callee else {
       return Err(self.throw_type_error("value is not callable"));
     };
     let Some(obj) = self.objects.get(&func) else {
-      return Err(VmError::Unimplemented("calling non-host functions is not supported"));
+      return Err(VmError::Unimplemented(
+        "Call: calling non-host functions is not supported",
+      ));
     };
     let HostObjectKind::Function(f) = &obj.kind else {
       return Err(self.throw_type_error("value is not callable"));
@@ -349,7 +401,7 @@ impl VmJsRuntime {
   /// [`VmJsRuntime::alloc_function_value`]. It is sufficient for early host integration plumbing
   /// (e.g. DOM event listeners) while the full `vm-js` interpreter is still under development.
   pub fn call_function(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
-    self.call(callee, this, args)
+    <Self as JsRuntime>::call(self, callee, this, args)
   }
 
   fn find_own_property(&self, obj: GcObject, key: &PropertyKey) -> Option<PropertyDescriptor> {
@@ -635,6 +687,23 @@ impl JsRuntime for VmJsRuntime {
     matches!(value, Value::Symbol(_))
   }
 
+  fn to_object(&mut self, value: Value) -> Result<Value, VmError> {
+    match value {
+      Value::Undefined | Value::Null => Err(self.throw_type_error(
+        "ToObject: cannot convert null or undefined to object",
+      )),
+      Value::Object(_) => Ok(value),
+      Value::String(string_data) => Ok(self.alloc_string_object_from_handle(string_data)?),
+      Value::Bool(boolean_data) => Ok(self.alloc_boolean_object_value(boolean_data)?),
+      Value::Number(number_data) => Ok(self.alloc_number_object_value(number_data)?),
+      Value::Symbol(symbol_data) => Ok(self.alloc_symbol_object_value(symbol_data)?),
+    }
+  }
+
+  fn call(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+    self.call_internal(callee, this, args)
+  }
+
   fn to_boolean(&mut self, value: Value) -> Result<bool, VmError> {
     Ok(match value {
       Value::Undefined | Value::Null => false,
@@ -663,6 +732,26 @@ impl JsRuntime for VmJsRuntime {
       }
       Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
         Some(HostObjectKind::StringObject { string_data }) => self.to_number_from_string(*string_data)?,
+        Some(HostObjectKind::BooleanObject { boolean_data }) => {
+          if *boolean_data {
+            1.0
+          } else {
+            0.0
+          }
+        }
+        Some(HostObjectKind::NumberObject { number_data }) => *number_data,
+        Some(HostObjectKind::SymbolObject { symbol_data }) => {
+          let message = match self
+            .heap
+            .symbol_description(*symbol_data)
+            .and_then(|s| self.heap.get_string(s).ok())
+            .map(|s| s.to_utf8_lossy())
+          {
+            Some(desc) => format!("Cannot convert a Symbol({desc}) value to a number"),
+            None => "Cannot convert a Symbol value to a number".to_string(),
+          };
+          return Err(self.throw_type_error(&message));
+        }
         _ => f64::NAN,
       },
     })
@@ -681,6 +770,26 @@ impl JsRuntime for VmJsRuntime {
       }
       Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
         Some(HostObjectKind::StringObject { string_data }) => *string_data,
+        Some(HostObjectKind::BooleanObject { boolean_data }) => {
+          if *boolean_data {
+            self.intern_string("true")?
+          } else {
+            self.intern_string("false")?
+          }
+        }
+        Some(HostObjectKind::NumberObject { number_data }) => self.to_string_from_number(*number_data)?,
+        Some(HostObjectKind::SymbolObject { symbol_data }) => {
+          let message = match self
+            .heap
+            .symbol_description(*symbol_data)
+            .and_then(|s| self.heap.get_string(s).ok())
+            .map(|s| s.to_utf8_lossy())
+          {
+            Some(desc) => format!("Cannot convert a Symbol({desc}) value to a string"),
+            None => "Cannot convert a Symbol value to a string".to_string(),
+          };
+          return Err(self.throw_type_error(&message));
+        }
         Some(HostObjectKind::Error { name, message }) => {
           // A minimal `Error.prototype.toString`-like formatting.
           let name = (*name).to_string();
@@ -820,7 +929,7 @@ impl JsRuntime for VmJsRuntime {
     iterable: Value,
     method: Value,
   ) -> Result<IteratorRecord<Value>, VmError> {
-    let iterator = self.call(method, iterable, &[])?;
+    let iterator = self.call_internal(method, iterable, &[])?;
     if !self.is_object(iterator) {
       return Err(self.throw_type_error("Iterator method did not return an object"));
     }
@@ -846,7 +955,7 @@ impl JsRuntime for VmJsRuntime {
       return Ok(None);
     }
 
-    let result = self.call(iterator_record.next_method, iterator_record.iterator, &[])?;
+    let result = self.call_internal(iterator_record.next_method, iterator_record.iterator, &[])?;
     if !self.is_object(result) {
       return Err(self.throw_type_error("Iterator.next() did not return an object"));
     }

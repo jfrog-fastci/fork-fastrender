@@ -86,6 +86,24 @@ pub trait JsRuntime {
   fn is_string(&self, value: Self::JsValue) -> bool;
   fn is_symbol(&self, value: Self::JsValue) -> bool;
 
+  /// ECMAScript abstract operation `ToObject ( argument )`.
+  ///
+  /// Spec: <https://tc39.es/ecma262/#sec-toobject>
+  ///
+  /// Implementations must throw a `TypeError` when `value` is `null` or `undefined`.
+  fn to_object(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
+  /// ECMAScript abstract operation `Call ( F, V, argumentsList )`.
+  ///
+  /// Spec: <https://tc39.es/ecma262/#sec-call>
+  ///
+  /// Implementations must throw a `TypeError` when `callee` is not callable.
+  fn call(
+    &mut self,
+    callee: Self::JsValue,
+    this: Self::JsValue,
+    args: &[Self::JsValue],
+  ) -> Result<Self::JsValue, Self::Error>;
+
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error>;
   fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error>;
   fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
