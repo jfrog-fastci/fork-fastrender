@@ -749,6 +749,12 @@ enum DisplayCommand {
     backdrop_filters: Vec<ResolvedFilter>,
     radii: BorderRadii,
     clip: Option<StackingClip>,
+    /// Whether the stacking context root has a non-`none` `clip-path`.
+    ///
+    /// This is tracked separately from `clip_path` because certain `clip-path` values (such as a
+    /// degenerate polygon/path, or an unresolved `url(#id)`) resolve to no mask but still need to
+    /// force stacking-context allocation to keep backdrop-root semantics consistent.
+    has_clip_path: bool,
     clip_path: Option<StackingClipPath>,
     commands: Vec<DisplayCommand>,
   },
@@ -2328,6 +2334,7 @@ impl Painter {
           // compositing the layer; only the explicit `clip` should apply.
           radii: BorderRadii::ZERO,
           clip,
+          has_clip_path: false,
           clip_path: None,
           commands: local_commands,
         });
@@ -2569,6 +2576,8 @@ impl Painter {
       },
       None => None,
     };
+    let style_has_clip_path =
+      style_ref.is_some_and(|style| !matches!(style.clip_path, crate::style::types::ClipPath::None));
     let mask = fragment
       .style
       .clone()
@@ -2581,7 +2590,7 @@ impl Painter {
       || has_filters
       || has_backdrop
       || clip.is_some()
-      || clip_path.is_some()
+      || style_has_clip_path
       || mask.is_some()
     {
       let radii = resolve_border_radii(style_ref, abs_bounds);
@@ -2597,6 +2606,7 @@ impl Painter {
         backdrop_filters,
         radii,
         clip,
+        has_clip_path: style_has_clip_path,
         clip_path,
         commands: local_commands,
       });
@@ -3115,6 +3125,7 @@ impl Painter {
         backdrop_filters,
         radii,
         clip,
+        has_clip_path,
         clip_path,
         commands,
       } => {
@@ -3164,7 +3175,7 @@ impl Painter {
           && filters.is_empty()
           && backdrop_filters.is_empty()
           && clip.is_none()
-          && clip_path.is_none()
+          && !has_clip_path
         {
           let mut outlines = Vec::new();
           for cmd in commands {
@@ -20933,6 +20944,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::uniform(0.5),
       clip: None,
+      has_clip_path: false,
       clip_path: None,
       commands: vec![DisplayCommand::Background {
         rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
@@ -20969,6 +20981,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       clip: None,
+      has_clip_path: false,
       clip_path: None,
       commands: Vec::new(),
     };

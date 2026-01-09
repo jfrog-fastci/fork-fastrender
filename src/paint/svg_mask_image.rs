@@ -301,14 +301,16 @@ mod tests {
     assert!(ids.is_ok());
     assert!(ids.unwrap().is_empty());
 
-    let defs = HashMap::from([("mask".to_string(), invalid.to_string())]);
+    let defs = HashMap::from([
+      ("mask".to_string(), invalid.to_string()),
+      ("clip".to_string(), invalid.to_string()),
+    ]);
     let inlined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       inline_svg_for_mask_id(&defs, "mask", 10, 10)
     }));
     assert!(inlined.is_ok());
     assert!(inlined.unwrap().is_some());
 
-    let defs = HashMap::from([("clip".to_string(), invalid.to_string())]);
     let inlined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       inline_svg_for_clip_path_id(&defs, "clip", 10, 10)
     }));
