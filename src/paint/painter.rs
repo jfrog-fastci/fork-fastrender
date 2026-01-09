@@ -190,7 +190,7 @@ use url::Url;
 type RenderResult<T> = std::result::Result<T, RenderError>;
 
 /// See `ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS` in `paint/display_list_builder.rs` for motivation.
-const ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS: u64 = 120_000;
+const ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS: u64 = 200_000;
 
 #[inline]
 fn is_ascii_whitespace_html_css(ch: char) -> bool {

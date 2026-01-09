@@ -44,7 +44,7 @@ fn render_single_img(
 }
 
 #[test]
-fn large_img_decoding_async_is_transparent_while_sync_paints() {
+fn img_decoding_async_defers_only_for_large_destinations() {
   let big_png = png_with_dimensions_and_color(2000, 1333, [255, 0, 0, 255]);
   let resources = HashMap::from([("test://big.png".to_string(), big_png)]);
   let fetcher = Arc::new(MapFetcher {
@@ -52,19 +52,38 @@ fn large_img_decoding_async_is_transparent_while_sync_paints() {
     mime: "image/png".to_string(),
   }) as Arc<dyn ResourceFetcher>;
 
+  // Medium destination sizes should still paint even when `decoding="async"` is set (Chrome often
+  // decodes these quickly enough for headless screenshot baselines).
+  let html_async_small = r#"
+      <!doctype html>
+      <style>
+        html, body { margin: 0; background: rgb(0, 255, 0); }
+        img { display: block; width: 448px; height: 299px; }
+      </style>
+      <img decoding="async" src="test://big.png">
+    "#;
+  let pixmap_async_small =
+    render_single_img(html_async_small, Arc::clone(&fetcher), 448, 299).expect("render async small");
+  let px = pixmap_async_small.pixel(224, 149).expect("pixel");
+  assert_eq!(
+    (px.red(), px.green(), px.blue()),
+    (255, 0, 0),
+    "expected decoding=async image to paint at moderate destination sizes"
+  );
+
   // Keep the destination paint size large enough that `decoding="async"` may still be pending in a
   // headless Chrome baseline screenshot (similar to USA Today fixtures).
   let html_async = r#"
       <!doctype html>
       <style>
         html, body { margin: 0; background: rgb(0, 255, 0); }
-        img { display: block; width: 384px; height: 384px; }
+        img { display: block; width: 512px; height: 512px; }
       </style>
       <img decoding="async" src="test://big.png">
     "#;
   let pixmap_async =
-    render_single_img(html_async, Arc::clone(&fetcher), 384, 384).expect("render async");
-  let px = pixmap_async.pixel(192, 192).expect("pixel");
+    render_single_img(html_async, Arc::clone(&fetcher), 512, 512).expect("render async");
+  let px = pixmap_async.pixel(256, 256).expect("pixel");
   assert_eq!(
     (px.red(), px.green(), px.blue()),
     (0, 255, 0),
@@ -75,12 +94,12 @@ fn large_img_decoding_async_is_transparent_while_sync_paints() {
       <!doctype html>
       <style>
         html, body { margin: 0; background: rgb(0, 255, 0); }
-        img { display: block; width: 384px; height: 384px; }
+        img { display: block; width: 512px; height: 512px; }
       </style>
       <img decoding="sync" src="test://big.png">
     "#;
-  let pixmap_sync = render_single_img(html_sync, fetcher, 384, 384).expect("render sync");
-  let px = pixmap_sync.pixel(192, 192).expect("pixel");
+  let pixmap_sync = render_single_img(html_sync, fetcher, 512, 512).expect("render sync");
+  let px = pixmap_sync.pixel(256, 256).expect("pixel");
   assert_eq!(
     (px.red(), px.green(), px.blue()),
     (255, 0, 0),

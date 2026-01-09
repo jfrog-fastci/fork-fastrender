@@ -198,7 +198,10 @@ const DECODED_IMAGE_CACHE_MAX_ENTRIES: usize = 256;
 /// Chrome's headless `--screenshot` capture often happens before large `decoding="async"` images
 /// finish decoding, leaving them transparent in the baseline. We approximate this by deferring
 /// decoding when the rendered image would occupy a large number of device pixels.
-const ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS: u64 = 120_000;
+// NOTE: Calibrated against fixture baselines: some above-the-fold images with
+// `decoding="async"` still reliably appear in Chrome screenshots at moderate sizes.
+// Keep this threshold high enough to avoid hiding typical hero images.
+const ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS: u64 = 200_000;
 const DECODED_IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DEADLINE_STRIDE: usize = 256;
 
