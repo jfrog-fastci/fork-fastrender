@@ -522,7 +522,7 @@ fn to_js_record<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
   key_ty: &IdlType,
   value_ty: &IdlType,
-  entries: &std::collections::BTreeMap<String, WebIdlValue>,
+  entries: &[(String, WebIdlValue)],
   limits: ToJsLimits,
   typedef_stack: &mut Vec<String>,
 ) -> Result<R::JsValue, R::Error> {
@@ -534,7 +534,7 @@ fn to_js_record<R: WebIdlJsRuntime>(
     rt.throw_type_error("record key type is not supported (expected a string type)")
   })?;
 
-  for key in entries.keys() {
+  for (key, _) in entries.iter() {
     if key.len() > limits.max_string_bytes {
       return Err(rt.throw_range_error("record key exceeds maximum length"));
     }
@@ -544,7 +544,7 @@ fn to_js_record<R: WebIdlJsRuntime>(
   }
 
   let obj = rt.alloc_object()?;
-  for (key, v) in entries {
+  for (key, v) in entries.iter() {
     let js_value = to_js_with_limits_inner(rt, ctx, value_ty, v, limits, typedef_stack)?;
     let prop_key = rt.property_key_from_str(key)?;
     rt.define_data_property(obj, prop_key, js_value, true)?;
@@ -848,9 +848,10 @@ mod tests {
     let key_ty = parse_idl_type_complete("DOMString")?;
     let value_ty = parse_idl_type_complete("long")?;
 
-    let mut entries = BTreeMap::new();
-    entries.insert("a".to_string(), WebIdlValue::Long(1));
-    entries.insert("b".to_string(), WebIdlValue::Long(2));
+    let entries = vec![
+      ("a".to_string(), WebIdlValue::Long(1)),
+      ("b".to_string(), WebIdlValue::Long(2)),
+    ];
     let value = WebIdlValue::Record {
       key_ty: Box::new(key_ty),
       value_ty: Box::new(value_ty),
@@ -1149,8 +1150,7 @@ mod tests {
     let key_ty = parse_idl_type_complete("ByteString")?;
     let value_ty = parse_idl_type_complete("long")?;
 
-    let mut entries = BTreeMap::new();
-    entries.insert("\u{0100}".to_string(), WebIdlValue::Long(1));
+    let entries = vec![("\u{0100}".to_string(), WebIdlValue::Long(1))];
     let value = WebIdlValue::Record {
       key_ty: Box::new(key_ty),
       value_ty: Box::new(value_ty),

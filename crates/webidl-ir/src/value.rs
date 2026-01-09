@@ -62,7 +62,12 @@ pub enum WebIdlValue {
   Record {
     key_ty: Box<IdlType>,
     value_ty: Box<IdlType>,
-    entries: BTreeMap<String, WebIdlValue>,
+    /// Record entries in iteration order.
+    ///
+    /// WebIDL records are ordered maps; JS→IDL conversion orders entries by the object's
+    /// `[[OwnPropertyKeys]]` enumeration order (filtered to enumerable properties), and record→JS
+    /// conversion creates properties in this order.
+    entries: Vec<(String, WebIdlValue)>,
   },
   Dictionary {
     name: String,

@@ -53,7 +53,7 @@ pub enum ConvertedValue<V> {
   Record {
     key_ty: Box<IdlType>,
     value_ty: Box<IdlType>,
-    entries: BTreeMap<String, ConvertedValue<V>>,
+    entries: Vec<(String, ConvertedValue<V>)>,
   },
 
   Dictionary {
@@ -933,7 +933,10 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   let v = rt.to_object(v)?;
 
   let keys = rt.own_property_keys(v)?;
-  let mut entries = BTreeMap::<String, ConvertedValue<R::JsValue>>::new();
+  let mut entries = Vec::<(String, ConvertedValue<R::JsValue>)>::new();
+  // Records use map/set semantics; when a converted key already exists, the value is overwritten
+  // without changing insertion order.
+  let mut index_by_key = std::collections::HashMap::<String, usize>::new();
 
   for key in keys {
     // Record keys are strings; symbol keys are ignored.
@@ -948,10 +951,6 @@ fn convert_to_record<R: WebIdlJsRuntime>(
     }
     if rt.property_key_is_symbol(key) {
       continue;
-    }
-
-    if entries.len() >= rt.limits().max_record_entries {
-      return Err(rt.throw_range_error("record exceeds maximum entry count"));
     }
 
     let key_value = rt.property_key_to_js_string(key)?;
@@ -976,7 +975,15 @@ fn convert_to_record<R: WebIdlJsRuntime>(
       typedef_stack,
       ConversionState::default(),
     )?;
-    entries.insert(typed_key, typed_value);
+    if let Some(&idx) = index_by_key.get(&typed_key) {
+      entries[idx].1 = typed_value;
+    } else {
+      if entries.len() >= rt.limits().max_record_entries {
+        return Err(rt.throw_range_error("record exceeds maximum entry count"));
+      }
+      index_by_key.insert(typed_key.clone(), entries.len());
+      entries.push((typed_key, typed_value));
+    }
   }
 
   Ok(ConvertedValue::Record {

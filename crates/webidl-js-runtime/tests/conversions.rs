@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use vm_js::{Value, VmError};
+use vm_js::{PropertyKey, Value, VmError};
 use webidl_ir::{
   parse_default_value, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
   NumericType, StringType, TypeAnnotation, TypeContext,
@@ -301,8 +301,7 @@ fn record_conversion_ignores_enumerable_symbol_keys() {
     panic!("expected record, got {converted:?}");
   };
 
-  let expected = BTreeMap::from([("a".to_string(), ConvertedValue::Long(1))]);
-  assert_eq!(entries, expected);
+  assert_eq!(entries, vec![("a".to_string(), ConvertedValue::Long(1))]);
 }
 
 #[test]
@@ -514,6 +513,76 @@ fn callback_interface_accepts_callable_or_handle_event_object() {
 }
 
 #[test]
+fn record_conversion_preserves_own_property_key_order() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  // WebIDL record conversion iterates `[[OwnPropertyKeys]]` order; for string keys this is
+  // insertion order.
+  let obj = rt.alloc_object_value().unwrap();
+  let key_b = rt.property_key_from_str("b").unwrap();
+  let key_a = rt.property_key_from_str("a").unwrap();
+  rt.define_data_property(obj, key_b, Value::Number(3.0), true)
+    .unwrap();
+  rt.define_data_property(obj, key_a, Value::Number(4.0), true)
+    .unwrap();
+
+  let ty = IdlType::Record(
+    Box::new(IdlType::String(StringType::DomString)),
+    Box::new(IdlType::Numeric(NumericType::Long)),
+  );
+  let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
+  let ConvertedValue::Record { entries, .. } = converted else {
+    panic!("expected record, got {converted:?}");
+  };
+
+  assert_eq!(
+    entries,
+    vec![
+      ("b".to_string(), ConvertedValue::Long(3)),
+      ("a".to_string(), ConvertedValue::Long(4)),
+    ]
+  );
+}
+
+#[test]
+fn record_conversion_overwrites_duplicate_keys_without_reordering() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  // Create two distinct string property keys that both stringify to U+FFFD after UTF-16 lossy
+  // conversion (unpaired surrogate code units).
+  let js_key1 = rt.alloc_string_from_code_units(&[0xD800]).unwrap();
+  let Value::String(handle1) = js_key1 else {
+    panic!("expected string");
+  };
+  let js_key2 = rt.alloc_string_from_code_units(&[0xDC00]).unwrap();
+  let Value::String(handle2) = js_key2 else {
+    panic!("expected string");
+  };
+
+  let obj = rt.alloc_object_value().unwrap();
+  rt.define_data_property(obj, PropertyKey::String(handle1), Value::Number(1.0), true)
+    .unwrap();
+  rt.define_data_property(obj, PropertyKey::String(handle2), Value::Number(2.0), true)
+    .unwrap();
+
+  let ty = IdlType::Record(
+    Box::new(IdlType::String(StringType::DomString)),
+    Box::new(IdlType::Numeric(NumericType::Long)),
+  );
+  let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
+  let ConvertedValue::Record { entries, .. } = converted else {
+    panic!("expected record, got {converted:?}");
+  };
+
+  assert_eq!(
+    entries,
+    vec![("\u{FFFD}".to_string(), ConvertedValue::Long(2))]
+  );
+}
+
+#[test]
 fn conversion_limits_are_enforced() {
   let mut rt = VmJsRuntime::new();
   rt.set_webidl_limits(WebIdlLimits {
@@ -602,6 +671,6 @@ fn conversion_limits_are_enforced() {
   };
   assert_eq!(
     entries,
-    BTreeMap::from([("a".to_string(), ConvertedValue::Long(1))])
+    vec![("a".to_string(), ConvertedValue::Long(1))]
   );
 }
