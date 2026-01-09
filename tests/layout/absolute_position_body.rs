@@ -317,3 +317,38 @@ fn fixed_inside_animated_transform_none_does_not_create_containing_block() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn fixed_negative_top_not_offset_by_ancestor_flow_position() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+            <style>
+              body { margin: 0; background: white; }
+              .spacer { height: 100px; }
+              .fixed {
+                position: fixed;
+                top: -30px;
+                left: 0;
+                width: 200px;
+                height: 20px;
+                background: rgb(255, 0, 0);
+              }
+            </style>
+            <div class="spacer"></div>
+            <div><div class="fixed"></div></div>
+            "#;
+
+      let pixmap = renderer.render_html(html, 200, 200).expect("render");
+      assert_eq!(
+        pixel(&pixmap, 10, 80),
+        [255, 255, 255, 255],
+        "fixed element should not inherit y-offset from normal-flow ancestors"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
