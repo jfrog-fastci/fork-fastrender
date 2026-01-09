@@ -53,6 +53,31 @@ test(() => {
 }, "document.createTextNode + Text.data");
 
 test(() => {
+  assert_equals(document.nodeType, Node.DOCUMENT_NODE);
+  assert_equals(document.nodeName, "#document");
+  assert_equals(document.ownerDocument, null);
+  assert_true(document.isConnected);
+
+  const frag = document.createDocumentFragment();
+  assert_equals(frag.nodeType, Node.DOCUMENT_FRAGMENT_NODE);
+  assert_equals(frag.nodeName, "#document-fragment");
+  assert_equals(frag.ownerDocument, document);
+  assert_false(frag.isConnected);
+
+  const el = document.createElement("div");
+  assert_equals(el.nodeType, Node.ELEMENT_NODE);
+  assert_equals(el.nodeName, "DIV");
+  assert_equals(el.ownerDocument, document);
+  assert_false(el.isConnected);
+  document.body.appendChild(el);
+  assert_true(el.isConnected);
+
+  const text = document.createTextNode("x");
+  assert_equals(text.nodeType, Node.TEXT_NODE);
+  assert_equals(text.nodeName, "#text");
+}, "Node.nodeType/nodeName/ownerDocument/isConnected shims");
+
+test(() => {
   assert_equals(document.documentElement.tagName, "HTML");
   assert_equals(document.head.tagName, "HEAD");
   assert_equals(document.body.tagName, "BODY");

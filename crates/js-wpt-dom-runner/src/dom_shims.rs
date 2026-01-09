@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
 
-const DOM_SHIM: &str = r#"
+const DOM_SHIM: &str = r##"
 (function () {
   var g = typeof globalThis !== "undefined" ? globalThis : this;
   if (g.__fastrender_dom_installed) return;
@@ -31,6 +31,14 @@ const DOM_SHIM: &str = r#"
   Object.setPrototypeOf(DocumentFragment.prototype, Node.prototype);
   Object.setPrototypeOf(Element.prototype, Node.prototype);
   Object.setPrototypeOf(Text.prototype, Node.prototype);
+
+  // Node type constants.
+  Node.ELEMENT_NODE = 1;
+  Node.TEXT_NODE = 3;
+  Node.COMMENT_NODE = 8;
+  Node.DOCUMENT_NODE = 9;
+  Node.DOCUMENT_TYPE_NODE = 10;
+  Node.DOCUMENT_FRAGMENT_NODE = 11;
 
   // Attach the existing `document` object (created by Rust) to `Document.prototype`.
   if (typeof g.document !== "object" || g.document === null) {
@@ -239,6 +247,46 @@ const DOM_SHIM: &str = r#"
     return false;
   };
 
+  Object.defineProperty(Node.prototype, "nodeType", {
+    get: function () {
+      nodeIdFromThis(this);
+      if (this === g.document) return Node.DOCUMENT_NODE;
+      if (this instanceof DocumentFragment) return Node.DOCUMENT_FRAGMENT_NODE;
+      if (this instanceof Element) return Node.ELEMENT_NODE;
+      if (this instanceof Text) return Node.TEXT_NODE;
+      return 0;
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(Node.prototype, "nodeName", {
+    get: function () {
+      var t = this.nodeType;
+      if (t === Node.ELEMENT_NODE) return this.tagName;
+      if (t === Node.TEXT_NODE) return "#text";
+      if (t === Node.DOCUMENT_NODE) return "#document";
+      if (t === Node.DOCUMENT_FRAGMENT_NODE) return "#document-fragment";
+      return "";
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(Node.prototype, "isConnected", {
+    get: function () {
+      nodeIdFromThis(this);
+      return g.document.contains(this);
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(Node.prototype, "ownerDocument", {
+    get: function () {
+      nodeIdFromThis(this);
+      return this === g.document ? null : g.document;
+    },
+    configurable: true,
+  });
+
   // Provide `document.head`/`document.body` for smoke tests.
   if (typeof g.__fastrender_dom_head_id === "number") {
     g.document.head = makeNode(Element.prototype, g.__fastrender_dom_head_id, "HEAD");
@@ -273,7 +321,7 @@ const DOM_SHIM: &str = r#"
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
   Object.defineProperty(g, "Text", { value: Text, configurable: true, writable: true });
 })();
-"#;
+"##;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DomShimError {
