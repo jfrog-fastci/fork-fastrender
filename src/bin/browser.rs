@@ -1651,12 +1651,18 @@ impl App {
       let ui_to_worker_tx = self.ui_to_worker_tx.clone();
 
       if let Some(tex) = self.tab_textures.get(&active_tab) {
+        let viewport_css_for_mapping = self
+          .browser_state
+          .tab(active_tab)
+          .and_then(|tab| tab.latest_frame_meta.as_ref().map(|m| m.viewport_css))
+          .or_else(|| (self.viewport_cache_tab == Some(active_tab)).then_some(self.viewport_cache_css))
+          .unwrap_or(viewport_css);
         let size_points = tex.size_points(self.pixels_per_point);
         let response =
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
         self.page_rect_points = Some(response.rect);
-        self.page_viewport_css = Some(viewport_css);
-        let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css);
+        self.page_viewport_css = Some(viewport_css_for_mapping);
+        let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping);
         self.page_input_tab = Some(active_tab);
         self.page_input_mapping = Some(mapping);
         if self.page_has_focus {
