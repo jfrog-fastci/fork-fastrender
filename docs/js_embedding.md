@@ -289,6 +289,10 @@ Run only the smoke subset:
 scripts/cargo_agent.sh xtask js wpt-dom --suite smoke --fail-on none
 ```
 
+By default it writes a JSON report to `target/js/wpt_dom.json` and classifies known gaps via
+`tests/wpt_dom/expectations.toml`. Use `--filter` and `--shard` to run smaller subsets while
+iterating.
+
 ### (Future) `fetch_and_render --js` (page execution)
 
 FastRender’s CLI tools currently render without executing author `<script>` content.

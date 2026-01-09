@@ -187,8 +187,8 @@ To keep velocity high and avoid hand-written glue, plan to add:
     - keeps generated output stable for easy diffs.
 - **Curated JS conformance runners** (prefer `bash scripts/cargo_agent.sh xtask …` subcommands):
   - `xtask js test262 …` to run a curated subset (fast, offline),
-  - `xtask js wpt-dom …` to run a curated set of WPT `testharness.js` DOM tests
-    (once we have a minimal harness).
+  - `xtask js wpt-dom …` to run the offline curated WPT DOM (`testharness.js`) subset under
+    `tests/wpt_dom`.
 
 ### In `ecma-rs` (engine repo)
 

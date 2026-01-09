@@ -260,8 +260,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     Function::new(ctx.clone(), {
       let state = state.clone();
       move |ctx: Ctx<'js>, handle: u32, name: String, value: String| -> rquickjs::Result<Object<'js>> {
-        let mut state = state.borrow_mut();
-        let Some(params) = state.search_params.get_mut(&handle) else {
+        let state = state.borrow();
+        let Some(params) = state.search_params.get(&handle) else {
           return make_err(ctx, "TypeError", "Invalid URLSearchParams handle");
         };
         match params.append(&name, &value) {
@@ -333,8 +333,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     Function::new(ctx.clone(), {
       let state = state.clone();
       move |ctx: Ctx<'js>, handle: u32, name: String, value: String| -> rquickjs::Result<Object<'js>> {
-        let mut state = state.borrow_mut();
-        let Some(params) = state.search_params.get_mut(&handle) else {
+        let state = state.borrow();
+        let Some(params) = state.search_params.get(&handle) else {
           return make_err(ctx, "TypeError", "Invalid URLSearchParams handle");
         };
         match params.set(&name, &value) {

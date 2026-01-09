@@ -25,6 +25,7 @@ mod url_bindings;
 pub mod wpt_fs;
 mod wpt_report;
 
+pub use conformance_harness::{FailOn, Shard};
 pub use backend::{BackendKind, BackendSelection};
 pub use discover::{discover_tests, TestCase, TestKind};
 pub use meta::{MetaDirective, MetaParseResult};

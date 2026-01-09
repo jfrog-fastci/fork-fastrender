@@ -48,6 +48,17 @@ fn suite_smoke_report_classifies_expected_failures() {
     "expected xfail should be marked expected_mismatch: {sync_fail:#?}"
   );
 
+  let uncaught_exception = report
+    .results
+    .iter()
+    .find(|r| r.id == "smoke/uncaught-exception.html")
+    .expect("missing uncaught-exception.html");
+  assert_eq!(uncaught_exception.outcome, TestOutcome::Errored);
+  assert!(
+    uncaught_exception.expected_mismatch,
+    "expected xfail should be marked expected_mismatch: {uncaught_exception:#?}"
+  );
+
   let mismatches = report.summary.mismatches.as_ref().expect("mismatches");
   assert_eq!(mismatches.expected, 3, "expected mismatches");
   assert_eq!(mismatches.unexpected, 0, "unexpected mismatches");
