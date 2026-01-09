@@ -5102,6 +5102,80 @@ fn paint_fragment_tree_with_state(
   {
     scroll_state.viewport = bounds.clamp(scroll_state.viewport);
   }
+  if !scroll_state.elements.is_empty() {
+    fn clamp_element_offsets(
+      node: &FragmentNode,
+      scroll_state: &mut ScrollState,
+      viewport_size: Size,
+      has_fixed_cb_ancestor: bool,
+    ) {
+      let establishes_fixed_cb = node
+        .style
+        .as_deref()
+        .is_some_and(|style| style.establishes_fixed_containing_block());
+      let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+      if let Some(box_id) = node.box_id() {
+        if let Some(offset_ref) = scroll_state.elements.get_mut(&box_id) {
+          let mut offset = Point::new(
+            if offset_ref.x.is_finite() { offset_ref.x } else { 0.0 },
+            if offset_ref.y.is_finite() { offset_ref.y } else { 0.0 },
+          );
+          let mut bounds = crate::scroll::scroll_bounds_for_fragment(
+            node,
+            Point::ZERO,
+            node.bounds.size,
+            has_fixed_cb_ancestor,
+          );
+          // Listbox <select> controls are painted from their `SelectControl` model rather than real
+          // `<option>` fragments, so their `scroll_overflow` is not representative. Mirror the
+          // wheel-scroll logic and approximate the scroll range from row height * total rows.
+          if let Some(style) = node.style.as_deref() {
+            if let crate::tree::fragment_tree::FragmentContent::Replaced { replaced_type, .. } =
+              &node.content
+            {
+              if let crate::tree::box_tree::ReplacedType::FormControl(control) = replaced_type {
+                if let crate::tree::box_tree::FormControlKind::Select(select) = &control.control {
+                  if select.multiple || select.size > 1 {
+                    let row_height = crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport(
+                      style,
+                      None,
+                      Some(viewport_size),
+                    );
+                    if row_height.is_finite() && row_height > 0.0 {
+                      let content_height = row_height * select.items.len() as f32;
+                      if content_height.is_finite() {
+                        let viewport_height = node.bounds.height();
+                        if viewport_height.is_finite() {
+                          bounds.min_y = 0.0;
+                          bounds.max_y = (content_height - viewport_height).max(0.0);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          offset = bounds.clamp(offset);
+          *offset_ref = offset;
+        }
+      }
+      for child in node.children.iter() {
+        clamp_element_offsets(
+          child,
+          scroll_state,
+          viewport_size,
+          has_fixed_cb_ancestor_for_children,
+        );
+      }
+    }
+    clamp_element_offsets(&fragment_tree.root, &mut scroll_state, scrollport_viewport, false);
+    for root in &fragment_tree.additional_fragments {
+      clamp_element_offsets(root, &mut scroll_state, scrollport_viewport, false);
+    }
+    scroll_state.elements.retain(|_, offset| *offset != Point::ZERO);
+  }
   let scroll = scroll_state.viewport;
 
   // Sticky positioning affects the geometry used by view timelines. Apply sticky offsets before

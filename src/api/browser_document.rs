@@ -887,7 +887,7 @@ mod tests {
 
   #[test]
   fn reset_with_prepared_skips_layout_on_first_paint() -> Result<()> {
-    let mut renderer = super::super::FastRender::new()?;
+    let mut renderer = renderer_for_tests();
     let options = RenderOptions::default().with_viewport(64, 64);
     let prepared = renderer.prepare_html("<div>hi</div>", options.clone())?;
 
@@ -908,7 +908,7 @@ mod tests {
 
   #[test]
   fn reset_with_html_clears_prepared_and_triggers_layout() -> Result<()> {
-    let mut renderer = super::super::FastRender::new()?;
+    let mut renderer = renderer_for_tests();
     let options = RenderOptions::default().with_viewport(64, 64);
     let prepared = renderer.prepare_html("<div>old</div>", options.clone())?;
 
@@ -925,7 +925,7 @@ mod tests {
 
   #[test]
   fn non_ascii_whitespace_set_navigation_urls_does_not_trim_nbsp_base_url() -> Result<()> {
-    let mut document = BrowserDocument::from_html("<div>hi</div>", RenderOptions::default())?;
+    let mut document = BrowserDocument::new(renderer_for_tests(), "<div>hi</div>", RenderOptions::default())?;
     let nbsp = "\u{00A0}".to_string();
     document.set_navigation_urls(None, Some(nbsp.clone()));
     assert_eq!(document.renderer.base_url.as_deref(), Some(nbsp.as_str()));
@@ -935,7 +935,11 @@ mod tests {
   #[test]
   fn set_device_pixel_ratio_triggers_layout() -> Result<()> {
     let mut document =
-      BrowserDocument::from_html("<div>hi</div>", RenderOptions::default().with_viewport(32, 32))?;
+      BrowserDocument::new(
+        renderer_for_tests(),
+        "<div>hi</div>",
+        RenderOptions::default().with_viewport(32, 32),
+      )?;
     document.render_frame()?;
 
     document.set_device_pixel_ratio(2.0);
@@ -951,7 +955,11 @@ mod tests {
   #[test]
   fn needs_layout_transitions() -> Result<()> {
     let mut document =
-      BrowserDocument::from_html("<div>hi</div>", RenderOptions::default().with_viewport(32, 32))?;
+      BrowserDocument::new(
+        renderer_for_tests(),
+        "<div>hi</div>",
+        RenderOptions::default().with_viewport(32, 32),
+      )?;
 
     assert!(document.needs_layout(), "expected needs_layout before first render");
     document.render_frame()?;
@@ -971,7 +979,11 @@ mod tests {
   #[test]
   fn paint_from_cache_frame_with_deadline_can_cancel() -> Result<()> {
     let mut document =
-      BrowserDocument::from_html("<div>hi</div>", RenderOptions::default().with_viewport(32, 32))?;
+      BrowserDocument::new(
+        renderer_for_tests(),
+        "<div>hi</div>",
+        RenderOptions::default().with_viewport(32, 32),
+      )?;
     document.render_frame()?;
 
     let cancel: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
@@ -990,7 +1002,7 @@ mod tests {
   #[test]
   fn render_frame_with_deadlines_cancels_layout_via_cancel_callback() -> Result<()> {
     let options = RenderOptions::default().with_viewport(32, 32);
-    let mut document = BrowserDocument::from_html("<div>hi</div>", options)?;
+    let mut document = BrowserDocument::new(renderer_for_tests(), "<div>hi</div>", options)?;
 
     let cb: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
     document.set_cancel_callback(Some(cb));
@@ -1011,7 +1023,7 @@ mod tests {
   #[test]
   fn render_frame_with_deadlines_cancels_paint_via_paint_deadline() -> Result<()> {
     let options = RenderOptions::default().with_viewport(32, 32);
-    let mut document = BrowserDocument::from_html("<div>hi</div>", options)?;
+    let mut document = BrowserDocument::new(renderer_for_tests(), "<div>hi</div>", options)?;
 
     // Prime the layout cache.
     let _ = document.render_frame_with_deadlines(None)?;
@@ -1051,7 +1063,7 @@ mod tests {
   </body>
 </html>"#;
     let mut document =
-      BrowserDocument::from_html(html, RenderOptions::default().with_viewport(100, 100))?;
+      BrowserDocument::new(renderer_for_tests(), html, RenderOptions::default().with_viewport(100, 100))?;
     // Prime the layout cache so we can repaint after changing scroll offsets.
     document.render_frame()?;
 
@@ -1070,6 +1082,63 @@ mod tests {
       (document.scroll_state().viewport.y - expected_max_y).abs() < 0.5,
       "expected BrowserDocument scroll state to be updated to {expected_max_y}, got {}",
       document.scroll_state().viewport.y
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn paint_clamps_programmatic_element_scroll_to_bounds() -> Result<()> {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #scroller { width: 100px; height: 100px; overflow-y: scroll; }
+      #content { height: 2000px; }
+    </style>
+  </head>
+  <body>
+    <div id="scroller"><div id="content"></div></div>
+  </body>
+</html>"#;
+    let mut document =
+      BrowserDocument::new(renderer_for_tests(), html, RenderOptions::default().with_viewport(200, 200))?;
+    // Prime the layout cache so we can scroll and repaint.
+    document.render_frame()?;
+
+    // Scroll the element once so we learn its box id from the produced scroll state.
+    assert!(
+      document.wheel_scroll_at_viewport_point(Point::new(10.0, 10.0), (0.0, 10.0))?,
+      "expected wheel scroll to affect the scroll container"
+    );
+    let initial = document.scroll_state();
+    assert!(
+      initial.elements.len() == 1,
+      "expected exactly one element scroll offset; got {:?}",
+      initial.elements
+    );
+    let (&box_id, _) = initial
+      .elements
+      .iter()
+      .next()
+      .expect("expected element scroll state");
+
+    // Force the element scroll offset far beyond the scrollable range and ensure paint clamps it.
+    let mut next = initial.clone();
+    next.elements.insert(box_id, Point::new(0.0, 50000.0));
+    document.set_scroll_state(next);
+
+    let frame = document.paint_from_cache_frame_with_deadline(None)?;
+    let expected_max_y = 2000.0 - 100.0;
+    let painted_y = frame.scroll_state.element_offset(box_id).y;
+    assert!(
+      (painted_y - expected_max_y).abs() < 0.5,
+      "expected element scroll_y to clamp to {expected_max_y}, got {painted_y}"
+    );
+    let stored_y = document.scroll_state().element_offset(box_id).y;
+    assert!(
+      (stored_y - expected_max_y).abs() < 0.5,
+      "expected BrowserDocument element scroll to sync to {expected_max_y}, got {stored_y}"
     );
     Ok(())
   }
@@ -1106,7 +1175,7 @@ mod tests {
 
     let options = RenderOptions::default().with_viewport(32, 32);
     let html = r#"<!doctype html><html><head><base href="https://example.com/base/"></head><body><a href="x">x</a></body></html>"#;
-    let mut document = BrowserDocument::from_html(html, options)?;
+    let mut document = BrowserDocument::new(renderer_for_tests(), html, options)?;
     let _ = document.render_frame_with_deadlines(None)?;
     assert_eq!(document.base_url(), Some("https://example.com/base/"));
 
