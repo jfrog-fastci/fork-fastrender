@@ -1,4 +1,4 @@
-mod common;
+use fastrender::cli_utils as common;
 
 use clap::Parser;
 use common::args::parse_viewport;

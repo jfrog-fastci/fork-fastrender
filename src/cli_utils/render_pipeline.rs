@@ -1,0 +1,1226 @@
+//! Shared helpers for CLI render binaries.
+
+use super::args::{
+  CompatArgs, LayoutParallelArgs, LayoutParallelModeArg, MemoryGuardArgs, ResourceAccessArgs,
+};
+use crate::api::{
+  FastRender, FastRenderConfig, RenderArtifactRequest, RenderDiagnostics, RenderOptions,
+  RenderReport, RenderResult, ResourceKind,
+};
+use crate::compat::CompatProfile;
+use crate::css::loader::{infer_base_url, resolve_href};
+use crate::dom::DomCompatibilityMode;
+use crate::html::encoding::decode_html_bytes;
+use crate::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
+use crate::html::referrer_policy::extract_referrer_policy_from_html;
+use crate::render_control::{with_deadline, RenderDeadline};
+use crate::resource::{
+  parse_cached_html_meta, FetchRequest, FetchedResource, HttpFetcher, HttpRetryPolicy,
+  ReferrerPolicy, ResourceFetcher,
+};
+use crate::style::media::MediaType;
+use crate::text::font_db::FontConfig;
+use crate::{Error, LayoutParallelism, Result};
+use memchr::memchr;
+use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Stack size for CLI worker threads running the full render pipeline.
+///
+/// Large pages (or deeply nested DOM/style trees) can otherwise overflow the default thread stack
+/// and abort the process.
+///
+/// This aliases [`crate::system::DEFAULT_RENDER_STACK_SIZE`] so CLI tools and the browser UI
+/// share the same value.
+pub const CLI_RENDER_STACK_SIZE: usize = crate::system::DEFAULT_RENDER_STACK_SIZE;
+
+/// Bundle of renderer configuration and per-render options parsed from CLI flags.
+#[derive(Debug, Clone)]
+pub struct RenderConfigBundle {
+  pub config: FastRenderConfig,
+  pub options: RenderOptions,
+}
+
+/// Shared render surface options parsed from CLI flags.
+#[derive(Debug, Clone)]
+pub struct RenderSurface {
+  pub viewport: (u32, u32),
+  pub scroll_x: f32,
+  pub scroll_y: f32,
+  pub dpr: f32,
+  pub media_type: MediaType,
+  pub css_limit: Option<usize>,
+  pub allow_partial: bool,
+  pub apply_meta_viewport: bool,
+  pub base_url: Option<String>,
+  pub allow_file_from_http: bool,
+  pub block_mixed_content: bool,
+  pub same_origin_subresources: bool,
+  pub allowed_subresource_origins: Vec<String>,
+  pub trace_output: Option<PathBuf>,
+  pub layout_parallelism: Option<LayoutParallelism>,
+  pub font_config: Option<FontConfig>,
+  pub compat_profile: CompatProfile,
+  pub dom_compat_mode: DomCompatibilityMode,
+}
+
+/// Construct render configuration objects from CLI settings.
+pub fn build_render_configs(surface: &RenderSurface) -> RenderConfigBundle {
+  let mut config = FastRenderConfig::new()
+    .with_default_viewport(surface.viewport.0, surface.viewport.1)
+    .with_device_pixel_ratio(surface.dpr)
+    .with_meta_viewport(surface.apply_meta_viewport)
+    .with_allow_file_from_http(surface.allow_file_from_http)
+    .with_block_mixed_content(surface.block_mixed_content)
+    .compat_profile(surface.compat_profile)
+    .with_dom_compat_mode(surface.dom_compat_mode);
+  if let Some(base_url) = &surface.base_url {
+    config = config.with_base_url(base_url.clone());
+  }
+  if let Some(font_config) = surface.font_config.as_ref() {
+    config = config.with_font_sources(font_config.clone());
+  }
+
+  let mut options = RenderOptions::new()
+    .with_viewport(surface.viewport.0, surface.viewport.1)
+    .with_device_pixel_ratio(surface.dpr)
+    .with_media_type(surface.media_type)
+    .with_scroll(surface.scroll_x, surface.scroll_y)
+    .with_stylesheet_limit(surface.css_limit)
+    .allow_partial(surface.allow_partial);
+  options.trace_output = surface.trace_output.clone();
+
+  if let Some(parallelism) = surface.layout_parallelism {
+    config = config.with_layout_parallelism(parallelism);
+    options = options.with_layout_parallelism(parallelism);
+  }
+
+  RenderConfigBundle { config, options }
+}
+
+/// Configure an HTTP fetcher with headers and timeout suitable for CLI use.
+pub fn build_http_fetcher(
+  user_agent: &str,
+  accept_language: &str,
+  timeout_budget: Option<Duration>,
+) -> HttpFetcher {
+  let mut fetcher = HttpFetcher::new()
+    .with_user_agent(user_agent.to_string())
+    .with_accept_language(accept_language.to_string());
+  if let Some(timeout) = timeout_budget {
+    fetcher = fetcher.with_timeout_budget(timeout);
+  }
+  // CLI knobs for retry behavior without growing the flag surface area.
+  // - `FASTR_HTTP_MAX_ATTEMPTS=1` disables retries.
+  // - `FASTR_HTTP_BACKOFF_BASE_MS`, `FASTR_HTTP_BACKOFF_CAP_MS` tune backoff.
+  // - `FASTR_HTTP_RESPECT_RETRY_AFTER=0|1` controls honoring Retry-After.
+  let mut retry = HttpRetryPolicy {
+    max_attempts: 3,
+    backoff_base: Duration::from_millis(50),
+    backoff_cap: Duration::from_millis(500),
+    respect_retry_after: true,
+  };
+  if let Ok(raw) = std::env::var("FASTR_HTTP_MAX_ATTEMPTS") {
+    if let Ok(value) = raw.trim().parse::<usize>() {
+      retry.max_attempts = value.max(1);
+    }
+  }
+  if let Ok(raw) = std::env::var("FASTR_HTTP_BACKOFF_BASE_MS") {
+    if let Ok(value) = raw.trim().parse::<u64>() {
+      retry.backoff_base = Duration::from_millis(value);
+    }
+  }
+  if let Ok(raw) = std::env::var("FASTR_HTTP_BACKOFF_CAP_MS") {
+    if let Ok(value) = raw.trim().parse::<u64>() {
+      retry.backoff_cap = Duration::from_millis(value);
+    }
+  }
+  if let Ok(raw) = std::env::var("FASTR_HTTP_RESPECT_RETRY_AFTER") {
+    let lowered = raw.trim().to_ascii_lowercase();
+    retry.respect_retry_after = !matches!(lowered.as_str(), "0" | "false" | "no");
+  }
+  fetcher = fetcher.with_retry_policy(retry);
+  fetcher
+}
+
+#[cfg(feature = "disk_cache")]
+const DISK_CACHE_FETCH_PROFILE_NAMESPACE_MARKER: &str = "fetch-profile:contextual-v1";
+
+#[cfg(feature = "disk_cache")]
+fn browser_headers_enabled_from_env(raw: Option<&str>) -> bool {
+  raw
+    .map(|raw| {
+      !matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+      )
+    })
+    .unwrap_or(true)
+}
+
+#[cfg(feature = "disk_cache")]
+fn disk_cache_namespace_for_browser_headers(
+  user_agent: &str,
+  accept_language: &str,
+  browser_headers_enabled: bool,
+) -> String {
+  let ua = crate::resource::normalize_user_agent_for_log(user_agent).trim();
+  let lang = accept_language.trim();
+  if browser_headers_enabled {
+    format!("{DISK_CACHE_FETCH_PROFILE_NAMESPACE_MARKER}\nuser-agent:{ua}\naccept-language:{lang}")
+  } else {
+    format!(
+      "{DISK_CACHE_FETCH_PROFILE_NAMESPACE_MARKER}\nuser-agent:{ua}\naccept-language:{lang}\nhttp-browser-headers:0"
+    )
+  }
+}
+
+/// Compute a stable namespace for the disk-backed subresource cache based on request headers.
+///
+/// The disk cache is keyed by URL only by default; callers that vary headers between runs
+/// (e.g. `User-Agent` or `Accept-Language`) should provide a namespace to avoid cross-contaminating
+/// variants. This also includes opt-out debug toggles like `FASTR_HTTP_BROWSER_HEADERS=0`, which
+/// changes per-resource `Accept` + `Sec-Fetch-*` headers and can alter server behavior.
+///
+/// Note: The returned value is intentionally *not* backwards compatible with legacy pageset runs
+/// when browser headers are enabled (the default). We include a stable `fetch-profile:*` marker so
+/// that existing disk caches populated without contextual `Accept`/`Sec-Fetch-*`/`Referer` request
+/// headers don't remain sticky forever (pageset runs can pin entries indefinitely via
+/// `FASTR_DISK_CACHE_MAX_AGE_SECS=0`).
+#[cfg(feature = "disk_cache")]
+pub fn disk_cache_namespace(user_agent: &str, accept_language: &str) -> String {
+  let raw = std::env::var("FASTR_HTTP_BROWSER_HEADERS").ok();
+  let browser_headers_enabled = browser_headers_enabled_from_env(raw.as_deref());
+  disk_cache_namespace_for_browser_headers(user_agent, accept_language, browser_headers_enabled)
+}
+
+#[cfg(all(test, feature = "disk_cache"))]
+mod disk_cache_namespace_tests {
+  use super::*;
+  use crate::resource::{DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT};
+
+  #[test]
+  fn disk_cache_namespace_includes_fetch_profile_marker_and_partitions_opt_out() {
+    let enabled =
+      disk_cache_namespace_for_browser_headers(DEFAULT_USER_AGENT, DEFAULT_ACCEPT_LANGUAGE, true);
+    assert!(
+      enabled.contains(DISK_CACHE_FETCH_PROFILE_NAMESPACE_MARKER),
+      "namespace should include fetch profile marker when browser headers are enabled: {enabled}"
+    );
+
+    let disabled =
+      disk_cache_namespace_for_browser_headers(DEFAULT_USER_AGENT, DEFAULT_ACCEPT_LANGUAGE, false);
+    assert_ne!(
+      enabled, disabled,
+      "disabling browser headers should produce a distinct disk cache namespace"
+    );
+    assert!(
+      disabled.contains("http-browser-headers:0"),
+      "opt-out namespace should keep the legacy marker: {disabled}"
+    );
+
+    let raw = std::env::var("FASTR_HTTP_BROWSER_HEADERS").ok();
+    let browser_headers_enabled = browser_headers_enabled_from_env(raw.as_deref());
+    let from_env = disk_cache_namespace(DEFAULT_USER_AGENT, DEFAULT_ACCEPT_LANGUAGE);
+    let expected = disk_cache_namespace_for_browser_headers(
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      browser_headers_enabled,
+    );
+    assert_eq!(
+      from_env, expected,
+      "disk_cache_namespace should respect FASTR_HTTP_BROWSER_HEADERS when selecting the namespace"
+    );
+    if browser_headers_enabled {
+      assert!(
+        from_env.contains(DISK_CACHE_FETCH_PROFILE_NAMESPACE_MARKER),
+        "default namespace should include fetch profile marker: {from_env}"
+      );
+    } else {
+      assert!(
+        from_env.contains("http-browser-headers:0"),
+        "opt-out namespace should include the legacy marker: {from_env}"
+      );
+    }
+  }
+}
+
+/// Rendered HTML along with its resolved base information.
+#[derive(Debug, Clone)]
+pub struct PreparedDocument {
+  pub html: String,
+  pub base_hint: String,
+  pub base_url: String,
+  pub referrer_policy: ReferrerPolicy,
+}
+
+fn derive_base_url(html: &str, base_hint: &str) -> String {
+  infer_base_url(html, base_hint).into_owned()
+}
+
+impl PreparedDocument {
+  pub fn new(html: String, base_hint: String) -> Self {
+    Self::new_with_response_referrer_policy(html, base_hint, None)
+  }
+
+  pub fn new_with_response_referrer_policy(
+    html: String,
+    base_hint: String,
+    response_referrer_policy: Option<ReferrerPolicy>,
+  ) -> Self {
+    let base_url = derive_base_url(&html, &base_hint);
+    let meta_policy = extract_referrer_policy_from_html(&html);
+    let referrer_policy = meta_policy.or(response_referrer_policy).unwrap_or_default();
+    Self {
+      html,
+      base_hint,
+      base_url,
+      referrer_policy,
+    }
+  }
+
+  pub fn with_base_override(mut self, base_url: Option<&str>) -> Self {
+    if let Some(base_url) = base_url {
+      self.base_hint = base_url.to_string();
+      self.base_url = derive_base_url(&self.html, &self.base_hint);
+    }
+    self
+  }
+}
+
+/// Cached HTML content loaded from disk.
+#[derive(Debug, Clone)]
+pub struct CachedDocument {
+  pub resource: FetchedResource,
+  pub document: PreparedDocument,
+  pub byte_len: usize,
+}
+
+/// Cached HTML documents are untrusted input; cap reads so a corrupt cache can't OOM the CLI.
+pub const MAX_CACHED_HTML_BYTES: u64 = 50 * 1024 * 1024; // 50MB
+/// Sidecar metadata blobs are expected to be tiny; cap reads defensively.
+pub const MAX_CACHED_HTML_META_BYTES: usize = 256 * 1024;
+
+/// Decode a fetched HTML resource using the provided base URL hint.
+pub fn decode_html_resource(resource: &FetchedResource, base_hint: &str) -> PreparedDocument {
+  let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
+  PreparedDocument::new_with_response_referrer_policy(
+    html,
+    base_hint.to_string(),
+    resource.response_referrer_policy,
+  )
+}
+
+/// Load cached HTML from disk, honoring optional sidecar metadata.
+pub fn read_cached_document(path: &Path) -> Result<CachedDocument> {
+  let meta = std::fs::metadata(path).map_err(Error::Io)?;
+  if meta.len() > MAX_CACHED_HTML_BYTES {
+    return Err(Error::Io(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!(
+        "cached HTML file too large ({} bytes, max {}) at {}",
+        meta.len(),
+        MAX_CACHED_HTML_BYTES,
+        path.display()
+      ),
+    )));
+  }
+
+  let bytes = std::fs::read(path).map_err(Error::Io)?;
+
+  let mut meta_path = path.to_path_buf();
+  if let Some(ext) = meta_path.extension().and_then(|e| e.to_str()) {
+    meta_path.set_extension(format!("{ext}.meta"));
+  } else {
+    meta_path.set_extension("meta");
+  }
+  let meta = match std::fs::read(&meta_path) {
+    Ok(buf) => {
+      if buf.len() > MAX_CACHED_HTML_META_BYTES {
+        return Err(Error::Io(io::Error::new(
+          io::ErrorKind::InvalidData,
+          format!(
+            "cached HTML meta file too large ({} bytes, max {}) at {}",
+            buf.len(),
+            MAX_CACHED_HTML_META_BYTES,
+            meta_path.display()
+          ),
+        )));
+      }
+      Some(String::from_utf8_lossy(&buf).into_owned())
+    }
+    Err(_) => None,
+  };
+  let parsed_meta = meta
+    .as_deref()
+    .map(parse_cached_html_meta)
+    .unwrap_or_default();
+
+  let base_hint = parsed_meta
+    .url
+    .clone()
+    .unwrap_or_else(|| format!("file://{}", path.display()));
+  let mut resource = FetchedResource::with_final_url(
+    bytes,
+    parsed_meta.content_type.clone(),
+    Some(base_hint.clone()),
+  );
+  resource.status = parsed_meta.status;
+  resource.response_referrer_policy = parsed_meta.response_referrer_policy;
+  let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
+
+  let document = PreparedDocument::new_with_response_referrer_policy(
+    html,
+    base_hint,
+    resource.response_referrer_policy,
+  );
+
+  Ok(CachedDocument {
+    byte_len: resource.bytes.len(),
+    document,
+    resource,
+  })
+}
+
+const MAX_CLIENT_REDIRECT_HOPS: usize = 5;
+// Avoid quadratic-ish scans over huge HTML bodies when looking for meta refresh / JS redirects.
+// Redirect tags/scripts are almost always near the top of the document (head / early body).
+const MAX_CLIENT_REDIRECT_SCAN_BYTES: usize = 256 * 1024;
+const CLIENT_REDIRECT_SCAN_BODY_PREFIX_BYTES: usize = 32 * 1024;
+
+fn find_tag_case_insensitive(bytes: &[u8], limit: usize, needle: &[u8]) -> Option<usize> {
+  let mut idx = 0usize;
+  while idx < limit {
+    let Some(pos) = memchr(b'<', &bytes[idx..limit]) else {
+      return None;
+    };
+    let start = idx + pos;
+    if start + needle.len() <= limit
+      && bytes[start..start + needle.len()].eq_ignore_ascii_case(needle)
+    {
+      let after = start + needle.len();
+      if after >= limit {
+        return Some(start);
+      }
+      let next = bytes[after];
+      if next == b'>' || next == b'/' || next.is_ascii_whitespace() {
+        return Some(start);
+      }
+    }
+    idx = start + 1;
+  }
+  None
+}
+
+fn client_redirect_scan_html(html: &str) -> &str {
+  if html.len() <= MAX_CLIENT_REDIRECT_SCAN_BYTES {
+    return html;
+  }
+  let bytes = html.as_bytes();
+  let limit = MAX_CLIENT_REDIRECT_SCAN_BYTES.min(bytes.len());
+  let mut end = limit;
+
+  if let Some(pos) = find_tag_case_insensitive(bytes, limit, b"<body") {
+    end = (pos + CLIENT_REDIRECT_SCAN_BODY_PREFIX_BYTES).min(limit);
+  } else if let Some(pos) = find_tag_case_insensitive(bytes, limit, b"</head") {
+    end = pos.min(limit);
+  }
+
+  while end > 0 && !html.is_char_boundary(end) {
+    end -= 1;
+  }
+  &html[..end]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientRedirectKind {
+  MetaRefresh,
+  JsLocation,
+}
+
+fn format_client_redirect_kind(kind: ClientRedirectKind) -> &'static str {
+  match kind {
+    ClientRedirectKind::MetaRefresh => "meta refresh",
+    ClientRedirectKind::JsLocation => "JS redirect",
+  }
+}
+
+fn client_redirect_target(
+  kind: ClientRedirectKind,
+  doc: &PreparedDocument,
+  mut log: impl FnMut(&str),
+) -> Option<String> {
+  let html = client_redirect_scan_html(&doc.html);
+  match kind {
+    ClientRedirectKind::MetaRefresh => {
+      let refresh = extract_meta_refresh_url(html)?;
+      resolve_href(&doc.base_url, &refresh)
+    }
+    ClientRedirectKind::JsLocation => {
+      let js_redirect = extract_js_location_redirect(html)?;
+      if js_redirect.len() > 2048 {
+        log(&format!(
+          "Warning: skipping JS redirect of length {}",
+          js_redirect.len()
+        ));
+        return None;
+      }
+      resolve_href(&doc.base_url, &js_redirect)
+    }
+  }
+}
+
+#[derive(Debug)]
+struct FollowClientRedirectsState {
+  doc: PreparedDocument,
+  resource: Option<FetchedResource>,
+}
+
+fn follow_client_redirects_state(
+  fetcher: &dyn ResourceFetcher,
+  mut state: FollowClientRedirectsState,
+  keep_resource: bool,
+  mut log: impl FnMut(&str),
+) -> FollowClientRedirectsState {
+  let mut visited: HashSet<String> = HashSet::new();
+  visited.insert(state.doc.base_hint.clone());
+
+  let is_error_status = |status: Option<u16>| status.is_some_and(|code| code >= 400);
+
+  for _ in 0..MAX_CLIENT_REDIRECT_HOPS {
+    let mut redirected = false;
+
+    for kind in [
+      ClientRedirectKind::MetaRefresh,
+      ClientRedirectKind::JsLocation,
+    ] {
+      let Some(target) = client_redirect_target(kind, &state.doc, &mut log) else {
+        continue;
+      };
+
+      if visited.contains(&target) {
+        log(&format!(
+          "Warning: client redirect loop detected ({} -> {target}); skipping",
+          format_client_redirect_kind(kind)
+        ));
+        continue;
+      }
+
+      log(&format!(
+        "Following {} to: {target}",
+        format_client_redirect_kind(kind)
+      ));
+
+      match fetcher.fetch_with_request(
+        FetchRequest::document_no_user(&target)
+          .with_referrer_url(state.doc.base_hint.as_str())
+          .with_referrer_policy(state.doc.referrer_policy),
+      ) {
+        Ok(mut res) => {
+          if is_error_status(res.status) {
+            let status = res
+              .status
+              .map(|code| code.to_string())
+              .unwrap_or_else(|| "<unknown>".to_string());
+            log(&format!(
+              "Warning: {} fetch failed: status {status} (keeping original)",
+              format_client_redirect_kind(kind)
+            ));
+            continue;
+          }
+
+          if res.bytes.is_empty() {
+            log(&format!(
+              "Warning: {} fetch returned empty body (keeping original)",
+              format_client_redirect_kind(kind)
+            ));
+            continue;
+          }
+
+          let base_hint = res.final_url.as_deref().unwrap_or(&target).to_string();
+          if visited.contains(&base_hint) {
+            log(&format!(
+              "Warning: client redirect loop detected ({} -> {base_hint}); skipping",
+              format_client_redirect_kind(kind)
+            ));
+            continue;
+          }
+          visited.insert(target);
+          visited.insert(base_hint.clone());
+          res.final_url.get_or_insert(base_hint.clone());
+
+          state.doc = decode_html_resource(&res, &base_hint);
+          state.resource = if keep_resource { Some(res) } else { None };
+          redirected = true;
+          break;
+        }
+        Err(err) => log(&format!(
+          "Warning: failed to follow {} {target}: {err}",
+          format_client_redirect_kind(kind)
+        )),
+      }
+    }
+
+    if !redirected {
+      break;
+    }
+  }
+
+  state
+}
+
+/// Follow client-side redirects (meta refresh and JS location).
+pub fn follow_client_redirects(
+  fetcher: &dyn ResourceFetcher,
+  doc: PreparedDocument,
+  mut log: impl FnMut(&str),
+) -> PreparedDocument {
+  follow_client_redirects_state(
+    fetcher,
+    FollowClientRedirectsState {
+      doc,
+      resource: None,
+    },
+    false,
+    &mut log,
+  )
+  .doc
+}
+
+/// Follow client-side redirects (meta refresh and JS location) under a cooperative timeout.
+///
+/// Pageset worker processes are hard-killed after a fixed wall-clock budget. Bounding redirect
+/// fetches prevents a slow/unreachable redirect target from consuming the entire budget before
+/// rendering even begins.
+pub fn follow_client_redirects_with_deadline(
+  fetcher: &dyn ResourceFetcher,
+  doc: PreparedDocument,
+  timeout: Option<Duration>,
+  log: impl FnMut(&str),
+) -> PreparedDocument {
+  let Some(timeout) = timeout.filter(|t| !t.is_zero()) else {
+    return follow_client_redirects(fetcher, doc, log);
+  };
+  let deadline = RenderDeadline::new(Some(timeout), None);
+  with_deadline(Some(&deadline), || {
+    follow_client_redirects(fetcher, doc, log)
+  })
+}
+
+/// Follow client-side redirects for a fetched HTML resource under a cooperative timeout.
+pub fn follow_client_redirects_resource_with_deadline(
+  fetcher: &dyn ResourceFetcher,
+  resource: FetchedResource,
+  requested_url: &str,
+  timeout: Option<Duration>,
+  log: impl FnMut(&str),
+) -> FetchedResource {
+  let Some(timeout) = timeout.filter(|t| !t.is_zero()) else {
+    return follow_client_redirects_resource(fetcher, resource, requested_url, log);
+  };
+  let deadline = RenderDeadline::new(Some(timeout), None);
+  with_deadline(Some(&deadline), || {
+    follow_client_redirects_resource(fetcher, resource, requested_url, log)
+  })
+}
+
+/// Follow client-side redirects for a fetched HTML resource, returning the final resource.
+pub fn follow_client_redirects_resource(
+  fetcher: &dyn ResourceFetcher,
+  mut resource: FetchedResource,
+  requested_url: &str,
+  mut log: impl FnMut(&str),
+) -> FetchedResource {
+  if resource.bytes.is_empty() {
+    return resource;
+  }
+  let base_hint = resource
+    .final_url
+    .clone()
+    .unwrap_or_else(|| requested_url.to_string());
+  resource.final_url.get_or_insert(base_hint.clone());
+  let doc = decode_html_resource(&resource, &base_hint);
+
+  let FollowClientRedirectsState { doc, resource } = follow_client_redirects_state(
+    fetcher,
+    FollowClientRedirectsState {
+      doc,
+      resource: Some(resource),
+    },
+    true,
+    &mut log,
+  );
+
+  match resource {
+    Some(res) => res,
+    None => {
+      // `keep_resource=true` should ensure we always have the last successful fetch here.
+      // Avoid panicking in CLI binaries; synthesize a minimal HTML resource so callers still
+      // proceed deterministically.
+      log("Warning: internal error: redirect following lost the HTML resource; using decoded document text");
+      let mut res =
+        FetchedResource::with_final_url(doc.html.into_bytes(), Some("text/html".to_string()), None);
+      res.final_url = Some(doc.base_hint);
+      res
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::render_control;
+  use crate::resource::FetchDestination;
+  use std::sync::atomic::{AtomicBool, Ordering};
+  use std::sync::Mutex;
+
+  struct DeadlineAssertingFetcher {
+    observed_deadline: AtomicBool,
+  }
+
+  impl DeadlineAssertingFetcher {
+    fn new() -> Self {
+      Self {
+        observed_deadline: AtomicBool::new(false),
+      }
+    }
+  }
+
+  impl ResourceFetcher for DeadlineAssertingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      let deadline = render_control::active_deadline();
+      assert!(
+        deadline.is_some(),
+        "expected active deadline for redirect fetch"
+      );
+      let deadline = deadline.expect("deadline installed");
+      assert!(
+        deadline.timeout_limit().is_some(),
+        "deadline should have timeout configured"
+      );
+      self.observed_deadline.store(true, Ordering::Relaxed);
+      let mut res = FetchedResource::with_final_url(
+        b"<html><head><title>ok</title></head><body>ok</body></html>".to_vec(),
+        Some("text/html".to_string()),
+        Some(url.to_string()),
+      );
+      res.status = Some(200);
+      Ok(res)
+    }
+  }
+
+  #[derive(Default)]
+  struct RecordingFetcher {
+    requests: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+  }
+
+  impl ResourceFetcher for RecordingFetcher {
+    fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+      panic!("follow_client_redirects should use fetch_with_request");
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+      self.requests.lock().unwrap().push((
+        req.url.to_string(),
+        req.destination,
+        req.referrer_url.map(|r| r.to_string()),
+      ));
+
+      let mut res = FetchedResource::new(
+        b"<!doctype html><html><body>done</body></html>".to_vec(),
+        Some("text/html".to_string()),
+      );
+      res.status = Some(200);
+      Ok(res)
+    }
+  }
+
+  #[test]
+  fn follow_client_redirects_with_deadline_installs_and_clears_deadline() {
+    assert!(
+      render_control::active_deadline().is_none(),
+      "test should start with no active deadline"
+    );
+
+    let fetcher = DeadlineAssertingFetcher::new();
+    let doc = PreparedDocument::new(
+      "<meta http-equiv='refresh' content='0; url=https://example.com/next'>".to_string(),
+      "https://example.com/".to_string(),
+    );
+    let _doc = follow_client_redirects_with_deadline(
+      &fetcher,
+      doc,
+      Some(Duration::from_millis(50)),
+      |_line| {},
+    );
+
+    assert!(
+      fetcher.observed_deadline.load(Ordering::Relaxed),
+      "fetcher should have observed a deadline"
+    );
+    assert!(
+      render_control::active_deadline().is_none(),
+      "deadline should be cleared after redirect following"
+    );
+  }
+
+  #[test]
+  fn follow_client_redirects_sets_destination_and_referrer() {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <base href="https://cdn.example/">
+    <meta http-equiv="refresh" content="0;url=/next">
+  </head>
+  <body>start</body>
+</html>"#;
+    let base_hint = "https://origin.example/start";
+    let doc = PreparedDocument::new(html.to_string(), base_hint.to_string());
+
+    let fetcher = RecordingFetcher::default();
+    let _ = follow_client_redirects(&fetcher, doc, |_| {});
+
+    let requests = fetcher.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "expected exactly one follow-up fetch");
+    let (url, destination, referrer) = &requests[0];
+    assert_eq!(destination, &FetchDestination::DocumentNoUser);
+    assert_eq!(referrer.as_deref(), Some(base_hint));
+    assert_eq!(url, "https://cdn.example/next");
+  }
+
+  #[test]
+  fn prepared_document_ignores_base_like_text_in_script() {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <script>var s='<base href="https://bad.example/">'</script>
+  </head>
+  <body>ok</body>
+</html>"#;
+    let base_hint = "https://good.example/page.html";
+    let doc = PreparedDocument::new(html.to_string(), base_hint.to_string());
+    assert_eq!(doc.base_url, base_hint);
+  }
+
+  #[test]
+  fn prepared_document_extracts_meta_referrer_policy() {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="refresh" content="0; url=https://example.com/next">
+  </head>
+  <body>start</body>
+</html>"#;
+    let doc = PreparedDocument::new(html.to_string(), "https://origin.example/".to_string());
+    assert_eq!(doc.referrer_policy, ReferrerPolicy::NoReferrer);
+
+    #[derive(Default)]
+    struct PolicyFetcher {
+      last_policy: Mutex<Option<ReferrerPolicy>>,
+    }
+
+    impl ResourceFetcher for PolicyFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("follow_client_redirects should use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        *self.last_policy.lock().unwrap() = Some(req.referrer_policy);
+        let mut res = FetchedResource::new(
+          b"<!doctype html><html><body>done</body></html>".to_vec(),
+          Some("text/html".to_string()),
+        );
+        res.status = Some(200);
+        Ok(res)
+      }
+    }
+
+    let fetcher = PolicyFetcher::default();
+    let _ = follow_client_redirects(&fetcher, doc, |_| {});
+    assert_eq!(
+      *fetcher.last_policy.lock().unwrap(),
+      Some(ReferrerPolicy::NoReferrer),
+    );
+  }
+
+  #[test]
+  fn decode_html_resource_meta_referrer_policy_overrides_response_header() {
+    let html = r#"<!doctype html><html><head>
+      <meta name="referrer" content="origin">
+    </head><body></body></html>"#;
+    let mut resource =
+      FetchedResource::new(html.as_bytes().to_vec(), Some("text/html".to_string()));
+    resource.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+    let doc = decode_html_resource(&resource, "https://example.com/");
+    assert_eq!(doc.referrer_policy, ReferrerPolicy::Origin);
+  }
+
+  #[test]
+  fn read_cached_document_uses_response_referrer_policy_when_meta_absent() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("page.html");
+    std::fs::write(&path, "<!doctype html><html><body>ok</body></html>").expect("write html");
+    std::fs::write(
+      path.with_extension("html.meta"),
+      "content-type: text/html\nreferrer-policy: no-referrer\nurl: https://example.com/page\n",
+    )
+    .expect("write meta");
+
+    let cached = read_cached_document(&path).expect("read cached document");
+    assert_eq!(cached.document.referrer_policy, ReferrerPolicy::NoReferrer);
+  }
+}
+
+/// Render prepared HTML using the shared render pipeline (including linked stylesheets).
+pub fn render_document(
+  renderer: &mut FastRender,
+  doc: PreparedDocument,
+  options: &RenderOptions,
+) -> Result<RenderResult> {
+  renderer.render_html_with_stylesheets(&doc.html, &doc.base_hint, options.clone())
+}
+
+/// Render an already-fetched HTML resource using the standard stylesheet loading pipeline.
+pub fn render_fetched_document(
+  renderer: &mut FastRender,
+  resource: &FetchedResource,
+  base_hint: Option<&str>,
+  options: &RenderOptions,
+) -> Result<RenderResult> {
+  renderer.render_fetched_html_with_options(resource, base_hint, options.clone())
+}
+
+/// Render a prepared document while capturing intermediate artifacts.
+pub fn render_document_with_artifacts(
+  renderer: &mut FastRender,
+  doc: PreparedDocument,
+  options: &RenderOptions,
+  artifacts: RenderArtifactRequest,
+) -> Result<RenderReport> {
+  renderer.render_html_with_stylesheets_report(
+    &doc.html,
+    &doc.base_hint,
+    options.clone(),
+    artifacts,
+  )
+}
+
+/// Render an already-fetched HTML resource while capturing intermediate artifacts.
+pub fn render_fetched_document_with_artifacts(
+  renderer: &mut FastRender,
+  resource: &FetchedResource,
+  base_hint: Option<&str>,
+  options: &RenderOptions,
+  artifacts: RenderArtifactRequest,
+) -> Result<RenderReport> {
+  renderer.render_fetched_html_with_options_report(resource, base_hint, options.clone(), artifacts)
+}
+
+/// Log render diagnostics in a consistent human-readable format.
+pub fn log_layout_parallelism(diagnostics: &RenderDiagnostics, mut log: impl FnMut(&str)) {
+  if let Some(layout) = &diagnostics.layout_parallelism {
+    let mode = format!("{:?}", layout.mode).to_ascii_lowercase();
+    let mut line = format!(
+      "Layout parallelism: mode={mode} engaged={} nodes={} min_fanout={} workers={} work_items={}",
+      layout.engaged,
+      layout.node_count,
+      layout.min_fanout,
+      layout.worker_threads,
+      layout.work_items
+    );
+    if let Some(max_threads) = layout.max_threads {
+      line.push_str(&format!(" max_threads={max_threads}"));
+    }
+    if let Some(min_nodes) = layout.auto_min_nodes {
+      line.push_str(&format!(" auto_min_nodes={min_nodes}"));
+    }
+    log(&line);
+  }
+}
+
+pub fn log_diagnostics(diagnostics: &RenderDiagnostics, mut log: impl FnMut(&str)) {
+  if let Some(err) = &diagnostics.document_error {
+    log(&format!("Document error: {err}"));
+  }
+
+  if let Some(stage) = diagnostics.timeout_stage {
+    log(&format!("Timed out during {stage}"));
+  }
+
+  log_layout_parallelism(diagnostics, &mut log);
+
+  for fetch_error in &diagnostics.fetch_errors {
+    let kind = match fetch_error.kind {
+      ResourceKind::Document => "document",
+      ResourceKind::Stylesheet => "stylesheet",
+      ResourceKind::Image => "image",
+      ResourceKind::Font => "font",
+      ResourceKind::Other => "resource",
+    };
+    let mut meta = Vec::new();
+    if let Some(status) = fetch_error.status {
+      meta.push(format!("status {}", status));
+    }
+    if let Some(final_url) = &fetch_error.final_url {
+      if final_url != &fetch_error.url {
+        meta.push(format!("final {final_url}"));
+      }
+    }
+    if let Some(etag) = &fetch_error.etag {
+      meta.push(format!("etag {etag}"));
+    }
+    if let Some(last_modified) = &fetch_error.last_modified {
+      meta.push(format!("last-modified {last_modified}"));
+    }
+    let meta = if meta.is_empty() {
+      String::new()
+    } else {
+      format!(" ({})", meta.join(", "))
+    };
+    log(&format!(
+      "Warning: failed to fetch {kind} {}{meta}: {}",
+      fetch_error.url, fetch_error.message
+    ));
+  }
+}
+
+/// Format an error, optionally including its source chain.
+pub fn format_error_with_chain(err: &dyn std::error::Error, verbose: bool) -> String {
+  if !verbose {
+    return err.to_string();
+  }
+
+  let mut lines = vec![err.to_string()];
+  let mut current = err.source();
+  while let Some(source) = current {
+    lines.push(format!("caused by: {}", source));
+    current = source.source();
+  }
+
+  lines.join("\n")
+}
+
+/// Convenience for building a renderer with the provided config and fetcher.
+pub fn build_renderer_with_fetcher(
+  config: FastRenderConfig,
+  fetcher: Arc<dyn ResourceFetcher>,
+) -> Result<FastRender> {
+  FastRender::with_config_and_fetcher(config, Some(fetcher))
+}
+
+/// Compute a cooperative timeout for the renderer given a hard timeout budget.
+pub fn compute_soft_timeout_ms(hard_timeout: Duration, override_ms: Option<u64>) -> Option<u64> {
+  if let Some(ms) = override_ms {
+    return Some(ms);
+  }
+  let ms = hard_timeout.as_millis();
+  if ms <= 250 {
+    None
+  } else {
+    Some((ms - 250) as u64)
+  }
+}
+
+/// Test-only hook to simulate slow renders for timeout coverage.
+///
+/// When `FASTR_TEST_RENDER_DELAY_MS` is set, workers sleep for that duration.
+/// If `FASTR_TEST_RENDER_DELAY_STEM` is also set, the delay is applied only to
+/// matching stems (comma-separated).
+pub fn apply_test_render_delay(stem: Option<&str>) {
+  let Some(delay_ms) = std::env::var("FASTR_TEST_RENDER_DELAY_MS")
+    .ok()
+    .and_then(|v| v.parse::<u64>().ok())
+  else {
+    return;
+  };
+  if let Some(filter) = std::env::var("FASTR_TEST_RENDER_DELAY_STEM").ok() {
+    let Some(stem) = stem else { return };
+    if !filter
+      .split(',')
+      .map(|s| s.trim())
+      .any(|candidate| candidate == stem)
+    {
+      return;
+    }
+  }
+  std::thread::sleep(Duration::from_millis(delay_ms));
+}
+
+/// Lightweight summary of a process exit status (code + optional signal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitStatusSummary {
+  pub code: Option<i32>,
+  pub signal: Option<i32>,
+}
+
+/// Extract a platform-agnostic summary from an ExitStatus.
+pub fn summarize_exit_status(status: &ExitStatus) -> ExitStatusSummary {
+  ExitStatusSummary {
+    code: status.code(),
+    signal: {
+      #[cfg(unix)]
+      {
+        status.signal()
+      }
+      #[cfg(not(unix))]
+      {
+        None
+      }
+    },
+  }
+}
+
+/// Human-readable formatting for ExitStatusSummary.
+pub fn format_exit_status(status: ExitStatusSummary) -> String {
+  match (status.code, status.signal) {
+    (Some(code), Some(signal)) => format!("code {code} (signal {signal})"),
+    (Some(code), None) => format!("code {code}"),
+    (None, Some(signal)) => format!("signal {signal}"),
+    (None, None) => "unknown status".to_string(),
+  }
+}
+
+/// Append a timeout note into the provided stderr path (best-effort).
+pub fn append_timeout_stderr_note(stderr_path: &Path, elapsed: Duration) {
+  if let Ok(mut file) = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(stderr_path)
+  {
+    let _ = writeln!(
+      file,
+      "parent killed worker after {:.2}s hard timeout",
+      elapsed.as_secs_f64()
+    );
+  }
+}
+
+/// Redirect worker stdout/stderr to a shared per-page log file.
+pub fn configure_worker_stdio(cmd: &mut Command, stderr_path: &Path) -> std::io::Result<()> {
+  if let Some(parent) = stderr_path.parent() {
+    if !parent.as_os_str().is_empty() {
+      fs::create_dir_all(parent)?;
+    }
+  }
+  let stderr_file = File::create(stderr_path)?;
+  let stdout_file = stderr_file.try_clone()?;
+  cmd
+    .stdin(Stdio::null())
+    .stdout(Stdio::from(stdout_file))
+    .stderr(Stdio::from(stderr_file));
+  Ok(())
+}
+
+/// Common CLI flags for worker subcommands across render binaries.
+#[derive(Debug)]
+pub struct WorkerCommonArgs<'a> {
+  pub timeout: u64,
+  pub soft_timeout_ms: Option<u64>,
+  pub memory: &'a MemoryGuardArgs,
+  pub viewport: (u32, u32),
+  pub dpr: f32,
+  pub scroll: Option<(f32, f32)>,
+  pub user_agent: &'a str,
+  pub accept_language: &'a str,
+  pub no_http_freshness: bool,
+  pub css_limit: Option<usize>,
+  pub resource_access: &'a ResourceAccessArgs,
+  pub layout_parallel: &'a LayoutParallelArgs,
+  pub compat: &'a CompatArgs,
+}
+
+/// Apply common worker args to a worker command, keeping CLI parity between binaries.
+pub fn apply_worker_common_args(cmd: &mut Command, args: &WorkerCommonArgs<'_>) {
+  cmd
+    .arg("--timeout")
+    .arg(args.timeout.to_string())
+    .arg("--viewport")
+    .arg(format!("{}x{}", args.viewport.0, args.viewport.1))
+    .arg("--dpr")
+    .arg(args.dpr.to_string())
+    .arg("--user-agent")
+    .arg(args.user_agent)
+    .arg("--accept-language")
+    .arg(args.accept_language);
+
+  if args.memory.mem_limit_mb > 0 {
+    cmd
+      .arg("--mem-limit-mb")
+      .arg(args.memory.mem_limit_mb.to_string());
+  }
+  if args.memory.stage_mem_budget_mb > 0 {
+    cmd
+      .arg("--stage-mem-budget-mb")
+      .arg(args.memory.stage_mem_budget_mb.to_string());
+  }
+
+  if let Some((scroll_x, scroll_y)) = args.scroll {
+    cmd
+      .arg("--scroll-x")
+      .arg(scroll_x.to_string())
+      .arg("--scroll-y")
+      .arg(scroll_y.to_string());
+  }
+
+  if let Some(ms) = args.soft_timeout_ms {
+    cmd.arg("--soft-timeout-ms").arg(ms.to_string());
+  }
+  if args.no_http_freshness {
+    cmd.arg("--no-http-freshness");
+  }
+  if let Some(limit) = args.css_limit {
+    cmd.arg("--css-limit").arg(limit.to_string());
+  }
+  if args.resource_access.allow_file_from_http {
+    cmd.arg("--allow-file-from-http");
+  }
+  if args.resource_access.block_mixed_content {
+    cmd.arg("--block-mixed-content");
+  }
+  if args.resource_access.same_origin_subresources {
+    cmd.arg("--same-origin-subresources");
+  }
+  for origin in &args.resource_access.allow_subresource_origin {
+    cmd.arg("--allow-subresource-origin").arg(origin);
+  }
+  match args.layout_parallel.layout_parallel {
+    LayoutParallelModeArg::Off => {
+      cmd.arg("--layout-parallel").arg("off");
+    }
+    LayoutParallelModeArg::On => {
+      cmd.arg("--layout-parallel").arg("on");
+    }
+    LayoutParallelModeArg::Auto => {
+      cmd.arg("--layout-parallel").arg("auto");
+    }
+  }
+  if args.layout_parallel.layout_parallel != LayoutParallelModeArg::Off {
+    cmd
+      .arg("--layout-parallel-min-fanout")
+      .arg(args.layout_parallel.layout_parallel_min_fanout.to_string());
+    if let Some(max_threads) = args.layout_parallel.layout_parallel_max_threads {
+      cmd
+        .arg("--layout-parallel-max-threads")
+        .arg(max_threads.to_string());
+    }
+    if let Some(min_nodes) = args.layout_parallel.layout_parallel_auto_min_nodes {
+      cmd
+        .arg("--layout-parallel-auto-min-nodes")
+        .arg(min_nodes.to_string());
+    }
+  }
+  if let Some(profile) = args.compat.compat_profile_arg() {
+    cmd.arg("--compat-profile").arg(profile.as_str());
+  }
+  if let Some(mode) = args.compat.dom_compat_arg() {
+    cmd.arg("--dom-compat").arg(mode.as_str());
+  }
+}

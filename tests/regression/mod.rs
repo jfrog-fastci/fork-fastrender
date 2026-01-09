@@ -1,0 +1,24 @@
+//! Regression tests consolidated from tests/*_regression_test.rs
+
+mod abspos_inline_cb_border_padding_edge;
+mod abspos_inline_relative_offset;
+mod abspos_inline_relative_offset_rtl_precedence;
+mod abspos_left_top_padding_edge;
+mod abspos_static_position_margin;
+mod abspos_static_position_margin_collapse;
+mod block_padding_offset;
+mod containment_containing_block;
+mod containment_inline_containing_block;
+mod containment_table_intrinsic_inline_size;
+mod content_visibility;
+mod content_visibility_auto_no_fallback;
+mod content_visibility_flex_grid;
+mod content_visibility_inline_axis;
+mod content_visibility_nested_offset;
+mod content_visibility_vertical_writing_mode;
+mod content_visibility_writing_mode;
+mod fixed_cb_propagation;
+mod inline_abspos_padding_edge;
+mod pages;
+mod rayon_global_thread_pool;
+mod stretch_sizing_inline_block;

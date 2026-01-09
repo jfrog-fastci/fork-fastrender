@@ -2,7 +2,7 @@
 // minimal subset of the paint suite.
 
 #[path = "paint/rayon_test_util.rs"]
-mod rayon_test_util;
+use crate::rayon_test_util;
 
 #[path = "paint/backdrop_root_non_triggers_test.rs"]
 mod backdrop_root_non_triggers_test;

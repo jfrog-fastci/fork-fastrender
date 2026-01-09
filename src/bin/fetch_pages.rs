@@ -2,7 +2,7 @@
 //!
 //! Fetches all target pages in parallel and caches to fetches/html/
 
-mod common;
+use fastrender::cli_utils as common;
 
 use clap::Parser;
 use common::args::{default_jobs, parse_shard, TimeoutArgs};

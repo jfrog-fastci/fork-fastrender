@@ -1,10 +1,26 @@
 # Testing
 
-FastRender’s test suite is primarily Rust unit/integration tests plus a small set of visual fixture tests.
+FastRender's test suite is primarily Rust unit/integration tests plus a small set of visual fixture tests.
+
+## Test organization
+
+Tests are organized into **harness directories** to reduce compilation overhead. Each `tests/<category>/` directory is compiled as a single binary via a harness file at `tests/<category>_tests.rs`.
+
+**Never create new top-level `tests/*.rs` files.** Add tests to the appropriate subdirectory:
+
+- `tests/layout/` — layout algorithm tests
+- `tests/paint/` — painting and display list tests  
+- `tests/style/` — CSS parsing and cascade tests
+- `tests/text/` — text shaping and font tests
+- `tests/regression/` — bug fix regressions
+- `tests/misc/` — tests that don't fit elsewhere
+
+See `AGENTS.md` for detailed test organization rules.
 
 ## Core tests
 
-- Run everything: `cargo test --quiet`
+- Run all tests: `cargo test --quiet` (compiles ~40 test binaries)
+- Run a specific harness: `cargo test --quiet --test layout_tests`
 
 ## Fonts
 

@@ -8,7 +8,7 @@
 #![allow(clippy::len_zero)]
 #![allow(clippy::items_after_test_module)]
 
-mod common;
+use fastrender::cli_utils as common;
 
 use clap::{ArgAction, Parser};
 use common::args::{

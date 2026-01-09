@@ -53,3 +53,20 @@ mod svg_glyph_safety_test;
 mod variable_font_metrics_mvar;
 mod web_font_cors;
 mod web_font_display;
+
+// Consolidated from tests/text_*.rs
+mod diagnostics_outlier_test;
+mod emphasis_grapheme_cluster_marks_test;
+mod emphasis_position_sideways_paint_test;
+mod emphasis_position_vertical_paint_test;
+mod emphasis_ruby_outside_test;
+mod emphasis_ruby_outside_vertical_lr_test;
+mod emphasis_ruby_outside_vertical_test;
+mod emphasis_skip_punctuation_test;
+mod emphasis_space_combining_mark_test;
+mod emphasis_string_truncation_test;
+mod emphasis_string_vertical_shaping_test;
+mod keywords_case_insensitive_test;
+mod mark_only_clusters_test;
+mod multiscript_fallback_test;
+mod overflow_invalid_values_ignored_test;

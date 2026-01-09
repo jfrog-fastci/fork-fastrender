@@ -6,10 +6,9 @@
 //!
 //! This binary provides deterministic diagnostics and opt-in cleanup for poisoned entries.
 
-mod common;
-
 use clap::Parser;
-use common::disk_cache_audit::{audit_disk_cache_dir, DiskCacheAuditOptions};
+use fastrender::cli_utils::args::DEFAULT_DISK_CACHE_LOCK_STALE_SECS;
+use fastrender::cli_utils::disk_cache_audit::{audit_disk_cache_dir, DiskCacheAuditOptions, UrlCount};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -59,7 +58,7 @@ struct Cli {
   #[arg(
     long,
     env = "FASTR_DISK_CACHE_LOCK_STALE_SECS",
-    default_value_t = common::args::DEFAULT_DISK_CACHE_LOCK_STALE_SECS,
+    default_value_t = DEFAULT_DISK_CACHE_LOCK_STALE_SECS,
     value_parser = clap::value_parser!(u64).range(1..),
     value_name = "SECS"
   )]
@@ -146,7 +145,7 @@ fn main() -> std::io::Result<()> {
     );
   }
 
-  fn print_top(label: &str, items: &[common::disk_cache_audit::UrlCount]) {
+  fn print_top(label: &str, items: &[UrlCount]) {
     if items.is_empty() {
       return;
     }

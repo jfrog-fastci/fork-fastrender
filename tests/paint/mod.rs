@@ -154,3 +154,8 @@ mod text_multiscript_emoji_golden;
 mod text_shadow_color_emoji_golden;
 mod text_variable_font_test;
 mod top_layer_test;
+
+// Consolidated from tests/paint_*.rs
+mod backend_default;
+mod diagnostics_attribution;
+mod diagnostics_parallel_capture_test;

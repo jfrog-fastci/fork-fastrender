@@ -10,7 +10,7 @@
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::struct_excessive_bools)]
 
-mod common;
+use fastrender::cli_utils as common;
 mod stage_buckets;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};

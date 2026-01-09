@@ -2,6 +2,7 @@
 //!
 //! This file integrates the WPT test runner module into the test suite.
 
+// Standalone WPT test harness
 mod wpt;
 
 // Re-export for test discovery

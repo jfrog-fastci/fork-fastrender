@@ -4,7 +4,7 @@
 //! Network access is denied via `ResourcePolicy` (http/https disabled) and the renderer defaults
 //! to bundled fonts.
 
-mod common;
+use fastrender::cli_utils as common;
 
 use clap::Parser;
 use common::args::{default_jobs, parse_shard, parse_viewport, MediaTypeArg};

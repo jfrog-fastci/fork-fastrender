@@ -1,5 +1,25 @@
 # `ecma-rs` integration + submodule workflow
 
+---
+
+**STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
+
+AGENTS.md is the law. These rules are not suggestions. Violating them destroys host machines, wastes hours of compute, and blocks other agents. Non-compliance is unacceptable.
+
+**MANDATORY (no exceptions):**
+- Use `scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
+- Use `scripts/run_limited.sh --as 64G` when executing ANY renderer binary
+- Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
+
+**FORBIDDEN — will destroy the host:**
+- `cargo build` / `cargo test` / `cargo check` without wrapper scripts
+- `cargo test --all-features` or `cargo check --all-features --tests`
+- Unscoped `cargo test` (compiles 300+ test binaries and blows RAM)
+
+If you do not understand these rules, re-read AGENTS.md. There are no exceptions. Ignorance is not an excuse.
+
+---
+
 FastRender uses `ecma-rs` as the JS/TS language implementation and will evolve it as needed for
 browser-grade JavaScript execution.
 
@@ -19,8 +39,6 @@ If you already initialized the submodule before the HTTPS switch, sync the store
 ```bash
 git submodule sync -- engines/ecma-rs
 ```
-
-Common repo-wide safety rules (resource limits, no hacks, regressions) live in `AGENTS.md`.
 
 ## Initializing the submodule
 

@@ -90,3 +90,34 @@ Live pages motivate fixes, but regressions keep them fixed:
 - Use a **tiny offline fixture** only when necessary to reproduce real-world interactions.
 
 When uncertain, add the regression first, then implement the fix.
+
+## Test organization (mandatory)
+
+**NEVER create loose `tests/*.rs` files.** Each `.rs` file directly in `tests/` becomes a separate binary that must be compiled and linked. With 300+ test files, this destroys build times.
+
+**Always add tests to an existing harness subdirectory:**
+
+```
+tests/
+├── layout_tests.rs      ← harness (auto-discovered, compiles as ONE binary)
+├── layout/              ← subdirectory (NOT auto-discovered)
+│   ├── mod.rs
+│   └── your_new_test.rs ← ADD YOUR TEST HERE
+├── paint_tests.rs
+├── paint/
+├── style_tests.rs
+├── style/
+├── regression_tests.rs
+├── regression/
+└── ...
+```
+
+**To add a new test:**
+
+1. Find the appropriate category (`layout/`, `paint/`, `style/`, `regression/`, etc.)
+2. Create your test file in that subdirectory
+3. Add `mod your_new_test;` to the subdirectory's `mod.rs`
+
+**If no category fits**, add to `tests/misc/` and update `tests/misc/mod.rs`.
+
+**NEVER** create a new top-level `tests/foo.rs` file unless you are creating a new harness (requires approval).

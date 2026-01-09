@@ -1,11 +1,29 @@
 # JavaScript support (full JS + web APIs)
 
+---
+
+**STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
+
+AGENTS.md is the law. These rules are not suggestions. Violating them destroys host machines, wastes hours of compute, and blocks other agents. Non-compliance is unacceptable.
+
+**MANDATORY (no exceptions):**
+- Use `scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
+- Use `scripts/run_limited.sh --as 64G` when executing ANY renderer binary
+- Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
+
+**FORBIDDEN — will destroy the host:**
+- `cargo build` / `cargo test` / `cargo check` without wrapper scripts
+- `cargo test --all-features` or `cargo check --all-features --tests`
+- Unscoped `cargo test` (compiles 300+ test binaries and blows RAM)
+
+If you do not understand these rules, re-read AGENTS.md. There are no exceptions. Ignorance is not an excuse.
+
+---
+
 This workstream turns FastRender into a real browser engine: **HTML + CSS + DOM + JavaScript**.
 
-We will use **`ecma-rs`** (this org’s JS/TS tooling repo) as the JavaScript language implementation
+We will use **`ecma-rs`** (this org's JS/TS tooling repo) as the JavaScript language implementation
 and evolve it as-needed for browser-grade execution.
-
-Common repo-wide rules (resource limits, no hacks, regression discipline) live in `AGENTS.md`.
 
 ## Repos + resources (keep them local)
 

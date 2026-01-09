@@ -4,7 +4,7 @@
 //! Logs per-page to fetches/renders/{name}.log
 //! Summary to fetches/renders/_summary.log
 
-mod common;
+use fastrender::cli_utils as common;
 
 use clap::{ArgAction, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use common::args::{

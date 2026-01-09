@@ -154,3 +154,9 @@ mod test_positioned;
 mod text_combine_upright;
 mod text_emphasis_line_height;
 mod text_emphasis_line_height_vertical;
+
+// Consolidated from tests/layout_*.rs
+mod parallel_api;
+mod parallel_stats;
+mod pipeline_churn_guardrail;
+mod profile_diagnostics;

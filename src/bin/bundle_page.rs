@@ -1,7 +1,7 @@
 //! Capture and replay self-contained page bundles (HTML + assets).
 #![allow(clippy::too_many_lines)]
 
-mod common;
+use fastrender::cli_utils as common;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 use common::args::CompatArgs;
