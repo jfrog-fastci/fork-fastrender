@@ -151,37 +151,6 @@ impl RendererDomMapping {
   }
 }
 
-#[derive(Debug, Clone)]
-struct SelectorDomMapping {
-  preorder_to_node_id: Vec<Option<NodeId>>,
-  node_id_to_preorder: Vec<usize>,
-}
-
-impl SelectorDomMapping {
-  pub fn node_id_for_preorder(&self, preorder_id: usize) -> Option<NodeId> {
-    self
-      .preorder_to_node_id
-      .get(preorder_id)
-      .copied()
-      .flatten()
-  }
-
-  /// Translate a `dom2` [`NodeId`] to its selector-matching pre-order id.
-  ///
-  /// Returns `None` when the node is either detached or lives under an inert `<template>` subtree
-  /// that is skipped for selector matching. If a node corresponds to multiple selector preorder ids
-  /// (e.g. `<wbr>` + its synthetic text child), this returns the preorder id of the real node (the
-  /// `<wbr>` element) and not the synthetic one.
-  pub fn preorder_for_node_id(&self, node_id: NodeId) -> Option<usize> {
-    self
-      .node_id_to_preorder
-      .get(node_id.index())
-      .copied()
-      .and_then(|v| (v != 0).then_some(v))
-  }
-}
-
-#[derive(Debug, Clone)]
 pub struct RendererDomSnapshot {
   pub dom: DomNode,
   pub mapping: RendererDomMapping,
@@ -482,53 +451,6 @@ impl Document {
     }
   }
 
-  fn build_selector_preorder_mapping(&self) -> SelectorDomMapping {
-    // Preorder ids are 1-based (index 0 unused), matching selector-matching traversals in this
-    // module (e.g. `query_selector`).
-    let mut preorder_to_node_id: Vec<Option<NodeId>> = Vec::with_capacity(self.nodes.len() + 1);
-    preorder_to_node_id.push(None);
-    let mut node_id_to_preorder: Vec<usize> = vec![0; self.nodes.len()];
- 
-    enum StackItem {
-      Real(NodeId),
-      SyntheticWbrZwsp(NodeId),
-    }
-
-    let mut stack: Vec<StackItem> = vec![StackItem::Real(self.root)];
-    while let Some(item) = stack.pop() {
-      match item {
-        StackItem::Real(id) => {
-          let preorder_id = preorder_to_node_id.len();
-          preorder_to_node_id.push(Some(id));
-          node_id_to_preorder[id.0] = preorder_id;
-
-          let node = self.node(id);
-          if node.inert_subtree {
-            continue;
-          }
-
-          // Keep selector preorder ids aligned with the renderer snapshot by accounting for
-          // synthetic `<wbr>` ZWSP nodes.
-          if self.should_inject_wbr_zwsp(id) {
-            stack.push(StackItem::SyntheticWbrZwsp(id));
-          }
-          // Push children in reverse so we traverse in tree order.
-          for child in node.children.iter().rev() {
-            stack.push(StackItem::Real(*child));
-          }
-        }
-        StackItem::SyntheticWbrZwsp(parent) => {
-          preorder_to_node_id.push(Some(parent));
-        }
-      }
-    }
-
-    SelectorDomMapping {
-      preorder_to_node_id,
-      node_id_to_preorder,
-    }
-  }
-
   pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshot {
     RendererDomSnapshot {
       dom: self.to_renderer_dom(),
@@ -542,30 +464,34 @@ impl Document {
     scope: Option<NodeId>,
   ) -> Result<Option<NodeId>, DomException> {
     let selector_list = parse_selector_list(selectors)?;
-    let snapshot = self.to_renderer_dom();
-    let mapping = self.build_selector_preorder_mapping();
-    let quirks_mode = snapshot.document_quirks_mode();
+    let snapshot = self.to_renderer_dom_with_mapping();
+    let quirks_mode = snapshot.dom.document_quirks_mode();
 
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
-    let scope_preorder = scope.and_then(|id| mapping.preorder_for_node_id(id));
+    let scope_preorder = scope.and_then(|id| snapshot.mapping.preorder_for_node_id(id));
     if scope.is_some() && scope_preorder.is_none() {
+      return Ok(None);
+    }
+    if scope.is_some_and(|id| self.is_descendant_of_inert_template(id)) {
+      // Template `.content` is not modelled yet, so treat template descendants as non-scoping for
+      // now.
       return Ok(None);
     }
 
     struct StackItem<'a> {
       node: &'a DomNode,
       exiting: bool,
-      node_id: NodeId,
+      node_id: Option<NodeId>,
     }
 
     let mut ancestors: Vec<&DomNode> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot,
+      node: &snapshot.dom,
       exiting: false,
-      node_id: NodeId(usize::MAX),
+      node_id: None,
     });
     let mut next_preorder_id = 1usize;
     let mut scope_active = scope.is_none();
@@ -574,35 +500,40 @@ impl Document {
     while let Some(item) = stack.pop() {
       if item.exiting {
         ancestors.pop();
-        if scope.is_some() && item.node_id == scope.unwrap() {
-          break;
+        if let Some(scope_id) = scope {
+          if item.node_id == Some(scope_id) {
+            break;
+          }
         }
         continue;
       }
 
       let preorder_id = next_preorder_id;
       next_preorder_id += 1;
-      let dom2_id = mapping
-        .node_id_for_preorder(preorder_id)
-        .unwrap_or(self.root);
+      let dom2_id = snapshot.mapping.node_id_for_preorder(preorder_id);
 
-      if scope == Some(dom2_id) {
-        scope_active = true;
-        if item.node.is_element() {
-          scope_anchor = Some(OpaqueElement::new(item.node));
+      if let Some(dom2_id) = dom2_id {
+        if scope == Some(dom2_id) {
+          scope_active = true;
+          if item.node.is_element() {
+            scope_anchor = Some(OpaqueElement::new(item.node));
+          }
         }
-      }
 
-      if scope_active && item.node.is_element() {
-        if node_matches_selector_list(
-          item.node,
-          &ancestors,
-          &selector_list,
-          &mut selector_caches,
-          quirks_mode,
-          scope_anchor,
-        ) {
-          return Ok(Some(dom2_id));
+        if scope_active
+          && item.node.is_element()
+          && !self.is_descendant_of_inert_template(dom2_id)
+        {
+          if node_matches_selector_list(
+            item.node,
+            &ancestors,
+            &selector_list,
+            &mut selector_caches,
+            quirks_mode,
+            scope_anchor,
+          ) {
+            return Ok(Some(dom2_id));
+          }
         }
       }
 
@@ -613,14 +544,12 @@ impl Document {
       });
       ancestors.push(item.node);
 
-      if !self.node(dom2_id).inert_subtree {
-        for child in item.node.children.iter().rev() {
-          stack.push(StackItem {
-            node: child,
-            exiting: false,
-            node_id: NodeId(usize::MAX),
-          });
-        }
+      for child in item.node.children.iter().rev() {
+        stack.push(StackItem {
+          node: child,
+          exiting: false,
+          node_id: None,
+        });
       }
     }
 
@@ -633,31 +562,33 @@ impl Document {
     scope: Option<NodeId>,
   ) -> Result<Vec<NodeId>, DomException> {
     let selector_list = parse_selector_list(selectors)?;
-    let snapshot = self.to_renderer_dom();
-    let mapping = self.build_selector_preorder_mapping();
-    let quirks_mode = snapshot.document_quirks_mode();
+    let snapshot = self.to_renderer_dom_with_mapping();
+    let quirks_mode = snapshot.dom.document_quirks_mode();
 
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
-    let scope_preorder = scope.and_then(|id| mapping.preorder_for_node_id(id));
+    let scope_preorder = scope.and_then(|id| snapshot.mapping.preorder_for_node_id(id));
     if scope.is_some() && scope_preorder.is_none() {
+      return Ok(Vec::new());
+    }
+    if scope.is_some_and(|id| self.is_descendant_of_inert_template(id)) {
       return Ok(Vec::new());
     }
 
     struct StackItem<'a> {
       node: &'a DomNode,
       exiting: bool,
-      node_id: NodeId,
+      node_id: Option<NodeId>,
     }
 
     let mut results: Vec<NodeId> = Vec::new();
     let mut ancestors: Vec<&DomNode> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot,
+      node: &snapshot.dom,
       exiting: false,
-      node_id: NodeId(usize::MAX),
+      node_id: None,
     });
     let mut next_preorder_id = 1usize;
     let mut scope_active = scope.is_none();
@@ -666,35 +597,40 @@ impl Document {
     while let Some(item) = stack.pop() {
       if item.exiting {
         ancestors.pop();
-        if scope.is_some() && item.node_id == scope.unwrap() {
-          break;
+        if let Some(scope_id) = scope {
+          if item.node_id == Some(scope_id) {
+            break;
+          }
         }
         continue;
       }
 
       let preorder_id = next_preorder_id;
       next_preorder_id += 1;
-      let dom2_id = mapping
-        .node_id_for_preorder(preorder_id)
-        .unwrap_or(self.root);
+      let dom2_id = snapshot.mapping.node_id_for_preorder(preorder_id);
 
-      if scope == Some(dom2_id) {
-        scope_active = true;
-        if item.node.is_element() {
-          scope_anchor = Some(OpaqueElement::new(item.node));
+      if let Some(dom2_id) = dom2_id {
+        if scope == Some(dom2_id) {
+          scope_active = true;
+          if item.node.is_element() {
+            scope_anchor = Some(OpaqueElement::new(item.node));
+          }
         }
-      }
 
-      if scope_active && item.node.is_element() {
-        if node_matches_selector_list(
-          item.node,
-          &ancestors,
-          &selector_list,
-          &mut selector_caches,
-          quirks_mode,
-          scope_anchor,
-        ) {
-          results.push(dom2_id);
+        if scope_active
+          && item.node.is_element()
+          && !self.is_descendant_of_inert_template(dom2_id)
+        {
+          if node_matches_selector_list(
+            item.node,
+            &ancestors,
+            &selector_list,
+            &mut selector_caches,
+            quirks_mode,
+            scope_anchor,
+          ) {
+            results.push(dom2_id);
+          }
         }
       }
 
@@ -705,14 +641,12 @@ impl Document {
       });
       ancestors.push(item.node);
 
-      if !self.node(dom2_id).inert_subtree {
-        for child in item.node.children.iter().rev() {
-          stack.push(StackItem {
-            node: child,
-            exiting: false,
-            node_id: NodeId(usize::MAX),
-          });
-        }
+      for child in item.node.children.iter().rev() {
+        stack.push(StackItem {
+          node: child,
+          exiting: false,
+          node_id: None,
+        });
       }
     }
 
@@ -732,32 +666,33 @@ impl Document {
       NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
       _ => return Ok(false),
     }
+    if self.is_descendant_of_inert_template(element) {
+      return Ok(false);
+    }
 
-    let snapshot = self.to_renderer_dom();
-    let mapping = self.build_selector_preorder_mapping();
-    let quirks_mode = snapshot.document_quirks_mode();
+    let snapshot = self.to_renderer_dom_with_mapping();
+    let quirks_mode = snapshot.dom.document_quirks_mode();
 
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
-    let element_preorder = mapping.preorder_for_node_id(element);
+    let element_preorder = snapshot.mapping.preorder_for_node_id(element);
     let Some(target_preorder) = element_preorder else {
-      // The element lives in an inert subtree that is not traversed for selector matching.
       return Ok(false);
     };
 
     struct StackItem<'a> {
       node: &'a DomNode,
       exiting: bool,
-      node_id: NodeId,
+      node_id: Option<NodeId>,
     }
 
     let mut ancestors: Vec<&DomNode> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot,
+      node: &snapshot.dom,
       exiting: false,
-      node_id: NodeId(usize::MAX),
+      node_id: None,
     });
     let mut next_preorder_id = 1usize;
 
@@ -769,9 +704,7 @@ impl Document {
 
       let preorder_id = next_preorder_id;
       next_preorder_id += 1;
-      let dom2_id = mapping
-        .node_id_for_preorder(preorder_id)
-        .unwrap_or(self.root);
+      let dom2_id = snapshot.mapping.node_id_for_preorder(preorder_id);
 
       stack.push(StackItem {
         node: item.node,
@@ -780,33 +713,33 @@ impl Document {
       });
       ancestors.push(item.node);
 
-      if dom2_id == element {
-        let anchor = Some(OpaqueElement::new(item.node));
-        let matched = node_matches_selector_list(
-          item.node,
-          &ancestors[..ancestors.len().saturating_sub(1)],
-          &selector_list,
-          &mut selector_caches,
-          quirks_mode,
-          anchor,
-        );
-        return Ok(matched);
-      }
-
-      if preorder_id >= target_preorder {
-        // If we've passed the target preorder id without finding it, the mapping/traversal is out of
-        // sync; bail out defensively.
-        return Ok(false);
-      }
-
-      if !self.node(dom2_id).inert_subtree {
-        for child in item.node.children.iter().rev() {
-          stack.push(StackItem {
-            node: child,
-            exiting: false,
-            node_id: NodeId(usize::MAX),
-          });
+      if let Some(dom2_id) = dom2_id {
+        if dom2_id == element {
+          let anchor = Some(OpaqueElement::new(item.node));
+          let matched = node_matches_selector_list(
+            item.node,
+            &ancestors[..ancestors.len().saturating_sub(1)],
+            &selector_list,
+            &mut selector_caches,
+            quirks_mode,
+            anchor,
+          );
+          return Ok(matched);
         }
+
+        if preorder_id >= target_preorder {
+          // If we've passed the target preorder id without finding it, the mapping/traversal is out
+          // of sync; bail out defensively.
+          return Ok(false);
+        }
+      }
+
+      for child in item.node.children.iter().rev() {
+        stack.push(StackItem {
+          node: child,
+          exiting: false,
+          node_id: None,
+        });
       }
     }
 
@@ -816,3 +749,5 @@ impl Document {
 
 #[cfg(test)]
 mod mapping_tests;
+#[cfg(test)]
+mod selector_query_tests;
