@@ -227,14 +227,31 @@ impl ScriptOrchestrator {
     Host: CurrentScriptHost + DomHost,
     Exec: ScriptBlockExecutor<Host>,
   {
-    // HTML: "prepare a script" early-outs when the script element is not connected.
+    // HTML: "prepare a script" returns early when:
+    // - the script element is not connected, or
+    // - the script element has already started.
     //
     // In `dom2`, `<template>` contents are represented as inert subtrees (the nodes remain in the
     // tree for snapshotting/traversal, but should not be treated as connected for scripting).
     // Scripts that have been detached from the document must also be skipped.
-    if !host.with_dom(|dom| dom.is_connected_for_scripting(script)) {
+    //
+    // `script_already_started` also serves as our guard against accidentally executing the same
+    // `<script>` element twice (e.g. if it is moved/reinserted, or if execution is re-entrant).
+    let should_execute = host.with_dom(|dom| {
+      dom.is_connected_for_scripting(script) && !dom.node(script).script_already_started
+    });
+    if !should_execute {
       return Ok(());
     }
+
+    // Mark the script as started before executing so re-entrant execution attempts short-circuit.
+    //
+    // Note: this is a DOM mutation, but does not affect rendering. Hosts can treat `changed=false`
+    // as meaning "no style/layout invalidation required".
+    host.mutate_dom(|dom| {
+      dom.node_mut(script).script_already_started = true;
+      ((), false)
+    });
 
     let new_current_script = match script_type {
       ScriptType::Classic => (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script),
@@ -721,6 +738,57 @@ mod tests {
       vec![None],
       "currentScript must be null for classic scripts in shadow trees"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn script_already_started_prevents_double_execution() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><script></script>").unwrap();
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let scripts = find_script_elements(&dom);
+    assert_eq!(scripts.len(), 1);
+    let script = scripts[0];
+    assert!(
+      !dom.node(script).script_already_started,
+      "imported DOM should start with script_already_started=false"
+    );
+
+    let mut host = Host {
+      dom,
+      script_state: CurrentScriptStateHandle::default(),
+      log: None,
+    };
+    let mut orchestrator = ScriptOrchestrator::new();
+    let mut executor = RecordingExecutor::default();
+
+    orchestrator.execute_script_element(
+      &mut host,
+      script,
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+    assert!(
+      host.dom.node(script).script_already_started,
+      "executed scripts must be marked already started"
+    );
+    assert_eq!(executor.observed, vec![Some(script)]);
+    assert_eq!(host.current_script(), None);
+    assert_eq!(host.script_state.borrow().stack_depth(), 0);
+
+    // Second execution attempt should no-op.
+    orchestrator.execute_script_element(
+      &mut host,
+      script,
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+    assert_eq!(
+      executor.observed,
+      vec![Some(script)],
+      "already-started scripts must not execute twice"
+    );
+    assert_eq!(host.current_script(), None);
+    assert_eq!(host.script_state.borrow().stack_depth(), 0);
     Ok(())
   }
 }
