@@ -106,3 +106,22 @@ fn wildcard_namespace_prefix_matches_any_namespace() {
   assert_eq!(display(html_div), "flex");
   assert_eq!(display(svg_rect), "none");
 }
+
+#[test]
+fn wildcard_namespace_prefix_overrides_default_namespace() {
+  let html = r#"<div id="h"></div><svg><rect id="s"></rect></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    @namespace url("http://www.w3.org/2000/svg");
+    div { display: none; }
+    *|div { display: flex; }
+    rect { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let html_div = find_by_id(&styled, "h").expect("html div");
+  let svg_rect = find_by_id(&styled, "s").expect("svg rect");
+  assert_eq!(display(html_div), "flex");
+  assert_eq!(display(svg_rect), "none");
+}
