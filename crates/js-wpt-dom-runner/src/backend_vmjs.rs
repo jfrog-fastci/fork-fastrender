@@ -549,6 +549,13 @@ impl Default for DomNodeKind {
 struct DomNodeState {
   kind: DomNodeKind,
   tag_name: String,
+  /// HTML attributes on this element.
+  ///
+  /// Stored as lowercase attribute name -> value string handle.
+  ///
+  /// We store values as `GcString` so getters can return them without allocating fresh strings for
+  /// every access, which keeps the per-test heap bounded even with many attribute reads.
+  attributes: HashMap<String, GcString>,
   /// Serialized character data for this node.
   ///
   /// The vm-js WPT runner currently models a minimal DOM that only needs to support the curated
@@ -1009,6 +1016,15 @@ impl JsWptRuntime {
     let query_selector = self.alloc_native_function(native_dom_element_query_selector)?;
     let query_selector_all = self.alloc_native_function(native_dom_element_query_selector_all)?;
 
+    // Basic attribute APIs (`id`/`className` accessors + getAttribute/setAttribute/removeAttribute).
+    let get_attribute = self.alloc_native_function(native_dom_element_get_attribute)?;
+    let set_attribute = self.alloc_native_function(native_dom_element_set_attribute)?;
+    let remove_attribute = self.alloc_native_function(native_dom_element_remove_attribute)?;
+    let id_get = self.alloc_native_function(native_dom_element_get_id)?;
+    let id_set = self.alloc_native_function(native_dom_element_set_id)?;
+    let class_get = self.alloc_native_function(native_dom_element_get_class_name)?;
+    let class_set = self.alloc_native_function(native_dom_element_set_class_name)?;
+
     let inner_get = self.alloc_native_function(native_dom_element_get_inner_html)?;
     let inner_set = self.alloc_native_function(native_dom_element_set_inner_html)?;
     let outer_get = self.alloc_native_function(native_dom_element_get_outer_html)?;
@@ -1057,6 +1073,48 @@ impl JsWptRuntime {
       outer_html_key,
       Value::Object(outer_get),
       Value::Object(outer_set),
+    )?;
+
+    let get_attribute_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("getAttribute")?)
+    };
+    let set_attribute_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("setAttribute")?)
+    };
+    let remove_attribute_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("removeAttribute")?)
+    };
+    self.define_data_prop(element_proto, get_attribute_key, Value::Object(get_attribute))?;
+    self.define_data_prop(element_proto, set_attribute_key, Value::Object(set_attribute))?;
+    self.define_data_prop(
+      element_proto,
+      remove_attribute_key,
+      Value::Object(remove_attribute),
+    )?;
+
+    let id_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("id")?)
+    };
+    self.define_accessor_prop(
+      element_proto,
+      id_key,
+      Value::Object(id_get),
+      Value::Object(id_set),
+    )?;
+
+    let class_name_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("className")?)
+    };
+    self.define_accessor_prop(
+      element_proto,
+      class_name_key,
+      Value::Object(class_get),
+      Value::Object(class_set),
     )?;
 
     self.dom_element_proto = Some(element_proto);
@@ -1615,6 +1673,7 @@ impl JsWptRuntime {
       DomNodeState {
         kind: DomNodeKind::Element,
         tag_name: tag_name.to_ascii_lowercase(),
+        attributes: HashMap::new(),
         text_content: None,
         parent: None,
         children: Vec::new(),
@@ -1671,6 +1730,7 @@ impl JsWptRuntime {
       DomNodeState {
         kind: DomNodeKind::DocumentFragment,
         tag_name: String::new(),
+        attributes: HashMap::new(),
         text_content: None,
         parent: None,
         children: Vec::new(),
@@ -4836,7 +4896,19 @@ fn dom_get_string_prop(rt: &mut JsWptRuntime, obj: GcObject, name: &str) -> Resu
       Value::String(s) => Ok(rt.heap.get_string(s)?.to_utf8_lossy()),
       _ => Ok(String::new()),
     },
-    PropertyKind::Accessor { .. } => Err(JsError::Vm(VmError::Unimplemented("accessor props"))),
+    PropertyKind::Accessor { get, .. } => {
+      if matches!(get, Value::Undefined) {
+        return Ok(String::new());
+      }
+      if !rt.is_callable_value(get) {
+        return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+      }
+      let value = rt.call(get, Value::Object(obj), &[])?;
+      match value {
+        Value::String(s) => Ok(rt.heap.get_string(s)?.to_utf8_lossy()),
+        _ => Ok(String::new()),
+      }
+    }
   }
 }
 
@@ -5062,6 +5134,18 @@ fn dom_escape_text(out: &mut String, text: &str) {
   }
 }
 
+fn dom_escape_attr_value(out: &mut String, text: &str) {
+  for ch in text.chars() {
+    match ch {
+      '&' => out.push_str("&amp;"),
+      '<' => out.push_str("&lt;"),
+      '>' => out.push_str("&gt;"),
+      '"' => out.push_str("&quot;"),
+      _ => out.push(ch),
+    }
+  }
+}
+
 fn dom_is_void_html_element(tag_name: &str) -> bool {
   // https://html.spec.whatwg.org/#void-elements
   matches!(
@@ -5091,6 +5175,49 @@ fn dom_element_children_for_serialization(state: &DomNodeState) -> &[GcObject] {
   }
 }
 
+fn dom_serialize_attributes(rt: &JsWptRuntime, state: &DomNodeState, out: &mut String) -> Result<(), JsError> {
+  if state.attributes.is_empty() {
+    return Ok(());
+  }
+
+  let mut push_attr = |name: &str, value: GcString| -> Result<(), JsError> {
+    out.push(' ');
+    out.push_str(name);
+    out.push_str("=\"");
+    let value = rt.heap.get_string(value)?.to_utf8_lossy();
+    dom_escape_attr_value(out, &value);
+    out.push('"');
+    Ok(())
+  };
+
+  // Emit commonly-used HTML attributes in a stable order.
+  if let Some(&value) = state.attributes.get("id") {
+    push_attr("id", value)?;
+  }
+  if let Some(&value) = state.attributes.get("class") {
+    push_attr("class", value)?;
+  }
+
+  // Emit any remaining attributes in a deterministic order.
+  let mut remaining = state
+    .attributes
+    .iter()
+    .filter_map(|(name, &value)| {
+      if name == "id" || name == "class" {
+        None
+      } else {
+        Some((name.as_str(), value))
+      }
+    })
+    .collect::<Vec<_>>();
+  remaining.sort_by(|(a, _), (b, _)| a.cmp(b));
+  for (name, value) in remaining {
+    push_attr(name, value)?;
+  }
+
+  Ok(())
+}
+
 fn dom_serialize_node(rt: &JsWptRuntime, node: GcObject, out: &mut String) -> Result<(), JsError> {
   let Some(state) = rt.dom_nodes.get(&node) else {
     return Ok(());
@@ -5106,6 +5233,7 @@ fn dom_serialize_node(rt: &JsWptRuntime, node: GcObject, out: &mut String) -> Re
     DomNodeKind::Element => {
       out.push('<');
       out.push_str(&state.tag_name);
+      dom_serialize_attributes(rt, state, out)?;
       out.push('>');
 
       if !dom_is_void_html_element(&state.tag_name) {
@@ -5163,6 +5291,109 @@ fn dom_parse_simple_element_list(html: &str) -> Result<Option<Vec<(String, Strin
   }
 
   Ok(Some(out))
+}
+
+fn native_dom_element_get_attribute(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "getAttribute")?;
+  let name = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let name = name.to_ascii_lowercase();
+  let Some(state) = rt.dom_nodes.get(&element) else {
+    return Ok(Value::Null);
+  };
+  Ok(match state.attributes.get(&name) {
+    Some(&value) => Value::String(value),
+    None => Value::Null,
+  })
+}
+
+fn native_dom_element_set_attribute(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "setAttribute")?;
+  let name = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let name = name.to_ascii_lowercase();
+  let value = string_from_value(rt, args.get(1).copied().unwrap_or(Value::Undefined))?;
+  let Value::String(handle) = rt.alloc_string_value(&value)? else {
+    return Ok(Value::Undefined);
+  };
+  if let Some(state) = rt.dom_nodes.get_mut(&element) {
+    state.attributes.insert(name, handle);
+  }
+  Ok(Value::Undefined)
+}
+
+fn native_dom_element_remove_attribute(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "removeAttribute")?;
+  let name = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let name = name.to_ascii_lowercase();
+  if let Some(state) = rt.dom_nodes.get_mut(&element) {
+    state.attributes.remove(&name);
+  }
+  Ok(Value::Undefined)
+}
+
+fn native_dom_element_get_id(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "id")?;
+  let Some(state) = rt.dom_nodes.get(&element) else {
+    return rt.alloc_string_value("");
+  };
+  match state.attributes.get("id") {
+    Some(&value) => Ok(Value::String(value)),
+    None => rt.alloc_string_value(""),
+  }
+}
+
+fn native_dom_element_set_id(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "id")?;
+  let value = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Value::String(handle) = rt.alloc_string_value(&value)? else {
+    return Ok(Value::Undefined);
+  };
+  if let Some(state) = rt.dom_nodes.get_mut(&element) {
+    state.attributes.insert("id".to_string(), handle);
+  }
+  Ok(Value::Undefined)
+}
+
+fn native_dom_element_get_class_name(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "className")?;
+  let Some(state) = rt.dom_nodes.get(&element) else {
+    return rt.alloc_string_value("");
+  };
+  match state.attributes.get("class") {
+    Some(&value) => Ok(Value::String(value)),
+    None => rt.alloc_string_value(""),
+  }
+}
+
+fn native_dom_element_set_class_name(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "className")?;
+  let value = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Value::String(handle) = rt.alloc_string_value(&value)? else {
+    return Ok(Value::Undefined);
+  };
+  if let Some(state) = rt.dom_nodes.get_mut(&element) {
+    state.attributes.insert("class".to_string(), handle);
+  }
+  Ok(Value::Undefined)
 }
 
 fn native_dom_element_get_inner_html(
@@ -5709,6 +5940,67 @@ mod tests {
     let fragment_name = get_data_prop(&mut rt, fragment, "nodeName");
     assert_eq!(rt.value_to_string_lossy(fragment_name), "#document-fragment");
     assert_eq!(get_data_prop(&mut rt, fragment, "nodeValue"), Value::Null);
+  }
+
+  #[test]
+  fn element_attributes_reflect_in_getattribute_and_outerhtml() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let Value::Object(arr) = rt
+      .exec_script(
+        r#"
+        const el = document.createElement("div");
+        el.id = "root";
+        el.className = "a b";
+        [
+          el.id,
+          el.getAttribute("id"),
+          el.getAttribute("class"),
+          el.outerHTML,
+        ];
+      "#,
+      )
+      .expect("exec script")
+    else {
+      panic!("expected array return value");
+    };
+
+    let el_id = get_data_prop(&mut rt, arr, "0");
+    assert_eq!(rt.value_to_string_lossy(el_id), "root");
+    let attr_id = get_data_prop(&mut rt, arr, "1");
+    assert_eq!(rt.value_to_string_lossy(attr_id), "root");
+    let attr_class = get_data_prop(&mut rt, arr, "2");
+    assert_eq!(rt.value_to_string_lossy(attr_class), "a b");
+    let outer_html = get_data_prop(&mut rt, arr, "3");
+    assert_eq!(
+      rt.value_to_string_lossy(outer_html),
+      r#"<div id="root" class="a b"></div>"#
+    );
+  }
+
+  #[test]
+  fn element_remove_attribute_clears_id_and_serialization() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let Value::Object(arr) = rt
+      .exec_script(
+        r#"
+        const el = document.createElement("div");
+        el.id = "root";
+        el.removeAttribute("id");
+        [el.id, el.getAttribute("id"), el.outerHTML];
+      "#,
+      )
+      .expect("exec script")
+    else {
+      panic!("expected array return value");
+    };
+
+    let el_id = get_data_prop(&mut rt, arr, "0");
+    assert_eq!(rt.value_to_string_lossy(el_id), "");
+    assert_eq!(get_data_prop(&mut rt, arr, "1"), Value::Null);
+    let outer_html = get_data_prop(&mut rt, arr, "2");
+    assert_eq!(rt.value_to_string_lossy(outer_html), "<div></div>");
   }
 
   #[test]
