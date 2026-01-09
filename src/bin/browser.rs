@@ -814,6 +814,7 @@ impl App {
       fastrender::ui::WorkerToUi::DebugLog { tab_id, line } => {
         eprintln!("[worker:{tab_id:?}] {line}");
       }
+      fastrender::ui::WorkerToUi::SelectDropdownOpened { .. } => {}
     }
   }
 

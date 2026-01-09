@@ -1,4 +1,4 @@
-use crate::geometry::{Point, Size};
+use crate::geometry::{Point, Rect, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{InteractionAction, InteractionEngine};
@@ -107,6 +107,13 @@ impl BrowserTabController {
         pos_css,
         button,
       } if tab_id == self.tab_id => self.handle_pointer_up(pos_css, button),
+      UiToWorker::SelectDropdownChoose {
+        tab_id,
+        select_node_id,
+        option_node_id,
+      } if tab_id == self.tab_id => {
+        self.handle_select_dropdown_choose(select_node_id, option_node_id)
+      }
       UiToWorker::TextInput { tab_id, text } if tab_id == self.tab_id => self.handle_text_input(&text),
       UiToWorker::KeyAction { tab_id, key } if tab_id == self.tab_id => self.handle_key_action(key),
       UiToWorker::Navigate {
@@ -290,11 +297,87 @@ impl BrowserTabController {
       }
     }
 
+    let (select_node_id, select_control) = if let InteractionAction::OpenSelectDropdown {
+      select_node_id,
+      control,
+    } = action
+    {
+      (Some(select_node_id), Some(control))
+    } else {
+      (None, None)
+    };
+
+    let mut out = if changed {
+      self.paint_if_needed()?
+    } else {
+      Vec::new()
+    };
+
+    if let (Some(select_node_id), Some(control)) = (select_node_id, select_control) {
+      let anchor_css = self
+        .select_anchor_css(select_node_id)
+        .unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 0.0, 0.0));
+      out.push(WorkerToUi::SelectDropdownOpened {
+        tab_id: self.tab_id,
+        select_node_id,
+        control,
+        anchor_css,
+      });
+    }
+
+    Ok(out)
+  }
+
+  fn handle_select_dropdown_choose(
+    &mut self,
+    select_node_id: usize,
+    option_node_id: usize,
+  ) -> Result<Vec<WorkerToUi>> {
+    let changed = self.document.mutate_dom(|dom| {
+      crate::interaction::dom_mutation::activate_select_option(
+        dom,
+        select_node_id,
+        option_node_id,
+        /*toggle_for_multiple=*/ false,
+      )
+    });
     if changed {
       self.paint_if_needed()
     } else {
       Ok(Vec::new())
     }
+  }
+
+  fn select_anchor_css(&self, select_node_id: usize) -> Option<Rect> {
+    let prepared = self.document.prepared()?;
+
+    let select_box_id = {
+      let mut stack: Vec<&crate::tree::box_tree::BoxNode> = vec![&prepared.box_tree().root];
+      let mut found = None;
+      while let Some(node) = stack.pop() {
+        if node.styled_node_id == Some(select_node_id) {
+          found = Some(node.id);
+          break;
+        }
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      found
+    }?;
+
+    let mut fragment_tree_scrolled = prepared.fragment_tree().clone();
+    crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, &self.scroll_state);
+    let page_rect = crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
+
+    // Convert page-space bounds (includes scroll) to viewport-local coords for UI positioning.
+    Some(page_rect.translate(Point::new(
+      -self.scroll_state.viewport.x,
+      -self.scroll_state.viewport.y,
+    )))
   }
 
   fn handle_text_input(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {

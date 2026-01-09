@@ -1,5 +1,5 @@
 use crate::api::{BrowserDocument, FastRender, FastRenderFactory, PreparedDocumentReport, RenderOptions};
-use crate::geometry::Point;
+use crate::geometry::{Point, Rect};
 use crate::html::find_document_title;
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{InteractionAction, InteractionEngine};
@@ -121,6 +121,44 @@ fn same_document_fragment_target(current_url: &str, href: &str) -> Option<url::U
 
 fn url_fragment(url: &str) -> Option<&str> {
   url.split_once('#').map(|(_, fragment)| fragment)
+}
+
+fn select_anchor_css(
+  box_tree: &crate::BoxTree,
+  fragment_tree: &crate::FragmentTree,
+  scroll_state: &ScrollState,
+  select_node_id: usize,
+) -> Option<Rect> {
+  // BoxTree: find the first box produced by the `<select>` element.
+  let select_box_id = {
+    let mut stack: Vec<&crate::BoxNode> = vec![&box_tree.root];
+    let mut found = None;
+    while let Some(node) = stack.pop() {
+      if node.styled_node_id == Some(select_node_id) {
+        found = Some(node.id);
+        break;
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    found?
+  };
+
+  // FragmentTree: compute absolute page-space bounds for the select's box.
+  let mut fragment_tree_scrolled = fragment_tree.clone();
+  crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, scroll_state);
+  let page_rect =
+    crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
+
+  // Convert page-space bounds to viewport-local coords for UI positioning.
+  Some(page_rect.translate(Point::new(
+    -scroll_state.viewport.x,
+    -scroll_state.viewport.y,
+  )))
 }
 
 fn is_allowed_navigation_url(url: &str) -> Result<(), String> {
@@ -429,6 +467,13 @@ impl BrowserRuntime {
       } => {
         self.handle_pointer_up(tab_id, pos_css, button);
       }
+      UiToWorker::SelectDropdownChoose {
+        tab_id,
+        select_node_id,
+        option_node_id,
+      } => {
+        self.handle_select_dropdown_choose(tab_id, select_node_id, option_node_id);
+      }
       UiToWorker::TextInput { tab_id, text } => {
         self.handle_text_input(tab_id, &text);
       }
@@ -688,10 +733,18 @@ impl BrowserRuntime {
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
-    let (dom_changed, action) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let (dom_changed, action, anchor_css) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let (dom_changed, action) =
         engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &document_url, &base_url);
-      (dom_changed, (dom_changed, action))
+
+      let anchor_css = match &action {
+        InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
+          select_anchor_css(box_tree, fragment_tree, scroll, *select_node_id)
+        }
+        _ => None,
+      };
+
+      (dom_changed, (dom_changed, action, anchor_css))
     }) {
       Ok(result) => result,
       Err(_) => return,
@@ -705,10 +758,20 @@ impl BrowserRuntime {
         select_node_id,
         control,
       } => {
+        // Back-compat: keep the older cursor-anchored dropdown message.
         let _ = self.ui_tx.send(WorkerToUi::OpenSelectDropdown {
           tab_id,
           select_node_id,
+          control: control.clone(),
+        });
+
+        let anchor_css =
+          anchor_css.unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 0.0, 0.0));
+        let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
+          tab_id,
+          select_node_id,
           control,
+          anchor_css,
         });
         if dom_changed {
           tab.cancel.bump_paint();
@@ -721,6 +784,28 @@ impl BrowserRuntime {
           tab.needs_repaint = true;
         }
       }
+    }
+  }
+
+  fn handle_select_dropdown_choose(&mut self, tab_id: TabId, select_node_id: usize, option_node_id: usize) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let changed = doc.mutate_dom(|dom| {
+      crate::interaction::dom_mutation::activate_select_option(
+        dom,
+        select_node_id,
+        option_node_id,
+        /*toggle_for_multiple=*/ false,
+      )
+    });
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
     }
   }
 
@@ -785,10 +870,29 @@ impl BrowserRuntime {
           select_node_id,
           control,
         } => {
+          // Back-compat: keep the older cursor-anchored dropdown message.
           let _ = self.ui_tx.send(WorkerToUi::OpenSelectDropdown {
             tab_id,
             select_node_id,
+            control: control.clone(),
+          });
+
+          let anchor_css = doc
+            .prepared()
+            .and_then(|prepared| {
+              select_anchor_css(
+                prepared.box_tree(),
+                prepared.fragment_tree(),
+                &tab.scroll_state,
+                select_node_id,
+              )
+            })
+            .unwrap_or(Rect::ZERO);
+          let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
+            tab_id,
+            select_node_id,
             control,
+            anchor_css,
           });
           if changed {
             tab.cancel.bump_paint();

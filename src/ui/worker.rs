@@ -1,5 +1,5 @@
 use crate::api::{BrowserDocument, FastRender, PreparedDocument, PreparedPaintOptions};
-use crate::geometry::{Point, Size};
+use crate::geometry::{Point, Rect, Size};
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::interaction::scroll_offset_for_fragment_target;
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
@@ -215,6 +215,39 @@ fn same_document_fragment_navigation(
     target_url: target,
     fragment,
   })
+}
+
+fn select_anchor_css(
+  prepared: &crate::PreparedDocument,
+  scroll_state: &ScrollState,
+  select_node_id: usize,
+) -> Option<Rect> {
+  let select_box_id = {
+    let mut stack: Vec<&crate::BoxNode> = vec![&prepared.box_tree().root];
+    let mut found = None;
+    while let Some(node) = stack.pop() {
+      if node.styled_node_id == Some(select_node_id) {
+        found = Some(node.id);
+        break;
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    found?
+  };
+
+  let mut fragment_tree_scrolled = prepared.fragment_tree().clone();
+  crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, scroll_state);
+  let page_rect =
+    crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
+  Some(page_rect.translate(Point::new(
+    -scroll_state.viewport.x,
+    -scroll_state.viewport.y,
+  )))
 }
 
 fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
@@ -492,16 +525,53 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
             select_node_id,
             control,
           } => {
+            // Back-compat: keep the older cursor-anchored dropdown message.
             let _ = tx.send(WorkerToUi::OpenSelectDropdown {
               tab_id,
               select_node_id,
+              control: control.clone(),
+            });
+
+            let anchor_css = doc
+              .prepared()
+              .and_then(|prepared| select_anchor_css(prepared, scroll, select_node_id))
+              .unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 0.0, 0.0));
+
+            let _ = tx.send(WorkerToUi::SelectDropdownOpened {
+              tab_id,
+              select_node_id,
               control,
+              anchor_css,
             });
             repaint_if_needed(tab_id, tab, &tx);
           }
           _ => {
             repaint_if_needed(tab_id, tab, &tx);
           }
+        }
+      }
+      UiToWorker::SelectDropdownChoose {
+        tab_id,
+        select_node_id,
+        option_node_id,
+      } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        let Some(doc) = tab.document.as_mut() else {
+          continue;
+        };
+
+        let changed = doc.mutate_dom(|dom| {
+          crate::interaction::dom_mutation::activate_select_option(
+            dom,
+            select_node_id,
+            option_node_id,
+            /*toggle_for_multiple=*/ false,
+          )
+        });
+        if changed {
+          repaint_if_needed(tab_id, tab, &tx);
         }
       }
       UiToWorker::TextInput { tab_id, text } => {
@@ -554,10 +624,23 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
             select_node_id,
             control,
           } => {
+            // Back-compat: keep the older cursor-anchored dropdown message.
             let _ = tx.send(WorkerToUi::OpenSelectDropdown {
               tab_id,
               select_node_id,
+              control: control.clone(),
+            });
+
+            let anchor_css = doc
+              .prepared()
+              .and_then(|prepared| select_anchor_css(prepared, &tab.scroll_state, select_node_id))
+              .unwrap_or(Rect::ZERO);
+
+            let _ = tx.send(WorkerToUi::SelectDropdownOpened {
+              tab_id,
+              select_node_id,
               control,
+              anchor_css,
             });
             if changed {
               repaint_if_needed(tab_id, tab, &tx);

@@ -154,6 +154,7 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
       WorkerToUi::Stage { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::FrameReady { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::OpenSelectDropdown { tab_id: t, .. } => *t == tab_id,
+      WorkerToUi::SelectDropdownOpened { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::NavigationStarted { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::NavigationCommitted { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::LoadingState { tab_id: t, .. } => *t == tab_id,

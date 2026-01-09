@@ -43,6 +43,11 @@ pub struct OpenSelectDropdownUpdate {
   pub tab_id: TabId,
   pub select_node_id: usize,
   pub control: crate::tree::box_tree::SelectControl,
+  /// Optional viewport-local CSS-pixel rect for positioning a dropdown popup.
+  ///
+  /// Some worker implementations only send cursor-anchored dropdown requests; for those, this will
+  /// be `None` and front-ends should pick a reasonable anchor (e.g. current pointer position).
+  pub anchor_css: Option<crate::geometry::Rect>,
 }
 
 impl std::fmt::Debug for FrameReadyUpdate {
@@ -597,6 +602,21 @@ impl BrowserAppState {
           tab_id,
           select_node_id,
           control,
+          anchor_css: None,
+        });
+      }
+      WorkerToUi::SelectDropdownOpened {
+        tab_id,
+        select_node_id,
+        control,
+        anchor_css,
+      } => {
+        update.request_redraw = true;
+        update.open_select_dropdown = Some(OpenSelectDropdownUpdate {
+          tab_id,
+          select_node_id,
+          control,
+          anchor_css: Some(anchor_css),
         });
       }
       WorkerToUi::Stage { tab_id, stage } => {

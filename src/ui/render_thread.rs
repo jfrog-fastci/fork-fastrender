@@ -198,6 +198,13 @@ impl BrowserRenderThread {
       } => {
         self.pointer_up(tab_id, pos_css, button);
       }
+      UiToWorker::SelectDropdownChoose {
+        tab_id,
+        select_node_id,
+        option_node_id,
+      } => {
+        self.select_dropdown_choose(tab_id, select_node_id, option_node_id);
+      }
       UiToWorker::TextInput { tab_id, text } => {
         self.text_input(tab_id, text);
       }
@@ -556,6 +563,8 @@ impl BrowserRenderThread {
       return;
     }
     let mut navigate_to: Option<String> = None;
+    let mut dropdown_opened: Option<(usize, crate::tree::box_tree::SelectControl, crate::geometry::Rect)> =
+      None;
 
     {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -597,6 +606,19 @@ impl BrowserRenderThread {
 
       if let InteractionAction::Navigate { href } = action {
         navigate_to = Some(href);
+      } else if let InteractionAction::OpenSelectDropdown {
+        select_node_id,
+        control,
+      } = action
+      {
+        if let Some(anchor_css) = select_anchor_css(&box_tree, &fragments, &scroll_state, select_node_id)
+        {
+          dropdown_opened = Some((select_node_id, control, anchor_css));
+        }
+        if changed {
+          tab.cancel.bump_paint();
+          repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
+        }
       } else if changed {
         tab.cancel.bump_paint();
         repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
@@ -605,6 +627,15 @@ impl BrowserRenderThread {
 
     if let Some(href) = navigate_to {
       self.navigate(tab_id, href, NavigationReason::LinkClick);
+    }
+
+    if let Some((select_node_id, control, anchor_css)) = dropdown_opened {
+      let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
+        tab_id,
+        select_node_id,
+        control,
+        anchor_css,
+      });
     }
   }
 
@@ -678,6 +709,60 @@ impl BrowserRenderThread {
       self.navigate(tab_id, href, NavigationReason::LinkClick);
     }
   }
+
+  fn select_dropdown_choose(&mut self, tab_id: TabId, select_node_id: usize, option_node_id: usize) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let changed = doc.mutate_dom(|dom| {
+      crate::interaction::dom_mutation::activate_select_option(
+        dom,
+        select_node_id,
+        option_node_id,
+        /*toggle_for_multiple=*/ false,
+      )
+    });
+    if changed {
+      tab.cancel.bump_paint();
+      repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
+    }
+  }
+}
+
+fn select_anchor_css(
+  box_tree: &crate::BoxTree,
+  fragment_tree_scrolled: &crate::FragmentTree,
+  scroll_state: &ScrollState,
+  select_node_id: usize,
+) -> Option<crate::geometry::Rect> {
+  let select_box_id = {
+    let mut stack: Vec<&crate::BoxNode> = vec![&box_tree.root];
+    let mut found = None;
+    while let Some(node) = stack.pop() {
+      if node.styled_node_id == Some(select_node_id) {
+        found = Some(node.id);
+        break;
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    found?
+  };
+
+  let page_rect =
+    crate::interaction::absolute_bounds_for_box_id(fragment_tree_scrolled, select_box_id)?;
+  Some(page_rect.translate(crate::geometry::Point::new(
+    -scroll_state.viewport.x,
+    -scroll_state.viewport.y,
+  )))
 }
 
 fn sanitize_delta(value: f32) -> f32 {

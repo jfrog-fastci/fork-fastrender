@@ -93,6 +93,19 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
+    WorkerToUi::SelectDropdownOpened {
+      tab_id,
+      select_node_id,
+      control,
+      anchor_css: _,
+    } => (
+      WorkerToUiEvent::OpenSelectDropdown {
+        tab_id,
+        select_node_id,
+        control,
+      },
+      None,
+    ),
     WorkerToUi::NavigationStarted { tab_id, url } => (WorkerToUiEvent::NavigationStarted { tab_id, url }, None),
     WorkerToUi::NavigationCommitted {
       tab_id,

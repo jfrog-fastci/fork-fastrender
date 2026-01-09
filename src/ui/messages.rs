@@ -183,6 +183,14 @@ pub enum UiToWorker {
     pos_css: (f32, f32),
     button: PointerButton,
   },
+  /// User chose an option in a dropdown `<select>` popup.
+  ///
+  /// The UI should send this after receiving [`WorkerToUi::SelectDropdownOpened`].
+  SelectDropdownChoose {
+    tab_id: TabId,
+    select_node_id: usize,
+    option_node_id: usize,
+  },
   TextInput {
     tab_id: TabId,
     text: String,
@@ -241,6 +249,16 @@ pub enum WorkerToUi {
   DebugLog {
     tab_id: TabId,
     line: String,
+  },
+  /// A dropdown `<select>` was clicked and should open a UI popup.
+  ///
+  /// `anchor_css` is in **viewport-local CSS pixels** so the UI can position the popup relative to
+  /// the rendered frame.
+  SelectDropdownOpened {
+    tab_id: TabId,
+    select_node_id: usize,
+    control: crate::tree::box_tree::SelectControl,
+    anchor_css: crate::geometry::Rect,
   },
 }
 
