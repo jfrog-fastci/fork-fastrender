@@ -231,11 +231,6 @@ impl VmJsRuntime {
     Self::internal_symbol(&mut self.symbol_data_symbol, &mut self.heap, key)
   }
 
-  fn bigint_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
-    let key = self.alloc_string_handle("VmJsRuntime.[[BigIntData]]")?;
-    Self::internal_symbol(&mut self.bigint_data_symbol, &mut self.heap, key)
-  }
-
   fn is_internal_key(&self, key: &PropertyKey) -> bool {
     let PropertyKey::Symbol(sym) = key else {
       return false;
@@ -932,7 +927,7 @@ impl JsRuntime for VmJsRuntime {
       Value::Undefined | Value::Null => false,
       Value::Bool(b) => b,
       Value::Number(n) => !(n == 0.0 || n.is_nan()),
-      Value::BigInt(b) => !b.is_zero(),
+      Value::BigInt(n) => !n.is_zero(),
       Value::String(s) => !self.heap.get_string(s)?.is_empty(),
       Value::Symbol(_) | Value::Object(_) => true,
     })
@@ -990,7 +985,7 @@ impl JsRuntime for VmJsRuntime {
         Value::Bool(true) => rt.alloc_string_handle("true")?,
         Value::Bool(false) => rt.alloc_string_handle("false")?,
         Value::Number(n) => rt.to_string_from_number(n)?,
-        Value::BigInt(b) => rt.alloc_string_handle(&b.to_decimal_string())?,
+        Value::BigInt(n) => rt.alloc_string_handle(&n.to_decimal_string())?,
         Value::Symbol(_) => {
           return Err(rt.throw_type_error("Cannot convert a Symbol value to a string"));
         }
@@ -1368,6 +1363,8 @@ mod tests {
     assert_eq!(as_utf8_lossy(&rt, s), "42");
     let s = rt.to_string(Value::Number(-0.0)).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "0");
+    let s = rt.to_string(Value::BigInt(JsBigInt::from_u128(42))).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "42");
   }
 
   #[test]
@@ -1379,6 +1376,10 @@ mod tests {
     assert_eq!(rt.to_number(Value::Bool(false)).unwrap(), 0.0);
     let s = rt.alloc_string_value("  123  ").unwrap();
     assert_eq!(rt.to_number(s).unwrap(), 123.0);
+    assert!(matches!(
+      rt.to_number(Value::BigInt(JsBigInt::from_u128(1))),
+      Err(VmError::Throw(_))
+    ));
 
     // Per ECMA-262 StringToNumber, signed hex strings are not valid numeric literals.
     let s = rt.alloc_string_value("-0x10").unwrap();
