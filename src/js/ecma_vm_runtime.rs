@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use vm_js::{
-  Budget, Heap, HeapLimits, Job, JobKind, NativeFunctionId, Realm, RealmId, RootId, Scope, Value,
-  Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  Budget, Heap, HeapLimits, Job, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHostHooks,
+  VmJobContext, VmOptions,
 };
 
 use super::event_loop::{EventLoop, TimerId};
@@ -21,7 +21,7 @@ use super::ScriptElementSpec;
 ///
 /// This is an MVP JS host/runtime that:
 /// - owns the `vm-js` heap + VM + a single document realm,
-/// - installs minimal Window-ish globals (`queueMicrotask`, timers, and a Promise-shaped stub),
+/// - installs minimal Window-ish globals (`queueMicrotask` and timers),
 /// - integrates ECMAScript Promise jobs with the FastRender [`EventLoop`] microtask queue.
 ///
 /// Note: `vm-js` is still early-stage; this runtime includes a small AST interpreter for a subset
@@ -38,8 +38,6 @@ pub struct EcmaVmRuntime<State: 'static> {
   realm_id: RealmId,
   /// Optional error captured by host hooks that cannot return a `Result` (e.g. enqueue failures).
   pending_host_error: Option<Error>,
-  /// Stable native-call handler id for `promise.then`.
-  promise_then_call_id: NativeFunctionId,
   _marker: PhantomData<Rc<()>>, // !Send/!Sync: JS host is single-threaded.
 }
 
@@ -85,11 +83,6 @@ impl<State: 'static> EcmaVmRuntime<State> {
     };
     let mut vm = Vm::new(vm_options);
 
-    // Register the shared call handler for Promise `.then` once per VM.
-    let promise_then_call_id = vm
-      .register_native_call(native_promise_then::<State>)
-      .map_err(map_vm_error)?;
-
     let mut heap = heap;
     let realm = Realm::new(&mut vm, &mut heap).map_err(map_vm_error)?;
 
@@ -103,7 +96,6 @@ impl<State: 'static> EcmaVmRuntime<State> {
       config,
       realm_id: RealmId::from_raw(1),
       pending_host_error: None,
-      promise_then_call_id,
       _marker: PhantomData,
     };
 
@@ -146,32 +138,6 @@ impl<State: 'static> EcmaVmRuntime<State> {
     self.define_global_native_function("clearTimeout", 1, native_clear_timeout::<State>)?;
     self.define_global_native_function("setInterval", 1, native_set_interval::<State>)?;
     self.define_global_native_function("clearInterval", 1, native_clear_interval::<State>)?;
-
-    // Minimal Promise: Promise.resolve().then(cb)
-    self.install_promise_object()?;
-
-    Ok(())
-  }
-
-  fn install_promise_object(&mut self) -> Result<()> {
-    let resolve_fn = self.alloc_native_function("resolve", 1, native_promise_resolve::<State>)?;
-    let promise_obj = {
-      let mut scope = self.heap.scope();
-      // Root `resolve_fn` across object/key allocation.
-      scope.push_root(resolve_fn).map_err(map_vm_error)?;
-      // Promise is a function in real JS; for MVP, an ordinary object with a `resolve` method is
-      // sufficient for microtask coverage tests.
-      let obj = scope
-        .alloc_object_with_prototype(Some(self.realm.intrinsics().object_prototype()))
-        .map_err(map_vm_error)?;
-      scope.push_root(Value::Object(obj)).map_err(map_vm_error)?;
-
-      let resolve_key = prop_key(&mut scope, "resolve").map_err(map_vm_error)?;
-      define_value(&mut scope, obj, resolve_key, resolve_fn).map_err(map_vm_error)?;
-      Value::Object(obj)
-    };
-
-    self.define_global_var("Promise", promise_obj)?;
     Ok(())
   }
 
@@ -266,9 +232,14 @@ impl<State: 'static> EcmaVmRuntime<State> {
       .map_err(|err| Error::Other(format!("JS parse error: {err}")))?;
 
     let global_this = self.global_this();
+    // `vm-js` Promise built-ins require a host hook implementation to enqueue jobs. We use a small
+    // adapter that forwards to `EcmaVmRuntime` while keeping the VM/heap borrowable.
+    let host_ptr: *mut EcmaVmRuntime<State> = self;
+    let mut hooks = RuntimeHostHooks { host: host_ptr };
     let mut evaluator = Evaluator {
       vm: &mut self.vm,
       env: &mut self.env,
+      hooks: &mut hooks,
       global_this,
     };
 
@@ -289,6 +260,7 @@ impl<State: 'static> EcmaVmRuntime<State> {
 struct Evaluator<'a> {
   vm: &'a mut Vm,
   env: &'a mut Env,
+  hooks: &'a mut dyn VmHostHooks,
   global_this: Value,
 }
 
@@ -345,10 +317,31 @@ impl Evaluator<'_> {
         let s = scope.alloc_string(&node.stx.value)?;
         Ok(Value::String(s))
       }
-      Expr::Id(node) => self
-        .env
-        .get(scope.heap(), &node.stx.name)
-        .ok_or(VmError::Unimplemented("unbound identifier")),
+      Expr::Id(node) => {
+        if let Some(value) = self.env.get(scope.heap(), &node.stx.name) {
+          return Ok(value);
+        }
+
+        // Fall back to the global object so realm-provided globals (e.g. `Promise`) are visible to
+        // the MVP evaluator without needing to mirror every binding in `Env`.
+        let Value::Object(global_obj) = self.global_this else {
+          return Err(VmError::Unimplemented("global object is not an object"));
+        };
+
+        let mut child = scope.reborrow();
+        // Root the receiver and key string across allocation + prototype lookup.
+        child.push_root(self.global_this)?;
+
+        let key_s = child.alloc_string(&node.stx.name)?;
+        child.push_root(Value::String(key_s))?;
+        let key = vm_js::PropertyKey::String(key_s);
+
+        if child.heap().get_property(global_obj, &key)?.is_none() {
+          return Err(VmError::Unimplemented("unbound identifier"));
+        }
+
+        child.ordinary_get(self.vm, global_obj, key, self.global_this)
+      }
       Expr::This(_) => Ok(self.global_this),
       Expr::Member(node) => self.eval_member_expr(scope, &node.stx),
       Expr::Call(node) => self.eval_call_expr(scope, &node.stx),
@@ -425,7 +418,9 @@ impl Evaluator<'_> {
       args.push(v);
     }
 
-    self.vm.call(&mut call_scope, callee, this, &args)
+    self
+      .vm
+      .call_with_host(&mut call_scope, self.hooks, callee, this, &args)
   }
 }
 
@@ -492,6 +487,31 @@ impl Drop for ExecCtxGuard {
   fn drop(&mut self) {
     let previous = self.previous;
     EXEC_CTX.with(|cell| cell.set(previous));
+  }
+}
+
+struct RuntimeHostHooks<State: 'static> {
+  host: *mut EcmaVmRuntime<State>,
+}
+
+impl<State: 'static> VmHostHooks for RuntimeHostHooks<State> {
+  fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
+    // SAFETY: `RuntimeHostHooks` is only constructed while an `EcmaVmRuntime` is actively
+    // executing a task/microtask. The raw pointer indirection is required because `vm-js` host
+    // hooks are invoked from within `Vm::call` without access to the Rust host borrow.
+    unsafe { (&mut *self.host).host_enqueue_promise_job(job, realm) }
+  }
+
+  fn host_call_job_callback(
+    &mut self,
+    ctx: &mut dyn VmJobContext,
+    callback: &vm_js::JobCallback,
+    this_argument: Value,
+    arguments: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    unsafe {
+      (&mut *self.host).host_call_job_callback(ctx, callback, this_argument, arguments)
+    }
   }
 }
 
@@ -614,40 +634,6 @@ impl VmJobContext for FastRenderJobContext {
   }
 }
 
-struct HeapRootContext<'a> {
-  heap: &'a mut Heap,
-}
-
-impl VmJobContext for HeapRootContext<'_> {
-  fn call(
-    &mut self,
-    _host: &mut dyn VmHostHooks,
-    _callee: Value,
-    _this: Value,
-    _args: &[Value],
-  ) -> std::result::Result<Value, VmError> {
-    Err(VmError::Unimplemented("HeapRootContext::call"))
-  }
-
-  fn construct(
-    &mut self,
-    _host: &mut dyn VmHostHooks,
-    _callee: Value,
-    _args: &[Value],
-    _new_target: Value,
-  ) -> std::result::Result<Value, VmError> {
-    Err(VmError::Unimplemented("HeapRootContext::construct"))
-  }
-
-  fn add_root(&mut self, value: Value) -> std::result::Result<RootId, VmError> {
-    self.heap.add_root(value)
-  }
-
-  fn remove_root(&mut self, id: RootId) {
-    self.heap.remove_root(id);
-  }
-}
-
 // --- ScriptScheduler adapter ---
 
 impl<State: 'static> ScriptExecutor for EcmaVmRuntime<State> {
@@ -766,19 +752,19 @@ fn native_queue_microtask<State: 'static>(
       let _guard = ExecCtxGuard::install(host, event_loop);
       host.reset_budget_for_run();
 
-      let global_this = Value::Object(host.realm.global_object());
-      let callback = {
-        let mut scope = host.heap.scope();
-        scope
-          .heap()
-          .get_root(callback_root)
-          .unwrap_or(Value::Undefined)
-      };
+      let callback = host
+        .heap
+        .get_root(callback_root)
+        .unwrap_or(Value::Undefined);
 
+      // HTML `queueMicrotask` invokes callbacks with an `undefined` callback-this value.
       let mut ctx = FastRenderJobContext::new(host);
-      let result = ctx.call(host, callback, global_this, &[]);
+      let result = ctx.call(host, callback, Value::Undefined, &[]);
       host.heap.remove_root(callback_root);
       result.map(|_| ()).map_err(map_vm_error)?;
+      if let Some(err) = host.pending_host_error.take() {
+        return Err(err);
+      }
       Ok(())
     }) {
       Ok(()) => true,
@@ -852,21 +838,17 @@ fn native_set_timeout<State: 'static>(
         return Ok(());
       };
 
-      let global_this = Value::Object(host.realm.global_object());
-      let (callback, call_args) = {
-        let mut scope = host.heap.scope();
-        let callback = scope
-          .heap()
-          .get_root(entry.callback)
-          .unwrap_or(Value::Undefined);
-        let call_args: Vec<Value> = entry
-          .args
-          .iter()
-          .map(|root| scope.heap().get_root(*root).unwrap_or(Value::Undefined))
-          .collect();
-        (callback, call_args)
-      };
+      let callback = host
+        .heap
+        .get_root(entry.callback)
+        .unwrap_or(Value::Undefined);
+      let call_args: Vec<Value> = entry
+        .args
+        .iter()
+        .map(|root| host.heap.get_root(*root).unwrap_or(Value::Undefined))
+        .collect();
 
+      let global_this = Value::Object(host.realm.global_object());
       let mut ctx = FastRenderJobContext::new(host);
       let result = ctx.call(host, callback, global_this, &call_args);
 
@@ -876,6 +858,9 @@ fn native_set_timeout<State: 'static>(
       }
 
       result.map(|_| ()).map_err(map_vm_error)?;
+      if let Some(err) = host.pending_host_error.take() {
+        return Err(err);
+      }
       Ok(())
     });
 
@@ -984,26 +969,25 @@ fn native_set_interval<State: 'static>(
         return Ok(());
       };
 
-      let global_this = Value::Object(host.realm.global_object());
-      let (callback, call_args) = {
-        let mut scope = host.heap.scope();
-        let callback = scope
-          .heap()
-          .get_root(entry.callback)
-          .unwrap_or(Value::Undefined);
-        let call_args: Vec<Value> = entry
-          .args
-          .iter()
-          .map(|root| scope.heap().get_root(*root).unwrap_or(Value::Undefined))
-          .collect();
-        (callback, call_args)
-      };
+      let callback = host
+        .heap
+        .get_root(entry.callback)
+        .unwrap_or(Value::Undefined);
+      let call_args: Vec<Value> = entry
+        .args
+        .iter()
+        .map(|root| host.heap.get_root(*root).unwrap_or(Value::Undefined))
+        .collect();
 
+      let global_this = Value::Object(host.realm.global_object());
       let mut ctx = FastRenderJobContext::new(host);
       ctx
         .call(host, callback, global_this, &call_args)
         .map(|_| ())
         .map_err(map_vm_error)?;
+      if let Some(err) = host.pending_host_error.take() {
+        return Err(err);
+      }
 
       Ok(())
     });
@@ -1055,127 +1039,6 @@ fn native_clear_interval<State: 'static>(
       }
     }
   });
-  Ok(Value::Undefined)
-}
-
-fn native_promise_resolve<State: 'static>(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
-  _callee: vm_js::GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> std::result::Result<Value, VmError> {
-  let then_call_id = ExecCtxGuard::with_current::<State, _>(|host_ptr, _| unsafe {
-    (*host_ptr).promise_then_call_id
-  });
-
-  let then_key_s = scope.alloc_string("then")?;
-  scope.push_root(Value::String(then_key_s))?;
-
-  let then_fn = {
-    let name_s = scope.alloc_string("then")?;
-    scope.push_root(Value::String(name_s))?;
-    let func = scope.alloc_native_function(then_call_id, None, name_s, 1)?;
-    Value::Object(func)
-  };
-
-  // Root `then_fn` across allocating the promise object.
-  scope.push_root(then_fn)?;
-
-  let promise_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(promise_obj))?;
-  scope.define_property(
-    promise_obj,
-    vm_js::PropertyKey::String(then_key_s),
-    vm_js::PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: vm_js::PropertyKind::Data {
-        value: then_fn,
-        writable: true,
-      },
-    },
-  )?;
-
-  Ok(Value::Object(promise_obj))
-}
-
-fn native_promise_then<State: 'static>(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
-  _callee: vm_js::GcObject,
-  _this: Value,
-  args: &[Value],
-) -> std::result::Result<Value, VmError> {
-  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
-  if matches!(callback, Value::String(_)) {
-    return Err(throw_type_error(
-      scope,
-      "Promise.then does not currently support string callbacks",
-    ));
-  }
-  if !scope.heap().is_callable(callback)? {
-    return Err(throw_type_error(
-      scope,
-      "Promise.then callback is not callable",
-    ));
-  }
-
-  // Root callback until the job runs.
-  let callback_root = scope.heap_mut().add_root(callback)?;
-
-  let global_this = ExecCtxGuard::with_current::<State, _>(|host_ptr, _| unsafe {
-    Value::Object((*host_ptr).realm.global_object())
-  });
-
-  let mut job = Job::new(JobKind::Promise, move |ctx, hooks| {
-    ctx.call(hooks, callback, global_this, &[]).map(|_| ())
-  });
-  job.push_root(callback_root);
-
-  // Enqueue as a FastRender microtask. We intentionally bypass `VmHostHooks::host_enqueue_promise_job`
-  // here because this function is invoked via `vm.call(..)` (holding `&mut Vm`/`&mut Heap`), so
-  // calling into `&mut EcmaVmRuntime` would violate Rust's aliasing rules.
-  //
-  // `EcmaVmRuntime` still implements `VmHostHooks` for real `vm-js` Promise integration, but this
-  // minimal Promise stub enqueues the job directly.
-  let job_cell: Rc<RefCell<Option<Job>>> = Rc::new(RefCell::new(Some(job)));
-  let job_cell_for_task = Rc::clone(&job_cell);
-
-  let enqueue_result: std::result::Result<(), Error> =
-    ExecCtxGuard::with_current::<State, _>(|_host_ptr, event_loop_ptr| unsafe {
-      (&mut *event_loop_ptr).queue_microtask(move |host, event_loop| {
-        let job = job_cell_for_task
-          .borrow_mut()
-          .take()
-          .expect("vm-js Job should be present when Promise microtask runs");
-
-        let _guard = ExecCtxGuard::install(host, event_loop);
-        host.reset_budget_for_run();
-
-        let mut ctx = FastRenderJobContext::new(host);
-        job.run(&mut ctx, host).map_err(map_vm_error)?;
-        if let Some(err) = host.pending_host_error.take() {
-          return Err(err);
-        }
-        Ok(())
-      })
-    });
-
-  if let Err(err) = enqueue_result {
-    if let Some(job) = job_cell.borrow_mut().take() {
-      let mut ctx = HeapRootContext {
-        heap: scope.heap_mut(),
-      };
-      job.discard(&mut ctx);
-    }
-    ExecCtxGuard::with_current::<State, _>(|host_ptr, _| unsafe {
-      (*host_ptr).pending_host_error.get_or_insert(err);
-    });
-  }
-
   Ok(Value::Undefined)
 }
 
@@ -1282,6 +1145,57 @@ mod tests {
     Ok(Value::Undefined)
   }
 
+  fn thenable_then(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+      (*host_ptr).state.log.push("thenable_then");
+    });
+
+    let resolve = args.get(0).copied().unwrap_or(Value::Undefined);
+    vm.call_with_host(scope, host, resolve, Value::Undefined, &[])?;
+    Ok(Value::Undefined)
+  }
+
+  fn make_thenable(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    let call_id = vm.register_native_call(thenable_then)?;
+
+    let then_name = scope.alloc_string("then")?;
+    scope.push_root(Value::String(then_name))?;
+    let then_func = scope.alloc_native_function(call_id, None, then_name, 2)?;
+    scope.push_root(Value::Object(then_func))?;
+
+    let obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(obj))?;
+
+    scope.define_property(
+      obj,
+      vm_js::PropertyKey::String(then_name),
+      vm_js::PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(then_func),
+          writable: true,
+        },
+      },
+    )?;
+
+    Ok(Value::Object(obj))
+  }
+
   #[test]
   fn promise_then_runs_at_microtask_checkpoint() -> Result<()> {
     let clock = Arc::new(VirtualClock::new());
@@ -1304,6 +1218,28 @@ mod tests {
   }
 
   #[test]
+  fn promise_thenable_jobs_are_drained_in_the_same_microtask_checkpoint() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock);
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+
+    host.define_global_native_function("__log_sync", 0, log_sync)?;
+    host.define_global_native_function("__log_micro", 0, log_micro)?;
+    host.define_global_native_function("__make_thenable", 0, make_thenable)?;
+
+    host.execute_classic_script(
+      "Promise.resolve(__make_thenable()).then(__log_micro); __log_sync();",
+      &classic_spec(),
+      &mut event_loop,
+    )?;
+    assert_eq!(host.state.log, vec!["sync"]);
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(host.state.log, vec!["sync", "thenable_then", "micro"]);
+    Ok(())
+  }
+
+  #[test]
   fn vm_host_hooks_enqueue_promise_jobs_as_microtasks_in_fifo_order() -> Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock);
@@ -1313,7 +1249,7 @@ mod tests {
       let _guard = ExecCtxGuard::install(&mut host, &mut event_loop);
 
       host.host_enqueue_promise_job(
-        Job::new(JobKind::Promise, |_ctx, _hooks| {
+        Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
           ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
             (*host_ptr).state.log.push("job1");
           });
@@ -1323,7 +1259,7 @@ mod tests {
       );
 
       host.host_enqueue_promise_job(
-        Job::new(JobKind::Promise, |_ctx, _hooks| {
+        Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
           ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
             (*host_ptr).state.log.push("job2");
           });
