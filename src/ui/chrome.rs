@@ -172,10 +172,15 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
   if shortcuts.reload {
     actions.push(ChromeAction::Reload);
   }
-  if shortcuts.back {
+  let (can_back, can_forward) = app
+    .active_tab()
+    .map(|t| (t.can_go_back, t.can_go_forward))
+    .unwrap_or((false, false));
+
+  if shortcuts.back && can_back {
     actions.push(ChromeAction::Back);
   }
-  if shortcuts.forward {
+  if shortcuts.forward && can_forward {
     actions.push(ChromeAction::Forward);
   }
 
