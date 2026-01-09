@@ -835,6 +835,56 @@ mod tests {
   }
 
   #[test]
+  fn sends_custom_method_over_network() {
+    if skip_if_curl_backend_missing("sends_custom_method_over_network") {
+      return;
+    }
+    let Some(listener) = try_bind_localhost("sends_custom_method_over_network") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured_headers = Arc::new(Mutex::new(String::new()));
+    let captured_body = Arc::new(Mutex::new(Vec::new()));
+    let captured_headers_req = Arc::clone(&captured_headers);
+    let captured_body_req = Arc::clone(&captured_body);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, body) = read_http_request(&mut stream);
+      *captured_headers_req.lock().unwrap() = headers;
+      *captured_body_req.lock().unwrap() = body;
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/custom");
+    let mut request = Request::new("PUT", &url);
+    request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()));
+    let mut response =
+      execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+
+    let req = captured_headers.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.starts_with("put /custom"),
+      "expected PUT request line, got:\n{req}"
+    );
+    assert!(req.contains("x-test: hello"), "expected user header, got:\n{req}");
+    assert_eq!(&*captured_body.lock().unwrap(), b"payload");
+  }
+
+  #[test]
   fn redirect_follow_follows() {
     if skip_if_curl_backend_missing("redirect_follow_follows") {
       return;

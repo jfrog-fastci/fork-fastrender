@@ -4181,10 +4181,14 @@ impl HttpFetcher {
         ),
         HttpBackendMode::Auto => {
           let curl_available = curl_backend::curl_available();
+          let method_supported_by_ureq = method.eq_ignore_ascii_case("GET")
+            || method.eq_ignore_ascii_case("HEAD")
+            || method.eq_ignore_ascii_case("POST");
           let prefer_reqwest = effective_url
             .get(..8)
             .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || !method_supported_by_ureq;
           let result = if prefer_reqwest {
             self.fetch_http_with_accept_inner_reqwest(
               kind,
@@ -7349,12 +7353,15 @@ impl ResourceFetcher for HttpFetcher {
 
     let method_is_get = req.method.eq_ignore_ascii_case("GET");
     let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
-    let method_is_post = req.method.eq_ignore_ascii_case("POST");
-
-    if !(method_is_get || method_is_head || method_is_post) {
+    // Block methods that are explicitly forbidden by Fetch (and generally unsafe to expose).
+    // https://fetch.spec.whatwg.org/#forbidden-method
+    if req.method.eq_ignore_ascii_case("CONNECT")
+      || req.method.eq_ignore_ascii_case("TRACE")
+      || req.method.eq_ignore_ascii_case("TRACK")
+    {
       return Err(Error::Resource(ResourceError::new(
         req.fetch.url,
-        format!("unsupported HTTP method: {}", req.method),
+        format!("forbidden HTTP method: {}", req.method),
       )));
     }
 
@@ -7396,6 +7403,12 @@ impl ResourceFetcher for HttpFetcher {
       }
       // For non-HTTP(S) schemes we only support the legacy GET/HEAD, no-headers/no-body behaviour.
       ResourceScheme::Data | ResourceScheme::File | ResourceScheme::Relative => {
+        if !(method_is_get || method_is_head) {
+          return Err(Error::Resource(ResourceError::new(
+            req.fetch.url,
+            format!("unsupported non-HTTP method: {}", req.method),
+          )));
+        }
         if !req.headers.is_empty()
           || req.body.is_some()
           || req.redirect != web_fetch::RequestRedirect::Follow
