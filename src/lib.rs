@@ -206,6 +206,7 @@ pub mod image_output;
 pub mod pageset;
 pub(crate) mod rayon_init;
 pub mod resource;
+pub(crate) mod url_normalize;
 pub mod svg;
 pub(crate) mod svg_path;
 pub(crate) mod thread_pool_cache;

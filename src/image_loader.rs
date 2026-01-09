@@ -24,6 +24,7 @@ use crate::resource::{ensure_http_success, ensure_image_mime_sane, origin_from_u
 use crate::style::color::Rgba;
 use crate::style::types::ImageResolution;
 use crate::style::types::OrientationTransform;
+use crate::url_normalize::normalize_url_reference_for_resolution;
 use crate::svg::{
   map_svg_aspect_ratio, parse_svg_length_px, parse_svg_view_box,
   svg_intrinsic_dimensions_from_attributes, svg_view_box_root_transform, SvgPreserveAspectRatio,
@@ -6328,6 +6329,13 @@ pub(crate) fn resolve_against_base(base: &str, reference: &str) -> Option<String
     }
   }
 
+  let normalized = normalize_url_reference_for_resolution(reference);
+  if normalized.as_ref() != reference {
+    if let Ok(joined) = base_url.join(normalized.as_ref()) {
+      return Some(joined.to_string());
+    }
+  }
+
   base_url.join(reference).ok().map(|u| u.to_string())
 }
 
@@ -6379,6 +6387,20 @@ mod tests {
   use std::time::Duration;
   use std::time::SystemTime;
   use url::Url;
+
+  #[test]
+  fn resolve_against_base_normalizes_pipe_character() {
+    let resolved = resolve_against_base("https://example.com/dir/", "a|b.svg").expect("resolved");
+    assert_eq!(resolved, "https://example.com/dir/a%7Cb.svg");
+  }
+
+  #[test]
+  fn resolve_against_base_preserves_nbsp() {
+    let nbsp = "\u{00A0}";
+    let reference = format!("a{nbsp}b.svg");
+    let resolved = resolve_against_base("https://example.com/dir/", &reference).expect("resolved");
+    assert_eq!(resolved, "https://example.com/dir/a%C2%A0b.svg");
+  }
 
   #[derive(Clone, Default)]
   struct MapFetcher {

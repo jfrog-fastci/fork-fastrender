@@ -14,6 +14,7 @@ use crate::error::{RenderError, RenderStage, Result};
 use crate::resource::CorsMode;
 use crate::render_control::{check_active, check_active_periodic, RenderDeadline};
 use crate::resource::ReferrerPolicy;
+use crate::url_normalize::{normalize_http_url_for_resolution, normalize_url_reference_for_resolution};
 use cssparser::{serialize_identifier, Parser, ParserInput, Token};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
@@ -149,7 +150,19 @@ pub fn resolve_href(base: &str, href: &str) -> Option<String> {
 
   // Avoid invoking the full WHATWG URL parser for the common relative-path case.
   if looks_like_absolute_url(href_bytes) {
-    if let Ok(abs) = Url::parse(href.as_ref()) {
+    if starts_with_ignore_ascii_case(href_bytes, b"http://")
+      || starts_with_ignore_ascii_case(href_bytes, b"https://")
+    {
+      let normalized = normalize_http_url_for_resolution(href.as_ref());
+      if let Ok(abs) = Url::parse(normalized.as_ref()) {
+        return Some(abs.to_string());
+      }
+      if normalized.as_ref() != href.as_ref() {
+        if let Ok(abs) = Url::parse(href.as_ref()) {
+          return Some(abs.to_string());
+        }
+      }
+    } else if let Ok(abs) = Url::parse(href.as_ref()) {
       return Some(abs.to_string());
     }
   }
@@ -164,15 +177,21 @@ pub fn resolve_href(base: &str, href: &str) -> Option<String> {
     }
   }
 
-  Url::parse(base_candidate.as_ref())
+  let base_url = Url::parse(base_candidate.as_ref())
     .or_else(|_| {
       Url::from_file_path(base_candidate.as_ref())
         .map_err(|()| url::ParseError::RelativeUrlWithoutBase)
     })
-    .ok()?
-    .join(href.as_ref())
-    .ok()
-    .map(|u| u.to_string())
+    .ok()?;
+
+  let normalized_href = normalize_url_reference_for_resolution(href.as_ref());
+  if normalized_href.as_ref() != href.as_ref() {
+    if let Ok(joined) = base_url.join(normalized_href.as_ref()) {
+      return Some(joined.to_string());
+    }
+  }
+
+  base_url.join(href.as_ref()).ok().map(|u| u.to_string())
 }
 
 /// Resolve an href against an optional base, returning absolute URLs when possible.
@@ -3144,6 +3163,28 @@ mod tests {
     let href = "//cdn.example.com/main.css";
     let resolved = resolve_href(base, href).expect("resolved");
     assert_eq!(resolved, "https://cdn.example.com/main.css");
+  }
+
+  #[test]
+  fn resolves_relative_href_with_pipe_character() {
+    let resolved = resolve_href("https://example.com/dir/page.html", "a|b.png").expect("resolved");
+    assert_eq!(resolved, "https://example.com/dir/a%7Cb.png");
+  }
+
+  #[test]
+  fn resolves_absolute_href_with_pipe_character() {
+    let resolved =
+      resolve_href("https://example.com/dir/page.html", "https://cdn.example.com/a|b.png")
+        .expect("resolved");
+    assert_eq!(resolved, "https://cdn.example.com/a%7Cb.png");
+  }
+
+  #[test]
+  fn resolves_href_preserving_nbsp() {
+    let nbsp = "\u{00A0}";
+    let href = format!("a{nbsp}b.png");
+    let resolved = resolve_href("https://example.com/dir/page.html", &href).expect("resolved");
+    assert_eq!(resolved, "https://example.com/dir/a%C2%A0b.png");
   }
 
   #[test]
