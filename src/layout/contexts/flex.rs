@@ -1259,6 +1259,11 @@ impl FormattingContext for FlexFormattingContext {
             None,
             &mut resolved_style,
           );
+          if container_inner_size.height.is_none()
+            && resolved_style.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG
+          {
+            resolved_style.size.height = Dimension::auto();
+          }
           taffy_tree
             .set_style(*node_id, resolved_style)
             .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -5227,6 +5232,15 @@ impl FlexFormattingContext {
         None,
         &mut resolved_style,
       );
+      // CSS2.1 §10.5 / Flexbox percentage resolution:
+      // If the flex container's height is indefinite, percentage heights on flex items behave as
+      // `auto`. Passing them through to Taffy causes it to resolve 100% against a fallback base
+      // (often the viewport), producing runaway sizes (e.g. NatGeo promo tiles).
+      if container_inner_size.height.is_none()
+        && resolved_style.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG
+      {
+        resolved_style.size.height = Dimension::auto();
+      }
       let node = taffy_tree
         .new_leaf_with_context(resolved_style, child as *const BoxNode)
         .map_err(|e| {
