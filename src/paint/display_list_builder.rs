@@ -5785,6 +5785,48 @@ impl DisplayListBuilder {
                     }));
                   }
                 }
+                MathFragment::StrokeRoundedRect {
+                  rect: stroke_rect,
+                  radii: (radius_x, radius_y),
+                  width,
+                } => {
+                  let scaled_rect = Rect::from_xywh(
+                    content_rect.x() + stroke_rect.x() * scale_x,
+                    content_rect.y() + stroke_rect.y() * scale_y,
+                    stroke_rect.width() * scale_x,
+                    stroke_rect.height() * scale_y,
+                  );
+                  let uniform = ((scale_x + scale_y) * 0.5).max(0.0);
+                  let stroke_width = width * uniform;
+                  let scaled_radius_x = radius_x * scale_x;
+                  let scaled_radius_y = radius_y * scale_y;
+                  if scaled_radius_x > 0.0 || scaled_radius_y > 0.0 {
+                    let border_radius = crate::paint::display_list::BorderRadius {
+                      x: scaled_radius_x.max(0.0),
+                      y: scaled_radius_y.max(0.0),
+                    };
+                    self
+                      .list
+                      .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
+                        rect: scaled_rect,
+                        color,
+                        width: stroke_width,
+                        radii: BorderRadii {
+                          top_left: border_radius,
+                          top_right: border_radius,
+                          bottom_right: border_radius,
+                          bottom_left: border_radius,
+                        },
+                      }));
+                  } else {
+                    self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
+                      rect: scaled_rect,
+                      color,
+                      width: stroke_width,
+                      blend_mode: BlendMode::Normal,
+                    }));
+                  }
+                }
               }
             }
             if clip_contents.is_some() {

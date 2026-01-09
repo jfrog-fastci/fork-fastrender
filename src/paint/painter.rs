@@ -7469,6 +7469,71 @@ impl Painter {
                   .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
               }
             }
+            MathFragment::StrokeRoundedRect {
+              rect: stroke_rect,
+              radii: (radius_x, radius_y),
+              width,
+            } => {
+              let scaled_rect = Rect::from_xywh(
+                content_rect.x() + stroke_rect.x() * scale_x,
+                content_rect.y() + stroke_rect.y() * scale_y,
+                stroke_rect.width() * scale_x,
+                stroke_rect.height() * scale_y,
+              );
+              let uniform = ((scale_x + scale_y) * 0.5).max(0.0);
+              let stroke_width = *width * uniform;
+              let scaled_radius_x = *radius_x * scale_x;
+              let scaled_radius_y = *radius_y * scale_y;
+
+              let device_rect = self.device_rect(scaled_rect);
+              let Some(rect) = SkiaRect::from_xywh(
+                device_rect.x(),
+                device_rect.y(),
+                device_rect.width(),
+                device_rect.height(),
+              ) else {
+                continue;
+              };
+
+              let mut paint = Paint::default();
+              paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+              paint.anti_alias = true;
+
+              let stroke = tiny_skia::Stroke {
+                width: stroke_width * self.scale,
+                ..Default::default()
+              };
+
+              if scaled_radius_x > 0.0 || scaled_radius_y > 0.0 {
+                let corner_radius = crate::paint::display_list::BorderRadius {
+                  x: scaled_radius_x.max(0.0),
+                  y: scaled_radius_y.max(0.0),
+                };
+                let radii = self.device_radii(BorderRadii {
+                  top_left: corner_radius,
+                  top_right: corner_radius,
+                  bottom_right: corner_radius,
+                  bottom_left: corner_radius,
+                });
+                let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+                  rect.x(),
+                  rect.y(),
+                  rect.width(),
+                  rect.height(),
+                  &radii,
+                ) else {
+                  continue;
+                };
+                self
+                  .pixmap
+                  .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+              } else {
+                let path = PathBuilder::from_rect(rect);
+                self
+                  .pixmap
+                  .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+              }
+            }
           }
         }
         return;

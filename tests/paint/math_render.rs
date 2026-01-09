@@ -264,6 +264,19 @@ fn math_menclose_diagonal_strike_matches_golden() {
 }
 
 #[test]
+fn math_menclose_circle_matches_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_menclose_circle"))
+      .expect("load math_menclose_circle");
+    let png = renderer
+      .render_to_png(&html, 420, 220)
+      .expect("render menclose circle");
+    compare_golden("math_menclose_circle", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn math_table_alignment_matches_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();

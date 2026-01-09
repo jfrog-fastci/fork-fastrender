@@ -560,6 +560,11 @@ pub enum MathFragment {
   Rule(Rect),
   Line { from: Point, to: Point, width: f32 },
   StrokeRect { rect: Rect, radius: f32, width: f32 },
+  StrokeRoundedRect {
+    rect: Rect,
+    radii: (f32, f32),
+    width: f32,
+  },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -616,6 +621,11 @@ impl MathFragment {
       } => MathFragment::StrokeRect {
         rect: rect.translate(offset),
         radius,
+        width,
+      },
+      MathFragment::StrokeRoundedRect { rect, radii, width } => MathFragment::StrokeRoundedRect {
+        rect: rect.translate(offset),
+        radii,
         width,
       },
     }
@@ -3771,10 +3781,11 @@ impl MathLayoutContext {
           width: stroke,
         }),
         MencloseNotation::Circle => {
-          let radius = (outer_rect.width().min(outer_rect.height()) / 2.0).max(0.0);
-          fragments.push(MathFragment::StrokeRect {
+          let rx = (outer_rect.width() / 2.0).max(0.0);
+          let ry = (outer_rect.height() / 2.0).max(0.0);
+          fragments.push(MathFragment::StrokeRoundedRect {
             rect: outer_rect,
-            radius,
+            radii: (rx, ry),
             width: stroke,
           });
         }
