@@ -5,6 +5,7 @@
 
 use fastrender::dom::HTML_NAMESPACE;
 use fastrender::dom2::{Document as Dom2Document, DomError, NodeId, NodeKind};
+use fastrender::js::DomHost;
 use fastrender::web::dom::DomException;
 use fastrender::js::CurrentScriptStateHandle;
 use rquickjs::{Ctx, Function, Object, Result as JsResult, Value};
@@ -99,12 +100,15 @@ fn make_element_object<'js>(
   Ok(element)
 }
 
-pub fn install_dom_bindings<'js>(
+pub fn install_dom_bindings<'js, Host>(
   ctx: Ctx<'js>,
   globals: &Object<'js>,
-  dom: Rc<RefCell<Dom2Document>>,
+  dom: Rc<RefCell<Host>>,
   current_script_state: CurrentScriptStateHandle,
-) -> JsResult<()> {
+) -> JsResult<()>
+where
+  Host: DomHost + 'static,
+{
   let document = Object::new(ctx.clone())?;
   globals.set("document", document.clone())?;
 
@@ -117,19 +121,24 @@ pub fn install_dom_bindings<'js>(
       return Ok(None);
     };
 
-    let dom = dom_for_getter.borrow();
-    // The orchestrator stores `NodeId` handles. If the node is gone (future DOM delete support),
-    // surface `null` rather than crashing.
-    if node_id.index() >= dom.nodes_len() {
-      return Ok(None);
-    }
+    let maybe_id = dom_for_getter.borrow().with_dom(|dom| {
+      // The orchestrator stores `NodeId` handles. If the node is gone (future DOM delete support),
+      // surface `null` rather than crashing.
+      if node_id.index() >= dom.nodes_len() {
+        return None;
+      }
+      if !matches!(&dom.node(node_id).kind, NodeKind::Element { .. }) {
+        return None;
+      }
+      Some(element_id(dom, node_id))
+    });
 
-    if !matches!(&dom.node(node_id).kind, NodeKind::Element { .. }) {
+    let Some(id) = maybe_id else {
       return Ok(None);
-    }
+    };
 
     let element = Object::new(ctx.clone())?;
-    element.set("id", element_id(&dom, node_id))?;
+    element.set("id", id)?;
     Ok(Some(element))
   })?;
 
@@ -147,22 +156,23 @@ pub fn install_dom_bindings<'js>(
   //
   // This is not a full DOM implementation; we expose stable JS objects with minimal shape needed by
   // real-world scripts.
-  let (doc_el, head, body) = {
-    let dom = dom.borrow();
+  let (doc_el, head, body) = dom
+    .borrow()
+    .with_dom(|dom| -> JsResult<(Option<Object<'js>>, Option<Object<'js>>, Option<Object<'js>>)> {
     let doc_el = dom
       .document_element()
-      .map(|node_id| make_element_object(ctx.clone(), &dom, node_id))
+      .map(|node_id| make_element_object(ctx.clone(), dom, node_id))
       .transpose()?;
     let head = dom
       .head()
-      .map(|node_id| make_element_object(ctx.clone(), &dom, node_id))
+      .map(|node_id| make_element_object(ctx.clone(), dom, node_id))
       .transpose()?;
     let body = dom
       .body()
-      .map(|node_id| make_element_object(ctx.clone(), &dom, node_id))
+      .map(|node_id| make_element_object(ctx.clone(), dom, node_id))
       .transpose()?;
-    (doc_el, head, body)
-  };
+    Ok((doc_el, head, body))
+  })?;
   document.set("documentElement", doc_el)?;
   document.set("head", head)?;
   document.set("body", body)?;
@@ -189,11 +199,14 @@ pub fn install_dom_bindings<'js>(
   Ok(())
 }
 
-fn install_dom_exceptions_and_minimal_dom<'js>(
+fn install_dom_exceptions_and_minimal_dom<'js, Host>(
   ctx: Ctx<'js>,
   globals: &Object<'js>,
-  dom: Rc<RefCell<Dom2Document>>,
-) -> JsResult<()> {
+  dom: Rc<RefCell<Host>>,
+) -> JsResult<()>
+where
+  Host: DomHost + 'static,
+{
   // Host functions used by the JS shim.
   globals.set(
     "__fastrender_dom_create_element",
@@ -201,7 +214,11 @@ fn install_dom_exceptions_and_minimal_dom<'js>(
       let dom = Rc::clone(&dom);
       move |tag_name: String| {
         let mut dom = dom.borrow_mut();
-        let id = dom.create_element(&tag_name, "");
+        let id = dom.mutate_dom(|dom| {
+          let id = dom.create_element(&tag_name, "");
+          // Creating a detached node does not affect rendered output.
+          (id, false)
+        });
         Ok::<u32, rquickjs::Error>(id.index() as u32)
       }
     })?,
@@ -213,7 +230,11 @@ fn install_dom_exceptions_and_minimal_dom<'js>(
       let dom = Rc::clone(&dom);
       move |data: String| {
         let mut dom = dom.borrow_mut();
-        let id = dom.create_text(&data);
+        let id = dom.mutate_dom(|dom| {
+          let id = dom.create_text(&data);
+          // Detached nodes do not affect rendered output.
+          (id, false)
+        });
         Ok::<u32, rquickjs::Error>(id.index() as u32)
       }
     })?,
@@ -225,9 +246,15 @@ fn install_dom_exceptions_and_minimal_dom<'js>(
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, parent: u32, child: u32| {
         let mut dom = dom.borrow_mut();
-        let parent = NodeId::from_index(parent as usize);
-        let child = NodeId::from_index(child as usize);
-        match dom.append_child(parent, child) {
+        let result = dom.mutate_dom(|dom| {
+          let parent = NodeId::from_index(parent as usize);
+          let child = NodeId::from_index(child as usize);
+          match dom.append_child(parent, child) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
           Ok(changed) => Ok(changed),
           Err(err) => throw_dom_error(ctx, err),
         }
@@ -241,9 +268,15 @@ fn install_dom_exceptions_and_minimal_dom<'js>(
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, parent: u32, child: u32| {
         let mut dom = dom.borrow_mut();
-        let parent = NodeId::from_index(parent as usize);
-        let child = NodeId::from_index(child as usize);
-        match dom.remove_child(parent, child) {
+        let result = dom.mutate_dom(|dom| {
+          let parent = NodeId::from_index(parent as usize);
+          let child = NodeId::from_index(child as usize);
+          match dom.remove_child(parent, child) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
           Ok(changed) => Ok(changed),
           Err(err) => throw_dom_error(ctx, err),
         }
@@ -257,7 +290,13 @@ fn install_dom_exceptions_and_minimal_dom<'js>(
       let dom = Rc::clone(&dom);
       move |ctx: Ctx<'js>, selectors: String| {
         let mut dom = dom.borrow_mut();
-        match dom.query_selector(&selectors, None) {
+        let result = dom.mutate_dom(|dom| {
+          match dom.query_selector(&selectors, None) {
+            Ok(found) => (Ok(found), false),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
           Ok(found) => Ok(found.map(|id| id.index() as u32)),
           Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
         }
@@ -402,6 +441,7 @@ mod tests {
   use fastrender::js::{
     CurrentScriptHost, CurrentScriptStateHandle, ScriptBlockExecutor, ScriptOrchestrator, ScriptType,
   };
+  use fastrender::js::DomHost;
   use rquickjs::{Context, Runtime};
   use std::cell::RefCell;
   use std::rc::Rc;
@@ -414,6 +454,28 @@ mod tests {
   impl CurrentScriptHost for Host {
     fn current_script_state(&self) -> &CurrentScriptStateHandle {
       &self.script_state
+    }
+  }
+
+  #[derive(Debug)]
+  struct TestDomHost {
+    dom: Dom2Document,
+  }
+
+  impl DomHost for TestDomHost {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Dom2Document) -> R,
+    {
+      f(&self.dom)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Dom2Document) -> (R, bool),
+    {
+      let (result, _changed) = f(&mut self.dom);
+      result
     }
   }
 
@@ -435,7 +497,7 @@ mod tests {
   }
 
   fn init_ctx(
-    dom: Rc<RefCell<Dom2Document>>,
+    dom: Rc<RefCell<TestDomHost>>,
     script_state: CurrentScriptStateHandle,
   ) -> (Runtime, Context) {
     let rt = Runtime::new().expect("create QuickJS runtime");
@@ -484,9 +546,11 @@ mod tests {
     let renderer_dom = fastrender::dom::parse_html(
       "<!doctype html><script id=a></script><script id=b></script>",
     )?;
-    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
-    let script_a = find_script_by_id(&dom.borrow(), "a");
-    let script_b = find_script_by_id(&dom.borrow(), "b");
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_a = find_script_by_id(&dom.borrow().dom, "a");
+    let script_b = find_script_by_id(&dom.borrow().dom, "b");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
@@ -499,14 +563,14 @@ mod tests {
 
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow(),
+      &dom.borrow().dom,
       script_a,
       ScriptType::Classic,
       &mut executor,
     )?;
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow(),
+      &dom.borrow().dom,
       script_b,
       ScriptType::Classic,
       &mut executor,
@@ -575,9 +639,11 @@ mod tests {
     let renderer_dom = fastrender::dom::parse_html(
       "<!doctype html><script id=a></script><script id=b></script>",
     )?;
-    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
-    let script_a = find_script_by_id(&dom.borrow(), "a");
-    let script_b = find_script_by_id(&dom.borrow(), "b");
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_a = find_script_by_id(&dom.borrow().dom, "a");
+    let script_b = find_script_by_id(&dom.borrow().dom, "b");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
@@ -590,7 +656,7 @@ mod tests {
 
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow(),
+      &dom.borrow().dom,
       script_a,
       ScriptType::Classic,
       &mut executor,
@@ -614,10 +680,12 @@ mod tests {
       "<div id=host><template shadowroot=open><script id=shadow></script></template></div>",
       "<script id=module type=module></script>",
     ))?;
-    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
 
-    let shadow_script = find_script_by_id(&dom.borrow(), "shadow");
-    let module_script = find_script_by_id(&dom.borrow(), "module");
+    let shadow_script = find_script_by_id(&dom.borrow().dom, "shadow");
+    let module_script = find_script_by_id(&dom.borrow().dom, "module");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
@@ -630,14 +698,14 @@ mod tests {
 
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow(),
+      &dom.borrow().dom,
       shadow_script,
       ScriptType::Classic,
       &mut executor,
     )?;
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow(),
+      &dom.borrow().dom,
       module_script,
       ScriptType::Module,
       &mut executor,
@@ -654,7 +722,9 @@ mod tests {
   #[test]
   fn maps_dom_errors_to_domexception_and_selector_errors_to_syntaxerror() -> Result<()> {
     let renderer_dom = fastrender::dom::parse_html("<!doctype html>")?;
-    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
     let script_state = CurrentScriptStateHandle::default();
 
     let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
@@ -723,7 +793,9 @@ mod tests {
   fn document_head_and_body_expose_tagname_and_appendchild() -> Result<()> {
     let renderer_dom =
       fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
     let script_state = CurrentScriptStateHandle::default();
     let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
 
