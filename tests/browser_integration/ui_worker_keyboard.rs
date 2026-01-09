@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::interaction::KeyAction;
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -121,25 +122,13 @@ fn backspace_edits_focused_input_and_repaints() {
     .split();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (100, 120),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
@@ -188,25 +177,13 @@ fn key_action_sets_focus_visible() {
     .split();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (100, 120),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let frame = wait_for_frame_ready(&ui_rx, tab_id);

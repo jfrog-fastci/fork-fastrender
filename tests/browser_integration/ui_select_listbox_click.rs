@@ -51,27 +51,15 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
   let tab_id = TabId(1);
   worker
     .ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .expect("CreateTab");
   worker
     .ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 200),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (200, 200), 1.0))
     .expect("ViewportChanged");
   worker
     .ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let frame = recv_frame(&worker.ui_rx, tab_id, TIMEOUT);

@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use super::support::{create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg};
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::scroll::ScrollState;
 use fastrender::ui::worker_loop::spawn_ui_worker_for_test;
@@ -90,26 +91,14 @@ fn rapid_navigation_cancels_stale_navigation() {
   let tab_id = TabId(1);
 
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: cancel_gens.clone(),
-    })
+    .send(create_tab_msg_with_cancel(tab_id, None, cancel_gens.clone()))
     .unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 120),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
 
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: url_a.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url_a.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
   let mut messages = recv_until(&ui_rx, MAX_WAIT, |msg| {
@@ -130,11 +119,7 @@ fn rapid_navigation_cancels_stale_navigation() {
 
   cancel_gens.bump_nav();
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: url_b.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url_b.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
   let mut committed_b = false;
@@ -244,26 +229,14 @@ fn rapid_scroll_cancels_stale_paint() {
   let tab_id = TabId(1);
 
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: cancel_gens.clone(),
-    })
+    .send(create_tab_msg_with_cancel(tab_id, None, cancel_gens.clone()))
     .unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 120),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
 
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
   let _initial = recv_until(&ui_rx, MAX_WAIT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }));
@@ -272,22 +245,14 @@ fn rapid_scroll_cancels_stale_paint() {
   for _ in ui_rx.try_iter() {}
 
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 80.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, 80.0), None))
     .unwrap();
   // Give the worker thread a chance to begin painting the first scroll. The per-thread render delay
   // ensures the paint stays in-flight long enough to reliably cancel.
   std::thread::sleep(Duration::from_millis(20));
   cancel_gens.bump_paint();
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 80.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, 80.0), None))
     .unwrap();
 
   let mut latest_scroll: Option<ScrollState> = None;

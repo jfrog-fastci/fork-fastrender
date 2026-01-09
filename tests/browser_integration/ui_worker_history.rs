@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
+use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg};
+
 // These tests run alongside other render-heavy integration tests; allow extra slack to avoid
 // flakes under CPU contention.
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -153,24 +155,12 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
 
   let (tx, rx, handle) = spawn_worker();
   let tab_id = TabId(1);
-  tx.send(UiToWorker::CreateTab {
-    tab_id,
-    initial_url: None,
-    cancel: Default::default(),
-  })
+  tx.send(create_tab_msg(tab_id, None))
   .unwrap();
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (64, 64),
-    dpr: 1.0,
-  })
+  tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
   .unwrap();
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: a_url.clone(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, a_url);
@@ -179,11 +169,7 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   let frame_a = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame_a, (255, 0, 0, 255));
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: b_url.clone(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, b_url);
@@ -192,11 +178,7 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   let frame_b = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame_b, (0, 0, 255, 255));
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: a_url.clone(),
-    reason: NavigationReason::BackForward,
-  })
+  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::BackForward))
   .unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, a_url);
@@ -205,11 +187,7 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   let frame_back = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame_back, (255, 0, 0, 255));
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: b_url.clone(),
-    reason: NavigationReason::BackForward,
-  })
+  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::BackForward))
   .unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, b_url);
@@ -230,42 +208,22 @@ fn reload_does_not_create_new_history_entry() {
 
   let (tx, rx, handle) = spawn_worker();
   let tab_id = TabId(1);
-  tx.send(UiToWorker::CreateTab {
-    tab_id,
-    initial_url: None,
-    cancel: Default::default(),
-  })
+  tx.send(create_tab_msg(tab_id, None))
   .unwrap();
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (64, 64),
-    dpr: 1.0,
-  })
+  tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
   .unwrap();
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: a_url.clone(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: b_url.clone(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: b_url.clone(),
-    reason: NavigationReason::Reload,
-  })
+  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::Reload))
   .unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, b_url);
@@ -286,33 +244,17 @@ fn scroll_is_restored_when_going_back() {
 
   let (tx, rx, handle) = spawn_worker();
   let tab_id = TabId(1);
-  tx.send(UiToWorker::CreateTab {
-    tab_id,
-    initial_url: None,
-    cancel: Default::default(),
-  })
+  tx.send(create_tab_msg(tab_id, None))
   .unwrap();
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (64, 64),
-    dpr: 1.0,
-  })
+  tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
   .unwrap();
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: a_url.clone(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
 
-  tx.send(UiToWorker::Scroll {
-    tab_id,
-    delta_css: (0.0, 400.0),
-    pointer_css: None,
-  })
+  tx.send(scroll_msg(tab_id, (0.0, 400.0), None))
   .unwrap();
   let scrolled = next_scroll_state_updated(&rx, tab_id);
   assert!(
@@ -328,20 +270,12 @@ fn scroll_is_restored_when_going_back() {
     frame_scrolled.scroll_state.viewport
   );
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: b_url.clone(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: a_url.clone(),
-    reason: NavigationReason::BackForward,
-  })
+  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::BackForward))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let frame = next_frame_ready(&rx, tab_id);

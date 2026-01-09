@@ -58,27 +58,15 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
   let tab_id = TabId(1);
   worker
     .ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 120),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .unwrap();
 
   let msg = next_navigation_committed(&worker.ui_rx, tab_id);
@@ -139,27 +127,15 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   let tab_id = TabId(1);
   worker
     .ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .expect("create tab");
   worker
     .ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 120),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("viewport");
   worker
     .ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(support::navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
     .expect("navigate");
 
   // Wait for an initial frame so hit-testing has a layout cache.

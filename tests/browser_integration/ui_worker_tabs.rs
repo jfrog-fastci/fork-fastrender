@@ -5,6 +5,8 @@ use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
+use super::support::create_tab_msg;
+
 fn wait_for_first_frame(
   rx: &std::sync::mpsc::Receiver<WorkerToUi>,
   tab_id: TabId,
@@ -40,18 +42,10 @@ fn multi_tab_navigations_are_scoped_by_tab_id() {
   let tab2 = TabId::new();
 
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab1,
-      initial_url: Some("about:blank".to_string()),
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab1, Some("about:blank".to_string())))
     .expect("create tab1");
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab2,
-      initial_url: Some("about:newtab".to_string()),
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab2, Some("about:newtab".to_string())))
     .expect("create tab2");
 
   let deadline = Instant::now() + Duration::from_secs(10);
@@ -153,11 +147,7 @@ fn close_tab_prevents_future_frames_for_that_tab() {
 
   let tab1 = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab1,
-      initial_url: Some("about:newtab".to_string()),
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab1, Some("about:newtab".to_string())))
     .expect("create tab1");
   let _ = wait_for_first_frame(&ui_rx, tab1, Duration::from_secs(10));
 
@@ -188,11 +178,7 @@ fn close_tab_prevents_future_frames_for_that_tab() {
   // Worker must stay alive and serve other tabs.
   let tab2 = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab2,
-      initial_url: Some("about:blank".to_string()),
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab2, Some("about:blank".to_string())))
     .expect("create tab2");
   let _ = wait_for_first_frame(&ui_rx, tab2, Duration::from_secs(10));
 

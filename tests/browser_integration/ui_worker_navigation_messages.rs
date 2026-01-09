@@ -77,28 +77,20 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
 
   handle
     .ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .expect("create tab");
   handle
     .ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (64, 64),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
     .expect("viewport");
 
   handle
     .ui_tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: url_a.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      url_a.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("navigate a");
   let (url, back, forward) = next_navigation_committed(&handle.ui_rx, tab_id);
   assert_eq!(url, url_a);
@@ -109,22 +101,18 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
 
   handle
     .ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 120.0),
-      pointer_css: None,
-    })
+    .send(support::scroll_msg(tab_id, (0.0, 120.0), None))
     .expect("scroll a");
   let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 120.0);
 
   handle
     .ui_tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: url_b.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      url_b.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("navigate b");
   let (url, back, forward) = next_navigation_committed(&handle.ui_rx, tab_id);
   assert_eq!(url, url_b);
@@ -135,11 +123,7 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
 
   handle
     .ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 240.0),
-      pointer_css: None,
-    })
+    .send(support::scroll_msg(tab_id, (0.0, 240.0), None))
     .expect("scroll b");
   let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 240.0);

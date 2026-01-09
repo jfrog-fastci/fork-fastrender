@@ -8,6 +8,7 @@ use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{
   spawn_browser_render_thread, NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi,
 };
+use super::support::{create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg};
 use std::ffi::OsString;
 use std::time::Duration;
 
@@ -47,23 +48,15 @@ fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
-  tx.send(UiToWorker::CreateTab {
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel))
+    .unwrap();
+  tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .unwrap();
+  tx.send(navigate_msg(
     tab_id,
-    initial_url: None,
-    cancel,
-  })
-  .unwrap();
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (64, 64),
-    dpr: 1.0,
-  })
-  .unwrap();
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: "about:newtab".to_string(),
-    reason: NavigationReason::TypedUrl,
-  })
+    "about:newtab".to_string(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
 
   let mut stages = Vec::new();
@@ -101,23 +94,15 @@ fn scroll_produces_scroll_update_and_frame() {
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
-  tx.send(UiToWorker::CreateTab {
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel))
+    .unwrap();
+  tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .unwrap();
+  tx.send(navigate_msg(
     tab_id,
-    initial_url: None,
-    cancel,
-  })
-  .unwrap();
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (64, 64),
-    dpr: 1.0,
-  })
-  .unwrap();
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: "about:test-scroll".to_string(),
-    reason: NavigationReason::TypedUrl,
-  })
+    "about:test-scroll".to_string(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
 
   // Wait for the initial frame.
@@ -127,12 +112,7 @@ fn scroll_produces_scroll_update_and_frame() {
     }
   }
 
-  tx.send(UiToWorker::Scroll {
-    tab_id,
-    delta_css: (0.0, 200.0),
-    pointer_css: None,
-  })
-  .unwrap();
+  tx.send(scroll_msg(tab_id, (0.0, 200.0), None)).unwrap();
 
   let mut saw_scroll = false;
   let mut saw_frame = false;
@@ -172,28 +152,16 @@ fn navigation_cancellation_drops_stale_frame() {
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
-  tx.send(UiToWorker::CreateTab {
-    tab_id,
-    initial_url: None,
-    cancel: cancel.clone(),
-  })
-  .unwrap();
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (128, 128),
-    dpr: 1.0,
-  })
-  .unwrap();
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel.clone()))
+    .unwrap();
+  tx.send(viewport_changed_msg(tab_id, (128, 128), 1.0))
+    .unwrap();
 
   let first_url = "about:test-heavy".to_string();
   let second_url = "about:blank".to_string();
 
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: first_url.clone(),
-    reason: NavigationReason::TypedUrl,
-  })
-  .unwrap();
+  tx.send(navigate_msg(tab_id, first_url.clone(), NavigationReason::TypedUrl))
+    .unwrap();
 
   let mut started_first = false;
   let mut sent_second = false;
@@ -209,12 +177,8 @@ fn navigation_cancellation_drops_stale_frame() {
       WorkerToUi::Stage { .. } if started_first && !sent_second => {
         // Simulate UI-driven cancellation while the worker is blocked in the first navigation.
         cancel.bump_nav();
-        tx.send(UiToWorker::Navigate {
-          tab_id,
-          url: second_url.clone(),
-          reason: NavigationReason::TypedUrl,
-        })
-        .unwrap();
+        tx.send(navigate_msg(tab_id, second_url.clone(), NavigationReason::TypedUrl))
+          .unwrap();
         sent_second = true;
       }
       WorkerToUi::NavigationCommitted { url, .. } => {
@@ -258,23 +222,15 @@ fn enter_submits_focused_text_input_form() {
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
-  tx.send(UiToWorker::CreateTab {
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel))
+    .unwrap();
+  tx.send(viewport_changed_msg(tab_id, (200, 120), 1.0))
+    .unwrap();
+  tx.send(navigate_msg(
     tab_id,
-    initial_url: None,
-    cancel,
-  })
-  .unwrap();
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (200, 120),
-    dpr: 1.0,
-  })
-  .unwrap();
-  tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: "about:test-form".to_string(),
-    reason: NavigationReason::TypedUrl,
-  })
+    "about:test-form".to_string(),
+    NavigationReason::TypedUrl,
+  ))
   .unwrap();
 
   // Wait for the initial frame so the document has cached layout for hit-testing.
@@ -327,4 +283,3 @@ fn enter_submits_focused_text_input_form() {
     "expected NavigationCommitted for {expected_url} (keyboard submit)"
   );
 }
-

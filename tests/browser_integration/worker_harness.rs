@@ -78,7 +78,7 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::OpenSelectDropdown {
       tab_id,
       select_node_id,
-      control: _,
+      ..
     } => (
       WorkerToUiEvent::OpenSelectDropdown {
         tab_id,

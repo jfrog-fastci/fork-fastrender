@@ -1,10 +1,12 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
+
+use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg};
 
 fn recv_until<T>(
   rx: &Receiver<WorkerToUi>,
@@ -120,36 +122,20 @@ fn scroll_without_pointer_updates_viewport_scroll() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 100),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
   let initial_scroll = frame.scroll_state.viewport;
 
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 40.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, 40.0), None))
     .expect("Scroll");
 
   let updated = wait_for_scroll_update(&ui_rx, tab_id);
@@ -179,36 +165,20 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 100),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
   // Inside the #scroller element (it starts at the top of the page with margin: 0).
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 60.0),
-      pointer_css: Some((10.0, 10.0)),
-    })
+    .send(scroll_msg(tab_id, (0.0, 60.0), Some((10.0, 10.0))))
     .expect("Scroll");
 
   let updated = wait_for_scroll_update(&ui_rx, tab_id);
@@ -242,25 +212,13 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 100),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
@@ -268,11 +226,7 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
   // Scroll the viewport so the #scroller element (positioned at y=500) is visible at the top of
   // the viewport.
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 500.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, 500.0), None))
     .expect("Scroll viewport");
   let after_viewport_scroll = wait_for_scroll_update(&ui_rx, tab_id);
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
@@ -287,11 +241,7 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
   // though the viewport is already scrolled. This only works if `pointer_css` is interpreted as
   // viewport-local and the worker adds `ScrollState.viewport` internally.
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 60.0),
-      pointer_css: Some((10.0, 10.0)),
-    })
+    .send(scroll_msg(tab_id, (0.0, 60.0), Some((10.0, 10.0))))
     .expect("Scroll scroller element");
 
   let updated = wait_for_scroll_update(&ui_rx, tab_id);
@@ -326,46 +276,26 @@ fn scroll_clamps_to_zero() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 100),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
   // Ensure we're scrolled away from 0 so the clamp can be observed.
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 120.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, 120.0), None))
     .expect("Scroll down");
   let _ = wait_for_scroll_update(&ui_rx, tab_id);
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, -10_000.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, -10_000.0), None))
     .expect("Scroll up");
   let updated = wait_for_scroll_update(&ui_rx, tab_id);
   let frame = wait_for_frame_ready(&ui_rx, tab_id);

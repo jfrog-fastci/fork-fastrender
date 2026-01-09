@@ -127,7 +127,7 @@ pub fn rgba_at(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
 }
 
 #[cfg(feature = "browser_ui")]
-use fastrender::ui::messages::{TabId, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 
 #[cfg(feature = "browser_ui")]
 fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
@@ -257,4 +257,57 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     let _ = writeln!(&mut out, "{msg:?}");
   }
   out
+}
+
+// -----------------------------------------------------------------------------
+// UiToWorker message constructors
+// -----------------------------------------------------------------------------
+
+/// Construct a `UiToWorker::CreateTab` message with default fields.
+///
+/// Centralizing this avoids churn across many integration tests when the UI/worker protocol evolves
+/// (e.g. new required fields like `cancel`).
+#[cfg(feature = "browser_ui")]
+pub fn create_tab_msg(tab_id: TabId, initial_url: Option<String>) -> UiToWorker {
+  create_tab_msg_with_cancel(tab_id, initial_url, Default::default())
+}
+
+/// Construct a `UiToWorker::CreateTab` message with an explicit cancel generation tracker.
+#[cfg(feature = "browser_ui")]
+pub fn create_tab_msg_with_cancel(
+  tab_id: TabId,
+  initial_url: Option<String>,
+  cancel: fastrender::ui::cancel::CancelGens,
+) -> UiToWorker {
+  UiToWorker::CreateTab {
+    tab_id,
+    initial_url,
+    cancel,
+  }
+}
+
+/// Construct a `UiToWorker::ViewportChanged` message.
+#[cfg(feature = "browser_ui")]
+pub fn viewport_changed_msg(tab_id: TabId, viewport_css: (u32, u32), dpr: f32) -> UiToWorker {
+  UiToWorker::ViewportChanged {
+    tab_id,
+    viewport_css,
+    dpr,
+  }
+}
+
+/// Construct a `UiToWorker::Navigate` message.
+#[cfg(feature = "browser_ui")]
+pub fn navigate_msg(tab_id: TabId, url: String, reason: NavigationReason) -> UiToWorker {
+  UiToWorker::Navigate { tab_id, url, reason }
+}
+
+/// Construct a `UiToWorker::Scroll` message.
+#[cfg(feature = "browser_ui")]
+pub fn scroll_msg(tab_id: TabId, delta_css: (f32, f32), pointer_css: Option<(f32, f32)>) -> UiToWorker {
+  UiToWorker::Scroll {
+    tab_id,
+    delta_css,
+    pointer_css,
+  }
 }

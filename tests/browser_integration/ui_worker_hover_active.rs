@@ -84,27 +84,15 @@ fn pointer_move_sets_hover_and_repaints() {
   let tab_id = TabId(1);
   worker
     .ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (256, 256),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (256, 256), 1.0))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .unwrap();
 
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
@@ -144,27 +132,15 @@ fn pointer_down_sets_active_until_pointer_up() {
   let tab_id = TabId(1);
   worker
     .ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (256, 256),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (256, 256), 1.0))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .unwrap();
 
   let frame = next_frame_ready(&worker.ui_rx, tab_id);

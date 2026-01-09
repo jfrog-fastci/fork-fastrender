@@ -1,8 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::worker_harness::{assert_event_subsequence, WorkerEventKind, WorkerHarness, WorkerToUiEvent};
-use super::support;
-use fastrender::ui::cancel::CancelGens;
+use super::support::{self, create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg};
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker};
 use std::path::Path;
 use tempfile::tempdir;
@@ -17,16 +16,8 @@ fn file_url(path: &Path) -> String {
 
 fn create_tab(h: &WorkerHarness, viewport: (u32, u32)) -> TabId {
   let tab_id = TabId::new();
-  h.send(UiToWorker::CreateTab {
-    tab_id,
-    initial_url: None,
-    cancel: CancelGens::new(),
-  });
-  h.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: viewport,
-    dpr: 1.0,
-  });
+  h.send(create_tab_msg(tab_id, None));
+  h.send(viewport_changed_msg(tab_id, viewport, 1.0));
   tab_id
 }
 
@@ -142,11 +133,11 @@ fn navigation_about_newtab_renders_frame() {
 
   let (frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
+    navigate_msg(
       tab_id,
-      url: "about:newtab".to_string(),
-      reason: NavigationReason::TypedUrl,
-    },
+      "about:newtab".to_string(),
+      NavigationReason::TypedUrl,
+    ),
   );
 
   assert_eq!(frame.viewport_css, (200, 140));
@@ -177,11 +168,7 @@ fn navigation_file_url_emits_committed_and_frame() {
 
   let (_frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl),
   );
   let events = drain_after_frame(&h, events);
 
@@ -208,11 +195,11 @@ fn navigation_unsupported_scheme_rejects_with_failed() {
   let h = WorkerHarness::spawn();
   let tab_id = create_tab(&h, (120, 80));
 
-  h.send(UiToWorker::Navigate {
+  h.send(navigate_msg(
     tab_id,
-    url: "ftp://example.com/".to_string(),
-    reason: NavigationReason::TypedUrl,
-  });
+    "ftp://example.com/".to_string(),
+    NavigationReason::TypedUrl,
+  ));
 
   let events = h.wait_for_event(std::time::Duration::from_secs(2), |ev| {
     matches!(ev, WorkerToUiEvent::NavigationFailed { .. })
@@ -250,21 +237,13 @@ fn history_back_forward_emits_committed_urls() {
 
   let (_, events_a) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url: a_url.clone(),
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl),
   );
   let _ = drain_after_frame(&h, events_a);
 
   let (_, events_b) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url: b_url.clone(),
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, b_url.clone(), NavigationReason::TypedUrl),
   );
   let _ = drain_after_frame(&h, events_b);
 
@@ -318,22 +297,14 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   let tab_id = create_tab(&h, (100, 100));
   let (_, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, url, NavigationReason::TypedUrl),
   );
   let _ = drain_after_frame(&h, events);
 
   // Scroll down; mandatory scroll snap should snap to the second section.
   let (_frame, scroll_events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 60.0),
-      pointer_css: None,
-    },
+    scroll_msg(tab_id, (0.0, 60.0), None),
   );
   let scroll_events = drain_after_frame(&h, scroll_events);
   let scroll_y = scroll_events.iter().find_map(|ev| match ev {
@@ -349,11 +320,7 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   // Scroll beyond the end; should clamp to max scroll (100px for 2x100px content in 100px viewport).
   let (_frame, clamp_events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 10_000.0),
-      pointer_css: None,
-    },
+    scroll_msg(tab_id, (0.0, 10_000.0), None),
   );
   let clamp_events = drain_after_frame(&h, clamp_events);
   let clamp_y = clamp_events.iter().find_map(|ev| match ev {
@@ -391,11 +358,7 @@ fn interaction_click_link_navigates() {
   let tab_id = create_tab(&h, (200, 200));
   let (_, events_a) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url: a_url,
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, a_url, NavigationReason::TypedUrl),
   );
   let _ = drain_after_frame(&h, events_a);
 
@@ -440,11 +403,7 @@ fn interaction_text_input_triggers_repaint_and_frame_changes() {
   let tab_id = create_tab(&h, (220, 80));
   let (initial_frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, url, NavigationReason::TypedUrl),
   );
   let _ = drain_after_frame(&h, events);
 
@@ -507,30 +466,14 @@ fn cancellation_rapid_scroll_coalesces_to_last_frame() {
   let tab_id = create_tab(&h, (100, 100));
   let (_, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, url, NavigationReason::TypedUrl),
   );
   let _ = drain_after_frame(&h, events);
 
   // Fire multiple scroll messages back-to-back.
-  h.send(UiToWorker::Scroll {
-    tab_id,
-    delta_css: (0.0, 10.0),
-    pointer_css: None,
-  });
-  h.send(UiToWorker::Scroll {
-    tab_id,
-    delta_css: (0.0, 20.0),
-    pointer_css: None,
-  });
-  h.send(UiToWorker::Scroll {
-    tab_id,
-    delta_css: (0.0, 30.0),
-    pointer_css: None,
-  });
+  h.send(scroll_msg(tab_id, (0.0, 10.0), None));
+  h.send(scroll_msg(tab_id, (0.0, 20.0), None));
+  h.send(scroll_msg(tab_id, (0.0, 30.0), None));
 
   let (frame, events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(3));
   assert!(

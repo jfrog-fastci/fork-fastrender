@@ -9,8 +9,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use url::Url;
 
-use super::support::rgba_at;
-use super::support::TempSite;
+use super::support::{
+  create_tab_msg, navigate_msg, rgba_at, scroll_msg, viewport_changed_msg, TempSite,
+};
 
 // Rendering + worker startup can take a few seconds under load when tests run in parallel.
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -134,27 +135,15 @@ fn click_after_scroll_hits_link() {
 
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   // Keep the viewport height <= the link height so scrolling to y=500 is possible even when the
   // document's scrollable height is only just large enough to include the absolute-positioned link.
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 40),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 40), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: page1_url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, page1_url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let frame_before_scroll = wait_for_frame_ready(&ui_rx, tab_id, TIMEOUT);
@@ -168,11 +157,7 @@ fn click_after_scroll_hits_link() {
   );
 
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 500.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, 500.0), None))
     .expect("Scroll");
 
   let (scroll, frame_after_scroll) = wait_for_scroll_and_frame(&ui_rx, tab_id, TIMEOUT);

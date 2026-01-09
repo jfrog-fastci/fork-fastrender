@@ -1,8 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker};
+use fastrender::ui::messages::{NavigationReason, TabId};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::time::{Duration, Instant};
+
+use super::support::{create_tab_msg, navigate_msg};
 
 fn join_with_timeout(
   handle: std::thread::JoinHandle<std::thread::Result<()>>,
@@ -38,18 +40,14 @@ fn dropping_ui_receiver_does_not_panic_worker() {
 
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("send CreateTab");
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: "about:blank".to_string(),
-      reason: NavigationReason::TypedUrl,
-    })
+      "about:blank".to_string(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send Navigate");
 
   drop(ui_tx);

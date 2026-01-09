@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
 use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -44,29 +45,21 @@ fn viewport_changed_updates_frame_dpr_and_pixmap_size() {
 
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("send CreateTab");
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: "about:newtab".to_string(),
-      reason: NavigationReason::TypedUrl,
-    })
+      "about:newtab".to_string(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send Navigate");
 
   // Drain the initial frame rendered as part of navigation.
   let _ = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
 
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (100, 50),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (100, 50), 1.0))
     .expect("send ViewportChanged 1.0");
   let frame1 = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
   assert_eq!(frame1.viewport_css, (100, 50));
@@ -75,11 +68,7 @@ fn viewport_changed_updates_frame_dpr_and_pixmap_size() {
   assert!(w1 > 0 && h1 > 0, "expected non-zero pixmap; got {w1}x{h1}");
 
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (100, 50),
-      dpr: 2.0,
-    })
+    .send(viewport_changed_msg(tab_id, (100, 50), 2.0))
     .expect("send ViewportChanged 2.0");
   let frame2 = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
   assert_eq!(frame2.viewport_css, (100, 50));
@@ -101,29 +90,21 @@ fn invalid_dpr_is_sanitized() {
 
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("send CreateTab");
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: "about:newtab".to_string(),
-      reason: NavigationReason::TypedUrl,
-    })
+      "about:newtab".to_string(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send Navigate");
 
   // Drain the initial frame rendered as part of navigation.
   let _ = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
 
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (100, 50),
-      dpr: 0.0,
-    })
+    .send(viewport_changed_msg(tab_id, (100, 50), 0.0))
     .expect("send ViewportChanged invalid dpr");
   let frame = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
   assert_eq!(frame.viewport_css, (100, 50));

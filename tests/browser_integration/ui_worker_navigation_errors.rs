@@ -1,11 +1,13 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
+
+use super::support::{create_tab_msg, navigate_msg};
 
 fn recv_until_deadline(rx: &Receiver<WorkerToUi>, deadline: Instant) -> Option<WorkerToUi> {
   loop {
@@ -36,18 +38,14 @@ fn missing_file_navigation_emits_navigation_failed_and_stops_loading() {
 
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("create tab");
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: missing_url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      missing_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send navigate");
 
   #[derive(Debug)]
@@ -137,20 +135,12 @@ fn unknown_about_page_still_commits_and_renders_error_page() {
 
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("create tab");
 
   let url = "about:does-not-exist".to_string();
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
     .expect("send navigate");
 
   let deadline = Instant::now() + Duration::from_secs(10);

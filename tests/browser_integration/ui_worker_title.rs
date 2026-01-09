@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use super::support::{create_tab_msg, navigate_msg};
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -46,18 +47,14 @@ fn about_newtab_navigation_committed_includes_title() {
 
   let tab = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab, None))
     .expect("create tab");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id: tab,
-      url: "about:newtab".to_string(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(
+      tab,
+      "about:newtab".to_string(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("navigate");
 
   let (_url, title) = wait_for_navigation_committed(&ui_rx, tab, TIMEOUT);
@@ -86,18 +83,10 @@ fn file_page_navigation_committed_includes_title_and_trims_ascii_whitespace() {
 
   let tab = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab, None))
     .expect("create tab");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id: tab,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab, url.clone(), NavigationReason::TypedUrl))
     .expect("navigate");
 
   let (committed_url, title) = wait_for_navigation_committed(&ui_rx, tab, TIMEOUT);
@@ -127,18 +116,10 @@ fn missing_title_results_in_none() {
 
   let tab = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab, None))
     .expect("create tab");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id: tab,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab, url, NavigationReason::TypedUrl))
     .expect("navigate");
 
   let (_url, title) = wait_for_navigation_committed(&ui_rx, tab, TIMEOUT);

@@ -5,6 +5,8 @@ use fastrender::ui::messages::{PointerButton, RenderedFrame, RepaintReason, TabI
 use fastrender::ui::BrowserTabController;
 use fastrender::{BoxNode, BoxTree, Result};
 
+use super::support::scroll_msg;
+
 fn extract_frame(messages: Vec<WorkerToUi>) -> Option<RenderedFrame> {
   messages.into_iter().rev().find_map(|msg| match msg {
     WorkerToUi::FrameReady { frame, .. } => Some(frame),
@@ -152,11 +154,7 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
     box_id_for_styled_node(prepared.box_tree(), scroller_dom_id)
   };
 
-  let scroll_msgs = controller.handle_message(UiToWorker::Scroll {
-    tab_id,
-    delta_css: (0.0, 40.0),
-    pointer_css: Some((15.0, 110.0)),
-  })?;
+  let scroll_msgs = controller.handle_message(scroll_msg(tab_id, (0.0, 40.0), Some((15.0, 110.0))))?;
   assert!(
     scroll_msgs
       .iter()
@@ -238,11 +236,7 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
   // Scroll outside element scroller should affect viewport scroll.
   // At this point the anchor navigation likely clamps us near the max scroll offset, so scroll up.
   let before_viewport_scroll = controller.scroll_state().viewport.y;
-  let _ = controller.handle_message(UiToWorker::Scroll {
-    tab_id,
-    delta_css: (0.0, -25.0),
-    pointer_css: Some((190.0, 190.0)),
-  })?;
+  let _ = controller.handle_message(scroll_msg(tab_id, (0.0, -25.0), Some((190.0, 190.0))))?;
   assert!(
     controller.scroll_state().viewport.y < before_viewport_scroll,
     "expected viewport scroll to decrease when scrolling outside element scroller"

@@ -9,6 +9,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
+
 // These tests spin up real UI worker threads that create renderers and rasterize frames.
 // When the test binary runs with many threads (default), CPU contention can make the first render
 // take longer than a couple seconds on busy CI hosts. Keep the timeout generous to avoid flakiness
@@ -90,25 +92,13 @@ fn label_click_toggles_checkbox_and_repaints() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (128, 128),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (128, 128), 1.0))
     .unwrap();
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: file_url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, file_url, NavigationReason::TypedUrl))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -172,25 +162,13 @@ fn text_input_updates_focused_input_value_and_repaints() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (160, 160),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (160, 160), 1.0))
     .unwrap();
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: file_url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, file_url, NavigationReason::TypedUrl))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -274,25 +252,13 @@ fn link_click_triggers_navigation_to_resolved_url() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 120),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: page1_url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, page1_url, NavigationReason::TypedUrl))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
@@ -382,25 +348,13 @@ fn select_dropdown_click_emits_open_select_dropdown_message() {
     .split();
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 80),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 80), 1.0))
     .unwrap();
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: file_url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, file_url, NavigationReason::TypedUrl))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
