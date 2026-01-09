@@ -137,6 +137,32 @@ impl Document {
     )
   }
 
+  pub fn text_data(&self, node: NodeId) -> Result<&str, DomError> {
+    let node = self.node_checked(node)?;
+    match &node.kind {
+      NodeKind::Text { content } => Ok(content.as_str()),
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
+
+  pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
+    let node = self
+      .nodes
+      .get_mut(node.index())
+      .ok_or(DomError::NotFoundError)?;
+    match &mut node.kind {
+      NodeKind::Text { content } => {
+        if content == data {
+          return Ok(false);
+        }
+        content.clear();
+        content.push_str(data);
+        Ok(true)
+      }
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
+
   pub fn parent(&self, node: NodeId) -> Result<Option<NodeId>, DomError> {
     Ok(self.node_checked(node)?.parent)
   }
@@ -277,4 +303,3 @@ impl Document {
     Ok(true)
   }
 }
-

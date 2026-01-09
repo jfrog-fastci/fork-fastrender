@@ -50,7 +50,8 @@ fn attrs_and_is_html_mut(kind: &mut NodeKind) -> Option<(&mut Vec<(String, Strin
 
 impl Document {
   pub fn get_attribute(&self, node: NodeId, name: &str) -> Option<&str> {
-    let kind = &self.node(node).kind;
+    let node = self.nodes.get(node.index())?;
+    let kind = &node.kind;
     let (attrs, is_html) = attrs_and_is_html(kind)?;
     attrs
       .iter()
@@ -59,7 +60,10 @@ impl Document {
   }
 
   pub fn has_attribute(&self, node: NodeId, name: &str) -> bool {
-    let kind = &self.node(node).kind;
+    let Some(node) = self.nodes.get(node.index()) else {
+      return false;
+    };
+    let kind = &node.kind;
     let Some((attrs, is_html)) = attrs_and_is_html(kind) else {
       return false;
     };
@@ -74,7 +78,11 @@ impl Document {
     name: &str,
     value: &str,
   ) -> Result<bool, DomError> {
-    let kind = &mut self.node_mut(node).kind;
+    let node = self
+      .nodes
+      .get_mut(node.index())
+      .ok_or(DomError::NotFoundError)?;
+    let kind = &mut node.kind;
     let Some((attrs, is_html)) = attrs_and_is_html_mut(kind) else {
       return Err(DomError::InvalidNodeType);
     };
@@ -96,7 +104,11 @@ impl Document {
   }
 
   pub fn remove_attribute(&mut self, node: NodeId, name: &str) -> Result<bool, DomError> {
-    let kind = &mut self.node_mut(node).kind;
+    let node = self
+      .nodes
+      .get_mut(node.index())
+      .ok_or(DomError::NotFoundError)?;
+    let kind = &mut node.kind;
     let Some((attrs, is_html)) = attrs_and_is_html_mut(kind) else {
       return Err(DomError::InvalidNodeType);
     };
@@ -119,7 +131,11 @@ impl Document {
     present: bool,
   ) -> Result<bool, DomError> {
     if present {
-      let kind = &mut self.node_mut(node).kind;
+      let node = self
+        .nodes
+        .get_mut(node.index())
+        .ok_or(DomError::NotFoundError)?;
+      let kind = &mut node.kind;
       let Some((attrs, is_html)) = attrs_and_is_html_mut(kind) else {
         return Err(DomError::InvalidNodeType);
       };
@@ -144,4 +160,3 @@ impl Document {
     self.get_attribute(node, "class")
   }
 }
-

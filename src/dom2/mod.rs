@@ -19,7 +19,6 @@ pub mod import;
 mod html5ever_tree_sink;
 mod traversal;
 mod shadow_dom;
-
 pub use html5ever_tree_sink::Dom2TreeSink;
 
 #[cfg(test)]
@@ -40,9 +39,6 @@ pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
 pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) -> bool {
   doc.set_attribute(node, name, value).unwrap_or(false)
 }
-
-#[cfg(test)]
-mod query_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -818,7 +814,13 @@ impl Document {
 }
 
 #[cfg(test)]
+mod attrs_tests;
+#[cfg(test)]
 mod mapping_tests;
+#[cfg(test)]
+mod mutation_tests;
+#[cfg(test)]
+mod query_tests;
 #[cfg(test)]
 mod selector_query_tests;
 
