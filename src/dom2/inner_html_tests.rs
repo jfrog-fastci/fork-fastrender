@@ -513,6 +513,190 @@ fn insert_adjacent_html_parses_in_body_context_when_parent_is_document_fragment(
 }
 
 #[test]
+fn insert_adjacent_element_inserts_beforebegin_and_afterend() {
+  let root = parse_html(
+    "<!doctype html><html><body><div id=root><span id=target>hi</span></div></body></html>",
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let target = find_element_by_id(&doc, "target");
+  let root_div = find_element_by_id(&doc, "root");
+
+  let p1 = doc.create_element("p", HTML_NAMESPACE);
+  let p1_text = doc.create_text("one");
+  doc.append_child(p1, p1_text).unwrap();
+  let p2 = doc.create_element("p", HTML_NAMESPACE);
+  let p2_text = doc.create_text("two");
+  doc.append_child(p2, p2_text).unwrap();
+
+  assert_eq!(
+    doc.insert_adjacent_element(target, "beforebegin", p1),
+    Ok(Some(p1))
+  );
+  assert_eq!(
+    doc.insert_adjacent_element(target, "afterend", p2),
+    Ok(Some(p2))
+  );
+
+  assert_eq!(
+    doc.inner_html(root_div).unwrap(),
+    r#"<p>one</p><span id="target">hi</span><p>two</p>"#
+  );
+}
+
+#[test]
+fn insert_adjacent_element_inserts_afterbegin_and_beforeend() {
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  let b = doc.create_element("b", HTML_NAMESPACE);
+  let b_text = doc.create_text("first");
+  doc.append_child(b, b_text).unwrap();
+  let i = doc.create_element("i", HTML_NAMESPACE);
+  let i_text = doc.create_text("last");
+  doc.append_child(i, i_text).unwrap();
+
+  assert_eq!(doc.insert_adjacent_element(div, "afterbegin", b), Ok(Some(b)));
+  assert_eq!(doc.insert_adjacent_element(div, "beforeend", i), Ok(Some(i)));
+
+  assert_eq!(doc.inner_html(div).unwrap(), "<b>first</b><i>last</i>");
+}
+
+#[test]
+fn insert_adjacent_element_errors_on_invalid_position() {
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+  let b = doc.create_element("b", HTML_NAMESPACE);
+  assert_eq!(
+    doc.insert_adjacent_element(div, "nope", b),
+    Err(super::DomError::SyntaxError)
+  );
+}
+
+#[test]
+fn insert_adjacent_element_returns_none_when_element_has_no_parent_for_beforebegin() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let div = doc.create_element("div", HTML_NAMESPACE);
+  let span = doc.create_element("span", HTML_NAMESPACE);
+  assert_eq!(doc.insert_adjacent_element(div, "beforebegin", span), Ok(None));
+}
+
+#[test]
+fn insert_adjacent_text_inserts_before_first_child_and_after_last_child() {
+  let root = parse_html(
+    "<!doctype html><html><body><div id=target><span id=mid>mid</span></div></body></html>",
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  doc.insert_adjacent_text(div, "afterbegin", "a").unwrap();
+  doc.insert_adjacent_text(div, "beforeend", "b").unwrap();
+
+  assert_eq!(
+    doc.inner_html(div).unwrap(),
+    r#"a<span id="mid">mid</span>b"#
+  );
+}
+
+#[test]
+fn insert_adjacent_text_errors_on_invalid_position() {
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+  assert_eq!(
+    doc.insert_adjacent_text(div, "nope", "x"),
+    Err(super::DomError::SyntaxError)
+  );
+}
+
+#[test]
+fn insert_adjacent_text_inserts_into_detached_element_for_afterbegin() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let div = doc.create_element("div", HTML_NAMESPACE);
+  doc.insert_adjacent_text(div, "afterbegin", "x").unwrap();
+  assert_eq!(doc.inner_html(div).unwrap(), "x");
+}
+
+#[test]
+fn insert_adjacent_element_keeps_shadow_root_first_child_for_afterbegin() {
+  let html = r#"<div id=host><template shadowroot=open><span id=shadow>shadow</span></template><p id=light>light</p></div>"#;
+  let root = parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let host = find_element_by_id(&doc, "host");
+  let shadow_root = doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+    .expect("expected a ShadowRoot child under the host element");
+
+  let b = doc.create_element("b", HTML_NAMESPACE);
+  let b_text = doc.create_text("new");
+  doc.append_child(b, b_text).unwrap();
+
+  assert_eq!(doc.insert_adjacent_element(host, "afterbegin", b), Ok(Some(b)));
+  assert_eq!(
+    doc.node(host).children.first().copied(),
+    Some(shadow_root),
+    "shadow root should remain first in host.children"
+  );
+  assert_eq!(doc.inner_html(host).unwrap(), r#"<b>new</b><p id="light">light</p>"#);
+}
+
+#[test]
+fn insert_adjacent_text_keeps_shadow_root_first_child_for_afterbegin() {
+  let html = r#"<div id=host><template shadowroot=open><span id=shadow>shadow</span></template><p id=light>light</p></div>"#;
+  let root = parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let host = find_element_by_id(&doc, "host");
+  let shadow_root = doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+    .expect("expected a ShadowRoot child under the host element");
+
+  doc.insert_adjacent_text(host, "afterbegin", "x").unwrap();
+  assert_eq!(
+    doc.node(host).children.first().copied(),
+    Some(shadow_root),
+    "shadow root should remain first in host.children"
+  );
+  assert_eq!(doc.inner_html(host).unwrap(), r#"x<p id="light">light</p>"#);
+}
+
+#[test]
+fn insert_adjacent_html_keeps_shadow_root_first_child_for_afterbegin() {
+  let html = r#"<div id=host><template shadowroot=open><span id=shadow>shadow</span></template><p id=light>light</p></div>"#;
+  let root = parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let host = find_element_by_id(&doc, "host");
+  let shadow_root = doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+    .expect("expected a ShadowRoot child under the host element");
+
+  doc.insert_adjacent_html(host, "afterbegin", "<b>new</b>").unwrap();
+  assert_eq!(
+    doc.node(host).children.first().copied(),
+    Some(shadow_root),
+    "shadow root should remain first in host.children"
+  );
+  assert_eq!(doc.inner_html(host).unwrap(), r#"<b>new</b><p id="light">light</p>"#);
+}
+
+#[test]
 fn inner_html_skips_shadow_root_children() {
   let html = r#"<div id=host><template shadowroot=open><span id=shadow>shadow</span></template><p id=light>light</p></div>"#;
   let root = parse_html(html).unwrap();

@@ -13,6 +13,82 @@ fn validate_element_like(doc: &Document, element: NodeId) -> DomResult<()> {
   }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdjacentPosition {
+  BeforeBegin,
+  AfterBegin,
+  BeforeEnd,
+  AfterEnd,
+}
+
+fn parse_adjacent_position(position: &str) -> Result<AdjacentPosition, DomError> {
+  if position.eq_ignore_ascii_case("beforebegin") {
+    Ok(AdjacentPosition::BeforeBegin)
+  } else if position.eq_ignore_ascii_case("afterbegin") {
+    Ok(AdjacentPosition::AfterBegin)
+  } else if position.eq_ignore_ascii_case("beforeend") {
+    Ok(AdjacentPosition::BeforeEnd)
+  } else if position.eq_ignore_ascii_case("afterend") {
+    Ok(AdjacentPosition::AfterEnd)
+  } else {
+    Err(DomError::SyntaxError)
+  }
+}
+
+fn first_light_child(doc: &Document, parent: NodeId) -> Option<NodeId> {
+  let node = doc.nodes.get(parent.index())?;
+  node.children.iter().copied().find(|&child| {
+    doc.nodes.get(child.index()).is_some_and(|n| {
+      n.parent == Some(parent) && !matches!(n.kind, NodeKind::ShadowRoot { .. })
+    })
+  })
+}
+
+fn next_light_sibling(doc: &Document, node: NodeId) -> Option<NodeId> {
+  let parent = doc.nodes.get(node.index())?.parent?;
+  let parent_node = doc.nodes.get(parent.index())?;
+  let pos = parent_node.children.iter().position(|&c| c == node)?;
+  parent_node.children.iter().skip(pos + 1).copied().find(|&sib| {
+    doc.nodes.get(sib.index()).is_some_and(|n| {
+      n.parent == Some(parent) && !matches!(n.kind, NodeKind::ShadowRoot { .. })
+    })
+  })
+}
+
+fn insert_adjacent_node(
+  doc: &mut Document,
+  element: NodeId,
+  position: AdjacentPosition,
+  node: NodeId,
+) -> DomResult<Option<NodeId>> {
+  match position {
+    AdjacentPosition::BeforeBegin => {
+      let Some(parent) = doc.nodes.get(element.index()).and_then(|n| n.parent) else {
+        return Ok(None);
+      };
+      doc.insert_before(parent, node, Some(element))?;
+      Ok(Some(node))
+    }
+    AdjacentPosition::AfterBegin => {
+      let reference = first_light_child(doc, element);
+      doc.insert_before(element, node, reference)?;
+      Ok(Some(node))
+    }
+    AdjacentPosition::BeforeEnd => {
+      doc.insert_before(element, node, None)?;
+      Ok(Some(node))
+    }
+    AdjacentPosition::AfterEnd => {
+      let Some(parent) = doc.nodes.get(element.index()).and_then(|n| n.parent) else {
+        return Ok(None);
+      };
+      let reference = next_light_sibling(doc, element);
+      doc.insert_before(parent, node, reference)?;
+      Ok(Some(node))
+    }
+  }
+}
+
 impl Document {
   /// Serialize the element's light DOM children as HTML.
   ///
@@ -98,31 +174,13 @@ impl Document {
   pub fn insert_adjacent_html(&mut self, element: NodeId, position: &str, html: &str) -> DomResult<()> {
     validate_element_like(self, element)?;
 
-    #[derive(Clone, Copy)]
-    enum Position {
-      BeforeBegin,
-      AfterBegin,
-      BeforeEnd,
-      AfterEnd,
-    }
-
-    let pos = if position.eq_ignore_ascii_case("beforebegin") {
-      Position::BeforeBegin
-    } else if position.eq_ignore_ascii_case("afterbegin") {
-      Position::AfterBegin
-    } else if position.eq_ignore_ascii_case("beforeend") {
-      Position::BeforeEnd
-    } else if position.eq_ignore_ascii_case("afterend") {
-      Position::AfterEnd
-    } else {
-      return Err(DomError::SyntaxError);
-    };
+    let pos = parse_adjacent_position(position)?;
 
     let parent = self.nodes.get(element.index()).and_then(|n| n.parent);
 
     // Step 3: choose parsing context or throw for detached / document parents.
     let (context, parse_context) = match pos {
-      Position::BeforeBegin | Position::AfterEnd => {
+      AdjacentPosition::BeforeBegin | AdjacentPosition::AfterEnd => {
         let parent = parent.ok_or(DomError::NoModificationAllowedError)?;
         match self.nodes.get(parent.index()).map(|n| &n.kind) {
           Some(NodeKind::Document { .. }) => return Err(DomError::NoModificationAllowedError),
@@ -144,7 +202,7 @@ impl Document {
         (parent, parse_context)
       }
 
-      Position::AfterBegin | Position::BeforeEnd => {
+      AdjacentPosition::AfterBegin | AdjacentPosition::BeforeEnd => {
         // Step 4: if context is the HTML <html> element, parse in a synthetic <body> element.
         let parse_context = match self.nodes.get(element.index()).map(|n| &n.kind) {
           Some(NodeKind::Element { tag_name, namespace, .. })
@@ -161,45 +219,59 @@ impl Document {
 
     let fragment = super::dom_parsing::parse_html_fragment_as_fragment(self, parse_context, html)?;
 
-    // Helper: return the first light DOM child (skipping stored ShadowRoot nodes).
-    let first_light_child = |doc: &Document, parent: NodeId| -> Option<NodeId> {
-      let node = doc.nodes.get(parent.index())?;
-      node.children.iter().copied().find(|&child| {
-        doc.nodes.get(child.index()).is_some_and(|n| {
-          n.parent == Some(parent) && !matches!(n.kind, NodeKind::ShadowRoot { .. })
-        })
-      })
-    };
-
-    // Helper: return next light sibling (skipping stored ShadowRoot nodes).
-    let next_light_sibling = |doc: &Document, node: NodeId| -> Option<NodeId> {
-      let parent = doc.nodes.get(node.index())?.parent?;
-      let parent_node = doc.nodes.get(parent.index())?;
-      let pos = parent_node.children.iter().position(|&c| c == node)?;
-      parent_node.children.iter().skip(pos + 1).copied().find(|&sib| {
-        doc.nodes.get(sib.index()).is_some_and(|n| {
-          n.parent == Some(parent) && !matches!(n.kind, NodeKind::ShadowRoot { .. })
-        })
-      })
-    };
-
     match pos {
-      Position::BeforeBegin => {
+      AdjacentPosition::BeforeBegin => {
         self.insert_before(context, fragment, Some(element))?;
       }
-      Position::AfterBegin => {
+      AdjacentPosition::AfterBegin => {
         let reference = first_light_child(self, element);
         self.insert_before(element, fragment, reference)?;
       }
-      Position::BeforeEnd => {
+      AdjacentPosition::BeforeEnd => {
         self.append_child(element, fragment)?;
       }
-      Position::AfterEnd => {
+      AdjacentPosition::AfterEnd => {
         let reference = next_light_sibling(self, element);
         self.insert_before(context, fragment, reference)?;
       }
     }
 
+    Ok(())
+  }
+
+  /// DOM `Element.insertAdjacentElement(where, element)` for a `dom2` element.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-element-insertadjacentelement
+  pub fn insert_adjacent_element(
+    &mut self,
+    element: NodeId,
+    where_: &str,
+    new_element: NodeId,
+  ) -> DomResult<Option<NodeId>> {
+    validate_element_like(self, element)?;
+    validate_element_like(self, new_element)?;
+    let pos = parse_adjacent_position(where_)?;
+    insert_adjacent_node(self, element, pos, new_element)
+  }
+
+  /// DOM `Element.insertAdjacentText(where, data)` for a `dom2` element.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-element-insertadjacenttext
+  pub fn insert_adjacent_text(&mut self, element: NodeId, where_: &str, data: &str) -> DomResult<()> {
+    validate_element_like(self, element)?;
+    let pos = parse_adjacent_position(where_)?;
+
+    // The DOM spec creates the Text node before attempting insertion. Since dom2 nodes are stored
+    // in a grow-only arena (no GC), avoid allocating an unreachable Text node when insertion is
+    // guaranteed to do nothing.
+    if matches!(pos, AdjacentPosition::BeforeBegin | AdjacentPosition::AfterEnd)
+      && self.nodes.get(element.index()).and_then(|n| n.parent).is_none()
+    {
+      return Ok(());
+    }
+
+    let text = self.create_text(data);
+    let _ = insert_adjacent_node(self, element, pos, text)?;
     Ok(())
   }
 }
