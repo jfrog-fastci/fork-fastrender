@@ -37,14 +37,28 @@ fn is_ecma_whitespace(c: char) -> bool {
 }
 
 fn parse_integer_radix_to_f64(digits: &str, radix: u32) -> Option<f64> {
+  fn ascii_digit_value(b: u8) -> Option<u32> {
+    match b {
+      b'0'..=b'9' => Some((b - b'0') as u32),
+      b'a'..=b'z' => Some((b - b'a') as u32 + 10),
+      b'A'..=b'Z' => Some((b - b'A') as u32 + 10),
+      _ => None,
+    }
+  }
+
   if digits.is_empty() {
     return None;
   }
   let radix_f: f64 = radix as f64;
   let mut value: f64 = 0.0;
-  for ch in digits.chars() {
-    let digit = ch.to_digit(radix)? as f64;
-    value = value.mul_add(radix_f, digit);
+  // ECMA-262's NonDecimalIntegerLiteral grammar only accepts ASCII digits/letters. Avoid `char::to_digit`
+  // so we don't accidentally accept other Unicode digit characters.
+  for b in digits.bytes() {
+    let digit = ascii_digit_value(b)?;
+    if digit >= radix {
+      return None;
+    }
+    value = value.mul_add(radix_f, digit as f64);
   }
   Some(value)
 }
@@ -1666,6 +1680,12 @@ mod tests {
     // Rust's float parser accepts spellings like "inf"/"infinity" which are not valid numeric
     // literals in ECMA-262. Ensure we reject them so `Number("inf")` produces NaN.
     for text in ["inf", "+inf", "-inf", "infinity", "INFINITY"] {
+      let s = rt.alloc_string_value(text).unwrap();
+      assert!(rt.to_number(s).unwrap().is_nan(), "Number({text:?})");
+    }
+
+    // Radix-prefixed integer literals must only accept ASCII digits/letters.
+    for text in ["0b\u{0661}", "0o\u{0661}", "0x\u{0661}"] {
       let s = rt.alloc_string_value(text).unwrap();
       assert!(rt.to_number(s).unwrap().is_nan(), "Number({text:?})");
     }
