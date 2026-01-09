@@ -207,12 +207,7 @@ impl Node {
     let mut dom = self.state.dom.borrow_mut();
 
     match &mut dom.node_mut(self.node_id).kind {
-      NodeKind::Text { content } => {
-        content.clear();
-        content.push_str(&value);
-        return Ok(());
-      }
-      NodeKind::Comment { content } => {
+      NodeKind::Text { content } | NodeKind::Comment { content } => {
         content.clear();
         content.push_str(&value);
         return Ok(());
@@ -390,8 +385,8 @@ impl Node {
   fn id_get<'js>(&self, ctx: Ctx<'js>) -> JsResult<String> {
     self.ensure_element(ctx.clone())?;
     let dom = self.state.dom.borrow();
-    let value = dom.id(self.node_id).map_err(|e| dom_error_to_js(&ctx, e))?;
-    Ok(value.unwrap_or("").to_string())
+    let id = dom.id(self.node_id).map_err(|e| dom_error_to_js(&ctx, e))?;
+    Ok(id.unwrap_or("").to_string())
   }
 
   #[qjs(set, rename = "id")]
@@ -410,10 +405,10 @@ impl Node {
   fn class_name_get<'js>(&self, ctx: Ctx<'js>) -> JsResult<String> {
     self.ensure_element(ctx.clone())?;
     let dom = self.state.dom.borrow();
-    let value = dom
+    let class = dom
       .class_name(self.node_id)
       .map_err(|e| dom_error_to_js(&ctx, e))?;
-    Ok(value.unwrap_or("").to_string())
+    Ok(class.unwrap_or("").to_string())
   }
 
   #[qjs(set, rename = "className")]

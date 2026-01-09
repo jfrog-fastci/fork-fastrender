@@ -107,7 +107,10 @@ fn class_list_add_remove_toggle() {
 
   let doc = dom.borrow();
   let x = doc.get_element_by_id("x").unwrap();
-  let class_attr = doc.get_attribute(x, "class").unwrap().unwrap_or("");
+  let class_attr = doc
+    .get_attribute(x, "class")
+    .expect("get_attribute should succeed")
+    .unwrap_or("");
   // Order is not specified by the MVP; we only require membership.
   let tokens: std::collections::HashSet<&str> = class_attr.split_whitespace().collect();
   assert!(tokens.contains("b"));
