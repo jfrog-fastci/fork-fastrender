@@ -1,16 +1,17 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::api::FastRenderFactory;
 use fastrender::ui::browser_worker::BrowserWorker;
 use fastrender::ui::messages::{TabId, WorkerToUi};
 use fastrender::RenderOptions;
 use tempfile::tempdir;
 
+use super::support;
+
 #[test]
 fn navigation_invalid_url_emits_navigation_failed() {
   let _lock = super::stage_listener_test_lock();
   let (tx, rx) = std::sync::mpsc::channel::<WorkerToUi>();
-  let factory = FastRenderFactory::new().expect("factory");
+  let factory = support::deterministic_factory();
   let mut worker = BrowserWorker::new(factory, tx);
 
   let url = "foo://example.com";
@@ -46,7 +47,7 @@ fn navigation_file_url_emits_started_committed_and_loading_toggle() {
 
   let url = format!("file://{}/index.html", dir.path().display());
   let (tx, rx) = std::sync::mpsc::channel::<WorkerToUi>();
-  let factory = FastRenderFactory::new().expect("factory");
+  let factory = support::deterministic_factory();
   let mut worker = BrowserWorker::new(factory, tx);
 
   worker

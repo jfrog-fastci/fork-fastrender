@@ -6,6 +6,8 @@ use fastrender::layout::contexts::inline::baseline::compute_line_height_with_met
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
 use fastrender::{BrowserDocument, BoxType, Overflow, Point, RenderOptions, Result};
 
+use super::support;
+
 fn find_listbox_select_box_id(box_tree: &fastrender::BoxTree) -> Option<usize> {
   let mut stack = vec![&box_tree.root];
   while let Some(node) = stack.pop() {

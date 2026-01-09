@@ -2,6 +2,8 @@ use fastrender::interaction::{absolute_bounds_for_box_id, InteractionEngine, Key
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
 use fastrender::{BoxType, BrowserDocument, Point, RenderOptions, Result};
 
+use super::support;
+
 fn find_select_box_id(box_tree: &fastrender::BoxTree) -> Option<usize> {
   let mut stack = vec![&box_tree.root];
   while let Some(node) = stack.pop() {
@@ -68,7 +70,7 @@ fn select_dropdown_arrow_keys_skip_hidden_options_when_box_tree_is_available() -
   "#;
 
   let options = RenderOptions::new().with_viewport(200, 200);
-  let mut doc = BrowserDocument::from_html(html, options)?;
+  let mut doc = BrowserDocument::new(support::deterministic_renderer(), html, options)?;
   doc.render_frame_with_scroll_state()?;
   let prepared = doc
     .prepared()

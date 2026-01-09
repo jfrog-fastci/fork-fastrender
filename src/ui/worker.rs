@@ -1112,7 +1112,10 @@ fn navigate_tab(
       doc.set_cancel_callback(None);
       url.clone()
     } else {
-      let mut renderer = match FastRender::new() {
+      let mut renderer = match FastRender::builder()
+        .font_sources(FontConfig::bundled_only())
+        .build()
+      {
         Ok(renderer) => renderer,
         Err(err) => {
           let _ = tx.send(WorkerToUi::NavigationFailed {

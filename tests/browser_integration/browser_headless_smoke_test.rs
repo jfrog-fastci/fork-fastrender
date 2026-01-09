@@ -14,6 +14,7 @@ fn browser_headless_smoke_mode_runs_and_reports_success() {
     // Keep the smoke test cheap/deterministic even if the parent environment has a larger Rayon
     // pool configured.
     .env("RAYON_NUM_THREADS", "1")
+    .env("FASTR_USE_BUNDLED_FONTS", "1")
     .env("FASTR_TEST_BROWSER_HEADLESS_SMOKE", "1")
     .output()
     .expect("spawn browser");

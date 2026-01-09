@@ -5,13 +5,12 @@ use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker::spawn_ui_worker;
 use fastrender::ui::UiWorker;
 use fastrender::system::DEFAULT_RENDER_STACK_SIZE;
-use fastrender::FastRender;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{self, create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 fn recv_until_deadline(rx: &Receiver<WorkerToUi>, deadline: Instant) -> Option<WorkerToUi> {
   loop {
@@ -31,7 +30,7 @@ fn recv_until_deadline(rx: &Receiver<WorkerToUi>, deadline: Instant) -> Option<W
 fn spawn_model_ui_worker(
   name: &str,
 ) -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
-  let renderer = FastRender::new().expect("renderer");
+  let renderer = support::deterministic_renderer();
   let (to_ui_tx, to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
   let (to_worker_tx, to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let worker = UiWorker::new(renderer, to_ui_tx);

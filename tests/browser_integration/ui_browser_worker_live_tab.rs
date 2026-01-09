@@ -1,6 +1,5 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::api::FastRenderFactory;
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::ui::browser_worker::BrowserWorker;
@@ -8,6 +7,8 @@ use fastrender::ui::messages::{TabId, WorkerToUi};
 use fastrender::RenderOptions;
 use std::time::Duration;
 use tempfile::tempdir;
+
+use super::support;
 
 fn recv_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>) -> fastrender::ui::messages::RenderedFrame {
   loop {
@@ -36,7 +37,7 @@ fn navigation_creates_a_live_tab_and_ticks_are_safe() {
   run_on_render_stack(|| {
     let _stage_listener_guard = crate::browser_integration::stage_listener_test_lock();
 
-    let factory = FastRenderFactory::new().unwrap();
+    let factory = support::deterministic_factory();
     let (tx, rx) = std::sync::mpsc::channel::<WorkerToUi>();
     let mut worker = BrowserWorker::new(factory, tx);
 
@@ -70,7 +71,7 @@ fn second_frame_is_emitted_after_a_timer_mutates_the_dom() {
   run_on_render_stack(|| {
     let _stage_listener_guard = crate::browser_integration::stage_listener_test_lock();
 
-    let factory = FastRenderFactory::new().unwrap();
+    let factory = support::deterministic_factory();
     let (tx, rx) = std::sync::mpsc::channel::<WorkerToUi>();
     let mut worker = BrowserWorker::new(factory, tx);
 

@@ -39,7 +39,7 @@ pub mod input_mapping;
 pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
 
 pub use browser_tab_controller::BrowserTabController;
-pub use browser_thread::{spawn_browser_worker, BrowserWorkerHandle};
+pub use browser_thread::{spawn_browser_worker, spawn_browser_worker_with_factory, BrowserWorkerHandle};
 #[cfg(any(test, feature = "browser_ui"))]
 pub use browser_thread::spawn_browser_worker_for_test;
 

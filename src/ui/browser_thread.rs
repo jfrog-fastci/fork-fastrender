@@ -837,16 +837,15 @@ impl BrowserRuntime {
       return;
     };
     let (dom_changed, action, anchor_css) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let (dom_changed, action) =
-        engine.pointer_up_with_scroll(
-          dom,
-          box_tree,
-          fragment_tree,
-          scroll,
-          viewport_point,
-          &document_url,
-          &base_url,
-        );
+      let (dom_changed, action) = engine.pointer_up_with_scroll(
+        dom,
+        box_tree,
+        fragment_tree,
+        scroll,
+        viewport_point,
+        &document_url,
+        &base_url,
+      );
 
       let anchor_css = match &action {
         InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
@@ -1764,6 +1763,20 @@ fn spawn_browser_worker_inner(
   let factory = FastRenderFactory::with_config(
     FastRenderPoolConfig::new().with_renderer_config(renderer_config),
   )?;
+  spawn_browser_worker_with_name_and_factory(name, factory, test_render_delay_ms)
+}
+
+/// Like [`spawn_browser_worker`], but allows callers (tests) to provide a preconfigured renderer
+/// factory.
+pub fn spawn_browser_worker_with_factory(factory: FastRenderFactory) -> crate::Result<BrowserWorkerHandle> {
+  spawn_browser_worker_with_name_and_factory("browser_worker".to_string(), factory, None)
+}
+
+fn spawn_browser_worker_with_name_and_factory(
+  name: String,
+  factory: FastRenderFactory,
+  test_render_delay_ms: Option<u64>,
+) -> crate::Result<BrowserWorkerHandle> {
   // `spawn_render_worker_thread` requires a renderer instance even though this runtime builds its
   // own per-navigation renderers from the factory. Build one from the same factory to ensure we do
   // not duplicate global caches.

@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use super::support;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecordedRequest {
   url: String,
@@ -120,11 +122,11 @@ fn browser_document_rerenders_after_dom_mutation() -> Result<()> {
     </html>
   "#;
 
-  let mut renderer = FastRender::new()?;
+  let mut renderer = support::deterministic_renderer();
   let baseline_a = renderer.render_html_with_options(html_a, options.clone())?;
   let baseline_b = renderer.render_html_with_options(html_b, options.clone())?;
 
-  let mut doc = BrowserDocument::from_html(html_a, options)?;
+  let mut doc = BrowserDocument::new(support::deterministic_renderer(), html_a, options)?;
   let frame1 = doc.render_frame()?;
   assert_eq!(
     frame1.data(),
@@ -182,7 +184,7 @@ fn browser_document_render_frame_with_scroll_state_syncs_scroll_state() -> Resul
     </html>
   "#;
   let options = RenderOptions::new().with_viewport(100, 100);
-  let mut doc = BrowserDocument::from_html(html, options)?;
+  let mut doc = BrowserDocument::new(support::deterministic_renderer(), html, options)?;
   doc.set_scroll(0.0, 60.0);
 
   let frame = doc.render_frame_with_scroll_state()?;
@@ -216,7 +218,9 @@ fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_r
     "FASTR_FETCH_LINK_CSS".to_string(),
     "1".to_string(),
   )]));
-  let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+  let config = FastRenderConfig::default()
+    .with_runtime_toggles(toggles)
+    .with_font_sources(fastrender::text::font_db::FontConfig::bundled_only());
   let renderer =
     FastRender::with_config_and_fetcher(config, Some(fetcher.clone() as Arc<dyn ResourceFetcher>))?;
 
@@ -245,7 +249,11 @@ fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_over
   </head><body><div id="t"></div></body></html>"#;
 
   let url_with_fragment = "https://page.example/index.html#t";
-  let mut doc = BrowserDocument::from_html(html, RenderOptions::new().with_viewport(64, 64))?;
+  let mut doc = BrowserDocument::new(
+    support::deterministic_renderer(),
+    html,
+    RenderOptions::new().with_viewport(64, 64),
+  )?;
   doc.set_document_url(Some(url_with_fragment.to_string()));
   doc.set_navigation_urls(
     Some(url_with_fragment.to_string()),
@@ -284,7 +292,7 @@ fn base_href_does_not_override_target_fragment() -> Result<()> {
 
   let document_url = "https://example.com/page#t";
   let options = RenderOptions::new().with_viewport(64, 64);
-  let mut doc = BrowserDocument::from_html(html, options)?;
+  let mut doc = BrowserDocument::new(support::deterministic_renderer(), html, options)?;
   doc.set_document_url(Some(document_url.to_string()));
 
   let pixmap = doc.render_frame()?;
@@ -317,7 +325,7 @@ fn browser_document_cached_paint_respects_cancel_callback() -> Result<()> {
       </body>
     </html>"#;
 
-  let mut renderer = FastRender::new()?;
+  let mut renderer = support::deterministic_renderer();
   let base_options = RenderOptions::new().with_viewport(64, 64);
   let prepared = renderer.prepare_html(html, base_options.clone())?;
 
@@ -362,7 +370,7 @@ fn browser_document2_cached_paint_respects_cancel_callback() -> Result<()> {
   let options = RenderOptions::new()
     .with_viewport(64, 64)
     .with_cancel_callback(Some(cancel_callback));
-  let mut doc = BrowserDocument2::from_html(html, options)?;
+  let mut doc = BrowserDocument2::new(support::deterministic_renderer(), html, options)?;
 
   // First frame should complete so we can exercise cached paint on the next frame.
   doc.render_frame()?;

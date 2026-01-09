@@ -4,6 +4,8 @@ use fastrender::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::support;
+
 #[test]
 fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
   #[cfg(feature = "browser_ui")]
@@ -40,11 +42,11 @@ fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
     </html>
   "#;
 
-  let mut renderer = FastRender::new()?;
+  let mut renderer = support::deterministic_renderer();
   let baseline_a = renderer.render_html_with_options(html_a, options.clone())?;
   let baseline_b = renderer.render_html_with_options(html_b, options.clone())?;
 
-  let mut doc = BrowserDocument2::from_html(html_a, options)?;
+  let mut doc = BrowserDocument2::new(support::deterministic_renderer(), html_a, options)?;
   let frame1 = doc.render_frame()?;
   assert_eq!(
     frame1.data(),

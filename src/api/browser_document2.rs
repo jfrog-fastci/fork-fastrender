@@ -35,7 +35,11 @@ pub struct BrowserDocument2 {
 impl BrowserDocument2 {
   /// Creates a new live `dom2` document from an HTML string using a fresh renderer.
   pub fn from_html(html: &str, options: RenderOptions) -> Result<Self> {
-    let renderer = super::FastRender::new()?;
+    Self::new(super::FastRender::new()?, html, options)
+  }
+
+  /// Creates a new live `dom2` document from an HTML string using the provided renderer.
+  pub fn new(renderer: super::FastRender, html: &str, options: RenderOptions) -> Result<Self> {
     let dom = renderer.parse_html(html)?;
     let dom = Document::from_renderer_dom(&dom);
     Ok(Self {

@@ -28,6 +28,7 @@ mod ui_browser_worker_live_tab;
 mod ui_browser_worker_thread_naming;
 mod ui_fragment_navigation;
 mod ui_cancellation;
+mod ui_select_listbox_click_after_wheel_scroll;
 mod ui_render_worker_thread_builder_test;
 mod ui_select_dropdown_choose;
 mod ui_select_listbox_click;

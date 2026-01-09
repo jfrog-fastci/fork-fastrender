@@ -10573,14 +10573,16 @@ impl FastRender {
     mut stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
     // Layout can consult runtime toggles (e.g. media preference overrides). Install the renderer's
-    // configured toggles in thread-local storage so callers can override env-derived behaviour.
+    // configured toggles in thread-local storage so callers can override env-derived behavior
+    // without mutating process environment variables.
     //
     // Important: layout may be executed on a larger-stack helper thread in debug builds. When the
     // render pipeline already installed a process-wide toggle override (via
     // `runtime::with_runtime_toggles`), attempting to reinstall the global override from the helper
     // thread can deadlock (the parent thread holds the global override lock while waiting to join
-    // the helper thread).
-    runtime::with_thread_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
+    // the helper thread). We only need thread-local overrides here.
+    let runtime_toggles = Arc::clone(&self.runtime_toggles);
+    runtime::with_thread_runtime_toggles(runtime_toggles, || {
       let inherited_deadline = crate::render_control::active_deadline();
       let deadline = deadline.or(inherited_deadline.as_ref());
       let _deadline_guard = DeadlineGuard::install(deadline);

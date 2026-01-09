@@ -3,12 +3,12 @@
 use fastrender::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use fastrender::scroll::ScrollState;
 use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
-use fastrender::{FastRender, Point, RenderOptions, Size};
+use fastrender::{Point, RenderOptions, Size};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{self, create_tab_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 fn wait_for_message<F>(rx: &Receiver<WorkerToUi>, timeout: Duration, mut f: F) -> WorkerToUi
 where
@@ -34,7 +34,8 @@ fn drain_worker(rx: &Receiver<WorkerToUi>) {
 }
 
 fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
-  let handle = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  let handle = fastrender::ui::spawn_browser_worker_with_factory(support::deterministic_factory())
+    .expect("spawn browser worker");
   (handle.tx, handle.rx, handle.join)
 }
 
@@ -126,7 +127,7 @@ fn element_scroll_at_pointer_updates_element_scroll_state() {
 
   // Discover the box id the renderer assigns to the scroller so we can assert on it. Use the same
   // `prepare_url` path as the browser worker so box ids match.
-  let mut renderer = FastRender::new().expect("renderer");
+  let mut renderer = support::deterministic_renderer();
   let report = renderer
     .prepare_url(
       &url,

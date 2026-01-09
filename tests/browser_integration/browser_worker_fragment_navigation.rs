@@ -88,7 +88,8 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
   );
   let url = format!("{page_url}#target");
 
-  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  let worker = fastrender::ui::spawn_browser_worker_with_factory(support::deterministic_factory())
+    .expect("spawn browser worker");
   let tab_id = TabId::new();
   worker
     .tx
@@ -232,7 +233,8 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
     "##,
   );
 
-  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  let worker = fastrender::ui::spawn_browser_worker_with_factory(support::deterministic_factory())
+    .expect("spawn browser worker");
   let tab_id = TabId::new();
   worker
     .tx

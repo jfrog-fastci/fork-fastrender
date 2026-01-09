@@ -6,7 +6,7 @@ use fastrender::ui::messages::{PointerButton, RenderedFrame, RepaintReason, TabI
 use fastrender::ui::BrowserTabController;
 use fastrender::{BoxNode, BoxTree, Point, Result};
 
-use super::support::scroll_msg;
+use super::support::{self, scroll_msg};
 
 fn extract_frame(messages: Vec<WorkerToUi>) -> Option<RenderedFrame> {
   messages.into_iter().rev().find_map(|msg| match msg {
@@ -93,7 +93,14 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
     </html>
   "##;
 
-  let mut controller = BrowserTabController::from_html(tab_id, html, url, viewport_css, 1.0)?;
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
 
   // Initial paint.
   let frame0 = extract_frame(controller.handle_message(UiToWorker::RequestRepaint {

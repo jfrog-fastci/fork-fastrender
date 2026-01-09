@@ -2,6 +2,7 @@
 
 use fastrender::ui::messages::WorkerToUi;
 use fastrender::ui::worker::spawn_render_worker_thread;
+use fastrender::text::font_db::FontConfig;
 use fastrender::FastRender;
 
 #[test]
@@ -10,7 +11,10 @@ fn browser_render_worker_thread_is_spawned_via_thread_builder() {
   // We can't reliably trigger a stack overflow in CI, but we can at least assert that the browser
   // UI render worker thread is created via `std::thread::Builder` (naming requires it), and the
   // implementation sets a large stack size.
-  let renderer = FastRender::builder().build().expect("renderer");
+  let renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
   let (tx, _rx) = std::sync::mpsc::channel::<WorkerToUi>();
 
   let expected_name = "fastr-browser-render-worker-test";

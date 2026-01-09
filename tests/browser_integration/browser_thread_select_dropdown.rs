@@ -32,7 +32,8 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
   "#;
   let url = site.write("page.html", html);
 
-  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  let worker = fastrender::ui::spawn_browser_worker_with_factory(support::deterministic_factory())
+    .expect("spawn browser worker");
   let fastrender::ui::BrowserWorkerHandle { tx, rx, join } = worker;
 
   let tab_id = TabId::new();

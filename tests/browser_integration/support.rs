@@ -9,6 +9,7 @@
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::OnceLock;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Default per-wait timeout used by integration-test helpers/tests that don't define their own.
@@ -37,12 +38,54 @@ pub(crate) fn ensure_bundled_fonts_loaded() {
 /// Create a deterministic `FastRender` instance for UI integration tests.
 ///
 /// The browser UI worker tests should not depend on system-installed fonts, so always use the
-/// bundled font set.
+/// a deterministic fixture font set.
+fn deterministic_font_config() -> fastrender::text::font_db::FontConfig {
+  // Loading the full bundled fallback set is expensive; for browser integration tests we only need
+  // a small, stable subset. Copy a few fixture fonts into a temporary directory and point the font
+  // loader at it.
+  static FONT_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+
+  let dir = FONT_DIR.get_or_init(|| {
+    let dir = tempfile::tempdir().expect("temp font dir");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fonts = root.join("tests/fixtures/fonts");
+    for name in [
+      "NotoSans-subset.ttf",
+      "NotoSerif-subset.ttf",
+      "NotoSansMono-subset.ttf",
+    ] {
+      let src = fonts.join(name);
+      let dst = dir.path().join(name);
+      std::fs::copy(&src, &dst)
+        .unwrap_or_else(|err| panic!("copy fixture font {}: {err}", src.display()));
+    }
+    dir
+  });
+
+  fastrender::text::font_db::FontConfig::new()
+    .with_system_fonts(false)
+    .with_bundled_fonts(false)
+    .with_font_dirs([dir.path().to_path_buf()])
+}
+
 pub fn deterministic_renderer() -> fastrender::FastRender {
   fastrender::FastRender::builder()
-    .font_sources(fastrender::text::font_db::FontConfig::bundled_only())
+    .font_sources(deterministic_font_config())
     .build()
     .expect("build deterministic renderer")
+}
+
+/// Create a deterministic `FastRenderFactory` instance for integration tests.
+///
+/// Prefer this over `FastRenderFactory::new()` so the test suite does not depend on system-installed
+/// fonts.
+pub fn deterministic_factory() -> fastrender::api::FastRenderFactory {
+  let renderer_config = fastrender::api::FastRenderConfig::default()
+    .with_font_sources(deterministic_font_config());
+  fastrender::api::FastRenderFactory::with_config(
+    fastrender::api::FastRenderPoolConfig::new().with_renderer_config(renderer_config),
+  )
+  .expect("build deterministic factory")
 }
 
 /// Receive from `rx` until `pred` returns `true`, or the timeout elapses.
@@ -383,6 +426,11 @@ pub fn scroll_msg(tab_id: TabId, delta_css: (f32, f32), pointer_css: Option<(f32
 #[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::*;
+
+  #[test]
+  fn deterministic_renderer_builds() {
+    let _ = deterministic_renderer();
+  }
 
   #[test]
   fn create_tab_sets_expected_fields_and_default_cancel() {

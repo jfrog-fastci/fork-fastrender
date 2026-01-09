@@ -38,11 +38,26 @@ impl BrowserTabController {
     viewport_css: (u32, u32),
     dpr: f32,
   ) -> Result<Self> {
+    Self::from_html_with_renderer(FastRender::new()?, tab_id, html, document_url, viewport_css, dpr)
+  }
+
+  /// Like [`BrowserTabController::from_html`], but allows the caller to provide a pre-built
+  /// renderer instance.
+  ///
+  /// This is useful for tests that need a deterministic font configuration.
+  pub fn from_html_with_renderer(
+    renderer: FastRender,
+    tab_id: TabId,
+    html: &str,
+    document_url: &str,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) -> Result<Self> {
     let options = RenderOptions::new()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
 
-    let mut document = BrowserDocument::from_html(html, options)?;
+    let mut document = BrowserDocument::new(renderer, html, options)?;
     document.set_navigation_urls(Some(document_url.to_string()), Some(document_url.to_string()));
 
     Ok(Self {
