@@ -109,6 +109,56 @@ fn outer_html_does_not_escape_script_text() {
 }
 
 #[test]
+fn inner_html_does_not_escape_script_or_style_text() {
+  let root = parse_html(
+    r#"<!doctype html><html><body>
+      <script id=s>if (a < b) c(a & b);</script>
+      <style id=st>.a{content:"a < b & c"}</style>
+    </body></html>"#,
+  )
+  .unwrap();
+  let doc = Document::from_renderer_dom(&root);
+
+  let script = find_element_by_id(&doc, "s");
+  let script_inner = doc.get_inner_html(script).unwrap();
+  assert!(
+    script_inner.contains("a < b"),
+    "expected raw '<' in serialized <script> innerHTML, got: {script_inner}"
+  );
+  assert!(
+    script_inner.contains("a & b"),
+    "expected raw '&' in serialized <script> innerHTML, got: {script_inner}"
+  );
+  assert!(
+    !script_inner.contains("&lt;"),
+    "unexpected escaping inside <script> innerHTML, got: {script_inner}"
+  );
+  assert!(
+    !script_inner.contains("&amp;"),
+    "unexpected escaping inside <script> innerHTML, got: {script_inner}"
+  );
+
+  let style = find_element_by_id(&doc, "st");
+  let style_inner = doc.get_inner_html(style).unwrap();
+  assert!(
+    style_inner.contains("a < b"),
+    "expected raw '<' in serialized <style> innerHTML, got: {style_inner}"
+  );
+  assert!(
+    style_inner.contains("a < b & c"),
+    "expected raw '&' in serialized <style> innerHTML, got: {style_inner}"
+  );
+  assert!(
+    !style_inner.contains("&lt;"),
+    "unexpected escaping inside <style> innerHTML, got: {style_inner}"
+  );
+  assert!(
+    !style_inner.contains("&amp;"),
+    "unexpected escaping inside <style> innerHTML, got: {style_inner}"
+  );
+}
+
+#[test]
 fn outer_html_setter_replaces_node_in_parent_children() {
   let root = parse_html(
     "<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>",
