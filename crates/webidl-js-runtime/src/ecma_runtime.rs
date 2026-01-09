@@ -5,8 +5,8 @@ use crate::runtime::{
 use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind,
-  Value, VmError, WeakGcObject,
+  GcObject, GcString, GcSymbol, Heap, HeapLimits, JsBigInt, PropertyDescriptor, PropertyKey,
+  PropertyKind, Value, VmError, WeakGcObject,
 };
 
 type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError>>;
@@ -56,6 +56,7 @@ pub struct VmJsRuntime {
   string_data_symbol: Option<GcSymbol>,
   boolean_data_symbol: Option<GcSymbol>,
   number_data_symbol: Option<GcSymbol>,
+  bigint_data_symbol: Option<GcSymbol>,
   symbol_data_symbol: Option<GcSymbol>,
 
   last_swept_gc_runs: u64,
@@ -72,7 +73,7 @@ pub struct VmJsRuntime {
 impl VmJsRuntime {
   fn value_is_valid_or_primitive(&self, value: Value) -> bool {
     match value {
-      Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => true,
+      Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) | Value::BigInt(_) => true,
       Value::String(s) => self.heap.is_valid_string(s),
       Value::Symbol(s) => self.heap.is_valid_symbol(s),
       Value::Object(o) => self.heap.is_valid_object(o),
@@ -96,6 +97,7 @@ impl VmJsRuntime {
       string_data_symbol: None,
       boolean_data_symbol: None,
       number_data_symbol: None,
+      bigint_data_symbol: None,
       symbol_data_symbol: None,
       last_swept_gc_runs: 0,
       interned_window: None,
@@ -219,6 +221,11 @@ impl VmJsRuntime {
     Self::internal_symbol(&mut self.number_data_symbol, &mut self.heap, key)
   }
 
+  fn bigint_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    let key = self.alloc_string_handle("VmJsRuntime.[[BigIntData]]")?;
+    Self::internal_symbol(&mut self.bigint_data_symbol, &mut self.heap, key)
+  }
+
   fn symbol_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
     let key = self.alloc_string_handle("VmJsRuntime.[[SymbolData]]")?;
     Self::internal_symbol(&mut self.symbol_data_symbol, &mut self.heap, key)
@@ -231,6 +238,7 @@ impl VmJsRuntime {
     self.string_data_symbol == Some(*sym)
       || self.boolean_data_symbol == Some(*sym)
       || self.number_data_symbol == Some(*sym)
+      || self.bigint_data_symbol == Some(*sym)
       || self.symbol_data_symbol == Some(*sym)
   }
 
@@ -397,6 +405,16 @@ impl VmJsRuntime {
       scope.alloc_object()?
     };
     self.define_hidden_slot(obj, sym, Value::Number(number_data))?;
+    Ok(Value::Object(obj))
+  }
+
+  fn alloc_bigint_object_value(&mut self, bigint_data: JsBigInt) -> Result<Value, VmError> {
+    let sym = self.bigint_data_symbol()?;
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    self.define_hidden_slot(obj, sym, Value::BigInt(bigint_data))?;
     Ok(Value::Object(obj))
   }
 
@@ -639,6 +657,20 @@ impl VmJsRuntime {
     }
   }
 
+  fn bigint_object_data(&self, obj: GcObject) -> Result<Option<JsBigInt>, VmError> {
+    let Some(sym) = self.bigint_data_symbol else {
+      return Ok(None);
+    };
+    match self
+      .heap
+      .object_get_own_data_property_value(obj, &PropertyKey::Symbol(sym))
+    {
+      Ok(Some(Value::BigInt(b))) => Ok(Some(b)),
+      Ok(_) => Ok(None),
+      Err(_) => Ok(None),
+    }
+  }
+
   fn symbol_object_data(&self, obj: GcObject) -> Result<Option<GcSymbol>, VmError> {
     let Some(sym) = self.symbol_data_symbol else {
       return Ok(None);
@@ -860,8 +892,8 @@ impl JsRuntime for VmJsRuntime {
     matches!(value, Value::Number(_))
   }
 
-  fn is_bigint(&self, _value: Value) -> bool {
-    false
+  fn is_bigint(&self, value: Value) -> bool {
+    matches!(value, Value::BigInt(_))
   }
 
   fn is_string(&self, value: Value) -> bool {
@@ -881,6 +913,7 @@ impl JsRuntime for VmJsRuntime {
       Value::String(string_data) => Ok(self.alloc_string_object_from_handle(string_data)?),
       Value::Bool(boolean_data) => Ok(self.alloc_boolean_object_value(boolean_data)?),
       Value::Number(number_data) => Ok(self.alloc_number_object_value(number_data)?),
+      Value::BigInt(bigint_data) => Ok(self.alloc_bigint_object_value(bigint_data)?),
       Value::Symbol(symbol_data) => Ok(self.alloc_symbol_object_value(symbol_data)?),
     }
   }
@@ -894,6 +927,7 @@ impl JsRuntime for VmJsRuntime {
       Value::Undefined | Value::Null => false,
       Value::Bool(b) => b,
       Value::Number(n) => !(n == 0.0 || n.is_nan()),
+      Value::BigInt(b) => !b.is_zero(),
       Value::String(s) => !self.heap.get_string(s)?.is_empty(),
       Value::Symbol(_) | Value::Object(_) => true,
     })
@@ -912,6 +946,9 @@ impl JsRuntime for VmJsRuntime {
       Value::Null => 0.0,
       Value::Undefined => f64::NAN,
       Value::String(s) => self.to_number_from_string(s)?,
+      Value::BigInt(_) => {
+        return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
+      }
       Value::Symbol(_) => {
         return Err(self.throw_type_error("Cannot convert a Symbol value to a number"));
       }
@@ -926,6 +963,8 @@ impl JsRuntime for VmJsRuntime {
           }
         } else if let Some(number_data) = self.number_object_data(obj)? {
           number_data
+        } else if self.bigint_object_data(obj)?.is_some() {
+          return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
         } else if let Some(symbol_data) = self.symbol_object_data(obj)? {
           return Err(self.throw_symbol_to_number(symbol_data));
         } else {
@@ -946,6 +985,7 @@ impl JsRuntime for VmJsRuntime {
         Value::Bool(true) => rt.alloc_string_handle("true")?,
         Value::Bool(false) => rt.alloc_string_handle("false")?,
         Value::Number(n) => rt.to_string_from_number(n)?,
+        Value::BigInt(b) => rt.alloc_string_handle(&b.to_decimal_string())?,
         Value::Symbol(_) => {
           return Err(rt.throw_type_error("Cannot convert a Symbol value to a string"));
         }
@@ -960,6 +1000,8 @@ impl JsRuntime for VmJsRuntime {
             }
           } else if let Some(number_data) = rt.number_object_data(obj)? {
             rt.to_string_from_number(number_data)?
+          } else if let Some(bigint_data) = rt.bigint_object_data(obj)? {
+            rt.alloc_string_handle(&bigint_data.to_decimal_string())?
           } else if let Some(symbol_data) = rt.symbol_object_data(obj)? {
             return Err(rt.throw_symbol_to_string(symbol_data));
           } else if rt.heap.is_valid_object(obj) {

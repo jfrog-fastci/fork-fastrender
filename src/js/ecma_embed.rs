@@ -501,6 +501,7 @@ impl Evaluator<'_> {
       Value::Null => Ok(ScriptValue::Null),
       Value::Bool(b) => Ok(ScriptValue::Bool(b)),
       Value::Number(n) => Ok(ScriptValue::Number(n)),
+      Value::BigInt(b) => Ok(ScriptValue::String(b.to_decimal_string())),
       Value::String(s) => Ok(ScriptValue::String(
         heap
           .get_string(s)
@@ -854,6 +855,7 @@ impl Evaluator<'_> {
         Value::Null => ScriptValue::Null,
         Value::Bool(b) => ScriptValue::Bool(b),
         Value::Number(n) => ScriptValue::Number(n),
+        Value::BigInt(b) => ScriptValue::String(b.to_decimal_string()),
         Value::String(s) => ScriptValue::String(
           call_scope
             .heap()
@@ -899,6 +901,7 @@ fn to_boolean(heap: &Heap, value: Value) -> Result<bool, VmError> {
     Value::Undefined | Value::Null => false,
     Value::Bool(b) => b,
     Value::Number(n) => n != 0.0 && !n.is_nan(),
+    Value::BigInt(b) => !b.is_zero(),
     Value::String(s) => !heap.get_string(s)?.as_code_units().is_empty(),
     Value::Symbol(_) | Value::Object(_) => true,
   })

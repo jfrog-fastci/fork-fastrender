@@ -26,6 +26,7 @@ pub mod ecma_vm_runtime;
 pub mod event_loop;
 pub mod ecma_microtasks;
 pub mod host_document;
+pub mod html_classic_scripts;
 pub mod html_scripting;
 pub mod options;
 pub mod orchestrator;
@@ -72,6 +73,10 @@ pub use orchestrator::{
 };
 pub use browser_tab::{BrowserTab, BrowserTabHost};
 pub use dom_bindings::DomJsRealm;
+pub use html_classic_scripts::{
+  parse_and_run_classic_scripts, ClassicScriptExecutor, ClassicScriptFetcher,
+  ResourceFetcherClassicScriptFetcher,
+};
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader,

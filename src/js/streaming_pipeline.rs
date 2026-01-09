@@ -464,6 +464,27 @@ impl<Host: ClassicScriptPipelineHost> ClassicScriptPipeline<Host> {
     &mut self.event_loop
   }
 
+  /// Returns `true` once the HTML parser has reached EOF and produced a finished document.
+  ///
+  /// Note: this does **not** imply that all external script fetches have completed or that all
+  /// queued script tasks have executed; it only reflects the parser state.
+  pub fn parsing_finished(&self) -> bool {
+    self.state.borrow().document.is_some()
+  }
+
+  /// Returns the finished document once parsing has completed.
+  ///
+  /// This is primarily intended for deterministic test harnesses that want to consume the
+  /// post-parse DOM after driving the pipeline to completion.
+  pub fn finished_document(&self) -> Option<Document> {
+    self.state.borrow().document.clone()
+  }
+
+  /// Returns the parser-blocking script that the pipeline is currently waiting for, if any.
+  pub fn blocked_on_script(&self) -> Option<ScriptId> {
+    self.state.borrow().blocked_parser_on
+  }
+
   pub fn feed_str(&mut self, chunk: &str) -> Result<()> {
     self.state.borrow_mut().parser.push_str(chunk);
     self.queue_parse_task()
