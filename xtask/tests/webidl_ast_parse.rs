@@ -16,6 +16,7 @@ fn parses_complex_operation_signature() {
       return_type: IdlType::Builtin(BuiltinType::Undefined),
       arguments: vec![
         Argument {
+          ext_attrs: Vec::new(),
           name: "type".to_string(),
           type_: IdlType::Builtin(BuiltinType::DOMString),
           optional: false,
@@ -23,6 +24,7 @@ fn parses_complex_operation_signature() {
           default: None,
         },
         Argument {
+          ext_attrs: Vec::new(),
           name: "callback".to_string(),
           type_: IdlType::Nullable(Box::new(IdlType::Named("EventListener".to_string()))),
           optional: false,
@@ -30,6 +32,7 @@ fn parses_complex_operation_signature() {
           default: None,
         },
         Argument {
+          ext_attrs: Vec::new(),
           name: "options".to_string(),
           type_: IdlType::Union(vec![
             IdlType::Named("AddEventListenerOptions".to_string()),
@@ -101,4 +104,3 @@ fn parses_stringifier_attribute() {
     }
   );
 }
-

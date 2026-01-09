@@ -826,7 +826,7 @@ fn run_tests(args: TestArgs) -> Result<()> {
   }
 
   for suite in suites {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
     cmd.arg("test").arg("--quiet");
     if args.release {
       cmd.arg("--release");
@@ -873,7 +873,7 @@ fn run_update_goldens(args: UpdateGoldensArgs) -> Result<()> {
   };
 
   for suite in suites {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
     cmd.arg("test").arg("--quiet");
     if args.release {
       cmd.arg("--release");
@@ -1152,7 +1152,7 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
   }
 
   if !no_fetch {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
     cmd
       .arg("run")
       .arg("--release")
@@ -1265,7 +1265,7 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
       }
     }
 
-    let mut cmd = Command::new("cargo");
+    let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
     cmd
       .arg("run")
       .arg("--release")
@@ -1544,10 +1544,20 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
         }
         bundles_captured += 1;
 
-        let mut import_cmd = capture.import_command.to_command();
-        import_cmd.current_dir(&repo_root);
-        let import_result =
-          run_command(import_cmd).with_context(|| format!("import-page-fixture {}", capture.stem));
+        let import_result = crate::import_page_fixture::run_import_page_fixture(
+          crate::import_page_fixture::ImportPageFixtureArgs {
+            bundle: capture.bundle_path.clone(),
+            fixture_name: capture.stem.clone(),
+            output_root: plan_args.fixtures_root.clone(),
+            overwrite: plan_args.overwrite,
+            allow_missing: plan_args.allow_missing_resources,
+            allow_http_references: false,
+            legacy_rewrite: false,
+            rewrite_scripts: plan_args.include_scripts,
+            dry_run: false,
+          },
+        )
+        .with_context(|| format!("import-page-fixture {}", capture.stem));
         if let Err(err) = import_result {
           failures.push((capture.stem.clone(), format!("import failed: {err}")));
           continue;
@@ -1745,10 +1755,20 @@ fn capture_accuracy_fixtures_with_plan(
     }
     bundles_captured += 1;
 
-    let mut import_cmd = capture.import_command.to_command();
-    import_cmd.current_dir(repo_root);
-    let import_result =
-      run_command(import_cmd).with_context(|| format!("import-page-fixture {}", capture.stem));
+    let import_result = crate::import_page_fixture::run_import_page_fixture(
+      crate::import_page_fixture::ImportPageFixtureArgs {
+        bundle: capture.bundle_path.clone(),
+        fixture_name: capture.stem.clone(),
+        output_root: plan_args.fixtures_root.clone(),
+        overwrite: plan_args.overwrite,
+        allow_missing: plan_args.allow_missing_resources,
+        allow_http_references: false,
+        legacy_rewrite: false,
+        rewrite_scripts: plan_args.include_scripts,
+        dry_run: false,
+      },
+    )
+    .with_context(|| format!("import-page-fixture {}", capture.stem));
     if let Err(err) = import_result {
       failures.push((capture.stem.clone(), format!("import failed: {err}")));
       continue;
@@ -1808,7 +1828,7 @@ fn build_pageset_progress_run_command(
   cache_dir: &Path,
   use_bundled_fonts: bool,
 ) -> Command {
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root());
   cmd
     .arg("run")
     .arg("--release")
@@ -1833,7 +1853,7 @@ fn build_pageset_progress_run_command(
 }
 
 fn build_prefetch_assets_command(jobs: usize, fetch_timeout: u64, cache_dir: &Path) -> Command {
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root());
   cmd
     .arg("run")
     .arg("--release")
@@ -1850,7 +1870,7 @@ fn build_prefetch_assets_command(jobs: usize, fetch_timeout: u64, cache_dir: &Pa
 }
 
 fn query_prefetch_assets_support(disk_cache_feature: bool) -> Result<xtask::PrefetchAssetsSupport> {
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root());
   cmd
     .arg("run")
     .arg("--release")
@@ -1961,7 +1981,7 @@ fn run_pageset_diff(args: PagesetDiffArgs) -> Result<()> {
     None
   };
 
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd
     .arg("run")
     .arg("--release")
@@ -2119,7 +2139,8 @@ fn run_perf_smoke(args: PerfSmokeArgs) -> Result<()> {
   };
 
   // Keep renders deterministic across machines.
-  let mut cmd = Command::new("cargo");
+  let repo_root = repo_root();
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg("run");
   if !args.debug {
@@ -2176,7 +2197,7 @@ fn run_perf_smoke(args: PerfSmokeArgs) -> Result<()> {
 
   cmd.args(&args.extra);
 
-  cmd.current_dir(repo_root());
+  cmd.current_dir(&repo_root);
   println!("Running perf_smoke...");
   run_command(cmd)
 }
@@ -2233,7 +2254,7 @@ fn run_render_page(args: RenderPageArgs) -> Result<()> {
   // (`fetches/assets`, `fetches/html`, etc.) are stable.
   let repo_root = repo_root();
 
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd.arg("run");
   if !args.debug {
     cmd.arg("--release");
@@ -2320,7 +2341,7 @@ fn run_diff_renders(args: DiffRendersArgs) -> Result<()> {
       );
     }
   } else {
-    let mut build_cmd = Command::new("cargo");
+    let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
     build_cmd
       .arg("build")
       .arg("--release")

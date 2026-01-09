@@ -49,6 +49,7 @@ fn selects_missing_failing_fixtures_and_builds_commands() {
     dpr: Some("2".to_string()),
     allow_missing_resources: true,
     overwrite: true,
+    include_scripts: false,
   };
 
   let plan = plan_capture_missing_failure_fixtures(&args).expect("plan fixtures");
@@ -76,9 +77,13 @@ fn selects_missing_failing_fixtures_and_builds_commands() {
     );
 
     let bundle_cmd = &capture.bundle_command;
-    assert_eq!(bundle_cmd.program, "cargo");
+    assert_eq!(bundle_cmd.program, "bash");
 
     let bundle_args = bundle_cmd.args.join(" ");
+    assert!(
+      bundle_args.contains("scripts/cargo_agent.sh"),
+      "bundle command should use cargo_agent wrapper; got: {bundle_args}"
+    );
     assert!(
       bundle_args.contains("--bin bundle_page -- cache"),
       "bundle_page cache invocation missing: {bundle_args}"
@@ -120,9 +125,13 @@ fn selects_missing_failing_fixtures_and_builds_commands() {
     );
 
     let import_cmd = &capture.import_command;
-    assert_eq!(import_cmd.program, "cargo");
+    assert_eq!(import_cmd.program, "bash");
 
     let import_args = import_cmd.args.join(" ");
+    assert!(
+      import_args.contains("scripts/cargo_agent.sh"),
+      "import command should use cargo_agent wrapper; got: {import_args}"
+    );
     assert!(
       import_args.contains("xtask import-page-fixture"),
       "import-page-fixture invocation missing: {import_args}"

@@ -2,7 +2,6 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const DEFAULT_TEST262_DIR: &str = "engines/ecma-rs/test262-semantic/data";
 const DEFAULT_REPORT_PATH: &str = "target/js/test262.json";
@@ -123,7 +122,7 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
   let jobs = crate::cpu_budget().min(DEFAULT_JOBS_CAP).max(1);
   let shard_arg = args.shard.map(|(idx, total)| format!("{idx}/{total}"));
 
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd
     .arg("run")
     .arg("--release")

@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Tokens that must not appear in generated Rust sources.
 ///
@@ -289,20 +289,27 @@ pub fn ensure_no_forbidden_tokens(source: &str) -> Result<()> {
 
 /// Format Rust source using the repository's rustfmt config.
 pub fn rustfmt(source: &str, rustfmt_config_path: &Path) -> Result<String> {
-  let mut input = tempfile::NamedTempFile::new().context("create rustfmt temp file")?;
-  input
-    .write_all(source.as_bytes())
-    .context("write rustfmt input")?;
-
-  let output = Command::new("rustfmt")
+  // Feed source on stdin instead of formatting a temp file: rustfmt versions differ in whether
+  // `--emit stdout <file>` prefixes the output with `<file>:\n\n`, which breaks deterministic
+  // generation tests.
+  let mut child = Command::new("rustfmt")
     .arg("--edition")
     .arg("2021")
     .arg("--config-path")
     .arg(rustfmt_config_path)
     .args(["--emit", "stdout"])
-    .arg(input.path())
-    .output()
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
     .context("run rustfmt")?;
+
+  let stdin = child.stdin.as_mut().context("open rustfmt stdin")?;
+  stdin
+    .write_all(source.as_bytes())
+    .context("write rustfmt stdin")?;
+
+  let output = child.wait_with_output().context("wait for rustfmt")?;
 
   if !output.status.success() {
     bail!(

@@ -61,6 +61,20 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Some CI/agent environments configure `build.rustc-wrapper = "sccache"` in a global Cargo config.
+# When the sccache daemon is unhealthy, it can fail *some* compilations mid-run and surface as a
+# spurious `could not compile ... process didn't exit successfully: sccache rustc ...` error.
+#
+# Prefer reliability over caching by default: unless the caller explicitly opted into a wrapper,
+# override to a no-op wrapper (`env`) so Cargo executes `env rustc ...` instead of using sccache.
+#
+# Callers that want sccache can export `RUSTC_WRAPPER=sccache` (or `CARGO_BUILD_RUSTC_WRAPPER`)
+# before invoking this script.
+if [[ -z "${RUSTC_WRAPPER:-}" && -z "${CARGO_BUILD_RUSTC_WRAPPER:-}" ]]; then
+  export RUSTC_WRAPPER="env"
+  export CARGO_BUILD_RUSTC_WRAPPER="env"
+fi
+
 nproc="${FASTR_CARGO_NPROC:-}"
 if [[ -z "${nproc}" ]]; then
   if command -v nproc >/dev/null 2>&1; then

@@ -182,6 +182,7 @@ fn build_bundle_page_cache_command(
   let cache_dir = args.asset_cache_dir.to_string_lossy().to_string();
 
   let mut cmd = vec![
+    "scripts/cargo_agent.sh".to_string(),
     "run".to_string(),
     "--release".to_string(),
     "--features".to_string(),
@@ -221,7 +222,7 @@ fn build_bundle_page_cache_command(
   }
 
   CommandSpec {
-    program: "cargo".to_string(),
+    program: "bash".to_string(),
     args: cmd,
   }
 }
@@ -235,6 +236,7 @@ fn build_import_page_fixture_command(
   let fixtures_root = args.fixtures_root.to_string_lossy().to_string();
 
   let mut cmd = vec![
+    "scripts/cargo_agent.sh".to_string(),
     "xtask".to_string(),
     "import-page-fixture".to_string(),
     bundle_path,
@@ -254,7 +256,7 @@ fn build_import_page_fixture_command(
   }
 
   CommandSpec {
-    program: "cargo".to_string(),
+    program: "bash".to_string(),
     args: cmd,
   }
 }

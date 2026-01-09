@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const DEFAULT_VIEWPORT: [u32; 2] = [1200, 800];
 const DEFAULT_DPR: f32 = 1.0;
@@ -420,7 +419,7 @@ fn capture_missing(missing: &[MissingFixture], args: &UpdatePagesetGuardrailsArg
       fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
 
-    let mut bundle_cmd = Command::new("cargo");
+    let mut bundle_cmd = xtask::cmd::cargo_agent_command(&crate::repo_root());
     bundle_cmd.args(["run", "--release"]);
     if args.capture_mode == FixtureCaptureMode::Cache {
       use crate::DiskCacheFeatureExt;
@@ -469,25 +468,20 @@ fn capture_missing(missing: &[MissingFixture], args: &UpdatePagesetGuardrailsArg
     bundle_cmd.current_dir(crate::repo_root());
     crate::run_command(bundle_cmd).with_context(|| format!("bundle {}", entry.name))?;
 
-    let mut import_cmd = Command::new("cargo");
-    import_cmd
-      .arg("xtask")
-      .arg("import-page-fixture")
-      .arg(&bundle_path)
-      .arg(&entry.name)
-      .arg("--output-root")
-      .arg(&args.fixtures_root);
-    if args.overwrite_fixtures {
-      import_cmd.arg("--overwrite");
-    }
-    if args.allow_missing_resources {
-      import_cmd.arg("--allow-missing");
-    }
-    if args.include_scripts {
-      import_cmd.arg("--rewrite-scripts");
-    }
-    import_cmd.current_dir(crate::repo_root());
-    crate::run_command(import_cmd).with_context(|| format!("import {}", entry.name))?;
+    crate::import_page_fixture::run_import_page_fixture(
+      crate::import_page_fixture::ImportPageFixtureArgs {
+        bundle: bundle_path.clone(),
+        fixture_name: entry.name.clone(),
+        output_root: args.fixtures_root.clone(),
+        overwrite: args.overwrite_fixtures,
+        allow_missing: args.allow_missing_resources,
+        allow_http_references: false,
+        legacy_rewrite: false,
+        rewrite_scripts: args.include_scripts,
+        dry_run: false,
+      },
+    )
+    .with_context(|| format!("import {}", entry.name))?;
   }
 
   Ok(())

@@ -318,7 +318,7 @@ pub fn run_fixture_determinism(args: FixtureDeterminismArgs) -> Result<()> {
       diff_snapshots_exe_opt = Some(diff_snapshots_exe.clone());
     }
   } else {
-    let mut build_cmd = Command::new("cargo");
+    let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
     build_cmd
       .arg("build")
       .arg("--release")
@@ -794,7 +794,8 @@ fn build_render_fixtures_command(
   out_dir: &Path,
   args: &FixtureDeterminismArgs,
 ) -> Result<Command> {
-  let mut cmd = Command::new(render_fixtures_exe);
+  let mut cmd = xtask::cmd::run_limited_command_default(&crate::repo_root());
+  cmd.arg(render_fixtures_exe);
   // Keep renders deterministic across machines.
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg("--fixtures-dir").arg(fixtures_root);
@@ -824,7 +825,8 @@ fn build_render_fixtures_snapshot_command(
 ) -> Result<Command> {
   // Do not forward `--fixtures` / `--shard` from the outer determinism harness: we always want to
   // re-run exactly the single nondeterministic fixture.
-  let mut cmd = Command::new(render_fixtures_exe);
+  let mut cmd = xtask::cmd::run_limited_command_default(&crate::repo_root());
+  cmd.arg(render_fixtures_exe);
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg("--fixtures-dir").arg(fixtures_root);
   cmd.arg("--out-dir").arg(out_dir);
@@ -848,7 +850,8 @@ fn build_diff_renders_command(
   html_path: &Path,
   ignore_alpha: bool,
 ) -> Result<Command> {
-  let mut cmd = Command::new(diff_renders_exe);
+  let mut cmd = xtask::cmd::run_limited_command_default(&crate::repo_root());
+  cmd.arg(diff_renders_exe);
   cmd
     .arg("--before")
     .arg(before_dir)
@@ -877,7 +880,8 @@ fn build_diff_snapshots_command(
   json_path: &Path,
   html_path: &Path,
 ) -> Result<Command> {
-  let mut cmd = Command::new(diff_snapshots_exe);
+  let mut cmd = xtask::cmd::run_limited_command_default(&crate::repo_root());
+  cmd.arg(diff_snapshots_exe);
   cmd
     .arg("--before")
     .arg(before_dir)

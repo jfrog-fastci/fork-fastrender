@@ -63,6 +63,7 @@ fn selects_top_and_threshold_pages_and_skips_existing_fixtures() {
     dpr: Some("2".to_string()),
     allow_missing_resources: true,
     overwrite: false,
+    include_scripts: false,
     min_diff_percent: 2.5,
     top: 2,
   };
@@ -177,6 +178,7 @@ fn top_selection_is_deterministic_and_overwrite_includes_existing_fixtures() {
     dpr: None,
     allow_missing_resources: false,
     overwrite: true,
+    include_scripts: false,
     min_diff_percent: 5.0,
     top: 2,
   };

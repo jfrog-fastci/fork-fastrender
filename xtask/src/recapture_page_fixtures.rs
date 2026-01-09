@@ -483,7 +483,7 @@ fn build_bundle_page_command(
   url: Option<&str>,
   bundle_path: &Path,
 ) -> Result<Command> {
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&crate::repo_root());
   cmd.arg("run").arg("--quiet");
   if !args.debug {
     cmd.arg("--release");
@@ -557,37 +557,34 @@ fn import_fixture(
     return StepResult::Skipped("fixture exists (pass --overwrite)".to_string());
   }
 
-  let mut cmd = build_import_page_fixture_command(args, fixture, bundle_path);
-  cmd.current_dir(crate::repo_root());
-  match crate::run_command(cmd).with_context(|| format!("import {}", fixture.name)) {
+  match crate::import_page_fixture::run_import_page_fixture(build_import_page_fixture_args(
+    args,
+    fixture,
+    bundle_path,
+  ))
+  .with_context(|| format!("import {}", fixture.name))
+  {
     Ok(()) => StepResult::Ok,
     Err(err) => StepResult::Failed(err.to_string()),
   }
 }
 
-fn build_import_page_fixture_command(
+fn build_import_page_fixture_args(
   args: &RecapturePageFixturesArgs,
   fixture: &FixtureDefinition,
   bundle_path: &Path,
-) -> Command {
-  let mut cmd = Command::new("cargo");
-  cmd
-    .arg("xtask")
-    .arg("import-page-fixture")
-    .arg(bundle_path)
-    .arg(&fixture.name)
-    .arg("--output-root")
-    .arg(&args.fixtures_root);
-  if args.overwrite {
-    cmd.arg("--overwrite");
+) -> crate::import_page_fixture::ImportPageFixtureArgs {
+  crate::import_page_fixture::ImportPageFixtureArgs {
+    bundle: bundle_path.to_path_buf(),
+    fixture_name: fixture.name.clone(),
+    output_root: args.fixtures_root.clone(),
+    overwrite: args.overwrite,
+    allow_missing: args.allow_missing_resources,
+    allow_http_references: false,
+    legacy_rewrite: false,
+    rewrite_scripts: args.include_scripts,
+    dry_run: false,
   }
-  if args.allow_missing_resources {
-    cmd.arg("--allow-missing");
-  }
-  if args.include_scripts {
-    cmd.arg("--rewrite-scripts");
-  }
-  cmd
 }
 
 fn remove_path(path: &Path) -> Result<()> {
@@ -775,14 +772,9 @@ mod tests {
       "expected --bundle-scripts in bundle_page args when include_scripts is set: {bundle_args:?}"
     );
 
-    let import_cmd = build_import_page_fixture_command(&args, &fixture, Path::new("out.tar"));
-    let import_args: Vec<String> = import_cmd
-      .get_args()
-      .map(|s| s.to_string_lossy().to_string())
-      .collect();
     assert!(
-      import_args.iter().any(|a| a == "--rewrite-scripts"),
-      "expected --rewrite-scripts in import-page-fixture args when include_scripts is set: {import_args:?}"
+      build_import_page_fixture_args(&args, &fixture, Path::new("out.tar")).rewrite_scripts,
+      "expected rewrite_scripts=true when include_scripts is set"
     );
   }
 }

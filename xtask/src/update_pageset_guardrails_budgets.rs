@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tempfile::TempDir;
 
 const FALLBACK_DEFAULT_BUDGET_MS: u64 = 5000;
@@ -229,7 +229,7 @@ fn run_perf_smoke(
   _tempdir: &TempDir,
 ) -> Result<()> {
   // Keep renders deterministic across machines.
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&crate::repo_root());
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   // Ensure we always exercise the same manifest, even if the caller has env vars set.
   cmd.env(

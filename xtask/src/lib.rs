@@ -2,6 +2,7 @@
 
 pub mod capture_accuracy_fixtures;
 pub mod capture_missing_failure_fixtures;
+pub mod cmd;
 pub mod freeze_page_fixture;
 pub mod lint_no_panics;
 pub mod pageset_failure_fixtures;
@@ -36,7 +37,11 @@ pub fn build_pageset_progress_run_command(
   timeout_secs: u64,
   font_mode: PagesetFontMode,
 ) -> Command {
-  let mut cmd = Command::new("cargo");
+  let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask manifest should live under repository root")
+    .to_path_buf();
+  let mut cmd = crate::cmd::cargo_agent_command(&repo_root);
   cmd.arg("run").arg("--release");
   if disk_cache_feature {
     cmd.args(["--features", "disk_cache"]);

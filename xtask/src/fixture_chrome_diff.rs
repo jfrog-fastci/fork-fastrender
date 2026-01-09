@@ -16,7 +16,12 @@ const DEFAULT_OUT_DIR: &str = "target/fixture_chrome_diff";
 const DEFAULT_VIEWPORT: &str = "1040x1240";
 const DEFAULT_DPR: f32 = 1.0;
 const DEFAULT_TIMEOUT: u64 = 15;
-const PAGES_REGRESSION_TEST_RS: &str = "tests/pages_regression_test.rs";
+const PAGES_REGRESSION_MANIFEST_CANDIDATES: &[&str] = &[
+  // Legacy location.
+  "tests/pages_regression_test.rs",
+  // Current location (pages_regression suite lives under tests/regression/).
+  "tests/regression/pages.rs",
+];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
@@ -92,9 +97,9 @@ pub struct FixtureChromeDiffArgs {
 
   /// Only render fixtures matching these names (comma-separated stems).
   ///
-  /// When omitted, the default fixture set is derived from `tests/pages_regression_test.rs` (the
-  /// curated pages_regression suite). Pass `--all-fixtures` to render everything under
-  /// `--fixtures-dir` instead.
+  /// When omitted, the default fixture set is derived from the repo's curated `pages_regression`
+  /// suite manifest (typically `tests/regression/pages.rs`, or legacy `tests/pages_regression_test.rs`).
+  /// Pass `--all-fixtures` to render everything under `--fixtures-dir` instead.
   #[arg(long, alias = "only", value_delimiter = ',', value_name = "STEM,...")]
   pub fixtures: Option<Vec<String>>,
 
@@ -390,7 +395,7 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   } else {
     // Avoid `cargo run` here since `diff_renders` intentionally exits 1 when differences are found,
     // and `cargo run` would wrap that with a scary `error: process didn't exit successfully` line.
-    let mut build_cmd = Command::new("cargo");
+    let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
     build_cmd
       .arg("build")
       .arg("--release")
@@ -1500,7 +1505,7 @@ fn build_render_fixtures_command(
   args: &FixtureChromeDiffArgs,
   layout: &Layout,
 ) -> Result<Command> {
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(repo_root);
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd
     .arg("run")
@@ -1611,9 +1616,11 @@ fn apply_default_fixture_selection(repo_root: &Path, args: &mut FixtureChromeDif
     return;
   }
 
-  let source = match fs::read_to_string(repo_root.join(PAGES_REGRESSION_TEST_RS)) {
-    Ok(source) => source,
-    Err(_) => return,
+  let source = PAGES_REGRESSION_MANIFEST_CANDIDATES
+    .iter()
+    .find_map(|rel_path| fs::read_to_string(repo_root.join(rel_path)).ok());
+  let Some(source) = source else {
+    return;
   };
 
   let fixtures = extract_pages_regression_fixture_stems(&source);
@@ -1624,7 +1631,7 @@ fn apply_default_fixture_selection(repo_root: &Path, args: &mut FixtureChromeDif
 }
 
 fn extract_pages_regression_fixture_stems(source: &str) -> Vec<String> {
-  // Pages fixtures in `tests/pages_regression_test.rs` look like:
+  // Pages fixtures in the pages_regression suite manifest look like:
   //   html: "flex_dashboard/index.html",
   // so we can extract the fixture stem by matching the string literal up to `/index.html`.
   let re = Regex::new(r#"html:\s*"([^"]+)/index\.html""#)

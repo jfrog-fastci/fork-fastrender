@@ -107,6 +107,7 @@ fn build_bundle_page_cache_command(
   let viewport = format!("{}x{}", args.viewport.0, args.viewport.1);
 
   let mut cmd = vec![
+    "scripts/cargo_agent.sh".to_string(),
     "run".to_string(),
     "--release".to_string(),
     "--features".to_string(),
@@ -140,7 +141,7 @@ fn build_bundle_page_cache_command(
   }
 
   CommandSpec {
-    program: "cargo".to_string(),
+    program: "bash".to_string(),
     args: cmd,
   }
 }

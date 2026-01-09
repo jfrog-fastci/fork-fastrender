@@ -132,7 +132,15 @@ fn validate_repo_pages_regression_fixtures_are_offline() {
     .parent()
     .expect("xtask should live at repo_root/xtask");
   let fixtures_root = repo_root.join("tests/pages/fixtures");
-  let regression_manifest = repo_root.join("tests/pages_regression_test.rs");
+  let regression_manifest = [
+    // Legacy location.
+    repo_root.join("tests/pages_regression_test.rs"),
+    // Current location (pages_regression suite lives under tests/regression/).
+    repo_root.join("tests/regression/pages.rs"),
+  ]
+  .into_iter()
+  .find(|path| path.is_file())
+  .expect("expected a pages_regression manifest under tests/pages_regression_test.rs or tests/regression/pages.rs");
 
   let contents = fs::read_to_string(&regression_manifest)
     .unwrap_or_else(|e| panic!("read {}: {}", regression_manifest.display(), e));

@@ -158,17 +158,19 @@ pub fn run_freeze_page_fixture(mut args: FreezePageFixtureArgs) -> Result<()> {
       .with_context(|| format!("bundle_page cache {}", capture.cache_stem))?;
 
     println!("Importing fixture {}...", capture.fixture_name);
-    let mut import_cmd = build_import_page_fixture_command(&args, capture);
-    import_cmd.current_dir(&repo_root);
-    crate::run_command(import_cmd)
+    crate::import_page_fixture::run_import_page_fixture(build_import_page_fixture_args(
+      &args, capture,
+    ))
       .with_context(|| format!("import-page-fixture {}", capture.fixture_name))?;
   }
 
   // Ensure the imported fixtures are fully offline unless the caller explicitly bypassed the
   // invariant.
-  let mut validate_cmd = build_validate_page_fixtures_command(&args, &selected_cache_stems);
-  validate_cmd.current_dir(&repo_root);
-  crate::run_command(validate_cmd).context("validate-page-fixtures")?;
+  crate::validate_page_fixtures::run_validate_page_fixtures(build_validate_page_fixtures_args(
+    &args,
+    &selected_cache_stems,
+  ))
+  .context("validate-page-fixtures")?;
 
   Ok(())
 }
@@ -199,7 +201,7 @@ fn ensure_cached_inputs_exist(
 
 fn run_fetch_pages_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Result<()> {
   let repo_root = crate::repo_root();
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd
     .arg("run")
     .arg("--release")
@@ -229,7 +231,7 @@ fn run_prefetch_assets_step(args: &FreezePageFixtureArgs, pages_csv: &str) -> Re
 fn build_prefetch_assets_command(args: &FreezePageFixtureArgs, pages_csv: &str) -> Command {
   use crate::DiskCacheFeatureExt;
 
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&crate::repo_root());
   cmd
     .arg("run")
     .arg("--release")
@@ -258,51 +260,32 @@ fn build_prefetch_assets_command(args: &FreezePageFixtureArgs, pages_csv: &str) 
   cmd
 }
 
-fn build_import_page_fixture_command(
+fn build_import_page_fixture_args(
   args: &FreezePageFixtureArgs,
   capture: &xtask::freeze_page_fixture::FreezePageFixturePlanItem,
-) -> Command {
-  let mut cmd = Command::new("cargo");
-  cmd
-    .arg("xtask")
-    .arg("import-page-fixture")
-    .arg(&capture.bundle_path)
-    .arg(&capture.fixture_name)
-    .arg("--output-root")
-    .arg(&args.fixtures_root);
-
-  if args.overwrite {
-    cmd.arg("--overwrite");
+) -> crate::import_page_fixture::ImportPageFixtureArgs {
+  crate::import_page_fixture::ImportPageFixtureArgs {
+    bundle: capture.bundle_path.clone(),
+    fixture_name: capture.fixture_name.clone(),
+    output_root: args.fixtures_root.clone(),
+    overwrite: args.overwrite,
+    allow_missing: args.allow_missing_resources,
+    allow_http_references: false,
+    legacy_rewrite: false,
+    rewrite_scripts: args.include_scripts,
+    dry_run: false,
   }
-  if args.allow_missing_resources {
-    cmd.arg("--allow-missing");
-  }
-  if args.include_scripts {
-    cmd.arg("--rewrite-scripts");
-  }
-
-  cmd
 }
 
-fn build_validate_page_fixtures_command(
+fn build_validate_page_fixtures_args(
   args: &FreezePageFixtureArgs,
   selected_cache_stems: &[String],
-) -> Command {
-  let only_csv = selected_cache_stems.join(",");
-  let mut cmd = Command::new("cargo");
-  cmd
-    .arg("xtask")
-    .arg("validate-page-fixtures")
-    .arg("--fixtures-root")
-    .arg(&args.fixtures_root)
-    .arg("--only")
-    .arg(only_csv);
-
-  if args.include_scripts {
-    cmd.arg("--include-scripts");
+) -> crate::validate_page_fixtures::ValidatePageFixturesArgs {
+  crate::validate_page_fixtures::ValidatePageFixturesArgs {
+    fixtures_root: args.fixtures_root.clone(),
+    include_scripts: args.include_scripts,
+    only: Some(selected_cache_stems.to_vec()),
   }
-
-  cmd
 }
 
 #[cfg(test)]
@@ -371,24 +354,14 @@ mod tests {
       "prefetch_assets should include --prefetch-scripts when --include-scripts is set: {prefetch_args:?}"
     );
 
-    let import_cmd = build_import_page_fixture_command(&args, capture);
-    let import_args: Vec<String> = import_cmd
-      .get_args()
-      .map(|s| s.to_string_lossy().to_string())
-      .collect();
     assert!(
-      import_args.iter().any(|a| a == "--rewrite-scripts"),
-      "import-page-fixture should include --rewrite-scripts when --include-scripts is set: {import_args:?}"
+      build_import_page_fixture_args(&args, capture).rewrite_scripts,
+      "import-page-fixture should set rewrite_scripts when --include-scripts is set"
     );
 
-    let validate_cmd = build_validate_page_fixtures_command(&args, &[capture.cache_stem.clone()]);
-    let validate_args: Vec<String> = validate_cmd
-      .get_args()
-      .map(|s| s.to_string_lossy().to_string())
-      .collect();
     assert!(
-      validate_args.iter().any(|a| a == "--include-scripts"),
-      "validate-page-fixtures should include --include-scripts when --include-scripts is set: {validate_args:?}"
+      build_validate_page_fixtures_args(&args, &[capture.cache_stem.clone()]).include_scripts,
+      "validate-page-fixtures should set include_scripts when --include-scripts is set"
     );
   }
 }
