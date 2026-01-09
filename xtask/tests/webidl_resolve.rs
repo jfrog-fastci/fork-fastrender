@@ -357,6 +357,55 @@ fn smoke_resolve_whatwg_html() {
     Some("EventTarget"),
     "expected Window to inherit EventTarget"
   );
+  let window_member_names: std::collections::BTreeSet<&str> =
+    window.members.iter().filter_map(|m| m.name.as_deref()).collect();
+  for required in [
+    "setTimeout",
+    "clearTimeout",
+    "setInterval",
+    "clearInterval",
+    "queueMicrotask",
+    "atob",
+    "btoa",
+    "structuredClone",
+    "reportError",
+  ] {
+    assert!(
+      window_member_names.contains(required),
+      "expected Window to include `{required}` (members={:?})",
+      window_member_names
+    );
+  }
+}
+
+#[test]
+fn whatwg_html_global_mixin_windoworworkerglobalscope_is_present() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+
+  let sources = [WebIdlSource {
+    rel_path: "specs/whatwg-html/source",
+    label: "HTML",
+  }];
+
+  let loaded = load_combined_webidl(repo_root, &sources).unwrap();
+  if !loaded.missing_sources.is_empty() {
+    for (label, path) in &loaded.missing_sources {
+      eprintln!(
+        "skipping WHATWG HTML global mixin test: missing {label} source at {}",
+        path.display()
+      );
+    }
+    return;
+  }
+
+  let parsed = parse_webidl(&loaded.combined_idl).unwrap();
+  let resolved = resolve_webidl_world(&parsed);
+  assert!(
+    resolved.interface_mixins.contains_key("WindowOrWorkerGlobalScope"),
+    "expected WindowOrWorkerGlobalScope interface mixin to be present in resolved world"
+  );
 }
 
 #[test]
