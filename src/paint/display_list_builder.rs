@@ -5063,6 +5063,62 @@ impl DisplayListBuilder {
         };
 
         if let Some(runs) = runs_ref {
+          if runtime::runtime_toggles().truthy("FASTR_TEXT_METRICS_CHECK") {
+            if let Some(style) = style_opt {
+              if matches!(style.line_height, crate::style::types::LineHeight::Normal) {
+                let mut max_line_height = 0.0_f32;
+                for run in runs {
+                  if let Some(scaled) = self.font_ctx.get_scaled_metrics_with_variations(
+                    run.font.as_ref(),
+                    run.font_size,
+                    &run.variations,
+                  ) {
+                    max_line_height = max_line_height.max(scaled.line_height);
+                  }
+                }
+
+                let line_height = if max_line_height > 0.0 {
+                  max_line_height
+                } else {
+                  Self::resolve_scaled_metrics(style, &self.font_ctx)
+                    .map(|m| m.line_height)
+                    .unwrap_or(style.font_size * 1.2)
+                };
+
+                let mut expected = InlineTextItem::metrics_from_runs(
+                  &self.font_ctx,
+                  runs,
+                  line_height,
+                  style.font_size,
+                );
+                InlineTextItem::apply_text_emphasis_metrics(&mut expected, style);
+
+                let block_size = if inline_vertical {
+                  rect.width()
+                } else {
+                  rect.height()
+                };
+                let baseline_delta = (expected.baseline_offset - *baseline_offset).abs();
+                let block_delta = (expected.height - block_size).abs();
+                let tol = 0.5;
+                if baseline_delta > tol || block_delta > tol {
+                  eprintln!(
+                    "text metrics mismatch line-height=normal baseline_delta={baseline_delta:.2} block_delta={block_delta:.2} expected(base={:.2} h={:.2}) layout(base={:.2} h={:.2}) text={:?}",
+                    expected.baseline_offset,
+                    expected.height,
+                    baseline_offset,
+                    block_size,
+                    text,
+                  );
+                  debug_assert!(
+                    baseline_delta <= tol && block_delta <= tol,
+                    "layout/paint text metric mismatch"
+                  );
+                }
+              }
+            }
+          }
+
           if inline_vertical {
             if *is_marker {
               self.emit_list_marker_runs_vertical(
@@ -8196,10 +8252,17 @@ impl DisplayListBuilder {
     runs: Option<&[ShapedRun]>,
     style: &ComputedStyle,
   ) -> Option<DecorationMetrics> {
+    // Prefer using the actual shaped runs (including fallback fonts and size-adjust / metric
+    // overrides) so underline/overline/strike-through placement matches inline layout.
     let mut metrics_source = runs.and_then(|rs| {
       rs.iter().find_map(|run| {
+        let scaled = self.font_ctx.get_scaled_metrics_with_variations(
+          run.font.as_ref(),
+          run.font_size,
+          &run.variations,
+        )?;
         let coords: Vec<_> = run.variations.iter().map(|v| (v.tag, v.value)).collect();
-        let metrics = if coords.is_empty() {
+        let raw = if coords.is_empty() {
           run.font.metrics()
         } else {
           run
@@ -8208,7 +8271,7 @@ impl DisplayListBuilder {
             .or_else(|_| run.font.metrics())
         }
         .ok()?;
-        Some((metrics, run.font_size * run.scale))
+        Some((scaled, raw))
       })
     });
 
@@ -8247,41 +8310,38 @@ impl DisplayListBuilder {
             )
           })
           .unwrap_or_else(|| authored.clone());
+          let scaled =
+            self
+              .font_ctx
+              .get_scaled_metrics_with_variations(&font, used_font_size, &variations)?;
           let coords: Vec<_> = variations.iter().map(|v| (v.tag, v.value)).collect();
-          let metrics = if coords.is_empty() {
-            font.metrics().ok()?
+          let raw = if coords.is_empty() {
+            font.metrics()
           } else {
             font
               .metrics_with_variations(&coords)
               .or_else(|_| font.metrics())
-              .ok()?
-          };
-          let size_adjust = if font.face_metrics_overrides.size_adjust.is_finite()
-            && font.face_metrics_overrides.size_adjust > 0.0
-          {
-            font.face_metrics_overrides.size_adjust
-          } else {
-            1.0
-          };
-          Some((metrics, used_font_size * size_adjust))
+          }
+          .ok()?;
+          Some((scaled, raw))
         });
     }
 
-    if let Some((metrics, size)) = metrics_source {
-      let scale = size / (metrics.units_per_em as f32);
+    if let Some((scaled, raw)) = metrics_source {
+      let scale = scaled.scale;
 
-      let underline_pos = metrics.underline_position as f32 * scale;
-      let underline_thickness = (metrics.underline_thickness as f32 * scale).max(1.0);
-      let descent = (metrics.descent as f32 * scale).abs();
-      let strike_pos = metrics
+      let underline_pos = scaled.underline_position;
+      let underline_thickness = scaled.underline_thickness.max(1.0);
+      let descent = scaled.descent;
+      let strike_pos = raw
         .strikeout_position
         .map(|p| p as f32 * scale)
-        .unwrap_or_else(|| metrics.ascent as f32 * scale * 0.3);
-      let strike_thickness = metrics
+        .unwrap_or_else(|| scaled.ascent * 0.3);
+      let strike_thickness = raw
         .strikeout_thickness
         .map(|t| t as f32 * scale)
         .unwrap_or(underline_thickness);
-      let ascent = metrics.ascent as f32 * scale;
+      let ascent = scaled.ascent;
 
       Some(DecorationMetrics {
         underline_pos,
@@ -8454,12 +8514,14 @@ impl DisplayListBuilder {
       return None;
     }
     let mark_color = style.text_emphasis_color.unwrap_or(style.color);
-    let (ascent, descent) = if let Ok(metrics) = run.font.metrics() {
-      let scaled = metrics.scale(run.font_size);
-      (scaled.ascent, scaled.descent)
-    } else {
-      (run.font_size * 0.8, run.font_size * 0.2)
-    };
+    let (ascent, descent) = self
+      .font_ctx
+      .get_scaled_metrics_with_variations(run.font.as_ref(), run.font_size, &run.variations)
+      .map(|scaled| (scaled.ascent, scaled.descent))
+      .unwrap_or_else(|| {
+        let fallback_size = (run.font_size * run.scale).max(0.0);
+        (fallback_size * 0.8, fallback_size * 0.2)
+      });
     let mark_size = (style.font_size * 0.5).max(1.0);
     let gap = mark_size * 0.3;
     let resolved_position = match style.text_emphasis_position {
@@ -8661,15 +8723,23 @@ impl DisplayListBuilder {
             let mut ascent: f32 = 0.0;
             let mut descent: f32 = 0.0;
             for r in &mark_runs {
-              if let Ok(m) = r.font.metrics() {
-                let scaled = m.scale(r.font_size);
+              if let Some(scaled) = self.font_ctx.get_scaled_metrics_with_variations(
+                r.font.as_ref(),
+                r.font_size,
+                &r.variations,
+              ) {
                 ascent = ascent.max(scaled.ascent);
                 descent = descent.max(scaled.descent);
               }
             }
             if ascent == 0.0 && descent == 0.0 {
-              ascent = mark_style.font_size * 0.8;
-              descent = mark_style.font_size * 0.2;
+              let fallback = mark_runs
+                .iter()
+                .map(|r| r.font_size * r.scale)
+                .fold(0.0_f32, f32::max)
+                .max(0.0);
+              ascent = fallback * 0.8;
+              descent = fallback * 0.2;
             }
             for r in &mark_runs {
               let run_advance = r.advance;
@@ -8689,7 +8759,7 @@ impl DisplayListBuilder {
                 glyphs,
                 font: Some(r.font.clone()),
                 font_id: self.font_id_from_run(r),
-                font_size: r.font_size,
+                font_size: r.font_size * r.scale,
                 advance_width: run_advance,
                 variations: r
                   .variations

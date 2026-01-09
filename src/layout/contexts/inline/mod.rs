@@ -3738,9 +3738,7 @@ impl InlineFormattingContext {
       explicit_bidi_context(base_direction, &contextual_stack)
     };
 
-    let metrics = self.resolve_scaled_metrics(style);
-    let line_height =
-      compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(self.viewport_size));
+    let primary_metrics = self.resolve_scaled_metrics(style);
 
     let (hyphen_free, hyphen_breaks) = if is_marker {
       (normalized_text, Vec::new())
@@ -3764,6 +3762,38 @@ impl InlineFormattingContext {
       style.letter_spacing,
       style.word_spacing,
     );
+
+    let line_height = match &style.line_height {
+      crate::style::types::LineHeight::Normal => {
+        // `line-height: normal` depends on the font metrics of the actual shaped runs (including
+        // fallback fonts). If we compute it only from the primary `font-family` entry, then when
+        // fallback fonts have different ascent/descent the inline box ends up with negative
+        // half-leading and baseline alignment diverges from browser behavior.
+        let mut max_line_height = 0.0_f32;
+        for run in &shaped_runs {
+          if let Some(scaled) = self.font_context.get_scaled_metrics_with_variations(
+            run.font.as_ref(),
+            run.font_size,
+            &run.variations,
+          ) {
+            max_line_height = max_line_height.max(scaled.line_height);
+          }
+        }
+
+        if max_line_height > 0.0 {
+          max_line_height
+        } else if let Some(primary) = primary_metrics.as_ref() {
+          primary.line_height
+        } else {
+          style.font_size * 1.2
+        }
+      }
+      _ => compute_line_height_with_metrics_viewport(
+        style,
+        primary_metrics.as_ref(),
+        Some(self.viewport_size),
+      ),
+    };
 
     let mut metrics = TextItem::metrics_from_runs(
       &self.font_context,
