@@ -62,7 +62,14 @@ pub fn collect_running_element_events(
   axes: FragmentAxes,
 ) -> Vec<RunningElementEvent> {
   let mut events = Vec::new();
-  collect_running_element_occurrences(root, 0.0, axes.block_size(&root.logical_bounds()), axes, &mut events);
+  collect_running_element_occurrences(
+    root,
+    0.0,
+    axes.block_size(&root.logical_bounds()),
+    axes,
+    false,
+    &mut events,
+  );
   events.sort_by(|a, b| {
     a.abs_block
       .partial_cmp(&b.abs_block)
@@ -86,7 +93,7 @@ pub fn collect_running_element_events_for_page(
   let block_size = axes.block_size(&bounds);
   let root_start = axes.block_start(&bounds, block_size);
   let mut events = Vec::new();
-  collect_running_element_occurrences(root, -root_start, block_size, axes, &mut events);
+  collect_running_element_occurrences(root, -root_start, block_size, axes, false, &mut events);
   events.sort_by(|a, b| {
     a.abs_block
       .partial_cmp(&b.abs_block)
@@ -210,8 +217,18 @@ fn collect_running_element_occurrences(
   abs_block_start: f32,
   parent_block_size: f32,
   axes: FragmentAxes,
+  in_style_containment: bool,
   out: &mut Vec<RunningElementEvent>,
 ) {
+  let in_style_containment = in_style_containment
+    || node
+      .style
+      .as_deref()
+      .is_some_and(|style| style.containment.style);
+  if in_style_containment {
+    return;
+  }
+
   let logical_bounds = node.logical_bounds();
   let node_abs_block = axes.abs_block_start(&logical_bounds, abs_block_start, parent_block_size);
   let node_block_size = axes.block_size(&logical_bounds);
@@ -245,7 +262,14 @@ fn collect_running_element_occurrences(
   }
 
   for child in node.children() {
-    collect_running_element_occurrences(child, node_abs_block, node_block_size, axes, out);
+    collect_running_element_occurrences(
+      child,
+      node_abs_block,
+      node_block_size,
+      axes,
+      in_style_containment,
+      out,
+    );
   }
 }
 

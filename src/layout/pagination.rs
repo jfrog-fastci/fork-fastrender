@@ -69,6 +69,78 @@ fn subtree_has_text(node: &FragmentNode) -> bool {
   node.children.iter().any(subtree_has_text)
 }
 
+fn html_and_body_box_ids(node: &FragmentNode) -> (Option<usize>, Option<usize>) {
+  // Synthetic fragment trees (mostly unit tests) sometimes wrap the true root element in a
+  // single-child viewport fragment without a `box_id`. In renderer-produced trees, the root
+  // fragment is the root element itself.
+  let html = if node.box_id().is_none() && node.children.len() == 1 {
+    node.children.first().unwrap_or(node)
+  } else {
+    node
+  };
+  let html_id = html.box_id();
+  let body_id = html_id.and_then(|id| id.checked_add(1));
+  (html_id, body_id)
+}
+
+fn subtree_has_in_flow_content(node: &FragmentNode, html_id: Option<usize>, body_id: Option<usize>) -> bool {
+  // Running/footnote anchors capture paintable snapshots, but the anchors themselves don't paint
+  // into the in-flow content stream.
+  if matches!(
+    node.content,
+    FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+  ) {
+    return false;
+  }
+  if node
+    .style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed))
+  {
+    return false;
+  }
+
+  if matches!(node.content, FragmentContent::Text { .. } | FragmentContent::Replaced { .. }) {
+    return true;
+  }
+
+  if let Some(box_id) = node.box_id() {
+    if Some(box_id) != html_id && Some(box_id) != body_id {
+      return true;
+    }
+  }
+
+  node
+    .children
+    .iter()
+    .any(|child| subtree_has_in_flow_content(child, html_id, body_id))
+}
+
+fn page_has_in_flow_content(page: &FragmentNode) -> bool {
+  // Determine which box IDs correspond to the HTML/body wrappers so we don't treat trailing body
+  // margins as "content" for pagination purposes.
+  let mut html_id = None;
+  let mut body_id = None;
+
+  for child in page.children.iter() {
+    if child
+      .style
+      .as_deref()
+      .is_some_and(|style| matches!(style.position, Position::Fixed))
+    {
+      continue;
+    }
+    if html_id.is_none() && body_id.is_none() {
+      (html_id, body_id) = html_and_body_box_ids(child);
+    }
+    if subtree_has_in_flow_content(child, html_id, body_id) {
+      return true;
+    }
+  }
+
+  false
+}
+
 fn pos_is_inside_atomic(pos: f32, atomic: &[AtomicRange]) -> bool {
   // Atomic ranges treat their endpoints as break-safe (see `atomic_containing` in
   // `layout::fragmentation`). Treat near-equal comparisons as outside the interval so pagination can
@@ -742,6 +814,7 @@ pub fn paginate_fragment_tree(
     ResolvedPageStyle,
     HashMap<String, RunningStringValues>,
     HashMap<String, RunningElementValues>,
+    bool,
   )> = Vec::new();
   let mut consumed_base = 0.0f32;
   let mut page_index = 0usize;
@@ -1156,7 +1229,13 @@ pub fn paginate_fragment_tree(
       );
     }
 
-    pages.push((page_root, page_style, page_strings, page_running_elements));
+    pages.push((
+      page_root,
+      page_style,
+      page_strings,
+      page_running_elements,
+      is_blank_page,
+    ));
     if !is_blank_page {
       consumed_base = end_in_base;
     }
@@ -1167,13 +1246,32 @@ pub fn paginate_fragment_tree(
     }
   }
 
+  // Suppress trailing pages that contain no in-flow content beyond the root HTML/body wrappers (and
+  // any repeated `position: fixed` fragments). This most commonly happens when the only remaining
+  // "content" is trailing margins (e.g. `body { margin-bottom }`), which should not force an extra
+  // empty page at the end of pagination.
+  while pages.len() > 1 {
+    let Some((page, _style, _strings, _running, is_blank_page)) = pages.last() else {
+      break;
+    };
+    if *is_blank_page {
+      break;
+    }
+    if page_has_in_flow_content(page) {
+      break;
+    }
+    pages.pop();
+  }
+
   if pages.is_empty() {
     return Ok(vec![base_root]);
   }
 
   let count = pages.len();
   let mut page_roots = Vec::with_capacity(count);
-  for (idx, (mut page, style, running_strings, running_elements)) in pages.into_iter().enumerate() {
+  for (idx, (mut page, style, running_strings, running_elements, _is_blank_page)) in
+    pages.into_iter().enumerate()
+  {
     page.children_mut().extend(build_margin_box_fragments(
       &style,
       font_ctx,
