@@ -1,6 +1,6 @@
-use fastrender::geometry::{Rect, Size};
-use fastrender::scroll::build_scroll_chain;
-use fastrender::style::types::Overflow;
+use fastrender::geometry::{Point, Rect, Size};
+use fastrender::scroll::{apply_scroll_snap, build_scroll_chain, ScrollState};
+use fastrender::style::types::{Overflow, ScrollSnapAxis};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::ComputedStyle;
 use std::sync::Arc;
@@ -102,5 +102,41 @@ fn scroll_overflow_respects_axis_specific_overflow_clipping() {
     (chain[0].bounds.max_y - 200.0).abs() < 1e-3,
     "y scroll range should still include visible overflow: {:#?}",
     chain[0].bounds
+  );
+}
+
+#[test]
+fn scroll_snap_bounds_ignore_clipped_descendant_overflow() {
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.overflow_y = Overflow::Scroll;
+  scroller_style.scroll_snap_type.axis = ScrollSnapAxis::Y;
+  let scroller_style = Arc::new(scroller_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.overflow_x = Overflow::Hidden;
+  child_style.overflow_y = Overflow::Hidden;
+  let child_style = Arc::new(child_style);
+
+  let grandchild = FragmentNode::new_block(Rect::from_xywh(0.0, 200.0, 100.0, 100.0), vec![]);
+  let child = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![grandchild],
+    child_style,
+  );
+  let scroller = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![child],
+    scroller_style,
+  );
+
+  let mut tree = FragmentTree::with_viewport(scroller, Size::new(100.0, 100.0));
+  // Scroll snap with no targets falls back to clamping within the scroll bounds. Overflow hidden
+  // descendants must not inflate those bounds.
+  let state = ScrollState::with_viewport(Point::new(0.0, 500.0));
+  let snapped = apply_scroll_snap(&mut tree, &state);
+  assert!(
+    snapped.state.viewport.y.abs() < 1e-3,
+    "expected scroll snap to clamp to 0 when overflow is clipped; got {:#?}",
+    snapped.state.viewport
   );
 }

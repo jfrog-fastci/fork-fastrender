@@ -20529,6 +20529,58 @@ fn parse_text_transform(value: &PropertyValue) -> Option<TextTransform> {
   })
 }
 
+fn parse_symbols_type(ident_lower: &str) -> Option<SymbolsType> {
+  match ident_lower {
+    "cyclic" => Some(SymbolsType::Cyclic),
+    "numeric" => Some(SymbolsType::Numeric),
+    "alphabetic" => Some(SymbolsType::Alphabetic),
+    "symbolic" => Some(SymbolsType::Symbolic),
+    "fixed" => Some(SymbolsType::Fixed),
+    _ => None,
+  }
+}
+
+fn parse_symbols_counter_style<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<SymbolsCounterStyle, cssparser::ParseError<'i, ()>> {
+  // CSS Counter Styles 3: `symbols( <<symbols-type>>? [ <<string>> | <<image>> ]+ )`
+  //
+  // For now we support only the <<string>> form, as marker generation currently produces
+  // a single text run.
+  //
+  // Spec: https://www.w3.org/TR/css-counter-styles-3/#symbols-function
+  let mut system = SymbolsType::Symbolic;
+  let mut saw_system = false;
+  let mut symbols: Vec<String> = Vec::new();
+
+  while let Ok(token) = input.next_including_whitespace_and_comments() {
+    match token {
+      Token::WhiteSpace(_) | Token::Comment(_) => continue,
+      Token::Ident(ident) if !saw_system && symbols.is_empty() => {
+        let lower = ident.as_ref().to_ascii_lowercase();
+        let Some(parsed) = parse_symbols_type(&lower) else {
+          return Err(input.new_custom_error(()));
+        };
+        system = parsed;
+        saw_system = true;
+      }
+      Token::QuotedString(s) => symbols.push(s.to_string()),
+      _ => return Err(input.new_custom_error(())),
+    }
+  }
+
+  if symbols.is_empty() {
+    return Err(input.new_custom_error(()));
+  }
+
+  if matches!(system, SymbolsType::Numeric | SymbolsType::Alphabetic) && symbols.len() < 2 {
+    // The `symbols()` function is invalid when numeric/alphabetic have fewer than 2 symbols.
+    return Err(input.new_custom_error(()));
+  }
+
+  Ok(SymbolsCounterStyle { system, symbols })
+}
+
 fn parse_list_style_type(value: &PropertyValue) -> Option<ListStyleType> {
   match value {
     PropertyValue::Keyword(kw) => {
@@ -20544,19 +20596,31 @@ fn parse_list_style_type(value: &PropertyValue) -> Option<ListStyleType> {
       let mut input = ParserInput::new(raw);
       let mut parser = Parser::new(&mut input);
       let mut ident: Option<String> = None;
+      let mut symbols: Option<SymbolsCounterStyle> = None;
       while let Ok(token) = parser.next_including_whitespace_and_comments() {
         match token {
           Token::WhiteSpace(_) | Token::Comment(_) => continue,
           Token::Ident(name) => {
-            if ident.is_some() {
+            if ident.is_some() || symbols.is_some() {
               return None;
             }
             ident = Some(name.as_ref().to_string());
           }
-          // `symbols(...)` and other functions are not supported here.
+          Token::Function(name) if name.eq_ignore_ascii_case("symbols") => {
+            if ident.is_some() || symbols.is_some() {
+              return None;
+            }
+            let parsed = parser.parse_nested_block(parse_symbols_counter_style).ok()?;
+            symbols = Some(parsed);
+          }
           _ => return None,
         }
       }
+
+      if let Some(symbols) = symbols {
+        return Some(ListStyleType::Symbols(symbols));
+      }
+
       let ident = ident?;
 
       let lower = ident.to_ascii_lowercase();
@@ -21164,6 +21228,7 @@ mod tests {
   use crate::style::types::TextWrap;
   use crate::style::types::TransformBox;
   use crate::style::types::WordBreak;
+  use crate::style::types::SymbolsType;
   use crate::style::types::WritingMode;
   use crate::style::values::CalcLength;
   use crate::style::values::CustomPropertySyntax;
@@ -29557,6 +29622,71 @@ mod tests {
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
     assert!(matches!(style.list_style_type, ListStyleType::String(ref s) if s == "★"));
+  }
+
+  #[test]
+  fn parses_list_style_type_symbols_function() {
+    let mut style = ComputedStyle::default();
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "list-style-type".into(),
+        value: PropertyValue::Keyword(r#"symbols("*" "†")"#.to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    match &style.list_style_type {
+      ListStyleType::Symbols(symbols) => {
+        assert_eq!(symbols.system, SymbolsType::Symbolic);
+        assert_eq!(symbols.symbols, vec!["*".to_string(), "†".to_string()]);
+      }
+      other => panic!("expected symbols() list-style-type, got {other:?}"),
+    }
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "list-style-type".into(),
+        value: PropertyValue::Keyword(r#"symbols(cyclic "*" "†")"#.to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    match &style.list_style_type {
+      ListStyleType::Symbols(symbols) => {
+        assert_eq!(symbols.system, SymbolsType::Cyclic);
+        assert_eq!(symbols.symbols, vec!["*".to_string(), "†".to_string()]);
+      }
+      other => panic!("expected symbols() list-style-type, got {other:?}"),
+    }
+
+    // Numeric/alphabetic systems require at least 2 symbols; invalid functions should be ignored.
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "list-style-type".into(),
+        value: PropertyValue::Keyword(r#"symbols(numeric "*")"#.to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert!(matches!(&style.list_style_type, ListStyleType::Symbols(symbols) if symbols.system == SymbolsType::Cyclic));
   }
 
   #[test]

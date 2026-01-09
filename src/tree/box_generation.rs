@@ -37,6 +37,8 @@ use crate::style::types::Direction;
 use crate::style::types::FontStyle;
 use crate::style::types::InsetValue;
 use crate::style::types::ListStyleType;
+use crate::style::types::SymbolsCounterStyle;
+use crate::style::types::SymbolsType;
 use crate::style::types::TextTransform;
 use crate::style::types::WhiteSpace;
 use crate::style::types::WritingMode;
@@ -9391,6 +9393,61 @@ mod tests {
   }
 
   #[test]
+  fn marker_uses_symbols_list_style_type() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::ListItem;
+    style.list_style_type = ListStyleType::Symbols(SymbolsCounterStyle {
+      system: SymbolsType::Symbolic,
+      symbols: vec!["*".to_string(), "†".to_string()],
+    });
+    let style = Arc::new(style);
+
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: style.clone(),
+      marker_styles: Some(style.clone()),
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut counters = CounterManager::new();
+    counters.enter_scope();
+    counters.apply_reset(&CounterSet::single("list-item", 3));
+
+    let mut quote_depth = 0usize;
+    let marker_box = create_marker_box(&styled, &mut counters, &mut quote_depth).expect("marker");
+    counters.leave_scope();
+
+    match &marker_box.box_type {
+      BoxType::Marker(marker) => match &marker.content {
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "** "),
+        MarkerContent::Image(_) => panic!("expected text marker from symbols() list-style-type"),
+      },
+      _ => panic!("expected marker box"),
+    }
+  }
+
+  #[test]
   fn disclosure_closed_marker_points_right_in_ltr() {
     let mut style = ComputedStyle::default();
     style.display = Display::ListItem;
@@ -12201,9 +12258,9 @@ mod tests {
 fn list_marker_text(marker_style: &ComputedStyle, counters: &CounterManager) -> String {
   let value = counters.get_or_zero("list-item");
   let registry = marker_style.counter_styles.as_ref();
-  match marker_style.list_style_type.clone() {
+  match &marker_style.list_style_type {
     ListStyleType::None => String::new(),
-    ListStyleType::String(text) => text,
+    ListStyleType::String(text) => text.clone(),
     ListStyleType::Disc => registry.format_marker_string(value, CounterStyle::Disc),
     ListStyleType::Circle => registry.format_marker_string(value, CounterStyle::Circle),
     ListStyleType::Square => registry.format_marker_string(value, CounterStyle::Square),
@@ -12238,7 +12295,131 @@ fn list_marker_text(marker_style: &ComputedStyle, counters: &CounterManager) -> 
       out
     }
     ListStyleType::Custom(name) => {
-      registry.format_marker_string(value, CounterStyleName::Custom(name))
+      registry.format_marker_string(value, CounterStyleName::Custom(name.clone()))
     }
+    ListStyleType::Symbols(symbols) => format_symbols_marker_string(value, symbols),
   }
+}
+
+fn format_symbols_marker_string(value: i32, symbols: &SymbolsCounterStyle) -> String {
+  // CSS Counter Styles 3 §7.1 `symbols()` defaults:
+  // - prefix: "" (empty string)
+  // - suffix: " " (U+0020 SPACE)
+  let mut repr = format_symbols_representation(value, symbols);
+  repr.push(' ');
+  repr
+}
+
+fn format_symbols_representation(value: i32, symbols: &SymbolsCounterStyle) -> String {
+  // `symbols()` declares a fixed set of descriptors with fallback `decimal`.
+  let fallback = || value.to_string();
+  if symbols.symbols.is_empty() {
+    return fallback();
+  }
+
+  let value_i64 = value as i64;
+  let in_range = match symbols.system {
+    SymbolsType::Alphabetic | SymbolsType::Symbolic => value_i64 >= 1,
+    SymbolsType::Fixed => value_i64 >= 1 && value_i64 <= symbols.symbols.len() as i64,
+    SymbolsType::Cyclic | SymbolsType::Numeric => true,
+  };
+  if !in_range {
+    return fallback();
+  }
+
+  let uses_negative_sign = matches!(
+    symbols.system,
+    SymbolsType::Numeric | SymbolsType::Alphabetic | SymbolsType::Symbolic
+  );
+  let negative_value = value_i64 < 0;
+  let initial_value = if negative_value && uses_negative_sign {
+    value_i64.abs()
+  } else {
+    value_i64
+  };
+
+  let repr = match format_symbols_positive(initial_value, symbols.system, &symbols.symbols) {
+    Some(r) => r,
+    None => return fallback(),
+  };
+
+  if negative_value && uses_negative_sign {
+    format!("-{repr}")
+  } else {
+    repr
+  }
+}
+
+fn format_symbols_positive(value: i64, system: SymbolsType, symbols: &[String]) -> Option<String> {
+  match system {
+    SymbolsType::Cyclic => format_symbols_cyclic(value, symbols),
+    SymbolsType::Fixed => format_symbols_fixed(value, 1, symbols),
+    SymbolsType::Numeric => format_symbols_numeric(value, symbols),
+    SymbolsType::Alphabetic => format_symbols_alphabetic(value, symbols),
+    SymbolsType::Symbolic => format_symbols_symbolic(value, symbols),
+  }
+}
+
+fn format_symbols_cyclic(value: i64, symbols: &[String]) -> Option<String> {
+  if symbols.is_empty() {
+    return None;
+  }
+  let len = symbols.len() as i64;
+  let idx = (value - 1).rem_euclid(len) as usize;
+  symbols.get(idx).cloned()
+}
+
+fn format_symbols_fixed(value: i64, start: i64, symbols: &[String]) -> Option<String> {
+  if symbols.is_empty() {
+    return None;
+  }
+  let idx = value - start;
+  if idx < 0 || idx >= symbols.len() as i64 {
+    return None;
+  }
+  symbols.get(idx as usize).cloned()
+}
+
+fn format_symbols_numeric(mut value: i64, symbols: &[String]) -> Option<String> {
+  if symbols.len() < 2 || value < 0 {
+    return None;
+  }
+  let base = symbols.len() as i64;
+  if value == 0 {
+    return symbols.get(0).cloned();
+  }
+  let mut out = Vec::new();
+  while value > 0 {
+    let digit = (value % base) as usize;
+    out.push(symbols.get(digit)?.clone());
+    value /= base;
+  }
+  out.reverse();
+  Some(out.join(""))
+}
+
+fn format_symbols_alphabetic(mut value: i64, symbols: &[String]) -> Option<String> {
+  if symbols.len() < 2 || value <= 0 {
+    return None;
+  }
+  let base = symbols.len() as i64;
+  let mut out = Vec::new();
+  while value > 0 {
+    value -= 1;
+    let digit = (value % base) as usize;
+    out.push(symbols.get(digit)?.clone());
+    value /= base;
+  }
+  out.reverse();
+  Some(out.join(""))
+}
+
+fn format_symbols_symbolic(value: i64, symbols: &[String]) -> Option<String> {
+  if symbols.is_empty() || value <= 0 {
+    return None;
+  }
+  let n = symbols.len() as i64;
+  let idx = ((value - 1).rem_euclid(n)) as usize;
+  let repeat = ((value + n - 1) / n) as usize;
+  Some(symbols.get(idx)?.repeat(repeat))
 }

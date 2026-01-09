@@ -3499,11 +3499,38 @@ pub enum ListStyleType {
   LowerGreek,
   DisclosureOpen,
   DisclosureClosed,
+  /// Anonymous counter style defined by the CSS Counter Styles `symbols()` function.
+  ///
+  /// Reference: https://www.w3.org/TR/css-counter-styles-3/#symbols-function
+  Symbols(SymbolsCounterStyle),
   /// Custom counter style name (via `@counter-style`).
   Custom(String),
   /// Custom marker string value from list-style-type: "<string>"
   String(String),
   None,
+}
+
+/// Symbol algorithm type accepted by the CSS Counter Styles `symbols()` function.
+///
+/// Reference: https://www.w3.org/TR/css-counter-styles-3/#symbols-function
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolsType {
+  Cyclic,
+  Numeric,
+  Alphabetic,
+  Symbolic,
+  Fixed,
+}
+
+/// Anonymous counter style constructed from the CSS Counter Styles `symbols()` function.
+///
+/// This is used by `list-style-type: symbols(...)`.
+///
+/// Reference: https://www.w3.org/TR/css-counter-styles-3/#symbols-function
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolsCounterStyle {
+  pub system: SymbolsType,
+  pub symbols: Vec<String>,
 }
 
 /// list-style-position values

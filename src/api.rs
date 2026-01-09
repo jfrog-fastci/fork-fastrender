@@ -15426,6 +15426,7 @@ fn hash_list_style_type(value: &crate::style::types::ListStyleType, hasher: &mut
   use crate::style::types::ListStyleType::LowerRoman;
   use crate::style::types::ListStyleType::None;
   use crate::style::types::ListStyleType::Square;
+  use crate::style::types::ListStyleType::Symbols;
   use crate::style::types::ListStyleType::String;
   use crate::style::types::ListStyleType::UpperAlpha;
   use crate::style::types::ListStyleType::UpperRoman;
@@ -15452,6 +15453,19 @@ fn hash_list_style_type(value: &crate::style::types::ListStyleType, hasher: &mut
     String(s) => {
       15u8.hash(hasher);
       s.hash(hasher);
+    }
+    Symbols(symbols) => {
+      use crate::style::types::SymbolsType;
+      18u8.hash(hasher);
+      let system_discriminant = match symbols.system {
+        SymbolsType::Cyclic => 0u8,
+        SymbolsType::Numeric => 1u8,
+        SymbolsType::Alphabetic => 2u8,
+        SymbolsType::Symbolic => 3u8,
+        SymbolsType::Fixed => 4u8,
+      };
+      system_discriminant.hash(hasher);
+      symbols.symbols.hash(hasher);
     }
     None => 16u8.hash(hasher),
   }

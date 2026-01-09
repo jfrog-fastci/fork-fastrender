@@ -11091,10 +11091,9 @@ mod tests {
       pseudo: None,
     };
     assert!(
-      state_a
-        .elements
-        .get(&key)
-        .is_some_and(|el| el.running.contains_key("border-top-color") && el.running.contains_key("border-right-color")),
+      state_a.elements.get(&key).is_some_and(|el| {
+        el.running.contains_key("border-top-color") && el.running.contains_key("border-right-color")
+      }),
       "expected both border colors to be running transitions when transition-property: all"
     );
 

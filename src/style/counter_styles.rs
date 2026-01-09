@@ -565,11 +565,7 @@ fn format_cyclic(value: i64, symbols: &[String]) -> Option<String> {
     return None;
   }
   let len = symbols.len() as i64;
-  let idx = if value == 0 {
-    0
-  } else {
-    (value - 1).rem_euclid(len)
-  } as usize;
+  let idx = (value - 1).rem_euclid(len) as usize;
   symbols.get(idx).cloned()
 }
 
@@ -622,12 +618,14 @@ fn format_symbolic(value: i64, symbols: &[String]) -> Option<String> {
   if symbols.is_empty() || value <= 0 {
     return None;
   }
-  if value as usize <= symbols.len() {
-    return symbols.get(value as usize - 1).cloned();
-  }
-  let tail = symbols.last()?.clone();
-  let repeat = (value as usize).saturating_sub(symbols.len()) + 1;
-  Some(tail.repeat(repeat))
+  // CSS Counter Styles 3 §3.4 "symbolic" system:
+  // - chosen symbol = symbols[(value - 1) mod N]
+  // - representation length = ceil(value / N)
+  // - output is chosen symbol repeated representation length times
+  let n = symbols.len() as i64;
+  let idx = ((value - 1).rem_euclid(n)) as usize;
+  let repeat = ((value + n - 1) / n) as usize;
+  Some(symbols.get(idx)?.repeat(repeat))
 }
 
 fn format_additive(mut value: i64, symbols: &[(i32, String)]) -> Option<String> {
@@ -857,6 +855,7 @@ fn roman_symbols(lowercase: bool) -> Vec<(i32, String)> {
 #[cfg(test)]
 mod tests {
   use super::CounterStyleName;
+  use super::{CounterStyleRegistry, CounterStyleRule, CounterSystem};
 
   #[test]
   fn non_ascii_whitespace_counter_style_name_does_not_trim_nbsp() {
@@ -865,5 +864,36 @@ mod tests {
       CounterStyleName::Custom(name) => assert_eq!(name, format!("{nbsp}foo")),
       other => panic!("expected custom style name, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn symbolic_counter_system_repeats_chosen_symbol_each_pass() {
+    // https://www.w3.org/TR/css-counter-styles-3/#symbolic-system
+    let mut registry = CounterStyleRegistry::with_builtins();
+    let mut rule = CounterStyleRule::new("footnote");
+    rule.system = Some(CounterSystem::Symbolic);
+    rule.symbols = Some(vec!["*".to_string(), "†".to_string()]);
+    registry.register(rule);
+
+    assert_eq!(registry.format_value(1, CounterStyleName::from("footnote")), "*");
+    assert_eq!(registry.format_value(2, CounterStyleName::from("footnote")), "†");
+    assert_eq!(registry.format_value(3, CounterStyleName::from("footnote")), "**");
+    assert_eq!(registry.format_value(4, CounterStyleName::from("footnote")), "††");
+    assert_eq!(registry.format_value(5, CounterStyleName::from("footnote")), "***");
+    assert_eq!(registry.format_value(6, CounterStyleName::from("footnote")), "†††");
+  }
+
+  #[test]
+  fn cyclic_counter_system_maps_zero_to_last_symbol() {
+    // https://www.w3.org/TR/css-counter-styles-3/#cyclic-system
+    let mut registry = CounterStyleRegistry::with_builtins();
+    let mut rule = CounterStyleRule::new("cyclic");
+    rule.system = Some(CounterSystem::Cyclic);
+    rule.symbols = Some(vec!["A".to_string(), "B".to_string()]);
+    registry.register(rule);
+
+    assert_eq!(registry.format_value(1, CounterStyleName::from("cyclic")), "A");
+    assert_eq!(registry.format_value(2, CounterStyleName::from("cyclic")), "B");
+    assert_eq!(registry.format_value(0, CounterStyleName::from("cyclic")), "B");
   }
 }

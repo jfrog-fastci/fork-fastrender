@@ -689,11 +689,12 @@ fn collect_scroll_metadata(
     }
   }
 
-  let overflow_abs = node.scroll_overflow.translate(origin);
-  for container in stack.iter_mut().skip(active_container_start) {
-    let relative = overflow_abs.translate(Point::new(-container.origin.x, -container.origin.y));
-    container.content_bounds = container.content_bounds.union(relative);
-  }
+  // `PendingContainer::new` seeds `content_bounds` from the container fragment's already-computed
+  // `scroll_overflow` (which includes all descendants with intermediate overflow clipping applied).
+  //
+  // We intentionally do *not* union every descendant fragment's `scroll_overflow` into each
+  // ancestor container here: descendant overflow is not yet clipped by intermediate ancestors, so
+  // doing so would re-introduce clipped geometry and inflate scroll snap bounds.
 
   if let Some(style) = style.as_ref() {
     for container in stack.iter_mut().skip(active_container_start) {
