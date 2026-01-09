@@ -9,7 +9,7 @@ use fastrender::style::position::Position;
 use fastrender::style::position_try::PositionTryRegistry;
 use fastrender::style::types::{
   AnchorFunction, AnchorScope, AnchorSide, AnchorSizeAxis, AnchorSizeFunction, Direction, InsetValue,
-  PositionAnchor, WritingMode,
+  PositionAnchor, PositionTryOrder, WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
@@ -996,6 +996,72 @@ fn anchor_positioning_supports_multiple_builtin_try_tactics() {
   assert!(
     overlay_fragment.bounds.max_x() <= 100.0 + 0.1 && overlay_fragment.bounds.max_y() <= 100.0 + 0.1,
     "overlay should not overflow the containing block after applying the multi-tactic fallback"
+  );
+}
+
+#[test]
+fn anchor_positioning_sorts_position_try_fallbacks_by_most_width() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(50.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let overlay_id = 1usize;
+
+  let mut position_try_registry = PositionTryRegistry::default();
+  // A fallback that fits, but reduces the available width (left inset = 20px).
+  position_try_registry.register(
+    "--narrow".to_string(),
+    vec![decl("left", PropertyValue::Length(Length::px(20.0)))],
+  );
+  // A fallback that fits and provides the full containing block width (left auto, right 0).
+  position_try_registry.register(
+    "--wide".to_string(),
+    vec![
+      decl("left", PropertyValue::Keyword("auto".to_string())),
+      decl("right", PropertyValue::Length(Length::px(0.0))),
+    ],
+  );
+  let position_try_registry = Arc::new(position_try_registry);
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  // Base placement overflows horizontally: x=80, width=30 → max_x=110.
+  overlay_style.left = InsetValue::Length(Length::px(80.0));
+  overlay_style.top = InsetValue::Length(Length::px(0.0));
+  overlay_style.width = Some(Length::px(30.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  overlay_style.position_try_registry = position_try_registry;
+  overlay_style.position_try_fallbacks = vec!["--narrow".to_string(), "--wide".to_string()];
+  overlay_style.position_try_order = PositionTryOrder::MostWidth;
+  let mut overlay =
+    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
+  container.id = 209;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 50.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+  assert!(
+    (overlay_fragment.bounds.x() - 70.0).abs() < 0.1,
+    "most-width should prefer the fallback that provides more available space (got x={})",
+    overlay_fragment.bounds.x()
+  );
+  assert!(
+    overlay_fragment.bounds.max_x() <= 100.0 + 0.1,
+    "overlay should not overflow the containing block after applying the most-width ordering"
   );
 }
 

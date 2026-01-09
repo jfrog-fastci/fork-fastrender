@@ -3086,9 +3086,57 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     return Ok((base_input.style.clone(), base_result));
   }
 
-  let mut best_style = base_input.style.clone();
-  let mut best_result = base_result;
-  let mut best_overflow = base_overflow;
+  struct TryCandidate {
+    key: f32,
+    positioned: PositionedStyle,
+  }
+
+  let try_order = base_style.position_try_order;
+  let candidate_key = |positioned: &PositionedStyle| -> f32 {
+    use crate::layout::utils::resolve_offset_for_positioned;
+    use crate::style::types::PositionTryOrder;
+
+    let viewport = viewport;
+    let x_base = containing_block.inline_percentage_base();
+    let y_base = containing_block.block_percentage_base();
+
+    let resolve_or_zero = |value: &LengthOrAuto, base: Option<f32>| -> f32 {
+      resolve_offset_for_positioned(value, base, viewport, positioned, font_context).unwrap_or(0.0)
+    };
+
+    let left = resolve_or_zero(&positioned.left, x_base);
+    let right = resolve_or_zero(&positioned.right, x_base);
+    let top = resolve_or_zero(&positioned.top, y_base);
+    let bottom = resolve_or_zero(&positioned.bottom, y_base);
+
+    let width = containing_block.rect.size.width - left - right;
+    let height = containing_block.rect.size.height - top - bottom;
+
+    let width = if width.is_finite() { width } else { 0.0 };
+    let height = if height.is_finite() { height } else { 0.0 };
+
+    match try_order {
+      PositionTryOrder::Normal => 0.0,
+      PositionTryOrder::MostWidth => width,
+      PositionTryOrder::MostHeight => height,
+      PositionTryOrder::MostInlineSize => {
+        if crate::style::inline_axis_is_horizontal(positioned.writing_mode) {
+          width
+        } else {
+          height
+        }
+      }
+      PositionTryOrder::MostBlockSize => {
+        if crate::style::block_axis_is_horizontal(positioned.writing_mode) {
+          width
+        } else {
+          height
+        }
+      }
+    }
+  };
+
+  let mut candidates: Vec<TryCandidate> = Vec::new();
 
   for name in base_style.position_try_fallbacks.iter() {
     let mut trial_style = base_style.clone();
@@ -3131,24 +3179,33 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       anchors,
       query_parent_box_id,
     );
+
+    let key = candidate_key(&trial_positioned);
+    candidates.push(TryCandidate {
+      key,
+      positioned: trial_positioned,
+    });
+  }
+
+  if !matches!(try_order, crate::style::types::PositionTryOrder::Normal) {
+    // `position-try-order` uses a stable sort, keeping author order when the available space ties.
+    candidates.sort_by(|a, b| b.key.total_cmp(&a.key));
+  }
+
+  for candidate in candidates {
     let mut trial_input = base_input.clone();
-    trial_input.style = trial_positioned.clone();
+    trial_input.style = candidate.positioned.clone();
     let trial_result = abs.layout_absolute(&trial_input, containing_block)?;
     let trial_overflow =
-      overflow_area(border_box_rect(&trial_result, &trial_positioned), containing_block.rect);
+      overflow_area(border_box_rect(&trial_result, &candidate.positioned), containing_block.rect);
 
     if trial_overflow <= OVERFLOW_EPSILON {
-      return Ok((trial_positioned, trial_result));
-    }
-
-    if trial_overflow < best_overflow {
-      best_overflow = trial_overflow;
-      best_style = trial_positioned;
-      best_result = trial_result;
+      return Ok((candidate.positioned, trial_result));
     }
   }
 
-  Ok((best_style, best_result))
+  // No option avoided overflow; keep the current (base) styles.
+  Ok((base_input.style.clone(), base_result))
 }
 
 /// Returns the padding + border edge sizes that participate in intrinsic sizing.

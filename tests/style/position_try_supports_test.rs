@@ -3,6 +3,7 @@ use fastrender::css::types::PropertyValue;
 use fastrender::dom;
 use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
 use fastrender::style::media::MediaContext;
+use fastrender::style::types::PositionTryOrder;
 use fastrender::style::values::Length;
 use fastrender::Rgba;
 
@@ -161,7 +162,7 @@ fn position_try_fallbacks_parses_multiple_tactics_per_fallback() {
 fn position_try_fallbacks_parses_dashed_ident_with_try_tactic() {
   let target = styled_target(
     r#"
-      #t { position-try-fallbacks: flip-block --foo; }
+       #t { position-try-fallbacks: flip-block --foo; }
     "#,
   );
 
@@ -169,6 +170,49 @@ fn position_try_fallbacks_parses_dashed_ident_with_try_tactic() {
     target.styles.position_try_fallbacks,
     vec!["--foo flip-block".to_string()]
   );
+}
+
+#[test]
+fn supports_position_try_order_property() {
+  let target = styled_target(
+    r#"
+      @supports (position-try-order: most-width) {
+        #t { color: rgb(51, 52, 53); }
+      }
+      @supports not (position-try-order: most-width) {
+        #t { color: rgb(1, 1, 1); }
+      }
+    "#,
+  );
+
+  assert_eq!(target.styles.color, Rgba::rgb(51, 52, 53));
+}
+
+#[test]
+fn position_try_order_parses_most_height_keyword() {
+  let target = styled_target(
+    r#"
+      #t { position-try-order: most-height; }
+    "#,
+  );
+
+  assert_eq!(target.styles.position_try_order, PositionTryOrder::MostHeight);
+}
+
+#[test]
+fn supports_position_try_shorthand() {
+  let target = styled_target(
+    r#"
+      @supports (position-try: most-inline-size flip-inline) {
+        #t { color: rgb(61, 62, 63); }
+      }
+      @supports not (position-try: most-inline-size flip-inline) {
+        #t { color: rgb(1, 1, 1); }
+      }
+    "#,
+  );
+
+  assert_eq!(target.styles.color, Rgba::rgb(61, 62, 63));
 }
 
 #[test]

@@ -3837,6 +3837,22 @@ impl Default for PositionAnchor {
   }
 }
 
+/// Computed value for the `position-try-order` property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionTryOrder {
+  Normal,
+  MostWidth,
+  MostHeight,
+  MostBlockSize,
+  MostInlineSize,
+}
+
+impl Default for PositionTryOrder {
+  fn default() -> Self {
+    Self::Normal
+  }
+}
+
 /// Computed value for the `anchor-scope` property.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnchorScope {

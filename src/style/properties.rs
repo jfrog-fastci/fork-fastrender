@@ -361,6 +361,155 @@ fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
     .filter(|part| !part.is_empty())
 }
 
+fn parse_position_try_order_value(raw: &str) -> Option<PositionTryOrder> {
+  let trimmed = trim_ascii_whitespace(raw);
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let token = parser.next_including_whitespace().ok()?;
+  let order = match token {
+    Token::Ident(ident) => {
+      let lower = ident.as_ref().to_ascii_lowercase();
+      match lower.as_str() {
+        "normal" => PositionTryOrder::Normal,
+        "most-width" => PositionTryOrder::MostWidth,
+        "most-height" => PositionTryOrder::MostHeight,
+        "most-block-size" => PositionTryOrder::MostBlockSize,
+        "most-inline-size" => PositionTryOrder::MostInlineSize,
+        _ => return None,
+      }
+    }
+    _ => return None,
+  };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return None;
+  }
+  Some(order)
+}
+
+fn parse_position_try_fallbacks_list(raw: &str) -> Option<Vec<String>> {
+  let raw = trim_ascii_whitespace(raw);
+  if raw.is_empty() {
+    return None;
+  }
+
+  if raw.eq_ignore_ascii_case("none") {
+    return Some(Vec::new());
+  }
+
+  let mut input = ParserInput::new(raw);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  if parser.is_exhausted() {
+    return None;
+  }
+
+  let mut parsed: Vec<String> = Vec::new();
+
+  let parse_tactic = |name: &str| -> Option<&'static str> {
+    if name.eq_ignore_ascii_case("flip-inline") {
+      Some("flip-inline")
+    } else if name.eq_ignore_ascii_case("flip-block") {
+      Some("flip-block")
+    } else if name.eq_ignore_ascii_case("flip-x") {
+      Some("flip-x")
+    } else if name.eq_ignore_ascii_case("flip-y") {
+      Some("flip-y")
+    } else if name.eq_ignore_ascii_case("flip-start") {
+      Some("flip-start")
+    } else {
+      None
+    }
+  };
+
+  'outer: loop {
+    parser.skip_whitespace();
+    if parser.is_exhausted() {
+      break;
+    }
+
+    let mut try_name: Option<String> = None;
+    let mut tactics: Vec<&'static str> = Vec::new();
+
+    loop {
+      parser.skip_whitespace();
+
+      if parser.is_exhausted() {
+        break;
+      }
+
+      if parser.try_parse(|p| p.expect_comma()).is_ok() {
+        if try_name.is_none() && tactics.is_empty() {
+          return None;
+        }
+        let item = if let Some(name) = try_name.take() {
+          if tactics.is_empty() {
+            name
+          } else {
+            format!("{name} {}", tactics.join(" "))
+          }
+        } else {
+          tactics.join(" ")
+        };
+        parsed.push(item);
+
+        parser.skip_whitespace();
+        if parser.is_exhausted() {
+          // Trailing comma.
+          return None;
+        }
+        continue 'outer;
+      }
+
+      let ident = match parser.expect_ident() {
+        Ok(ident) => ident,
+        Err(_) => return None,
+      };
+      let name = ident.as_ref();
+
+      if name.starts_with("--") && name.len() > 2 {
+        if try_name.is_some() {
+          return None;
+        }
+        try_name = Some(name.to_string());
+        continue;
+      }
+
+      let Some(tactic) = parse_tactic(name) else {
+        return None;
+      };
+      tactics.push(tactic);
+    }
+
+    if try_name.is_none() && tactics.is_empty() {
+      return None;
+    }
+
+    let item = if let Some(name) = try_name.take() {
+      if tactics.is_empty() {
+        name
+      } else {
+        format!("{name} {}", tactics.join(" "))
+      }
+    } else {
+      tactics.join(" ")
+    };
+    parsed.push(item);
+    break;
+  }
+
+  if parsed.is_empty() {
+    None
+  } else {
+    Some(parsed)
+  }
+}
+
 fn parse_background_image_value(value: &PropertyValue) -> Option<BackgroundImage> {
   match value {
     PropertyValue::Keyword(kw) if starts_with_ignore_ascii_case(kw, "image-set(") => {
@@ -4824,6 +4973,11 @@ pub(crate) fn apply_property_from_source(
     "anchor-scope" => styles.anchor_scope = source.anchor_scope.clone(),
     "position-anchor" => styles.position_anchor = source.position_anchor.clone(),
     "position-try-fallbacks" => styles.position_try_fallbacks = source.position_try_fallbacks.clone(),
+    "position-try-order" => styles.position_try_order = source.position_try_order,
+    "position-try" => {
+      styles.position_try_fallbacks = source.position_try_fallbacks.clone();
+      styles.position_try_order = source.position_try_order;
+    }
     "z-index" => styles.z_index = source.z_index,
     "outline-color" => styles.outline_color = source.outline_color,
     "outline-style" => styles.outline_style = source.outline_style,
@@ -9661,15 +9815,28 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "position-try-fallbacks" => {
-      let Some(raw) = (match resolved_value {
-        PropertyValue::Keyword(kw) => Some(trim_ascii_whitespace(kw)),
-        _ => None,
-      }) else {
+      let PropertyValue::Keyword(raw) = resolved_value else {
         return;
       };
-
-      if raw.eq_ignore_ascii_case("none") {
-        styles.position_try_fallbacks.clear();
+      let Some(parsed) = parse_position_try_fallbacks_list(raw) else {
+        return;
+      };
+      styles.position_try_fallbacks = parsed;
+    }
+    "position-try-order" => {
+      let PropertyValue::Keyword(raw) = resolved_value else {
+        return;
+      };
+      if let Some(order_value) = parse_position_try_order_value(raw) {
+        styles.position_try_order = order_value;
+      }
+    }
+    "position-try" => {
+      let PropertyValue::Keyword(raw) = resolved_value else {
+        return;
+      };
+      let raw = trim_ascii_whitespace(raw);
+      if raw.is_empty() {
         return;
       }
 
@@ -9680,105 +9847,31 @@ fn apply_declaration_with_base_internal_with_order(
         return;
       }
 
-      let mut parsed: Vec<String> = Vec::new();
-
-      let parse_tactic = |name: &str| -> Option<&'static str> {
-        if name.eq_ignore_ascii_case("flip-inline") {
-          Some("flip-inline")
-        } else if name.eq_ignore_ascii_case("flip-block") {
-          Some("flip-block")
-        } else if name.eq_ignore_ascii_case("flip-x") {
-          Some("flip-x")
-        } else if name.eq_ignore_ascii_case("flip-y") {
-          Some("flip-y")
-        } else if name.eq_ignore_ascii_case("flip-start") {
-          Some("flip-start")
-        } else {
-          None
-        }
+      let first = match parser.expect_ident() {
+        Ok(ident) => ident,
+        Err(_) => return,
       };
 
-      'outer: loop {
+      if let Some(order_value) = parse_position_try_order_value(first.as_ref()) {
         parser.skip_whitespace();
         if parser.is_exhausted() {
-          break;
-        }
-
-        let mut try_name: Option<String> = None;
-        let mut tactics: Vec<&'static str> = Vec::new();
-
-        loop {
-          parser.skip_whitespace();
-
-          if parser.is_exhausted() {
-            break;
-          }
-
-          if parser.try_parse(|p| p.expect_comma()).is_ok() {
-            if try_name.is_none() && tactics.is_empty() {
-              return;
-            }
-            let item = if let Some(name) = try_name.take() {
-              if tactics.is_empty() {
-                name
-              } else {
-                format!("{name} {}", tactics.join(" "))
-              }
-            } else {
-              tactics.join(" ")
-            };
-            parsed.push(item);
-
-            parser.skip_whitespace();
-            if parser.is_exhausted() {
-              // Trailing comma.
-              return;
-            }
-            continue 'outer;
-          }
-
-          let ident = match parser.expect_ident() {
-            Ok(ident) => ident,
-            Err(_) => return,
-          };
-          let name = ident.as_ref();
-
-          if name.starts_with("--") && name.len() > 2 {
-            if try_name.is_some() {
-              return;
-            }
-            try_name = Some(name.to_string());
-            continue;
-          }
-
-          let Some(tactic) = parse_tactic(name) else {
-            return;
-          };
-          tactics.push(tactic);
-        }
-
-        if try_name.is_none() && tactics.is_empty() {
+          styles.position_try_order = order_value;
+          styles.position_try_fallbacks = Vec::new();
           return;
         }
-
-        let item = if let Some(name) = try_name.take() {
-          if tactics.is_empty() {
-            name
-          } else {
-            format!("{name} {}", tactics.join(" "))
-          }
-        } else {
-          tactics.join(" ")
+        let fallbacks_raw = parser.slice_from(parser.position());
+        let Some(parsed) = parse_position_try_fallbacks_list(fallbacks_raw) else {
+          return;
         };
-        parsed.push(item);
-        break;
+        styles.position_try_order = order_value;
+        styles.position_try_fallbacks = parsed;
+      } else {
+        let Some(parsed) = parse_position_try_fallbacks_list(raw) else {
+          return;
+        };
+        styles.position_try_order = PositionTryOrder::Normal;
+        styles.position_try_fallbacks = parsed;
       }
-
-      if parsed.is_empty() {
-        return;
-      }
-
-      styles.position_try_fallbacks = parsed;
     }
     "anchor-scope" => {
       let token = match resolved_value {

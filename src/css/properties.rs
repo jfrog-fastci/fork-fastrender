@@ -81,6 +81,8 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
       | "transition-behavior"
       | "transition"
       | "position-try-fallbacks"
+      | "position-try-order"
+      | "position-try"
   )
 }
 
@@ -452,7 +454,9 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "place-self",
   "position",
   "position-anchor",
+  "position-try",
   "position-try-fallbacks",
+  "position-try-order",
   "quotes",
   "ruby-align",
   "ruby-merge",
@@ -2328,6 +2332,164 @@ fn supports_position_try_fallbacks_value(raw_value: &str) -> bool {
   count > 0
 }
 
+fn supports_position_try_order_value(raw_value: &str) -> bool {
+  let raw_value = trim_css_whitespace(raw_value);
+  if raw_value.is_empty() {
+    return false;
+  }
+
+  let mut input = ParserInput::new(raw_value);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let ident = match parser.expect_ident() {
+    Ok(ident) => ident,
+    Err(_) => return false,
+  };
+  let lower = ident.as_ref().to_ascii_lowercase();
+  let valid = matches!(
+    lower.as_str(),
+    "normal" | "most-width" | "most-height" | "most-block-size" | "most-inline-size"
+  );
+  if !valid {
+    return false;
+  }
+  parser.skip_whitespace();
+  parser.is_exhausted()
+}
+
+fn supports_position_try_value(raw_value: &str) -> bool {
+  let raw_value = trim_css_whitespace(raw_value);
+  if raw_value.is_empty() {
+    return false;
+  }
+
+  let mut input = ParserInput::new(raw_value);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  if parser.is_exhausted() {
+    return false;
+  }
+
+  let parse_tactic = |name: &str| -> bool {
+    name.eq_ignore_ascii_case("flip-inline")
+      || name.eq_ignore_ascii_case("flip-block")
+      || name.eq_ignore_ascii_case("flip-x")
+      || name.eq_ignore_ascii_case("flip-y")
+      || name.eq_ignore_ascii_case("flip-start")
+  };
+
+  let parse_fallbacks_from_parser = |parser: &mut Parser<'_, '_>| -> bool {
+    parser.skip_whitespace();
+    if parser.is_exhausted() {
+      return false;
+    }
+
+    // The keyword `none` stands alone.
+    if parser
+      .try_parse(|p| {
+        let ident = p.expect_ident()?;
+        if !ident.eq_ignore_ascii_case("none") {
+          return Err(p.new_custom_error::<(), ()>(()));
+        }
+        p.skip_whitespace();
+        if !p.is_exhausted() {
+          return Err(p.new_custom_error::<(), ()>(()));
+        }
+        Ok(())
+      })
+      .is_ok()
+    {
+      return true;
+    }
+
+    let mut count: usize = 0;
+
+    'outer: loop {
+      parser.skip_whitespace();
+      if parser.is_exhausted() {
+        break;
+      }
+
+      let mut saw_token = false;
+      let mut saw_name = false;
+
+      loop {
+        parser.skip_whitespace();
+        if parser.is_exhausted() {
+          break;
+        }
+
+        if parser.try_parse(|p| p.expect_comma()).is_ok() {
+          if !saw_token {
+            return false;
+          }
+          count += 1;
+          parser.skip_whitespace();
+          if parser.is_exhausted() {
+            // Trailing comma.
+            return false;
+          }
+          continue 'outer;
+        }
+
+        let ident = match parser.expect_ident() {
+          Ok(ident) => ident,
+          Err(_) => return false,
+        };
+        let name = ident.as_ref();
+
+        if name.starts_with("--") && name.len() > 2 {
+          if saw_name {
+            return false;
+          }
+          saw_name = true;
+          saw_token = true;
+          continue;
+        }
+
+        if !parse_tactic(name) {
+          return false;
+        }
+        saw_token = true;
+      }
+
+      if !saw_token {
+        return false;
+      }
+      count += 1;
+      break;
+    }
+
+    count > 0
+  };
+
+  let first = match parser.expect_ident() {
+    Ok(ident) => ident,
+    Err(_) => return false,
+  };
+  let lower = first.as_ref().to_ascii_lowercase();
+  let is_order = matches!(
+    lower.as_str(),
+    "normal" | "most-width" | "most-height" | "most-block-size" | "most-inline-size"
+  );
+
+  if !is_order {
+    // No `position-try-order` prefix, just validate the fallbacks list.
+    return supports_position_try_fallbacks_value(raw_value);
+  }
+
+  // `position-try` shorthand accepts just the order keyword (resets fallbacks to `none`).
+  parser.skip_whitespace();
+  if parser.is_exhausted() {
+    return true;
+  }
+
+  parse_fallbacks_from_parser(&mut parser) && {
+    parser.skip_whitespace();
+    parser.is_exhausted()
+  }
+}
+
 fn supports_scroll_timeline_function<'i, 't>(
   input: &mut Parser<'i, 't>,
 ) -> Result<(), cssparser::ParseError<'i, ()>> {
@@ -2796,7 +2958,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     }
     "animation-timeline" => return supports_animation_timeline_value(raw_value),
     "timeline-scope" => return supports_timeline_scope_value(raw_value),
+    "position-try-order" => return supports_position_try_order_value(raw_value),
     "position-try-fallbacks" => return supports_position_try_fallbacks_value(raw_value),
+    "position-try" => return supports_position_try_value(raw_value),
     "transition-behavior" => return supports_transition_behavior_value(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),

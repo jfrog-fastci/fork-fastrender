@@ -161,6 +161,7 @@ use types::AnchorSizeFunction;
 use types::OverscrollBehavior;
 use types::PointerEvents;
 use types::PositionAnchor;
+use types::PositionTryOrder;
 use types::Resize;
 use types::RubyAlign;
 use types::RubyMerge;
@@ -894,6 +895,8 @@ pub struct ComputedStyle {
   pub position_anchor: PositionAnchor,
   /// Fallback `@position-try` sets to consult when anchor-based positioning would overflow.
   pub position_try_fallbacks: Vec<String>,
+  /// Determines the order in which `position-try-fallbacks` are evaluated.
+  pub position_try_order: PositionTryOrder,
   pub top: InsetValue,
   pub right: InsetValue,
   pub bottom: InsetValue,
@@ -1374,6 +1377,7 @@ impl Default for ComputedStyle {
       anchor_scope: AnchorScope::None,
       position_anchor: PositionAnchor::None,
       position_try_fallbacks: Vec::new(),
+      position_try_order: PositionTryOrder::Normal,
       top: InsetValue::Auto,
       right: InsetValue::Auto,
       bottom: InsetValue::Auto,
