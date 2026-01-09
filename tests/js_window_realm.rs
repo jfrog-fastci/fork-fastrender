@@ -341,6 +341,65 @@ fn location_url_components_are_exposed_to_js_execution() -> Result<()> {
 }
 
 #[test]
+fn document_head_and_body_reflect_dom_ids() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><head id=h></head><body id=b></body></html>",
+  )?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r#"
+  globalThis.__head_id = document.head.id;
+  globalThis.__body_id = document.body.id;
+  globalThis.__head_same = document.head === document.head;
+  globalThis.__body_same = document.body === document.body;
+  document.body.id = "new";
+  globalThis.__body_id_after = document.body.id;
+  "#,
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
+  }
+
+  let (head_id, body_id, body_id_after, head_same, body_same) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let head_value = get_data_prop(&mut scope, global, "__head_id");
+    let body_value = get_data_prop(&mut scope, global, "__body_id");
+    let body_after_value = get_data_prop(&mut scope, global, "__body_id_after");
+    let head_same = get_data_prop(&mut scope, global, "__head_same");
+    let body_same = get_data_prop(&mut scope, global, "__body_same");
+    (
+      get_string(scope.heap(), head_value),
+      get_string(scope.heap(), body_value),
+      get_string(scope.heap(), body_after_value),
+      head_same,
+      body_same,
+    )
+  };
+
+  assert_eq!(head_id, "h");
+  assert_eq!(body_id, "b");
+  assert_eq!(body_id_after, "new");
+  assert_eq!(head_same, Value::Bool(true));
+  assert_eq!(body_same, Value::Bool(true));
+
+  let body_node = host
+    .dom()
+    .body()
+    .expect("expected body element to exist for HTML document");
+  assert_eq!(host.dom().element_id(body_node), "new");
+
+  Ok(())
+}
+
+#[test]
 fn document_current_script_is_visible_to_js_execution() -> Result<()> {
   #[derive(Default)]
   struct JsExecutor {

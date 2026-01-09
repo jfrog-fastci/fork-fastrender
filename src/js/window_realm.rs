@@ -327,6 +327,8 @@ const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
 const ELEMENT_CLASS_NAME_GET_KEY: &str = "__fastrender_element_class_name_get";
 const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
+const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
+const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
 
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -716,6 +718,14 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_SET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let id_get = {
+    let key = alloc_key(scope, ELEMENT_ID_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let id_set = {
+    let key = alloc_key(scope, ELEMENT_ID_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
 
   let wrapper = scope.alloc_object()?;
   scope.push_root(Value::Object(wrapper))?;
@@ -736,6 +746,22 @@ fn get_or_create_node_wrapper(
     scope.define_property(
       wrapper,
       class_name_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (id_get, id_set) {
+    let id_key = alloc_key(scope, "id")?;
+    scope.define_property(
+      wrapper,
+      id_key,
       PropertyDescriptor {
         enumerable: false,
         configurable: true,
@@ -781,6 +807,76 @@ fn document_document_element_get_native(
   // lifetime of the associated host document.
   let dom = unsafe { dom_ptr.as_ref() };
   let Some(node_id) = dom.document_element() else {
+    return Ok(Value::Null);
+  };
+
+  get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
+fn document_head_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Null),
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Null);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(node_id) = dom.head() else {
+    return Ok(Value::Null);
+  };
+
+  get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
+fn document_body_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Null),
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Null);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(node_id) = dom.body() else {
     return Ok(Value::Null);
   };
 
@@ -887,6 +983,110 @@ fn element_class_name_set_native(
   dom
     .set_element_class_name(node_id, &new_value)
     .map_err(|_| VmError::TypeError("failed to set Element.className"))?;
+
+  Ok(Value::Undefined)
+}
+
+fn element_id_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Undefined),
+  };
+
+  let id = dom.element_id(node_id);
+  let s = scope.alloc_string(id)?;
+  Ok(Value::String(s))
+}
+
+fn element_id_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Undefined),
+  };
+
+  dom
+    .set_element_id(node_id, &new_value)
+    .map_err(|_| VmError::TypeError("failed to set Element.id"))?;
 
   Ok(Value::Undefined)
 }
@@ -1236,6 +1436,58 @@ fn init_window_globals(
     },
   )?;
 
+  // document.head
+  let document_head_key = alloc_key(&mut scope, "head")?;
+  let document_head_call_id = vm.register_native_call(document_head_get_native)?;
+  let document_head_name = scope.alloc_string("get head")?;
+  scope.push_root(Value::String(document_head_name))?;
+  let document_head_func = scope.alloc_native_function(document_head_call_id, None, document_head_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      document_head_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(document_head_func))?;
+  scope.define_property(
+    document_obj,
+    document_head_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(document_head_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  // document.body
+  let document_body_key = alloc_key(&mut scope, "body")?;
+  let document_body_call_id = vm.register_native_call(document_body_get_native)?;
+  let document_body_name = scope.alloc_string("get body")?;
+  scope.push_root(Value::String(document_body_name))?;
+  let document_body_func = scope.alloc_native_function(document_body_call_id, None, document_body_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      document_body_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(document_body_func))?;
+  scope.define_property(
+    document_obj,
+    document_body_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(document_body_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
   // Store shared Element.className getter/setter functions on `document` so wrappers can reuse them.
   let class_name_get_call_id = vm.register_native_call(element_class_name_get_native)?;
   let class_name_get_name = scope.alloc_string("get className")?;
@@ -1274,6 +1526,29 @@ fn init_window_globals(
     class_name_set_key,
     data_desc(Value::Object(class_name_set_func)),
   )?;
+
+  // Store shared Element.id getter/setter functions on `document` so wrappers can reuse them.
+  let id_get_call_id = vm.register_native_call(element_id_get_native)?;
+  let id_get_name = scope.alloc_string("get id")?;
+  scope.push_root(Value::String(id_get_name))?;
+  let id_get_func = scope.alloc_native_function(id_get_call_id, None, id_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(id_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(id_get_func))?;
+  let id_get_key = alloc_key(&mut scope, ELEMENT_ID_GET_KEY)?;
+  scope.define_property(document_obj, id_get_key, data_desc(Value::Object(id_get_func)))?;
+
+  let id_set_call_id = vm.register_native_call(element_id_set_native)?;
+  let id_set_name = scope.alloc_string("set id")?;
+  scope.push_root(Value::String(id_set_name))?;
+  let id_set_func = scope.alloc_native_function(id_set_call_id, None, id_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(id_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(id_set_func))?;
+  let id_set_key = alloc_key(&mut scope, ELEMENT_ID_SET_KEY)?;
+  scope.define_property(document_obj, id_set_key, data_desc(Value::Object(id_set_func)))?;
 
   let current_script_guard = config
     .current_script_state
