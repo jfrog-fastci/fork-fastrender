@@ -364,7 +364,9 @@ pub fn execute_web_fetch<'a>(
     return Ok(Response {
       r#type: response_type,
       url: String::new(),
-      redirected: response.redirected,
+      // Per Fetch, opaque/opaqueredirect filtered responses have an empty URL list; `redirected`
+      // must therefore always be `false` (and must not leak redirect information to callers).
+      redirected: false,
       status: 0,
       status_text: String::new(),
       headers: Headers::new_with_guard(HeadersGuard::Immutable),
@@ -1340,6 +1342,43 @@ mod tests {
   }
 
   #[test]
+  fn opaque_redirect_does_not_leak_redirected_flag() {
+    struct ManualRedirectFetcher;
+
+    impl ResourceFetcher for ManualRedirectFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request")
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.redirect, RequestRedirect::Manual);
+        assert!(req.headers.is_empty());
+        assert!(req.body.is_none());
+        let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+        resource.status = Some(302);
+        // Simulate a redirect that would otherwise be detectable via `final_url`.
+        resource.final_url = Some("https://example.com/final".to_string());
+        Ok(resource)
+      }
+    }
+
+    let fetcher = ManualRedirectFetcher;
+    let mut request = Request::new("GET", "https://example.com/start");
+    request.redirect = RequestRedirect::Manual;
+    let response =
+      execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).expect("response");
+
+    assert_eq!(response.r#type, ResponseType::OpaqueRedirect);
+    assert_eq!(response.status, 0);
+    assert_eq!(response.url, "");
+    assert!(!response.redirected);
+    assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
+    assert!(response.headers.sort_and_combine().is_empty());
+    assert!(response.body.is_none());
+  }
+
+  #[test]
   fn same_origin_blocks_cross_origin_before_fetching() {
     let fetcher = PanicFetcher;
     let mut request = Request::new("GET", "https://other.example/res");
@@ -1514,9 +1553,10 @@ mod tests {
 
   #[test]
   fn no_cors_skips_cors_validation_and_returns_opaque() {
-    let fetcher = StaticFetcher {
-      resource: FetchedResource::new(b"ok".to_vec(), None),
-    };
+    // Ensure `Response.redirected` does not leak redirect information for opaque responses.
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.final_url = Some("https://other.example/final".to_string());
+    let fetcher = StaticFetcher { resource };
     let mut request = Request::new("GET", "https://other.example/res");
     request.mode = RequestMode::NoCors;
     let origin = origin_from_url("https://client.example/").expect("origin");

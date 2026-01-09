@@ -534,6 +534,21 @@ impl<State: 'static> VmHostHooks for EcmaVmRuntime<State> {
       self.pending_host_error.get_or_insert(err);
     }
   }
+
+  fn host_call_job_callback(
+    &mut self,
+    ctx: &mut dyn VmJobContext,
+    callback: &vm_js::JobCallback,
+    this_argument: Value,
+    arguments: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    ctx.call(
+      self,
+      Value::Object(callback.callback_object()),
+      this_argument,
+      arguments,
+    )
+  }
 }
 
 struct FastRenderJobContext {
