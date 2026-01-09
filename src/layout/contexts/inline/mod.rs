@@ -22360,12 +22360,54 @@ mod tests {
     let first_x = fragment.children[0].children[0].bounds.x();
     let second_x = fragment.children[1].children[0].bounds.x();
     assert!(
-      second_x >= 11.0,
-      "subsequent lines should be indented under hanging + each-line"
+      second_x < 1.0,
+      "hanging + each-line should not indent the first line after a forced break"
     );
     assert!(
       first_x < 1.0,
       "first line should remain outdented under hanging"
+    );
+  }
+
+  #[test]
+  fn text_indent_hanging_each_line_indents_soft_wrap_continuations() {
+    let mut root_style = ComputedStyle::default();
+    root_style.text_indent.length = Length::px(12.0);
+    root_style.text_indent.hanging = true;
+    root_style.text_indent.each_line = true;
+    root_style.font_size = 16.0;
+    let mut text_style = ComputedStyle::default();
+    text_style.white_space = WhiteSpace::PreWrap;
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        Arc::new(text_style),
+        "first\nlongword longword longword longword".to_string(),
+      )],
+    );
+    // Force the second paragraph line to soft-wrap so we can observe the hanging indentation on the
+    // wrapped continuation line(s).
+    let constraints = LayoutConstraints::definite_width(80.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert!(
+      fragment.children.len() >= 3,
+      "expected at least three lines (forced break + soft wrap)"
+    );
+    let first_x = fragment.children[0].children[0].bounds.x();
+    let second_x = fragment.children[1].children[0].bounds.x();
+    let third_x = fragment.children[2].children[0].bounds.x();
+
+    assert!(first_x < 1.0, "first line should be outdented under hanging");
+    assert!(
+      second_x < 1.0,
+      "first line after forced break should be outdented under hanging + each-line"
+    );
+    assert!(
+      third_x >= 11.0,
+      "soft-wrapped continuation lines should receive hanging indent under hanging + each-line"
     );
   }
 

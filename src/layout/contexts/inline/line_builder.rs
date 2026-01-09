@@ -2924,20 +2924,24 @@ impl<'a> LineBuilder<'a> {
     if self.indent == 0.0 {
       return 0.0;
     }
-    if is_first_line {
-      if self.indent_hanging {
-        0.0
-      } else {
-        self.indent
-      }
+
+    // CSS Text 3: `text-indent` applies to the first formatted line of the block container.
+    // The `each-line` keyword extends this to each line after a *forced* line break (but not soft
+    // wraps). The `hanging` keyword inverts which lines are affected.
+    //
+    // https://www.w3.org/TR/css-text-3/#text-indent-property
+    let base_target = if self.indent_each_line {
+      is_first_line || is_para_start
     } else {
-      let apply_indent = self.indent_hanging || (self.indent_each_line && is_para_start);
-      if apply_indent {
-        self.indent
-      } else {
-        0.0
-      }
-    }
+      is_first_line
+    };
+    let should_indent = if self.indent_hanging {
+      !base_target
+    } else {
+      base_target
+    };
+
+    if should_indent { self.indent } else { 0.0 }
   }
 
   fn start_new_line(&mut self) {
