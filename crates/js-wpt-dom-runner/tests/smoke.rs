@@ -232,3 +232,23 @@ fn runs_domparsing_innerhtml_outerhtml_test() {
 fn runs_domparsing_documentfragment_test() {
   assert_wpt_pass("domparsing/documentfragment.window.js");
 }
+
+#[test]
+fn runs_element_matches_and_closest_test() {
+  assert_wpt_pass("dom/element_matches_closest.window.js");
+}
+
+#[test]
+fn runs_element_query_selector_test() {
+  assert_wpt_pass("dom/element_query_selector.window.js");
+}
+
+#[test]
+fn runs_document_fragment_append_semantics_test() {
+  assert_wpt_pass("dom/document_fragment_append.window.js");
+}
+
+#[test]
+fn runs_node_sibling_props_test() {
+  assert_wpt_pass("dom/node_sibling_props.window.js");
+}

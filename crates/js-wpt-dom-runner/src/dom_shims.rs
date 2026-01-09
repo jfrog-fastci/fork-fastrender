@@ -152,6 +152,209 @@ const DOM_SHIM: &str = r##"
     }
   }
 
+  function syntaxError(msg) {
+    // Match browser behavior closely enough for WPT smoke tests: `e.name` must be "SyntaxError".
+    throw new SyntaxError(msg || "Invalid selector");
+  }
+
+  function isIdentChar(ch) {
+    // Keep this conservative; it only needs to support ids/class names in the offline corpus.
+    return (
+      (ch >= "a" && ch <= "z") ||
+      (ch >= "A" && ch <= "Z") ||
+      (ch >= "0" && ch <= "9") ||
+      ch === "_" ||
+      ch === "-" ||
+      ch === "\\u00B7"
+    );
+  }
+
+  function parseIdent(input, i) {
+    var start = i;
+    while (i < input.length && isIdentChar(input[i])) i++;
+    if (i === start) syntaxError("Expected identifier");
+    return { value: input.slice(start, i), next: i };
+  }
+
+  function skipWhitespace(input, i) {
+    var start = i;
+    while (i < input.length && /\s/.test(input[i])) i++;
+    return { next: i, had: i !== start };
+  }
+
+  function parseCompound(input, i) {
+    var tag = null;
+    var id = null;
+    var classes = [];
+    var isScope = false;
+
+    if (input[i] === "*") {
+      tag = "*";
+      i++;
+    } else if (i < input.length && isIdentChar(input[i])) {
+      var ident = parseIdent(input, i);
+      tag = ident.value;
+      i = ident.next;
+    }
+
+    while (i < input.length) {
+      var ch = input[i];
+      if (ch === "#") {
+        i++;
+        var ident = parseIdent(input, i);
+        id = ident.value;
+        i = ident.next;
+      } else if (ch === ".") {
+        i++;
+        var ident = parseIdent(input, i);
+        classes.push(ident.value);
+        i = ident.next;
+      } else if (ch === ":") {
+        i++;
+        var ident = parseIdent(input, i);
+        i = ident.next;
+        if (ident.value.toLowerCase() === "scope") {
+          isScope = true;
+        } else {
+          syntaxError("Unsupported pseudo-class :" + ident.value);
+        }
+      } else {
+        break;
+      }
+    }
+
+    if (!tag && !id && classes.length === 0 && !isScope) {
+      syntaxError("Expected selector");
+    }
+
+    return {
+      compound: { tag: tag, id: id, classes: classes, isScope: isScope },
+      next: i,
+    };
+  }
+
+  function parseSelector(input) {
+    var i = 0;
+    var compounds = [];
+    var combinators = [];
+    var hasScope = false;
+
+    var ws = skipWhitespace(input, i);
+    i = ws.next;
+
+    while (i < input.length) {
+      var parsed = parseCompound(input, i);
+      i = parsed.next;
+      compounds.push(parsed.compound);
+      if (parsed.compound.isScope) hasScope = true;
+
+      ws = skipWhitespace(input, i);
+      i = ws.next;
+      if (i >= input.length) break;
+
+      var combinator = null;
+      if (input[i] === ">") {
+        i++;
+        ws = skipWhitespace(input, i);
+        i = ws.next;
+        combinator = "child";
+      } else if (ws.had) {
+        combinator = "descendant";
+      } else {
+        syntaxError("Unexpected character " + input[i]);
+      }
+      combinators.push(combinator);
+    }
+
+    if (compounds.length === 0) {
+      syntaxError("Expected selector");
+    }
+
+    return { compounds: compounds, combinators: combinators, hasScope: hasScope };
+  }
+
+  function parseSelectorList(selectors) {
+    var raw = String(selectors);
+    var parts = raw.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+    if (parts.length === 0) syntaxError("Empty selector");
+    return parts.map(parseSelector);
+  }
+
+  function splitClassTokens(className) {
+    var raw = String(className || "").trim();
+    if (!raw) return [];
+    return raw.split(/\s+/).filter(Boolean);
+  }
+
+  function compoundMatches(compound, el, scopeEl) {
+    if (!(el instanceof Element)) return false;
+    if (compound.isScope && el !== scopeEl) return false;
+    if (compound.tag && compound.tag !== "*") {
+      if (String(el.tagName).toLowerCase() !== compound.tag.toLowerCase()) return false;
+    }
+    if (compound.id) {
+      if (String(el.id) !== compound.id) return false;
+    }
+    if (compound.classes && compound.classes.length) {
+      var tokens = splitClassTokens(el.className);
+      for (var i = 0; i < compound.classes.length; i++) {
+        if (tokens.indexOf(compound.classes[i]) < 0) return false;
+      }
+    }
+    return true;
+  }
+
+  function matchesSelectorChain(el, selector, scopeEl, limitRoot) {
+    var idx = selector.compounds.length - 1;
+    if (!compoundMatches(selector.compounds[idx], el, scopeEl)) return false;
+
+    var current = el;
+    for (var i = idx - 1; i >= 0; i--) {
+      var combinator = selector.combinators[i];
+      var need = selector.compounds[i];
+
+      if (combinator === "child") {
+        current = current.parentNode;
+        if (!current) return false;
+        if (limitRoot && current === limitRoot.parentNode) return false;
+        if (!compoundMatches(need, current, scopeEl)) return false;
+      } else if (combinator === "descendant") {
+        var ancestor = current.parentNode;
+        var stop = limitRoot ? limitRoot.parentNode : null;
+        var found = false;
+        while (ancestor && ancestor !== stop) {
+          if (compoundMatches(need, ancestor, scopeEl)) {
+            found = true;
+            current = ancestor;
+            break;
+          }
+          ancestor = ancestor.parentNode;
+        }
+        if (!found) return false;
+      } else {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function traverseElementSubtree(root, visit) {
+    var stack = [];
+    var kids = root.childNodes || [];
+    for (var i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+
+    while (stack.length) {
+      var node = stack.pop();
+      if (!(node instanceof Element)) continue;
+      visit(node);
+      // Treat `<template>` contents as inert.
+      if (String(node.tagName).toUpperCase() === "TEMPLATE") continue;
+      var children = node.childNodes || [];
+      for (var j = children.length - 1; j >= 0; j--) stack.push(children[j]);
+    }
+  }
+
   function isArrayIndex(prop) {
     if (typeof prop !== "string") return false;
     if (prop === "") return false;
@@ -292,6 +495,93 @@ const DOM_SHIM: &str = r##"
     },
     configurable: true,
   });
+
+  Element.prototype.matches = function (selectors) {
+    nodeIdFromThis(this);
+    if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
+    var parsed = parseSelectorList(selectors);
+    for (var i = 0; i < parsed.length; i++) {
+      if (matchesSelectorChain(this, parsed[i], this, null)) return true;
+    }
+    return false;
+  };
+
+  Element.prototype.closest = function (selectors) {
+    nodeIdFromThis(this);
+    if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
+    var parsed = parseSelectorList(selectors);
+    var cur = this;
+    while (cur && cur !== g.document) {
+      if (cur instanceof Element) {
+        for (var i = 0; i < parsed.length; i++) {
+          if (matchesSelectorChain(cur, parsed[i], this, null)) return cur;
+        }
+      }
+      cur = cur.parentNode;
+    }
+    return null;
+  };
+
+  Element.prototype.querySelector = function (selectors) {
+    nodeIdFromThis(this);
+    if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
+    var parsed = parseSelectorList(selectors);
+
+    for (var i = 0; i < parsed.length; i++) {
+      if (parsed[i].hasScope && matchesSelectorChain(this, parsed[i], this, this)) return this;
+    }
+
+    var found = null;
+    traverseElementSubtree(this, function (el) {
+      if (found) return;
+      for (var i = 0; i < parsed.length; i++) {
+        if (matchesSelectorChain(el, parsed[i], this, this)) {
+          found = el;
+          return;
+        }
+      }
+    }.bind(this));
+    return found;
+  };
+
+  Element.prototype.querySelectorAll = function (selectors) {
+    nodeIdFromThis(this);
+    if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
+    var parsed = parseSelectorList(selectors);
+    var out = [];
+    var seen = new Set();
+
+    for (var i = 0; i < parsed.length; i++) {
+      if (parsed[i].hasScope && matchesSelectorChain(this, parsed[i], this, this)) {
+        var id = nodeIdFromThis(this);
+        if (!seen.has(id)) {
+          seen.add(id);
+          out.push(this);
+        }
+      }
+    }
+
+    traverseElementSubtree(this, function (el) {
+      var id = nodeIdFromThis(el);
+      if (seen.has(id)) return;
+      for (var i = 0; i < parsed.length; i++) {
+        if (matchesSelectorChain(el, parsed[i], this, this)) {
+          seen.add(id);
+          out.push(el);
+          return;
+        }
+      }
+    }.bind(this));
+
+    return out;
+  };
+
+  Document.prototype.querySelector = function (selectors) {
+    return g.document.documentElement.querySelector(selectors);
+  };
+  Document.prototype.querySelectorAll = function (selectors) {
+    return g.document.documentElement.querySelectorAll(selectors);
+  };
 
   Node.prototype.appendChild = function (child) {
     var parentId = nodeIdFromThis(this);
