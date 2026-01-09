@@ -27943,6 +27943,25 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn svg_presentation_font_size_unitless_number_applies() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "svg".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![("font-size".to_string(), "12".to_string())],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    assert!(
+      (styled.styles.font_size - 12.0).abs() < 1e-6,
+      "expected unitless SVG font-size to map to px; got {}",
+      styled.styles.font_size
+    );
+  }
+
+  #[test]
   fn author_css_overrides_svg_presentation_attribute() {
     let dom = DomNode {
       node_type: DomNodeType::Element {
@@ -34608,23 +34627,51 @@ fn svg_presentation_attribute_hints(
   }
   if let Some(value) = node.get_attribute_ref("font-size") {
     // `font-size` is a presentation attribute, so it accepts SVG lengths (including unitless
-    // numbers). Prefer normal CSS parsing when possible, but fall back to SVG length parsing for
-    // unitless values.
-    if parse_property_value("font-size", value).is_some() {
-      push_parsed(&mut declarations, "font-size", value);
-    } else if let Some(length) = crate::svg::parse_svg_length(value) {
-      if !crate::style::var_resolution::contains_var(value) {
-        let len = match length {
-          crate::svg::SvgLength::Px(px) => Length::px(px),
-          crate::svg::SvgLength::Percentage(percent) => Length::percent(percent),
-        };
-        declarations.push(Declaration {
-          property: "font-size".into(),
-          value: PropertyValue::Length(len),
-          contains_var: false,
-          raw_value: String::new(),
-          important: false,
-        });
+    // numbers). Our CSS parser returns `PropertyValue::Number` for unitless numbers, but the CSS
+    // `font-size` property does *not* accept numbers (only lengths/percentages/keywords), so those
+    // values would otherwise be ignored at computed-value time.
+    //
+    // Prefer normal CSS parsing for real CSS values (e.g. `1em`, `small`), but treat unitless
+    // numbers as SVG user units (px) via `parse_svg_length`.
+    match parse_property_value("font-size", value) {
+      Some(PropertyValue::Number(_)) => {
+        if !crate::style::var_resolution::contains_var(value) {
+          if let Some(length) = crate::svg::parse_svg_length(value) {
+            let len = match length {
+              crate::svg::SvgLength::Px(px) => Length::px(px),
+              crate::svg::SvgLength::Percentage(percent) => Length::percent(percent),
+            };
+            declarations.push(Declaration {
+              property: "font-size".into(),
+              value: PropertyValue::Length(len),
+              contains_var: false,
+              raw_value: String::new(),
+              important: false,
+            });
+          }
+        } else {
+          push_parsed(&mut declarations, "font-size", value);
+        }
+      }
+      Some(_) => {
+        push_parsed(&mut declarations, "font-size", value);
+      }
+      None => {
+        if !crate::style::var_resolution::contains_var(value) {
+          if let Some(length) = crate::svg::parse_svg_length(value) {
+            let len = match length {
+              crate::svg::SvgLength::Px(px) => Length::px(px),
+              crate::svg::SvgLength::Percentage(percent) => Length::percent(percent),
+            };
+            declarations.push(Declaration {
+              property: "font-size".into(),
+              value: PropertyValue::Length(len),
+              contains_var: false,
+              raw_value: String::new(),
+              important: false,
+            });
+          }
+        }
       }
     }
   }
