@@ -60,6 +60,21 @@ fn whatwg_html_handles_nested_code_tags_in_idl_blocks() {
 }
 
 #[test]
+fn whatwg_html_malformed_idl_block_does_not_abort_scan() {
+  let src = concat!(
+    "<pre><code class=\"idl\">interface <dfn>Broken</dfn> {}; </pre>",
+    "<pre><code class=\"idl\">typedef DOMString <dfn>StillOk</dfn>;</code></pre>",
+  );
+  let blocks = extract_webidl_blocks_from_whatwg_html(src);
+  assert_eq!(blocks.len(), 1);
+  assert!(
+    blocks[0].contains("typedef DOMString StillOk;"),
+    "expected extractor to skip malformed block and return later typedef, got:\n{}",
+    blocks[0]
+  );
+}
+
+#[test]
 fn whatwg_html_extracts_timer_handler_typedef() {
   let src = r#"
     <pre><code class="idl extract">typedef (DOMString or <span class="t">Function</span>) <dfn typedef data-x="timer-handler">TimerHandler</dfn>;</code></pre>
@@ -75,61 +90,54 @@ fn whatwg_html_extracts_timer_handler_typedef() {
 }
 
 #[test]
-fn whatwg_html_source_extracts_windoworworkerglobalscope_block() {
-  // This is a regression test for extracting the real WHATWG HTML `WindowOrWorkerGlobalScope` IDL
-  // block (timers/microtask/base64/structuredClone globals). If this disappears it breaks host
-  // integration relying on spec-shaped WebIDL metadata.
-  let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-    .parent()
-    .expect("xtask has a parent dir");
-  let html_path = repo_root.join("specs/whatwg-html/source");
-  if !html_path.is_file() {
-    eprintln!(
-      "skipping WHATWG HTML extraction test: missing source at {}",
-      html_path.display()
-    );
-    return;
-  }
+fn whatwg_html_extracts_window_or_worker_global_scope_timers() {
+  // Trimmed from WHATWG HTML `source` around the `TimerHandler` typedef and
+  // `WindowOrWorkerGlobalScope` mixin.
+  let src = r#"
+  <pre><code class="idl">typedef (DOMString or <span data-x="idl-Function">Function</span> or <span data-x="tt-trustedscript">TrustedScript</span>) <dfn typedef>TimerHandler</dfn>;
 
-  let src = std::fs::read_to_string(&html_path).expect("read WHATWG HTML source");
-  let blocks = extract_webidl_blocks_from_whatwg_html(&src);
+  interface mixin <dfn interface>WindowOrWorkerGlobalScope</dfn> {
+    // timers
+    long <span data-x="dom-setTimeout">setTimeout</span>(<span>TimerHandler</span> handler, optional long timeout = 0, any... arguments);
 
+    // microtask queuing
+    undefined <span data-x="dom-queueMicrotask">queueMicrotask</span>(<span data-x="idl-VoidFunction">VoidFunction</span> callback);
+  };
+  <span>Window</span> includes <span>WindowOrWorkerGlobalScope</span>;</code></pre>
+  "#;
+
+  let blocks = extract_webidl_blocks_from_whatwg_html(src);
+  assert_eq!(blocks.len(), 1);
   assert!(
-    blocks.iter().any(|b| b.contains("interface mixin WindowOrWorkerGlobalScope")),
-    "expected WHATWG HTML extractor to capture WindowOrWorkerGlobalScope mixin (blocks={})",
-    blocks.len()
+    blocks[0].contains("typedef (DOMString or Function"),
+    "expected TimerHandler typedef, got:
+{}",
+    blocks[0]
   );
   assert!(
-    blocks.iter().any(|b| b.contains("typedef") && b.contains("TimerHandler")),
-    "expected WHATWG HTML extractor to capture TimerHandler typedef (blocks={})",
-    blocks.len()
+    blocks[0].contains("setTimeout"),
+    "expected setTimeout operation, got:
+{}",
+    blocks[0]
+  );
+  assert!(
+    blocks[0].contains("queueMicrotask"),
+    "expected queueMicrotask operation, got:
+{}",
+    blocks[0]
   );
 }
 
 #[test]
-fn bikeshed_extractor_does_not_match_whatwg_html_source() {
-  // The WHATWG HTML `source` file is not a Bikeshed `.bs` input; its IDL is embedded in
-  // `<pre><code class="idl">...</code></pre>`. If the Bikeshed extractor matches it, the output
-  // includes raw HTML tags like `<dfn>`/`<span>`, producing unparseable IDL and breaking resolution
-  // (notably WindowOrWorkerGlobalScope).
-  let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-    .parent()
-    .expect("xtask has a parent dir");
-  let html_path = repo_root.join("specs/whatwg-html/source");
-  if !html_path.is_file() {
-    eprintln!(
-      "skipping WHATWG HTML bikeshed-extractor test: missing source at {}",
-      html_path.display()
-    );
-    return;
-  }
-
-  let src = std::fs::read_to_string(&html_path).expect("read WHATWG HTML source");
-  let blocks = extract_webidl_blocks_from_bikeshed(&src);
+fn bikeshed_extractor_does_not_match_whatwg_html_idl_blocks() {
+  // The WHATWG HTML `source` format is not a Bikeshed `.bs` input: its IDL is embedded in
+  // `<pre><code class="idl">...</code></pre>`. Ensure the Bikeshed extractor doesn't accidentally
+  // match those blocks (which would yield raw HTML tags and unparseable IDL).
+  let src = r#"<pre><code class="idl">interface <dfn>Foo</dfn> { attribute <span>DOMString</span> <span>bar</span>; };</code></pre>"#;
+  let blocks = extract_webidl_blocks_from_bikeshed(src);
   assert!(
     blocks.is_empty(),
-    "expected Bikeshed extractor to return 0 blocks for WHATWG HTML source, got {} (first block starts with: {:?})",
-    blocks.len(),
-    blocks.first().map(|b| b.chars().take(80).collect::<String>())
+    "expected Bikeshed extractor to return 0 blocks for WHATWG HTML-style IDL, got {}",
+    blocks.len()
   );
 }

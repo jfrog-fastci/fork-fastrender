@@ -337,13 +337,18 @@ mod tests {
       member_names.contains(&"setTimeout"),
       "expected Window to contain setTimeout: {member_names:?}"
     );
+    assert!(
+      member_names.contains(&"queueMicrotask"),
+      "expected Window to contain queueMicrotask: {member_names:?}"
+    );
 
     WORLD
       .interface_mixin("WindowOrWorkerGlobalScope")
       .expect("generated world should include WindowOrWorkerGlobalScope mixin");
-    WORLD
+    let timer = WORLD
       .typedef_("TimerHandler")
       .expect("generated world should include TimerHandler typedef");
+    assert_eq!(timer.type_, "(DOMString or Function or TrustedScript)");
   }
 
   #[test]
