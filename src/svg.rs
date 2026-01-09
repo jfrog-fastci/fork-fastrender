@@ -468,6 +468,11 @@ mod tests {
   }
 
   #[test]
+  fn svg_preserve_aspect_ratio_defer_is_ascii_case_insensitive() {
+    assert!(SvgPreserveAspectRatio::parse(Some("DeFeR none")).none);
+  }
+
+  #[test]
   fn svg_preserve_aspect_ratio_supports_defer_align_and_slice() {
     let parsed = SvgPreserveAspectRatio::parse(Some("defer xMinYMin slice"));
     assert!(!parsed.none);
