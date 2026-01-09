@@ -1,6 +1,7 @@
 use crate::dom2::{Document, NodeId, NodeKind};
-use crate::error::Result;
+use crate::error::{RenderStage, Result};
 use crate::js::ScriptType;
+use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
 use serde::{Deserialize, Serialize};
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::VecDeque;
@@ -204,7 +205,11 @@ impl ScriptOrchestrator {
         current_script_node_id: new_current_script.map(|id| id.index()),
       });
     }
-    let result = executor.execute_script(host, self, dom, script, script_type);
+    let result = {
+      let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+      record_stage(StageHeartbeat::Script);
+      executor.execute_script(host, self, dom, script, script_type)
+    };
     host.current_script_state().borrow_mut().pop();
     result
   }

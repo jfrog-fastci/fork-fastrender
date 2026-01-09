@@ -1,4 +1,5 @@
-use crate::error::{Error, Result};
+use crate::error::{Error, RenderStage, Result};
+use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -119,7 +120,11 @@ where
       if spec.parser_inserted && event_loop.currently_running_task().is_none() {
         event_loop.perform_microtask_checkpoint(host)?;
       }
-      host.execute_classic_script(&spec.inline_text, &spec, event_loop)?;
+      {
+        let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+        record_stage(StageHeartbeat::Script);
+        host.execute_classic_script(&spec.inline_text, &spec, event_loop)?;
+      }
       // HTML: a microtask checkpoint is performed after script execution.
       event_loop.perform_microtask_checkpoint(host)?;
       return Ok(());
@@ -165,7 +170,11 @@ where
       event_loop.perform_microtask_checkpoint(host)?;
     }
     let script_text = host.load_blocking(src_url)?;
-    host.execute_classic_script(&script_text, &spec, event_loop)?;
+    {
+      let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+      record_stage(StageHeartbeat::Script);
+      host.execute_classic_script(&script_text, &spec, event_loop)?;
+    }
     event_loop.perform_microtask_checkpoint(host)?;
     Ok(())
   }

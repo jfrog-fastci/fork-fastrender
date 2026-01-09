@@ -1,5 +1,6 @@
-use crate::error::Result;
+use crate::error::{RenderStage, Result};
 use crate::js::{EventLoop, RunLimits, ScriptBlockingStyleSheetSet, TaskSource};
+use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
 use memchr::memchr;
 use std::ops::ControlFlow;
 
@@ -228,7 +229,11 @@ where
       return Ok(false);
     }
 
-    self.script_executor.execute(script_text)?;
+    {
+      let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+      record_stage(StageHeartbeat::Script);
+      self.script_executor.execute(script_text)?;
+    }
     event_loop.perform_microtask_checkpoint(self)?;
     Ok(true)
   }

@@ -2770,6 +2770,7 @@ pub(crate) fn progress_stage_from_heartbeat(stage: StageHeartbeat) -> Option<Pro
     StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects | StageHeartbeat::DomParse => {
       Some(ProgressStage::DomParse)
     }
+    StageHeartbeat::Script => Some(ProgressStage::Script),
     StageHeartbeat::CssInline | StageHeartbeat::CssParse => Some(ProgressStage::Css),
     StageHeartbeat::Cascade => Some(ProgressStage::Cascade),
     StageHeartbeat::BoxTree => Some(ProgressStage::BoxTree),
@@ -11277,6 +11278,7 @@ mod tests {
     assert_eq!(StageHeartbeat::ReadCache.hotspot(), "fetch");
     assert_eq!(StageHeartbeat::FollowRedirects.hotspot(), "fetch");
     assert_eq!(StageHeartbeat::DomParse.hotspot(), "fetch");
+    assert_eq!(StageHeartbeat::Script.hotspot(), "script");
     assert_eq!(StageHeartbeat::CssInline.hotspot(), "css");
     assert_eq!(StageHeartbeat::CssParse.hotspot(), "css");
     assert_eq!(StageHeartbeat::Cascade.hotspot(), "cascade");
@@ -11289,6 +11291,7 @@ mod tests {
   #[test]
   fn heartbeat_stage_roundtrips_new_markers() {
     for (raw, stage) in [
+      ("script", StageHeartbeat::Script),
       ("css_parse", StageHeartbeat::CssParse),
       ("box_tree", StageHeartbeat::BoxTree),
     ] {

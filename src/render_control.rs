@@ -53,6 +53,8 @@ pub enum StageHeartbeat {
   FollowRedirects,
   CssInline,
   DomParse,
+  /// JavaScript / script execution (including event loop tasks and microtasks).
+  Script,
   CssParse,
   Cascade,
   /// DOM + computed styles → box tree.
@@ -72,6 +74,7 @@ impl StageHeartbeat {
       StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects | StageHeartbeat::DomParse => {
         Some(RenderStage::DomParse)
       }
+      StageHeartbeat::Script => Some(RenderStage::Script),
       StageHeartbeat::CssInline | StageHeartbeat::CssParse => Some(RenderStage::Css),
       StageHeartbeat::Cascade => Some(RenderStage::Cascade),
       StageHeartbeat::BoxTree => Some(RenderStage::BoxTree),
@@ -87,6 +90,7 @@ impl StageHeartbeat {
       StageHeartbeat::FollowRedirects => "follow_redirects",
       StageHeartbeat::CssInline => "css_inline",
       StageHeartbeat::DomParse => "dom_parse",
+      StageHeartbeat::Script => "script",
       StageHeartbeat::CssParse => "css_parse",
       StageHeartbeat::Cascade => "cascade",
       StageHeartbeat::BoxTree => "box_tree",
@@ -103,6 +107,7 @@ impl StageHeartbeat {
       "follow_redirects" => Some(StageHeartbeat::FollowRedirects),
       "css_inline" => Some(StageHeartbeat::CssInline),
       "dom_parse" => Some(StageHeartbeat::DomParse),
+      "script" => Some(StageHeartbeat::Script),
       "css_parse" => Some(StageHeartbeat::CssParse),
       "cascade" => Some(StageHeartbeat::Cascade),
       "box_tree" => Some(StageHeartbeat::BoxTree),
@@ -119,6 +124,7 @@ impl StageHeartbeat {
       StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects | StageHeartbeat::DomParse => {
         "fetch"
       }
+      StageHeartbeat::Script => "script",
       StageHeartbeat::CssInline | StageHeartbeat::CssParse => "css",
       StageHeartbeat::Cascade => "cascade",
       StageHeartbeat::BoxTree => "box_tree",
@@ -497,6 +503,14 @@ pub fn with_deadline<T>(deadline: Option<&RenderDeadline>, f: impl FnOnce() -> T
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn stage_heartbeat_script_roundtrips() {
+    assert_eq!(
+      StageHeartbeat::from_str(StageHeartbeat::Script.as_str()),
+      Some(StageHeartbeat::Script)
+    );
+  }
 
   #[test]
   fn scoped_stage_listener_receives_events_and_is_removed_on_drop() {

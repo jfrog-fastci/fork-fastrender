@@ -1,5 +1,5 @@
 use crate::error::{Error, RenderStage, Result};
-use crate::render_control;
+use crate::render_control::{self, record_stage, StageGuard, StageHeartbeat};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -321,6 +321,9 @@ impl<Host: 'static> EventLoop<Host> {
       return Ok(());
     }
 
+    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+    record_stage(StageHeartbeat::Script);
+
     self.performing_microtask_checkpoint = true;
     let previous_running_task = self.currently_running_task.take();
 
@@ -349,6 +352,9 @@ impl<Host: 'static> EventLoop<Host> {
   /// Returns `Ok(true)` when a task was executed, `Ok(false)` when the task queue was empty.
   /// After executing a task, a microtask checkpoint is performed.
   pub fn run_next_task(&mut self, host: &mut Host) -> Result<bool> {
+    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+    record_stage(StageHeartbeat::Script);
+
     self.queue_due_timers()?;
 
     let Some(task) = self.pop_next_task() else {
@@ -376,6 +382,9 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   pub fn run_until_idle(&mut self, host: &mut Host, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
+    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+    record_stage(StageHeartbeat::Script);
+
     let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
 
     match self.run_until_idle_inner(host, &mut run_state) {
@@ -452,6 +461,9 @@ impl<Host: 'static> EventLoop<Host> {
     if self.performing_microtask_checkpoint {
       return Ok(());
     }
+
+    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+    record_stage(StageHeartbeat::Script);
 
     self.performing_microtask_checkpoint = true;
     let previous_running_task = self.currently_running_task.take();
@@ -671,6 +683,9 @@ impl<Host: 'static> EventLoop<Host> {
     limits: RunLimits,
     mut condition: impl FnMut(&Host) -> bool,
   ) -> Result<SpinOutcome> {
+    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+    record_stage(StageHeartbeat::Script);
+
     let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
     match self.spin_until_inner(host, &mut run_state, &mut condition) {
       Ok(outcome) => Ok(outcome),
@@ -789,6 +804,27 @@ mod tests {
   struct TestHost {
     log: Vec<&'static str>,
     count: usize,
+  }
+
+  #[test]
+  fn cooperative_timeout_during_event_loop_is_attributed_to_script_stage() {
+    struct Host;
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let deadline = render_control::RenderDeadline::new(None, Some(Arc::new(|| true)));
+    let _deadline_guard = render_control::DeadlineGuard::install(Some(&deadline));
+
+    let mut host = Host;
+    let err = event_loop
+      .run_until_idle(&mut host, RunLimits::unbounded())
+      .expect_err("expected timeout");
+    match err {
+      Error::Render(crate::error::RenderError::Timeout { stage, .. }) => {
+        assert_eq!(stage, RenderStage::Script);
+      }
+      err => panic!("expected RenderError::Timeout, got {err:?}"),
+    }
   }
 
   #[test]
