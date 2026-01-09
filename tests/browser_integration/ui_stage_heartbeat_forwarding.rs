@@ -1,8 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
-use fastrender::ui::messages::{TabId, WorkerToUi};
+use fastrender::ui::cancel::CancelGens;
+use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker::RenderWorker;
+use fastrender::ui::worker_loop::spawn_ui_worker;
 use fastrender::{FastRender, PreparedPaintOptions, RenderOptions};
 use tempfile::tempdir;
 
@@ -108,4 +110,109 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
     rx.try_recv().is_err(),
     "expected stage listener to be cleared after jobs"
   );
+}
+
+#[test]
+fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
+  let _lock = super::stage_listener_test_lock();
+  let dir = tempdir().expect("temp dir");
+
+  std::fs::write(
+    dir.path().join("style.css"),
+    "body { background: rgb(1, 2, 3); }",
+  )
+  .expect("write css");
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <link rel="stylesheet" href="style.css">
+      </head>
+      <body>Hello</body>
+    </html>
+  "#;
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = format!("file://{}/index.html", dir.path().display());
+
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-loop-stage-test")
+    .expect("spawn ui worker")
+    .split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: None,
+      cancel: CancelGens::new(),
+    })
+    .expect("CreateTab");
+  ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 120),
+      dpr: 1.0,
+    })
+    .expect("ViewportChanged");
+  ui_tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url,
+      reason: NavigationReason::TypedUrl,
+    })
+    .expect("Navigate");
+
+  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+  let mut messages = Vec::new();
+  let mut saw_frame = false;
+
+  while std::time::Instant::now() < deadline {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
+      Ok(msg) => {
+        if matches!(msg, WorkerToUi::FrameReady { tab_id: got, .. } if got == tab_id) {
+          saw_frame = true;
+        }
+        messages.push(msg);
+        if saw_frame {
+          break;
+        }
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  // Allow any trailing stage heartbeats enqueued by background threads to arrive.
+  while let Ok(msg) = ui_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+    messages.push(msg);
+  }
+
+  assert!(saw_frame, "expected FrameReady message for worker loop navigation");
+
+  let stages: Vec<StageHeartbeat> = messages
+    .iter()
+    .filter_map(|msg| match msg {
+      WorkerToUi::Stage {
+        tab_id: got,
+        stage,
+      } if *got == tab_id => Some(*stage),
+      _ => None,
+    })
+    .collect();
+  assert!(
+    !stages.is_empty(),
+    "expected stage heartbeats for worker loop tab, got none"
+  );
+
+  // Stage forwarding must be scoped to the job: once the navigation completes, the global stage
+  // listener should be removed.
+  while ui_rx.try_recv().is_ok() {}
+  record_stage(StageHeartbeat::DomParse);
+  assert!(
+    ui_rx.try_recv().is_err(),
+    "expected stage listener to be cleared after worker loop navigation"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
 }

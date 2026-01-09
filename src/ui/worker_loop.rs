@@ -3,7 +3,7 @@ use crate::geometry::{Point, Size};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{InteractionAction, InteractionEngine};
-use crate::render_control::RenderDeadline;
+use crate::render_control::{GlobalStageListenerGuard, RenderDeadline, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::ui::cancel::CancelGens;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
@@ -13,6 +13,7 @@ use crate::ui::messages::{
 };
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use url::Url;
 
@@ -198,6 +199,22 @@ fn non_empty_url_fragment(url: &str) -> Option<String> {
     .and_then(|parsed| parsed.fragment().filter(|frag| !frag.is_empty()).map(str::to_string))
 }
 
+/// Install a stage listener that forwards heartbeats to the UI for the lifetime of the returned
+/// guard.
+///
+/// # Concurrency
+///
+/// Stage listeners are process-global. `run_worker_loop` processes messages sequentially, so this
+/// worker must execute at most one render job at a time while the listener is installed (i.e. no
+/// overlapping navigations / paints).
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> GlobalStageListenerGuard {
+  let listener = Arc::new(move |stage: StageHeartbeat| {
+    // Best-effort: UI might have dropped its receiver.
+    let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
+  });
+  GlobalStageListenerGuard::new(listener)
+}
+
 fn emit_frame(
   tab_id: TabId,
   tab: &mut TabState,
@@ -237,6 +254,7 @@ fn repaint_if_needed(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToU
 }
 
 fn repaint_force(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>) {
+  let _stage_guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
   let painted = match tab.document.render_frame_with_scroll_state() {
     Ok(frame) => frame,
     Err(err) => {
@@ -294,6 +312,7 @@ fn navigate_tab(
     tab_id,
     loading: true,
   });
+  let _stage_guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
 
   tab.scroll = ScrollState::default();
   tab.interaction = InteractionEngine::new();

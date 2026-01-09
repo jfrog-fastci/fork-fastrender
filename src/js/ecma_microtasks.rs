@@ -30,7 +30,7 @@ pub trait VmJsEngineHost {
   ///
   /// Defaults to the heap returned by [`VmJsEngineHost::vm_js_vm_and_heap_mut`].
   fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-    let (_vm, heap) = self.vm_js_vm_and_heap_mut();
+    let (_, heap) = self.vm_js_vm_and_heap_mut();
     heap
   }
 

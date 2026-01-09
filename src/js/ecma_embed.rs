@@ -510,6 +510,8 @@ impl Evaluator<'_> {
       .heap_mut()
       .add_root(Value::Undefined)
       .map_err(vm_error_to_runtime)?;
+
+    // Ensure we clear the persistent root even if statement execution fails partway through.
     let result = (|| {
       let mut last_value = Value::Undefined;
       for stmt in stmts {
