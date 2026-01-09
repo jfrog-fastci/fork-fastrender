@@ -323,12 +323,44 @@ fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
   }
 }
 
+#[inline]
+fn overflow_axis_clips(overflow: Overflow) -> bool {
+  matches!(
+    overflow,
+    Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
+  )
+}
+
 fn annotate_overflow(node: &mut FragmentNode) -> Rect {
   let mut overflow = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
   for child in node.children_mut() {
     let child_overflow = annotate_overflow(child);
     let translated = child_overflow.translate(Point::new(child.bounds.x(), child.bounds.y()));
-    overflow = overflow.union(translated);
+
+    let child_style = child.style.as_ref();
+    let clips_x = child_style
+      .map(|style| overflow_axis_clips(style.overflow_x))
+      .unwrap_or(false);
+    let clips_y = child_style
+      .map(|style| overflow_axis_clips(style.overflow_y))
+      .unwrap_or(false);
+
+    let mut clip = ClipRect::unbounded();
+    if clips_x || clips_y {
+      let child_border_box = Rect::from_xywh(
+        child.bounds.x(),
+        child.bounds.y(),
+        child.bounds.width(),
+        child.bounds.height(),
+      );
+      if let Some(updated) = clip.clip_to_rect_on_axes(child_border_box, clips_x, clips_y) {
+        clip = updated;
+      }
+    }
+
+    if let Some(clipped) = clip.intersect_rect(translated) {
+      overflow = overflow.union(clipped);
+    }
   }
   node.scroll_overflow = overflow;
   overflow
@@ -989,41 +1021,111 @@ impl Bounds {
   }
 }
 
-fn collect_bounds(node: &FragmentNode, origin: Point, bounds: &mut Bounds) {
-  let abs_rect = Rect::from_xywh(
-    origin.x,
-    origin.y,
-    node.bounds.width(),
-    node.bounds.height(),
-  );
-  bounds.update(abs_rect);
+#[derive(Debug, Clone, Copy)]
+struct ClipRect {
+  min_x: f32,
+  max_x: f32,
+  min_y: f32,
+  max_y: f32,
+}
+
+impl ClipRect {
+  fn unbounded() -> Self {
+    Self {
+      min_x: f32::NEG_INFINITY,
+      max_x: f32::INFINITY,
+      min_y: f32::NEG_INFINITY,
+      max_y: f32::INFINITY,
+    }
+  }
+
+  fn intersect_rect(self, rect: Rect) -> Option<Rect> {
+    let min_x = rect.min_x().max(self.min_x);
+    let max_x = rect.max_x().min(self.max_x);
+    let min_y = rect.min_y().max(self.min_y);
+    let max_y = rect.max_y().min(self.max_y);
+
+    if max_x < min_x || max_y < min_y {
+      return None;
+    }
+
+    Some(Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y))
+  }
+
+  fn clip_to_rect_on_axes(self, rect: Rect, clip_x: bool, clip_y: bool) -> Option<Self> {
+    let mut out = self;
+
+    if clip_x {
+      out.min_x = out.min_x.max(rect.min_x());
+      out.max_x = out.max_x.min(rect.max_x());
+      if out.max_x < out.min_x {
+        return None;
+      }
+    }
+
+    if clip_y {
+      out.min_y = out.min_y.max(rect.min_y());
+      out.max_y = out.max_y.min(rect.max_y());
+      if out.max_y < out.min_y {
+        return None;
+      }
+    }
+
+    Some(out)
+  }
+}
+
+fn collect_bounds(
+  node: &FragmentNode,
+  origin: Point,
+  bounds: &mut Bounds,
+  clip: ClipRect,
+  root: bool,
+) {
+  let rect = Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height());
+  let Some(visible_rect) = clip.intersect_rect(rect) else {
+    return;
+  };
+  bounds.update(visible_rect);
+
+  let mut child_clip = clip;
+  if !root {
+    if let Some(style) = node.style.as_ref() {
+      let clip_x = overflow_axis_clips(style.overflow_x);
+      let clip_y = overflow_axis_clips(style.overflow_y);
+      if clip_x || clip_y {
+        let Some(updated) = child_clip.clip_to_rect_on_axes(rect, clip_x, clip_y) else {
+          return;
+        };
+        child_clip = updated;
+      }
+    }
+  }
 
   for child in node.children.iter() {
-    let child_origin = Point::new(
-      abs_rect.x() + child.bounds.x(),
-      abs_rect.y() + child.bounds.y(),
-    );
-    collect_bounds(child, child_origin, bounds);
+    let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+    collect_bounds(child, child_origin, bounds, child_clip, false);
   }
 }
 
 pub(crate) fn scroll_bounds_for_fragment(
   container: &FragmentNode,
-  origin: Point,
+  _origin: Point,
   viewport: Size,
 ) -> ScrollBounds {
-  let mut bounds = Bounds::new(Rect::from_xywh(
-    origin.x,
-    origin.y,
-    viewport.width,
-    viewport.height,
-  ));
-  collect_bounds(container, origin, &mut bounds);
+  let mut bounds = Bounds::new(Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height));
+  collect_bounds(
+    container,
+    Point::ZERO,
+    &mut bounds,
+    ClipRect::unbounded(),
+    true,
+  );
 
-  let min_x = (bounds.min_x - origin.x).min(0.0);
-  let min_y = (bounds.min_y - origin.y).min(0.0);
-  let max_x = (bounds.max_x - origin.x - viewport.width).max(min_x);
-  let max_y = (bounds.max_y - origin.y - viewport.height).max(min_y);
+  let min_x = bounds.min_x.min(0.0);
+  let min_y = bounds.min_y.min(0.0);
+  let max_x = (bounds.max_x - viewport.width).max(min_x);
+  let max_y = (bounds.max_y - viewport.height).max(min_y);
 
   ScrollBounds {
     min_x,

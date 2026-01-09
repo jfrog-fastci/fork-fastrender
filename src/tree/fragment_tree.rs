@@ -682,6 +682,10 @@ pub struct FragmentNode {
 
   /// Scrollable overflow area for this fragment (including descendants),
   /// expressed in the fragment's local coordinate space.
+  ///
+  /// When propagating descendant overflow into ancestors, intermediate overflow clipping
+  /// (`overflow: hidden/scroll/auto/clip`) is respected so clipped descendants do not inflate
+  /// ancestor scroll ranges or paint bounds.
   pub scroll_overflow: Rect,
 
   /// Fragmentation metadata for nested fragmentainers (e.g., multi-column containers).
