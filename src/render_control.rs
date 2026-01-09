@@ -444,6 +444,10 @@ impl RenderDeadline {
 
   /// Check for timeout or cancellation at the given stage.
   pub fn check(&self, stage: RenderStage) -> Result<(), RenderError> {
+    // `CancelCallback` does not accept any arguments, so stage-aware cancellation relies on
+    // `render_control::active_stage()`. Install a scoped stage hint so callbacks (and any other
+    // code invoked by this check) can observe the stage we're currently attributing to.
+    let _stage_guard = StageGuard::install(Some(stage));
     #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
     {
       let delay = resolved_test_render_delay_ms();
@@ -808,5 +812,34 @@ mod tests {
     );
     drop(_guard);
     record_stage(StageHeartbeat::Done);
+  }
+
+  #[test]
+  fn deadline_check_sets_active_stage_for_cancel_callback() {
+    let observed: Arc<Mutex<Vec<Option<RenderStage>>>> = Arc::new(Mutex::new(Vec::new()));
+    let observed_for_cb = Arc::clone(&observed);
+    let cb: Arc<CancelCallback> = Arc::new(move || {
+      observed_for_cb.lock().unwrap().push(active_stage());
+      true
+    });
+
+    let deadline = RenderDeadline::new(None, Some(cb));
+    let outer_stage = StageGuard::install(Some(RenderStage::Layout));
+
+    let err = deadline.check(RenderStage::Paint).expect_err("expected cancellation");
+    match err {
+      RenderError::Timeout { stage, .. } => assert_eq!(stage, RenderStage::Paint),
+      other => panic!("unexpected error: {other:?}"),
+    }
+
+    // The deadline check must not leak its stage hint outside the check scope.
+    assert_eq!(active_stage(), Some(RenderStage::Layout));
+    drop(outer_stage);
+    assert_eq!(active_stage(), None);
+
+    assert_eq!(
+      observed.lock().unwrap().clone(),
+      vec![Some(RenderStage::Paint)]
+    );
   }
 }
