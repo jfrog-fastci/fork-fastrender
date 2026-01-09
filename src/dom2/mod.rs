@@ -2,6 +2,7 @@ use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use crate::dom::HTML_NAMESPACE;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DomException;
+use crate::web::events;
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;
@@ -95,6 +96,7 @@ pub struct Node {
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
+  events: events::EventListenerRegistry,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +213,7 @@ impl Document {
     let mut doc = Self {
       nodes: Vec::new(),
       root: NodeId(0),
+      events: events::EventListenerRegistry::new(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
