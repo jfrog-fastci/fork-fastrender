@@ -2409,6 +2409,7 @@ impl BlockFormattingContext {
     }
     let deadline = active_deadline();
     let stage = active_stage();
+    let child_layout_ctx = self.clone();
     let parallel_results = parent
       .children
       .par_iter()
@@ -2417,7 +2418,7 @@ impl BlockFormattingContext {
         with_deadline(deadline.as_ref(), || {
           let _stage_guard = StageGuard::install(stage);
           crate::layout::engine::debug_record_parallel_work();
-          let fragment = self.layout_block_child(
+          let fragment = child_layout_ctx.layout_block_child(
             parent,
             child,
             containing_width,
@@ -3085,7 +3086,10 @@ impl BlockFormattingContext {
       }
     }
     let has_external_float_ctx = external_float_ctx.is_some();
-    let owns_float_ctx = !has_external_float_ctx || establishes_bfc(&parent.style);
+    // Flex items establish a new block formatting context for their contents, which prevents
+    // parent/child margin collapsing and isolates floats from the outside.
+    let owns_float_ctx =
+      !has_external_float_ctx || establishes_bfc(&parent.style) || parent_is_independent_context_root;
     let mut local_float_ctx = FloatContext::new(containing_width);
     let float_base_y = if owns_float_ctx {
       0.0
@@ -3211,13 +3215,15 @@ impl BlockFormattingContext {
       .as_deref()
       .unwrap_or_else(|| self.intrinsic_inline_fc.as_ref());
 
+    let child_layout_ctx: &BlockFormattingContext = self;
+
     let layout_in_flow_block_child =
       |child: &BoxNode,
        margin_ctx: &mut MarginCollapseContext,
        current_y: f32,
        float_ctx_ref: &mut FloatContext|
        -> Result<(FragmentNode, f32), LayoutError> {
-        let child_margins = self.collapsed_block_margins(child, containing_width, false);
+        let child_margins = child_layout_ctx.collapsed_block_margins(child, containing_width, false);
         let pending_margin = margin_ctx.pending_collapsible_margin();
         let margin_edge_y = current_y + pending_margin.resolve();
         let cleared_margin_edge_y = float_ctx_ref.compute_clearance(
@@ -3253,7 +3259,7 @@ impl BlockFormattingContext {
           current_y + offset
         };
 
-        let fragment = self.layout_block_child(
+        let fragment = child_layout_ctx.layout_block_child(
           parent,
           child,
           containing_width,
@@ -3340,18 +3346,18 @@ impl BlockFormattingContext {
               BoxType::Replaced(_) if !child.style.display.is_inline_level()
             );
 
-          let (fragment, next_y) = if treated_as_block {
-            layout_in_flow_block_child(&child, margin_ctx, *current_y, float_ctx_ref)?
-          } else {
-            let pending_margin = margin_ctx.consume_pending();
-            *current_y += pending_margin;
-            let box_y = *current_y;
-           let fragment = self.layout_block_child(
-             parent,
-             &child,
-             containing_width,
-             constraints,
-             box_y,
+           let (fragment, next_y) = if treated_as_block {
+             layout_in_flow_block_child(&child, margin_ctx, *current_y, float_ctx_ref)?
+           } else {
+             let pending_margin = margin_ctx.consume_pending();
+             *current_y += pending_margin;
+             let box_y = *current_y;
+            let fragment = child_layout_ctx.layout_block_child(
+              parent,
+              &child,
+              containing_width,
+              constraints,
+              box_y,
              nearest_positioned_cb,
              nearest_fixed_cb,
              Some(&mut *float_ctx_ref),
@@ -6034,11 +6040,16 @@ impl FormattingContext for BlockFormattingContext {
     }
 
     // When a parent layout mode (flex/grid) has already resolved a *used border-box* size for this
-    // block formatting context root, honor it during block layout even if the authored width is
-    // non-auto. Otherwise percentage widths can be applied twice (e.g. `width: 50%` resolved
-    // against the flex item's used width instead of the flex container), producing children laid
-    // out in a smaller coordinate space than the final fragment bounds.
-    if let Some(used_border_box) = constraints.used_border_box_width {
+    // block formatting context root, honor it during block layout even if the authored inline-size
+    // is non-auto. Otherwise percentage inline sizes can be applied twice (e.g. `width: 50%`
+    // resolved against the flex item's used width instead of the flex container), producing
+    // children laid out in a smaller coordinate space than the final fragment bounds.
+    let used_border_box_inline = if inline_is_horizontal {
+      constraints.used_border_box_width
+    } else {
+      constraints.used_border_box_height
+    };
+    if let Some(used_border_box) = used_border_box_inline {
       let used_content = (used_border_box - horizontal_edges).max(0.0);
       if self.flex_item_mode {
         computed_width.content_width = used_content;

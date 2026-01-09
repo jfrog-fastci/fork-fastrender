@@ -324,12 +324,12 @@ fn scaled_metrics_for_style(
 ///
 /// CSS leaves the exact thickness up to the user agent. We choose representative values to
 /// reserve space for scrollbars during layout:
-/// - `auto`: typical platform scrollbar thickness (16px)
+/// - `auto`: typical platform scrollbar thickness (15px on our Linux/Chrome fixture baseline)
 /// - `thin`: a slimmer scrollbar (8px)
 /// - `none`: no space reserved
 pub fn resolve_scrollbar_width(style: &ComputedStyle) -> f32 {
   match style.scrollbar_width {
-    ScrollbarWidth::Auto => 16.0,
+    ScrollbarWidth::Auto => 15.0,
     ScrollbarWidth::Thin => 8.0,
     ScrollbarWidth::None => 0.0,
   }
@@ -2370,7 +2370,7 @@ mod tests {
   fn resolves_scrollbar_width_keywords() {
     let mut style = ComputedStyle::default();
     style.scrollbar_width = ScrollbarWidth::Auto;
-    assert_eq!(resolve_scrollbar_width(&style), 16.0);
+    assert_eq!(resolve_scrollbar_width(&style), 15.0);
 
     style.scrollbar_width = ScrollbarWidth::Thin;
     assert_eq!(resolve_scrollbar_width(&style), 8.0);

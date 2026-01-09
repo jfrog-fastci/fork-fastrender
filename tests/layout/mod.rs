@@ -54,6 +54,7 @@ mod flex_forced_breaks;
 mod flex_positioned_relayout;
 mod flex_fragmentation_row_lines;
 mod flex_fragmentation_order_and_oof;
+mod flex_used_border_box_override;
 mod flex_wrap_alignment;
 mod flex_wrap_reverse_cross_alignment;
 mod flex_wrap_writing_mode;

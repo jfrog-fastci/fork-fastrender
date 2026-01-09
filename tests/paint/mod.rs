@@ -27,6 +27,7 @@ mod backface_culling_non_stacking_context;
 mod backface_visibility_does_not_create_stacking_context;
 mod border_image_outset_bounds;
 mod canvas_background_propagation_test;
+mod viewport_scrollbar_gutter_test;
 mod canvas_test;
 mod color_bitmap_glyph_test;
 mod color_font_cache_regression;

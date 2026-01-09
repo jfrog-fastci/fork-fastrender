@@ -32,11 +32,13 @@ use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation;
 use crate::layout::fragmentation::FragmentationOptions;
+use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
   active_stage, check_active, deadline_stack_snapshot, DeadlineGuard, DeadlineStackGuard,
   RenderDeadline, StageGuard,
 };
 use crate::style::display::FormattingContextType;
+use crate::style::types::Overflow;
 use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::BoxNode;
@@ -961,7 +963,7 @@ impl LayoutEngine {
     // fragmentainer size when pagination is enabled.
     let icb = &self.config.initial_containing_block;
     let mut fragmentainer_block_hint: Option<f32> = None;
-    let (constraint_width, constraint_height) = if let Some(options) = &self.config.fragmentation {
+    let (base_width, base_height) = if let Some(options) = &self.config.fragmentation {
       let root_style = &box_tree.root.style;
       let wm = root_style.writing_mode;
       let _dir = root_style.direction;
@@ -1004,13 +1006,117 @@ impl LayoutEngine {
     } else {
       (icb.width, icb.height)
     };
-    let constraints = LayoutConstraints::definite(constraint_width, constraint_height);
     let _fragmentainer_hint_guard =
       fragmentainer_block_hint.map(|hint| set_fragmentainer_block_size_hint(Some(hint)));
 
-    // Layout the root box
-    let root_fragment =
-      self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?;
+    // Layout the root box, applying viewport scrollbar reservation when the body overflow model
+    // indicates a scrollbar should be present.
+    //
+    // On the web platform, the viewport has a fixed size, and when content overflows it the UA may
+    // reserve space for scrollbars. This reduces the root element's containing block (e.g.
+    // `documentElement.clientWidth`) while viewport-relative units (`vw`) continue to resolve
+    // against the full viewport (`window.innerWidth`). Headless Chrome does this reservation but
+    // does not paint native scrollbars into screenshots, leaving the gutter filled with the canvas
+    // background (often the `<html>` background). Many real-world fixtures (notably nasa.gov) rely
+    // on this behavior for text wrapping and background fills.
+    let root_fragment = if self.config.fragmentation.is_some() {
+      let constraints = LayoutConstraints::definite(base_width, base_height);
+      self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?
+    } else {
+      let root_style = box_tree.root.style.as_ref();
+      let body_style = box_tree
+        .root
+        .children
+        .first()
+        .map(|child| child.style.as_ref());
+
+      // HTML overflow propagation: when the root element has `overflow: visible` but the body does
+      // not, the viewport scrolling box uses the body overflow settings.
+      let viewport_style = if matches!(root_style.overflow_x, Overflow::Visible)
+        && matches!(root_style.overflow_y, Overflow::Visible)
+      {
+        match body_style {
+          Some(body)
+            if !matches!(body.overflow_x, Overflow::Visible)
+              || !matches!(body.overflow_y, Overflow::Visible) =>
+          {
+            body
+          }
+          _ => root_style,
+        }
+      } else {
+        root_style
+      };
+
+      let overflow_x = viewport_style.overflow_x;
+      let overflow_y = viewport_style.overflow_y;
+      let scrollbar_width = resolve_scrollbar_width(viewport_style);
+      let gutter_edges = if viewport_style.scrollbar_gutter.both_edges {
+        2.0
+      } else {
+        1.0
+      };
+
+      let mut reserve_vertical = matches!(overflow_y, Overflow::Scroll)
+        || (viewport_style.scrollbar_gutter.stable
+          && matches!(overflow_y, Overflow::Auto | Overflow::Scroll));
+      let mut reserve_horizontal = matches!(overflow_x, Overflow::Scroll)
+        || (viewport_style.scrollbar_gutter.stable
+          && matches!(overflow_x, Overflow::Auto | Overflow::Scroll));
+
+      let might_need_scrollbar = matches!(overflow_x, Overflow::Auto)
+        || matches!(overflow_y, Overflow::Auto)
+        || reserve_vertical
+        || reserve_horizontal;
+
+      if scrollbar_width <= 0.0 || !might_need_scrollbar {
+        let constraints = LayoutConstraints::definite(base_width, base_height);
+        self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?
+      } else {
+        let mut fragment: Option<FragmentNode> = None;
+        // Layout can toggle scrollbars on/off due to reflow (e.g. adding a vertical scrollbar can
+        // introduce horizontal overflow and vice versa). Iterate a small number of times to reach a
+        // stable scrollbar state.
+        for _ in 0..3 {
+          let available_width = (base_width
+            - if reserve_vertical {
+              scrollbar_width * gutter_edges
+            } else {
+              0.0
+            })
+          .max(0.0);
+          let available_height = (base_height
+            - if reserve_horizontal {
+              scrollbar_width * gutter_edges
+            } else {
+              0.0
+            })
+          .max(0.0);
+
+          let constraints = LayoutConstraints::definite(available_width, available_height);
+          let next = self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?;
+          let bbox = next.bounding_box();
+
+          // Apply a small epsilon to avoid oscillating on subpixel rounding.
+          let eps = 0.5;
+          let overflows_x = bbox.min_x() < -eps || bbox.max_x() > available_width + eps;
+          let overflows_y = bbox.min_y() < -eps || bbox.max_y() > available_height + eps;
+
+          let needs_vertical = reserve_vertical || (matches!(overflow_y, Overflow::Auto) && overflows_y);
+          let needs_horizontal =
+            reserve_horizontal || (matches!(overflow_x, Overflow::Auto) && overflows_x);
+
+          fragment = Some(next);
+          if needs_vertical == reserve_vertical && needs_horizontal == reserve_horizontal {
+            break;
+          }
+          reserve_vertical = needs_vertical;
+          reserve_horizontal = needs_horizontal;
+        }
+
+        fragment.expect("root fragment should be produced")
+      }
+    };
 
     if let Some(options) = &self.config.fragmentation {
       let fragments = fragmentation::fragment_tree(&root_fragment, options)?;

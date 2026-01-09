@@ -3383,6 +3383,17 @@ impl<'a> LineBuilder<'a> {
             return Ok(());
           }
 
+          // `white-space: nowrap` / `text-wrap: nowrap` suppresses soft wraps not just within text,
+          // but also across atomic inline boundaries. If an inline box is itself non-wrapping, it
+          // must not be fragmented to fit the line width; instead, it overflows the line.
+          //
+          // This matters for patterns like `span { white-space: nowrap } span::after { ... }`,
+          // where the pseudo-element is an atomic inline (e.g. `display: inline-block`).
+          if !allows_soft_wrap(inline_box.style.as_ref()) {
+            self.place_item_with_width(InlineItem::InlineBox(inline_box), total_width);
+            return Ok(());
+          }
+
           if !self.current_line.is_empty() {
             self.finish_line()?;
           }

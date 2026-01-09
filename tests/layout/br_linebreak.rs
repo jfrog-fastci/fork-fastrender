@@ -114,3 +114,22 @@ fn br_preserves_line_height_for_empty_lines() {
     );
   }
 }
+
+#[test]
+fn nowrap_inline_box_does_not_soft_wrap_across_pseudo_element() {
+  // Regression: `white-space: nowrap` must suppress soft wraps across atomic inline boundaries,
+  // not just inside text. This catches cases where an inline box is fragmented to fit the line
+  // width even though wrapping is disabled (e.g. `span::after { display: inline-block }`).
+  let html = r#"
+    <style>
+      .live { white-space: nowrap }
+      .live::after { content: "Live"; display: inline-block }
+    </style>
+    <p style="width: 40px; font-family: 'DejaVu Sans', sans-serif; font-size: 16px; line-height: 1">
+      <span class="live">NASA+</span>
+    </p>
+  "#;
+
+  let lines = line_texts(html);
+  assert_eq!(lines, ["NASA+Live"]);
+}

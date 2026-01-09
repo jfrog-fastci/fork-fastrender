@@ -7766,7 +7766,19 @@ impl FlexFormattingContext {
           parent_scroll.y - work.origin.y,
         );
         let child_factory = factory.clone().with_viewport_scroll(child_scroll);
-        let fc = child_factory.get(work.fc_type);
+        // Flex items establish an independent formatting context. Block flex items need the
+        // flex-item block formatting context so:
+        // - auto margins resolve per flexbox rules, and
+        // - parent/child margin collapsing is prevented (flex items behave like a BFC).
+        let fc: Arc<dyn FormattingContext> = if matches!(work.fc_type, FormattingContextType::Block)
+        {
+          Arc::new(
+            BlockFormattingContext::for_flex_item_with_factory(child_factory.clone())
+              .with_parallelism(self.parallelism),
+          )
+        } else {
+          child_factory.get(work.fc_type)
+        };
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
         let basis_content_override = work.layout_child_storage.is_none()
           && matches!(

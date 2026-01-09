@@ -3,6 +3,7 @@ use std::sync::Arc;
 use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::contexts::factory::FormattingContextFactory;
+use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::float::{Clear, Float};
 use fastrender::style::types::{BorderStyle, LineHeight, Overflow, WritingMode};
@@ -879,5 +880,46 @@ fn vertical_writing_mode_uses_block_start_end_edges_for_margin_collapse() {
     inner_fragment.bounds.x(),
     expected_x,
     "expected vertical writing mode to treat right padding/margin as block-start separation for margin collapse",
+  );
+}
+
+#[test]
+fn flex_item_establishes_bfc_for_margin_collapse() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+
+  let mut inner_style = block_style_with_height(Some(10.0));
+  inner_style.margin_top = Some(Length::px(20.0));
+  let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![item],
+  );
+
+  let fragment = FlexFormattingContext::new()
+    .layout(
+      &container,
+      &LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite),
+    )
+    .expect("layout");
+
+  let item_fragment = &fragment.children[0];
+  let inner_fragment = &item_fragment.children[0];
+  assert_approx(
+    inner_fragment.bounds.y(),
+    20.0,
+    "expected flex items to establish a BFC, preventing parent/child margin collapsing",
   );
 }
