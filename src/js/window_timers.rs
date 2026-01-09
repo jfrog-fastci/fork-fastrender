@@ -157,6 +157,20 @@ fn timer_global_from_callee(
   }
 }
 
+fn timer_global_from_this(
+  scope: &Scope<'_>,
+  callee: vm_js::GcObject,
+  this: Value,
+  invalid_this_msg: &'static str,
+) -> Result<vm_js::GcObject, VmError> {
+  let global = timer_global_from_callee(scope, callee)?;
+  match this {
+    Value::Undefined | Value::Null => Ok(global),
+    Value::Object(obj) if obj == global => Ok(global),
+    _ => Err(throw_type_error(invalid_this_msg)),
+  }
+}
+
 fn clear_registry_entry(
   scope: &mut Scope<'_>,
   registry: vm_js::GcObject,
@@ -407,7 +421,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -427,7 +441,12 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
     Vec::new()
   };
 
-  let global_obj = timer_global_from_callee(scope, callee)?;
+  let global_obj = timer_global_from_this(
+    scope,
+    callee,
+    this,
+    "setTimeout called with invalid this value",
+  )?;
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -510,13 +529,18 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
   let id = normalize_timer_id(scope.heap_mut(), id_value)?;
 
-  let global_obj = timer_global_from_callee(scope, callee)?;
+  let global_obj = timer_global_from_this(
+    scope,
+    callee,
+    this,
+    "clearTimeout called with invalid this value",
+  )?;
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -537,7 +561,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -557,7 +581,12 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
     Vec::new()
   };
 
-  let global_obj = timer_global_from_callee(scope, callee)?;
+  let global_obj = timer_global_from_this(
+    scope,
+    callee,
+    this,
+    "setInterval called with invalid this value",
+  )?;
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -638,13 +667,18 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
   let id = normalize_timer_id(scope.heap_mut(), id_value)?;
 
-  let global_obj = timer_global_from_callee(scope, callee)?;
+  let global_obj = timer_global_from_this(
+    scope,
+    callee,
+    this,
+    "clearInterval called with invalid this value",
+  )?;
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -664,7 +698,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -675,7 +709,12 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
     return Err(throw_type_error(QUEUE_MICROTASK_NOT_CALLABLE_ERROR));
   }
 
-  let _global_obj = timer_global_from_callee(scope, callee)?;
+  let _global_obj = timer_global_from_this(
+    scope,
+    callee,
+    this,
+    "queueMicrotask called with invalid this value",
+  )?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
     return Err(throw_type_error(
