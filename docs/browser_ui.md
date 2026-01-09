@@ -41,6 +41,10 @@ hooks to exercise startup and UI↔worker wiring without creating a window:
 
 See [env-vars.md](env-vars.md) for details.
 
+Note: the windowed `browser` app currently starts by navigating to `about:newtab`, but `about:`
+URLs are not yet supported by the in-binary worker (`spawn_default_render_worker`), so this may show
+an error until you navigate to a `http(s)://` or `file://` URL.
+
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)

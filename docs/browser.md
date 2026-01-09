@@ -45,6 +45,10 @@ end-to-end:
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
 - **Pointer/keyboard routing**: basic input events are forwarded to the render worker.
 
+Note: the window currently starts by navigating to `about:newtab`, but `about:` URLs are not yet
+supported by the windowed UI’s current render worker, so you may see a navigation error on startup.
+Type a URL into the address bar and press Enter to navigate.
+
 **Not yet wired in the windowed UI (in progress):**
 
 - hit-testing / link clicking (`<a href=...>`)
