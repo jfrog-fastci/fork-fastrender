@@ -449,7 +449,9 @@ where
         let result = dom.mutate_dom(|dom| (dom.closest(node_id, &selectors), false));
         match result {
           Ok(found) => Ok(found.map(|id| id.index() as u32)),
-          Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
+          Err(DomException::SyntaxError { message }) => {
+            throw_dom_exception(ctx, "SyntaxError", &message)
+          }
         }
       }
     })?,
@@ -1137,6 +1139,11 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
   Element.prototype.matches = function (selectors) {
     return !!g.__fastrender_dom_matches_selector(this.__node_id, String(selectors));
+  };
+  Element.prototype.closest = function (selectors) {
+    var id = g.__fastrender_dom_closest(this.__node_id, String(selectors));
+    if (id == null) return null;
+    return g.__fastrender_wrap_node_id(id, "element");
   };
 
   Element.prototype.closest = function (selectors) {
@@ -2219,26 +2226,26 @@ const DOM_BINDINGS_SHIM: &str = r##"
               var scopes = parent.querySelectorAll(":scope");
               if (!scopes || scopes.length !== 1 || scopes[0] !== parent) return "fail: element.querySelectorAll(:scope) mismatch";
 
-              if (!a.matches("span.x")) return "fail: matches should be true";
-              if (a.matches("div")) return "fail: matches should be false";
+               if (!a.matches("span.x")) return "fail: matches should be true";
+               if (a.matches("div")) return "fail: matches should be false";
 
-              if (a.closest("span") !== a) return "fail: closest should return self";
-              if (a.closest("div") !== parent) return "fail: closest should return ancestor";
-              if (a.closest(".nope") !== null) return "fail: closest should return null";
+               var threw = false;
+               try { a.matches("["); } catch (e) { threw = String(e && e.name) === "SyntaxError"; }
+               if (!threw) return "fail: matches invalid selector should throw";
 
-              var closestThrew = false;
-              try { a.closest("["); } catch (e) { closestThrew = String(e && e.name) === "SyntaxError"; }
-              if (!closestThrew) return "fail: closest invalid selector should throw";
+               if (a.closest(".x") !== a) return "fail: closest should be inclusive";
+               if (a.closest("#p") !== parent) return "fail: closest should find ancestor";
+               if (a.closest("body") !== document.body) return "fail: closest should find body";
+               if (a.closest("section") !== null) return "fail: closest should return null";
+               threw = false;
+               try { a.closest("["); } catch (e) { threw = String(e && e.name) === "SyntaxError"; }
+               if (!threw) return "fail: closest invalid selector should throw";
 
-              var threw = false;
-              try { a.matches("["); } catch (e) { threw = String(e && e.name) === "SyntaxError"; }
-              if (!threw) return "fail: matches invalid selector should throw";
-
-              return "ok";
-            } catch (e) {
-              if (!e) return "unknown error";
-              return String(e) + "\n" + String(e.stack || "");
-            }
+               return "ok";
+             } catch (e) {
+               if (!e) return "unknown error";
+               return String(e) + "\n" + String(e.stack || "");
+             }
           })()"##,
         )
       })

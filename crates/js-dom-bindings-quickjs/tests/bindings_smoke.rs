@@ -77,10 +77,23 @@ fn element_scoped_query_selectors_do_not_include_the_scope_element() {
             const scopes = parent.querySelectorAll(":scope");
             if (scopes.length !== 1 || scopes[0] !== parent) return "bad_scope_qsa";
 
+            if (a.closest(".x") !== a) return "bad_closest_inclusive";
+            if (a.closest("#p") !== parent) return "bad_closest_ancestor";
+            if (a.closest("body") !== document.body) return "bad_closest_body";
+            if (a.closest("section") !== null) return "bad_closest_null";
+
             // Invalid selector should throw SyntaxError.
             try {
               parent.querySelectorAll("[");
               return "no_throw";
+            } catch (e) {
+              if (String(e && e.name) !== "SyntaxError") return String(e && e.name);
+            }
+
+            // Invalid selector should throw SyntaxError for closest() as well.
+            try {
+              a.closest("[");
+              return "no_throw_closest";
             } catch (e) {
               return String(e && e.name);
             }
