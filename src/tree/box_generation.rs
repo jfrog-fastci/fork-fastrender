@@ -3275,6 +3275,19 @@ fn generate_boxes_for_styled_into(
               out.push(backdrop_box);
             }
           }
+          if let Some(top_layer) = styled.styles.top_layer {
+            // Top-layer elements are modeled as stacking contexts at paint time. When the element is
+            // `display: contents` it generates no box, so its descendants would otherwise remain in
+            // the normal document stacking order and end up behind `::backdrop`. Promote the
+            // generated child boxes into the top layer so they paint above the backdrop.
+            for child in children.iter_mut() {
+              if child.style.top_layer.is_none() {
+                let mut style = child.style.as_ref().clone();
+                style.top_layer = Some(top_layer);
+                child.style = Arc::new(style);
+              }
+            }
+          }
           if let Some(parent) = stack.last_mut() {
             parent.children.extend(children);
           } else {

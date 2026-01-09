@@ -390,8 +390,8 @@ impl StackingContext {
           Ordering::Equal => {
             if a_top_layer {
               // Top layer elements render above all other stacking contexts. They are ordered
-              // by tree order, but the earliest element should be painted last (on top).
-              b.tree_order.cmp(&a.tree_order)
+              // by tree order; later elements are painted last (on top), matching normal DOM order.
+              a.tree_order.cmp(&b.tree_order)
             } else {
               a.tree_order.cmp(&b.tree_order)
             }
