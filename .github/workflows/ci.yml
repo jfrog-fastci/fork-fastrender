@@ -59,6 +59,60 @@ jobs:
         run: cargo metadata --locked --format-version 1 > /dev/null
 
   # ===========================================================================
+  # ecma-rs Sanity - Fail fast if the ecma-rs submodule is unreachable or JS integration doesn't compile
+  # ===========================================================================
+  ecma-rs-sanity:
+    name: ecma-rs sanity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global core.longpaths true
+          git submodule update --init engines/ecma-rs
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
+            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init engines/ecma-rs" >&2
+            exit 1
+          fi
+
+      - name: Compile fastrender JS integration (scoped)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/cargo_agent.sh check -p fastrender --lib
+
+  # ===========================================================================
   # Test Job - Run all tests across multiple platforms and Rust versions
   # ===========================================================================
   test:
@@ -891,13 +945,14 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [lockfile, test, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
+    needs: [lockfile, ecma-rs-sanity, test, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
     if: always()
     steps:
       - name: Check CI Status
         run: |
           if [ "${{ needs.test.result }}" != "success" ] || \
               [ "${{ needs.lockfile.result }}" != "success" ] || \
+              [ "${{ needs.ecma-rs-sanity.result }}" != "success" ] || \
               [ "${{ needs.chrome_baseline_viewport.result }}" != "success" ] || \
               [ "${{ needs.msrv.result }}" != "success" ] || \
               [ "${{ needs.msrv-cross.result }}" != "success" ] || \
