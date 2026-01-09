@@ -8144,6 +8144,58 @@ mod custom_property_global_keyword_tests {
   }
 }
 
+#[cfg(test)]
+mod system_color_resolution_tests {
+  use super::*;
+  use crate::css::parser::parse_declarations;
+
+  #[test]
+  fn system_colors_resolve_using_used_color_scheme() {
+    let parent = ComputedStyle::default();
+    let decls = parse_declarations("color: CanvasText; background-color: Canvas;");
+    assert_eq!(decls.len(), 2);
+
+    let mut light = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut light,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        false,
+      );
+    }
+
+    let mut dark = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut dark,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        true,
+      );
+    }
+
+    assert_eq!(light.background_color, Rgba::WHITE);
+    assert_eq!(light.color, Rgba::BLACK);
+
+    assert_eq!(dark.background_color, Rgba::rgb(16, 16, 16));
+    assert_eq!(dark.color, Rgba::rgb(232, 232, 232));
+
+    assert_ne!(light.background_color, dark.background_color);
+    assert_ne!(light.color, dark.color);
+  }
+}
+
 fn apply_custom_property_declaration(
   styles: &mut ComputedStyle,
   decl: &Declaration,

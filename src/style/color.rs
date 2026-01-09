@@ -756,6 +756,12 @@ pub enum Color {
   /// HSLA color
   Hsla(Hsla),
 
+  /// CSS system color keyword (CSS Color 4/5).
+  ///
+  /// Browsers typically resolve system colors from the platform/theme. FastRender is a headless
+  /// renderer, so we use a deterministic built-in palette (see [`SystemColor`]).
+  System(SystemColor),
+
   /// Interpolated color mix
   Mix {
     components: [(Box<Color>, f32); 2],
@@ -779,6 +785,92 @@ pub enum Color {
   /// Special keyword: currentColor
   /// Uses the current value of the 'color' property
   CurrentColor,
+}
+
+/// CSS system color keywords (CSS Color 4/5).
+///
+/// In browsers these map to platform-specific theme colors. FastRender renders without access to a
+/// host OS theme, so we provide a stable palette for both light and dark color schemes.
+///
+/// Palette (sRGB):
+///
+/// Light:
+/// - `Canvas` = `#ffffff`
+/// - `CanvasText` = `#000000`
+/// - `LinkText` = `#0000ee`
+/// - `VisitedText` = `#551a8b`
+/// - `ActiveText` = `#ff0000`
+/// - `ButtonFace` = `#f0f0f0`
+/// - `ButtonText` = `#000000`
+/// - `ButtonBorder` = `#767676`
+/// - `Field` = `#ffffff`
+/// - `FieldText` = `#000000`
+/// - `Highlight` = `#0078d7`
+/// - `HighlightText` = `#ffffff`
+/// - `GrayText` = `#808080`
+///
+/// Dark:
+/// - `Canvas` = `#101010`
+/// - `CanvasText` = `#e8e8e8`
+/// - `LinkText` = `#78b4ff`
+/// - `VisitedText` = `#d0a0ff`
+/// - `ActiveText` = `#ff8080`
+/// - `ButtonFace` = `#181818`
+/// - `ButtonText` = `#e8e8e8`
+/// - `ButtonBorder` = `#606060`
+/// - `Field` = `#181818`
+/// - `FieldText` = `#e8e8e8`
+/// - `Highlight` = `#264f78`
+/// - `HighlightText` = `#ffffff`
+/// - `GrayText` = `#a0a0a0`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemColor {
+  Canvas,
+  CanvasText,
+  LinkText,
+  VisitedText,
+  ActiveText,
+  ButtonFace,
+  ButtonText,
+  ButtonBorder,
+  Field,
+  FieldText,
+  Highlight,
+  HighlightText,
+  GrayText,
+}
+
+impl SystemColor {
+  pub fn to_rgba(self, is_dark: bool) -> Rgba {
+    match (self, is_dark) {
+      (SystemColor::Canvas, false) => Rgba::WHITE,
+      (SystemColor::Canvas, true) => Rgba::rgb(16, 16, 16),
+      (SystemColor::CanvasText, false) => Rgba::BLACK,
+      (SystemColor::CanvasText, true) => Rgba::rgb(232, 232, 232),
+      (SystemColor::LinkText, false) => Rgba::rgb(0, 0, 238),
+      (SystemColor::LinkText, true) => Rgba::rgb(120, 180, 255),
+      (SystemColor::VisitedText, false) => Rgba::rgb(85, 26, 139),
+      (SystemColor::VisitedText, true) => Rgba::rgb(208, 160, 255),
+      (SystemColor::ActiveText, false) => Rgba::RED,
+      (SystemColor::ActiveText, true) => Rgba::rgb(255, 128, 128),
+      (SystemColor::ButtonFace, false) => Rgba::rgb(240, 240, 240),
+      (SystemColor::ButtonFace, true) => Rgba::rgb(24, 24, 24),
+      (SystemColor::ButtonText, false) => Rgba::BLACK,
+      (SystemColor::ButtonText, true) => Rgba::rgb(232, 232, 232),
+      (SystemColor::ButtonBorder, false) => Rgba::rgb(118, 118, 118),
+      (SystemColor::ButtonBorder, true) => Rgba::rgb(96, 96, 96),
+      (SystemColor::Field, false) => Rgba::WHITE,
+      (SystemColor::Field, true) => Rgba::rgb(24, 24, 24),
+      (SystemColor::FieldText, false) => Rgba::BLACK,
+      (SystemColor::FieldText, true) => Rgba::rgb(232, 232, 232),
+      (SystemColor::Highlight, false) => Rgba::rgb(0, 120, 215),
+      (SystemColor::Highlight, true) => Rgba::rgb(38, 79, 120),
+      (SystemColor::HighlightText, false) => Rgba::WHITE,
+      (SystemColor::HighlightText, true) => Rgba::WHITE,
+      (SystemColor::GrayText, false) => Rgba::rgb(128, 128, 128),
+      (SystemColor::GrayText, true) => Rgba::rgb(160, 160, 160),
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -926,6 +1018,7 @@ impl Color {
     match self {
       Color::Rgba(rgba) => *rgba,
       Color::Hsla(hsla) => hsla.to_rgba(),
+      Color::System(system) => system.to_rgba(is_dark),
       Color::Mix { components, space } => mix_colors(
         *space,
         &components[0],
@@ -968,7 +1061,8 @@ impl Color {
     }
   }
 
-  /// Resolve `light-dark()` to a concrete color based on the used color scheme.
+  /// Resolve scheme-dependent colors (`light-dark()` and system colors) to a concrete color based on
+  /// the used color scheme.
   ///
   /// This is useful for contexts where the chosen branch needs to be stored (e.g. gradient stops)
   /// and later resolved without access to the color scheme.
@@ -977,6 +1071,7 @@ impl Color {
       Color::Rgba(rgba) => Color::Rgba(*rgba),
       Color::Hsla(hsla) => Color::Hsla(*hsla),
       Color::CurrentColor => Color::CurrentColor,
+      Color::System(system) => Color::Rgba(system.to_rgba(is_dark)),
       Color::LightDark { light, dark } => {
         if is_dark {
           dark.resolve_light_dark(is_dark)
@@ -1025,7 +1120,7 @@ impl Color {
   pub fn depends_on_current_color(&self) -> bool {
     match self {
       Color::CurrentColor => true,
-      Color::Rgba(_) | Color::Hsla(_) => false,
+      Color::Rgba(_) | Color::Hsla(_) | Color::System(_) => false,
       Color::Mix { components, .. } => components
         .iter()
         .any(|(component, _)| component.depends_on_current_color()),
@@ -1066,6 +1161,7 @@ impl Color {
   /// - HWB: hwb() with hue angle, whiteness/blackness percentages, optional slash alpha
   /// - Named colors: red, blue, etc.
   /// - Special: transparent, currentColor
+  /// - System colors (CSS Color 4/5): Canvas, CanvasText, LinkText, ...
   ///
   /// # Examples
   ///
@@ -1091,6 +1187,10 @@ impl Color {
     }
     if s.eq_ignore_ascii_case("currentcolor") {
       return Ok(Color::CurrentColor);
+    }
+
+    if let Some(system) = parse_system_color(s) {
+      return Ok(Color::System(system));
     }
 
     if starts_with_ignore_ascii_case(s, "color-mix(") {
@@ -1202,12 +1302,37 @@ impl fmt::Display for Color {
     match self {
       Color::Rgba(rgba) => write!(f, "{}", rgba),
       Color::Hsla(hsla) => write!(f, "{}", hsla),
+      Color::System(system) => write!(f, "{:?}", system),
       Color::Mix { .. } => write!(f, "color-mix(...)"),
       Color::Contrast { .. } => write!(f, "color-contrast(...)"),
       Color::Relative(_) => write!(f, "color(...)"),
       Color::LightDark { .. } => write!(f, "light-dark(...)"),
       Color::CurrentColor => write!(f, "currentColor"),
     }
+  }
+}
+
+fn parse_system_color(s: &str) -> Option<SystemColor> {
+  let lower: std::borrow::Cow<'_, str> = if s.bytes().any(|b| b.is_ascii_uppercase()) {
+    std::borrow::Cow::Owned(s.to_ascii_lowercase())
+  } else {
+    std::borrow::Cow::Borrowed(s)
+  };
+  match lower.as_ref() {
+    "canvas" => Some(SystemColor::Canvas),
+    "canvastext" => Some(SystemColor::CanvasText),
+    "linktext" => Some(SystemColor::LinkText),
+    "visitedtext" => Some(SystemColor::VisitedText),
+    "activetext" => Some(SystemColor::ActiveText),
+    "buttonface" => Some(SystemColor::ButtonFace),
+    "buttontext" => Some(SystemColor::ButtonText),
+    "buttonborder" => Some(SystemColor::ButtonBorder),
+    "field" => Some(SystemColor::Field),
+    "fieldtext" => Some(SystemColor::FieldText),
+    "highlight" => Some(SystemColor::Highlight),
+    "highlighttext" => Some(SystemColor::HighlightText),
+    "graytext" => Some(SystemColor::GrayText),
+    _ => None,
   }
 }
 
@@ -3276,6 +3401,36 @@ mod tests {
       Color::parse(&format!("color-mix(in{nbsp}srgb, red, blue)")).is_err(),
       "NBSP must not be treated as CSS whitespace in function argument tokenization"
     );
+  }
+
+  #[test]
+  fn parses_system_color_keywords() {
+    let cases: &[(&str, SystemColor)] = &[
+      ("Canvas", SystemColor::Canvas),
+      ("CanvasText", SystemColor::CanvasText),
+      ("LinkText", SystemColor::LinkText),
+      ("VisitedText", SystemColor::VisitedText),
+      ("ActiveText", SystemColor::ActiveText),
+      ("ButtonFace", SystemColor::ButtonFace),
+      ("ButtonText", SystemColor::ButtonText),
+      ("ButtonBorder", SystemColor::ButtonBorder),
+      ("Field", SystemColor::Field),
+      ("FieldText", SystemColor::FieldText),
+      ("Highlight", SystemColor::Highlight),
+      ("HighlightText", SystemColor::HighlightText),
+      ("GrayText", SystemColor::GrayText),
+    ];
+
+    for (raw, expected) in cases {
+      let parsed = Color::parse(raw).unwrap_or_else(|e| panic!("{raw} should parse: {e}"));
+      assert_eq!(parsed, Color::System(*expected));
+
+      // Case-insensitive.
+      let lower = raw.to_ascii_lowercase();
+      let parsed_lower =
+        Color::parse(&lower).unwrap_or_else(|e| panic!("{lower} should parse: {e}"));
+      assert_eq!(parsed_lower, Color::System(*expected));
+    }
   }
 
   // Rgba tests

@@ -714,9 +714,9 @@ mod tests {
       heap_b: vm_js::Heap::new(limits),
     };
 
-    // `VmJsJobContext::add_root` / `remove_root` should route through `VmJsEngineHost::vm_js_heap_mut`
-    // so hosts can override which heap stores persistent roots without forcing a
-    // `vm_js_vm_and_heap_mut` borrow.
+    // `VmJsJobContext::add_root` / `remove_root` should route through
+    // `VmJsEngineHost::vm_js_heap_mut` so hosts can override which heap stores persistent roots
+    // without forcing a `vm_js_vm_and_heap_mut` borrow.
     let root_id = {
       let mut ctx = VmJsJobContext {
         host: &mut host,
