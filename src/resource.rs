@@ -698,6 +698,85 @@ fn http_normalize_referrer_url_tolerant(url: &str) -> String {
   out
 }
 
+fn normalize_http_url_for_fetch(raw: &str) -> Option<String> {
+  let scheme_len = if raw
+    .get(.."http://".len())
+    .map(|prefix| prefix.eq_ignore_ascii_case("http://"))
+    .unwrap_or(false)
+  {
+    "http://".len()
+  } else if raw
+    .get(.."https://".len())
+    .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    .unwrap_or(false)
+  {
+    "https://".len()
+  } else {
+    return None;
+  };
+
+  let after_scheme = &raw[scheme_len..];
+  let authority_end = after_scheme
+    .find(|c| matches!(c, '/' | '?' | '#'))
+    .unwrap_or(after_scheme.len());
+  let split_at = scheme_len + authority_end;
+  let (prefix, rest) = raw.split_at(split_at);
+
+  let mut out = String::with_capacity(raw.len());
+  out.push_str(prefix);
+
+  let mut changed = false;
+  let bytes = rest.as_bytes();
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let b = bytes[i];
+    if b == b'%'
+      && i + 2 < bytes.len()
+      && bytes[i + 1].is_ascii_hexdigit()
+      && bytes[i + 2].is_ascii_hexdigit()
+    {
+      out.push('%');
+      out.push(bytes[i + 1] as char);
+      out.push(bytes[i + 2] as char);
+      i += 3;
+      continue;
+    }
+
+    match b {
+      b' ' => {
+        out.push_str("%20");
+        changed = true;
+        i += 1;
+      }
+      b'|' => {
+        out.push_str("%7C");
+        changed = true;
+        i += 1;
+      }
+      b'%' => {
+        out.push_str("%25");
+        changed = true;
+        i += 1;
+      }
+      _ if b.is_ascii() => {
+        out.push(b as char);
+        i += 1;
+      }
+      _ => {
+        let ch = rest[i..].chars().next().expect("valid UTF-8");
+        out.push(ch);
+        i += ch.len_utf8();
+      }
+    }
+  }
+
+  if !changed {
+    return None;
+  }
+
+  Url::parse(&out).ok().map(|_| out)
+}
+
 fn http_browser_origin_and_referer_for_origin(origin: &DocumentOrigin) -> Option<(String, String)> {
   if !matches!(origin.scheme.as_str(), "http" | "https") {
     return None;
@@ -2083,7 +2162,15 @@ impl ResourcePolicy {
     }
 
     if matches!(scheme, ResourceScheme::Http | ResourceScheme::Https) {
-      let parsed = Url::parse(url).map_err(|e| policy_error(format!("invalid URL: {e}")))?;
+      let parsed = match Url::parse(url) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+          let Some(normalized) = normalize_http_url_for_fetch(url) else {
+            return Err(policy_error(format!("invalid URL: {err}")));
+          };
+          Url::parse(&normalized).map_err(|e| policy_error(format!("invalid URL: {e}")))?
+        }
+      };
       let host = parsed.host_str();
       self.check_host_lists(host)?;
     }
@@ -4602,7 +4689,11 @@ impl HttpFetcher {
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
-    let mut current = url.to_string();
+    let requested_url = url.to_string();
+    let mut current = requested_url.clone();
+    if let Some(normalized) = normalize_http_url_for_fetch(url) {
+      current = normalized;
+    }
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
     let mut effective_referrer_policy = referrer_policy;
@@ -4621,7 +4712,7 @@ impl HttpFetcher {
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
-          current_url.to_string(),
+          requested_url.clone(),
           format!(
             "overall HTTP timeout budget exceeded (budget={budget:?}, elapsed={elapsed:?}){}",
             format_attempt_suffix(attempt, max_attempts)
@@ -4751,7 +4842,7 @@ impl HttpFetcher {
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
             }
 
-            let err = ResourceError::new(current.clone(), message)
+            let err = ResourceError::new(requested_url.clone(), message)
               .with_final_url(current.clone())
               .with_source(err);
             return Err(Error::Resource(err));
@@ -4776,11 +4867,14 @@ impl HttpFetcher {
               effective_referrer_policy = policy;
               redirect_referrer_policy = Some(policy);
             }
-            let next = Url::parse(&current)
+            let mut next = Url::parse(&current)
               .ok()
               .and_then(|base| base.join(loc).ok())
               .map(|u| u.to_string())
               .unwrap_or_else(|| loc.to_string());
+            if let Some(normalized) = normalize_http_url_for_fetch(&next) {
+              next = normalized;
+            }
             finish_network_fetch_diagnostics(network_timer.take());
             render_control::check_active(render_stage_hint_for_context(kind, &next))
               .map_err(Error::Render)?;
@@ -4803,7 +4897,7 @@ impl HttpFetcher {
           finish_network_fetch_diagnostics(network_timer.take());
           let final_url = response.get_uri().to_string();
           let err = ResourceError::new(
-            current.clone(),
+            requested_url.clone(),
             format!(
               "received content-encoding {:?} for partial fetch (expected identity)",
               encodings
@@ -4940,7 +5034,7 @@ impl HttpFetcher {
                 message.push_str(" (retry aborted: render deadline exceeded)");
               }
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
-              let err = ResourceError::new(current.clone(), message)
+              let err = ResourceError::new(requested_url.clone(), message)
                 .with_status(status_code)
                 .with_final_url(final_url.clone());
               return Err(Error::Resource(err));
@@ -5003,7 +5097,7 @@ impl HttpFetcher {
                 let mut message =
                   "retryable HTTP status (retry aborted: render deadline exceeded)".to_string();
                 message.push_str(&format_attempt_suffix(attempt, max_attempts));
-                let err = ResourceError::new(current.clone(), message)
+                let err = ResourceError::new(requested_url.clone(), message)
                   .with_status(status_code)
                   .with_final_url(final_url.clone());
                 return Err(Error::Resource(err));
@@ -5091,7 +5185,7 @@ impl HttpFetcher {
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
             }
 
-            let err = ResourceError::new(current.clone(), message)
+            let err = ResourceError::new(requested_url.clone(), message)
               .with_status(status_code)
               .with_final_url(final_url)
               .with_source(err);
@@ -5123,7 +5217,11 @@ impl HttpFetcher {
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
-    let mut current = url.to_string();
+    let requested_url = url.to_string();
+    let mut current = requested_url.clone();
+    if let Some(normalized) = normalize_http_url_for_fetch(url) {
+      current = normalized;
+    }
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
     let mut effective_referrer_policy = referrer_policy;
@@ -5142,7 +5240,7 @@ impl HttpFetcher {
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
-          current_url.to_string(),
+          requested_url.clone(),
           format!(
             "overall HTTP timeout budget exceeded (budget={budget:?}, elapsed={elapsed:?}){}",
             format_attempt_suffix(attempt, max_attempts)
@@ -5265,7 +5363,7 @@ impl HttpFetcher {
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
             }
 
-            let err = ResourceError::new(current.clone(), message)
+            let err = ResourceError::new(requested_url.clone(), message)
               .with_final_url(current.clone())
               .with_source(err);
             return Err(Error::Resource(err));
@@ -5290,11 +5388,14 @@ impl HttpFetcher {
               effective_referrer_policy = policy;
               redirect_referrer_policy = Some(policy);
             }
-            let next = Url::parse(&current)
+            let mut next = Url::parse(&current)
               .ok()
               .and_then(|base| base.join(loc).ok())
               .map(|u| u.to_string())
               .unwrap_or_else(|| loc.to_string());
+            if let Some(normalized) = normalize_http_url_for_fetch(&next) {
+              next = normalized;
+            }
             finish_network_fetch_diagnostics(network_timer.take());
             render_control::check_active(render_stage_hint_for_context(kind, &next))
               .map_err(Error::Render)?;
@@ -5317,7 +5418,7 @@ impl HttpFetcher {
           finish_network_fetch_diagnostics(network_timer.take());
           let final_url = response.url().to_string();
           let err = ResourceError::new(
-            current.clone(),
+            requested_url.clone(),
             format!(
               "received content-encoding {:?} for partial fetch (expected identity)",
               encodings
@@ -5453,7 +5554,7 @@ impl HttpFetcher {
                 message.push_str(" (retry aborted: render deadline exceeded)");
               }
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
-              let err = ResourceError::new(current.clone(), message)
+              let err = ResourceError::new(requested_url.clone(), message)
                 .with_status(status_code)
                 .with_final_url(final_url.clone());
               return Err(Error::Resource(err));
@@ -5516,7 +5617,7 @@ impl HttpFetcher {
                 let mut message =
                   "retryable HTTP status (retry aborted: render deadline exceeded)".to_string();
                 message.push_str(&format_attempt_suffix(attempt, max_attempts));
-                let err = ResourceError::new(current.clone(), message)
+                let err = ResourceError::new(requested_url.clone(), message)
                   .with_status(status_code)
                   .with_final_url(final_url.clone());
                 return Err(Error::Resource(err));
@@ -5604,7 +5705,7 @@ impl HttpFetcher {
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
             }
 
-            let err = ResourceError::new(current.clone(), message)
+            let err = ResourceError::new(requested_url.clone(), message)
               .with_status(status_code)
               .with_final_url(final_url)
               .with_source(err);
@@ -5642,7 +5743,11 @@ impl HttpFetcher {
     started: Instant,
     auto_fallback: bool,
   ) -> Result<FetchedResource> {
-    let mut current = url.to_string();
+    let requested_url = url.to_string();
+    let mut current = requested_url.clone();
+    if let Some(normalized) = normalize_http_url_for_fetch(url) {
+      current = normalized;
+    }
     let original_method = method;
     let original_body = body;
     let mut current_method = method;
@@ -5671,7 +5776,7 @@ impl HttpFetcher {
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
-          current_url.to_string(),
+          requested_url.clone(),
           format!(
             "overall HTTP timeout budget exceeded (budget={budget:?}, elapsed={elapsed:?}){}",
             format_attempt_suffix(attempt, max_attempts)
@@ -5845,7 +5950,7 @@ impl HttpFetcher {
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
             }
 
-            let err = ResourceError::new(current.clone(), message)
+            let err = ResourceError::new(requested_url.clone(), message)
               .with_final_url(current.clone())
               .with_source(err);
             return Err(Error::Resource(err));
@@ -5873,11 +5978,14 @@ impl HttpFetcher {
                   effective_referrer_policy = policy;
                   redirect_referrer_policy = Some(policy);
                 }
-                let next = Url::parse(&current)
+                let mut next = Url::parse(&current)
                   .ok()
                   .and_then(|base| base.join(loc).ok())
                   .map(|u| u.to_string())
                   .unwrap_or_else(|| loc.to_string());
+                if let Some(normalized) = normalize_http_url_for_fetch(&next) {
+                  next = normalized;
+                }
 
                 // Match common web redirect behavior:
                 // - 303: switch to GET for non-GET/HEAD requests
@@ -6058,8 +6166,11 @@ impl HttpFetcher {
                 }
                 Err(err) => {
                   finish_network_fetch_diagnostics(network_timer.take());
-                  let err =
-                    err.into_resource_error(current.clone(), status.as_u16(), final_url.clone());
+                  let err = err.into_resource_error(
+                    requested_url.clone(),
+                    status.as_u16(),
+                    final_url.clone(),
+                  );
                   return Err(Error::Resource(err));
                 }
               };
@@ -6151,7 +6262,7 @@ impl HttpFetcher {
                 message.push_str(" (retry aborted: render deadline exceeded)");
               }
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
-              let err = ResourceError::new(current.clone(), message)
+              let err = ResourceError::new(requested_url.clone(), message)
                 .with_status(status_code)
                 .with_final_url(final_url.clone());
               return Err(Error::Resource(err));
@@ -6218,7 +6329,7 @@ impl HttpFetcher {
                 let mut message =
                   "retryable HTTP status (retry aborted: render deadline exceeded)".to_string();
                 message.push_str(&format_attempt_suffix(attempt, max_attempts));
-                let err = ResourceError::new(current.clone(), message)
+                let err = ResourceError::new(requested_url.clone(), message)
                   .with_status(status_code)
                   .with_final_url(final_url.clone());
                 return Err(Error::Resource(err));
@@ -6230,7 +6341,7 @@ impl HttpFetcher {
               if let Some(remaining) = self.policy.remaining_budget() {
                 if bytes.len() > remaining {
                   let err = ResourceError::new(
-                    current.clone(),
+                    requested_url.clone(),
                     format!(
                       "total bytes budget exceeded ({} > {} bytes remaining)",
                       bytes.len(),
@@ -6244,7 +6355,7 @@ impl HttpFetcher {
               }
 
               let err = ResourceError::new(
-                current.clone(),
+                requested_url.clone(),
                 format!(
                   "response too large ({} > {} bytes)",
                   bytes.len(),
@@ -6337,7 +6448,7 @@ impl HttpFetcher {
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
             }
 
-            let err = ResourceError::new(current.clone(), message)
+            let err = ResourceError::new(requested_url.clone(), message)
               .with_status(status.as_u16())
               .with_final_url(final_url)
               .with_source(err);
@@ -6375,7 +6486,11 @@ impl HttpFetcher {
     started: Instant,
     auto_fallback: bool,
   ) -> Result<FetchedResource> {
-    let mut current = url.to_string();
+    let requested_url = url.to_string();
+    let mut current = requested_url.clone();
+    if let Some(normalized) = normalize_http_url_for_fetch(url) {
+      current = normalized;
+    }
     let original_method = method;
     let original_body = body;
     let mut current_method = method;
@@ -6406,7 +6521,7 @@ impl HttpFetcher {
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
-          current_url.to_string(),
+          requested_url.clone(),
           format!(
             "overall HTTP timeout budget exceeded (budget={budget:?}, elapsed={elapsed:?}){}",
             format_attempt_suffix(attempt, max_attempts)
@@ -6541,7 +6656,7 @@ impl HttpFetcher {
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
             }
 
-            let err = ResourceError::new(current.clone(), message)
+            let err = ResourceError::new(requested_url.clone(), message)
               .with_final_url(current.clone())
               .with_source(err);
             return Err(Error::Resource(err));
@@ -6569,11 +6684,14 @@ impl HttpFetcher {
                   effective_referrer_policy = policy;
                   redirect_referrer_policy = Some(policy);
                 }
-                let next = Url::parse(&current)
+                let mut next = Url::parse(&current)
                   .ok()
                   .and_then(|base| base.join(loc).ok())
                   .map(|u| u.to_string())
                   .unwrap_or_else(|| loc.to_string());
+                if let Some(normalized) = normalize_http_url_for_fetch(&next) {
+                  next = normalized;
+                }
 
                 if status_code == 303
                   && !current_method.eq_ignore_ascii_case("GET")
@@ -6725,7 +6843,7 @@ impl HttpFetcher {
               if let Some(remaining) = self.policy.remaining_budget() {
                 if body.len() > remaining {
                   let err = ResourceError::new(
-                    current.clone(),
+                    requested_url.clone(),
                     format!(
                       "total bytes budget exceeded ({} > {} bytes remaining)",
                       body.len(),
@@ -6738,7 +6856,7 @@ impl HttpFetcher {
                 }
               }
               let err = ResourceError::new(
-                current.clone(),
+                requested_url.clone(),
                 format!(
                   "response too large ({} > {} bytes)",
                   body.len(),
@@ -6786,8 +6904,11 @@ impl HttpFetcher {
                 }
                 Err(err) => {
                   finish_network_fetch_diagnostics(network_timer.take());
-                  let err =
-                    err.into_resource_error(current.clone(), status.as_u16(), final_url.clone());
+                  let err = err.into_resource_error(
+                    requested_url.clone(),
+                    status.as_u16(),
+                    final_url.clone(),
+                  );
                   return Err(Error::Resource(err));
                 }
               };
@@ -6871,7 +6992,7 @@ impl HttpFetcher {
                 message.push_str(" (retry aborted: render deadline exceeded)");
               }
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
-              let err = ResourceError::new(current.clone(), message)
+              let err = ResourceError::new(requested_url.clone(), message)
                 .with_status(status_code)
                 .with_final_url(final_url.clone());
               return Err(Error::Resource(err));
@@ -6934,7 +7055,7 @@ impl HttpFetcher {
                 let mut message =
                   "retryable HTTP status (retry aborted: render deadline exceeded)".to_string();
                 message.push_str(&format_attempt_suffix(attempt, max_attempts));
-                let err = ResourceError::new(current.clone(), message)
+                let err = ResourceError::new(requested_url.clone(), message)
                   .with_status(status_code)
                   .with_final_url(final_url.clone());
                 return Err(Error::Resource(err));
@@ -6946,7 +7067,7 @@ impl HttpFetcher {
               if let Some(remaining) = self.policy.remaining_budget() {
                 if bytes.len() > remaining {
                   let err = ResourceError::new(
-                    current.clone(),
+                    requested_url.clone(),
                     format!(
                       "total bytes budget exceeded ({} > {} bytes remaining)",
                       bytes.len(),
@@ -6960,7 +7081,7 @@ impl HttpFetcher {
               }
 
               let err = ResourceError::new(
-                current.clone(),
+                requested_url.clone(),
                 format!(
                   "response too large ({} > {} bytes)",
                   bytes.len(),
@@ -7053,7 +7174,7 @@ impl HttpFetcher {
               message.push_str(&format_attempt_suffix(attempt, max_attempts));
             }
 
-            let err = ResourceError::new(current.clone(), message)
+            let err = ResourceError::new(requested_url.clone(), message)
               .with_status(status.as_u16())
               .with_final_url(final_url)
               .with_source(err);
@@ -10828,6 +10949,43 @@ mod tests {
       FetchRequest::new(url, FetchDestination::Document).credentials_mode,
       FetchCredentialsMode::Include,
       "Document navigations remain credentialed by default"
+    );
+  }
+
+  #[test]
+  fn normalize_http_url_for_fetch_encodes_pipe_in_query() {
+    let raw = "https://example.com/?a=1|2";
+    assert_eq!(
+      normalize_http_url_for_fetch(raw).as_deref(),
+      Some("https://example.com/?a=1%7C2")
+    );
+  }
+
+  #[test]
+  fn normalize_http_url_for_fetch_encodes_space_in_path() {
+    let raw = "https://example.com/a b";
+    assert_eq!(
+      normalize_http_url_for_fetch(raw).as_deref(),
+      Some("https://example.com/a%20b")
+    );
+  }
+
+  #[test]
+  fn normalize_http_url_for_fetch_does_not_double_encode_percent_sequences() {
+    let raw = "https://example.com/?a=%7C|%20b";
+    assert_eq!(
+      normalize_http_url_for_fetch(raw).as_deref(),
+      Some("https://example.com/?a=%7C%7C%20b")
+    );
+  }
+
+  #[test]
+  fn resource_policy_ensure_url_allowed_accepts_normalized_http_urls() {
+    let policy = ResourcePolicy::new();
+    let url = "https://example.com/?a=%ZZ|2";
+    assert!(
+      policy.ensure_url_allowed(url).is_ok(),
+      "policy should accept HTTP(S) URLs that become valid after normalization"
     );
   }
 

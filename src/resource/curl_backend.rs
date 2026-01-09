@@ -412,7 +412,9 @@ fn run_curl(
     let stderr = stderr_handle.join().unwrap_or_default();
     return Err(CurlError::Failure(CurlFailure {
       exit_status,
-      stderr: format!("{stderr}\ncurl stdout pipe unavailable").trim().to_string(),
+      stderr: format!("{stderr}\ncurl stdout pipe unavailable")
+        .trim()
+        .to_string(),
       spawn_error: None,
     }));
   };
@@ -510,7 +512,11 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   deadline: &Option<render_control::RenderDeadline>,
   started: Instant,
 ) -> Result<super::FetchedResource> {
-  let mut current = url.to_string();
+  let requested_url = url.to_string();
+  let mut current = requested_url.clone();
+  if let Some(normalized) = super::normalize_http_url_for_fetch(url) {
+    current = normalized;
+  }
   let original_method = method;
   let original_body = body;
   let mut current_method = method;
@@ -541,7 +547,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
     let elapsed = started.elapsed();
     Error::Resource(
       ResourceError::new(
-        current_url.to_string(),
+        requested_url.clone(),
         format!(
           "overall HTTP timeout budget exceeded (budget={budget:?}, elapsed={elapsed:?}){}",
           super::format_attempt_suffix(attempt, max_attempts)
@@ -622,7 +628,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           if let Some(remaining) = fetcher.policy.remaining_budget() {
             if observed > remaining {
               let err = ResourceError::new(
-                current.clone(),
+                requested_url.clone(),
                 format!(
                   "total bytes budget exceeded ({} > {} bytes remaining)",
                   observed, remaining
@@ -635,7 +641,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           }
 
           let err = ResourceError::new(
-            current.clone(),
+            requested_url.clone(),
             format!("response too large ({} > {} bytes)", observed, limit),
           )
           .with_status(status)
@@ -712,7 +718,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           }
 
           let mut err =
-            ResourceError::new(current.clone(), message).with_final_url(current.clone());
+            ResourceError::new(requested_url.clone(), message).with_final_url(current.clone());
           if let Some(source) = failure.spawn_error {
             err = err.with_source(source);
           }
@@ -740,11 +746,14 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
                 effective_referrer_policy = policy;
                 redirect_referrer_policy = Some(policy);
               }
-              let next = Url::parse(&current)
+              let mut next = Url::parse(&current)
                 .ok()
                 .and_then(|base| base.join(loc).ok())
                 .map(|u| u.to_string())
                 .unwrap_or_else(|| loc.to_string());
+              if let Some(normalized) = super::normalize_http_url_for_fetch(&next) {
+                next = normalized;
+              }
 
               if status_code == 303
                 && !current_method.eq_ignore_ascii_case("GET")
@@ -856,10 +865,11 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         super::parse_cors_response_headers(&response.headers);
       let timing_allow_origin =
         super::header_values_joined(&response.headers, "timing-allow-origin");
-      let response_referrer_policy = super::header_values_joined(&response.headers, "referrer-policy")
-        .as_deref()
-        .and_then(super::ReferrerPolicy::parse_value_list)
-        .or(redirect_referrer_policy);
+      let response_referrer_policy =
+        super::header_values_joined(&response.headers, "referrer-policy")
+          .as_deref()
+          .and_then(super::ReferrerPolicy::parse_value_list)
+          .or(redirect_referrer_policy);
       let cache_policy = super::parse_http_cache_policy(&response.headers);
       let vary = super::parse_vary_headers(&response.headers);
       let response_headers = super::collect_response_headers(&response.headers);
@@ -992,7 +1002,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           message.push_str(" (retry aborted: render deadline exceeded)");
         }
         message.push_str(&super::format_attempt_suffix(attempt, max_attempts));
-        let err = ResourceError::new(current.clone(), message)
+        let err = ResourceError::new(requested_url.clone(), message)
           .with_status(status_code)
           .with_final_url(current.clone());
         return Err(Error::Resource(err));
@@ -1051,7 +1061,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
             "retryable HTTP status (retries exhausted)".to_string()
           };
           message.push_str(&super::format_attempt_suffix(attempt, max_attempts));
-          let err = ResourceError::new(current.clone(), message)
+          let err = ResourceError::new(requested_url.clone(), message)
             .with_status(status_code)
             .with_final_url(current.clone());
           return Err(Error::Resource(err));
@@ -1062,7 +1072,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         if let Some(remaining) = fetcher.policy.remaining_budget() {
           if bytes.len() > remaining {
             let err = ResourceError::new(
-              current.clone(),
+              requested_url.clone(),
               format!(
                 "total bytes budget exceeded ({} > {} bytes remaining)",
                 bytes.len(),
@@ -1075,7 +1085,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           }
         }
         let err = ResourceError::new(
-          current.clone(),
+          requested_url.clone(),
           format!(
             "response too large ({} > {} bytes)",
             bytes.len(),
@@ -1247,10 +1257,7 @@ mod tests {
   #[test]
   fn status_line_does_not_trim_non_ascii_whitespace() {
     let nbsp = "\u{00A0}";
-    assert_eq!(
-      parse_status_line(&format!("{nbsp}HTTP/2 204\r\n")),
-      None
-    );
+    assert_eq!(parse_status_line(&format!("{nbsp}HTTP/2 204\r\n")), None);
   }
 
   #[test]
