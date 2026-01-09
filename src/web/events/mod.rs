@@ -60,6 +60,18 @@ pub enum EventTargetId {
   Node(dom2::NodeId),
 }
 
+impl EventTargetId {
+  /// Per spec, the document node is an [`EventTargetId::Document`] (not a `Node`).
+  ///
+  /// `dom2::NodeId` is an opaque index, but the document node is always index 0.
+  pub fn normalize(self) -> Self {
+    match self {
+      EventTargetId::Node(node_id) if node_id.index() == 0 => EventTargetId::Document,
+      other => other,
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventListenerOptions {
   pub capture: bool,
@@ -235,6 +247,7 @@ impl EventListenerRegistry {
     listener_id: ListenerId,
     options: AddEventListenerOptions,
   ) -> bool {
+    let target = target.normalize();
     let mut listeners = self.listeners.borrow_mut();
     let by_type = listeners.entry(target).or_default();
     let list = by_type.entry(type_.to_string()).or_default();
@@ -261,6 +274,7 @@ impl EventListenerRegistry {
     listener_id: ListenerId,
     capture: bool,
   ) -> bool {
+    let target = target.normalize();
     let mut listeners = self.listeners.borrow_mut();
     let Some(by_type) = listeners.get_mut(&target) else {
       return false;
@@ -304,6 +318,7 @@ impl Clone for EventListenerRegistry {
 }
 
 fn build_event_path(target: EventTargetId, dom: &dom2::Document) -> Vec<EventPathEntry> {
+  let target = target.normalize();
   let mut path: Vec<EventTargetId> = Vec::new();
   match target {
     EventTargetId::Window => {
@@ -314,32 +329,26 @@ fn build_event_path(target: EventTargetId, dom: &dom2::Document) -> Vec<EventPat
       path.push(EventTargetId::Document);
     }
     EventTargetId::Node(node_id) => {
-      // If the caller passes the document node itself, treat it as `Document`.
-      if matches!(dom.node(node_id).kind, dom2::NodeKind::Document { .. }) {
-        path.push(EventTargetId::Window);
-        path.push(EventTargetId::Document);
-      } else {
-        let mut rev: Vec<EventTargetId> = vec![EventTargetId::Node(node_id)];
-        let mut current = node_id;
-        let mut reached_document = false;
-        loop {
-          let Some(parent) = dom.node(current).parent else {
-            break;
-          };
-          if matches!(dom.node(parent).kind, dom2::NodeKind::Document { .. }) {
-            rev.push(EventTargetId::Document);
-            reached_document = true;
-            break;
-          }
-          rev.push(EventTargetId::Node(parent));
-          current = parent;
+      let mut rev: Vec<EventTargetId> = vec![EventTargetId::Node(node_id)];
+      let mut current = node_id;
+      let mut reached_document = false;
+      loop {
+        let Some(parent) = dom.node(current).parent else {
+          break;
+        };
+        if parent.index() == 0 {
+          rev.push(EventTargetId::Document);
+          reached_document = true;
+          break;
         }
-        if reached_document {
-          rev.push(EventTargetId::Window);
-        }
-        rev.reverse();
-        path.extend(rev);
+        rev.push(EventTargetId::Node(parent));
+        current = parent;
       }
+      if reached_document {
+        rev.push(EventTargetId::Window);
+      }
+      rev.reverse();
+      path.extend(rev);
     }
   }
 
@@ -397,6 +406,7 @@ pub fn dispatch_event(
   registry: &EventListenerRegistry,
   invoker: &mut dyn EventListenerInvoker,
 ) -> std::result::Result<bool, DomError> {
+  let target = target.normalize();
   // Reset per-dispatch state. DOM permits re-dispatching the same Event instance; state from prior
   // dispatches must not leak.
   event.target = Some(target);
@@ -463,6 +473,7 @@ impl EventListenerRegistry {
     type_: &str,
     record_id: u64,
   ) -> bool {
+    let target = target.normalize();
     self
       .listeners
       .borrow()
@@ -472,6 +483,7 @@ impl EventListenerRegistry {
   }
 
   fn listeners_snapshot(&self, target: EventTargetId, type_: &str) -> Vec<RegisteredListener> {
+    let target = target.normalize();
     self
       .listeners
       .borrow()

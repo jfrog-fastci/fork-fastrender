@@ -38,6 +38,7 @@ enum Action {
   None,
   StopPropagation,
   StopImmediatePropagation,
+  PreventDefault,
   RemoveListener {
     target: EventTargetId,
     type_: &'static str,
@@ -102,6 +103,7 @@ impl EventListenerInvoker for RecordingInvoker<'_> {
       Action::None => {}
       Action::StopPropagation => event.stop_propagation(),
       Action::StopImmediatePropagation => event.stop_immediate_propagation(),
+      Action::PreventDefault => event.prevent_default(),
       Action::RemoveListener {
         target,
         type_,
@@ -381,14 +383,21 @@ fn stop_propagation_prevents_subsequent_targets() {
   let type_ = "x";
 
   let id_stop = ListenerId::new(1);
-  let id_a = ListenerId::new(2);
-  let id_document = ListenerId::new(3);
-  let id_window = ListenerId::new(4);
+  let id_b2 = ListenerId::new(2);
+  let id_a = ListenerId::new(3);
+  let id_document = ListenerId::new(4);
+  let id_window = ListenerId::new(5);
 
   assert!(registry.add_event_listener(
     EventTargetId::Node(b),
     type_,
     id_stop,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(b),
+    type_,
+    id_b2,
     AddEventListenerOptions::default()
   ));
   assert!(registry.add_event_listener(
@@ -421,6 +430,15 @@ fn stop_propagation_prevents_subsequent_targets() {
           expected_phase: EventPhase::Bubbling,
           expected_current_target: EventTargetId::Node(b),
           action: Action::StopPropagation,
+        },
+      ),
+      (
+        id_b2,
+        Behavior {
+          label: "b_bubble_2",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Node(b),
+          action: Action::None,
         },
       ),
       (
@@ -469,7 +487,7 @@ fn stop_propagation_prevents_subsequent_targets() {
   )
   .unwrap();
 
-  assert_eq!(invoker.calls.as_slice(), &["b_bubble_stop"]);
+  assert_eq!(invoker.calls.as_slice(), &["b_bubble_stop", "b_bubble_2"]);
 }
 
 #[test]
@@ -930,4 +948,155 @@ fn debug_does_not_borrow_listener_map() {
   // panic (Debug must not borrow the RefCell).
   let _guard = registry.listeners.borrow_mut();
   let _formatted = format!("{registry:?}");
+}
+
+#[test]
+fn passive_listeners_cannot_set_default_prevented() {
+  let (doc, _a, _b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id_passive = ListenerId::new(1);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(c),
+    type_,
+    id_passive,
+    AddEventListenerOptions {
+      passive: true,
+      ..Default::default()
+    }
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [(
+      id_passive,
+      Behavior {
+        label: "passive",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(c),
+        action: Action::PreventDefault,
+      },
+    )],
+  );
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      cancelable: true,
+      ..Default::default()
+    },
+  );
+  let res = dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert!(res, "dispatchEvent should return true if not canceled");
+  assert!(
+    !event.default_prevented,
+    "passive listeners must not set defaultPrevented"
+  );
+}
+
+#[test]
+fn duplicate_add_event_listener_is_noop() {
+  let (doc, _a, _b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id = ListenerId::new(1);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(c),
+    type_,
+    id,
+    AddEventListenerOptions::default()
+  ));
+  assert!(
+    !registry.add_event_listener(
+      EventTargetId::Node(c),
+      type_,
+      id,
+      AddEventListenerOptions::default()
+    ),
+    "duplicate addEventListener should be ignored"
+  );
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [(
+      id,
+      Behavior {
+        label: "listener",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(c),
+        action: Action::None,
+      },
+    )],
+  );
+
+  let mut event = Event::new(type_, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["listener"]);
+}
+
+#[test]
+fn document_node_id_normalizes_to_document() {
+  let (doc, _a, _b, _c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id = ListenerId::new(1);
+  let doc_node_id = doc.root();
+
+  // Registering on the document node itself must behave like registering on `Document`.
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(doc_node_id),
+    type_,
+    id,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Document,
+    [(
+      id,
+      Behavior {
+        label: "document_listener",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Document,
+        action: Action::None,
+      },
+    )],
+  );
+
+  let mut event = Event::new(type_, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(doc_node_id),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["document_listener"]);
 }
