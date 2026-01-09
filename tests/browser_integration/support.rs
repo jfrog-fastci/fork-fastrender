@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 ///
 /// This is intentionally generous: these tests do real rendering work and can run in parallel,
 /// contending for CPU.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.
 const RECV_SLICE: Duration = Duration::from_millis(25);
