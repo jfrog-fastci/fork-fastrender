@@ -911,6 +911,85 @@ fn apply_filters(
   Ok(())
 }
 
+#[inline]
+fn transform_vector_by_skia(transform: Transform, x: f32, y: f32) -> (f32, f32) {
+  (
+    x * transform.sx + y * transform.kx,
+    x * transform.ky + y * transform.sy,
+  )
+}
+
+#[inline]
+fn transform_max_axis_scale(transform: Transform) -> f32 {
+  // Compute the magnitudes of the transformed basis vectors. This is used to scale isotropic
+  // filter lengths (blur radius, shadow spread) when converting filter parameters from the
+  // element's local coordinate system into the pixmap coordinate system the filter is actually
+  // executed in.
+  //
+  // This is exact for rotation + uniform scaling, and conservative for skew/non-uniform scaling.
+  let sx = (transform.sx * transform.sx + transform.ky * transform.ky).sqrt();
+  let sy = (transform.kx * transform.kx + transform.sy * transform.sy).sqrt();
+  let scale = sx.max(sy);
+  if scale.is_finite() && scale > 0.0 {
+    scale
+  } else {
+    1.0
+  }
+}
+
+fn transform_filters_for_pixmap_space(
+  filters: &[ResolvedFilter],
+  local_to_pixmap: Transform,
+) -> Vec<ResolvedFilter> {
+  if filters.is_empty() {
+    return Vec::new();
+  }
+
+  // CSS Filter Effects: filter operations are specified in the element's local coordinate system,
+  // but in this renderer we execute them on rasterized pixmaps that have already had the current
+  // canvas transform applied.
+  //
+  // For non-translation transforms (rotation/scale/skew), geometric filter parameters must be
+  // converted into the pixmap coordinate space so results match the spec and browser behavior
+  // (e.g. `drop-shadow(dx,dy)` offsets rotate with transforms).
+  //
+  // Spec reference: Filter Effects Level 1, "The filter operations are applied in the element's
+  // local coordinate system." (<https://drafts.fxtf.org/filter-effects-1/#FilterProperty>)
+  let scale = transform_max_axis_scale(local_to_pixmap);
+
+  filters
+    .iter()
+    .map(|filter| match *filter {
+      ResolvedFilter::Blur(radius) => ResolvedFilter::Blur(radius * scale),
+      ResolvedFilter::DropShadow {
+        offset_x,
+        offset_y,
+        blur_radius,
+        spread,
+        color,
+      } => {
+        let (dx, dy) = transform_vector_by_skia(local_to_pixmap, offset_x, offset_y);
+        ResolvedFilter::DropShadow {
+          offset_x: dx,
+          offset_y: dy,
+          blur_radius: blur_radius * scale,
+          spread: spread * scale,
+          color,
+        }
+      }
+      ResolvedFilter::Brightness(amount) => ResolvedFilter::Brightness(amount),
+      ResolvedFilter::Contrast(amount) => ResolvedFilter::Contrast(amount),
+      ResolvedFilter::Grayscale(amount) => ResolvedFilter::Grayscale(amount),
+      ResolvedFilter::Sepia(amount) => ResolvedFilter::Sepia(amount),
+      ResolvedFilter::Saturate(amount) => ResolvedFilter::Saturate(amount),
+      ResolvedFilter::HueRotate(deg) => ResolvedFilter::HueRotate(deg),
+      ResolvedFilter::Invert(amount) => ResolvedFilter::Invert(amount),
+      ResolvedFilter::Opacity(amount) => ResolvedFilter::Opacity(amount),
+      ResolvedFilter::SvgFilter(ref filter) => ResolvedFilter::SvgFilter(Arc::clone(filter)),
+    })
+    .collect()
+}
+
 fn apply_filters_scoped(
   pixmap: &mut Pixmap,
   filters: &[ResolvedFilter],
@@ -4490,8 +4569,9 @@ impl DisplayListRenderer {
     backdrop_filters: &[ResolvedFilter],
   ) -> Option<Rect> {
     let mut layer_bounds = transform_rect(bounds, &transform);
+    let filters_for_outset = transform_filters_for_pixmap_space(filters, transform);
     let (f_l, f_t, f_r, f_b) =
-      filter_outset_with_bounds(filters, self.scale, Some(css_bounds)).as_tuple();
+      filter_outset_with_bounds(&filters_for_outset, self.scale, Some(css_bounds)).as_tuple();
     let (b_l, b_t, b_r, b_b) =
       filter_outset_with_bounds(backdrop_filters, self.scale, Some(css_bounds)).as_tuple();
     let expand_left = f_l.max(b_l);
@@ -12050,8 +12130,15 @@ impl DisplayListRenderer {
         if record.needs_layer {
           let (mut layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
 
+          // Convert geometric filter parameters (e.g. drop-shadow offsets) from the element's local
+          // coordinate system into the pixmap coordinate space the filter is executed in. The
+          // pixmap already includes the stacking context's current canvas transform, so without
+          // this conversion filters would behave differently depending on whether the subtree was
+          // rendered via affine transforms or the projective-warp path.
+          let filters_for_effects =
+            transform_filters_for_pixmap_space(&record.filters, record.warp_source_transform);
           let (out_l, out_t, out_r, out_b) =
-            filter_outset_with_bounds(&record.filters, self.scale, Some(record.css_bounds))
+            filter_outset_with_bounds(&filters_for_effects, self.scale, Some(record.css_bounds))
               .as_tuple();
 
           let mut effect_bounds = record.layer_bounds;
@@ -12131,7 +12218,7 @@ impl DisplayListRenderer {
               };
             apply_filters_scoped(
               &mut layer,
-              &record.filters,
+              &filters_for_effects,
               self.scale,
               bbox,
               layer_region.as_ref(),

@@ -48,6 +48,7 @@ mod display_list_test;
 mod filter_calc_length;
 mod filter_cache_regressions;
 mod filter_premultiplication;
+mod filter_transform_order_projective;
 mod filter_url_svg_display_list;
 mod fit_canvas_to_content;
 mod form_control_listbox_geometry_regression;

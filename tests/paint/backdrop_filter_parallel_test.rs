@@ -356,8 +356,13 @@ fn filter_drop_shadow_preserves_outsets_with_affine_transform() {
     .render(&list)
     .expect("render");
 
-  // The drop-shadow extends beyond the rounded box; sample a pixel well inside the shadow region.
-  assert_eq!(pixel(&pixmap, 100, 40), (0, 0, 0, 255));
+  // The drop-shadow offset is specified in the element's local coordinate system and therefore
+  // rotates with the element. With a 45deg rotation, `drop-shadow(60px 0)` offsets the shadow
+  // down+right by ~42px.
+  //
+  // Sample a pixel well inside the expected shadow region to ensure filter outsets are preserved
+  // and not clipped away by the transformed stacking context.
+  assert_eq!(pixel(&pixmap, 82, 82), (0, 0, 0, 255));
   // Background remains red away from the shadow.
   assert_eq!(pixel(&pixmap, 180, 10), (255, 0, 0, 255));
 }
