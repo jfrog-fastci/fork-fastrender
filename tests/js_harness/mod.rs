@@ -1,6 +1,9 @@
 use fastrender::dom::DomNode;
 use fastrender::dom2::{Document, NodeId};
-use fastrender::js::{EventLoop, RunLimits, RunUntilIdleOutcome, VirtualClock};
+use fastrender::js::{
+  EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementSpec, ScriptExecutor, ScriptLoader,
+  VirtualClock,
+};
 use fastrender::{Error, Result};
 use rquickjs::{Context, Function, Object, Runtime};
 use std::cell::{Cell, RefCell};
@@ -188,7 +191,7 @@ impl Default for ScriptLoaderState {
   }
 }
 
-struct HostState {
+pub struct HostState {
   dom: Document,
   node_handles: Vec<NodeId>,
   microtask_id: i32,
@@ -438,6 +441,46 @@ impl HostState {
   }
 }
 
+impl ScriptLoader for HostState {
+  type Handle = usize;
+
+  fn load_blocking(&mut self, url: &str) -> Result<String> {
+    self
+      .loader
+      .sources
+      .get(url)
+      .cloned()
+      .ok_or_else(|| Error::Other(format!("no registered script source for url={url}")))
+  }
+
+  fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+    let handle = self.loader.next_handle;
+    self.loader.next_handle += 1;
+    self
+      .loader
+      .handles_by_url
+      .insert(url.to_string(), handle);
+    Ok(handle)
+  }
+
+  fn poll_complete(&mut self) -> Result<Option<(Self::Handle, String)>> {
+    Ok(self.loader.completed.pop_front())
+  }
+}
+
+impl ScriptExecutor for HostState {
+  fn execute_classic_script(
+    &mut self,
+    script_text: &str,
+    _spec: &ScriptElementSpec,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    let host_ptr: *mut HostState = self;
+    let loop_ptr: *mut EventLoop<HostState> = event_loop;
+    js_eval(host_ptr, loop_ptr, script_text)
+  }
+}
+
 pub struct Harness {
   clock: Arc<VirtualClock>,
   host: HostState,
@@ -487,6 +530,18 @@ impl Harness {
 
   pub fn run_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     self.event_loop.run_until_idle(&mut self.host, limits)
+  }
+
+  pub fn host_mut(&mut self) -> &mut HostState {
+    &mut self.host
+  }
+
+  pub fn event_loop_mut(&mut self) -> &mut EventLoop<HostState> {
+    &mut self.event_loop
+  }
+
+  pub fn host_and_event_loop_mut(&mut self) -> (&mut HostState, &mut EventLoop<HostState>) {
+    (&mut self.host, &mut self.event_loop)
   }
 
   pub fn snapshot_dom(&self) -> DomNode {
