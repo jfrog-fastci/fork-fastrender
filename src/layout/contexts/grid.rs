@@ -4460,6 +4460,23 @@ impl GridFormattingContext {
     }
 
     let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
+
+    // Taffy resolves named line inheritance for in-flow subgrid items internally, but static
+    // positioning for abspos/fixed descendants is handled here. For subgrid axes, the computed
+    // style only stores any author-supplied `subgrid [...]` names; the inherited parent names must
+    // be reconstructed so `grid-*-raw` named placements resolve correctly.
+    let needs_column_effective_names = box_node.style.grid_column_subgrid
+      && positioned_children.iter().any(|&child_ptr| unsafe { &*child_ptr }.style.grid_column_raw.is_some());
+    let needs_row_effective_names = box_node.style.grid_row_subgrid
+      && positioned_children.iter().any(|&child_ptr| unsafe { &*child_ptr }.style.grid_row_raw.is_some());
+
+    let effective_column_line_names = needs_column_effective_names.then(|| {
+      resolve_effective_grid_line_names_for_node_axis(taffy, node_id, CssGridAxis::Column, axes_swapped)
+    }).flatten();
+    let effective_row_line_names = needs_row_effective_names.then(|| {
+      resolve_effective_grid_line_names_for_node_axis(taffy, node_id, CssGridAxis::Row, axes_swapped)
+    }).flatten();
+
     for &child_ptr in positioned_children {
       let child = unsafe { &*child_ptr };
       let mut pos = Point::ZERO;
@@ -4497,13 +4514,17 @@ impl GridFormattingContext {
               (start > 0 && end > start)
                 .then(|| u16::try_from((end - start + 1).max(0)).ok())
                 .flatten()
-            }),
+          }),
         )
       };
       let x_line_names: &[Vec<String>] = if axes_swapped {
-        box_node.style.grid_row_line_names.as_slice()
+        effective_row_line_names
+          .as_deref()
+          .unwrap_or_else(|| box_node.style.grid_row_line_names.as_slice())
       } else {
-        box_node.style.grid_column_line_names.as_slice()
+        effective_column_line_names
+          .as_deref()
+          .unwrap_or_else(|| box_node.style.grid_column_line_names.as_slice())
       };
       if let Some((start_line, end_line)) =
         resolve_grid_line_range_from_style(x_start, x_end, x_raw, x_line_count, Some(x_line_names))
@@ -4557,9 +4578,13 @@ impl GridFormattingContext {
         )
       };
       let y_line_names: &[Vec<String>] = if axes_swapped {
-        box_node.style.grid_column_line_names.as_slice()
+        effective_column_line_names
+          .as_deref()
+          .unwrap_or_else(|| box_node.style.grid_column_line_names.as_slice())
       } else {
-        box_node.style.grid_row_line_names.as_slice()
+        effective_row_line_names
+          .as_deref()
+          .unwrap_or_else(|| box_node.style.grid_row_line_names.as_slice())
       };
       if let Some((start_line, end_line)) =
         resolve_grid_line_range_from_style(y_start, y_end, y_raw, y_line_count, Some(y_line_names))
@@ -7523,6 +7548,170 @@ fn grid_line_count_from_offsets(offsets: &[f32]) -> Option<u16> {
   }
   let track_count = (offsets.len() - 1) / 2;
   u16::try_from(track_count.saturating_add(1)).ok()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CssGridAxis {
+  Column,
+  Row,
+}
+
+impl CssGridAxis {
+  fn is_subgrid(self, style: &ComputedStyle) -> bool {
+    match self {
+      CssGridAxis::Column => style.grid_column_subgrid,
+      CssGridAxis::Row => style.grid_row_subgrid,
+    }
+  }
+
+  fn line_names<'a>(self, style: &'a ComputedStyle) -> &'a [Vec<String>] {
+    match self {
+      CssGridAxis::Column => style.grid_column_line_names.as_slice(),
+      CssGridAxis::Row => style.grid_row_line_names.as_slice(),
+    }
+  }
+
+  fn subgrid_extra_line_names<'a>(self, style: &'a ComputedStyle) -> &'a [Vec<String>] {
+    match self {
+      CssGridAxis::Column => style.subgrid_column_line_names.as_slice(),
+      CssGridAxis::Row => style.subgrid_row_line_names.as_slice(),
+    }
+  }
+
+  fn placement_start(self, style: &ComputedStyle) -> i32 {
+    match self {
+      CssGridAxis::Column => style.grid_column_start,
+      CssGridAxis::Row => style.grid_row_start,
+    }
+  }
+
+  fn placement_end(self, style: &ComputedStyle) -> i32 {
+    match self {
+      CssGridAxis::Column => style.grid_column_end,
+      CssGridAxis::Row => style.grid_row_end,
+    }
+  }
+
+  fn placement_raw<'a>(self, style: &'a ComputedStyle) -> Option<&'a str> {
+    match self {
+      CssGridAxis::Column => style.grid_column_raw.as_deref(),
+      CssGridAxis::Row => style.grid_row_raw.as_deref(),
+    }
+  }
+
+  /// Returns the number of grid lines for `node_id` on this axis (tracks + 1), if available.
+  fn node_line_count(
+    self,
+    taffy: &TaffyTree<*const BoxNode>,
+    node_id: TaffyNodeId,
+    axes_swapped: bool,
+  ) -> Option<u16> {
+    if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
+      let track_count = match (self, axes_swapped) {
+        // When axes are swapped, CSS columns map to physical Y (Taffy rows) and CSS rows map to
+        // physical X (Taffy columns).
+        (CssGridAxis::Column, false) => info.columns.sizes.len(),
+        (CssGridAxis::Column, true) => info.rows.sizes.len(),
+        (CssGridAxis::Row, false) => info.rows.sizes.len(),
+        (CssGridAxis::Row, true) => info.columns.sizes.len(),
+      };
+      return u16::try_from(track_count.saturating_add(1)).ok();
+    }
+
+    // Subgrid nodes don't always expose detailed track info. When this axis is subgridded we can
+    // derive the local line count from the parent's span (which is stored as start/end placement
+    // coordinates on the subgrid container itself).
+    let node_ptr = *taffy.get_node_context(node_id)?;
+    let node = unsafe { &*node_ptr };
+    let start = self.placement_start(&node.style);
+    let end = self.placement_end(&node.style);
+    (start > 0 && end > start)
+      .then(|| u16::try_from((end - start + 1).max(0)).ok())
+      .flatten()
+  }
+}
+
+const MAX_SUBGRID_LINE_NAME_INHERITANCE_DEPTH: usize = 64;
+
+fn merge_line_names(base: &mut [Vec<String>], extra: &[Vec<String>]) {
+  for (i, extra_names) in extra.iter().enumerate() {
+    if let Some(target) = base.get_mut(i) {
+      target.extend(extra_names.iter().cloned());
+    }
+  }
+}
+
+fn resolve_effective_grid_line_names_for_node_axis(
+  taffy: &TaffyTree<*const BoxNode>,
+  node_id: TaffyNodeId,
+  axis: CssGridAxis,
+  axes_swapped: bool,
+) -> Option<Vec<Vec<String>>> {
+  fn inner(
+    taffy: &TaffyTree<*const BoxNode>,
+    node_id: TaffyNodeId,
+    axis: CssGridAxis,
+    axes_swapped: bool,
+    depth: usize,
+  ) -> Option<Vec<Vec<String>>> {
+    if depth >= MAX_SUBGRID_LINE_NAME_INHERITANCE_DEPTH {
+      return None;
+    }
+
+    let node_ptr = *taffy.get_node_context(node_id)?;
+    let node = unsafe { &*node_ptr };
+    if !axis.is_subgrid(&node.style) {
+      return Some(axis.line_names(&node.style).to_vec());
+    }
+
+    let parent_id = taffy.parent(node_id)?;
+
+    let parent_names = inner(taffy, parent_id, axis, axes_swapped, depth + 1)?;
+
+    let parent_line_count = axis
+      .node_line_count(taffy, parent_id, axes_swapped)
+      .or_else(|| u16::try_from(parent_names.len()).ok())
+      .filter(|count| *count > 0);
+
+    let start = axis.placement_start(&node.style);
+    let end = axis.placement_end(&node.style);
+    let raw = axis.placement_raw(&node.style);
+    let (start_line, end_line) = resolve_grid_line_range_from_style(
+      start,
+      end,
+      raw,
+      parent_line_count,
+      Some(parent_names.as_slice()),
+    )?;
+
+    let span = end_line.checked_sub(start_line)?;
+    let start_index = start_line.saturating_sub(1) as usize;
+    let mut result: Vec<Vec<String>> = Vec::with_capacity(span as usize + 1);
+    for i in 0..=span {
+      let idx = start_index.saturating_add(i as usize);
+      let mut names: Vec<String> = Vec::new();
+      if let Some(parent_line) = parent_names.get(idx) {
+        names.extend(parent_line.iter().cloned());
+      }
+      result.push(names);
+    }
+
+    let extra = axis.subgrid_extra_line_names(&node.style);
+    if !extra.is_empty() {
+      merge_line_names(&mut result, extra);
+    }
+
+    // Preserve any explicit names authored on the subgrid container itself, in case the computed
+    // style stores them on `grid_*_line_names` rather than `subgrid_*_line_names`.
+    let authored = axis.line_names(&node.style);
+    if !authored.is_empty() {
+      merge_line_names(&mut result, authored);
+    }
+
+    Some(result)
+  }
+
+  inner(taffy, node_id, axis, axes_swapped, 0)
 }
 
 fn resolve_css_grid_line_to_u16(line: i32, line_count: Option<u16>) -> Option<u16> {
