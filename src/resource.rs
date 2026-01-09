@@ -8394,7 +8394,12 @@ impl VaryKeyFields {
   }
 }
 
-fn canonicalize_vary_header_value(vary: Option<&str>) -> Option<String> {
+/// Canonicalize an HTTP `Vary` header value.
+///
+/// Returns `None` for empty/whitespace-only `Vary` values, `Some("*")` for `Vary: *`, and
+/// otherwise a deterministic string of lowercased field-names joined with `", "` (sorted and
+/// deduplicated).
+pub fn canonicalize_vary_header_value(vary: Option<&str>) -> Option<String> {
   VaryKeyFields::parse(vary).canonical_string()
 }
 

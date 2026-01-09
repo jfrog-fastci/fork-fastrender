@@ -26,6 +26,7 @@ use fastrender::resource::bundle::{
   BUNDLE_MANIFEST, BUNDLE_VERSION,
 };
 use fastrender::resource::{
+  canonicalize_vary_header_value,
   compute_vary_key_for_request,
   ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
   offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, DocumentOrigin,
@@ -1251,7 +1252,7 @@ fn build_manifest(
       .map(|policy| policy.as_str().to_string()),
     access_control_allow_origin: document_resource.access_control_allow_origin.clone(),
     timing_allow_origin: document_resource.timing_allow_origin.clone(),
-    vary: document_resource.vary.clone(),
+    vary: canonicalize_vary_header_value(document_resource.vary.as_deref()),
   };
 
   let mut resources: Vec<ResourceEntry> = Vec::new();
@@ -1291,7 +1292,7 @@ fn build_manifest(
       response_referrer_policy: res
         .response_referrer_policy
         .map(|policy| policy.as_str().to_string()),
-      vary: res.vary.clone(),
+      vary: canonicalize_vary_header_value(res.vary.as_deref()),
       access_control_allow_origin: res.access_control_allow_origin.clone(),
       timing_allow_origin: res.timing_allow_origin.clone(),
       access_control_allow_credentials: res.access_control_allow_credentials,
@@ -2785,6 +2786,49 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
       default_credentials_mode_for_destination(FetchDestination::StyleCors),
       FetchCredentialsMode::Omit
     );
+  }
+
+  #[test]
+  fn build_manifest_canonicalizes_vary_values() {
+    let mut document = FetchedResource::with_final_url(
+      b"<!doctype html><html></html>".to_vec(),
+      Some("text/html".to_string()),
+      Some("https://example.com/".to_string()),
+    );
+    document.vary = Some("Origin, Accept-Language".to_string());
+
+    let mut style = FetchedResource::with_final_url(
+      b"body{}".to_vec(),
+      Some("text/css".to_string()),
+      Some("https://example.com/style.css".to_string()),
+    );
+    style.vary = Some("accept-language, origin, Origin".to_string());
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    let recorded = HashMap::from([("https://example.com/style.css".to_string(), style)]);
+    let (manifest, _resources, _document_bytes) =
+      build_manifest("https://example.com/".to_string(), render, document, recorded);
+
+    assert_eq!(
+      manifest.document.vary.as_deref(),
+      Some("accept-language, origin")
+    );
+    let style_info = manifest
+      .resources
+      .get("https://example.com/style.css")
+      .expect("style resource info");
+    assert_eq!(style_info.vary.as_deref(), Some("accept-language, origin"));
   }
 
   #[test]
