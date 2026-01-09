@@ -232,9 +232,9 @@ impl BrowserDocument {
     base_url_hint: Option<&str>,
     options: RenderOptions,
   ) -> Result<(String, String)> {
-    // `prepare_dom_with_options` updates the renderer's URL hints early (before doing layout). If
-    // it errors (e.g. cancellation), restore the previous hints so the existing document continues
-    // to have consistent origin/base semantics.
+    // Mirror `navigate_url_with_options`: apply the navigation URL hints up-front (so relative URL
+    // resolution and resource context semantics match the new document), but restore the previous
+    // hints if parsing/preparing fails (including cancellation).
     let prev_document_url = self.renderer.document_url.clone();
     let prev_base_url = self.renderer.base_url.clone();
 
@@ -247,6 +247,15 @@ impl BrowserDocument {
       None => self.renderer.clear_base_url(),
     }
 
+    // Ensure the resource context sees the provided document URL (used for referrer/origin
+    // semantics). Unlike `base_url`, this must remain stable even if `<base href>` mutates.
+    let sanitized_document_url = super::trim_ascii_whitespace(document_url);
+    if sanitized_document_url.is_empty() {
+      self.renderer.clear_document_url();
+    } else {
+      self.renderer.set_document_url(sanitized_document_url.to_string());
+    }
+
     let dom = match self.renderer.parse_html(html) {
       Ok(dom) => dom,
       Err(err) => {
@@ -255,22 +264,50 @@ impl BrowserDocument {
       }
     };
 
-    let report = match self
-      .renderer
-      .prepare_dom_with_options(dom, Some(document_url), options.clone())
-    {
-      Ok(report) => report,
+    // Prepare the DOM using the same lightweight pipeline as `BrowserDocument::render_frame*`
+    // (which avoids the diagnostics plumbing in `FastRender::prepare_dom_with_options`).
+    let prepared = {
+      let renderer = &mut self.renderer;
+      let toggles = renderer.resolve_runtime_toggles(&options);
+      let _toggles_guard =
+        super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
+      crate::debug::runtime::with_thread_runtime_toggles(toggles, || {
+        let trace = super::TraceSession::from_options(Some(&options));
+        let trace_handle = trace.handle();
+        let _root_span = trace_handle.span("browser_document_prepare_html", "pipeline");
+
+        let shared_diagnostics =
+          renderer
+            .diagnostics
+            .as_ref()
+            .map(|diag| super::SharedRenderDiagnostics {
+              inner: std::sync::Arc::clone(diag),
+            });
+        let context = Some(renderer.build_resource_context(
+          renderer.document_url_hint(),
+          shared_diagnostics,
+          ReferrerPolicy::default(),
+        ));
+        let (prev_self, prev_image, prev_layout_image, prev_font) =
+          renderer.push_resource_context(context);
+        let result = prepare_dom_inner(renderer, &dom, options.clone(), trace_handle);
+        renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+        drop(_root_span);
+        trace.finalize(result)
+      })
+    };
+
+    let prepared = match prepared {
+      Ok(prepared) => prepared,
       Err(err) => {
         self.set_navigation_urls(prev_document_url, prev_base_url);
         return Err(err);
       }
     };
 
-    let committed_url = report
-      .final_url
-      .clone()
-      .unwrap_or_else(|| document_url.to_string());
-    let base_url = report
+    let committed_url = sanitized_document_url.to_string();
+    let base_url = self
+      .renderer
       .base_url
       .clone()
       .filter(|base| !super::trim_ascii_whitespace(base).is_empty())
@@ -284,7 +321,7 @@ impl BrowserDocument {
 
     // Install the prepared layout result and mark paint dirty so the next render call produces a
     // frame without re-running layout.
-    self.reset_with_prepared(report.document, options);
+    self.reset_with_prepared(prepared, options);
 
     Ok((committed_url, base_url))
   }
@@ -811,7 +848,7 @@ impl BrowserDocument {
     Some((time_ms.min(f32::MAX as f64)) as f32)
   }
 
-  pub(crate) fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
+  fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
     let options = self.options.clone();
     let dom = &self.dom;
     let document_url = self.document_url.clone();

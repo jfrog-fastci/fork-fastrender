@@ -1596,47 +1596,32 @@ impl BrowserRuntime {
         about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {original_url}"))
       });
 
-      // `about:` pages must never resolve relative URLs against the previously committed origin.
-      doc.set_navigation_urls(
-        Some(original_url.clone()),
-        Some(about_pages::ABOUT_BASE_URL.to_string()),
-      );
-      doc.set_document_url_without_invalidation(Some(original_url.clone()));
-
-      if let Err(err) = doc.reset_with_html(&html, options.clone()) {
-        let _ = self.reinsert_document(tab_id, doc);
-        return self.run_navigation_error(
-          tab_id,
-          &original_url,
-          &format!("failed to parse about page HTML: {err}"),
-          snapshot,
-        );
-      }
-
-      let prepared = {
+      let result = {
         let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-        match doc.prepare_dom_with_options() {
-          Ok(prepared) => prepared,
-          Err(err) => {
-            let _ = self.reinsert_document(tab_id, doc);
-            // Treat cancelled prepares as silent drops.
-            if !snapshot.is_still_current_for_prepare(&cancel) {
-              return None;
-            }
-            return self.run_navigation_error(
-              tab_id,
-              &original_url,
-              &format!("about page prepare failed: {err}"),
-              snapshot,
-            );
-          }
-        }
+        doc.navigate_html_with_options(
+          &original_url,
+          &html,
+          Some(about_pages::ABOUT_BASE_URL),
+          options.clone(),
+        )
       };
 
-      let base_url = doc.base_url().map(str::to_string);
-      doc.reset_with_prepared(prepared, options.clone());
-
-      (Some(original_url.clone()), base_url)
+      match result {
+        Ok((committed_url, base_url)) => (Some(committed_url), Some(base_url)),
+        Err(err) => {
+          let _ = self.reinsert_document(tab_id, doc);
+          // Treat cancelled prepares as silent drops.
+          if !snapshot.is_still_current_for_prepare(&cancel) {
+            return None;
+          }
+          return self.run_navigation_error(
+            tab_id,
+            &original_url,
+            &format!("about page prepare failed: {err}"),
+            snapshot,
+          );
+        }
+      }
     } else {
       match is_allowed_navigation_url(&original_url) {
         Ok(()) => {
@@ -1999,14 +1984,19 @@ impl BrowserRuntime {
       return None;
     };
 
-    // Ensure `about:` semantics: do not resolve relative URLs against the previous origin.
-    doc.set_navigation_urls(
-      Some(about_pages::ABOUT_ERROR.to_string()),
-      Some(about_pages::ABOUT_BASE_URL.to_string()),
-    );
-    doc.set_document_url_without_invalidation(Some(about_pages::ABOUT_ERROR.to_string()));
-
-    if let Err(err) = doc.reset_with_html(&html, options.clone()) {
+    let prepared = {
+      let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+      doc.navigate_html_with_options(
+        about_pages::ABOUT_ERROR,
+        &html,
+        Some(about_pages::ABOUT_BASE_URL),
+        options.clone(),
+      )
+    };
+    if let Err(err) = prepared {
+      if cancel_callback() {
+        return None;
+      }
       tab.loading = false;
       tab.pending_history_entry = false;
       return Some(JobOutput {
@@ -2017,7 +2007,7 @@ impl BrowserRuntime {
           WorkerToUi::NavigationFailed {
             tab_id,
             url: original_url.to_string(),
-            error: format!("{error} (and failed to parse error page HTML: {err})"),
+            error: format!("{error} (and failed to prepare error page: {err})"),
             can_go_back,
             can_go_forward,
           },
