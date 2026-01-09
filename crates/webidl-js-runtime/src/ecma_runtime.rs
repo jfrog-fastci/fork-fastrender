@@ -141,6 +141,10 @@ impl VmJsRuntime {
         }
         return Err(VmError::InvalidHandle);
       }
+      // Ensure the vector can grow before creating a root so we never leak roots on OOM.
+      root_ids
+        .try_reserve_exact(1)
+        .map_err(|_| VmError::OutOfMemory)?;
       let id = match self.heap.add_root(v) {
         Ok(id) => id,
         Err(err) => {

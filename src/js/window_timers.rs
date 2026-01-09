@@ -51,12 +51,10 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
-fn throw_type_error(scope: &mut Scope<'_>, message: &str) -> VmError {
-  let msg = format!("TypeError: {message}");
-  match scope.alloc_string(&msg) {
-    Ok(s) => VmError::Throw(Value::String(s)),
-    Err(_) => VmError::Throw(Value::Undefined),
-  }
+fn throw_type_error(message: &'static str) -> VmError {
+  // Use `VmError::TypeError` so the evaluator can construct a real `TypeError` object in the
+  // current realm (mirrors how internal VM operations report type errors).
+  VmError::TypeError(message)
 }
 
 fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
@@ -202,12 +200,11 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(handler, Value::String(_)) {
     return Err(throw_type_error(
-      scope,
       "setTimeout does not currently support string handlers",
     ));
   }
   if !is_callable(scope, handler) {
-    return Err(throw_type_error(scope, "setTimeout callback is not callable"));
+    return Err(throw_type_error("setTimeout callback is not callable"));
   }
 
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -216,12 +213,12 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   let extra_args: Vec<Value> = if args.len() > 2 { args[2..].to_vec() } else { Vec::new() };
 
   let Value::Object(global_obj) = this else {
-    return Err(throw_type_error(scope, "setTimeout called with invalid this value"));
+    return Err(throw_type_error("setTimeout called with invalid this value"));
   };
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(throw_type_error(scope, "setTimeout called without an active EventLoop"));
+    return Err(throw_type_error("setTimeout called without an active EventLoop"));
   };
 
   let id_cell = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -284,12 +281,12 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   let id = normalize_timer_id(scope.heap(), id_value);
 
   let Value::Object(global_obj) = this else {
-    return Err(throw_type_error(scope, "clearTimeout called with invalid this value"));
+    return Err(throw_type_error("clearTimeout called with invalid this value"));
   };
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(throw_type_error(scope, "clearTimeout called without an active EventLoop"));
+    return Err(throw_type_error("clearTimeout called without an active EventLoop"));
   };
   event_loop.clear_timeout(id);
 
@@ -309,12 +306,11 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(handler, Value::String(_)) {
     return Err(throw_type_error(
-      scope,
       "setInterval does not currently support string handlers",
     ));
   }
   if !is_callable(scope, handler) {
-    return Err(throw_type_error(scope, "setInterval callback is not callable"));
+    return Err(throw_type_error("setInterval callback is not callable"));
   }
 
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -323,12 +319,12 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   let extra_args: Vec<Value> = if args.len() > 2 { args[2..].to_vec() } else { Vec::new() };
 
   let Value::Object(global_obj) = this else {
-    return Err(throw_type_error(scope, "setInterval called with invalid this value"));
+    return Err(throw_type_error("setInterval called with invalid this value"));
   };
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(throw_type_error(scope, "setInterval called without an active EventLoop"));
+    return Err(throw_type_error("setInterval called without an active EventLoop"));
   };
 
   let id_cell = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -389,12 +385,12 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
   let id = normalize_timer_id(scope.heap(), id_value);
 
   let Value::Object(global_obj) = this else {
-    return Err(throw_type_error(scope, "clearInterval called with invalid this value"));
+    return Err(throw_type_error("clearInterval called with invalid this value"));
   };
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(throw_type_error(scope, "clearInterval called without an active EventLoop"));
+    return Err(throw_type_error("clearInterval called without an active EventLoop"));
   };
   event_loop.clear_interval(id);
 
@@ -413,21 +409,19 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(callback, Value::String(_)) {
     return Err(throw_type_error(
-      scope,
       "queueMicrotask does not currently support string callbacks",
     ));
   }
   if !is_callable(scope, callback) {
-    return Err(throw_type_error(scope, "queueMicrotask callback is not callable"));
+    return Err(throw_type_error("queueMicrotask callback is not callable"));
   }
 
   let Value::Object(_global_obj) = this else {
-    return Err(throw_type_error(scope, "queueMicrotask called with invalid this value"));
+    return Err(throw_type_error("queueMicrotask called with invalid this value"));
   };
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
     return Err(throw_type_error(
-      scope,
       "queueMicrotask called without an active EventLoop",
     ));
   };
@@ -445,6 +439,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
         let mut scope = heap.scope();
         let call_result = (|| -> Result<(), VmError> {
           vm.tick()?;
+          // HTML `queueMicrotask` invokes callbacks with an `undefined` callback-this value.
           let _ = vm.call(&mut scope, callback, Value::Undefined, &[])?;
           Ok(())
         })();
@@ -561,6 +556,8 @@ mod tests {
   use std::sync::Arc;
   use vm_js::Realm;
 
+  const CALLBACK_GLOBAL_KEY: &str = "__test_global";
+
   struct Host {
     window: WindowRealm,
   }
@@ -664,38 +661,28 @@ mod tests {
   fn make_callback(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
+    global: vm_js::GcObject,
     name: &str,
     native: vm_js::NativeCall,
   ) -> vm_js::GcObject {
     let id = vm.register_native_call(native).expect("register_native_call");
     let name_s = scope.alloc_string(name).unwrap();
-    scope
-      .push_root(Value::String(name_s))
-      .expect("push root callback name");
-    scope.alloc_native_function(id, None, name_s, 0).unwrap()
-  }
-
-  fn make_callback_with_global(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    global: vm_js::GcObject,
-    name: &str,
-    native: vm_js::NativeCall,
-  ) -> vm_js::GcObject {
-    let func = make_callback(vm, scope, name, native);
+    scope.push_root(Value::String(name_s)).unwrap();
+    scope.push_root(Value::Object(global)).unwrap();
+    let func = scope.alloc_native_function(id, None, name_s, 0).unwrap();
     scope.push_root(Value::Object(func)).unwrap();
-    set_prop(scope, func, "__global", Value::Object(global));
+    set_prop(scope, func, CALLBACK_GLOBAL_KEY, Value::Object(global));
     func
   }
 
   fn cb_push_t(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _callee: vm_js::GcObject,
-    this: Value,
+    callee: vm_js::GcObject,
+    _this: Value,
     _args: &[Value],
   ) -> Result<Value, VmError> {
-    let Value::Object(global) = this else {
+    let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
       return Ok(Value::Undefined);
     };
     push_log(scope, global, "t");
@@ -709,9 +696,8 @@ mod tests {
     this: Value,
     _args: &[Value],
   ) -> Result<Value, VmError> {
-    let global = match get_prop(scope, callee, "__global") {
-      Value::Object(obj) => obj,
-      other => panic!("expected callback.__global to be an object, got {other:?}"),
+    let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+      return Ok(Value::Undefined);
     };
     set_prop(
       scope,
@@ -726,11 +712,11 @@ mod tests {
   fn cb_capture_args(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _callee: vm_js::GcObject,
-    this: Value,
+    callee: vm_js::GcObject,
+    _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let Value::Object(global) = this else {
+    let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
       return Ok(Value::Undefined);
     };
     if let Some(v) = args.get(0).copied() {
@@ -745,11 +731,11 @@ mod tests {
   fn cb_interval_tick(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _callee: vm_js::GcObject,
-    this: Value,
+    callee: vm_js::GcObject,
+    _this: Value,
     _args: &[Value],
   ) -> Result<Value, VmError> {
-    let Value::Object(global) = this else {
+    let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
       return Ok(Value::Undefined);
     };
 
@@ -795,12 +781,12 @@ mod tests {
       &[Value::Object(not_a_function), Value::Number(0.0)],
     );
 
-    let Err(VmError::Throw(Value::String(msg))) = err else {
-      panic!("expected setTimeout to throw a TypeError for non-callable callback");
+    let Err(VmError::TypeError(msg)) = err else {
+      panic!("expected setTimeout to return VmError::TypeError for non-callable callback");
     };
     assert_eq!(
-      scope.heap().get_string(msg)?.to_utf8_lossy(),
-      "TypeError: setTimeout callback is not callable"
+      msg,
+      "setTimeout callback is not callable"
     );
 
     Ok(())
@@ -837,8 +823,8 @@ mod tests {
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
         let queue_microtask = get_prop(&mut scope, global, "queueMicrotask");
 
-        let timeout_cb = make_callback(vm, &mut scope, "timeout_cb", cb_push_t);
-        let micro_cb = make_callback_with_global(vm, &mut scope, global, "micro_cb", cb_push_m);
+        let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_push_t);
+        let micro_cb = make_callback(vm, &mut scope, global, "micro_cb", cb_push_m);
 
         vm.call(
           &mut scope,
@@ -905,7 +891,7 @@ mod tests {
         let mut scope = heap.scope();
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
         let clear_timeout = get_prop(&mut scope, global, "clearTimeout");
-        let timeout_cb = make_callback(vm, &mut scope, "timeout_cb", cb_push_t);
+        let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_push_t);
         let id = vm
           .call(
             &mut scope,
@@ -961,7 +947,7 @@ mod tests {
       with_event_loop(&mut event_loop, || -> Result<(), crate::error::Error> {
         let mut scope = heap.scope();
         let set_interval = get_prop(&mut scope, global, "setInterval");
-        let interval_cb = make_callback(vm, &mut scope, "interval_cb", cb_interval_tick);
+        let interval_cb = make_callback(vm, &mut scope, global, "interval_cb", cb_interval_tick);
         let id = vm
           .call(
             &mut scope,
@@ -1021,7 +1007,7 @@ mod tests {
       with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
         let mut scope = heap.scope();
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
-        let cb = make_callback(vm, &mut scope, "cb", cb_capture_args);
+        let cb = make_callback(vm, &mut scope, global, "cb", cb_capture_args);
         let x_s = scope.alloc_string("x").unwrap();
         scope
           .push_root(Value::String(x_s))
@@ -1097,14 +1083,80 @@ mod tests {
     };
 
     match err {
-      VmError::Throw(Value::String(s)) => {
-        let (_, _, heap) = host.window.vm_realm_and_heap_mut();
-        let msg = heap.get_string(s).unwrap().to_utf8_lossy();
-        assert!(msg.starts_with("TypeError:"), "msg={msg}");
+      VmError::TypeError(msg) => {
+        assert!(msg.contains("string handlers"), "msg={msg}");
       }
-      other => panic!("expected Throw(String), got {other:?}"),
+      other => panic!("expected TypeError, got {other:?}"),
     }
 
+    Ok(())
+  }
+
+  #[test]
+  fn queue_microtask_invokes_callback_with_undefined_this() -> crate::error::Result<()> {
+    fn cb_record_this_is_undefined(
+      _vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      callee: vm_js::GcObject,
+      this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+        return Ok(Value::Undefined);
+      };
+      let is_undefined = matches!(this, Value::Undefined);
+      set_prop(scope, global, "__microtask_this_is_undefined", Value::Bool(is_undefined));
+      Ok(Value::Undefined)
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      set_prop(
+        &mut scope,
+        global,
+        "__microtask_this_is_undefined",
+        Value::Bool(false),
+      );
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        let mut scope = heap.scope();
+        let queue_microtask = get_prop(&mut scope, global, "queueMicrotask");
+        let cb =
+          make_callback(vm, &mut scope, global, "micro_cb", cb_record_this_is_undefined);
+        vm.call(
+          &mut scope,
+          queue_microtask,
+          Value::Object(global),
+          &[Value::Object(cb)],
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let flag = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      get_prop(&mut scope, global, "__microtask_this_is_undefined")
+    };
+    assert_eq!(flag, Value::Bool(true));
     Ok(())
   }
 }
