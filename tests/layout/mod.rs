@@ -39,6 +39,7 @@ mod flex_auto_min_size_aspect_ratio_transferred;
 mod flex_auto_min_size_column_single_line;
 mod flex_auto_min_size_overflow_clip;
 mod flex_auto_min_size_percent;
+mod flex_empty_anonymous_block_item;
 mod flex_percent_height_indefinite;
 mod flex_basis_calc;
 mod flex_basis_content;

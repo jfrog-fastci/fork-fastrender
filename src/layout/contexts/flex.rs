@@ -7535,6 +7535,7 @@ impl FlexFormattingContext {
       target_height: f32,
       raw_layout_width: f32,
       raw_layout_height: f32,
+      zero_main_size_is_legitimate: bool,
     }
 
     #[derive(Clone)]
@@ -7763,8 +7764,55 @@ impl FlexFormattingContext {
           }
         }
       }
-      let needs_intrinsic_main = (main_axis_is_row && raw_layout_width <= eps)
-        || (!main_axis_is_row && raw_layout_height <= eps);
+      // Taffy can legitimately resolve a 0px main size for empty flex items. Only treat it as a
+      // "collapsed layout" that needs fallback reflow when the child has a non-zero intrinsic
+      // contribution (or an explicit size forces it to be non-zero).
+      let raw_main_size = if main_axis_is_row {
+        raw_layout_width
+      } else {
+        raw_layout_height
+      };
+      let main_size_is_zero = raw_main_size.is_finite() && raw_main_size >= 0.0 && raw_main_size <= eps;
+      let explicit_zero_main_size = if main_axis_is_row {
+        child_box
+          .style
+          .width
+          .as_ref()
+          .map(|l| l.unit.is_absolute() && l.value.abs() <= eps && !l.unit.is_percentage())
+          .unwrap_or(false)
+      } else {
+        child_box
+          .style
+          .height
+          .as_ref()
+          .map(|l| l.unit.is_absolute() && l.value.abs() <= eps && !l.unit.is_percentage())
+          .unwrap_or(false)
+      };
+      let zero_main_size_is_legitimate = if main_size_is_zero {
+        if explicit_zero_main_size {
+          true
+        } else {
+          let fc_type = child_box
+            .formatting_context()
+            .unwrap_or(FormattingContextType::Block);
+          let fc = factory.get(fc_type);
+          let intrinsic_main = if main_axis_is_row {
+            fc.compute_intrinsic_inline_size(child_box, IntrinsicSizingMode::MaxContent)
+          } else {
+            fc.compute_intrinsic_block_size(child_box, IntrinsicSizingMode::MaxContent)
+          };
+          match intrinsic_main {
+            Ok(size) => size <= eps,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => false,
+          }
+        }
+      } else {
+        false
+      };
+      let needs_intrinsic_main = !zero_main_size_is_legitimate
+        && ((main_axis_is_row && raw_layout_width <= eps)
+          || (!main_axis_is_row && raw_layout_height <= eps));
 
       child_metrics[dom_idx] = Some(ChildMetrics {
         child_loc_x,
@@ -7775,6 +7823,7 @@ impl FlexFormattingContext {
         target_height,
         raw_layout_width,
         raw_layout_height,
+        zero_main_size_is_legitimate,
       });
 
       let skip_contents = match child_box.style.content_visibility {
@@ -7836,7 +7885,7 @@ impl FlexFormattingContext {
       let used_border_box_width = if main_axis_is_horizontal {
         (raw_layout_width.is_finite()
           && raw_layout_width >= 0.0
-          && (raw_layout_width > size_eps || basis_is_content))
+          && (raw_layout_width > size_eps || basis_is_content || zero_main_size_is_legitimate))
           .then_some(raw_layout_width)
       } else {
         (raw_layout_width.is_finite() && raw_layout_width > size_eps).then_some(raw_layout_width)
@@ -7846,7 +7895,7 @@ impl FlexFormattingContext {
       } else {
         (raw_layout_height.is_finite()
           && raw_layout_height >= 0.0
-          && (raw_layout_height > size_eps || basis_is_content))
+          && (raw_layout_height > size_eps || basis_is_content || zero_main_size_is_legitimate))
           .then_some(raw_layout_height)
       };
 
@@ -8063,9 +8112,15 @@ impl FlexFormattingContext {
         }
 
         let mut max_content: Option<(FragmentNode, Size)> = None;
+        let main_axis_has_used_border_box = if main_axis_is_row {
+          work.used_border_box_width.is_some()
+        } else {
+          work.used_border_box_height.is_some()
+        };
         let needs_max_content_fallback = (main_axis_is_row && work.layout_width <= eps)
           || (!main_axis_is_row && work.layout_height <= eps);
         if needs_max_content_fallback
+          && !main_axis_has_used_border_box
           && !matches!(
             work.child_box.style.flex_basis,
             crate::style::types::FlexBasis::Content
@@ -8225,6 +8280,7 @@ impl FlexFormattingContext {
       let target_height = metrics.target_height;
       let raw_layout_width = metrics.raw_layout_width;
       let raw_layout_height = metrics.raw_layout_height;
+      let zero_main_size_is_legitimate = metrics.zero_main_size_is_legitimate;
       let child_cross_align = child_box
         .style
         .align_self
@@ -8256,16 +8312,20 @@ impl FlexFormattingContext {
           store_remembered_size = true;
           record_fragment_clone(CloneSite::FlexMeasureReuse, fragment.as_ref());
           let template = CachedFragmentTemplate::new(fragment);
-          let intrinsic_size =
-            Self::fragment_subtree_size(template.fragment(), &mut deadline_counter)?;
-          let mut resolved_width = layout_width;
-          let mut resolved_height = layout_height;
-          let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-            && main_axis_is_horizontal
-            && resolved_width <= eps);
-          let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-            && !main_axis_is_horizontal
-            && resolved_height <= eps);
+           let intrinsic_size =
+             Self::fragment_subtree_size(template.fragment(), &mut deadline_counter)?;
+           let mut resolved_width = layout_width;
+           let mut resolved_height = layout_height;
+           let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+             && main_axis_is_horizontal
+             && resolved_width <= eps)
+             && !(main_axis_is_horizontal && zero_main_size_is_legitimate && resolved_width <= eps);
+           let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+             && !main_axis_is_horizontal
+             && resolved_height <= eps)
+             && !(!main_axis_is_horizontal
+               && zero_main_size_is_legitimate
+               && resolved_height <= eps);
           if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
             resolved_width = intrinsic_size.width;
           }
@@ -8592,14 +8652,18 @@ impl FlexFormattingContext {
 
           if final_fragment.is_none() {
             // Position the child using the Taffy-computed coordinates (relative to parent).
-            let mut resolved_width = layout_width;
-            let mut resolved_height = layout_height;
-            let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-              && main_axis_is_horizontal
-              && resolved_width <= eps);
-            let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-              && !main_axis_is_horizontal
-              && resolved_height <= eps);
+             let mut resolved_width = layout_width;
+             let mut resolved_height = layout_height;
+             let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+               && main_axis_is_horizontal
+               && resolved_width <= eps)
+               && !(main_axis_is_horizontal && zero_main_size_is_legitimate && resolved_width <= eps);
+             let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+               && !main_axis_is_horizontal
+               && resolved_height <= eps)
+               && !(!main_axis_is_horizontal
+                 && zero_main_size_is_legitimate
+                 && resolved_height <= eps);
             if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
               resolved_width = intrinsic_size.width;
             }
@@ -9171,20 +9235,34 @@ impl FlexFormattingContext {
     if !children.is_empty() && matches!(box_node.style.flex_wrap, FlexWrap::NoWrap) {
       let eps = 0.1;
       if main_axis_is_horizontal {
+        // Taffy can legitimately return equal main-axis offsets for adjacent 0px items. Detect
+        // overlap/backtracking using each child's main-axis interval rather than requiring
+        // strictly monotonic start coordinates.
         let mut violates_monotonicity = false;
-        let mut last_x = children[0].bounds.x();
+        let mut prev_min = children[0].bounds.x();
+        let mut prev_max = children[0].bounds.max_x();
         for child in children.iter().skip(1) {
-          let x = child.bounds.x();
-          if main_grows_positive {
-            if x <= last_x + eps {
-              violates_monotonicity = true;
-              break;
-            }
-          } else if x >= last_x - eps {
+          let min = child.bounds.x();
+          let max = child.bounds.max_x();
+          if !min.is_finite()
+            || !max.is_finite()
+            || !prev_min.is_finite()
+            || !prev_max.is_finite()
+          {
             violates_monotonicity = true;
             break;
           }
-          last_x = x;
+          if main_grows_positive {
+            if min < prev_max - eps {
+              violates_monotonicity = true;
+              break;
+            }
+          } else if max > prev_min + eps {
+            violates_monotonicity = true;
+            break;
+          }
+          prev_min = min;
+          prev_max = max;
         }
         if violates_monotonicity {
           if main_grows_positive {
@@ -9203,19 +9281,30 @@ impl FlexFormattingContext {
         }
       } else {
         let mut violates_monotonicity = false;
-        let mut last_y = children[0].bounds.y();
+        let mut prev_min = children[0].bounds.y();
+        let mut prev_max = children[0].bounds.max_y();
         for child in children.iter().skip(1) {
-          let y = child.bounds.y();
-          if main_grows_positive {
-            if y <= last_y + eps {
-              violates_monotonicity = true;
-              break;
-            }
-          } else if y >= last_y - eps {
+          let min = child.bounds.y();
+          let max = child.bounds.max_y();
+          if !min.is_finite()
+            || !max.is_finite()
+            || !prev_min.is_finite()
+            || !prev_max.is_finite()
+          {
             violates_monotonicity = true;
             break;
           }
-          last_y = y;
+          if main_grows_positive {
+            if min < prev_max - eps {
+              violates_monotonicity = true;
+              break;
+            }
+          } else if max > prev_min + eps {
+            violates_monotonicity = true;
+            break;
+          }
+          prev_min = min;
+          prev_max = max;
         }
         if violates_monotonicity {
           if main_grows_positive {

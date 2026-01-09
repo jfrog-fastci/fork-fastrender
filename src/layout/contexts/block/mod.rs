@@ -3137,7 +3137,14 @@ impl BlockFormattingContext {
       self.viewport_size.height
     };
     let mut containing_width = inline_percentage_base;
-    if !intrinsic_width && containing_width <= 1.0 {
+    // When flex/grid passes a used border-box size override, a near-zero containing width is
+    // intentional (e.g. a 0px flex item) and should not fall back to the viewport.
+    let used_border_box_inline = if inline_is_horizontal {
+      constraints.used_border_box_width
+    } else {
+      constraints.used_border_box_height
+    };
+    if !intrinsic_width && containing_width <= 1.0 && used_border_box_inline.is_none() {
       let width_is_absolute = parent
         .style
         .width
@@ -5610,7 +5617,7 @@ impl FormattingContext for BlockFormattingContext {
     // width as the used content width without honoring max-width).
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
       let mut containing_width = inline_percentage_base;
-      if containing_width <= 1.0 {
+      if containing_width <= 1.0 && constraints.used_border_box_width.is_none() {
         let width_is_absolute = style
           .width
           .as_ref()
@@ -5727,7 +5734,12 @@ impl FormattingContext for BlockFormattingContext {
         preferred_containing_width(inline_percentage_base).unwrap_or(inline_percentage_base)
       }
     };
-    if containing_width <= 1.0 && !intrinsic_width_mode {
+    let used_border_box_inline = if inline_is_horizontal {
+      constraints.used_border_box_width
+    } else {
+      constraints.used_border_box_height
+    };
+    if containing_width <= 1.0 && !intrinsic_width_mode && used_border_box_inline.is_none() {
       let width_is_absolute = style
         .width
         .as_ref()
