@@ -43,6 +43,7 @@ mod flex_fragmentation;
 mod flex_intrinsic_sizing_keywords;
 mod flex_justify_content_reverse;
 mod flex_justify_content_start_end;
+mod flex_forced_breaks;
 mod flex_positioned_relayout;
 mod flex_fragmentation_row_lines;
 mod flex_fragmentation_order_and_oof;

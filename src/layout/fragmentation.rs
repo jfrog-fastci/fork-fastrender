@@ -3392,6 +3392,8 @@ fn collect_forced_boundaries_with_axes_internal(
         }
 
         if boundary_reqs.iter().any(|req| req.forced) {
+          // Align boundaries to the end edge of each preceding flex line so breaks never land after
+          // a `row-gap`/`align-content` gap and accidentally create gap-only pages.
           let line_ends: Vec<f32> = flex_lines.lines.iter().map(|line| line.end).collect();
 
           if boundary_reqs[0].forced {
