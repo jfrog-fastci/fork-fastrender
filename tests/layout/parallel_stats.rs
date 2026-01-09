@@ -4,6 +4,7 @@ use std::fmt::Write;
 
 #[test]
 fn render_stats_records_layout_parallel_counters() {
+  let _guard = super::layout_parallel_debug_lock();
   let mut html = String::from(
     "<!DOCTYPE html><style>.item{padding:4px;margin:2px;border:1px solid #000;}</style><body>",
   );

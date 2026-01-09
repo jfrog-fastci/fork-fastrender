@@ -3856,11 +3856,10 @@ fn atomic_containing_for_fragmentainer(
     return None;
   }
   // `atomic` ranges are filtered per-fragmentainer-size upstream (see `atomic_ranges_for`), using
-  // each candidate's `required_fragmentainer_size`. Some atomic candidates widen their range to
-  // include adjacent empty gutters (grid gaps, flex line gaps) while still using the *track/line
-  // size* as the required size. In those cases `range.end - range.start` can exceed the
-  // fragmentainer size, but we still want to treat the widened range as atomic so breaks never
-  // land inside the gutter.
+  // each candidate's `required_fragmentainer_size` (which may exclude absorbed gutters). Some
+  // atomic candidates widen their range to include adjacent empty gutters (grid gaps, flex line
+  // gaps) so breaks never land inside the gutter; in those cases `range.end - range.start` can
+  // exceed the fragmentainer size, but the widened range should still be treated as atomic here.
   atomic_containing(pos, atomic)
 }
 

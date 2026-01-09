@@ -317,6 +317,29 @@ fn subtree_contains_content_visibility_auto(
     ) {
       return Ok(true);
     }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter() {
+      stack.push(child);
+    }
+  }
+  Ok(false)
+}
+
+fn subtree_contains_out_of_flow_positioned(
+  root: &BoxNode,
+  deadline_counter: &mut usize,
+) -> Result<bool, LayoutError> {
+  let mut stack: Vec<&BoxNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    check_layout_deadline(deadline_counter)?;
+    if matches!(node.style.position, Position::Absolute | Position::Fixed) {
+      return Ok(true);
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
     for child in node.children.iter() {
       stack.push(child);
     }
@@ -4460,13 +4483,13 @@ impl FormattingContext for FlexFormattingContext {
         .map_init(
           || 0usize,
           |deadline_counter, (idx, child)| {
-              with_deadline(deadline.as_ref(), || {
-                let _stage_guard = StageGuard::install(stage);
-                self.factory.debug_record_parallel_work();
-                check_layout_deadline(deadline_counter)?;
-                compute_child_contribution(child).map(|value| (idx, value))
-              })
-            },
+            with_deadline(deadline.as_ref(), || {
+              let _stage_guard = StageGuard::install(stage);
+              self.factory.debug_record_parallel_work();
+              check_layout_deadline(deadline_counter)?;
+              compute_child_contribution(child).map(|value| (idx, value))
+            })
+          },
         )
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -7562,6 +7585,14 @@ impl FlexFormattingContext {
       dom_idx: usize,
       child_box: &'a BoxNode,
       fc_type: FormattingContextType,
+      /// Whether this child's formatting context must run with a translated factory.
+      ///
+      /// Flex items establish an independent formatting context rooted at their own border-box
+      /// origin (`(0, 0)` in the item's coordinate space). When the flex container places an item
+      /// at a non-zero origin, viewport-relative state (scroll offsets, positioned containing
+      /// blocks) must be translated into the item's coordinate space whenever the subtree relies
+      /// on it (e.g. `content-visibility:auto` or abs/fixed positioned descendants).
+      needs_translated_factory: bool,
       /// The child's Taffy-resolved origin in the flex container's coordinate space.
       ///
       /// Used to translate the viewport scroll offset into the child's local coordinate system so
@@ -7625,6 +7656,10 @@ impl FlexFormattingContext {
         factory = factory.with_fixed_cb(padding_cb);
       }
     }
+    let flex_item_block_fc: Arc<dyn FormattingContext> = Arc::new(
+      BlockFormattingContext::for_flex_item_with_factory(factory.clone())
+        .with_parallelism(self.parallelism),
+    );
     let eps = 0.01;
     let main_axis_positive_container = if main_axis_is_row {
       inline_positive
@@ -7890,11 +7925,13 @@ impl FlexFormattingContext {
         continue;
       }
 
+      let child_ptr = child_box as *const BoxNode;
+      let is_scroll_sensitive = scroll_sensitive.contains(&child_ptr);
+
       if !needs_intrinsic_main {
-        let child_ptr = child_box as *const BoxNode;
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
         let child_scroll = Point::new(parent_scroll.x - child_loc_x, parent_scroll.y - child_loc_y);
-        let cache_key = if scroll_sensitive.contains(&child_ptr) {
+        let cache_key = if is_scroll_sensitive {
           flex_cache_key_with_scroll(child_box, child_scroll)
         } else {
           flex_cache_key(child_box)
@@ -8035,10 +8072,13 @@ impl FlexFormattingContext {
       } else {
         base_constraints
       };
+      let needs_translated_factory = is_scroll_sensitive
+        || subtree_contains_out_of_flow_positioned(child_box, &mut deadline_counter)?;
       layout_work.push(ChildLayoutWorkItem {
         dom_idx,
         child_box,
         fc_type,
+        needs_translated_factory,
         origin: Point::new(child_loc_x, child_loc_y),
         constraints,
         used_border_box_width,
@@ -8059,28 +8099,34 @@ impl FlexFormattingContext {
       let run_layout = |deadline_counter: &mut usize,
                         work: &ChildLayoutWorkItem<'_>|
        -> Result<(usize, ChildLayoutWorkOutput), LayoutError> {
-        // Translate viewport-relative state into the child's coordinate system so nested formatting
-        // contexts can correctly decide which `content-visibility:auto` descendants intersect the
-        // viewport and so absolute/fixed positioning resolves against the correct containing
-        // blocks.
-        //
-        // The flex container receives state already translated into its own coordinate space by its
-        // parent (block/grid/flex); do the same for each child formatting context using the Taffy
-        // placement origin.
-        let child_factory = factory.translated_for_child(work.origin);
-        // Flex items establish an independent formatting context. Block flex items need the
-        // flex-item block formatting context so:
-        // - auto margins resolve per flexbox rules, and
-        // - parent/child margin collapsing is prevented (flex items behave like a BFC).
-        let fc: Arc<dyn FormattingContext> = if matches!(work.fc_type, FormattingContextType::Block)
-        {
-          Arc::new(
-            BlockFormattingContext::for_flex_item_with_factory(child_factory.clone())
-              .with_parallelism(self.parallelism),
-          )
-        } else {
-          child_factory.get(work.fc_type)
-        };
+        let fc: Arc<dyn FormattingContext> =
+          if work.needs_translated_factory {
+            // Translate viewport-relative state into the child's coordinate system so nested
+            // formatting contexts can correctly decide which `content-visibility:auto` descendants
+            // intersect the viewport and so absolute/fixed positioning resolves against the correct
+            // containing blocks.
+            //
+            // The flex container receives state already translated into its own coordinate space by
+            // its parent (block/grid/flex); do the same for each child formatting context using the
+            // Taffy placement origin.
+            let child_factory = factory.translated_for_child(work.origin);
+            if matches!(work.fc_type, FormattingContextType::Block) {
+              // Flex items establish an independent formatting context. Block flex items need the
+              // flex-item block formatting context so:
+              // - auto margins resolve per flexbox rules, and
+              // - parent/child margin collapsing is prevented (flex items behave like a BFC).
+              Arc::new(
+                BlockFormattingContext::for_flex_item_with_factory(child_factory.clone())
+                  .with_parallelism(self.parallelism),
+              )
+            } else {
+              child_factory.get(work.fc_type)
+            }
+          } else if matches!(work.fc_type, FormattingContextType::Block) {
+            flex_item_block_fc.clone()
+          } else {
+            factory.get(work.fc_type)
+          };
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
         let basis_content_override = work.layout_child_storage.is_none()
           && matches!(

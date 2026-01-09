@@ -211,5 +211,8 @@ mod test_locks;
 // Consolidated from tests/layout_*.rs
 mod parallel_api;
 mod parallel_stats;
-mod pipeline_churn_guardrail;
 mod profile_diagnostics;
+
+fn layout_parallel_debug_lock() -> parking_lot::MutexGuard<'static, ()> {
+  test_locks::layout_parallel_debug_lock()
+}

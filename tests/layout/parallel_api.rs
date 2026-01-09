@@ -9,11 +9,10 @@ use fastrender::{
   RenderArtifactRequest, Size,
 };
 use std::fmt::Write;
-use super::test_locks::layout_parallel_debug_lock;
 
 #[test]
 fn parallel_layout_matches_serial_and_uses_threads() {
-  let _guard = layout_parallel_debug_lock();
+  let _guard = super::layout_parallel_debug_lock();
   let mut html = String::from(
     "<!DOCTYPE html><style>.item{padding:4px;margin:2px;border:1px solid #000;}</style><body>",
   );
@@ -93,7 +92,7 @@ fn parallel_layout_matches_serial_and_uses_threads() {
 
 #[test]
 fn auto_parallel_layout_engages_on_wide_html() {
-  let _guard = layout_parallel_debug_lock();
+  let _guard = super::layout_parallel_debug_lock();
   let mut html = String::from("<!DOCTYPE html><body>");
   for idx in 0..1024 {
     let _ = writeln!(html, "<div class=\"item\">row-{idx}</div>");
@@ -133,7 +132,7 @@ fn auto_parallel_layout_engages_on_wide_html() {
 
 #[test]
 fn auto_parallel_layout_does_not_engage_on_tiny_html() {
-  let _guard = layout_parallel_debug_lock();
+  let _guard = super::layout_parallel_debug_lock();
   let html = "<!DOCTYPE html><body><div>tiny</div></body>";
 
   let config = FastRenderConfig::new().with_default_viewport(64, 64);
@@ -163,7 +162,7 @@ fn auto_parallel_layout_does_not_engage_on_tiny_html() {
 
 #[test]
 fn auto_parallel_layout_engages_on_large_synthetic_box_tree() {
-  let _guard = layout_parallel_debug_lock();
+  let _guard = super::layout_parallel_debug_lock();
   let style = std::sync::Arc::new(fastrender::ComputedStyle::default());
   let mut children = Vec::with_capacity(1024);
   for _ in 0..1024 {

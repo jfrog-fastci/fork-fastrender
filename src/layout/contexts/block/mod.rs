@@ -2424,17 +2424,20 @@ impl BlockFormattingContext {
     // Keep this conservative (treat any in-flow `float` as disabling parallelism) rather than
     // trying to reason about BFC boundaries; correctness > parallelism coverage.
     let mut stack: Vec<&BoxNode> = node.children.iter().collect();
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
     while let Some(node) = stack.pop() {
       if node.style.float.is_floating()
         && matches!(node.style.position, Position::Static | Position::Relative)
       {
         return true;
       }
-      for child in node.children.iter() {
-        stack.push(child);
-      }
       if let Some(body) = node.footnote_body.as_deref() {
         stack.push(body);
+      }
+      for child in node.children.iter() {
+        stack.push(child);
       }
     }
     false
@@ -2490,22 +2493,21 @@ impl BlockFormattingContext {
     }
     let deadline = active_deadline();
     let stage = active_stage();
-    let child_layout_ctx = self.clone();
     let parallel_results = parent
       .children
       .par_iter()
       .enumerate()
       .filter(|(_, child)| !is_ignorable_whitespace(child))
-        .map(|(idx, child)| {
-          with_deadline(deadline.as_ref(), || {
-            let _stage_guard = StageGuard::install(stage);
-            child_layout_ctx.factory.debug_record_parallel_work();
-            let fragment = child_layout_ctx.layout_block_child(
-              parent,
-              child,
-              containing_width,
-              constraints,
-              0.0,
+      .map(|(idx, child)| {
+        with_deadline(deadline.as_ref(), || {
+          let _stage_guard = StageGuard::install(stage);
+          self.factory.debug_record_parallel_work();
+          let fragment = self.layout_block_child(
+            parent,
+            child,
+            containing_width,
+            constraints,
+            0.0,
             nearest_positioned_cb,
             nearest_fixed_cb,
             None,
