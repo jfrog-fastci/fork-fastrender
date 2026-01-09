@@ -71,8 +71,8 @@ pub struct BrowserTabState {
   pub cancel: CancelGens,
   /// URL shown in the address bar when this tab is active.
   ///
-  /// This is driven exclusively by worker navigation events (e.g.
-  /// [`WorkerToUi::NavigationCommitted`]) and is *not* an authoritative history stack.
+  /// This is driven by worker navigation events (e.g. [`WorkerToUi::NavigationCommitted`]), along
+  /// with optimistic UI updates for typed navigations, and is *not* an authoritative history stack.
   pub current_url: Option<String>,
   pub title: Option<String>,
   pub loading: bool,
@@ -123,8 +123,10 @@ impl BrowserTabState {
   /// `javascript:` and unknown schemes. On failure, the returned error is intended for
   /// user-facing display.
   ///
-  /// On success, this marks the tab as loading. `current_url` is updated exclusively via worker
-  /// navigation events so the worker remains the source of truth for history.
+  /// On success, this marks the tab as loading and updates `current_url` for immediate UI display.
+  ///
+  /// The worker remains the source of truth for the ultimately committed URL (e.g. after
+  /// redirects) and navigation history/back-forward state.
   pub fn navigate_typed(&mut self, raw: &str) -> Result<UiToWorker, String> {
     let raw_trimmed = raw.trim();
 
@@ -143,6 +145,7 @@ impl BrowserTabState {
     };
     validate_typed_url_scheme(&normalized)?;
 
+    self.current_url = Some(normalized.clone());
     self.loading = true;
     self.error = None;
     self.title = None;
@@ -220,7 +223,7 @@ mod tab_tests {
       other => panic!("expected Navigate, got {other:?}"),
     }
 
-    assert_eq!(tab.current_url(), Some("about:newtab"));
+    assert_eq!(tab.current_url(), Some("about:blank"));
     assert_eq!(tab.error, None);
     assert!(tab.loading);
   }
@@ -244,7 +247,7 @@ mod tab_tests {
       other => panic!("expected Navigate, got {other:?}"),
     }
 
-    assert_eq!(tab.current_url(), Some("https://example.com/page.html"));
+    assert_eq!(tab.current_url(), Some("https://example.com/page.html#target"));
     assert_eq!(tab.error, None);
     assert!(tab.loading);
   }
