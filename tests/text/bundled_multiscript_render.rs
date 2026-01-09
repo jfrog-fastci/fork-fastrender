@@ -199,6 +199,41 @@ fn bundled_fonts_cover_javanese_punctuation_cluster() {
 }
 
 #[test]
+fn bundled_fonts_select_traditional_chinese_face_for_zh_hant() {
+  let mut pipeline = ShapingPipeline::new();
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+  let db = font_ctx.database();
+
+  assert!(
+    db.faces()
+      .any(|face| face.families.iter().any(|(family, _)| family == "Noto Sans TC")),
+    "bundled font set should include Noto Sans TC for zh-Hant fallback selection",
+  );
+
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["sans-serif".to_string()].into();
+  style.font_size = 32.0;
+  style.language = "zh-Hant".into();
+
+  let text = "漢字測試";
+  let runs = pipeline
+    .shape(text, &style, &font_ctx)
+    .expect("shape zh-Hant sample");
+  assert!(!runs.is_empty(), "zh-Hant sample should produce runs");
+
+  for run in &runs {
+    assert_eq!(
+      run.font.family, "Noto Sans TC",
+      "zh-Hant Han run should prefer Noto Sans TC"
+    );
+    assert!(
+      run.glyphs.iter().all(|glyph| glyph.glyph_id != 0),
+      "zh-Hant sample should not contain .notdef glyphs"
+    );
+  }
+}
+
+#[test]
 fn bundled_generics_prefer_bundled_text_fonts() {
   let db = FontDatabase::with_config(&FontConfig::bundled_only());
 

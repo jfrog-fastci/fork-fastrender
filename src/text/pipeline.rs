@@ -8853,6 +8853,14 @@ mod tests {
     assert_eq!(zh_runs.len(), 1);
     assert_eq!(zh_runs[0].font.family, "Noto Sans SC");
 
+    let mut zh_hant_style = base_style.clone();
+    zh_hant_style.language = "zh-Hant".into();
+    let zh_hant_runs = pipeline
+      .shape("漢、字", &zh_hant_style, &ctx)
+      .expect("shape traditional chinese han");
+    assert_eq!(zh_hant_runs.len(), 1);
+    assert_eq!(zh_hant_runs[0].font.family, "Noto Sans TC");
+
     // Hebrew/Thai mapping is exercised only when those faces are present (they may be
     // added by a separate bundled-font task).
     for (lang, sample, expected) in [

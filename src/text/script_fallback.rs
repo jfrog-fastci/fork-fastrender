@@ -16,6 +16,7 @@ use crate::text::pipeline::Script;
 
 const NOTO_SANS_MONO: &str = "Noto Sans Mono";
 const NOTO_SANS_SC: &str = "Noto Sans SC";
+const NOTO_SANS_TC: &str = "Noto Sans TC";
 const NOTO_SANS_JP: &str = "Noto Sans JP";
 const NOTO_SANS_KR: &str = "Noto Sans KR";
 const NOTO_SANS_SYMBOLS_2: &str = "Noto Sans Symbols 2";
@@ -146,6 +147,8 @@ mod tests {
       ("ja-JP", NOTO_SANS_JP),
       ("ko", NOTO_SANS_KR),
       ("zh", NOTO_SANS_SC),
+      ("zh-Hant", NOTO_SANS_TC),
+      ("zh-TW", NOTO_SANS_TC),
       ("", NOTO_SANS_SC),
     ] {
       let families = preferred_families(Script::Han, lang);
@@ -217,6 +220,7 @@ mod tests {
       (Script::Han, "ja"),
       (Script::Han, "ko"),
       (Script::Han, "zh"),
+      (Script::Han, "zh-Hant"),
     ] {
       for &family in preferred_families(script, language) {
         assert!(
@@ -229,10 +233,47 @@ mod tests {
 }
 
 fn cjk_fallback_families(language: &str) -> &'static [&'static str] {
-  let primary = language
+  let language = language.trim();
+  let mut subtags = language
     .split(|ch| ch == '-' || ch == '_')
-    .next()
-    .unwrap_or_default();
+    .filter(|segment| !segment.is_empty())
+    .peekable();
+  let primary = subtags.next().unwrap_or_default();
+
+  // BCP47 syntax is language-extlang-script-region-variants-extensions-privateuse.
+  // We only need enough structure to pick a Han glyph-shape preference.
+  let mut extlang_count = 0usize;
+  while extlang_count < 3 {
+    let Some(&next) = subtags.peek() else { break };
+    if next.len() == 1 {
+      break;
+    }
+    if next.len() == 3 && next.chars().all(|ch| ch.is_ascii_alphabetic()) {
+      subtags.next();
+      extlang_count += 1;
+      continue;
+    }
+    break;
+  }
+
+  let script = match subtags.peek().copied() {
+    Some(subtag) if subtag.len() == 4 && subtag.chars().all(|ch| ch.is_ascii_alphabetic()) => {
+      subtags.next();
+      Some(subtag)
+    }
+    _ => None,
+  };
+
+  let region = match subtags.peek().copied() {
+    Some(subtag)
+      if (subtag.len() == 2 && subtag.chars().all(|ch| ch.is_ascii_alphabetic()))
+        || (subtag.len() == 3 && subtag.chars().all(|ch| ch.is_ascii_digit())) =>
+    {
+      subtags.next();
+      Some(subtag)
+    }
+    _ => None,
+  };
 
   if primary.eq_ignore_ascii_case("ja") {
     // Japanese prefers JP glyph shapes, but keep SC/KR as backups when the face
@@ -240,6 +281,7 @@ fn cjk_fallback_families(language: &str) -> &'static [&'static str] {
     &[
       NOTO_SANS_JP,
       NOTO_SANS_SC,
+      NOTO_SANS_TC,
       NOTO_SANS_KR,
       NOTO_SANS_SYMBOLS_2,
       NOTO_SANS_SYMBOLS,
@@ -249,15 +291,49 @@ fn cjk_fallback_families(language: &str) -> &'static [&'static str] {
     &[
       NOTO_SANS_KR,
       NOTO_SANS_SC,
+      NOTO_SANS_TC,
       NOTO_SANS_JP,
       NOTO_SANS_SYMBOLS_2,
       NOTO_SANS_SYMBOLS,
       STIX_TWO_MATH,
     ]
+  } else if primary.eq_ignore_ascii_case("zh") {
+    let use_traditional = match script {
+      Some(script) if script.eq_ignore_ascii_case("Hant") => true,
+      Some(script) if script.eq_ignore_ascii_case("Hans") => false,
+      _ => region.is_some_and(|region| {
+        region.eq_ignore_ascii_case("TW")
+          || region.eq_ignore_ascii_case("HK")
+          || region.eq_ignore_ascii_case("MO")
+      }),
+    };
+
+    if use_traditional {
+      &[
+        NOTO_SANS_TC,
+        NOTO_SANS_SC,
+        NOTO_SANS_JP,
+        NOTO_SANS_KR,
+        NOTO_SANS_SYMBOLS_2,
+        NOTO_SANS_SYMBOLS,
+        STIX_TWO_MATH,
+      ]
+    } else {
+      &[
+        NOTO_SANS_SC,
+        NOTO_SANS_TC,
+        NOTO_SANS_JP,
+        NOTO_SANS_KR,
+        NOTO_SANS_SYMBOLS_2,
+        NOTO_SANS_SYMBOLS,
+        STIX_TWO_MATH,
+      ]
+    }
   } else {
     // Default to Simplified Chinese when language is unknown.
     &[
       NOTO_SANS_SC,
+      NOTO_SANS_TC,
       NOTO_SANS_JP,
       NOTO_SANS_KR,
       NOTO_SANS_SYMBOLS_2,

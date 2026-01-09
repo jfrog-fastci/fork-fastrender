@@ -57,6 +57,7 @@ fn bundled_font_set_integrity() {
   assert_family_has_glyph(&ctx, "Noto Sans Myanmar", 'မ');
   assert_family_has_glyph(&ctx, "Noto Sans Telugu", 'త');
   assert_family_has_glyph(&ctx, "Noto Sans SC", '中');
+  assert_family_has_glyph(&ctx, "Noto Sans TC", '中');
   assert_family_has_glyph(&ctx, "Noto Sans JP", 'あ');
   assert_family_has_glyph(&ctx, "Noto Sans KR", '한');
   assert_family_has_glyph(&ctx, "Noto Sans Symbols", '→');

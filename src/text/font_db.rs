@@ -226,6 +226,10 @@ const BUNDLED_FONTS: &[BundledFont] = &[
     data: include_bytes!("../../tests/fixtures/fonts/NotoSansSC-subset.ttf"),
   },
   BundledFont {
+    name: "Noto Sans TC",
+    data: include_bytes!("../../tests/fixtures/fonts/NotoSansTC-subset.ttf"),
+  },
+  BundledFont {
     name: "Noto Sans JP",
     data: include_bytes!("../../tests/fixtures/fonts/NotoSansJP-subset.ttf"),
   },

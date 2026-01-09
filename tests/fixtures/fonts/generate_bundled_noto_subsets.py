@@ -78,6 +78,7 @@ FONT_SOURCES = {
     "meetei_mayek": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansmeeteimayek/NotoSansMeeteiMayek%5Bwght%5D.ttf",
     "gothic": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansgothic/NotoSansGothic-Regular.ttf",
     "cjk_sc": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+    "cjk_tc": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf",
     "cjk_jp": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
     "cjk_kr": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf",
     "symbols": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf",
@@ -541,6 +542,12 @@ FONT_DEFS = [
     {
         "source": "cjk_sc",
         "output": "NotoSansSC-subset.ttf",
+        "unicodes": CJK_SHARED_UNICODES,
+        "variations": {"wght": 400},
+    },
+    {
+        "source": "cjk_tc",
+        "output": "NotoSansTC-subset.ttf",
         "unicodes": CJK_SHARED_UNICODES,
         "variations": {"wght": 400},
     },

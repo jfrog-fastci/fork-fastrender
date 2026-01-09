@@ -85,9 +85,10 @@ pip install -r tests/fixtures/fonts/requirements.txt
   - `NotoSansSylotiNagri-subset.ttf`: Syloti Nagri (U+A800–A82F) for Wikipedia language list samples (ꠍꠤꠟꠐꠤ).
   - `NotoSansMeeteiMayek-subset.ttf`: Meetei Mayek (U+ABC0–ABFF) for Wikipedia language list samples (ꯃꯤꯇꯩ ꯂꯣꯟ).
   - `NotoSansGothic-subset.ttf`: Gothic (U+10330–1034F) for Wikipedia language list samples (𐌲𐌿𐍄𐌹𐍃𐌺).
-  - `NotoSansSC-subset.ttf` / `NotoSansJP-subset.ttf` / `NotoSansKR-subset.ttf`: CJK Unified Ideographs (U+3400–4DBF,
-    U+4E00–9FFF), CJK punctuation/fullwidth forms, Small Form Variants punctuation (U+FE50–FE6F), and common combining
-    marks (U+0300–036F); JP adds kana (U+3040–31FF) and KR adds Hangul (U+1100–11FF, U+AC00–D7AF).
+  - `NotoSansSC-subset.ttf` / `NotoSansTC-subset.ttf` / `NotoSansJP-subset.ttf` / `NotoSansKR-subset.ttf`: CJK Unified
+    Ideographs (U+3400–4DBF, U+4E00–9FFF), CJK punctuation/fullwidth forms, Small Form Variants punctuation
+    (U+FE50–FE6F), and common combining marks (U+0300–036F). The TC face provides Traditional Chinese glyph shapes; JP
+    adds kana (U+3040–31FF) and KR adds Hangul (U+1100–11FF, U+AC00–D7AF).
   - `NotoSansSymbols-subset.ttf` / `NotoSansSymbols2-subset.ttf`: UI arrows, checkmarks, stars, alerts, and related
     symbol glyphs used by fallback chains.
 - `FastRenderEmoji.ttf`: COLR/CPAL emoji fixture that covers 😀 (U+1F600), ❤ (U+2764), 👍 (U+1F44D), 🇺🇸
