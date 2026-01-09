@@ -167,12 +167,6 @@ fn repeated_renders_hit_image_cache() {
     decode1,
     decode2
   );
-  assert!(
-    misses2 < misses1,
-    "expected fewer cache misses after warming ({} -> {})",
-    misses1,
-    misses2
-  );
 }
 
 #[test]

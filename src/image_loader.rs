@@ -6305,18 +6305,19 @@ impl ImageCache {
       },
     ))?;
 
-    let render_width_f = render_width as f32;
-    let render_height_f = render_height as f32;
-
-    let scale_x = render_width_f / source_width;
-    let scale_y = render_height_f / source_height;
-    let transform = if aspect_ratio_none {
-      tiny_skia::Transform::from_scale(scale_x, scale_y)
-    } else {
-      let scale = scale_x.min(scale_y);
-      let translate_x = (render_width_f - source_width * scale) * 0.5;
-      let translate_y = (render_height_f - source_height * scale) * 0.5;
-      tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, translate_x, translate_y)
+    let transform = match svg_view_box_root_transform(
+      svg_content,
+      source_width,
+      source_height,
+      render_width as f32,
+      render_height as f32,
+    ) {
+      Some(transform) => transform,
+      None => {
+        let scale_x = render_width as f32 / source_width;
+        let scale_y = render_height as f32 / source_height;
+        tiny_skia::Transform::from_scale(scale_x, scale_y)
+      }
     };
     check_root(RenderStage::Paint).map_err(Error::Render)?;
     if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -14896,7 +14896,7 @@ fn apply_styles_internal_with_ancestors<'a>(
 ) -> Result<StyledNode, RenderError> {
   enum FrameBase {
     Computed {
-      base: NodeBaseStyles,
+      base: Box<NodeBaseStyles>,
       share_key: Option<StyleSharingKey>,
     },
     Shared {
@@ -14943,7 +14943,7 @@ fn apply_styles_internal_with_ancestors<'a>(
     scope_host: Option<usize>,
     node_id: usize,
     base: FrameBase,
-    starting_base: Option<NodeBaseStyles>,
+    starting_base: Option<Box<NodeBaseStyles>>,
     children: Vec<StyledNode>,
     next_child: usize,
     is_shadow_root: bool,
@@ -14977,7 +14977,7 @@ fn apply_styles_internal_with_ancestors<'a>(
     return Ok(reused);
   }
 
-  let root_base = compute_base_styles(
+  let root_base = Box::new(compute_base_styles(
     node,
     rule_scopes,
     scope_host,
@@ -15000,13 +15000,13 @@ fn apply_styles_internal_with_ancestors<'a>(
     sibling_cache,
     element_attr_cache,
     false,
-  )?;
+  )?);
   let root_starting_base = if has_starting_styles {
     let start_parent_styles = parent_starting_styles.unwrap_or(parent_styles);
     let start_root_font_size = parent_starting_styles
       .map(|s| s.root_font_size)
       .unwrap_or(root_font_size);
-    Some(compute_base_styles(
+    Some(Box::new(compute_base_styles(
       node,
       rule_scopes,
       scope_host,
@@ -15029,7 +15029,7 @@ fn apply_styles_internal_with_ancestors<'a>(
       sibling_cache,
       element_attr_cache,
       true,
-    )?)
+    )?))
   } else {
     None
   };
@@ -15171,7 +15171,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         if let Some(cached) = shared {
           (FrameBase::Shared { cached }, None)
         } else {
-          let base = compute_base_styles(
+          let base = Box::new(compute_base_styles(
             child,
             rule_scopes,
             child_scope,
@@ -15194,7 +15194,7 @@ fn apply_styles_internal_with_ancestors<'a>(
             sibling_cache,
             element_attr_cache,
             false,
-          )?;
+          )?);
 
           let starting_base = if has_starting_styles {
             let mut start_parent_styles: &ComputedStyle = parent
@@ -15217,7 +15217,7 @@ fn apply_styles_internal_with_ancestors<'a>(
                 start_parent_root_font_size = start_parent_styles.root_font_size;
               }
             }
-            Some(compute_base_styles(
+            Some(Box::new(compute_base_styles(
               child,
               rule_scopes,
               child_scope,
@@ -15240,7 +15240,7 @@ fn apply_styles_internal_with_ancestors<'a>(
               sibling_cache,
               element_attr_cache,
               true,
-            )?)
+            )?))
           } else {
             None
           };
@@ -15418,7 +15418,7 @@ fn apply_styles_internal_with_ancestors<'a>(
           ua_styles,
           current_root_font_size: _,
           current_ua_root_font_size: _,
-        } = base;
+        } = *base;
         let styles = Arc::new(styles);
         let needs_ua_styles = cache_flat_inheritance_parent || share_key.is_some();
         let ua_styles = needs_ua_styles.then(|| Arc::new(ua_styles));
