@@ -58,6 +58,7 @@ Rules:
   - `BrowserDocument` behaviour (DOM mutation → re-render, scroll state, referrer propagation, …)
   - The headless UI worker loop and message routing (`UiToWorker`/`WorkerToUi`, tab scoping, stage
     forwarding, …). See the `spawn_ui_worker(...)` helper used throughout the `ui_worker_*` tests.
+    `spawn_test_browser_worker(...)` is a convenience wrapper that returns a `BrowserWorkerHandle`.
 - Prefer `file://` fixtures and `tempdir()`-backed assets over network fetches to keep tests
   deterministic and fast.
 

@@ -2075,3 +2075,11 @@ pub fn spawn_browser_ui_worker(
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
   Ok((handle.tx, handle.rx, handle.join))
 }
+
+/// Convenience wrapper for browser integration tests.
+///
+/// Unlike [`spawn_ui_worker`], this returns a [`BrowserWorkerHandle`] (field names `tx`/`rx`) and
+/// takes `&str` for the worker name.
+pub fn spawn_test_browser_worker(name: &str) -> crate::Result<BrowserWorkerHandle> {
+  spawn_browser_worker_with_name(name.to_string())
+}

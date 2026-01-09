@@ -40,7 +40,8 @@ pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
 pub use browser_tab_controller::BrowserTabController;
 pub use render_worker::{
   spawn_browser_ui_worker, spawn_browser_worker, spawn_browser_worker_with_factory, spawn_ui_worker,
-  spawn_ui_worker_for_test, spawn_ui_worker_with_factory, BrowserWorkerHandle, UiWorkerHandle,
+  spawn_test_browser_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory,
+  BrowserWorkerHandle, UiWorkerHandle,
 };
 #[cfg(any(test, feature = "browser_ui"))]
 pub use render_worker::spawn_browser_worker_for_test;
