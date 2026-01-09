@@ -39,16 +39,24 @@ fn js_test262_smoke_writes_report() {
 set -eu
 
 report=""
+harness=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --report-path) report="$2"; shift 2;;
     --report-path=*) report="${1#--report-path=}"; shift;;
+    --harness) harness="$2"; shift 2;;
+    --harness=*) harness="${1#--harness=}"; shift;;
     *) shift;;
   esac
 done
 
 if [ -z "$report" ]; then
   echo "stub cargo: missing --report-path argument" >&2
+  exit 2
+fi
+
+if [ "$harness" != "none" ]; then
+  echo "stub cargo: expected --harness none (got '$harness')" >&2
   exit 2
 fi
 
@@ -98,6 +106,8 @@ exit 0
       "--suite",
       "smoke",
       "--fail-on",
+      "none",
+      "--harness",
       "none",
       "--test262-dir",
     ])
