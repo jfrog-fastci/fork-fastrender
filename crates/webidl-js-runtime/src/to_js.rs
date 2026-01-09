@@ -1098,7 +1098,7 @@ mod tests {
     let mut rt = VmJsRuntime::new();
     let ctx = TypeContext::default();
 
-    let ty = parse_idl_type_complete("async_sequence<DOMString>")?;
+    let ty = parse_idl_type_complete("async sequence<DOMString>")?;
     let obj = rt.alloc_object_value()?;
     let value = WebIdlValue::PlatformObject(PlatformObject::new(obj));
     let out = to_js(&mut rt, &ctx, &ty, &value)?;

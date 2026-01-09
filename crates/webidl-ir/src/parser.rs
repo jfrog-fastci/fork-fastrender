@@ -214,6 +214,13 @@ impl<'a> Parser<'a> {
       let inner = self.parse_generic_one()?;
       return Ok(IdlType::FrozenArray(Box::new(inner)));
     }
+    if self.consume_keyword("async") {
+      if !self.consume_keyword("sequence") {
+        return self.err("expected `sequence` after `async`");
+      }
+      let inner = self.parse_generic_one()?;
+      return Ok(IdlType::AsyncSequence(Box::new(inner)));
+    }
     if self.consume_keyword("async_sequence") {
       let inner = self.parse_generic_one()?;
       return Ok(IdlType::AsyncSequence(Box::new(inner)));
