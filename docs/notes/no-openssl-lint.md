@@ -37,7 +37,7 @@ For deeper inspection, `cargo tree` is usually enough:
 
 ```bash
 # Show all reverse-dependency paths that reach openssl-sys:
-cargo tree -i openssl-sys
+bash scripts/cargo_agent.sh tree -i openssl-sys
 ```
 
 In most cases, the fix is to switch the offending crate to a Rust TLS backend (e.g. `rustls`)
