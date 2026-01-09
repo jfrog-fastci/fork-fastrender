@@ -6281,8 +6281,30 @@ impl DisplayListBuilder {
       return None;
     }
 
-    // Fallback for fragment trees without box IDs (unit tests): treat the first paintable child as
-    // the body element.
+    // Fallback for fragment trees without box IDs (unit tests): treat the first *in-flow* paintable
+    // child as the body element.
+    //
+    // Important: avoid selecting floats/positioned elements, which would incorrectly promote their
+    // background to the canvas (and break CSS2 paint order expectations in unit tests).
+    for child in html.children.iter() {
+      if let Some(style) = child.style.clone() {
+        if Self::has_paintable_background(&style) {
+          let style_ref = style.as_ref();
+          let is_out_of_flow = matches!(style_ref.position, Position::Absolute | Position::Fixed);
+          let is_float = style_ref.float.is_floating();
+          let is_inline_level = style_ref.display.is_inline_level();
+          if is_out_of_flow || is_float || is_inline_level {
+            continue;
+          }
+          let suppress_box_id = Self::get_box_id(child).unwrap_or(usize::MAX);
+          let rect = Rect::new(html_origin.translate(child.bounds.origin), child.bounds.size);
+          return Some((style, suppress_box_id, rect));
+        }
+      }
+    }
+
+    // As a last resort, fall back to any paintable child so we at least fill the canvas for
+    // synthetic trees.
     for child in html.children.iter() {
       if let Some(style) = child.style.clone() {
         if Self::has_paintable_background(&style) {
@@ -13317,14 +13339,19 @@ mod tests {
     let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
     let items = list.items();
 
-    let push_opacity = items
+    let push_sc = items
       .iter()
-      .position(|item| matches!(item, DisplayItem::PushOpacity(_)))
-      .expect("expected push opacity");
-    let pop_opacity = items
+      .position(|item| {
+        matches!(
+          item,
+          DisplayItem::PushStackingContext(ctx) if (ctx.opacity - 0.5).abs() < 1e-6
+        )
+      })
+      .expect("expected stacking context push with opacity");
+    let pop_sc = items
       .iter()
-      .rposition(|item| matches!(item, DisplayItem::PopOpacity))
-      .expect("expected pop opacity");
+      .rposition(|item| matches!(item, DisplayItem::PopStackingContext))
+      .expect("expected stacking context pop");
 
     let background = items
       .iter()
@@ -13338,21 +13365,26 @@ mod tests {
     assert_eq!(
       items
         .iter()
-        .filter(|item| matches!(item, DisplayItem::PushOpacity(_)))
+        .filter(|item| matches!(item, DisplayItem::PushStackingContext(_)))
         .count(),
       1
     );
     assert_eq!(
       items
         .iter()
-        .filter(|item| matches!(item, DisplayItem::PopOpacity))
+        .filter(|item| matches!(item, DisplayItem::PopStackingContext))
         .count(),
       1
     );
-    assert!(push_opacity < background && background < text && text < pop_opacity);
-    if let DisplayItem::PushOpacity(opacity) = &items[push_opacity] {
-      assert!((opacity.opacity - 0.5).abs() < f32::EPSILON);
-    }
+    assert!(
+      items
+        .iter()
+        .filter(|item| matches!(item, DisplayItem::PushOpacity(_)))
+        .count()
+        == 0,
+      "opacity should be represented on stacking contexts, not via PushOpacity"
+    );
+    assert!(push_sc < background && background < text && text < pop_sc);
   }
 
   #[test]
@@ -15760,9 +15792,10 @@ mod tests {
     let builder = DisplayListBuilder::new();
     let list = builder.build(&fragment);
 
-    assert_eq!(list.len(), 2, "expected fill + stroke placeholder items");
-    assert!(matches!(list.items()[0], DisplayItem::FillRect(_)));
-    assert!(matches!(list.items()[1], DisplayItem::StrokeRect(_)));
+    assert!(
+      list.is_empty(),
+      "missing images without alt should paint nothing rather than a placeholder"
+    );
   }
 
   #[test]
@@ -15837,6 +15870,8 @@ mod tests {
     style.padding_right = Length::px(10.0);
     style.border_left_width = Length::px(5.0);
     style.border_right_width = Length::px(5.0);
+    style.border_left_style = crate::style::types::BorderStyle::Solid;
+    style.border_right_style = crate::style::types::BorderStyle::Solid;
     style.transform.push(Transform::Translate(
       Length::percent(50.0),
       Length::percent(0.0),
@@ -15858,6 +15893,7 @@ mod tests {
     style.transform_box = TransformBox::ContentBox;
     style.padding_left = Length::px(10.0);
     style.border_left_width = Length::px(5.0);
+    style.border_left_style = crate::style::types::BorderStyle::Solid;
     style.transform_origin = crate::style::types::TransformOrigin {
       x: Length::percent(0.0),
       y: Length::percent(0.0),
@@ -16393,7 +16429,9 @@ mod tests {
       }),
       repeat: BackgroundRepeat {
         x: BackgroundRepeatKeyword::Repeat,
-        y: BackgroundRepeatKeyword::Repeat,
+        // Use a non-(repeat|round) keyword in one axis so we take the slower tiling path instead of
+        // emitting a single pattern item.
+        y: BackgroundRepeatKeyword::Space,
       },
       size: BackgroundSize::Explicit(
         BackgroundSizeComponent::Length(Length::px(1.0)),
