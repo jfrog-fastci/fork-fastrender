@@ -2,11 +2,11 @@ use fastrender::dom2::Document;
 use fastrender::error::{Error, Result};
 use fastrender::html::base_url_tracker::BaseUrlTracker;
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
+use fastrender::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use fastrender::js::{
   ClassicScriptScheduler, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptExecutor, ScriptLoader,
   VirtualClock,
 };
-use fastrender::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use fastrender::text::font_db::FontConfig;
 use fastrender::{FastRender, RenderOptions, ResourcePolicy};
 use rquickjs::{Context as JsContext, Function as JsFunction, Runtime as JsRuntime};
@@ -48,8 +48,8 @@ fn file_url_for_path(path: &Path) -> Result<String> {
 }
 
 fn read_script_source(url: &str) -> Result<String> {
-  let parsed = Url::parse(url)
-    .map_err(|err| Error::Other(format!("invalid script URL {url:?}: {err}")))?;
+  let parsed =
+    Url::parse(url).map_err(|err| Error::Other(format!("invalid script URL {url:?}: {err}")))?;
   if parsed.scheme() != "file" {
     return Err(Error::Other(format!(
       "unexpected non-file script URL (scheme={}): {url:?}",
@@ -331,7 +331,10 @@ fn js_inline_script_mutation_affects_render() -> Result<()> {
   harness
     .scheduler
     .finish_parsing(&mut harness.host, &mut harness.event_loop)?;
-  assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    harness.run_event_loop_until_idle()?,
+    RunUntilIdleOutcome::Idle
+  );
   assert_eq!(harness.host.root_class().as_deref(), Some("on"));
 
   let actual = harness.render(options.clone())?;
@@ -371,7 +374,10 @@ fn js_external_defer_scripts_execute_in_order_after_parsing() -> Result<()> {
     .scheduler
     .poll(&mut harness.host, &mut harness.event_loop)?;
 
-  assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    harness.run_event_loop_until_idle()?,
+    RunUntilIdleOutcome::Idle
+  );
   assert_eq!(
     harness.host.root_class().as_deref(),
     Some("off"),
@@ -381,7 +387,10 @@ fn js_external_defer_scripts_execute_in_order_after_parsing() -> Result<()> {
   harness
     .scheduler
     .finish_parsing(&mut harness.host, &mut harness.event_loop)?;
-  assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    harness.run_event_loop_until_idle()?,
+    RunUntilIdleOutcome::Idle
+  );
   assert_eq!(harness.host.root_class().as_deref(), Some("step2"));
 
   let actual = harness.render(options.clone())?;
@@ -426,7 +435,10 @@ fn js_external_async_script_runs_without_waiting_for_parsing_complete() -> Resul
     .scheduler
     .poll(&mut harness.host, &mut harness.event_loop)?;
 
-  assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    harness.run_event_loop_until_idle()?,
+    RunUntilIdleOutcome::Idle
+  );
   assert_eq!(
     harness.host.root_class().as_deref(),
     Some("on"),
@@ -466,7 +478,10 @@ fn js_base_url_timing_script_before_base_href_uses_document_url() -> Result<()> 
     .scheduler
     .finish_parsing(&mut harness.host, &mut harness.event_loop)?;
 
-  assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    harness.run_event_loop_until_idle()?,
+    RunUntilIdleOutcome::Idle
+  );
 
   let actual = harness.render(options.clone())?;
   let expected = render_static_fixture("base_url_timing_static.html", options)?;

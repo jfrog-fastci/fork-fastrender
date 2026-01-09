@@ -30,7 +30,9 @@ impl Default for WebTime {
 
 impl WebTime {
   pub fn new(time_origin_unix_ms: i64) -> Self {
-    Self { time_origin_unix_ms }
+    Self {
+      time_origin_unix_ms,
+    }
   }
 
   /// Implementation of `performance.now()`.
@@ -40,7 +42,9 @@ impl WebTime {
 
   /// Implementation of `Date.now()`.
   pub fn date_now<Host>(&self, event_loop: &EventLoop<Host>) -> i64 {
-    self.time_origin_unix_ms.saturating_add(duration_to_millis_i64(event_loop.now()))
+    self
+      .time_origin_unix_ms
+      .saturating_add(duration_to_millis_i64(event_loop.now()))
   }
 }
 
@@ -110,13 +114,7 @@ pub fn install_time_bindings(
         "install_time_bindings called more than once for the same heap",
       ));
     }
-    map.insert(
-      heap_key,
-      TimeContext {
-        web_time,
-        clock,
-      },
-    );
+    map.insert(heap_key, TimeContext { web_time, clock });
     Ok(())
   };
 
@@ -138,7 +136,11 @@ pub fn install_time_bindings(
     scope.push_root(Value::Object(date_now))?;
 
     let date_now_key = PropertyKey::from_string(scope.alloc_string("now")?);
-    scope.define_property(date, date_now_key, global_data_desc(Value::Object(date_now)))?;
+    scope.define_property(
+      date,
+      date_now_key,
+      global_data_desc(Value::Object(date_now)),
+    )?;
 
     let date_key = PropertyKey::from_string(scope.alloc_string("Date")?);
     scope.define_property(global, date_key, global_data_desc(Value::Object(date)))?;
@@ -180,14 +182,17 @@ pub fn install_time_bindings(
   Ok(TimeBindings { heap_key })
 }
 
-fn with_time_context<T>(scope: &Scope<'_>, f: impl FnOnce(&TimeContext) -> T) -> Result<T, VmError> {
+fn with_time_context<T>(
+  scope: &Scope<'_>,
+  f: impl FnOnce(&TimeContext) -> T,
+) -> Result<T, VmError> {
   let heap_key = scope.heap() as *const Heap as usize;
   let map = time_contexts()
     .lock()
     .map_err(|_| VmError::Unimplemented("time context lock poisoned"))?;
-  let ctx = map
-    .get(&heap_key)
-    .ok_or(VmError::Unimplemented("time bindings not installed for this heap"))?;
+  let ctx = map.get(&heap_key).ok_or(VmError::Unimplemented(
+    "time bindings not installed for this heap",
+  ))?;
   Ok(f(ctx))
 }
 
@@ -266,8 +271,7 @@ mod tests {
 
   fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
     let mut scope = heap.scope();
-    vm
-      .call(&mut scope, callee, this, &[])
+    vm.call(&mut scope, callee, this, &[])
       .expect("call should succeed")
   }
 
@@ -283,14 +287,8 @@ mod tests {
     let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
 
     let web_time = WebTime::new(1_000);
-    let _bindings = install_time_bindings(
-      &mut vm,
-      &realm,
-      &mut heap,
-      clock_for_bindings,
-      web_time,
-    )
-    .expect("install time bindings");
+    let _bindings = install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, web_time)
+      .expect("install time bindings");
 
     // Start at a deterministic time.
     clock.set_now(Duration::from_millis(0));
@@ -383,14 +381,8 @@ mod tests {
     // can install time bindings again.
     drop(bindings);
 
-    let _bindings = install_time_bindings(
-      &mut vm,
-      &realm,
-      &mut heap,
-      clock_for_bindings,
-      web_time,
-    )
-    .expect("install_time_bindings after dropping the previous bindings should succeed");
+    let _bindings = install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, web_time)
+      .expect("install_time_bindings after dropping the previous bindings should succeed");
 
     realm.teardown(&mut heap);
   }

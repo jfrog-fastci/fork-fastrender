@@ -8,8 +8,7 @@ use vm_js::{
   Vm, VmError, VmOptions,
 };
 
-pub type ConsoleSink =
-  Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
+pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
 
 #[derive(Clone)]
 pub struct WindowRealmConfig {
@@ -133,7 +132,12 @@ impl vm_js::VmJobContext for WindowRealm {
     heap.call(vm, callee, this, args)
   }
 
-  fn construct(&mut self, callee: Value, args: &[Value], new_target: Value) -> Result<Value, VmError> {
+  fn construct(
+    &mut self,
+    callee: Value,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
     let (vm, heap) = self.vm_and_heap_mut();
     let mut scope = heap.scope();
     vm.construct(&mut scope, callee, args, new_target)
@@ -312,21 +316,9 @@ fn init_window_globals(
   scope.define_property(global, window_key, data_desc(Value::Object(global)))?;
   scope.define_property(global, self_key, data_desc(Value::Object(global)))?;
 
-  scope.define_property(
-    global,
-    location_key,
-    data_desc(Value::Object(location_obj)),
-  )?;
-  scope.define_property(
-    global,
-    document_key,
-    data_desc(Value::Object(document_obj)),
-  )?;
-  scope.define_property(
-    global,
-    console_key,
-    data_desc(Value::Object(console_obj)),
-  )?;
+  scope.define_property(global, location_key, data_desc(Value::Object(location_obj)))?;
+  scope.define_property(global, document_key, data_desc(Value::Object(document_obj)))?;
+  scope.define_property(global, console_key, data_desc(Value::Object(console_obj)))?;
 
   Ok(console_sink_guard.map(ConsoleSinkGuard::disarm))
 }
@@ -486,7 +478,10 @@ mod tests {
 
     let (ok, registered) = probe(succ_min.saturating_sub(1));
     assert!(!ok, "expected init to fail just below succ_min");
-    assert!(registered, "expected init to register a console sink before failing");
+    assert!(
+      registered,
+      "expected init to register a console sink before failing"
+    );
   }
 
   #[test]
@@ -530,13 +525,20 @@ mod tests {
     };
     let log = get_prop(&mut scope, console_obj, "log");
 
-    let call_result =
-      vm.call(&mut scope, log, Value::Object(console_obj), &[Value::Number(1.0), Value::Null])?;
+    let call_result = vm.call(
+      &mut scope,
+      log,
+      Value::Object(console_obj),
+      &[Value::Number(1.0), Value::Null],
+    )?;
     assert_eq!(call_result, Value::Undefined);
 
     assert_eq!(
       &*captured.lock(),
-      &[vec![CapturedConsoleArg::Number(1.0), CapturedConsoleArg::Null]]
+      &[vec![
+        CapturedConsoleArg::Number(1.0),
+        CapturedConsoleArg::Null
+      ]]
     );
     Ok(())
   }

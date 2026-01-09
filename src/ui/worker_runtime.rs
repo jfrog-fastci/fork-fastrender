@@ -146,7 +146,11 @@ impl BrowserWorkerRuntime {
         };
         self.navigate(tab_id, entry.url.clone(), NavigationReason::Reload);
       }
-      UiToWorker::Navigate { tab_id, url, reason } => {
+      UiToWorker::Navigate {
+        tab_id,
+        url,
+        reason,
+      } => {
         self.navigate(tab_id, url, reason);
       }
       UiToWorker::ViewportChanged {
@@ -158,7 +162,11 @@ impl BrowserWorkerRuntime {
           return;
         };
         tab.viewport_css = viewport_css;
-        tab.dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
+        tab.dpr = if dpr.is_finite() && dpr > 0.0 {
+          dpr
+        } else {
+          1.0
+        };
         tab.dirty = true;
         self.render_current(tab_id, RepaintReason::ViewportChanged);
       }
@@ -169,6 +177,7 @@ impl BrowserWorkerRuntime {
       } => {
         let msg = self.coalesce_scroll(tab_id, delta_css, pointer_css);
         self.apply_scroll(msg.tab_id, msg.delta_css, msg.pointer_css);
+        self.render_after_scroll_coalescing(msg.tab_id);
       }
       UiToWorker::PointerMove {
         tab_id,
@@ -225,7 +234,10 @@ impl BrowserWorkerRuntime {
     let Ok(parsed) = url::Url::parse(trimmed) else {
       return false;
     };
-    matches!(parsed.scheme().to_ascii_lowercase().as_str(), "http" | "https" | "file")
+    matches!(
+      parsed.scheme().to_ascii_lowercase().as_str(),
+      "http" | "https" | "file"
+    )
   }
 
   fn navigation_options(tab: &TabState) -> RenderOptions {
@@ -409,13 +421,26 @@ impl BrowserWorkerRuntime {
     }
   }
 
-  fn apply_scroll(&mut self, tab_id: TabId, delta_css: (f32, f32), pointer_css: Option<(f32, f32)>) {
+  fn apply_scroll(
+    &mut self,
+    tab_id: TabId,
+    delta_css: (f32, f32),
+    pointer_css: Option<(f32, f32)>,
+  ) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
 
-    let dx = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
-    let dy = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
+    let dx = if delta_css.0.is_finite() {
+      delta_css.0
+    } else {
+      0.0
+    };
+    let dy = if delta_css.1.is_finite() {
+      delta_css.1
+    } else {
+      0.0
+    };
 
     // Scroll wheel targeting is currently simplified: apply element scrolling first when a pointer
     // is provided, otherwise update viewport scroll.
@@ -438,8 +463,39 @@ impl BrowserWorkerRuntime {
       tab.scroll.viewport.x += dx;
       tab.scroll.viewport.y += dy;
     }
+  }
 
-    self.render_current(tab_id, RepaintReason::Scroll);
+  fn render_after_scroll_coalescing(&mut self, tab_id: TabId) {
+    loop {
+      let Some(frame) = self.paint_current(tab_id) else {
+        return;
+      };
+
+      match self.ui_rx.try_recv() {
+        Ok(UiToWorker::Scroll {
+          tab_id: next_id,
+          delta_css,
+          pointer_css,
+        }) if next_id == tab_id => {
+          let msg = self.coalesce_scroll(next_id, delta_css, pointer_css);
+          self.apply_scroll(msg.tab_id, msg.delta_css, msg.pointer_css);
+          continue;
+        }
+        Ok(other) => {
+          self.pending.push_back(other);
+          self.emit_frame(tab_id, frame);
+          break;
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+          self.emit_frame(tab_id, frame);
+          break;
+        }
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+          self.emit_frame(tab_id, frame);
+          break;
+        }
+      }
+    }
   }
 
   fn pointer_down(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
@@ -450,10 +506,13 @@ impl BrowserWorkerRuntime {
       return;
     };
     let viewport_point = Point::new(pos_css.0, pos_css.1);
-    let changed =
-      tab
-        .interaction
-        .pointer_down(dom, prepared.box_tree(), prepared.fragment_tree(), &tab.scroll, viewport_point);
+    let changed = tab.interaction.pointer_down(
+      dom,
+      prepared.box_tree(),
+      prepared.fragment_tree(),
+      &tab.scroll,
+      viewport_point,
+    );
     if changed {
       tab.dirty = true;
     }
@@ -533,8 +592,21 @@ impl BrowserWorkerRuntime {
   }
 
   fn render_current(&mut self, tab_id: TabId, _reason: RepaintReason) {
-    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+    let Some(frame) = self.paint_current(tab_id) else {
       return;
+    };
+    self.emit_frame(tab_id, frame);
+  }
+
+  fn emit_frame(&mut self, tab_id: TabId, frame: crate::ui::messages::RenderedFrame) {
+    let scroll = frame.scroll_state.clone();
+    let _ = self.ui_tx.send(WorkerToUi::FrameReady { tab_id, frame });
+    let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated { tab_id, scroll });
+  }
+
+  fn paint_current(&mut self, tab_id: TabId) -> Option<crate::ui::messages::RenderedFrame> {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return None;
     };
 
     // Ensure we have a prepared layout. Keep the previous `PreparedDocument` around for hit
@@ -548,12 +620,12 @@ impl BrowserWorkerRuntime {
               tab_id,
               line: format!("failed to create renderer: {err}"),
             });
-            return;
+            return None;
           }
         }
       }
       let Some(dom) = tab.dom.as_ref() else {
-        return;
+        return None;
       };
       let opts = Self::navigation_options(tab);
       let Some(renderer) = tab.renderer.as_mut() else {
@@ -561,7 +633,7 @@ impl BrowserWorkerRuntime {
           tab_id,
           line: "renderer unavailable after initialization".to_string(),
         });
-        return;
+        return None;
       };
       match renderer.prepare_dom_with_options(dom.clone(), tab.url.as_deref(), opts) {
         Ok(report) => {
@@ -574,13 +646,13 @@ impl BrowserWorkerRuntime {
             tab_id,
             line: format!("render prepare failed: {err}"),
           });
-          return;
+          return None;
         }
       }
     }
 
     let Some(prepared) = tab.prepared.as_ref() else {
-      return;
+      return None;
     };
 
     let painted = match prepared.paint_with_options_frame(PreparedPaintOptions {
@@ -595,26 +667,21 @@ impl BrowserWorkerRuntime {
           tab_id,
           line: format!("paint failed: {err}"),
         });
-        return;
+        return None;
       }
     };
 
     tab.scroll = painted.scroll_state.clone();
-    tab.history.update_scroll(tab.scroll.viewport.x, tab.scroll.viewport.y);
+    tab
+      .history
+      .update_scroll(tab.scroll.viewport.x, tab.scroll.viewport.y);
 
-    let _ = self.ui_tx.send(WorkerToUi::FrameReady {
-      tab_id,
-      frame: crate::ui::messages::RenderedFrame {
-        pixmap: painted.pixmap,
-        viewport_css: tab.viewport_css,
-        dpr: tab.dpr,
-        scroll_state: tab.scroll.clone(),
-      },
-    });
-    let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-      tab_id,
-      scroll: tab.scroll.clone(),
-    });
+    Some(crate::ui::messages::RenderedFrame {
+      pixmap: painted.pixmap,
+      viewport_css: tab.viewport_css,
+      dpr: tab.dpr,
+      scroll_state: tab.scroll.clone(),
+    })
   }
 }
 
