@@ -235,7 +235,7 @@ impl BrowserDocumentDom2 {
   }
 
   #[inline]
-  fn is_dirty(&self) -> bool {
+  pub fn is_dirty(&self) -> bool {
     self.style_dirty || self.layout_dirty || self.paint_dirty
   }
 }
