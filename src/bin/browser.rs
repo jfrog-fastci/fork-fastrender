@@ -397,6 +397,7 @@ struct App {
   browser_state: fastrender::ui::BrowserAppState,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
+  tab_cancel: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::cancel::CancelGens>,
 
   page_rect_points: Option<egui::Rect>,
   page_viewport_css: Option<(u32, u32)>,
@@ -508,6 +509,7 @@ impl App {
       worker_join: Some(worker_join),
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
+      tab_cancel: std::collections::HashMap::new(),
       page_rect_points: None,
       page_viewport_css: None,
       page_input_tab: None,
@@ -531,6 +533,7 @@ impl App {
     let initial_url = "about:newtab".to_string();
     let tab_state = fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone());
     let cancel = tab_state.cancel.clone();
+    self.tab_cancel.insert(tab_id, cancel.clone());
 
     self.browser_state.push_tab(tab_state, true);
     self.browser_state.chrome.address_bar_text = initial_url.clone();
@@ -584,13 +587,13 @@ impl App {
       | UiToWorker::RequestRepaint { tab_id, .. } => *tab_id,
     };
 
-    if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+    if let Some(cancel) = self.tab_cancel.get(&tab_id) {
       match &msg {
         // Navigations should cancel any in-flight navigation + paint work.
         UiToWorker::Navigate { .. }
         | UiToWorker::GoBack { .. }
         | UiToWorker::GoForward { .. }
-        | UiToWorker::Reload { .. } => tab.cancel.bump_nav(),
+        | UiToWorker::Reload { .. } => cancel.bump_nav(),
         // Repaint-driving events should cancel in-flight paints so we don't waste time rendering
         // intermediate frames (e.g. rapid scroll/resize/typing).
         UiToWorker::ViewportChanged { .. }
@@ -602,7 +605,7 @@ impl App {
         | UiToWorker::SelectDropdownPick { .. }
         | UiToWorker::TextInput { .. }
         | UiToWorker::KeyAction { .. }
-        | UiToWorker::RequestRepaint { .. } => tab.cancel.bump_paint(),
+        | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
         // `Tick` and tab-management messages should not force cancellation.
         UiToWorker::Tick { .. }
         | UiToWorker::CreateTab { .. }
@@ -681,25 +684,22 @@ impl App {
     match msg {
       fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
         let mut restore_scroll: Option<(f32, f32)> = None;
-        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.scroll_state = frame.scroll_state.clone();
-          tab.latest_frame_meta = Some(fastrender::ui::LatestFrameMeta {
-            pixmap_px: (frame.pixmap.width(), frame.pixmap.height()),
-            viewport_css: frame.viewport_css,
-            dpr: frame.dpr,
-          });
-          if tab.pending_restore_scroll.is_some() {
-            tab.note_scroll_restore_frame_ready();
-          } else {
-            tab
-              .history
-              .update_scroll(frame.scroll_state.viewport.x, frame.scroll_state.viewport.y);
-          }
+        let Some(tab) = self.browser_state.tab_mut(tab_id) else {
+          return;
+        };
+        tab.scroll_state = frame.scroll_state.clone();
+        tab.latest_frame_meta = Some(fastrender::ui::LatestFrameMeta {
+          pixmap_px: (frame.pixmap.width(), frame.pixmap.height()),
+          viewport_css: frame.viewport_css,
+          dpr: frame.dpr,
+        });
+        if tab.pending_restore_scroll.is_some() {
+          tab.note_scroll_restore_frame_ready();
+        }
 
-          if let Some(delta) = tab.take_scroll_restore_delta_if_ready() {
-            if delta.0.abs() > 1e-3 || delta.1.abs() > 1e-3 {
-              restore_scroll = Some(delta);
-            }
+        if let Some(delta) = tab.take_scroll_restore_delta_if_ready() {
+          if delta.0.abs() > 1e-3 || delta.1.abs() > 1e-3 {
+            restore_scroll = Some(delta);
           }
         }
         if let Some(delta) = restore_scroll {
@@ -1315,6 +1315,7 @@ impl App {
           let initial_url = "about:newtab".to_string();
           let tab_state = fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone());
           let cancel = tab_state.cancel.clone();
+          self.tab_cancel.insert(tab_id, cancel.clone());
           self.browser_state.push_tab(tab_state, true);
           self.browser_state.chrome.address_bar_text = initial_url.clone();
           self.page_has_focus = false;
@@ -1336,8 +1337,12 @@ impl App {
             tex.destroy(&mut self.egui_renderer);
           }
 
-          let close_result = self.browser_state.remove_tab(tab_id);
+          if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
+            cancel.bump_nav();
+          }
           self.send_worker_msg(UiToWorker::CloseTab { tab_id });
+
+          let close_result = self.browser_state.remove_tab(tab_id);
 
           if let Some(created_tab) = close_result.created_tab {
             let initial_url = "about:newtab".to_string();
@@ -1346,6 +1351,7 @@ impl App {
               .tab(created_tab)
               .map(|t| t.cancel.clone())
               .unwrap_or_else(fastrender::ui::cancel::CancelGens::new);
+            self.tab_cancel.insert(created_tab, cancel.clone());
             self.send_worker_msg(UiToWorker::CreateTab {
               tab_id: created_tab,
               initial_url: Some(initial_url),
