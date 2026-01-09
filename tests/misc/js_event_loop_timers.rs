@@ -180,12 +180,11 @@ fn nested_timeout_delay_clamps_after_five_nesting_levels() -> Result<()> {
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
     RunUntilIdleOutcome::Idle
   );
-  assert_eq!(host.times, vec![Duration::from_millis(0); 6]);
+  assert_eq!(host.times, vec![Duration::from_millis(0); 5]);
 
   clock.advance(Duration::from_millis(4));
   event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
   assert_eq!(host.times, vec![
-    Duration::from_millis(0),
     Duration::from_millis(0),
     Duration::from_millis(0),
     Duration::from_millis(0),
@@ -202,9 +201,21 @@ fn nested_timeout_delay_clamps_after_five_nesting_levels() -> Result<()> {
     Duration::from_millis(0),
     Duration::from_millis(0),
     Duration::from_millis(0),
+    Duration::from_millis(4),
+    Duration::from_millis(8),
+  ]);
+
+  clock.advance(Duration::from_millis(4));
+  event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+  assert_eq!(host.times, vec![
+    Duration::from_millis(0),
+    Duration::from_millis(0),
+    Duration::from_millis(0),
+    Duration::from_millis(0),
     Duration::from_millis(0),
     Duration::from_millis(4),
     Duration::from_millis(8),
+    Duration::from_millis(12),
   ]);
 
   Ok(())
