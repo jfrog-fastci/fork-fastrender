@@ -58,4 +58,3 @@ pub fn parse_leading_meta(source: &str) -> MetaParseResult {
     scripts,
   }
 }
-

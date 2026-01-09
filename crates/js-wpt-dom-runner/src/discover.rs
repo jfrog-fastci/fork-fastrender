@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum TestKind {
-  /// `*.html` tests which run in a Window realm.
+  /// `*.html` / `*.htm` / `*.xhtml` testharness tests which run in a Window realm.
   Html,
   /// `*.window.js` tests which run in a Window realm.
   Window,
@@ -37,7 +37,7 @@ impl TestKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestCase {
-  /// The WPT test id, e.g. `dom/nodes/foo.window.js`.
+  /// The WPT test id, e.g. `dom/nodes/foo.window.js` or `dom/nodes/foo.html`.
   pub id: String,
   /// Full filesystem path to the test file.
   pub path: PathBuf,
@@ -63,7 +63,7 @@ pub fn discover_tests(wpt_root: impl AsRef<Path>) -> Result<Vec<TestCase>, Disco
       continue;
     }
     let path = entry.path();
-    let Some(kind) = classify_js_test(path) else {
+    let Some(kind) = classify_test(path) else {
       continue;
     };
     let rel = path.strip_prefix(&root).unwrap_or(path);
@@ -90,9 +90,9 @@ pub enum DiscoverError {
   Walk(#[from] walkdir::Error),
 }
 
-fn classify_js_test(path: &Path) -> Option<TestKind> {
-  let file_name = path.file_name()?.to_string_lossy();
-  if file_name.ends_with(".html") || file_name.ends_with(".xhtml") {
+fn classify_test(path: &Path) -> Option<TestKind> {
+  let file_name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+  if file_name.ends_with(".html") || file_name.ends_with(".htm") || file_name.ends_with(".xhtml") {
     return Some(TestKind::Html);
   }
   if file_name.ends_with(".window.js") {

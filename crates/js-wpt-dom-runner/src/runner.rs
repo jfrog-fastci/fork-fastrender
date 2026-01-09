@@ -1,15 +1,18 @@
-use crate::discover::TestCase;
+use crate::discover::{TestCase, TestKind};
 use crate::meta::parse_leading_meta;
 use crate::timer_event_loop::{QueueLimits, TimerEventLoop, TimerExecution};
 use crate::wpt_fs::{WptFs, WptFsError};
 use crate::wpt_report::WptReport;
-use regex::Regex;
+use html5ever::parse_document;
+use html5ever::tendril::TendrilSink;
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use rquickjs::{Context, Function, Object, Runtime};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use url::Url;
 
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -87,7 +90,7 @@ impl Runner {
     }
 
     match test.kind {
-      crate::discover::TestKind::Html => self.run_html_test_in_window(test),
+      TestKind::Html => self.run_html_test_in_window(test),
       _ => self.run_js_test_in_window(test),
     }
   }
@@ -96,82 +99,53 @@ impl Runner {
     let test_source = self.fs.read_to_string(&test.path)?;
     let meta = parse_leading_meta(&test_source);
 
-    let timeout = meta.timeout.unwrap_or(self.config.default_timeout);
-
-    // `// META: timeout=long` maps to the runner's `long_timeout` instead of a hard-coded value.
-    let timeout = if meta
-      .directives
-      .iter()
-      .any(|d| matches!(d, crate::meta::MetaDirective::TimeoutLong))
-    {
-      self.config.long_timeout
-    } else {
-      timeout
-    };
-
     let base_dir = id_dir(&test.id);
 
+    let timeout = timeout_for_directives(&meta.directives, &self.config);
+
     let mut scripts = Vec::new();
-    // Always load testharness.js + FastRender reporter shim first.
-    scripts.push(ScriptToRun::External(
-      "/resources/testharness.js".to_string(),
-    ));
-    scripts.push(ScriptToRun::External(
-      "/resources/fastrender_testharness_report.js".to_string(),
-    ));
+    push_testharness_bootstrap(&mut scripts);
     for url in meta.scripts {
-      if url == "/resources/testharness.js"
-        || url == "resources/testharness.js"
-        || url == "/resources/fastrender_testharness_report.js"
-        || url == "resources/fastrender_testharness_report.js"
-        || url == "/resources/testharnessreport.js"
-        || url == "resources/testharnessreport.js"
-      {
+      if is_required_harness_script(&url) || is_testharnessreport(&url) {
         continue;
       }
-      scripts.push(ScriptToRun::External(url));
+      scripts.push(ScriptToEval::Url(url));
     }
-    scripts.push(ScriptToRun::Inline(test_source));
+    scripts.push(ScriptToEval::Inline(test_source));
 
     self.run_scripts_in_window(test, &base_dir, scripts, timeout)
   }
 
   fn run_html_test_in_window(&self, test: &TestCase) -> RunResultResult {
     let html_source = self.fs.read_to_string(&test.path)?;
+    let parsed = parse_html_test(&html_source)?;
+
+    let timeout = match parsed.timeout {
+      Some(HtmlTimeout::Long) => self.config.long_timeout,
+      Some(HtmlTimeout::Short) => self.config.default_timeout,
+      None => self.config.default_timeout,
+    };
+
     let base_dir = id_dir(&test.id);
 
     let mut scripts = Vec::new();
-    scripts.push(ScriptToRun::External(
-      "/resources/testharness.js".to_string(),
-    ));
-    scripts.push(ScriptToRun::External(
-      "/resources/fastrender_testharness_report.js".to_string(),
-    ));
-
-    for script in parse_html_scripts(&html_source)? {
+    push_testharness_bootstrap(&mut scripts);
+    for script in parsed.scripts {
       match script {
-        ScriptToRun::External(url)
-          if url == "/resources/testharness.js"
-            || url == "resources/testharness.js"
-            || url == "/resources/fastrender_testharness_report.js"
-            || url == "resources/fastrender_testharness_report.js"
-            || url == "/resources/testharnessreport.js"
-            || url == "resources/testharnessreport.js" =>
-        {
-          continue;
-        }
+        ScriptToEval::Url(url) if is_required_harness_script(&url) => continue,
+        ScriptToEval::Url(url) if is_testharnessreport(&url) => continue,
         other => scripts.push(other),
       }
     }
 
-    self.run_scripts_in_window(test, &base_dir, scripts, self.config.default_timeout)
+    self.run_scripts_in_window(test, &base_dir, scripts, timeout)
   }
 
   fn run_scripts_in_window(
     &self,
     test: &TestCase,
     base_dir: &str,
-    scripts: Vec<ScriptToRun>,
+    scripts: Vec<ScriptToEval>,
     timeout: Duration,
   ) -> RunResultResult {
     let timer_loop = Rc::new(RefCell::new(TimerEventLoop::new(QueueLimits::default())));
@@ -186,7 +160,6 @@ impl Runner {
     })));
 
     let ctx = Context::full(&rt).map_err(|e| RunError::Js(e.to_string()))?;
-
     let test_url = test.url();
 
     // One-time realm initialization + script execution.
@@ -210,11 +183,11 @@ impl Runner {
       // error via `window.onerror` so the reporter can emit a deterministic payload.
       for script in scripts {
         let src = match script {
-          ScriptToRun::External(url) => {
+          ScriptToEval::Url(url) => {
             let path = self.fs.resolve_url(base_dir, &url)?;
             self.fs.read_to_string(&path)?
           }
-          ScriptToRun::Inline(src) => src,
+          ScriptToEval::Inline(src) => src,
         };
 
         if let Err(err) = ctx.eval::<(), _>(src) {
@@ -237,7 +210,6 @@ impl Runner {
           return Err(RunError::Js(msg));
         }
       }
-
       Ok(())
     });
 
@@ -414,6 +386,157 @@ impl Runner {
       wpt_report,
     })
   }
+}
+
+#[derive(Debug, Clone)]
+enum ScriptToEval {
+  Url(String),
+  Inline(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HtmlTimeout {
+  Short,
+  Long,
+}
+
+#[derive(Debug, Clone)]
+struct HtmlTestParseResult {
+  timeout: Option<HtmlTimeout>,
+  scripts: Vec<ScriptToEval>,
+}
+
+const TESTHARNESS_JS: &str = "/resources/testharness.js";
+const FASTRENDER_TESTHARNESS_REPORT_JS: &str = "/resources/fastrender_testharness_report.js";
+const TESTHARNESSREPORT_JS: &str = "/resources/testharnessreport.js";
+
+fn timeout_for_directives(
+  directives: &[crate::meta::MetaDirective],
+  config: &RunnerConfig,
+) -> Duration {
+  if directives
+    .iter()
+    .any(|d| matches!(d, crate::meta::MetaDirective::TimeoutLong))
+  {
+    return config.long_timeout;
+  }
+  // `timeout=short` maps to the default timeout (we don't currently have a distinct "short" budget).
+  config.default_timeout
+}
+
+fn push_testharness_bootstrap(out: &mut Vec<ScriptToEval>) {
+  out.push(ScriptToEval::Url(TESTHARNESS_JS.to_string()));
+  out.push(ScriptToEval::Url(
+    FASTRENDER_TESTHARNESS_REPORT_JS.to_string(),
+  ));
+}
+
+fn is_required_harness_script(url: &str) -> bool {
+  is_equivalent_wpt_url(url, TESTHARNESS_JS)
+    || is_equivalent_wpt_url(url, FASTRENDER_TESTHARNESS_REPORT_JS)
+}
+
+fn is_testharnessreport(url: &str) -> bool {
+  is_equivalent_wpt_url(url, TESTHARNESSREPORT_JS)
+}
+
+fn is_equivalent_wpt_url(url: &str, expected_path: &str) -> bool {
+  let url = url.trim();
+  if url == expected_path {
+    return true;
+  }
+  if let Some(stripped) = expected_path.strip_prefix('/') {
+    if url == stripped {
+      return true;
+    }
+  }
+  if let Ok(parsed) = Url::parse(url) {
+    let origin = parsed.origin().unicode_serialization();
+    if origin == "https://web-platform.test" || origin == "http://web-platform.test" {
+      return parsed.path() == expected_path;
+    }
+  }
+  false
+}
+
+fn parse_html_test(source: &str) -> Result<HtmlTestParseResult, RunError> {
+  let mut bytes = source.as_bytes();
+  let dom = parse_document(RcDom::default(), Default::default())
+    .from_utf8()
+    .read_from(&mut bytes)?;
+
+  let mut out = HtmlTestParseResult {
+    timeout: None,
+    scripts: Vec::new(),
+  };
+  collect_html_metadata(dom.document, &mut out);
+  Ok(out)
+}
+
+fn collect_html_metadata(handle: Handle, out: &mut HtmlTestParseResult) {
+  if let NodeData::Element {
+    ref name,
+    ref attrs,
+    ..
+  } = handle.data
+  {
+    if name.local.as_ref().eq_ignore_ascii_case("meta") {
+      let mut meta_name = None;
+      let mut meta_content = None;
+      for attr in attrs.borrow().iter() {
+        if attr.name.local.as_ref().eq_ignore_ascii_case("name") {
+          meta_name = Some(attr.value.to_string());
+        } else if attr.name.local.as_ref().eq_ignore_ascii_case("content") {
+          meta_content = Some(attr.value.to_string());
+        }
+      }
+      if let (Some(meta_name), Some(meta_content)) = (meta_name, meta_content) {
+        if meta_name.trim().eq_ignore_ascii_case("timeout") {
+          match meta_content.trim().to_ascii_lowercase().as_str() {
+            "long" => out.timeout = Some(HtmlTimeout::Long),
+            "short" => out.timeout = Some(HtmlTimeout::Short),
+            _ => {}
+          }
+        }
+      }
+    }
+
+    if name.local.as_ref().eq_ignore_ascii_case("script") {
+      let mut src = None;
+      for attr in attrs.borrow().iter() {
+        if attr.name.local.as_ref().eq_ignore_ascii_case("src") {
+          src = Some(attr.value.to_string());
+          break;
+        }
+      }
+
+      if let Some(src) = src {
+        let src = src.trim();
+        if !src.is_empty() {
+          out.scripts.push(ScriptToEval::Url(src.to_string()));
+          return;
+        }
+      }
+
+      let inline = extract_inline_script(&handle);
+      out.scripts.push(ScriptToEval::Inline(inline));
+      return;
+    }
+  }
+
+  for child in handle.children.borrow().iter() {
+    collect_html_metadata(child.clone(), out);
+  }
+}
+
+fn extract_inline_script(handle: &Handle) -> String {
+  let mut out = String::new();
+  for child in handle.children.borrow().iter() {
+    if let NodeData::Text { ref contents } = child.data {
+      out.push_str(contents.borrow().as_ref());
+    }
+  }
+  out
 }
 
 fn id_dir(id: &str) -> String {
@@ -951,40 +1074,6 @@ const FASTR_REPORT_HOOK: &str = r#"
   };
 })();
 "#;
-
-#[derive(Debug, Clone)]
-enum ScriptToRun {
-  External(String),
-  Inline(String),
-}
-
-fn parse_html_scripts(source: &str) -> Result<Vec<ScriptToRun>, RunError> {
-  // Minimal (non-spec-compliant) extraction of script tags sufficient for the curated offline
-  // corpus under `tests/wpt_dom/tests`.
-  let script_re =
-    Regex::new(r"(?is)<script([^>]*)>(.*?)</script>").map_err(|e| RunError::Js(e.to_string()))?;
-  // `regex` does not support backreferences, so we match single-quoted and double-quoted values
-  // separately.
-  let src_re = Regex::new(r#"(?is)\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
-    .map_err(|e| RunError::Js(e.to_string()))?;
-
-  let mut out = Vec::new();
-  for cap in script_re.captures_iter(source) {
-    let attrs = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
-    let body = cap.get(2).map(|m| m.as_str()).unwrap_or_default();
-    if let Some(src_cap) = src_re.captures(attrs) {
-      let src = src_cap
-        .get(1)
-        .or_else(|| src_cap.get(2))
-        .map(|m| m.as_str())
-        .unwrap_or_default();
-      out.push(ScriptToRun::External(src.to_string()));
-    } else {
-      out.push(ScriptToRun::Inline(body.to_string()));
-    }
-  }
-  Ok(out)
-}
 
 fn first_nonpass_message(subtests: &[crate::wpt_report::WptSubtest]) -> Option<String> {
   for st in subtests {

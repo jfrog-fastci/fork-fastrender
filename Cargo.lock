@@ -2165,6 +2165,8 @@ dependencies = [
  "anyhow",
  "conformance-harness",
  "globset",
+ "html5ever",
+ "markup5ever_rcdom",
  "regex",
  "rquickjs",
  "serde",

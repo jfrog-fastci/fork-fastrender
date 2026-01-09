@@ -80,6 +80,73 @@ fn runs_eventtarget_window_js_test() {
 }
 
 #[test]
+fn runs_sync_html_smoke_test() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/sync-pass.html")
+    .expect("missing sync-pass.html");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+}
+
+#[test]
+fn runs_promise_html_smoke_test() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/promise-pass.html")
+    .expect("missing promise-pass.html");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+}
+
+#[test]
+fn runs_settimeout_html_smoke_test() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/async-timeout-pass.html")
+    .expect("missing async-timeout-pass.html");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+}
+
+#[test]
+fn html_failure_reports_fail_outcome() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/sync-fail.html")
+    .expect("missing sync-fail.html");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  match result.outcome {
+    RunOutcome::Fail(_) => {}
+    other => panic!("expected Fail, got {other:?}"),
+  }
+}
+
+#[test]
 fn meta_timeout_long_overrides_runner_default_timeout() {
   let corpus_root = corpus_root();
   let tests_root = tests_root();
