@@ -43,7 +43,6 @@ fn escape_text(out: &mut String, value: &str) {
     match ch {
       '&' => out.push_str("&amp;"),
       '<' => out.push_str("&lt;"),
-      '>' => out.push_str("&gt;"),
       _ => out.push(ch),
     }
   }
@@ -54,7 +53,6 @@ fn escape_attr_value(out: &mut String, value: &str) {
     match ch {
       '&' => out.push_str("&amp;"),
       '"' => out.push_str("&quot;"),
-      '<' => out.push_str("&lt;"),
       _ => out.push(ch),
     }
   }

@@ -81,6 +81,34 @@ fn outer_html_getter_serializes_element() {
 }
 
 #[test]
+fn outer_html_does_not_escape_script_text() {
+  let root = parse_html(
+    "<!doctype html><html><body><div id=target><script>if (a < b) c(a & b);</script></div></body></html>",
+  )
+  .unwrap();
+  let doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  let html = doc.get_outer_html(div).unwrap();
+  assert!(
+    html.contains("a < b"),
+    "expected raw '<' in serialized <script> text, got: {html}"
+  );
+  assert!(
+    html.contains("a & b"),
+    "expected raw '&' in serialized <script> text, got: {html}"
+  );
+  assert!(
+    !html.contains("a &lt; b"),
+    "unexpected escaping inside <script> text, got: {html}"
+  );
+  assert!(
+    !html.contains("a &amp; b"),
+    "unexpected escaping inside <script> text, got: {html}"
+  );
+}
+
+#[test]
 fn outer_html_setter_replaces_node_in_parent_children() {
   let root = parse_html(
     "<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>",
