@@ -349,6 +349,22 @@ pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
   Some(out)
 }
 
+pub(crate) fn clip_path_uses_object_bounding_box(defs: &HashMap<String, String>, clip_id: &str) -> bool {
+  let Some(fragment) = defs.get(clip_id) else {
+    return false;
+  };
+  let Some(doc) = parse_svg_fragment(fragment) else {
+    return false;
+  };
+  let root = doc.root_element();
+  if !root.tag_name().name().eq_ignore_ascii_case("clipPath") {
+    return false;
+  }
+  root
+    .attribute("clipPathUnits")
+    .is_some_and(|units| units.eq_ignore_ascii_case("objectBoundingBox"))
+}
+
 #[cfg(test)]
 mod tests {
   use super::{
