@@ -2476,6 +2476,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
       FontVariantAlternateValue::Number(idx) => {
         if let Some(tag) = number_tag(b"cv", u32::from(*idx)) {
           let tag = Tag::from_bytes(&tag);
+          features.retain(|f| f.tag != tag);
           features.push(Feature {
             tag,
             value: 1,
@@ -2485,17 +2486,25 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
         }
       }
       FontVariantAlternateValue::Name(name) => {
-        for &idx in resolve_list(FontFeatureValueType::CharacterVariant, name.as_str()) {
-          if let Some(tag) = number_tag(b"cv", idx) {
-            let tag = Tag::from_bytes(&tag);
-            features.push(Feature {
-              tag,
-              value: 1,
-              start: 0,
-              end: u32::MAX,
-            });
-          }
-        }
+        let values = resolve_list(FontFeatureValueType::CharacterVariant, name.as_str());
+        let Some((&feature_index, feature_value)) = (match values.len() {
+          1 => values.first().map(|idx| (idx, 1u32)),
+          2 => Some((&values[0], values[1])),
+          _ => None,
+        }) else {
+          continue;
+        };
+        let Some(tag) = number_tag(b"cv", feature_index) else {
+          continue;
+        };
+        let tag = Tag::from_bytes(&tag);
+        features.retain(|f| f.tag != tag);
+        features.push(Feature {
+          tag,
+          value: feature_value,
+          start: 0,
+          end: u32::MAX,
+        });
       }
     }
   }
