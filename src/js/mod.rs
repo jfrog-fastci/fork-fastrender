@@ -94,7 +94,7 @@ pub use script_loader_resource::ResourceScriptLoader;
 pub use page_load::{
   HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
 };
-pub use vm_dom::install_dom_bindings;
+pub use vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_bindings::{install_url_bindings, install_url_bindings_with_limits};

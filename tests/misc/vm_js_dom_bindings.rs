@@ -1,5 +1,5 @@
 use fastrender::dom2::Document;
-use fastrender::js::{install_dom_bindings, CurrentScriptState};
+use fastrender::js::{install_dom_bindings, install_dom_bindings_with_limits, CurrentScriptState};
 use selectors::context::QuirksMode;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -171,6 +171,74 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
 
   drop(scope);
   realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn dom_bindings_rejects_strings_over_max_string_bytes() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+
+  // Use a tiny conversion limit so multi-byte strings can exceed it even though the UTF-16 input
+  // is short.
+  install_dom_bindings_with_limits(
+    &mut vm,
+    &mut heap,
+    &realm,
+    dom.clone(),
+    current_script.clone(),
+    5,
+  )?;
+
+  let mut scope = heap.scope();
+  let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+  let document_val = scope
+    .heap()
+    .object_get_own_data_property_value(realm.global_object(), &key_document)?
+    .expect("globalThis.document should be defined");
+
+  let document_obj = match document_val {
+    Value::Object(o) => o,
+    _ => panic!("document should be an object"),
+  };
+
+  let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+  let create_element =
+    get_data_property_value(scope.heap(), document_obj, &key_create_element)
+      .expect("document.createElement should exist");
+
+  // "ééé" is 3 UTF-16 code units but 6 UTF-8 bytes.
+  let tag = Value::String(scope.alloc_string("ééé")?);
+  let err = vm
+    .call(&mut scope, create_element, document_val, &[tag])
+    .expect_err("expected createElement to throw");
+
+  let VmError::Throw(thrown) = err else {
+    panic!("expected a thrown TypeError, got {err:?}");
+  };
+
+  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let message = match thrown {
+    Value::Object(obj) => get_data_property_value(scope.heap(), obj, &message_key)
+      .expect("thrown error should have message"),
+    other => panic!("expected error object, got {other:?}"),
+  };
+  let Value::String(message_str) = message else {
+    panic!("expected message string, got {message:?}");
+  };
+  let msg = scope.heap().get_string(message_str)?.to_utf8_lossy();
+
+  // Ensure teardown runs even if assertions fail, otherwise `Realm` will panic in Drop while the
+  // test is already unwinding.
+  drop(scope);
+  realm.teardown(&mut heap);
+
+  assert!(msg.contains("max_string_bytes"), "unexpected error message: {msg}");
   Ok(())
 }
 

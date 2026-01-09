@@ -1,6 +1,7 @@
 use crate::dom2::{DomError, Document, NodeId, NodeKind};
 use crate::js::CurrentScriptState;
 use crate::web::dom::DomException;
+use std::char::decode_utf16;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -83,6 +84,13 @@ pub struct DomHost {
   dom: Rc<RefCell<Document>>,
   current_script: Rc<RefCell<CurrentScriptState>>,
 
+  /// Maximum number of bytes allowed when converting JS strings to Rust `String`s for DOM APIs.
+  ///
+  /// JavaScript strings are UTF-16; converting to UTF-8 can expand the byte size (especially when
+  /// the input contains lone surrogates that decode to U+FFFD). Keep this bounded so hostile input
+  /// cannot force unbounded host allocations even when the VM heap is capped.
+  max_string_bytes: usize,
+
   // Identity cache: preserve wrapper identity without keeping wrappers alive.
   node_wrappers: HashMap<NodeId, WeakGcObject>,
   class_list_wrappers: HashMap<NodeId, WeakGcObject>,
@@ -118,7 +126,53 @@ fn require_string<'a>(
     Value::String(s) => s,
     _ => return throw_type_error(scope, host, &format!("{what} must be a string")),
   };
-  Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+  js_string_to_rust_string_limited(scope, host, s, what)
+}
+
+fn js_string_to_rust_string_limited<'a>(
+  scope: &mut Scope<'a>,
+  host: &DomHost,
+  handle: vm_js::GcString,
+  context: &str,
+) -> Result<String, VmError> {
+  let js = scope.heap().get_string(handle)?;
+  let max_bytes = host.max_string_bytes;
+
+  let code_units_len = js.len_code_units();
+  // UTF-8 output bytes are always >= UTF-16 code unit length (and can grow by up to 3 bytes per
+  // code unit when decoding lone surrogates as U+FFFD). Reject overly large strings up-front.
+  if code_units_len > max_bytes {
+    return throw_type_error(
+      scope,
+      host,
+      &format!(
+        "{context} exceeded max_string_bytes (len_code_units={code_units_len}, limit={max_bytes})"
+      ),
+    );
+  }
+
+  // Decode manually so we can enforce the byte limit without relying on the potentially-large
+  // allocation performed by `String::from_utf16_lossy`.
+  let capacity = code_units_len.saturating_mul(3).min(max_bytes);
+  let mut out = String::with_capacity(capacity);
+  let mut out_len = 0usize;
+
+  for decoded in decode_utf16(js.as_code_units().iter().copied()) {
+    let ch = decoded.unwrap_or('\u{FFFD}');
+    let ch_len = ch.len_utf8();
+    let next_len = out_len.checked_add(ch_len).unwrap_or(usize::MAX);
+    if next_len > max_bytes {
+      return throw_type_error(
+        scope,
+        host,
+        &format!("{context} exceeded max_string_bytes (limit={max_bytes})"),
+      );
+    }
+    out.push(ch);
+    out_len = next_len;
+  }
+
+  Ok(out)
 }
 
 fn to_dom_string<'a>(scope: &mut Scope<'a>, host: &DomHost, value: Value) -> Result<String, VmError> {
@@ -131,7 +185,7 @@ fn to_dom_string<'a>(scope: &mut Scope<'a>, host: &DomHost, value: Value) -> Res
         Err(VmError::TypeError(msg)) => return throw_type_error(scope, host, msg),
         Err(e) => return Err(e),
       };
-      Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+      js_string_to_rust_string_limited(scope, host, s, "DOMString conversion")
     }
   }
 }
@@ -792,6 +846,19 @@ pub fn install_dom_bindings(
   dom: Rc<RefCell<Document>>,
   current_script: Rc<RefCell<CurrentScriptState>>,
 ) -> Result<(), VmError> {
+  const DEFAULT_MAX_DOM_STRING_BYTES: usize = 1024 * 1024;
+  let max_string_bytes = DEFAULT_MAX_DOM_STRING_BYTES.min(heap.limits().max_bytes);
+  install_dom_bindings_with_limits(vm, heap, realm, dom, current_script, max_string_bytes)
+}
+
+pub fn install_dom_bindings_with_limits(
+  vm: &mut Vm,
+  heap: &mut Heap,
+  realm: &Realm,
+  dom: Rc<RefCell<Document>>,
+  current_script: Rc<RefCell<CurrentScriptState>>,
+  max_string_bytes: usize,
+) -> Result<(), VmError> {
   let mut scope = heap.scope();
 
   // Allocate hidden symbol keys first and root them until the document wrapper exists.
@@ -896,6 +963,7 @@ pub fn install_dom_bindings(
   let mut host = DomHost {
     dom: dom.clone(),
     current_script: current_script.clone(),
+    max_string_bytes,
     node_wrappers: HashMap::new(),
     class_list_wrappers: HashMap::new(),
     sym_dom_kind,
