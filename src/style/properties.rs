@@ -24272,6 +24272,29 @@ mod tests {
   }
 
   #[test]
+  fn clip_path_empty_url_is_invalid() {
+    let mut style = ComputedStyle::default();
+    style.clip_path = ClipPath::Box(ReferenceBox::ContentBox);
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "clip-path".into(),
+        value: PropertyValue::Url("   ".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    // Empty/whitespace-only URLs are invalid and must not override the previous value.
+    assert_eq!(style.clip_path, ClipPath::Box(ReferenceBox::ContentBox));
+  }
+
+  #[test]
   fn parses_clip_path_modern_viewport_units() {
     let decl = Declaration {
       property: "clip-path".into(),
