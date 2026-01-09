@@ -198,3 +198,100 @@ fn abspos_static_position_nested_in_inline_flow_respects_float_offset() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn abspos_percent_height_uses_used_border_box_size_for_relayout_percentage_bases() {
+  // Regression test for relayouting absolutely positioned elements: when an abspos element has
+  // `height: 100%` but its containing block's height is auto, the percentage height computes to
+  // `auto` (CSS2.1). The absolute positioning algorithm still computes a definite used height via
+  // insets, and then re-runs layout with `LayoutConstraints::used_border_box_height` so descendants
+  // can resolve percentage heights against the final padding box.
+  //
+  // Block layout previously only honored `used_border_box_height` when the authored `height` was
+  // literally `auto`, which caused absolutely positioned descendants with `height: 100%` to
+  // resolve against an indefinite percentage base and collapse to 0px.
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = fastrender::FastRender::new().expect("renderer");
+      let html = r#"
+        <style>
+          body { margin: 0; background: white; }
+
+          /* Height is content-driven (auto), so it should *not* be a percentage base. */
+          .cb { position: relative; width: 200px; background: white; }
+          .spacer { height: 100px; }
+
+          /* Abspos element resolves a definite used height via top/bottom, but has `height: 100%`. */
+          .abs { position: absolute; top: 0; bottom: 0; left: 0; right: 0; width: 100%; height: 100%; }
+
+          /* This child relies on the relayout pass to establish a definite percentage base. */
+          .fill { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgb(255, 0, 0); }
+        </style>
+        <div class="cb">
+          <div class="spacer"></div>
+          <div class="abs"><div class="fill"></div></div>
+        </div>
+      "#;
+
+      let pixmap = renderer.render_html(html, 220, 120).expect("render");
+
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 0, 0, 255],
+        "expected abspos percent-height child to paint red after used border-box relayout"
+      );
+      assert_eq!(
+        pixel(&pixmap, 210, 10),
+        [255, 255, 255, 255],
+        "expected pixels outside the containing block to remain white"
+      );
+      assert_eq!(
+        pixel(&pixmap, 10, 110),
+        [255, 255, 255, 255],
+        "expected pixels below the containing block to remain white"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn abspos_percent_height_in_inline_flow_uses_block_containing_block_not_inline_wrapper() {
+  // Regression test: block layout wraps runs of inline-level children in a synthetic
+  // `BoxType::Inline` container so the inline formatting context can lay them out. When that
+  // wrapper inherited `position`/transform/containment from the real block container it would
+  // incorrectly establish a new containing block sized to the line box bounds (often 0px tall),
+  // causing absolutely positioned descendants with percentage heights to resolve against 0.
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = fastrender::FastRender::new().expect("renderer");
+      let html = r#"
+        <style>
+          body { margin: 0; background: white; }
+          .cb { position: relative; width: 100px; height: 100px; background: white; }
+          .abs { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgb(255, 0, 0); }
+        </style>
+        <div class="cb">
+          x<span class="abs"></span>
+        </div>
+      "#;
+
+      let pixmap = renderer.render_html(html, 120, 120).expect("render");
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 0, 0, 255],
+        "expected abspos child to paint at the block start"
+      );
+      assert_eq!(
+        pixel(&pixmap, 10, 90),
+        [255, 0, 0, 255],
+        "expected abspos percent-height child to fill the containing block height"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}

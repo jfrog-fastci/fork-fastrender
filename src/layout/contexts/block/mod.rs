@@ -758,7 +758,15 @@ impl BlockFormattingContext {
       };
       specified_height = Some((used_border_box - vertical_edges).max(0.0));
     }
-    if specified_height.is_none() && height_auto {
+    // `LayoutConstraints::used_border_box_*` represents the *final* used size computed by the
+    // parent formatting context (e.g. flex/grid, or the absolute positioning relayout pass).
+    //
+    // Previously this override was only applied for `height:auto`, but per CSS2.1 percentage sizes
+    // can compute to `auto` when their percentage base is indefinite. In that situation
+    // `specified_height` is `None` even though the authored value was non-auto (e.g. `height:100%`)
+    // and we still need to honor the parent-forced used size so descendants (notably absolutely
+    // positioned replaced elements) can resolve percentage heights against the correct padding box.
+    if specified_height.is_none() {
       let used_border_box = if inline_is_horizontal {
         constraints.used_border_box_height
       } else {
@@ -3281,14 +3289,62 @@ impl BlockFormattingContext {
       return result;
     }
 
-    let inline_fc_owned: Option<Box<InlineFormattingContext>> = if *nearest_positioned_cb
+    // Inline formatting contexts lay out in the parent's *content* coordinate space (origin at the
+    // content edge). When the parent establishes an abs/fixed containing block, the containing
+    // block rectangle is the parent's padding box (origin at the padding edge). Convert the
+    // nearest containing blocks into the inline context's content coordinate space so absolute
+    // descendants inside inline flow can correctly position against the padding edge without
+    // double-counting padding/border offsets.
+    let cb_percentage_base = constraints.width().unwrap_or(self.viewport_size.width);
+    let padding_left_for_cb = resolve_padding_side(
+      &parent.style,
+      PhysicalSide::Left,
+      cb_percentage_base,
+      &self.font_context,
+      self.viewport_size,
+    );
+    let padding_top_for_cb = resolve_padding_side(
+      &parent.style,
+      PhysicalSide::Top,
+      cb_percentage_base,
+      &self.font_context,
+      self.viewport_size,
+    );
+    let inline_nearest_positioned_cb = if establishes_absolute_cb {
+      ContainingBlock::with_viewport_and_bases(
+        Rect::new(
+          Point::new(-padding_left_for_cb, -padding_top_for_cb),
+          nearest_positioned_cb.rect.size,
+        ),
+        self.viewport_size,
+        nearest_positioned_cb.inline_percentage_base(),
+        nearest_positioned_cb.block_percentage_base(),
+      )
+    } else {
+      *nearest_positioned_cb
+    };
+    let inline_nearest_fixed_cb = if establishes_fixed_cb {
+      ContainingBlock::with_viewport_and_bases(
+        Rect::new(
+          Point::new(-padding_left_for_cb, -padding_top_for_cb),
+          nearest_fixed_cb.rect.size,
+        ),
+        self.viewport_size,
+        nearest_fixed_cb.inline_percentage_base(),
+        nearest_fixed_cb.block_percentage_base(),
+      )
+    } else {
+      *nearest_fixed_cb
+    };
+
+    let inline_fc_owned: Option<Box<InlineFormattingContext>> = if inline_nearest_positioned_cb
       == self.nearest_positioned_cb
-      && *nearest_fixed_cb == self.nearest_fixed_cb
+      && inline_nearest_fixed_cb == self.nearest_fixed_cb
     {
       None
     } else {
       Some(Box::new(InlineFormattingContext::with_factory(
-        self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb),
+        self.child_factory_for_cbs(inline_nearest_positioned_cb, inline_nearest_fixed_cb),
       )))
     };
     let inline_fc = inline_fc_owned
@@ -3484,6 +3540,26 @@ impl BlockFormattingContext {
         s.border_right_width = Length::px(0.0);
         s.border_bottom_width = Length::px(0.0);
         s.border_left_width = Length::px(0.0);
+        // The inline container is synthetic: it's just the inline formatting context wrapper for a
+        // block container's inline content. It should not establish a containing block (for abspos
+        // or fixed descendants), otherwise out-of-flow positioned children nested in inline content
+        // can resolve percentages against the wrapper's (often 0px-tall) line box bounds instead of
+        // the real block container padding box.
+        s.position = Position::Static;
+        s.top = crate::style::types::InsetValue::Auto;
+        s.right = crate::style::types::InsetValue::Auto;
+        s.bottom = crate::style::types::InsetValue::Auto;
+        s.left = crate::style::types::InsetValue::Auto;
+        s.translate = crate::css::types::TranslateValue::None;
+        s.rotate = crate::css::types::RotateValue::None;
+        s.scale = crate::css::types::ScaleValue::None;
+        s.transform.clear();
+        s.offset_path = crate::style::types::OffsetPath::None;
+        s.perspective = None;
+        s.filter.clear();
+        s.backdrop_filter.clear();
+        s.will_change = crate::style::types::WillChange::Auto;
+        s.containment = crate::style::types::Containment::none();
       }
       let mut inline_container = BoxNode::new_inline(inline_style, std::mem::take(buffer));
       // If the inline container would start below the current cursor because of pending
