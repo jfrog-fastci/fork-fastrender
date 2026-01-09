@@ -143,6 +143,29 @@ fn repaint_force(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>) 
   emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
 }
 
+fn render_navigation_error_page(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>, message: &str) {
+  let html = about_pages::error_page_html("Navigation failed", message);
+
+  tab.url = Some(about_pages::ABOUT_ERROR.to_string());
+  tab.base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
+  tab.document.set_navigation_urls(
+    Some(about_pages::ABOUT_ERROR.to_string()),
+    Some(about_pages::ABOUT_BASE_URL.to_string()),
+  );
+  tab
+    .document
+    .set_document_url(Some(about_pages::ABOUT_ERROR.to_string()));
+
+  let options = render_options_for_navigation(tab);
+  if tab.document.reset_with_html(&html, options).is_err() {
+    return;
+  }
+  tab.document.set_scroll_state(tab.scroll.clone());
+  if let Ok(frame) = tab.document.render_frame_with_scroll_state() {
+    emit_frame(tab_id, tab, ui_tx, frame.pixmap, frame.scroll_state);
+  }
+}
+
 fn navigate_tab(
   tab_id: TabId,
   tab: &mut TabState,
@@ -153,6 +176,10 @@ fn navigate_tab(
   let _ = ui_tx.send(WorkerToUi::NavigationStarted {
     tab_id,
     url: url.clone(),
+  });
+  let _ = ui_tx.send(WorkerToUi::LoadingState {
+    tab_id,
+    loading: true,
   });
 
   tab.scroll = ScrollState::default();
@@ -169,10 +196,16 @@ fn navigate_tab(
       .set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
     tab.document.set_document_url(Some(url.clone()));
     if let Err(err) = tab.document.reset_with_html(&html, options) {
+      let err = err.to_string();
       let _ = ui_tx.send(WorkerToUi::NavigationFailed {
         tab_id,
-        url,
-        error: err.to_string(),
+        url: url.clone(),
+        error: err.clone(),
+      });
+      render_navigation_error_page(tab_id, tab, ui_tx, &err);
+      let _ = ui_tx.send(WorkerToUi::LoadingState {
+        tab_id,
+        loading: false,
       });
       return;
     }
@@ -181,10 +214,16 @@ fn navigate_tab(
     match tab.document.navigate_url_with_options(&url, options) {
       Ok((committed, base)) => (committed, base),
       Err(err) => {
+        let err = err.to_string();
         let _ = ui_tx.send(WorkerToUi::NavigationFailed {
           tab_id,
-          url,
-          error: err.to_string(),
+          url: url.clone(),
+          error: err.clone(),
+        });
+        render_navigation_error_page(tab_id, tab, ui_tx, &err);
+        let _ = ui_tx.send(WorkerToUi::LoadingState {
+          tab_id,
+          loading: false,
         });
         return;
       }
@@ -198,10 +237,16 @@ fn navigate_tab(
   let painted = match tab.document.render_frame_with_scroll_state() {
     Ok(frame) => frame,
     Err(err) => {
+      let err = err.to_string();
       let _ = ui_tx.send(WorkerToUi::NavigationFailed {
         tab_id,
-        url: committed_url,
-        error: err.to_string(),
+        url: committed_url.clone(),
+        error: err.clone(),
+      });
+      render_navigation_error_page(tab_id, tab, ui_tx, &err);
+      let _ = ui_tx.send(WorkerToUi::LoadingState {
+        tab_id,
+        loading: false,
       });
       return;
     }
@@ -217,6 +262,11 @@ fn navigate_tab(
   });
 
   emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
+
+  let _ = ui_tx.send(WorkerToUi::LoadingState {
+    tab_id,
+    loading: false,
+  });
 }
 
 /// Spawns a headless UI worker loop used by the browser UI integration tests.
@@ -449,9 +499,11 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         let page_point = page_point_for(tab, pos_css);
         let engine = &mut tab.interaction;
 
-        let action = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          engine.pointer_up(dom, box_tree, fragment_tree, page_point, &base_url)
-        }) {
+        let action = match tab
+          .document
+          .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+            engine.pointer_up(dom, box_tree, fragment_tree, page_point, &base_url)
+          }) {
           Ok(action) => action,
           Err(_) => continue,
         };

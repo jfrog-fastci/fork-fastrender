@@ -974,32 +974,23 @@ impl App {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          let normalized = match fastrender::ui::normalize_user_url(&raw) {
-            Ok(url) => url,
+          let Some(tab) = self.browser_state.tab_mut(tab_id) else {
+            continue;
+          };
+          let msg = match tab.navigate_typed(&raw) {
+            Ok(msg) => msg,
             Err(err) => {
-              if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-                tab.error = Some(err);
-              }
+              tab.error = Some(err);
               continue;
             }
           };
 
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.history.push(normalized.clone());
-            tab.sync_nav_flags_from_history();
-            tab.loading = true;
-            tab.error = None;
-            tab.pending_nav_url = Some(normalized.clone());
+          if let UiToWorker::Navigate { url, .. } = &msg {
+            self.browser_state.chrome.address_bar_text = url.clone();
           }
-
-          self.browser_state.chrome.address_bar_text = normalized.clone();
           self.page_has_focus = false;
 
-          let _ = self.ui_to_worker_tx.send(UiToWorker::Navigate {
-            tab_id,
-            url: normalized,
-            reason: NavigationReason::TypedUrl,
-          });
+          let _ = self.ui_to_worker_tx.send(msg);
         }
         ChromeAction::Reload => {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
@@ -1477,7 +1468,7 @@ fn spawn_default_render_worker(
             }
           }
           UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
-            // History navigation is not wired up in this legacy worker implementation yet.
+            // History navigation is not wired up in this legacy in-binary worker implementation yet.
           }
           UiToWorker::Scroll {
             tab_id,

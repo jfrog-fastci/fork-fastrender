@@ -1,7 +1,9 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
 use crate::ui::history::TabHistory;
-use crate::ui::messages::TabId;
+use crate::ui::messages::{NavigationReason, TabId, UiToWorker};
+use crate::ui::normalize_user_url;
+use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatestFrameMeta {
@@ -65,6 +67,82 @@ impl BrowserTabState {
   pub fn sync_nav_flags_from_history(&mut self) {
     self.can_go_back = self.history.can_go_back();
     self.can_go_forward = self.history.can_go_forward();
+  }
+
+  /// Validate + normalize an address-bar navigation and produce a `UiToWorker::Navigate` message.
+  ///
+  /// This applies a scheme allowlist for typed URLs (http/https/file/about), rejecting `javascript:`
+  /// and unknown schemes. On failure, the returned error is intended for user-facing display.
+  ///
+  /// On success, this updates the tab's history/loading state and sets `pending_nav_url`.
+  pub fn navigate_typed(&mut self, raw: &str) -> Result<UiToWorker, String> {
+    let normalized = normalize_user_url(raw)?;
+    validate_typed_url_scheme(&normalized)?;
+
+    self.history.push(normalized.clone());
+    self.sync_nav_flags_from_history();
+    self.loading = true;
+    self.error = None;
+    self.pending_nav_url = Some(normalized.clone());
+
+    Ok(UiToWorker::Navigate {
+      tab_id: self.id,
+      url: normalized,
+      reason: NavigationReason::TypedUrl,
+    })
+  }
+}
+
+fn validate_typed_url_scheme(url: &str) -> Result<(), String> {
+  let parsed = Url::parse(url).map_err(|err| err.to_string())?;
+  let scheme = parsed.scheme().to_ascii_lowercase();
+  match scheme.as_str() {
+    "http" | "https" | "file" | "about" => Ok(()),
+    "javascript" => Err("typed navigation to javascript: URLs is not supported".to_string()),
+    _ => Err(format!("unsupported URL scheme for typed navigation: {scheme}")),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::BrowserTabState;
+  use crate::ui::messages::UiToWorker;
+  use crate::ui::TabId;
+
+  #[test]
+  fn typed_javascript_url_is_rejected() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    let before = tab.history.len();
+    assert!(tab.navigate_typed("javascript:alert(1)").is_err());
+    assert_eq!(tab.history.len(), before);
+    assert_eq!(tab.current_url(), Some("about:newtab"));
+  }
+
+  #[test]
+  fn typed_unknown_scheme_is_rejected() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    let before = tab.history.len();
+    assert!(tab.navigate_typed("foo:bar").is_err());
+    assert_eq!(tab.history.len(), before);
+    assert_eq!(tab.current_url(), Some("about:newtab"));
+  }
+
+  #[test]
+  fn typed_about_url_is_allowed() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    let msg = tab
+      .navigate_typed("about:blank")
+      .expect("about URL should be allowed");
+    match msg {
+      UiToWorker::Navigate { tab_id, url, .. } => {
+        assert_eq!(tab_id, TabId(1));
+        assert_eq!(url, "about:blank");
+      }
+      other => panic!("expected Navigate, got {other:?}"),
+    }
+
+    assert_eq!(tab.history.len(), 2);
+    assert_eq!(tab.current_url(), Some("about:blank"));
   }
 }
 

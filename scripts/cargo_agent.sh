@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Some environments inject `RUSTC_WRAPPER=sccache` without a running sccache daemon, which causes
+# builds to fail with errors like "Failed to send data to or receive data from server".
+# Prefer deterministic builds by default; opt back in with FASTR_CARGO_USE_SCCACHE=1.
+if [[ "${FASTR_CARGO_USE_SCCACHE:-0}" != "1" ]]; then
+  export RUSTC_WRAPPER=
+  export SCCACHE_DISABLE=1
+fi
+
 # High-throughput cargo wrapper for multi-agent hosts.
 #
 # Goals:
