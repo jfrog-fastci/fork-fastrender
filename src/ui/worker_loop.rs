@@ -367,6 +367,9 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         navigate_tab(tab_id, tab, &ui_tx, url, reason);
       }
       UiToWorker::GoBack { tab_id } | UiToWorker::GoForward { tab_id } => {
+        // History navigation is implemented in the real UI worker (`ui_worker.rs`). This minimal
+        // headless worker loop exists primarily for pixel-based integration tests, so ignore
+        // back/forward requests for now.
         let _ = ui_tx.send(WorkerToUi::DebugLog {
           tab_id,
           line: "navigation history is not tracked by this worker loop; ignoring back/forward".to_string(),

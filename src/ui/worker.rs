@@ -606,6 +606,9 @@ fn navigate_tab(
   }
   tab.current_url = Some(final_url.clone());
   tab.document = Some(doc);
+  if let Some(doc) = tab.document.as_mut() {
+    doc.set_scroll_state(tab.scroll_state.clone());
+  }
 
   // History bookkeeping (best-effort for MVP headless worker).
   match reason {

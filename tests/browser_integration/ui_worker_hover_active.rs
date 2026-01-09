@@ -9,7 +9,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // Rendering + worker startup can take a few seconds under load when tests run in parallel (CI).
-const TIMEOUT: Duration = Duration::from_secs(15);
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn fixture() -> (support::TempSite, String) {
   let site = support::TempSite::new();

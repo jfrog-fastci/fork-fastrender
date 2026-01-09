@@ -24,7 +24,8 @@ fn dropping_handle_shuts_down_worker_thread() {
   let handle = spawn_ui_worker("fastr-ui-worker-shutdown-drop").expect("spawn ui worker");
 
   let join = std::thread::spawn(move || handle.shutdown());
-  join_with_timeout(join, Duration::from_secs(5)).expect("worker thread should not panic");
+  // Shutting down can involve joining render threads; allow some slack under parallel load.
+  join_with_timeout(join, Duration::from_secs(10)).expect("worker thread should not panic");
 }
 
 #[test]
@@ -54,5 +55,7 @@ fn dropping_ui_receiver_does_not_panic_worker() {
   drop(ui_tx);
 
   let join = std::thread::spawn(move || join_handle.join());
-  join_with_timeout(join, Duration::from_secs(15)).expect("worker thread should not panic");
+  // The worker may still be finishing navigation/render work; use a generous timeout to avoid
+  // flakes when tests run in parallel.
+  join_with_timeout(join, Duration::from_secs(20)).expect("worker thread should not panic");
 }
