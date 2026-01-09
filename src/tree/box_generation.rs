@@ -2026,17 +2026,17 @@ pub fn collect_svg_filter_defs(styled: &StyledNode) -> HashMap<String, String> {
   filters
 }
 
-/// Collect serialized SVG id definitions required by fragment-only CSS masks.
+/// Collect serialized SVG id definitions required by fragment-only CSS masks and clip paths.
 ///
-/// This powers `mask-image: url(#id)` by serializing the referenced SVG `<mask>` element (and any
-/// other defs it references via `href="#..."`, `url(#...)`, etc.).
+/// This powers `mask-image: url(#id)` and `clip-path: url(#id)` by serializing the referenced SVG
+/// element (and any other defs it references via `href="#..."`, `url(#...)`, etc.).
 ///
 /// We inline computed SVG presentation properties (fill/stroke/opacity/etc.) during serialization
 /// so downstream rasterizers (resvg) do not need access to the full document CSS cascade.
 ///
 /// Namespace declarations from ancestor elements are preserved to keep prefixed attributes valid.
 pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
-  use crate::style::types::BackgroundImage;
+  use crate::style::types::{BackgroundImage, ClipPath};
 
   fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
     let bytes = value.as_bytes();
@@ -2101,7 +2101,7 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
       .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
   }
 
-  fn collect_requested_mask_ids(styled: &StyledNode, out: &mut HashSet<String>) {
+  fn collect_requested_svg_id_defs(styled: &StyledNode, out: &mut HashSet<String>) {
     for layer in styled.styles.mask_layers.iter() {
       let Some(image) = layer.image.as_ref() else {
         continue;
@@ -2116,8 +2116,16 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         out.insert(id.to_string());
       }
     }
+    if let ClipPath::Url(src) = &styled.styles.clip_path {
+      if let Some(id) = trim_ascii_whitespace(src)
+        .strip_prefix('#')
+        .filter(|id| !id.is_empty())
+      {
+        out.insert(id.to_string());
+      }
+    }
     for child in &styled.children {
-      collect_requested_mask_ids(child, out);
+      collect_requested_svg_id_defs(child, out);
     }
   }
 
@@ -2212,7 +2220,7 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
   }
 
   let mut requested = HashSet::new();
-  collect_requested_mask_ids(styled, &mut requested);
+  collect_requested_svg_id_defs(styled, &mut requested);
   if requested.is_empty() {
     return HashMap::new();
   }
