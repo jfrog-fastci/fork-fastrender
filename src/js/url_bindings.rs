@@ -3,7 +3,7 @@ use crate::js::webidl::{JsRuntime as _, WebIdlJsRuntime as _};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use vm_js::{GcObject, PropertyKey, Value, VmError};
+use vm_js::{GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Value, VmError};
 
 #[derive(Default)]
 struct UrlBindingState {
@@ -14,7 +14,6 @@ struct UrlBindingState {
 
 struct UrlInstance {
   url: Url,
-  cached_search_params: Option<Value>,
 }
 
 fn type_error(rt: &mut webidl_js_runtime::VmJsRuntime, message: &str) -> VmError {
@@ -292,27 +291,52 @@ fn init_url_instance(
     let state = state.clone();
     move |rt, this, _args| {
       let obj = expect_object(rt, this, "URL")?;
-      let (url, cached) = {
-        let guard = state.borrow();
-        let Some(entry) = guard.urls.get(&obj) else {
-          return Err(type_error(rt, "URL: illegal invocation"));
-        };
-        (entry.url.clone(), entry.cached_search_params)
-      };
-      if let Some(cached) = cached {
+      // Internal slot used to keep the associated URLSearchParams wrapper alive and stable.
+      //
+      // This intentionally uses a non-enumerable own property (instead of a Rust-side cache) so
+      // the vm-js GC can trace the cached object. This preserves `[SameObject]` semantics:
+      // repeated reads of `.searchParams` return the same object *as long as the URL object is
+      // alive*.
+      let slot_key = rt.property_key_from_str("__fastrender_url_searchParams")?;
+      let cached = rt.get(Value::Object(obj), slot_key)?;
+      if !matches!(cached, Value::Undefined) {
         return Ok(cached);
       }
+
+      let url = state
+        .borrow()
+        .urls
+        .get(&obj)
+        .ok_or_else(|| type_error(rt, "URL: illegal invocation"))?
+        .url
+        .clone();
 
       let params = url.search_params();
       let params_obj = rt.alloc_object_value()?;
       init_urlsearchparams_instance(rt, state.clone(), params_obj, params)?;
 
-      // Cache on the Url instance.
-      let mut guard = state.borrow_mut();
-      let Some(entry) = guard.urls.get_mut(&obj) else {
-        return Err(type_error(rt, "URL: illegal invocation"));
+      // Define the internal cache slot on the URL instance (non-enumerable, non-writable,
+      // non-configurable).
+      //
+      // Note: allocate a fresh key here rather than reusing `slot_key` so we never hold a
+      // non-rooted string handle across allocations that could trigger GC.
+      let slot_key = rt.property_key_from_str("__fastrender_url_searchParams")?;
+      let Value::Object(params_handle) = params_obj else {
+        return Err(type_error(rt, "URLSearchParams: expected object"));
       };
-      entry.cached_search_params = Some(params_obj);
+      let mut scope = rt.heap_mut().scope();
+      scope.define_property(
+        obj,
+        slot_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(params_handle),
+            writable: false,
+          },
+        },
+      )?;
       Ok(params_obj)
     }
   })?;
@@ -435,19 +459,13 @@ fn init_urlsearchparams_instance(
         .get_all(&name)
         .map_err(|e| type_error(rt, &e.to_string()))?;
 
-      let arr = rt.alloc_object_value()?;
+      // WHATWG `URLSearchParams.getAll()` returns a sequence<string>, which maps to a JS Array.
+      let arr = rt.alloc_array()?;
       for (idx, value) in values.iter().enumerate() {
-        let key = to_property_key(rt, &idx.to_string())?;
+        let key = rt.property_key_from_u32(idx as u32)?;
         let value = rt.alloc_string_value(value)?;
         rt.define_data_property(arr, key, value, true)?;
       }
-      let length_key = to_property_key(rt, "length")?;
-      rt.define_data_property(
-        arr,
-        length_key,
-        Value::Number(values.len() as f64),
-        false,
-      )?;
       Ok(arr)
     }
   })?;
@@ -553,7 +571,6 @@ pub fn install_url_bindings(
         obj_handle,
         UrlInstance {
           url,
-          cached_search_params: None,
         },
       );
 

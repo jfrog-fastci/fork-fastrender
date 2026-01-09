@@ -133,3 +133,27 @@ fn setting_and_clearing_hash() {
   let href = get(&mut rt, url, "href");
   assert_eq!(as_rust_string(&rt, href), "https://example.com/");
 }
+
+#[test]
+fn searchparams_cached_object_survives_gc() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  // Root the global + URL object so `collect_garbage()` doesn't sweep them.
+  let global_root = rt.heap_mut().add_root(global).unwrap();
+
+  let url = new_url(&mut rt, global, "https://example.com/?a=b", None);
+  let url_root = rt.heap_mut().add_root(url).unwrap();
+
+  let search_params_1 = get(&mut rt, url, "searchParams");
+  rt.heap_mut().collect_garbage();
+  let search_params_2 = get(&mut rt, url, "searchParams");
+  assert_eq!(
+    search_params_1, search_params_2,
+    "URL.searchParams should keep the cached object alive while the URL object is alive"
+  );
+
+  rt.heap_mut().remove_root(url_root);
+  rt.heap_mut().remove_root(global_root);
+}
