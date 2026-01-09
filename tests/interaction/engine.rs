@@ -3418,6 +3418,142 @@ fn listbox_select_click_uses_painted_row_list_not_dom_options() {
 }
 
 #[test]
+fn listbox_select_click_in_blank_area_is_noop() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "s"), ("size", "4")],
+        vec![
+          el("option", vec![("id", "o1"), ("selected", "")], vec![]),
+          el("option", vec![("id", "o2")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  assert!(
+    !has_attr(&dom, "s", "data-fastr-user-validity"),
+    "select should not be marked initially"
+  );
+
+  let select_dom_id = node_id(&dom, "s");
+  let o1_dom_id = node_id(&dom, "o1");
+  let o2_dom_id = node_id(&dom, "o2");
+
+  // Only 2 items are painted even though `size=4`, leaving blank space below.
+  let control = FormControlKind::Select(SelectControl {
+    multiple: false,
+    size: 4,
+    items: Arc::new(vec![
+      SelectItem::Option {
+        node_id: o1_dom_id,
+        label: "One".to_string(),
+        value: "1".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: o1_dom_id,
+      },
+      SelectItem::Option {
+        node_id: o2_dom_id,
+        label: "Two".to_string(),
+        value: "2".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: o2_dom_id,
+      },
+    ]),
+    selected: vec![0],
+  });
+
+  let mut select_style = ComputedStyle::default();
+  select_style.font_size = 10.0;
+  select_style.root_font_size = 10.0;
+  select_style.line_height = LineHeight::Length(Length::px(10.0));
+
+  let mut select_box = BoxNode::new_replaced(
+    Arc::new(select_style),
+    ReplacedType::FormControl(FormControl {
+      control,
+      appearance: Appearance::Auto,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      progress_bar_style: None,
+      progress_value_style: None,
+      meter_bar_style: None,
+      meter_optimum_value_style: None,
+      meter_suboptimum_value_style: None,
+      meter_even_less_good_value_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    }),
+    None,
+    None,
+  );
+  select_box.styled_node_id = Some(select_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![select_box],
+  ));
+  let select_box_id = find_box_id_for_styled_node(&box_tree, select_dom_id);
+
+  // line-height=10px; the fragment is tall enough for 4 rows (40px) but we only have 2 options.
+  // Clicking at y=35 is in the blank area and must not change selection.
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
+      select_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 35.0),
+  );
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 35.0),
+    "https://x/",
+    "https://x/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged {
+      node_id: Some(select_dom_id)
+    }
+  );
+  assert!(has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+  assert!(
+    !has_attr(&dom, "s", "data-fastr-user-validity"),
+    "no-op click must not mark user-validity"
+  );
+}
+
+#[test]
 fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others() {
   let mut dom = doc(vec![el(
     "html",

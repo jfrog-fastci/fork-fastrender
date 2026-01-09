@@ -917,14 +917,24 @@ fn apply_select_listbox_click(
   if !local_y.is_finite() {
     return false;
   }
+  // Only clicks within the listbox's scrollable viewport should map to an item row. Clicking in
+  // border/padding (outside the content rect) should be a no-op.
+  if local_y < 0.0 || local_y >= viewport_height {
+    return false;
+  }
   let content_y = local_y + scroll_y;
   if !content_y.is_finite() {
     return false;
   }
-  let mut row_idx = (content_y / row_height).floor() as isize;
-  row_idx = row_idx.clamp(0, total_rows.saturating_sub(1) as isize);
+  // The painter draws rows only for `SelectControl.items`. If the click lands in the extra blank
+  // area (e.g. `size` is larger than the number of items), do not clamp to the last row; treat it
+  // as a no-op instead.
+  if content_y < 0.0 || content_y >= content_height {
+    return false;
+  }
+  let row_idx = (content_y / row_height).floor() as usize;
 
-  let Some(item) = control.items.get(row_idx as usize) else {
+  let Some(item) = control.items.get(row_idx) else {
     return false;
   };
 
