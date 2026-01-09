@@ -35,7 +35,9 @@ fn find_context_by_bounds_and_z_index<'a>(
   z_index: i32,
 ) -> Option<&'a StackingContextItem> {
   contexts.iter().find(|ctx| {
-    ctx.z_index == z_index && approx_eq(ctx.bounds.width(), width) && approx_eq(ctx.bounds.height(), height)
+    ctx.z_index == z_index
+      && approx_eq(ctx.bounds.width(), width)
+      && approx_eq(ctx.bounds.height(), height)
   })
 }
 
@@ -43,7 +45,11 @@ fn render(
   html: &str,
   width: u32,
   height: u32,
-) -> (tiny_skia::Pixmap, Vec<StackingContextReason>, Vec<StackingContextItem>) {
+) -> (
+  tiny_skia::Pixmap,
+  Vec<StackingContextReason>,
+  Vec<StackingContextItem>,
+) {
   crate::rayon_test_util::init_rayon_for_tests(1);
   // Force the display-list paint backend so this future guard catches issues introduced by
   // stacking-context compositing layers (the known risk surface for backdrop-filter sampling).
@@ -146,8 +152,9 @@ fn backdrop_filter_crosses_positive_z_index_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::PositionedWithZIndex),
     "expected a z-index stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "z-index stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -172,8 +179,9 @@ fn backdrop_filter_crosses_fixed_position_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::FixedPositioning),
     "expected a position: fixed stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "position: fixed stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -203,8 +211,9 @@ fn backdrop_filter_crosses_sticky_position_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::StickyPositioning),
     "expected a position: sticky stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "position: sticky stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -229,8 +238,9 @@ fn backdrop_filter_crosses_negative_z_index_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::PositionedWithZIndex),
     "expected a z-index stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, -1)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, -1)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "negative z-index stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -255,8 +265,9 @@ fn backdrop_filter_crosses_transform_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::Transform),
     "expected a transform stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "transform stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -281,8 +292,9 @@ fn backdrop_filter_crosses_perspective_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::Perspective),
     "expected a perspective stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "perspective stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -307,8 +319,9 @@ fn backdrop_filter_crosses_flex_item_z_index_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::FlexItemWithZIndex),
     "expected a flex item z-index stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "flex item z-index stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -333,8 +346,9 @@ fn backdrop_filter_crosses_grid_item_z_index_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::GridItemWithZIndex),
     "expected a grid item z-index stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 1)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "grid item z-index stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -359,8 +373,9 @@ fn backdrop_filter_crosses_isolation_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::Isolation),
     "expected an isolation stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "isolation stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -370,20 +385,32 @@ fn backdrop_filter_crosses_isolation_stacking_context() {
 }
 
 #[test]
-fn backdrop_filter_ignores_backface_visibility_non_stacking_context() {
+fn backdrop_filter_crosses_backface_visibility_stacking_context() {
   let html = r#"<!doctype html>
     <style>
       body { margin: 0; background: rgb(255 0 0); }
+      #parent { transform-style: preserve-3d; }
       #sc { backface-visibility: hidden; width: 60px; height: 60px; }
       #overlay { position: absolute; left: 0; top: 0; width: 40px; height: 40px; backdrop-filter: invert(1); }
     </style>
-    <div id="sc"><div id="overlay"></div></div>
+    <div id="parent"><div id="sc"><div id="overlay"></div></div></div>
   "#;
 
   let (pixmap, stacking_reasons, display_list_stacking_contexts) = render(html, 64, 64);
   assert!(
-    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0).is_none(),
-    "backface-visibility must not create a stacking context; got stacking reasons {stacking_reasons:?} and contexts {display_list_stacking_contexts:?}"
+    stacking_reasons.contains(&StackingContextReason::BackfaceVisibility),
+    "expected a backface-visibility stacking context; got {stacking_reasons:?}"
+  );
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
+  assert!(
+    sc_context.creates_stacking_context,
+    "backface-visibility:hidden creates a stacking context when participating in a 3D rendering context (css-transforms-2); got {sc_context:?}"
+  );
+  assert!(
+    !sc_context.establishes_backdrop_root,
+    "backface-visibility stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
   );
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
@@ -405,8 +432,9 @@ fn backdrop_filter_crosses_containment_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::Containment),
     "expected a containment stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "containment stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -431,8 +459,9 @@ fn backdrop_filter_crosses_will_change_transform_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::WillChange),
     "expected a will-change stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "will-change: transform stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -468,13 +497,9 @@ fn backdrop_filter_crosses_top_layer_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::TopLayer),
     "expected a top-layer stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(
-    &display_list_stacking_contexts,
-    60.0,
-    60.0,
-    i32::MAX,
-  )
-  .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, i32::MAX)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "top-layer stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -499,8 +524,9 @@ fn backdrop_filter_crosses_will_change_contents_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::WillChange),
     "expected a will-change stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "will-change: contents stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -525,8 +551,9 @@ fn backdrop_filter_crosses_will_change_scroll_position_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::WillChange),
     "expected a will-change stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "will-change: scroll-position stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -553,8 +580,9 @@ fn backdrop_filter_crosses_will_change_container_type_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::WillChange),
     "expected a will-change stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "will-change: container-type stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
@@ -581,8 +609,9 @@ fn backdrop_filter_crosses_container_type_stacking_context() {
     stacking_reasons.contains(&StackingContextReason::ContainerType),
     "expected a container-type stacking context; got {stacking_reasons:?}"
   );
-  let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
-    .expect("expected display list stacking context for #sc");
+  let sc_context =
+    find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
+      .expect("expected display list stacking context for #sc");
   assert!(
     !sc_context.establishes_backdrop_root,
     "container-type stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"

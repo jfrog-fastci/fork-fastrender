@@ -38,7 +38,7 @@
 //! 9. Mix-blend-mode (except normal)
 //! 10. Isolation: isolate
 //! 11. Perspective property (except none)
-//! 12. Backface-visibility: hidden
+//! 12. Backface-visibility: hidden on an element participating in a 3D rendering context
 //! 13. Backdrop-filter property (except none)
 //! 14. Containment properties (contain: layout|paint|strict|content)
 //! 15. Flex items with z-index (child of flex container with z-index)
@@ -60,6 +60,7 @@
 use crate::error::{Error, RenderStage, Result};
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::paint::css_transforms::used_transform_style;
 use crate::paint::display_list::ResolvedFilter;
 use crate::paint::display_list::Transform3D;
 use crate::paint::filter_outset::filter_outset_with_bounds;
@@ -69,8 +70,8 @@ use crate::render_control::check_active_periodic;
 use crate::scroll::ScrollState;
 use crate::style::display::Display;
 use crate::style::position::Position;
-use crate::style::types::{FilterColor, FilterFunction};
 use crate::style::types::Overflow;
+use crate::style::types::{FilterColor, FilterFunction, TransformStyle};
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
@@ -107,7 +108,9 @@ fn resolve_filter_outset_for_bounds(
   let mut resolved_filters = Vec::with_capacity(style.filter.len());
   for filter in &style.filter {
     let resolved = match filter {
-      FilterFunction::Blur(radius) => Some(ResolvedFilter::Blur(resolve_length(radius, base).max(0.0))),
+      FilterFunction::Blur(radius) => {
+        Some(ResolvedFilter::Blur(resolve_length(radius, base).max(0.0)))
+      }
       FilterFunction::Brightness(v) => Some(ResolvedFilter::Brightness(*v)),
       FilterFunction::Contrast(v) => Some(ResolvedFilter::Contrast(*v)),
       FilterFunction::Grayscale(v) => Some(ResolvedFilter::Grayscale(*v)),
@@ -144,7 +147,11 @@ fn resolve_filter_outset_for_bounds(
     return None;
   }
 
-  Some(filter_outset_with_bounds(&resolved_filters, 1.0, Some(bbox)))
+  Some(filter_outset_with_bounds(
+    &resolved_filters,
+    1.0,
+    Some(bbox),
+  ))
 }
 
 /// A reference to a fragment with associated style information
@@ -248,10 +255,12 @@ pub enum StackingContextReason {
   /// Forced stacking context for synthetic fragments (e.g. paged-media wrappers/margin boxes).
   Forced,
 
-  /// Synthetic context used to track `backface-visibility` isolation in 3D rendering.
+  /// Has `backface-visibility: hidden` while participating in a 3D rendering context.
   ///
-  /// This is not a CSS stacking context trigger; it exists to keep display-list backface handling
-  /// scoped to the appropriate subtree.
+  /// Per CSS Transforms Level 2:
+  /// "A computed value of `backface-visibility/hidden` for `backface-visibility` on a
+  /// transformable element that participates in a 3D rendering context establishes both a
+  /// stacking context and a containing block for all descendants."
   BackfaceVisibility,
 
   /// Positioned element (relative/absolute/fixed/sticky) with z-index != auto
@@ -526,9 +535,7 @@ impl StackingContext {
   /// Sorts all child stacking contexts by z-index (for paint order)
   pub fn sort_children(&mut self) {
     self.layer6_positioned.sort_by_key(|frag| frag.tree_order);
-    self
-      .children
-      .sort_by(Self::compare_children_for_paint);
+    self.children.sort_by(Self::compare_children_for_paint);
 
     // Recursively sort grandchildren
     for child in &mut self.children {
@@ -599,8 +606,10 @@ impl StackingContext {
       if !style.has_transform() {
         return None;
       }
-      let transform_bounds =
-        Rect::new(context.offset_from_parent_context, root_fragment.bounds.size);
+      let transform_bounds = Rect::new(
+        context.offset_from_parent_context,
+        root_fragment.bounds.size,
+      );
       crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, viewport)
         .self_transform
     };
@@ -634,12 +643,8 @@ impl StackingContext {
     // surface.
     let mut include_fragment = |frag: &FragmentNode, origin: Point| {
       let border_rect = Rect::new(origin, frag.bounds.size);
-      let mut fragment_bounds = paint_bounds::fragment_paint_bounds(
-        frag,
-        border_rect,
-        frag.style.as_deref(),
-        viewport,
-      );
+      let mut fragment_bounds =
+        paint_bounds::fragment_paint_bounds(frag, border_rect, frag.style.as_deref(), viewport);
       fragment_bounds = fragment_bounds.union(frag.scroll_overflow.translate(origin));
       accumulate(translate(fragment_bounds), &mut bounds);
     };
@@ -831,11 +836,13 @@ pub fn creates_stacking_context(
     return true;
   }
 
-  // Backface-visibility: hidden creates a stacking context.
+  // CSS Transforms 2: `backface-visibility: hidden` establishes a stacking context only when the
+  // element participates in a 3D rendering context (i.e. its parent preserves 3D).
   if matches!(
     style.backface_visibility,
     crate::style::types::BackfaceVisibility::Hidden
-  ) {
+  ) && participates_in_3d_rendering_context(parent_style)
+  {
     return true;
   }
 
@@ -949,7 +956,8 @@ pub fn get_stacking_context_reason(
   if matches!(
     style.backface_visibility,
     crate::style::types::BackfaceVisibility::Hidden
-  ) {
+  ) && participates_in_3d_rendering_context(parent_style)
+  {
     return Some(StackingContextReason::BackfaceVisibility);
   }
 
@@ -1006,6 +1014,11 @@ pub fn get_stacking_context_reason(
   None
 }
 
+fn participates_in_3d_rendering_context(parent_style: Option<&ComputedStyle>) -> bool {
+  parent_style
+    .is_some_and(|parent| matches!(used_transform_style(parent), TransformStyle::Preserve3d))
+}
+
 /// Checks if an element is positioned (not static)
 fn is_positioned(style: &ComputedStyle) -> bool {
   !matches!(style.position, Position::Static)
@@ -1058,8 +1071,8 @@ fn clip_chain_link_for_fragment(
   offset_from_parent_context: Point,
 ) -> Option<ClipChainLink> {
   let is_replaced = matches!(fragment.content, FragmentContent::Replaced { .. });
-  let clips_overflow =
-    !is_replaced && (overflow_axis_clips(style.overflow_x) || overflow_axis_clips(style.overflow_y));
+  let clips_overflow = !is_replaced
+    && (overflow_axis_clips(style.overflow_x) || overflow_axis_clips(style.overflow_y));
   // CSS 2.1 `clip` only applies to absolutely positioned elements.
   let clips_rect =
     matches!(style.position, Position::Absolute | Position::Fixed) && style.clip.is_some();
@@ -2476,12 +2489,17 @@ mod tests {
   }
 
   #[test]
-  fn test_backface_visibility_hidden_creates_stacking_context() {
+  fn test_creates_stacking_context_backface_visibility_hidden_requires_3d_context() {
     let mut style = ComputedStyle::default();
     style.backface_visibility = crate::style::types::BackfaceVisibility::Hidden;
-    assert!(creates_stacking_context(&style, None, false));
+    assert!(!creates_stacking_context(&style, None, false));
+    assert_eq!(get_stacking_context_reason(&style, None, false), None);
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.transform_style = crate::style::types::TransformStyle::Preserve3d;
+    assert!(creates_stacking_context(&style, Some(&parent_style), false));
     assert_eq!(
-      get_stacking_context_reason(&style, None, false),
+      get_stacking_context_reason(&style, Some(&parent_style), false),
       Some(StackingContextReason::BackfaceVisibility)
     );
   }
@@ -3059,11 +3077,8 @@ mod tests {
     let shadow_style = Arc::new(shadow_style);
 
     // A non-stacking wrapper with a grandchild shadow.
-    let inner = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
-      vec![],
-      shadow_style,
-    );
+    let inner =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 20.0, 20.0), vec![], shadow_style);
     let wrapper = FragmentNode::new_block_styled(
       Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
       vec![inner],
@@ -3108,11 +3123,8 @@ mod tests {
     positioned_style.position = Position::Relative;
     let positioned_style = Arc::new(positioned_style);
 
-    let inner = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
-      vec![],
-      shadow_style,
-    );
+    let inner =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 20.0, 20.0), vec![], shadow_style);
     let positioned = FragmentNode::new_block_styled(
       Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
       vec![inner],
@@ -3131,8 +3143,7 @@ mod tests {
 
     let mut translated = positioned.clone();
     translated.translate_root_in_place(wrapper_origin);
-    sc
-      .layer6_positioned
+    sc.layer6_positioned
       .push(OrderedFragment::new(translated, 0));
 
     sc.compute_bounds(None, None);

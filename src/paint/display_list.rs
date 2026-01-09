@@ -318,17 +318,21 @@ fn resolve_border_image_widths(
     match value {
       BorderImageWidthValue::Auto => border,
       BorderImageWidthValue::Number(n) => clamp_non_negative_finite(n * border),
-      BorderImageWidthValue::Length(len) => clamp_non_negative_finite(
-        crate::paint::paint_bounds::resolve_length_for_paint(
+      BorderImageWidthValue::Length(len) => {
+        clamp_non_negative_finite(crate::paint::paint_bounds::resolve_length_for_paint(
           &len,
           font_size,
           root_font_size,
           axis,
           viewport,
-        ),
-      ),
+        ))
+      }
       BorderImageWidthValue::Percentage(p) => {
-        let axis = if axis.is_finite() && axis > 0.0 { axis } else { 0.0 };
+        let axis = if axis.is_finite() && axis > 0.0 {
+          axis
+        } else {
+          0.0
+        };
         clamp_non_negative_finite((p / 100.0) * axis)
       }
     }
@@ -352,15 +356,15 @@ fn resolve_border_image_outset(
   let resolve_single = |value: BorderImageOutsetValue, border: f32| -> f32 {
     match value {
       BorderImageOutsetValue::Number(n) => clamp_non_negative_finite(n * border),
-      BorderImageOutsetValue::Length(len) => clamp_non_negative_finite(
-        crate::paint::paint_bounds::resolve_length_for_paint(
+      BorderImageOutsetValue::Length(len) => {
+        clamp_non_negative_finite(crate::paint::paint_bounds::resolve_length_for_paint(
           &len,
           font_size,
           root_font_size,
           border.max(1.0),
           viewport,
-        ),
-      ),
+        ))
+      }
     }
   };
 
@@ -2449,9 +2453,9 @@ pub struct StackingContextItem {
 
   /// Whether this boundary corresponds to a stacking context defined by CSS rules.
   ///
-  /// The engine may also introduce stacking-context-like boundaries for internal reasons (e.g.
-  /// `backface-visibility: hidden` plane culling). Those should set this to `false` so debug
-  /// output can distinguish them from spec stacking contexts.
+  /// The engine may also introduce stacking-context-like boundaries for internal implementation
+  /// details. Those should set this to `false` so debug output can distinguish them from spec
+  /// stacking contexts.
   pub creates_stacking_context: bool,
 
   /// Whether this stacking context is a paint root (root of a display-list build).

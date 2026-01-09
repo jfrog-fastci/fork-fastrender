@@ -682,8 +682,9 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 fn trim_ascii_whitespace_start(value: &str) -> &str {
-  value
-    .trim_start_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  value.trim_start_matches(|c: char| {
+    matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+  })
 }
 
 impl DisplayListBuilder {
@@ -1657,10 +1658,11 @@ impl DisplayListBuilder {
     }
     self.estimate_from_roots(std::iter::once(root));
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let mut stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
-      root,
-      &self.scroll_state,
-    )?;
+    let mut stacking =
+      crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
+        root,
+        &self.scroll_state,
+      )?;
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), stacking_tree_timer) {
       breakdown.record_stacking_tree(start.elapsed());
     }
@@ -1706,10 +1708,11 @@ impl DisplayListBuilder {
     }
     self.estimate_from_roots(std::iter::once(root));
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let mut stacking = crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
-      root,
-      &self.scroll_state,
-    )?;
+    let mut stacking =
+      crate::paint::stacking::build_stacking_tree_from_fragment_tree_checked_with_scroll(
+        root,
+        &self.scroll_state,
+      )?;
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), stacking_tree_timer) {
       breakdown.record_stacking_tree(start.elapsed());
     }
@@ -1791,7 +1794,7 @@ impl DisplayListBuilder {
       tree,
       &self.scroll_state,
     )
-      .unwrap_or_else(|_| Vec::new());
+    .unwrap_or_else(|_| Vec::new());
     self.estimate_from_tree(tree);
     self.build_from_stacking_contexts(&stackings)
   }
@@ -2924,7 +2927,7 @@ impl DisplayListBuilder {
     let transform = transforms.self_transform;
     let child_perspective = transforms.child_perspective;
     let transform_style = root_style
-      .map(|style| Self::used_transform_style(style))
+      .map(crate::paint::css_transforms::used_transform_style)
       .unwrap_or(TransformStyle::Flat);
     let backface_visibility = root_style
       .map(|style| style.backface_visibility)
@@ -3239,9 +3242,6 @@ impl DisplayListBuilder {
       .list
       .push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: context.z_index,
-        // `backface-visibility` plane culling is represented via separate
-        // `PushBackfaceVisibility`/`PopBackfaceVisibility` display items, not as an ad-hoc stacking
-        // context boundary.
         creates_stacking_context: true,
         is_root,
         establishes_backdrop_root,
@@ -3726,45 +3726,6 @@ impl DisplayListBuilder {
     Some(ClipItem {
       shape: ClipShape::Rect { rect, radii: None },
     })
-  }
-
-  fn used_transform_style(style: &ComputedStyle) -> TransformStyle {
-    if Self::is_3d_flattening_boundary(style) {
-      TransformStyle::Flat
-    } else {
-      style.transform_style
-    }
-  }
-
-  fn is_3d_flattening_boundary(style: &ComputedStyle) -> bool {
-    if !style.filter.is_empty() || !style.backdrop_filter.is_empty() {
-      return true;
-    }
-    if style.opacity < 1.0 - f32::EPSILON {
-      return true;
-    }
-    if !matches!(style.clip_path, crate::style::types::ClipPath::None) {
-      return true;
-    }
-    if matches!(style.position, Position::Absolute | Position::Fixed) && style.clip.is_some() {
-      return true;
-    }
-    if Self::overflow_axis_clips(style.overflow_x) || Self::overflow_axis_clips(style.overflow_y) {
-      return true;
-    }
-    if style.mask_layers.iter().any(|layer| layer.image.is_some()) {
-      return true;
-    }
-    if !matches!(style.mix_blend_mode, MixBlendMode::Normal) {
-      return true;
-    }
-    if matches!(style.isolation, Isolation::Isolate) {
-      return true;
-    }
-    if style.containment.isolates_paint() {
-      return true;
-    }
-    false
   }
 
   fn convert_blend_mode(mode: MixBlendMode) -> BlendMode {
@@ -4830,7 +4791,9 @@ impl DisplayListBuilder {
     }
 
     if len.unit.is_container_query_relative()
-      || len.calc.is_some_and(|calc| calc.has_container_query_relative())
+      || len
+        .calc
+        .is_some_and(|calc| calc.has_container_query_relative())
     {
       return None;
     }
@@ -10619,7 +10582,8 @@ impl DisplayListBuilder {
               text_style.font_size,
             );
             let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
-            let baseline_y = text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
+            let baseline_y =
+              text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
             let top = baseline_y - metrics.ascent;
             let bottom = baseline_y + metrics.descent;
             let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -11006,8 +10970,11 @@ impl DisplayListBuilder {
         }
         let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
         let metrics_scaled = Self::resolve_scaled_metrics(&button_style, &self.font_ctx);
-        let line_height =
-          compute_line_height_with_metrics_viewport(&button_style, metrics_scaled.as_ref(), viewport);
+        let line_height = compute_line_height_with_metrics_viewport(
+          &button_style,
+          metrics_scaled.as_ref(),
+          viewport,
+        );
         let baseline_offset_y = if line_height.is_finite() {
           (rect.height() - line_height) / 2.0
         } else {
@@ -11590,11 +11557,12 @@ impl DisplayListBuilder {
           .as_deref()
           .filter(|v| !v.is_empty())
           .map(|v| {
-            let name = v
-              .rsplit(|c| c == '/' || c == '\\')
-              .next()
-              .unwrap_or(v);
-            if name.is_empty() { v } else { name }
+            let name = v.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(v);
+            if name.is_empty() {
+              v
+            } else {
+              name
+            }
           })
           .unwrap_or("No file chosen");
 
@@ -11633,8 +11601,7 @@ impl DisplayListBuilder {
           )
         };
 
-        let measured_button_text_w =
-          measure_shaped_advance(self, button_label, &button_text_style);
+        let measured_button_text_w = measure_shaped_advance(self, button_label, &button_text_style);
         let default_button_w = (measured_button_text_w + button_text_style.font_size * 1.4)
           .max(button_text_style.font_size * 3.0)
           .min(rect.width());
@@ -11713,7 +11680,14 @@ impl DisplayListBuilder {
         }
 
         if button_rect.width() > 0.0 && button_rect.height() > 0.0 {
-          let _ = emit_text_aligned(self, button_label, &button_text_style, button_rect, true, true);
+          let _ = emit_text_aligned(
+            self,
+            button_label,
+            &button_text_style,
+            button_rect,
+            true,
+            true,
+          );
         }
 
         if file_rect.width() > 0.0 && file_rect.height() > 0.0 {
@@ -11813,7 +11787,11 @@ impl DisplayListBuilder {
     rect: Rect,
     trim: bool,
   ) -> bool {
-    let text = if trim { trim_ascii_whitespace(text) } else { text };
+    let text = if trim {
+      trim_ascii_whitespace(text)
+    } else {
+      text
+    };
     if text.is_empty() {
       return false;
     }
@@ -12029,14 +12007,15 @@ impl DisplayListBuilder {
       } else {
         content.svg.as_str()
       };
-      let foreign_object_dpr = crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
-        foreign_object_svg,
-        self.device_pixel_ratio,
-        dest_w,
-        dest_h,
-        img_w_css,
-        img_h_css,
-      );
+      let foreign_object_dpr =
+        crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+          foreign_object_svg,
+          self.device_pixel_ratio,
+          dest_w,
+          dest_h,
+          img_w_css,
+          img_h_css,
+        );
       crate::paint::svg_foreign_object::inline_svg_with_foreign_objects(
         &content.svg,
         &content.foreign_objects,
@@ -12630,7 +12609,9 @@ mod tests {
     let bounds = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
     assert!(
-      builder.decode_mask_image_url("#mask", &style, bounds).is_some(),
+      builder
+        .decode_mask_image_url("#mask", &style, bounds)
+        .is_some(),
       "expected fragment-only URL to resolve with SVG id defs"
     );
     assert!(
