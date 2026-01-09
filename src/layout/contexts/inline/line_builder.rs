@@ -2954,7 +2954,9 @@ impl<'a> LineBuilder<'a> {
     if let Some(integration) = self.float_integration.as_ref() {
       let space = integration.find_line_space(
         self.float_base_y + self.current_y,
-        LineSpaceOptions::default().line_height(self.strut_metrics.line_height),
+        LineSpaceOptions::default()
+          .line_height(self.strut_metrics.line_height)
+          .allow_zero_width(false),
       );
       // Clamp the float-derived line range to the container width. This matters when we're
       // querying an external float context (e.g., inherited from an ancestor BFC) whose
@@ -2976,6 +2978,54 @@ impl<'a> LineBuilder<'a> {
       self.current_line.left_offset = 0.0;
     }
     self.current_line.indent = indent_for_line;
+  }
+
+  fn clamp_float_space_to_line_width(
+    &self,
+    base_width: f32,
+    space: crate::layout::inline::float_integration::LineSpace,
+  ) -> crate::layout::inline::float_integration::LineSpace {
+    // Clamp the float-derived line range to the container width. This matters when we're querying
+    // an external float context (e.g., inherited from an ancestor BFC) whose containing block is
+    // wider than the inline container we're laying out.
+    let left_edge = space.left_edge.max(0.0);
+    let right_edge = space.right_edge.min(base_width);
+    let width = (right_edge - left_edge).max(0.0);
+    crate::layout::inline::float_integration::LineSpace::new(space.y, left_edge, width)
+  }
+
+  fn reposition_empty_line_for_floats(&mut self, min_width: f32) -> bool {
+    if !self.current_line.is_empty() {
+      return false;
+    }
+    let Some(integration) = self.float_integration.as_ref() else {
+      return false;
+    };
+
+    let base_width = if self.lines.is_empty() {
+      self.first_line_width
+    } else {
+      self.subsequent_line_width
+    };
+    let before_y = self.current_y;
+    let before_width = self.current_line.available_width;
+
+    let space = integration.find_line_space(
+      self.float_base_y + self.current_y,
+      LineSpaceOptions::default()
+        .min_width(min_width.max(0.0))
+        .line_height(self.strut_metrics.line_height)
+        .allow_zero_width(false),
+    );
+    let space = self.clamp_float_space_to_line_width(base_width, space);
+
+    self.current_line_space = Some(space);
+    self.current_line.available_width = space.width;
+    self.current_line.box_width = space.width;
+    self.current_line.left_offset = space.left_edge;
+    self.current_y = self.current_y.max((space.y - self.float_base_y).max(0.0));
+
+    (self.current_y - before_y).abs() > 0.0001 || (self.current_line.available_width - before_width).abs() > 0.0001
   }
 
   /// Creates a new line builder
@@ -3071,68 +3121,110 @@ impl<'a> LineBuilder<'a> {
   }
 
   fn add_item_internal(&mut self, item: InlineItem) -> Result<(), LayoutError> {
-    // Tabs resolve to the next tab stop, which is defined relative to the inline start edge of the
-    // line box. `current_x` tracks the width used by items *before* indentation; indentation is
-    // applied later during fragment placement. Include the authored indentation here so tab stops
-    // line up correctly on indented lines.
-    let start_x = self.current_x + self.current_line.indent;
-    let (item, item_width) = item.resolve_width_at(start_x);
-    let line_width = self.current_line_width();
+    let mut item = item;
+    loop {
+      // Tabs resolve to the next tab stop, which is defined relative to the inline start edge of
+      // the line box. `current_x` tracks the width used by items *before* indentation; indentation
+      // is applied later during fragment placement. Include the authored indentation here so tab
+      // stops line up correctly on indented lines.
+      let start_x = self.current_x + self.current_line.indent;
+      let (resolved, item_width) = item.resolve_width_at(start_x);
+      let line_width = self.current_line_width();
 
-    let kind = match &item {
-      InlineItem::Text(_) => "text",
-      InlineItem::SoftBreak => "soft-break",
-      InlineItem::Tab(_) => "tab",
-      InlineItem::HardBreak => "hard-break",
-      InlineItem::InlineBox(_) => "inline-box",
-      InlineItem::InlineBlock(_) => "inline-block",
-      InlineItem::Ruby(_) => "ruby",
-      InlineItem::Replaced(_) => "replaced",
-      InlineItem::Floating(_) => "floating",
-      InlineItem::StaticPositionAnchor(_) => "anchor",
-    };
+      let kind = match &resolved {
+        InlineItem::Text(_) => "text",
+        InlineItem::SoftBreak => "soft-break",
+        InlineItem::Tab(_) => "tab",
+        InlineItem::HardBreak => "hard-break",
+        InlineItem::InlineBox(_) => "inline-box",
+        InlineItem::InlineBlock(_) => "inline-block",
+        InlineItem::Ruby(_) => "ruby",
+        InlineItem::Replaced(_) => "replaced",
+        InlineItem::Floating(_) => "floating",
+        InlineItem::StaticPositionAnchor(_) => "anchor",
+      };
 
-    if log_line_width_enabled() {
-      eprintln!(
-        "[line-add] kind={} line_width={:.2} current_x={:.2} item_width={:.2} breakable={}",
-        kind,
-        line_width,
-        self.current_x,
-        item_width,
-        item.is_breakable()
-      );
+      if log_line_width_enabled() {
+        eprintln!(
+          "[line-add] kind={} line_width={:.2} current_x={:.2} item_width={:.2} breakable={}",
+          kind,
+          line_width,
+          self.current_x,
+          item_width,
+          resolved.is_breakable()
+        );
+      }
+
+      // Check if item fits.
+      //
+      // Text advances come from shaping and can contain fractional values. In practice we sometimes
+      // compare values that were rounded/truncated through different code paths (e.g. Taffy
+      // constraints vs shaped glyph advances) and end up with a tiny "doesn't fit" overflow that
+      // triggers an unexpected line break (notably in narrow ad placeholders).
+      //
+      // Allow a small epsilon for breakable inline items (text / inline boxes) so subpixel rounding
+      // differences don't split a word into multiple lines.
+      let fit_eps = if resolved.is_breakable() { 0.5 } else { 0.0 };
+      if self.current_x + item_width <= line_width + fit_eps {
+        self.place_item_with_width(resolved, item_width);
+        return Ok(());
+      }
+
+      // CSS 2.1 §9.5.1: line boxes must avoid floats. When floats intrude such that there's
+      // insufficient horizontal room for the next piece of inline content, the line box is moved
+      // down until it finds enough space or clears past the floats.
+      if self.current_line.is_empty() {
+        let required_width = match &resolved {
+          InlineItem::Text(text) => self.min_required_width_for_text_item(text),
+          _ => item_width,
+        };
+        if self.reposition_empty_line_for_floats(required_width) {
+          item = resolved;
+          continue;
+        }
+      }
+
+      if resolved.is_breakable() {
+        // Try to break the item even on an empty line; oversized items should
+        // still honor break opportunities instead of overflowing the line.
+        self.add_breakable_item(resolved)?;
+        return Ok(());
+      }
+
+      // Item doesn't fit and can't be broken
+      if self.current_line.is_empty() || !item_allows_soft_wrap(&resolved) {
+        // No break possible (or wrapping is disabled); overflow this line.
+        self.place_item_with_width(resolved, item_width);
+        return Ok(());
+      }
+
+      self.finish_line()?;
+      item = resolved;
+    }
+  }
+
+  fn min_required_width_for_text_item(&self, item: &TextItem) -> f32 {
+    if item.advance_for_layout <= 0.0 {
+      return 0.0;
+    }
+    if !allows_soft_wrap(item.style.as_ref()) {
+      return item.advance_for_layout;
     }
 
-    // Check if item fits.
-    //
-    // Text advances come from shaping and can contain fractional values. In practice we sometimes
-    // compare values that were rounded/truncated through different code paths (e.g. Taffy
-    // constraints vs shaped glyph advances) and end up with a tiny "doesn't fit" overflow that
-    // triggers an unexpected line break (notably in narrow ad placeholders).
-    //
-    // Allow a small epsilon for breakable inline items (text / inline boxes) so subpixel rounding
-    // differences don't split a word into multiple lines.
-    let fit_eps = if item.is_breakable() { 0.5 } else { 0.0 };
-    if self.current_x + item_width <= line_width + fit_eps {
-      // Item fits
-      self.place_item_with_width(item, item_width);
-    } else if item.is_breakable() {
-      // Try to break the item even on an empty line; oversized items should
-      // still honor break opportunities instead of overflowing the line.
-      self.add_breakable_item(item)?;
-    } else {
-      // Item doesn't fit and can't be broken
-      if self.current_line.is_empty() || !item_allows_soft_wrap(&item) {
-        // No break possible (or wrapping is disabled); overflow this line.
-        self.place_item_with_width(item, item_width);
-      } else {
-        self.finish_line()?;
-        let start_x = self.current_x + self.current_line.indent;
-        let (resolved, width) = item.resolve_width_at(start_x);
-        self.place_item_with_width(resolved, width);
+    // When a line starts adjacent to floats, the available width can become extremely narrow. If
+    // we can't fit *any* prefix of the next text run (e.g., the first word with normal wrapping),
+    // we must push the line below the floats instead of placing overflowing text alongside them.
+    for brk in &item.break_opportunities {
+      if brk.byte_offset == 0 {
+        continue;
+      }
+      let width = item.advance_at_offset(brk.byte_offset);
+      if width.is_finite() && width > 0.0 {
+        return width;
       }
     }
-    Ok(())
+
+    item.advance_for_layout
   }
 
   /// Adds a breakable item (text or inline box), handling line breaking

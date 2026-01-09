@@ -172,6 +172,12 @@ impl LineSpaceOptions {
     self.line_height = line_height;
     self
   }
+
+  /// Sets whether zero-width results are allowed when `min_width` is zero.
+  pub fn allow_zero_width(mut self, allow_zero_width: bool) -> Self {
+    self.allow_zero_width = allow_zero_width;
+    self
+  }
 }
 
 /// Integration helper for inline layout with floats
@@ -270,16 +276,23 @@ impl<'a> InlineFloatIntegration<'a> {
       return LineSpace::full_width(start_y, self.containing_width());
     }
 
+    let min_width = if options.allow_zero_width || options.min_width > 0.0 {
+      options.min_width
+    } else {
+      // When laying out real line boxes we need *some* positive width; if floats overlap fully at
+      // `start_y`, the line must be pushed down until it finds a non-zero width segment.
+      f32::EPSILON
+    };
     let y = if options.line_height > 0.0 {
       self
         .float_ctx
-        .find_fit(options.min_width, options.line_height, start_y)
+        .find_fit(min_width, options.line_height, start_y)
     } else {
       // For zero-height lines, just check if width fits
       let mut y = start_y;
       loop {
         let (left_edge, width) = self.float_ctx.available_width_at_y(y);
-        if width >= options.min_width || !options.allow_zero_width {
+        if width >= min_width {
           return LineSpace::new(y, left_edge, width);
         }
 
@@ -413,15 +426,20 @@ impl<'a> InlineFloatIntegrationMut<'a> {
       return LineSpace::full_width(start_y, self.containing_width());
     }
 
+    let min_width = if options.allow_zero_width || options.min_width > 0.0 {
+      options.min_width
+    } else {
+      f32::EPSILON
+    };
     let y = if options.line_height > 0.0 {
       self
         .float_ctx
-        .find_fit(options.min_width, options.line_height, start_y)
+        .find_fit(min_width, options.line_height, start_y)
     } else {
       let mut y = start_y;
       loop {
         let (left_edge, width) = self.float_ctx.available_width_at_y(y);
-        if width >= options.min_width {
+        if width >= min_width {
           return LineSpace::new(y, left_edge, width);
         }
 

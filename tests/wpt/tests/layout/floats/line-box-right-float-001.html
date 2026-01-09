@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Line boxes shorten next to right floats over their line box height</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+
+  #wrap {
+    width: 100px;
+  }
+
+  .float {
+    float: right;
+    width: 60px;
+    height: 15px;
+    background: #00f;
+  }
+
+  .para {
+    font-size: 0;
+    line-height: 10px;
+  }
+
+  .piece {
+    display: inline-block;
+    width: 30px;
+    height: 10px;
+    background: #0f0;
+    vertical-align: top;
+  }
+</style>
+<div id="wrap"><div class="float"></div><div class="para"><span class="piece"></span><span class="piece"></span><span class="piece"></span></div></div>
+

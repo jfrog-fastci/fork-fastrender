@@ -624,6 +624,16 @@ impl FloatContext {
     self.containing_block_width
   }
 
+  /// Overrides the containing block width used by subsequent float placement and width queries.
+  ///
+  /// Note: this does **not** mutate the coordinates of existing floats. Callers that temporarily
+  /// override the width (e.g., when laying out descendants that share a float context but have a
+  /// narrower containing block) must restore the previous value once the scoped layout is
+  /// complete.
+  pub fn set_containing_block_width(&mut self, containing_block_width: f32) {
+    self.containing_block_width = containing_block_width;
+  }
+
   fn reset_sweep_state(&mut self) {
     self.sweep_state = RefCell::new(FloatSweepState::new(self.float_map.len(), &self.events));
   }
@@ -1038,6 +1048,12 @@ impl FloatContext {
       FloatSide::Right => (&mut self.right_floats, FloatSide::Right),
     };
     let (start_y, end_y) = float_vertical_span(&float_info);
+    // CSS 2.1 §9.5.1: a float's outer top may not be higher than the outer top of any earlier
+    // float. Track a monotonic "ceiling" so even if callers accidentally pass a smaller `min_y`
+    // for subsequent floats, the float context will still enforce source-order constraints.
+    //
+    // Callers can also advance `current_y` to account for preceding line boxes / blocks.
+    self.current_y = self.current_y.max(start_y);
     if side == FloatSide::Left && self.clearance_left_ordered {
       if let Some(previous) = storage.last() {
         let (prev_start, _) = float_vertical_span(previous);
@@ -1344,7 +1360,9 @@ impl FloatContext {
     height: f32,
     min_y: f32,
   ) -> (f32, f32) {
-    let mut y = min_y;
+    // Enforce the source-order "float ceiling" tracked in `current_y` so floats encountered later
+    // in the tree cannot rise above earlier floats even if the caller passes a smaller `min_y`.
+    let mut y = min_y.max(self.current_y);
     let target_width = clamp_positive_finite(width);
     let target_height = clamp_positive_finite(height);
     let mut state = self.ensure_sweep_state(y);
@@ -1486,6 +1504,7 @@ impl FloatContext {
     self.clearance_left_ordered = true;
     self.clearance_right_ordered = true;
     self.timeout_elapsed.set(None);
+    self.current_y = 0.0;
   }
 
   /// Clone the context with a new containing block width

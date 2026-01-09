@@ -733,6 +733,78 @@ width = 120
 height = 60
 
 [[tests]]
+id = "layout/floats/float-order-source-001"
+path = "layout/floats/float-order-source-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 20
+
+[[tests]]
+id = "layout/floats/line-box-left-float-001"
+path = "layout/floats/line-box-left-float-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 30
+
+[[tests]]
+id = "layout/floats/line-box-push-below-left-float-001"
+path = "layout/floats/line-box-push-below-left-float-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 30
+
+[[tests]]
+id = "layout/floats/line-box-right-float-001"
+path = "layout/floats/line-box-right-float-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 30
+
+[[tests]]
+id = "layout/floats/line-box-both-floats-push-down-001"
+path = "layout/floats/line-box-both-floats-push-down-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 30
+
+[[tests]]
+id = "layout/floats/float-shrink-to-fit-min-width-001"
+path = "layout/floats/float-shrink-to-fit-min-width-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 10
+
+[[tests]]
 id = "paint/border-radius-001"
 path = "paint/border-radius-001.html"
 test_type = "visual"

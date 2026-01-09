@@ -133,6 +133,11 @@ filetime = "0.2"
 usvg = "0.43"
 rquickjs = { version = "0.9", features = ["macro"] }
 
+[[test]]
+name = "wpt_tests"
+path = "tests/bin/wpt_tests.rs"
+harness = false
+
 [[bench]]
 name = "perf_regressions"
 harness = false

@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Line boxes push below left floats when there is not enough inline space</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+  }
+
+  #wrap {
+    width: 100px;
+  }
+
+  .float {
+    float: left;
+    width: 90px;
+    height: 20px;
+    background: #00f;
+  }
+
+  .para {
+    font-size: 0;
+    line-height: 10px;
+  }
+
+  .piece {
+    display: inline-block;
+    width: 30px;
+    height: 10px;
+    background: #0f0;
+    vertical-align: top;
+  }
+</style>
+<div id="wrap"><div class="float"></div><div class="para"><span class="piece"></span></div></div>
+

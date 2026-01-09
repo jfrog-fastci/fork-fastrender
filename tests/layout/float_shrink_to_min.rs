@@ -40,6 +40,38 @@ fn float_auto_width_honors_min_width() {
   assert!((float_fragment.bounds.width() - 150.0).abs() < 0.01);
 }
 
+/// When the intrinsic shrink-to-fit width is smaller than `min-width`, the used width should clamp
+/// up to the authored minimum instead of shrinking to the content.
+#[test]
+fn float_auto_width_with_content_clamps_to_min_width() {
+  let container_style = Arc::new(ComputedStyle::default());
+
+  let mut float_style = ComputedStyle::default();
+  float_style.float = Float::Left;
+  float_style.min_width = Some(Length::px(80.0));
+  let text_child = BoxNode::new_text(
+    Arc::new(ComputedStyle::default()),
+    "hi".to_string(),
+  );
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![
+    text_child,
+  ]);
+
+  let container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![float_box]);
+
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 1000.0);
+  let fragment = bfc.layout(&container, &constraints).expect("layout should succeed");
+
+  assert_eq!(fragment.children.len(), 1);
+  let float_fragment = &fragment.children[0];
+  assert!(
+    (float_fragment.bounds.width() - 80.0).abs() < 0.5,
+    "float width should clamp to min-width; got {:.2}",
+    float_fragment.bounds.width()
+  );
+}
+
 /// Floats should also clamp shrink-to-fit results to max-width. If the preferred
 /// widths exceed the authored max-width, the used width must not overflow it.
 #[test]
