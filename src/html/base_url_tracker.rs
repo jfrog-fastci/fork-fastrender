@@ -9,6 +9,40 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+/// Resolve a `<script src>` value at parse time, given the base URL as it exists at that moment.
+///
+/// When `base` is `None` (e.g. the document URL is unknown and no `<base href>` has been parsed
+/// yet), relative URLs are preserved (after ASCII whitespace trimming + scheme filtering) so the
+/// caller can defer resolution until a document URL becomes available.
+pub(crate) fn resolve_script_src_at_parse_time(base: Option<&str>, raw_src: &str) -> Option<String> {
+  match base {
+    Some(base) => resolve_href_with_base(Some(base), raw_src),
+    None => {
+      let trimmed = trim_ascii_whitespace(raw_src);
+      if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+      }
+
+      fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
+      }
+
+      let bytes = trimmed.as_bytes();
+      if starts_with_ignore_ascii_case(bytes, b"javascript:")
+        || starts_with_ignore_ascii_case(bytes, b"vbscript:")
+        || starts_with_ignore_ascii_case(bytes, b"mailto:")
+      {
+        return None;
+      }
+
+      // `resolve_href` rejects `javascript:`/`vbscript:`/`mailto:` URLs and returns `None` for
+      // relative URLs without a base. For the base-less case, keep relative URLs as-is so callers
+      // can defer resolution until a document URL becomes available.
+      resolve_href("", trimmed).or_else(|| Some(trimmed.to_string()))
+    }
+  }
+}
+
 /// Parse-time tracker for the document base URL.
 ///
 /// The HTML `<base href>` element affects URL resolution only *after* it has been parsed and
@@ -90,32 +124,7 @@ impl BaseUrlTracker {
 
   /// Resolve a `<script src>` value against the current base URL.
   pub fn resolve_script_src(&self, raw_src: &str) -> Option<String> {
-    match self.current_base_url.as_deref() {
-      Some(base) => resolve_href_with_base(Some(base), raw_src),
-      None => {
-        let trimmed = trim_ascii_whitespace(raw_src);
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-          return None;
-        }
-
-        fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
-          haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
-        }
-
-        let bytes = trimmed.as_bytes();
-        if starts_with_ignore_ascii_case(bytes, b"javascript:")
-          || starts_with_ignore_ascii_case(bytes, b"vbscript:")
-          || starts_with_ignore_ascii_case(bytes, b"mailto:")
-        {
-          return None;
-        }
-
-        // `resolve_href` rejects `javascript:`/`vbscript:`/`mailto:` URLs and returns `None` for
-        // relative URLs without a base. For the base-less case, keep relative URLs as-is so callers
-        // can defer resolution until a document URL becomes available.
-        resolve_href("", trimmed).or_else(|| Some(trimmed.to_string()))
-      }
-    }
+    resolve_script_src_at_parse_time(self.current_base_url.as_deref(), raw_src)
   }
 }
 

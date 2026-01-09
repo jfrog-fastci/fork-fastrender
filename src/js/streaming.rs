@@ -7,8 +7,8 @@
 //! This module provides small building blocks intended to be used by a streaming HTML
 //! parse+execute pipeline.
 
-use crate::css::loader::resolve_href_with_base;
 use crate::dom::{DomNode, DomNodeType};
+use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 
 use super::{determine_script_type, ScriptElementSpec};
 
@@ -27,7 +27,7 @@ pub fn build_parser_inserted_script_element_spec(
 
   let src = script
     .get_attribute_ref("src")
-    .and_then(|value| resolve_href_with_base(base_url_ref, value));
+    .and_then(|value| resolve_script_src_at_parse_time(base_url_ref, value));
 
   let mut inline_text = String::new();
   for child in &script.children {
@@ -100,5 +100,29 @@ mod tests {
     assert_eq!(spec.base_url.as_deref(), Some(document_url));
     assert_eq!(spec.src.as_deref(), Some("https://ex/a.js"));
     assert!(spec.parser_inserted);
+  }
+
+  #[test]
+  fn src_without_base_url_is_preserved_as_relative() {
+    let dom = parse_html(r#"<!doctype html><script src="a.js"></script>"#).unwrap();
+    let script_node = first_html_script_node(&dom);
+    let spec = build_parser_inserted_script_element_spec(script_node, None);
+    assert_eq!(spec.src.as_deref(), Some("a.js"));
+  }
+
+  #[test]
+  fn src_without_base_url_rejects_dangerous_schemes() {
+    for src in [
+      "javascript:alert(1)",
+      "vbscript:msgbox(1)",
+      "mailto:test@example.com",
+      " \t\r\nJaVaScRiPt:alert(1)\n",
+    ] {
+      let html = format!(r#"<!doctype html><script src="{src}"></script>"#);
+      let dom = parse_html(&html).unwrap();
+      let script_node = first_html_script_node(&dom);
+      let spec = build_parser_inserted_script_element_spec(script_node, None);
+      assert!(spec.src.is_none(), "expected src to be rejected: {src}");
+    }
   }
 }
