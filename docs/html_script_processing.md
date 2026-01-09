@@ -28,12 +28,12 @@ What exists today (in-tree):
   - `src/html/pausable_html5ever.rs`: wraps html5ever so the host can observe
     `TokenizerResult::Script` suspension points (html5ever’s built-in driver currently loops past
     them).
-  - `src/dom/scripting_parser.rs`: `parse_html_with_scripting(...)` pauses at `</script>` boundaries
-    and yields a `ScriptToken` plus a partial DOM snapshot (currently backed by
+  - `src/html/streaming_parser.rs`: streaming parser driver that builds a live `dom2::Document`,
+    pauses at parser-inserted `</script>` boundaries, supports `document.write`-style input
+    injection, and tracks the parse-time base URL.
+  - (Legacy/testing utility) `src/dom/scripting_parser.rs`: `parse_html_with_scripting(...)` pauses
+    at `</script>` boundaries and yields a `ScriptToken` plus a partial DOM snapshot (backed by
     `markup5ever_rcdom`).
-  - (Planned home) `src/html/streaming_parser.rs`: a dedicated streaming parser driver that feeds
-    input incrementally and pauses/resumes around parser-blocking scripts while building a live
-    `dom2` document (via the TreeSink noted below).
 - **Parse-time base URL tracking:**
   - `src/html/base_url_tracker.rs`: `BaseUrlTracker` tracks `<base href>` as the parser progresses
     so `<script src>` resolution uses the base URL *at script preparation time*.
@@ -58,11 +58,11 @@ What exists today (in-tree):
 - **Mutable DOM for bindings (intended):**
   - `src/dom2/`: mutable DOM (`dom2::Document`) intended for JS bindings and script-visible
     mutations.
-  - `src/dom2/import.rs`: current bridge for constructing `dom2::Document` from the renderer’s
-    immutable `crate::dom::DomNode`.
-  - **Missing piece:** an `html5ever::tree_builder::TreeSink` implementation backed by `dom2`
-    (expected to live under `src/dom2/`), so the parser can build the live DOM directly while
-    pausing/resuming at scripts.
+  - `src/dom2/html5ever_tree_sink.rs`: `dom2::Dom2TreeSink` (`html5ever::TreeSink`) implementation
+    that incrementally builds `dom2::Document` during parsing (and wires in parse-time
+    `<base href>` tracking via `BaseUrlTracker`).
+  - `src/dom2/import.rs`: bridge for constructing `dom2::Document` from the renderer’s immutable
+    `crate::dom::DomNode` (useful for incremental adoption / existing pipelines).
 - **End-to-end harness (not a full HTML parser):**
   - `src/js/html_scripting.rs`: a small harness used by unit tests to exercise script/style
     interaction and event loop semantics (Task 129).
@@ -186,12 +186,10 @@ Keeping these boundaries crisp is what makes later module/import map work tracta
 
 **Home (current):**
 
+- `src/html/streaming_parser.rs` (`StreamingHtmlParser`)
 - `src/html/pausable_html5ever.rs` (`PausableHtml5everParser`)
-- `src/dom/scripting_parser.rs` (`ScriptingHtmlParser`, `parse_html_with_scripting`)
-  
-Note: a dedicated streaming parser driver module may be added later (suggested home:
-`src/html/streaming_parser.rs`), but the core “pause at TokenizerResult::Script” hook is already
-exposed by `PausableHtml5everParser`.
+- (Legacy/testing utility) `src/dom/scripting_parser.rs` (`ScriptingHtmlParser`,
+  `parse_html_with_scripting`)
 
 **Key operations (conceptual):**
 
@@ -213,13 +211,11 @@ so it cannot support correct parser-time script execution.
 
 **Existing home:** `src/dom2/` (`dom2::Document`, `NodeId`, `NodeKind`).
 
-**Missing piece (still required for spec-correct parse-time JS):** an
-`html5ever::tree_builder::TreeSink` implementation backed by `dom2::Document`. This is the bridge
-between the tokenizer/tree-builder and our mutable DOM.
+**TreeSink home:** `src/dom2/html5ever_tree_sink.rs` (`dom2::Dom2TreeSink`).
 
-Until this exists, the pausable parser path uses `markup5ever_rcdom` and converts to renderer DOM
-snapshots for callbacks; `dom2` documents are typically created by importing those renderer DOM
-snapshots via `src/dom2/import.rs`.
+This is the bridge between html5ever’s tokenizer/tree-builder and our mutable DOM. It incrementally
+builds a live `dom2::Document` during parsing and wires parse-time `<base href>` tracking by calling
+into `BaseUrlTracker` as elements are inserted.
 
 **Mutable DOM invariants that must always hold:**
 
