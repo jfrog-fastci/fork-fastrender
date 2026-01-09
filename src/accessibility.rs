@@ -1178,6 +1178,36 @@ fn should_honor_presentational(node: &DomNode) -> bool {
   !has_global_aria_attributes(node) && !focusable_for_presentational_role(node)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableContext {
+  Table,
+  Grid,
+  TreeGrid,
+  Presentational,
+}
+
+fn table_context_for_descendant(ancestors: &[&DomNode]) -> Option<TableContext> {
+  let Some(table) = ancestors.iter().rev().find(|ancestor| {
+    is_html_element(ancestor)
+      && ancestor
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("table"))
+  }) else {
+    return None;
+  };
+
+  match parse_aria_role_attr(table) {
+    Some(ParsedRole::Presentational) => Some(TableContext::Presentational),
+    Some(ParsedRole::Explicit(role)) => match role.as_str() {
+      "grid" => Some(TableContext::Grid),
+      "treegrid" => Some(TableContext::TreeGrid),
+      "table" => Some(TableContext::Table),
+      _ => None,
+    },
+    None => Some(TableContext::Table),
+  }
+}
+
 fn compute_role(
   node: &StyledNode,
   ancestors: &[&DomNode],
@@ -1200,6 +1230,13 @@ fn compute_role(
 
   let Some(tag) = dom_node.tag_name().map(|t| t.to_ascii_lowercase()) else {
     return (None, false, false);
+  };
+
+  let table_ctx = match tag.as_str() {
+    "thead" | "tbody" | "tfoot" | "tr" | "td" | "th" | "caption" => {
+      table_context_for_descendant(ancestors)
+    }
+    _ => None,
   };
 
   let role = match tag.as_str() {
@@ -1227,11 +1264,32 @@ fn compute_role(
     "dt" => Some("term".to_string()),
     "dd" => Some("definition".to_string()),
     "table" => Some("table".to_string()),
-    "thead" | "tbody" | "tfoot" => Some("rowgroup".to_string()),
-    "tr" => Some("row".to_string()),
-    "td" => Some("cell".to_string()),
-    "th" => header_role(dom_node),
-    "caption" => Some("caption".to_string()),
+    "thead" | "tbody" | "tfoot" => matches!(
+      table_ctx,
+      Some(TableContext::Table) | Some(TableContext::Grid) | Some(TableContext::TreeGrid)
+    )
+    .then(|| "rowgroup".to_string()),
+    "tr" => matches!(
+      table_ctx,
+      Some(TableContext::Table) | Some(TableContext::Grid) | Some(TableContext::TreeGrid)
+    )
+    .then(|| "row".to_string()),
+    "td" => match table_ctx {
+      Some(TableContext::Table) => Some("cell".to_string()),
+      Some(TableContext::Grid) | Some(TableContext::TreeGrid) => Some("gridcell".to_string()),
+      _ => None,
+    },
+    "th" => matches!(
+      table_ctx,
+      Some(TableContext::Table) | Some(TableContext::Grid) | Some(TableContext::TreeGrid)
+    )
+    .then(|| header_role(dom_node))
+    .flatten(),
+    "caption" => matches!(
+      table_ctx,
+      Some(TableContext::Table) | Some(TableContext::Grid) | Some(TableContext::TreeGrid)
+    )
+    .then(|| "caption".to_string()),
     "progress" => Some("progressbar".to_string()),
     "meter" => Some("meter".to_string()),
     "output" => Some("status".to_string()),
