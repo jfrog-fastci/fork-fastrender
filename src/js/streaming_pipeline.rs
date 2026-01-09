@@ -13,6 +13,7 @@
 
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::Result;
+use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 
 use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestrator};
@@ -23,22 +24,6 @@ use super::{EventLoop, TaskSource};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-
-fn resolve_script_src(base_url: Option<&str>, raw_src: &str) -> Option<String> {
-  if raw_src.is_empty() {
-    return None;
-  }
-
-  // If we have a base URL, resolve relative URLs against it (and allow absolute URLs to override).
-  if let Some(base_url) = base_url {
-    if let Ok(base) = url::Url::parse(base_url) {
-      return base.join(raw_src).ok().map(|u| u.to_string());
-    }
-  }
-
-  // Fall back to treating the attribute as an absolute URL.
-  url::Url::parse(raw_src).ok().map(|u| u.to_string())
-}
 
 /// Host interface used by [`ClassicScriptPipeline`].
 ///
@@ -201,7 +186,8 @@ impl<Host: ClassicScriptPipelineHost> ClassicScriptPipeline<Host> {
     let raw_src = dom
       .get_attribute(script_node_id, "src")
       .map(|v| v.to_string());
-    let src = raw_src.as_deref().and_then(|raw| resolve_script_src(base_url.as_deref(), raw));
+    let src =
+      raw_src.as_deref().and_then(|raw| resolve_script_src_at_parse_time(base_url.as_deref(), raw));
 
     let inline_text = {
       let mut out = String::new();
@@ -516,4 +502,24 @@ mod tests {
     assert_eq!(url, "https://ex/a.js");
     Ok(())
   }
-}
+
+  #[test]
+  fn relative_external_script_without_document_url_is_preserved_as_relative_url() -> Result<()> {
+    let mut host = Host::default();
+    // No `document_url` hint: the base URL is initially unknown, so a relative `src` must remain
+    // relative (and must not be dropped / treated as an inline script).
+    let mut p = ClassicScriptPipeline::<Host>::new(None);
+    p.feed_str(r#"<script src="a.js"></script>"#);
+    p.finish_input();
+
+    assert_eq!(p.pump_parser(&mut host)?, PumpOutcome::Blocked);
+    assert_eq!(host.started_fetches.len(), 1);
+    let id = host.started_fetches[0].0;
+    let url = host.started_fetches[0].1.clone();
+    assert_eq!(url, "a.js");
+
+    p.on_fetch_completed(&mut host, id, "A_JS")?;
+    assert_eq!(host.log, vec!["A_JS".to_string(), "mA_JS".to_string()]);
+    Ok(())
+  }
+} 
