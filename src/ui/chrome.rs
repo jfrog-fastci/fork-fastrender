@@ -37,6 +37,10 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
   // Most "browser chrome" shortcuts should still work while the user is editing the address bar,
   // matching typical browser behaviour. Some shortcuts (e.g. Alt+Left/Right) are suppressed while
   // editing to avoid interfering with word-wise cursor movement on some platforms.
+  //
+  // Ctrl/Cmd+L should not steal focus from other egui text fields (e.g. devtools inputs), but we
+  // still want it to re-select the URL when the address bar is already focused.
+  let allow_focus_address_bar = !ctx.wants_keyboard_input() || app.chrome.address_bar_has_focus;
   let (focus_address_bar, new_tab, close_tab, reload, tab_delta, tab_number) = ctx.input(|i| {
     // Use the key event's modifier snapshot rather than `i.modifiers`: the winit integration feeds
     // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
@@ -63,7 +67,9 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 
       match key {
         // Many browsers support both Ctrl/Cmd+L and Ctrl/Cmd+K for focusing the address bar.
-        egui::Key::L | egui::Key::K if cmd_or_ctrl => focus_address_bar = true,
+        egui::Key::L | egui::Key::K if cmd_or_ctrl && allow_focus_address_bar => {
+          focus_address_bar = true
+        }
         egui::Key::T if cmd_or_ctrl => new_tab = true,
         egui::Key::W if cmd_or_ctrl => close_tab = true,
         egui::Key::R if cmd_or_ctrl => reload = true,
@@ -93,6 +99,10 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 
   if focus_address_bar {
     actions.push(ChromeAction::FocusAddressBar);
+    // Apply the focus/select changes immediately (this frame) so the address bar widget can
+    // consume them when it's built below.
+    app.chrome.request_focus_address_bar = true;
+    app.chrome.request_select_all_address_bar = true;
   }
   if new_tab {
     actions.push(ChromeAction::NewTab);
@@ -169,7 +179,6 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       actions.push(ChromeAction::Forward);
     }
   }
-
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
     // Tabs row.
     ui.horizontal_wrapped(|ui| {

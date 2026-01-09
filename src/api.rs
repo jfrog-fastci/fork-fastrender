@@ -28418,51 +28418,62 @@ mod tests {
 
   #[test]
   fn fast_render_config_limits_iframe_depth() {
-    let inner = "<style>html, body { margin: 0; padding: 0; background: rgb(255, 0, 0); }</style>";
-    let outer = format!(
-      r#"
+    // Rendering nested iframes is deeply recursive. Run this test body on a large-stack thread to
+    // avoid stack overflows on debug builds and on hosts with small default thread stacks.
+    std::thread::Builder::new()
+      .name("fastr-test-iframe-depth".to_string())
+      .stack_size(crate::system::DEFAULT_RENDER_STACK_SIZE)
+      .spawn(|| {
+        let inner =
+          "<style>html, body { margin: 0; padding: 0; background: rgb(255, 0, 0); }</style>";
+        let outer = format!(
+          r#"
         <style>
           html, body {{ margin: 0; padding: 0; background: rgb(0, 255, 0); }}
           iframe {{ border: 0; width: 8px; height: 8px; display: block; }}
         </style>
         <iframe srcdoc='{inner}'></iframe>
       "#,
-      inner = inner
-    );
-    let html = format!(
-      r#"
+          inner = inner
+        );
+        let html = format!(
+          r#"
         <style>
           html, body {{ margin: 0; padding: 0; }}
           iframe {{ border: 0; width: 8px; height: 8px; display: block; }}
         </style>
         <iframe srcdoc="{outer}"></iframe>
       "#,
-      outer = outer
-    );
+          outer = outer
+        );
 
-    let mut shallow = FastRender::with_config(FastRenderConfig {
-      max_iframe_depth: 1,
-      ..FastRenderConfig::default()
-    })
-    .unwrap();
-    let shallow = shallow.render_html(&html, 8, 8).unwrap();
-    let shallow_pixel = shallow.pixel(4, 4).unwrap();
-    assert!(
-      shallow_pixel.green() > shallow_pixel.red(),
-      "inner iframe should be blocked when max depth is 1"
-    );
+        let mut shallow = FastRender::with_config(FastRenderConfig {
+          max_iframe_depth: 1,
+          ..FastRenderConfig::default()
+        })
+        .unwrap();
+        let shallow = shallow.render_html(&html, 8, 8).unwrap();
+        let shallow_pixel = shallow.pixel(4, 4).unwrap();
+        assert!(
+          shallow_pixel.green() > shallow_pixel.red(),
+          "inner iframe should be blocked when max depth is 1"
+        );
 
-    let mut deep = FastRender::with_config(FastRenderConfig {
-      max_iframe_depth: 2,
-      ..FastRenderConfig::default()
-    })
-    .unwrap();
-    let deep = deep.render_html(&html, 8, 8).unwrap();
-    let deep_pixel = deep.pixel(4, 4).unwrap();
-    assert!(
-      deep_pixel.red() > deep_pixel.green(),
-      "inner iframe should render when max depth allows"
-    );
+        let mut deep = FastRender::with_config(FastRenderConfig {
+          max_iframe_depth: 2,
+          ..FastRenderConfig::default()
+        })
+        .unwrap();
+        let deep = deep.render_html(&html, 8, 8).unwrap();
+        let deep_pixel = deep.pixel(4, 4).unwrap();
+        assert!(
+          deep_pixel.red() > deep_pixel.green(),
+          "inner iframe should render when max depth allows"
+        );
+      })
+      .unwrap()
+      .join()
+      .unwrap();
   }
 
   #[test]

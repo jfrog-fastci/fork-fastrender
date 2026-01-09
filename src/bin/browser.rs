@@ -503,7 +503,6 @@ struct App {
 
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
-
   debug_log: std::collections::VecDeque<String>,
 
   /// Periodic tick driver state for animated documents.

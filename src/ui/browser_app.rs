@@ -806,13 +806,16 @@ mod address_bar_tests {
       true,
     );
 
-    app.chrome.address_bar_text = "typed text".to_string();
-    app.chrome.address_bar_editing = true;
+    app.set_address_bar_editing(true);
+    app.set_address_bar_text("typed text".to_string());
     app.sync_address_bar_to_active();
     assert_eq!(app.chrome.address_bar_text, "typed text");
+    assert!(app.chrome.address_bar_editing);
+    assert!(app.chrome.address_bar_has_focus);
 
-    app.chrome.address_bar_editing = false;
-    app.sync_address_bar_to_active();
+    app.set_address_bar_editing(false);
+    assert!(!app.chrome.address_bar_editing);
+    assert!(!app.chrome.address_bar_has_focus);
     assert_eq!(app.chrome.address_bar_text, "https://example.com/");
   }
 
@@ -839,6 +842,16 @@ mod address_bar_tests {
 
     app.set_address_bar_editing(true);
     app.set_address_bar_text("https://typed.example".to_string());
+
+    app.apply_worker_msg(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: "https://started.example/".to_string(),
+    });
+    assert_eq!(
+      app.chrome.address_bar_text,
+      "https://typed.example",
+      "worker updates should not clobber user typing"
+    );
 
     app.apply_worker_msg(WorkerToUi::NavigationCommitted {
       tab_id,
