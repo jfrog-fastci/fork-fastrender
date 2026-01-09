@@ -132,7 +132,7 @@ pub fn install_time_bindings(
     let date = scope.alloc_object()?;
     scope.push_root(Value::Object(date));
 
-    let date_now_id = vm.register_native_call(date_now_native)?;
+    let date_now_id = vm.register_native_call(date_now_native);
     let date_now_name = scope.alloc_string("now")?;
     let date_now = scope.alloc_native_function(date_now_id, None, date_now_name, 0)?;
     scope.push_root(Value::Object(date_now));
@@ -147,7 +147,7 @@ pub fn install_time_bindings(
     let performance = scope.alloc_object()?;
     scope.push_root(Value::Object(performance));
 
-    let perf_now_id = vm.register_native_call(performance_now_native)?;
+    let perf_now_id = vm.register_native_call(performance_now_native);
     let perf_now_name = scope.alloc_string("now")?;
     let perf_now = scope.alloc_native_function(perf_now_id, None, perf_now_name, 0)?;
     scope.push_root(Value::Object(perf_now));

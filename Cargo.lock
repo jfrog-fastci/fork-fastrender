@@ -2182,6 +2182,7 @@ name = "js-wpt-dom-runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "conformance-harness",
  "fastrender",
  "globset",

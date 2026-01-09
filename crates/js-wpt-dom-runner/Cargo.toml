@@ -20,6 +20,7 @@ backend_vmjs = ["url_bindings", "dep:vm-js"]
 
 [dependencies]
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 conformance-harness = { path = "../../engines/ecma-rs/conformance-harness" }
 globset = "0.4"
 regex = "1"

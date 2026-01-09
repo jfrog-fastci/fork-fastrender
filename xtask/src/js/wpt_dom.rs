@@ -36,17 +36,22 @@ impl WptDomBackend {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum WptDomSuite {
-  /// Run the full offline WPT DOM corpus under `tests/wpt_dom/tests`.
+  /// Run the curated DOM + event-loop subset (defaults to `event*/**`).
   Curated,
-  /// Run a minimal smoke subset (`smoke/**`).
+  /// Run the harness bring-up smoke subset (`smoke/**`).
   Smoke,
+  /// Run the full corpus (curated + smoke).
+  All,
 }
 
 impl WptDomSuite {
   fn default_filter(self) -> Option<&'static str> {
     match self {
-      Self::Curated => None,
+      // The smoke subset contains intentional failures for harness validation; keep it out of the
+      // default "curated" run so `xtask js wpt-dom` stays green.
+      Self::Curated => Some("event*/**"),
       Self::Smoke => Some("smoke/**"),
+      Self::All => None,
     }
   }
 }
