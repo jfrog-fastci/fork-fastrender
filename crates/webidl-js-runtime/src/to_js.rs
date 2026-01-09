@@ -317,6 +317,9 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
 
   let obj = rt.alloc_object()?;
   for (key, v) in members {
+    if key.len() > limits.max_string_bytes {
+      return Err(rt.throw_range_error("dictionary key exceeds maximum length"));
+    }
     let member_ty = dictionary_member_type(&schema, key).ok_or_else(|| {
       rt.throw_type_error("dictionary member name does not exist in the schema")
     })?;
@@ -482,6 +485,51 @@ mod tests {
       return Err("expected label to be a JS string".into());
     };
     assert_eq!(rt.heap().get_string(handle)?.to_utf8_lossy(), "ok");
+
+    Ok(())
+  }
+
+  #[test]
+  fn dictionary_key_length_limit_throws_range_error() -> Result<(), Box<dyn std::error::Error>> {
+    let mut ctx = TypeContext::default();
+    ctx.add_dictionary(DictionarySchema {
+      name: "Options".to_string(),
+      inherits: None,
+      members: vec![DictionaryMemberSchema {
+        name: "longkey".to_string(),
+        required: false,
+        ty: parse_idl_type_complete("long")?,
+        default: None,
+      }],
+    });
+    let ty = parse_idl_type_complete("Options")?;
+
+    let mut members = std::collections::BTreeMap::new();
+    members.insert("longkey".to_string(), WebIdlValue::Long(1));
+    let value = WebIdlValue::Dictionary {
+      name: "Options".to_string(),
+      members,
+    };
+
+    let mut rt = VmJsRuntime::new();
+    let limits = ToJsLimits {
+      max_string_bytes: 1,
+      ..ToJsLimits::default()
+    };
+    let err = to_js_with_limits(&mut rt, &ctx, &ty, &value, limits).unwrap_err();
+
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(
+      msg.starts_with("RangeError:"),
+      "expected RangeError, got {msg:?}"
+    );
 
     Ok(())
   }
