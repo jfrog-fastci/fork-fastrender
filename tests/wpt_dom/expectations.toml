@@ -22,3 +22,9 @@ reason = "Intentional failing .window.js smoke test used to validate WPT report 
 id = "smoke/uncaught-exception.html"
 status = "xfail"
 reason = "Intentional harness-level error used to validate uncaught exception classification."
+
+[[expectations]]
+id = "smoke/fetch_relative.window.js"
+status = "skip"
+backend = "vmjs"
+reason = "The vm-js backend does not implement async/await or the fetch/Request/Response shims (QuickJS-only smoke coverage)."

@@ -248,6 +248,24 @@ const DOM_SHIM: &str = r##"
     Object.setPrototypeOf(g.document, Document.prototype);
   }
 
+  // Minimal `document.cookie` backing store (host-provided).
+  if (
+    typeof g.__fastrender_get_cookie === "function" &&
+    typeof g.__fastrender_set_cookie === "function" &&
+    !Object.getOwnPropertyDescriptor(Document.prototype, "cookie")
+  ) {
+    Object.defineProperty(Document.prototype, "cookie", {
+      configurable: true,
+      enumerable: true,
+      get: function () {
+        return String(g.__fastrender_get_cookie());
+      },
+      set: function (v) {
+        g.__fastrender_set_cookie(String(v));
+      },
+    });
+  }
+
   // Document node id is always 0.
   g.document[NODE_ID] = 0;
   g.document.parentNode = null;

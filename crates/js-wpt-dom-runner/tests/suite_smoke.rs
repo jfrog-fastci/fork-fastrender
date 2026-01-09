@@ -81,8 +81,8 @@ fn suite_smoke_report_classifies_expected_failures() {
   match backend {
     BackendSelection::VmJs => assert_eq!(
       dom_shims.outcome,
-      TestOutcome::Skipped,
-      "vm-js suite should skip dom_shims.window.js: {dom_shims:#?}"
+      TestOutcome::Passed,
+      "vm-js suite should run dom_shims.window.js: {dom_shims:#?}"
     ),
     BackendSelection::QuickJs => assert_eq!(
       dom_shims.outcome,

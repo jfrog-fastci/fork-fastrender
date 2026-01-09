@@ -1,4 +1,5 @@
 use super::{Backend, BackendInit, HostEnvironment};
+use crate::cookie_jar::CookieJar;
 use crate::dom_shims::install_dom_shims;
 use crate::fetch::install_fetch_shims;
 use crate::window_or_worker_global_scope::{
@@ -8,6 +9,8 @@ use crate::window_or_worker_global_scope::{
 use crate::wpt_report::WptReport;
 use crate::RunError;
 use rquickjs::{Context, Function, Object, Runtime};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,6 +18,7 @@ use std::time::{Duration, Instant};
 pub struct QuickJsBackend {
   rt: Option<Runtime>,
   ctx: Option<Context>,
+  cookie_jar: Option<Rc<RefCell<CookieJar>>>,
   deadline: Option<Instant>,
   timed_out: bool,
   max_tasks: usize,
@@ -123,10 +127,12 @@ impl Backend for QuickJsBackend {
 
     let ctx = Context::full(&rt).map_err(|e| RunError::Js(e.to_string()))?;
 
+    let cookie_jar = Rc::new(RefCell::new(CookieJar::new()));
+
     ctx.with(|ctx| -> Result<(), RunError> {
       let globals = ctx.globals();
 
-      install_window_shims(ctx.clone(), &globals, &init.test_url)?;
+      install_window_shims(ctx.clone(), &globals, &init.test_url, Rc::clone(&cookie_jar))?;
       // Install minimal DOM shims so `.window.js` smoke tests can exercise DOMParsing-style APIs
       // (`innerHTML`, `outerHTML`, DocumentFragment insertion, etc.).
       install_dom_shims(ctx.clone(), &globals).map_err(|e| RunError::Js(e.to_string()))?;
@@ -138,6 +144,7 @@ impl Backend for QuickJsBackend {
 
     self.rt = Some(rt);
     self.ctx = Some(ctx);
+    self.cookie_jar = Some(cookie_jar);
 
     Ok(())
   }
@@ -276,6 +283,7 @@ fn install_window_shims<'js>(
   ctx: rquickjs::Ctx<'js>,
   globals: &Object<'js>,
   href: &str,
+  cookie_jar: Rc<RefCell<CookieJar>>,
 ) -> Result<(), RunError> {
   globals
     .set("window", globals.clone())
@@ -301,6 +309,28 @@ fn install_window_shims<'js>(
     .map_err(|e| RunError::Js(e.to_string()))?;
   globals
     .set("document", document)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  // Host-backed cookie jar used by the DOM shims to implement `document.cookie`.
+  let get_cookie = Function::new(ctx.clone(), {
+    let cookie_jar = Rc::clone(&cookie_jar);
+    move || Ok::<String, rquickjs::Error>(cookie_jar.borrow().cookie_string())
+  })
+  .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("__fastrender_get_cookie", get_cookie)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  let set_cookie = Function::new(ctx.clone(), {
+    let cookie_jar = Rc::clone(&cookie_jar);
+    move |cookie_string: String| -> Result<(), rquickjs::Error> {
+      cookie_jar.borrow_mut().set_cookie_string(&cookie_string);
+      Ok(())
+    }
+  })
+  .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("__fastrender_set_cookie", set_cookie)
     .map_err(|e| RunError::Js(e.to_string()))?;
 
   // Tiny console shim.

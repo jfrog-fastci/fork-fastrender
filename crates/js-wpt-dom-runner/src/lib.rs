@@ -13,6 +13,7 @@
 
 mod discover;
 mod backend;
+mod cookie_jar;
 mod engine;
 #[cfg(feature = "vmjs")]
 mod backend_vmjs;

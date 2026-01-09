@@ -1,4 +1,5 @@
 use crate::backend::{Backend, BackendInit};
+use crate::cookie_jar::CookieJar;
 use crate::wpt_report::WptReport;
 use crate::RunError;
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
@@ -801,6 +802,7 @@ struct JsWptRuntime {
   heap: Heap,
   env: Env,
   document_url: String,
+  cookie_jar: CookieJar,
   callables: HashMap<GcObject, Rc<Callable>>,
   arrays: HashMap<GcObject, Vec<Value>>,
   event_targets: HashMap<GcObject, EventTargetState>,
@@ -867,6 +869,7 @@ impl JsWptRuntime {
       heap,
       env: Env::new(),
       document_url: test_url.to_string(),
+      cookie_jar: CookieJar::new(),
       callables: HashMap::new(),
       arrays: HashMap::new(),
       event_targets: HashMap::new(),
@@ -1279,9 +1282,30 @@ impl JsWptRuntime {
     };
     self.define_data_prop(self.global_object, node_key, Value::Object(node_ctor))?;
 
+    // Document prototype (inherits Node). We expose `Document.prototype.cookie` to back
+    // `document.cookie` reads/writes used by many real-world scripts.
+    let document_proto = self.alloc_object()?;
+    self
+      .heap
+      .object_set_prototype(document_proto, Some(node_proto))?;
+    let cookie_get = self.alloc_native_function(native_document_get_cookie)?;
+    let cookie_set = self.alloc_native_function(native_document_set_cookie)?;
+    let cookie_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("cookie")?)
+    };
+    self.define_accessor_prop(
+      document_proto,
+      cookie_key,
+      Value::Object(cookie_get),
+      Value::Object(cookie_set),
+    )?;
+
     // `document` object: Node + createElement + URL.
     let document = self.alloc_object()?;
-    self.heap.object_set_prototype(document, Some(node_proto))?;
+    self
+      .heap
+      .object_set_prototype(document, Some(document_proto))?;
     self.event_targets.insert(
       document,
       EventTargetState {
@@ -1407,6 +1431,15 @@ impl JsWptRuntime {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("prototype")?)
     };
+
+    let document_ctor = self.alloc_native_function(native_illegal_dom_constructor)?;
+    self.define_data_prop(document_ctor, prototype_key, Value::Object(document_proto))?;
+    self.env.set("Document", Value::Object(document_ctor));
+    let document_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("Document")?)
+    };
+    self.define_data_prop(self.global_object, document_key, Value::Object(document_ctor))?;
 
     let element_ctor = self.alloc_native_function(native_illegal_dom_constructor)?;
     self.define_data_prop(element_ctor, prototype_key, Value::Object(element_proto))?;
@@ -4436,6 +4469,25 @@ fn native_node_ctor(rt: &mut JsWptRuntime, _this: Value, _args: &[Value]) -> Res
   )))
 }
 
+fn native_document_get_cookie(
+  rt: &mut JsWptRuntime,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let cookie = rt.cookie_jar.cookie_string();
+  rt.alloc_string_value(&cookie)
+}
+
+fn native_document_set_cookie(
+  rt: &mut JsWptRuntime,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let input = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  rt.cookie_jar.set_cookie_string(&input);
+  Ok(Value::Undefined)
+}
+
 fn native_document_create_element(
   rt: &mut JsWptRuntime,
   this: Value,
@@ -7336,6 +7388,38 @@ mod tests {
     let fragment_name = get_data_prop(&mut rt, fragment, "nodeName");
     assert_eq!(rt.value_to_string_lossy(fragment_name), "#document-fragment");
     assert_eq!(get_data_prop(&mut rt, fragment, "nodeValue"), Value::Null);
+  }
+
+  #[test]
+  fn document_cookie_round_trips_and_ignores_attributes() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let Value::Object(arr) = rt
+      .exec_script(
+        r#"
+        const initial = document.cookie;
+        document.cookie = "a=b";
+        const after_set = document.cookie;
+        document.cookie = "a=c";
+        const after_overwrite = document.cookie;
+        document.cookie = "b=d; Path=/; Expires=Wed, 21 Oct 2015 07:28:00 GMT";
+        const after_second = document.cookie;
+        [initial, after_set, after_overwrite, after_second];
+      "#,
+      )
+      .expect("exec script")
+    else {
+      panic!("expected array return value");
+    };
+
+    let initial = get_data_prop(&mut rt, arr, "0");
+    assert_eq!(rt.value_to_string_lossy(initial), "");
+    let after_set = get_data_prop(&mut rt, arr, "1");
+    assert_eq!(rt.value_to_string_lossy(after_set), "a=b");
+    let after_overwrite = get_data_prop(&mut rt, arr, "2");
+    assert_eq!(rt.value_to_string_lossy(after_overwrite), "a=c");
+    let after_second = get_data_prop(&mut rt, arr, "3");
+    assert_eq!(rt.value_to_string_lossy(after_second), "a=c; b=d");
   }
 
   #[test]
