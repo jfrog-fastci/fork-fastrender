@@ -50,11 +50,10 @@ pub fn setTimeout<Host: 'static>(
   let delay_ms = timeout_ms.max(0) as u64;
   let delay = Duration::from_millis(delay_ms);
   match handler {
-    TimerHandler::Function(mut callback) => {
-      event_loop.set_timeout(delay, move |host, event_loop| {
+    TimerHandler::Function(mut callback) => event_loop
+      .set_timeout(delay, move |host, event_loop| {
         callback(host, event_loop, &args)
-      })
-    }
+      }),
     TimerHandler::String(_) => Err(type_error(
       "setTimeout does not currently support string handlers",
     )),
@@ -77,9 +76,10 @@ pub fn setInterval<Host: 'static>(
   let interval_ms = timeout_ms.max(0) as u64;
   let interval = Duration::from_millis(interval_ms);
   match handler {
-    TimerHandler::Function(mut callback) => event_loop.set_interval(interval, move |host, event_loop| {
-      callback(host, event_loop, &args)
-    }),
+    TimerHandler::Function(mut callback) => event_loop
+      .set_interval(interval, move |host, event_loop| {
+        callback(host, event_loop, &args)
+      }),
     TimerHandler::String(_) => Err(type_error(
       "setInterval does not currently support string handlers",
     )),
