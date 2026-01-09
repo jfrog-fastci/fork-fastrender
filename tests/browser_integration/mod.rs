@@ -32,6 +32,7 @@ mod ui_worker_scroll;
 mod ui_worker_scroll_hit_test;
 mod ui_worker_anchor_scroll;
 mod ui_worker_shutdown;
+mod ui_worker_tab_resource_isolation;
 mod ui_worker_title;
 mod ui_worker_dpr;
 mod ui_worker_tabs;

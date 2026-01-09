@@ -36,11 +36,6 @@ pub trait VmJsEngineHost {
 
   /// Borrow the embedded `vm-js` VM and heap mutably using a borrow-splitting API.
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
-  fn vm_js_heap(&self) -> &vm_js::Heap;
-
-  fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-    self.vm_js_vm_and_heap_mut().1
-  }
 }
 
 /// Execution context passed to `vm-js` [`vm_js::Job`]s.
