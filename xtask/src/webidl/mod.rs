@@ -12,7 +12,7 @@ pub mod analyze;
 pub mod ast;
 pub mod generate;
 pub mod load;
-pub mod overload;
+pub mod overload_ir;
 pub mod parse;
 pub mod resolve;
 pub mod type_resolution;

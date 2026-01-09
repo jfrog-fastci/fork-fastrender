@@ -108,6 +108,98 @@ pub enum DistinguishabilityCategory {
   SequenceLike,
 }
 
+impl std::fmt::Display for NumericType {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      NumericType::Byte => f.write_str("byte"),
+      NumericType::Octet => f.write_str("octet"),
+      NumericType::Short => f.write_str("short"),
+      NumericType::UnsignedShort => f.write_str("unsigned short"),
+      NumericType::Long => f.write_str("long"),
+      NumericType::UnsignedLong => f.write_str("unsigned long"),
+      NumericType::LongLong => f.write_str("long long"),
+      NumericType::UnsignedLongLong => f.write_str("unsigned long long"),
+      NumericType::Float => f.write_str("float"),
+      NumericType::UnrestrictedFloat => f.write_str("unrestricted float"),
+      NumericType::Double => f.write_str("double"),
+      NumericType::UnrestrictedDouble => f.write_str("unrestricted double"),
+    }
+  }
+}
+
+impl std::fmt::Display for StringType {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      StringType::DomString => f.write_str("DOMString"),
+      StringType::ByteString => f.write_str("ByteString"),
+      StringType::UsvString => f.write_str("USVString"),
+    }
+  }
+}
+
+impl std::fmt::Display for TypeAnnotation {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      TypeAnnotation::Clamp => f.write_str("Clamp"),
+      TypeAnnotation::EnforceRange => f.write_str("EnforceRange"),
+      TypeAnnotation::LegacyNullToEmptyString => f.write_str("LegacyNullToEmptyString"),
+      TypeAnnotation::LegacyTreatNonObjectAsNull => f.write_str("LegacyTreatNonObjectAsNull"),
+      TypeAnnotation::AllowShared => f.write_str("AllowShared"),
+      TypeAnnotation::AllowResizable => f.write_str("AllowResizable"),
+      TypeAnnotation::Other { name, rhs } => {
+        f.write_str(name)?;
+        if let Some(rhs) = rhs {
+          f.write_str("=")?;
+          f.write_str(rhs)?;
+        }
+        Ok(())
+      }
+    }
+  }
+}
+
+impl std::fmt::Display for IdlType {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      IdlType::Any => f.write_str("any"),
+      IdlType::Undefined => f.write_str("undefined"),
+      IdlType::Boolean => f.write_str("boolean"),
+      IdlType::Numeric(n) => n.fmt(f),
+      IdlType::BigInt => f.write_str("bigint"),
+      IdlType::String(s) => s.fmt(f),
+      IdlType::Object => f.write_str("object"),
+      IdlType::Symbol => f.write_str("symbol"),
+      IdlType::Named(NamedType { name, .. }) => f.write_str(name),
+      IdlType::Nullable(inner) => write!(f, "{inner}?"),
+      IdlType::Union(members) => {
+        f.write_str("(")?;
+        for (idx, m) in members.iter().enumerate() {
+          if idx != 0 {
+            f.write_str(" or ")?;
+          }
+          write!(f, "{m}")?;
+        }
+        f.write_str(")")
+      }
+      IdlType::Sequence(inner) => write!(f, "sequence<{inner}>"),
+      IdlType::FrozenArray(inner) => write!(f, "FrozenArray<{inner}>"),
+      IdlType::AsyncSequence(inner) => write!(f, "async sequence<{inner}>"),
+      IdlType::Record(key, value) => write!(f, "record<{key}, {value}>"),
+      IdlType::Promise(inner) => write!(f, "Promise<{inner}>"),
+      IdlType::Annotated { annotations, inner } => {
+        f.write_str("[")?;
+        for (idx, a) in annotations.iter().enumerate() {
+          if idx != 0 {
+            f.write_str(", ")?;
+          }
+          write!(f, "{a}")?;
+        }
+        write!(f, "] {inner}")
+      }
+    }
+  }
+}
+
 impl IdlType {
   pub fn is_nullable(&self) -> bool {
     matches!(self, IdlType::Nullable(_))
