@@ -11006,6 +11006,14 @@ mod tests {
       BoxTree::new(node)
     }
 
+    fn capture_layout(state: &mut TransitionState, box_tree: &BoxTree) {
+      let mut root =
+        FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), 1, vec![]);
+      root.style = Some(box_tree.root.style.clone());
+      let tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
+      state.capture_layout_from_fragment_tree(&tree);
+    }
+
     let mut start_style = ComputedStyle::default();
     start_style.border_top_left_radius = BorderCornerRadius {
       x: Length::px(0.0),
@@ -11033,8 +11041,9 @@ mod tests {
     let tree_a = tree(style_a);
     let tree_b = tree(style_b);
 
-    let state_a = TransitionState::update_for_style_change(None, Some(&before_tree), &tree_a, 0.0);
-    let key = super::transitions::ElementKey {
+    let mut state_a =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &tree_a, 0.0);
+    let key = transitions::ElementKey {
       styled_node_id: 1,
       pseudo: None,
     };
@@ -11046,13 +11055,22 @@ mod tests {
       "expected border-radius shorthand to expand into a running corner longhand transition"
     );
 
+    capture_layout(&mut state_a, &tree_a);
+
     let state_b =
       TransitionState::update_for_style_change(Some(&state_a), Some(&tree_a), &tree_b, 500.0);
+
     let record = state_b
       .elements
       .get(&key)
       .and_then(|el| el.running.get("border-top-left-radius"))
       .expect("interrupted corner transition record");
+
+    assert!(
+      (record.start_time_ms - 500.0).abs() < 1e-6,
+      "start_time_ms={}",
+      record.start_time_ms
+    );
     assert!((record.from_style.border_top_left_radius.x.to_px() - 5.0).abs() < 1e-6);
     assert!((record.from_style.border_top_left_radius.y.to_px() - 5.0).abs() < 1e-6);
   }
@@ -11063,6 +11081,14 @@ mod tests {
       let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
       node.styled_node_id = Some(1);
       BoxTree::new(node)
+    }
+
+    fn capture_layout(state: &mut TransitionState, box_tree: &BoxTree) {
+      let mut root =
+        FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), 1, vec![]);
+      root.style = Some(box_tree.root.style.clone());
+      let tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
+      state.capture_layout_from_fragment_tree(&tree);
     }
 
     let mut start_style = ComputedStyle::default();
@@ -11085,8 +11111,9 @@ mod tests {
     let tree_a = tree(style_a);
     let tree_b = tree(style_b);
 
-    let state_a = TransitionState::update_for_style_change(None, Some(&before_tree), &tree_a, 0.0);
-    let key = super::transitions::ElementKey {
+    let mut state_a =
+      TransitionState::update_for_style_change(None, Some(&before_tree), &tree_a, 0.0);
+    let key = transitions::ElementKey {
       styled_node_id: 1,
       pseudo: None,
     };
@@ -11096,6 +11123,8 @@ mod tests {
       }),
       "expected both border colors to be running transitions when transition-property: all"
     );
+
+    capture_layout(&mut state_a, &tree_a);
 
     let state_b =
       TransitionState::update_for_style_change(Some(&state_a), Some(&tree_a), &tree_b, 500.0);
@@ -11108,6 +11137,17 @@ mod tests {
       .running
       .get("border-right-color")
       .expect("border-right-color record");
+
+    assert!(
+      (top.start_time_ms - 500.0).abs() < 1e-6,
+      "start_time_ms={}",
+      top.start_time_ms
+    );
+    assert!(
+      (right.start_time_ms - 500.0).abs() < 1e-6,
+      "start_time_ms={}",
+      right.start_time_ms
+    );
     assert_eq!(top.from_style.border_top_color, Rgba::rgb(128, 0, 0));
     assert_eq!(right.from_style.border_right_color, Rgba::rgb(0, 128, 0));
   }
