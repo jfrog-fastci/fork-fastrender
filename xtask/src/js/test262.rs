@@ -17,6 +17,7 @@ const DEFAULT_JOBS_CAP: usize = 4;
 #[clap(rename_all = "lowercase")]
 pub enum HarnessMode {
   /// Load and execute upstream tc39/test262 harness files.
+  #[value(aliases = ["full", "test262"])]
   Upstream,
   /// Use a minimal built-in harness prelude (no upstream harness JS).
   Minimal,

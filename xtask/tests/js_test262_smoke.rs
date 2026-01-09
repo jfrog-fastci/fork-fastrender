@@ -72,13 +72,10 @@ exit 0
 
   // Build a minimal test262-like directory so the xtask wrapper's sanity checks pass.
   let test262_dir = temp.path().join("test262");
-  fs::create_dir_all(test262_dir.join("harness")).expect("create harness dir");
   fs::create_dir_all(test262_dir.join("test/language/expressions/addition"))
     .expect("create test dir");
   fs::create_dir_all(test262_dir.join("test/language/expressions/multiplication"))
     .expect("create test dir");
-  fs::write(test262_dir.join("harness/assert.js"), "").expect("write assert.js");
-  fs::write(test262_dir.join("harness/sta.js"), "").expect("write sta.js");
   fs::write(
     test262_dir.join("test/language/expressions/addition/a.js"),
     "let x = 1 + 1;\n",
@@ -105,6 +102,8 @@ exit 0
       "test262",
       "--suite",
       "smoke",
+      "--harness",
+      "minimal",
       "--fail-on",
       "none",
       "--harness",
@@ -128,6 +127,54 @@ exit 0
     report_path.is_file(),
     "expected report file to be created at {}",
     report_path.display()
+  );
+}
+
+#[test]
+#[cfg(unix)]
+fn js_test262_upstream_harness_alias_requires_harness_dir() {
+  let temp = tempdir().expect("tempdir");
+
+  // Build a minimal test262-like directory but intentionally omit `harness/` so upstream mode fails.
+  let test262_dir = temp.path().join("test262");
+  fs::create_dir_all(test262_dir.join("test")).expect("create test dir");
+
+  let report_path = temp.path().join("out").join("test262.json");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "js",
+      "test262",
+      "--suite",
+      "smoke",
+      "--harness",
+      "test262",
+      "--fail-on",
+      "none",
+      "--test262-dir",
+    ])
+    .arg(&test262_dir)
+    .arg("--report")
+    .arg(&report_path)
+    .output()
+    .expect("run xtask js test262 with upstream harness alias");
+
+  assert!(
+    !output.status.success(),
+    "expected js test262 to fail when upstream harness is requested without harness/.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("missing required folders") && stderr.contains("harness"),
+    "expected missing harness directory error, got:\n{stderr}"
+  );
+  assert!(
+    !stderr.contains("invalid value"),
+    "expected `test262` to be accepted as a harness alias; got:\n{stderr}"
   );
 }
 

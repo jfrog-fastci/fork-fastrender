@@ -77,6 +77,7 @@ fn js_test262_help_mentions_flags() {
   let stdout = String::from_utf8_lossy(&output.stdout);
   assert!(
     stdout.contains("--suite")
+      && stdout.contains("--harness")
       && stdout.contains("--manifest")
       && stdout.contains("--shard")
       && stdout.contains("--timeout-secs")
