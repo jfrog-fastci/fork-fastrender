@@ -428,8 +428,10 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
   let arg_bad = Value::String(scope.alloc_string("???")?);
   let thrown = match vm.call_without_host(&mut scope, query_selector, document_val, &[arg_bad]) {
     Ok(_) => panic!("expected querySelector to throw"),
-    Err(VmError::Throw(v)) => v,
-    Err(e) => return Err(e),
+    Err(err) => match err.thrown_value() {
+      Some(v) => v,
+      None => return Err(err),
+    },
   };
   let thrown_obj = match thrown {
     Value::Object(o) => o,
@@ -515,7 +517,7 @@ fn dom_bindings_rejects_strings_over_max_string_bytes() -> Result<(), VmError> {
     .call_without_host(&mut scope, create_element, document_val, &[tag])
     .expect_err("expected createElement to throw");
 
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected a thrown TypeError, got {err:?}");
   };
 
@@ -1145,8 +1147,10 @@ fn element_class_list_dom_token_list() -> Result<(), VmError> {
   let bad = Value::String(scope.alloc_string("bad token")?);
   let thrown = match vm.call_without_host(&mut scope, add, list1, &[bad]) {
     Ok(_) => panic!("expected classList.add to throw for invalid token"),
-    Err(VmError::Throw(v)) => v,
-    Err(e) => return Err(e),
+    Err(err) => match err.thrown_value() {
+      Some(v) => v,
+      None => return Err(err),
+    },
   };
   let thrown_obj = match thrown {
     Value::Object(o) => o,

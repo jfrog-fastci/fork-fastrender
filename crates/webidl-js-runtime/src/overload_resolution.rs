@@ -1568,7 +1568,7 @@ mod tests {
   }
 
   fn thrown_message(rt: &mut VmJsRuntime, err: VmError) -> String {
-    let VmError::Throw(v) = err else {
+    let Some(v) = err.thrown_value() else {
       panic!("expected throw");
     };
     let Value::Object(obj) = v else {
@@ -1597,7 +1597,7 @@ mod tests {
       &["doThing(DOMString)", "doThing()", "doThing(long, long)"],
     );
 
-    let VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       panic!("expected VmError::Throw, got {err:?}");
     };
 

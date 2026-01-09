@@ -17,7 +17,7 @@ use crate::resource::{HttpFetcher, ResourceFetcher};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Instant;
-use vm_js::{Budget, VmError};
+use vm_js::Budget;
 
 fn callback_budget_from_render_deadline() -> Budget {
   // Prefer the root (outermost) render deadline so JS does not inherit internal per-stage budgets.
@@ -39,10 +39,14 @@ fn drain_vm_js_microtask_queue(host: &mut WindowHostState, event_loop: &mut Even
     vm.set_budget(callback_budget_from_render_deadline());
     let result = vm.perform_microtask_checkpoint(heap);
     vm.set_budget(Budget::unlimited(100));
-    result.map_err(|err| Error::Other(match err {
-      VmError::Throw(_) => "uncaught exception".to_string(),
-      other => other.to_string(),
-    }))
+    result.map_err(|err| {
+      let msg = if err.thrown_value().is_some() {
+        "uncaught exception".to_string()
+      } else {
+        err.to_string()
+      };
+      Error::Other(msg)
+    })
   })
 }
 

@@ -567,33 +567,27 @@ impl JsDomEvents {
   }
 
   fn vm_error_to_error(&mut self, err: VmError) -> Error {
-    match err {
-      VmError::Throw(value) => {
-        const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
-        // Best-effort: stringify the thrown value.
-        let message = self
-          .runtime
-          .to_string(value)
-          .ok()
-          .and_then(|v| match v {
-            Value::String(s) => self
-              .runtime
-              .heap()
-              .get_string(s)
-              .ok()
-              .and_then(|s| {
-                if s.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
-                  None
-                } else {
-                  Some(s.to_utf8_lossy())
-                }
-              }),
-            _ => None,
-          })
-          .unwrap_or_else(|| "uncaught exception".to_string());
-        Error::Other(format!("JS exception: {message}"))
-      }
-      other => Error::Other(format!("JS error: {other}")),
+    if let Some(value) = err.thrown_value() {
+      const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
+      // Best-effort: stringify the thrown value.
+      let message = self
+        .runtime
+        .to_string(value)
+        .ok()
+        .and_then(|v| match v {
+          Value::String(s) => self.runtime.heap().get_string(s).ok().and_then(|s| {
+            if s.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
+              None
+            } else {
+              Some(s.to_utf8_lossy())
+            }
+          }),
+          _ => None,
+        })
+        .unwrap_or_else(|| "uncaught exception".to_string());
+      Error::Other(format!("JS exception: {message}"))
+    } else {
+      Error::Other(format!("JS error: {err}"))
     }
   }
 }

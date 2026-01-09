@@ -3907,9 +3907,8 @@ mod tests {
       .call_function(append_child, div, &[document])
       .expect_err("expected HierarchyRequestError");
 
-    let thrown = match err {
-      VmError::Throw(value) => value,
-      other => panic!("expected VmError::Throw, got {other:?}"),
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
     };
 
     let name_key = pk(&mut realm.rt, "name");
@@ -4195,9 +4194,8 @@ mod tests {
       .rt
       .call_function(matches_fn, span, &[bad_sel])
       .unwrap_err();
-    let thrown = match err {
-      VmError::Throw(v) => v,
-      other => panic!("expected VmError::Throw, got {other:?}"),
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
     };
 
     let name_key = pk(&mut realm.rt, "name");
@@ -5102,7 +5100,7 @@ mod tests {
     }
 
     let err = realm.wrap_node(node_id).unwrap_err();
-    assert!(matches!(err, VmError::Throw(_)));
+    assert!(err.thrown_value().is_some());
   }
 
   #[test]
@@ -5437,7 +5435,7 @@ mod tests {
       .rt
       .call_function(div_contains, div, &[Value::Number(1.0)])
       .unwrap_err();
-    assert!(matches!(err, VmError::Throw(_)));
+    assert!(err.thrown_value().is_some());
   }
 
   #[test]
@@ -5600,9 +5598,8 @@ mod tests {
       .rt
       .call_function(document_append_child, document, &[fragment])
       .expect_err("expected HierarchyRequestError");
-    let thrown = match err {
-      VmError::Throw(value) => value,
-      other => panic!("expected VmError::Throw, got {other:?}"),
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
     };
 
     let name_key = pk(&mut realm.rt, "name");

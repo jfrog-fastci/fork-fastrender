@@ -2587,10 +2587,10 @@ mod tests {
   }
 
   fn unwrap_thrown_object(err: VmError) -> GcObject {
-    match err {
-      VmError::Throw(Value::Object(obj)) => obj,
-      VmError::Throw(other) => panic!("expected thrown object, got {other:?}"),
-      other => panic!("expected VmError::Throw, got {other:?}"),
+    match err.thrown_value() {
+      Some(Value::Object(obj)) => obj,
+      Some(other) => panic!("expected thrown object, got {other:?}"),
+      None => panic!("expected thrown error, got {err:?}"),
     }
   }
 

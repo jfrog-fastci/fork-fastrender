@@ -8,7 +8,7 @@ fn new_runtime() -> JsRuntime {
 
 fn assert_exec_throws_type_error(rt: &mut JsRuntime, script: &str) {
   let err = rt.exec_script(script).unwrap_err();
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected a thrown JS exception for {script:?}, got {err:?}");
   };
   let Value::Object(obj) = thrown else {

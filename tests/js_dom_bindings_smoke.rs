@@ -73,9 +73,8 @@ fn unimplemented_methods_throw_type_error_and_validate_required_args() {
 
   // Missing required argument should throw a TypeError with a deterministic message.
   let err = rt.call_function(create_element, document, &[]).unwrap_err();
-  let thrown = match err {
-    VmError::Throw(v) => v,
-    other => panic!("expected VmError::Throw, got {other:?}"),
+  let Some(thrown) = err.thrown_value() else {
+    panic!("expected thrown error, got {err:?}");
   };
   let msg = rt.to_string(thrown).unwrap();
   assert!(
@@ -89,9 +88,8 @@ fn unimplemented_methods_throw_type_error_and_validate_required_args() {
   let err = rt
     .call_function(create_element, document, &[arg0])
     .unwrap_err();
-  let thrown = match err {
-    VmError::Throw(v) => v,
-    other => panic!("expected VmError::Throw, got {other:?}"),
+  let Some(thrown) = err.thrown_value() else {
+    panic!("expected thrown error, got {err:?}");
   };
   let msg = rt.to_string(thrown).unwrap();
   assert!(
@@ -120,9 +118,8 @@ fn query_selector_invalid_selector_throws_domexception_syntaxerror() {
 
   let arg0 = rt.alloc_string_value("[").unwrap();
   let err = rt.call_function(query_selector, document, &[arg0]).unwrap_err();
-  let thrown = match err {
-    VmError::Throw(v) => v,
-    other => panic!("expected VmError::Throw, got {other:?}"),
+  let Some(thrown) = err.thrown_value() else {
+    panic!("expected thrown error, got {err:?}");
   };
 
   let k_name = rt.prop_key("name").unwrap();

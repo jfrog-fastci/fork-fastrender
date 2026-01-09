@@ -1735,8 +1735,8 @@ mod tests {
     )
     .expect_err("expected setTimeout to throw");
 
-    let VmError::Throw(value) = err else {
-      panic!("expected VmError::Throw, got {err:?}");
+    let Some(value) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
     };
     assert_type_error_object(
       &mut scope,
@@ -1771,8 +1771,8 @@ mod tests {
     )
     .expect_err("expected clearTimeout to throw");
 
-    let VmError::Throw(value) = err else {
-      panic!("expected VmError::Throw, got {err:?}");
+    let Some(value) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
     };
     assert_type_error_object(
       &mut scope,

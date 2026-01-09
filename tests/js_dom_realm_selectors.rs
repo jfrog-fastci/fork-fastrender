@@ -115,9 +115,8 @@ fn dom_realm_invalid_selector_throws_domexception_syntaxerror() -> Result<(), Vm
 
   let invalid = rt.alloc_string_value("[")?;
   let err = call_method(rt, document, "querySelector", &[invalid]).unwrap_err();
-  let thrown = match err {
-    VmError::Throw(v) => v,
-    other => panic!("expected VmError::Throw, got {other:?}"),
+  let Some(thrown) = err.thrown_value() else {
+    panic!("expected thrown error, got {err:?}");
   };
 
   let k_name = rt.prop_key("name")?;

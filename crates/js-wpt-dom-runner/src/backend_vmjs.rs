@@ -321,8 +321,10 @@ impl JsError {
   fn to_message(&self, rt: &mut JsWptRuntime) -> String {
     match self {
       JsError::Parse(msg) => msg.clone(),
-      JsError::Vm(VmError::Throw(value)) => rt.value_to_string_lossy(*value),
-      JsError::Vm(other) => other.to_string(),
+      JsError::Vm(err) => err
+        .thrown_value()
+        .map(|value| rt.value_to_string_lossy(value))
+        .unwrap_or_else(|| err.to_string()),
     }
   }
 }
@@ -2391,7 +2393,10 @@ impl JsWptRuntime {
   fn eval_expr_or_throw(&mut self, expr: &Node<Expr>) -> Result<Result<Value, Value>, JsError> {
     match self.eval_expr(expr) {
       Ok(v) => Ok(Ok(v)),
-      Err(JsError::Vm(VmError::Throw(v))) => Ok(Err(v)),
+      Err(JsError::Vm(err)) => match err.thrown_value() {
+        Some(v) => Ok(Err(v)),
+        None => Err(JsError::Vm(err)),
+      },
       Err(other) => Err(other),
     }
   }
@@ -6520,9 +6525,10 @@ fn native_run_promise_job(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -
   if rt.is_callable_value(handler) {
     match rt.call(handler, Value::Undefined, &[job.value]) {
       Ok(v) => rt.settle_promise(next, PromiseStatus::Fulfilled, v)?,
-      Err(JsError::Vm(VmError::Throw(reason))) => {
-        rt.settle_promise(next, PromiseStatus::Rejected, reason)?
-      }
+      Err(JsError::Vm(err)) => match err.thrown_value() {
+        Some(reason) => rt.settle_promise(next, PromiseStatus::Rejected, reason)?,
+        None => return Err(JsError::Vm(err)),
+      },
       Err(other) => return Err(other),
     }
   } else {

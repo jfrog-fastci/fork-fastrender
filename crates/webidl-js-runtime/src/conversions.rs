@@ -1590,7 +1590,7 @@ fn converted_from_webidl_value<V: Copy>(value: WebIdlValue) -> ConvertedValue<V>
 mod tests {
   use super::*;
   use crate::VmJsRuntime;
-  use vm_js::{Value, VmError};
+  use vm_js::Value;
 
   fn as_utf8_lossy(rt: &VmJsRuntime, v: Value) -> String {
     let Value::String(s) = v else {
@@ -1613,7 +1613,7 @@ mod tests {
     )
     .expect_err("out-of-range enforce-range conversion should throw");
 
-    let VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       panic!("expected VmError::Throw, got {err:?}");
     };
 

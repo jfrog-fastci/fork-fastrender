@@ -432,7 +432,7 @@ fn url_constructor_enforces_max_input_bytes_while_decoding_utf16() {
     .expect_err("expected URL() to throw");
   rt.heap_mut().remove_root(input_root);
 
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected thrown TypeError, got {err:?}");
   };
   let thrown_root = rt.heap_mut().add_root(thrown).unwrap();

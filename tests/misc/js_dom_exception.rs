@@ -58,8 +58,9 @@ fn query_selector_invalid_selector_throws_domexception_syntaxerror() {
 
   let thrown = match result {
     Ok(_) => panic!("expected querySelector to throw"),
-    Err(VmError::Throw(v)) => v,
-    Err(other) => panic!("expected Throw, got {other:?}"),
+    Err(err) => err
+      .thrown_value()
+      .unwrap_or_else(|| panic!("expected Throw, got {err:?}")),
   };
 
   let key_name = prop_key(&mut rt, "name");

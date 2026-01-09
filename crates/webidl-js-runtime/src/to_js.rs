@@ -870,7 +870,7 @@ mod tests {
     };
     let err = to_js_with_limits(&mut rt, &ctx, &ty, &value, limits).unwrap_err();
 
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -908,7 +908,7 @@ mod tests {
 
     let mut rt = VmJsRuntime::new();
     let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -982,7 +982,7 @@ mod tests {
       kind: NamedTypeKind::Interface,
     });
     let err = to_js(&mut rt, &ctx, &other_ty, &value).unwrap_err();
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -1030,7 +1030,7 @@ mod tests {
     let value = WebIdlValue::PlatformObject(PlatformObject::new(obj));
     let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
 
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -1077,7 +1077,7 @@ mod tests {
     let value = WebIdlValue::PlatformObject(PlatformObject::new(Value::Number(1.0)));
     let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
 
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -1119,7 +1119,7 @@ mod tests {
     };
 
     let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -1171,7 +1171,7 @@ mod tests {
     let value = WebIdlValue::Long(1);
     let mut rt = VmJsRuntime::new();
     let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -1196,7 +1196,7 @@ mod tests {
     let value = WebIdlValue::PlatformObject(PlatformObject::new(Value::Number(1.0)));
     let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
 
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -1249,7 +1249,7 @@ mod tests {
     let ty = parse_idl_type_complete("object")?;
     let err = to_js(&mut rt, &ctx, &ty, &WebIdlValue::Long(1)).unwrap_err();
 
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -1321,7 +1321,7 @@ mod tests {
 
     let bad = WebIdlValue::String("\u{0100}".to_string());
     let err = to_js(&mut rt, &ctx, &ty, &bad).unwrap_err();
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;
@@ -1354,7 +1354,7 @@ mod tests {
     };
 
     let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
-    let vm_js::VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       return Err(format!("expected VmError::Throw, got {err:?}").into());
     };
     let s = rt.to_string(thrown)?;

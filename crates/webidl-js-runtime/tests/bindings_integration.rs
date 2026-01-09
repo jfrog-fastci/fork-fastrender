@@ -143,7 +143,7 @@ fn alloc_symbol(rt: &mut VmJsRuntime, description: &str) -> Result<Value, VmErro
 }
 
 fn assert_type_error(rt: &mut VmJsRuntime, err: VmError, expected_message: &str) {
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected VmError::Throw, got {err:?}");
   };
   let Value::Object(_) = thrown else {

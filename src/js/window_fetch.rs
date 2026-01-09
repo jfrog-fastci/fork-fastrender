@@ -427,59 +427,60 @@ fn callback_budget_from_render_deadline() -> Budget {
 }
 
 fn vm_error_to_event_loop_error(heap: &mut Heap, err: VmError) -> Error {
-  match err {
-    VmError::Throw(value) => {
-      if let Value::String(s) = value {
-        if let Ok(js) = heap.get_string(s) {
-          // Converting a UTF-16 JS string to a Rust `String` allocates in the host. Keep this
-          // bounded so hostile scripts cannot force large host allocations via `throw "..."`.
-          const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
-          if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
-            return Error::Other(js.to_utf8_lossy());
-          }
+  if let Some(value) = err.thrown_value() {
+    if let Value::String(s) = value {
+      if let Ok(js) = heap.get_string(s) {
+        // Converting a UTF-16 JS string to a Rust `String` allocates in the host. Keep this
+        // bounded so hostile scripts cannot force large host allocations via `throw "..."`.
+        const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
+        if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
+          return Error::Other(js.to_utf8_lossy());
         }
       }
-
-      if let Value::Object(obj) = value {
-        let mut scope = heap.scope();
-        let _ = scope.push_root(Value::Object(obj));
-
-        let mut get_prop_str = |name: &str| -> Option<String> {
-          let key_s = scope.alloc_string(name).ok()?;
-          scope.push_root(Value::String(key_s)).ok()?;
-          let key = PropertyKey::from_string(key_s);
-          let value = scope
-            .heap()
-            .object_get_own_data_property_value(obj, &key)
-            .ok()?
-            .unwrap_or(Value::Undefined);
-          match value {
-            Value::String(s) => {
-              const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
-              let js = scope.heap().get_string(s).ok()?;
-              if js.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
-                return None;
-              }
-              Some(js.to_utf8_lossy())
-            }
-            _ => None,
-          }
-        };
-
-        let name = get_prop_str("name");
-        let message = get_prop_str("message");
-        if let (Some(name), Some(message)) = (name, message) {
-          if !message.is_empty() {
-            return Error::Other(format!("{name}: {message}"));
-          }
-          return Error::Other(name);
-        }
-      }
-
-      Error::Other("uncaught exception".to_string())
     }
-    VmError::Syntax(diags) => Error::Other(format!("syntax error: {diags:?}")),
-    other => Error::Other(other.to_string()),
+
+    if let Value::Object(obj) = value {
+      let mut scope = heap.scope();
+      let _ = scope.push_root(Value::Object(obj));
+
+      let mut get_prop_str = |name: &str| -> Option<String> {
+        let key_s = scope.alloc_string(name).ok()?;
+        scope.push_root(Value::String(key_s)).ok()?;
+        let key = PropertyKey::from_string(key_s);
+        let value = scope
+          .heap()
+          .object_get_own_data_property_value(obj, &key)
+          .ok()?
+          .unwrap_or(Value::Undefined);
+        match value {
+          Value::String(s) => {
+            const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
+            let js = scope.heap().get_string(s).ok()?;
+            if js.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
+              return None;
+            }
+            Some(js.to_utf8_lossy())
+          }
+          _ => None,
+        }
+      };
+
+      let name = get_prop_str("name");
+      let message = get_prop_str("message");
+      if let (Some(name), Some(message)) = (name, message) {
+        if !message.is_empty() {
+          return Error::Other(format!("{name}: {message}"));
+        }
+        return Error::Other(name);
+      }
+    }
+
+    Error::Other("uncaught exception".to_string())
+  } else {
+    match err {
+      VmError::Syntax(diags) => Error::Other(format!("syntax error: {diags:?}")),
+      other => Error::Other(other.to_string()),
+    }
   }
 }
 
@@ -2978,8 +2979,8 @@ mod tests {
     )
     .expect_err("expected status range error");
 
-    let VmError::Throw(Value::Object(err_obj)) = err else {
-      panic!("expected thrown RangeError object, got {err}");
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown RangeError object, got {err:?}");
     };
     let name_key = alloc_key(&mut scope, "name")?;
     let name_val = vm.get(&mut scope, err_obj, name_key)?;
@@ -3043,8 +3044,8 @@ mod tests {
     )
     .expect_err("expected invalid statusText error");
 
-    let VmError::Throw(Value::Object(err_obj)) = err else {
-      panic!("expected thrown TypeError object, got {err}");
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
     };
     let name_key = alloc_key(&mut scope, "name")?;
     let name_val = vm.get(&mut scope, err_obj, name_key)?;
@@ -3104,8 +3105,8 @@ mod tests {
     )
     .expect_err("expected null body status error");
 
-    let VmError::Throw(Value::Object(err_obj)) = err else {
-      panic!("expected thrown TypeError object, got {err}");
+    let Some(Value::Object(err_obj)) = err.thrown_value() else {
+      panic!("expected thrown TypeError object, got {err:?}");
     };
     let name_key = alloc_key(&mut scope, "name")?;
     let name_val = vm.get(&mut scope, err_obj, name_key)?;

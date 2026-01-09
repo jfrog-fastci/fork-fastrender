@@ -116,19 +116,18 @@ fn store_callback(
 }
 
 fn vm_error_to_event_loop_error(heap: &Heap, err: VmError) -> crate::error::Error {
-  match err {
-    VmError::Throw(value) => {
-      if let Value::String(s) = value {
-        if let Ok(js) = heap.get_string(s) {
-          const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
-          if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
-            return crate::error::Error::Other(js.to_utf8_lossy());
-          }
+  if let Some(value) = err.thrown_value() {
+    if let Value::String(s) = value {
+      if let Ok(js) = heap.get_string(s) {
+        const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
+        if js.len_code_units() <= MAX_THROWN_STRING_CODE_UNITS {
+          return crate::error::Error::Other(js.to_utf8_lossy());
         }
       }
-      crate::error::Error::Other("uncaught exception".to_string())
     }
-    other => crate::error::Error::Other(other.to_string()),
+    crate::error::Error::Other("uncaught exception".to_string())
+  } else {
+    crate::error::Error::Other(err.to_string())
   }
 }
 

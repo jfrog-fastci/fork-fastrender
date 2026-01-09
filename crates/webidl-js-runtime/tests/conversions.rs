@@ -12,7 +12,7 @@ use webidl_js_runtime::{
 };
 
 fn error_to_string(rt: &mut VmJsRuntime, err: VmError) -> String {
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected throw, got {err:?}");
   };
   // These tests sometimes set extremely small `WebIdlLimits::max_string_code_units` values to

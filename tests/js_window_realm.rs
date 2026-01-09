@@ -37,47 +37,48 @@ fn get_string(heap: &Heap, value: Value) -> String {
 }
 
 fn format_vm_error(heap: &mut Heap, err: VmError) -> String {
-  match err {
-    VmError::Throw(value) => {
-      if let Value::String(s) = value {
-        if let Ok(js) = heap.get_string(s) {
-          return js.to_utf8_lossy();
-        }
-      }
-
-      if let Value::Object(obj) = value {
-        let mut scope = heap.scope();
-        scope.push_root(Value::Object(obj)).ok();
-
-        let mut get_prop_str = |name: &str| -> Option<String> {
-          let key_s = scope.alloc_string(name).ok()?;
-          scope.push_root(Value::String(key_s)).ok()?;
-          let key = PropertyKey::from_string(key_s);
-          let value = scope
-            .heap()
-            .object_get_own_data_property_value(obj, &key)
-            .ok()?
-            .unwrap_or(Value::Undefined);
-          match value {
-            Value::String(s) => Some(scope.heap().get_string(s).ok()?.to_utf8_lossy()),
-            _ => None,
-          }
-        };
-
-        let name = get_prop_str("name");
-        let message = get_prop_str("message");
-        match (name, message) {
-          (Some(name), Some(message)) if !message.is_empty() => format!("{name}: {message}"),
-          (Some(name), _) => name,
-          (_, Some(message)) => message,
-          _ => "uncaught exception".to_string(),
-        }
-      } else {
-        "uncaught exception".to_string()
+  if let Some(value) = err.thrown_value() {
+    if let Value::String(s) = value {
+      if let Ok(js) = heap.get_string(s) {
+        return js.to_utf8_lossy();
       }
     }
-    VmError::Syntax(diags) => format!("syntax error: {diags:?}"),
-    other => other.to_string(),
+
+    if let Value::Object(obj) = value {
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(obj)).ok();
+
+      let mut get_prop_str = |name: &str| -> Option<String> {
+        let key_s = scope.alloc_string(name).ok()?;
+        scope.push_root(Value::String(key_s)).ok()?;
+        let key = PropertyKey::from_string(key_s);
+        let value = scope
+          .heap()
+          .object_get_own_data_property_value(obj, &key)
+          .ok()?
+          .unwrap_or(Value::Undefined);
+        match value {
+          Value::String(s) => Some(scope.heap().get_string(s).ok()?.to_utf8_lossy()),
+          _ => None,
+        }
+      };
+
+      let name = get_prop_str("name");
+      let message = get_prop_str("message");
+      match (name, message) {
+        (Some(name), Some(message)) if !message.is_empty() => format!("{name}: {message}"),
+        (Some(name), _) => name,
+        (_, Some(message)) => message,
+        _ => "uncaught exception".to_string(),
+      }
+    } else {
+      "uncaught exception".to_string()
+    }
+  } else {
+    match err {
+      VmError::Syntax(diags) => format!("syntax error: {diags:?}"),
+      other => other.to_string(),
+    }
   }
 }
 

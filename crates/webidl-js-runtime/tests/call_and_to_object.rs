@@ -2,7 +2,7 @@ use vm_js::{Value, VmError};
 use webidl_js_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
 
 fn assert_type_error(rt: &mut VmJsRuntime, err: VmError) {
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected TypeError throw, got {err:?}");
   };
   let s = rt.to_string(thrown).expect("error to_string should not throw");
@@ -69,4 +69,3 @@ fn call_invokes_host_function_with_this_and_args() {
     .unwrap();
   assert_eq!(rt.to_number(result).unwrap(), 123.0);
 }
-

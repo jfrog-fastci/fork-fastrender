@@ -143,7 +143,7 @@ fn boundedness_throws_type_error() {
     .call_function(url_ctor, Value::Undefined, &[arg])
     .unwrap_err();
 
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected Throw, got {err:?}");
   };
 
@@ -183,7 +183,7 @@ fn urlsearchparams_pair_limit_is_enforced() {
   let append = get(&mut rt, params, "append");
   let err = rt.call_function(append, params, &[b, two]).unwrap_err();
 
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected Throw");
   };
   let name = get(&mut rt, thrown, "name");
@@ -205,7 +205,7 @@ fn urlsearchparams_to_string_enforces_output_limit() {
 
   let to_string = get(&mut rt, params, "toString");
   let err = rt.call_function(to_string, params, &[]).unwrap_err();
-  let VmError::Throw(thrown) = err else {
+  let Some(thrown) = err.thrown_value() else {
     panic!("expected Throw");
   };
   let name = get(&mut rt, thrown, "name");

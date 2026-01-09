@@ -1676,7 +1676,7 @@ mod tests {
       .string_to_utf8_lossy(s)
       .expect_err("expected oversized string conversion to throw");
 
-    let VmError::Throw(thrown) = err else {
+    let Some(thrown) = err.thrown_value() else {
       panic!("expected Throw, got {err:?}");
     };
 
@@ -1713,16 +1713,16 @@ mod tests {
     assert_eq!(rt.to_number(Value::Null).unwrap(), 0.0);
     assert_eq!(rt.to_number(Value::Bool(true)).unwrap(), 1.0);
     assert_eq!(rt.to_number(Value::Bool(false)).unwrap(), 0.0);
-    assert!(matches!(
-      rt.to_number(Value::BigInt(JsBigInt::from_u128(1)))
-        .unwrap_err(),
-      VmError::Throw(_)
-    ));
+    assert!(rt
+      .to_number(Value::BigInt(JsBigInt::from_u128(1)))
+      .unwrap_err()
+      .thrown_value()
+      .is_some());
     let s = rt.alloc_string_value("  123  ").unwrap();
     assert_eq!(rt.to_number(s).unwrap(), 123.0);
     assert!(matches!(
       rt.to_number(Value::BigInt(JsBigInt::from_u128(1))),
-      Err(VmError::Throw(_))
+      Err(err) if err.thrown_value().is_some()
     ));
 
     // Per ECMA-262 StringToNumber, signed hex strings are not valid numeric literals.
@@ -1758,9 +1758,8 @@ mod tests {
     let err = rt
       .to_number(Value::BigInt(JsBigInt::from_u128(1)))
       .unwrap_err();
-    let thrown = match err {
-      VmError::Throw(v) => v,
-      other => panic!("expected thrown TypeError, got {other:?}"),
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown TypeError, got {err:?}");
     };
     let message_key = rt.prop_key_str("message").unwrap();
     let message_value = rt.get(thrown, message_key).unwrap();
@@ -1782,9 +1781,8 @@ mod tests {
     assert_eq!(as_utf8_lossy(&rt, s), "7");
 
     let err = rt.to_number(obj).unwrap_err();
-    let thrown = match err {
-      VmError::Throw(v) => v,
-      other => panic!("expected thrown TypeError, got {other:?}"),
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown TypeError, got {err:?}");
     };
     let message_key = rt.prop_key_str("message").unwrap();
     let message_value = rt.get(thrown, message_key).unwrap();
@@ -1795,9 +1793,8 @@ mod tests {
   }
 
   fn thrown_error_name(rt: &mut VmJsRuntime, err: VmError) -> String {
-    let thrown = match err {
-      VmError::Throw(v) => v,
-      other => panic!("expected thrown error, got {other:?}"),
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
     };
     let name_key = rt.prop_key_str("name").unwrap();
     let name_value = rt.get(thrown, name_key).unwrap();
@@ -1952,9 +1949,8 @@ mod tests {
     let err = rt
       .call_function(Value::Number(1.0), Value::Undefined, &[])
       .unwrap_err();
-    let thrown = match err {
-      VmError::Throw(v) => v,
-      other => panic!("expected thrown TypeError, got {other:?}"),
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown TypeError, got {err:?}");
     };
 
     let name_key = rt.prop_key_str("name").unwrap();
