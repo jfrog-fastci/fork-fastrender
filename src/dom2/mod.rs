@@ -135,6 +135,13 @@ impl std::fmt::Debug for Document {
   }
 }
 
+fn kind_implies_inert_subtree(kind: &NodeKind) -> bool {
+  match kind {
+    NodeKind::Element { tag_name, .. } => tag_name.eq_ignore_ascii_case("template"),
+    _ => false,
+  }
+}
+
 #[derive(Debug, Clone)]
 pub struct RendererDomMapping {
   /// 1-based pre-order id (as produced by `crate::dom::enumerate_dom_ids`) -> `dom2` [`NodeId`].
@@ -472,6 +479,7 @@ impl Document {
 
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {
     let id = NodeId(self.nodes.len());
+    let inert_subtree = inert_subtree || kind_implies_inert_subtree(&kind);
     self.nodes.push(Node {
       kind,
       parent,
@@ -484,6 +492,55 @@ impl Document {
       self.nodes[parent_id.0].children.push(id);
     }
     id
+  }
+
+  pub fn document_element(&self) -> Option<NodeId> {
+    let root = self.root();
+    let node = self.nodes.get(root.index())?;
+    node.children.iter().copied().find(|&child| {
+      self
+        .nodes
+        .get(child.index())
+        .is_some_and(|node| matches!(node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. }))
+    })
+  }
+
+  pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
+    if id.is_empty() {
+      return None;
+    }
+
+    // "getElementById" must not traverse into inert template contents.
+    let mut stack: Vec<NodeId> = vec![self.root()];
+    while let Some(node_id) = stack.pop() {
+      let Some(node) = self.nodes.get(node_id.index()) else {
+        continue;
+      };
+
+      let attributes: &[(String, String)] = match &node.kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => {
+          attributes.as_slice()
+        }
+        _ => &[],
+      };
+      if attributes
+        .iter()
+        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+      {
+        return Some(node_id);
+      }
+
+      if node.inert_subtree {
+        continue;
+      }
+
+      // Push in reverse to traverse in tree order.
+      for &child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+
+    None
   }
 
   /// Snapshot this `dom2` document back into the renderer's immutable [`DomNode`] representation.
@@ -1430,5 +1487,121 @@ mod helper_tests {
     );
 
     assert_eq!(doc.body(), Some(body));
+  }
+}
+
+#[cfg(test)]
+mod template_inert_tests {
+  use super::{Document, NodeId, NodeKind};
+
+  fn find_node_by_id_attribute(doc: &Document, id: &str) -> Option<NodeId> {
+    if id.is_empty() {
+      return None;
+    }
+    doc.nodes().iter().enumerate().find_map(|(idx, node)| {
+      let attrs = match &node.kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+        _ => return None,
+      };
+      attrs
+        .iter()
+        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+        .then_some(NodeId(idx))
+    })
+  }
+
+  #[test]
+  fn query_selector_and_get_element_by_id_ignore_inert_template_descendants() {
+    let root = crate::dom::parse_html(
+      "<!doctype html><html><body>\
+       <template><div id=inside></div></template>\
+       <div id=outside></div>\
+       </body></html>",
+    )
+    .unwrap();
+    let mut doc = Document::from_renderer_dom(&root);
+
+    assert_eq!(doc.query_selector("#inside", None).unwrap(), None);
+    assert_eq!(doc.get_element_by_id("inside"), None);
+
+    let outside_qs = doc.query_selector("#outside", None).unwrap();
+    let outside_id = doc.get_element_by_id("outside");
+    assert!(outside_qs.is_some(), "expected #outside to be query-selectable");
+    assert_eq!(outside_qs, outside_id);
+  }
+
+  #[test]
+  fn matches_selector_returns_false_for_elements_inside_inert_templates() {
+    let root = crate::dom::parse_html(
+      "<!doctype html><html><body>\
+       <template><div id=inside></div></template>\
+       </body></html>",
+    )
+    .unwrap();
+    let mut doc = Document::from_renderer_dom(&root);
+
+    let inside = find_node_by_id_attribute(&doc, "inside").expect("expected inside node in tree");
+    assert!(
+      doc.is_descendant_of_inert_template(inside),
+      "inside node should be inside inert template subtree"
+    );
+    assert!(
+      !doc.matches_selector(inside, "#inside").unwrap(),
+      "elements inside inert templates should not match selectors against the document tree"
+    );
+  }
+
+  #[test]
+  fn declarative_shadow_root_promotion_does_not_make_shadow_root_inert() {
+    // `parse_html` promotes the first `<template shadowroot=...>` child into a ShadowRoot node,
+    // leaving subsequent shadowroot templates as ordinary inert `<template>` elements.
+    let root = crate::dom::parse_html(
+      "<!doctype html><html><body>\
+       <div id=host>\
+         <template shadowroot=open><span id=shadow></span></template>\
+         <template shadowroot=open><span id=inert></span></template>\
+       </div>\
+       </body></html>",
+    )
+    .unwrap();
+    let doc = Document::from_renderer_dom(&root);
+
+    let shadow_root_id = doc.nodes().iter().enumerate().find_map(|(idx, node)| {
+      matches!(node.kind, NodeKind::ShadowRoot { .. }).then_some(NodeId(idx))
+    });
+    let shadow_root_id = shadow_root_id.expect("expected promoted ShadowRoot node");
+    assert!(
+      !doc.node(shadow_root_id).inert_subtree,
+      "promoted ShadowRoot nodes must not be inert"
+    );
+
+    let inert_template_id = doc.nodes().iter().enumerate().find_map(|(idx, node)| {
+      let NodeKind::Element { tag_name, attributes, .. } = &node.kind else {
+        return None;
+      };
+      if !tag_name.eq_ignore_ascii_case("template") {
+        return None;
+      }
+      attributes
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("shadowroot"))
+        .then_some(NodeId(idx))
+    });
+    let inert_template_id = inert_template_id.expect("expected remaining shadowroot template");
+    assert!(
+      doc.node(inert_template_id).inert_subtree,
+      "unpromoted <template shadowroot> siblings must remain inert"
+    );
+
+    let shadow_span = find_node_by_id_attribute(&doc, "shadow").expect("expected shadow span");
+    let inert_span = find_node_by_id_attribute(&doc, "inert").expect("expected inert span");
+    assert!(
+      !doc.is_descendant_of_inert_template(shadow_span),
+      "shadow root descendants must not be treated as template-inert"
+    );
+    assert!(
+      doc.is_descendant_of_inert_template(inert_span),
+      "unpromoted shadowroot template contents must remain inert"
+    );
   }
 }
