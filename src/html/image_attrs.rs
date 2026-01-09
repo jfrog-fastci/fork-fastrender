@@ -559,64 +559,133 @@ pub fn parse_sizes(attr: &str) -> Option<SizesList> {
   }
 
   fn split_media_and_length(entry: &str) -> (Option<&str>, &str) {
-    // `sizes` values are `<media-condition>? <length>`, where the `<length>` can itself contain
-    // whitespace (e.g. `calc(100vw - 20px)`) and commas (e.g. `clamp(10px, 20vw, 30px)`).
+    // `sizes` values are `<media-condition>? <source-size-value>`, where the `<source-size-value>`
+    // is the **last** component value in the entry per
+    // https://html.spec.whatwg.org/multipage/images.html#parse-a-sizes-attribute.
     //
-    // Split on the last *top-level* whitespace (outside any ()/[]/{}) so we don't tear apart
-    // calc/min/max/clamp expressions.
-    let mut paren_depth = 0i32;
-    let mut bracket_depth = 0i32;
-    let mut brace_depth = 0i32;
-    let mut in_string: Option<char> = None;
-    let mut last_ws: Option<usize> = None;
-    let mut chars = entry.char_indices().peekable();
-    while let Some((idx, ch)) = chars.next() {
-      if let Some(quote) = in_string {
-        if ch == '\\' {
-          // Skip escaped character.
-          let _ = chars.next();
-          continue;
-        }
-        if ch == quote {
-          in_string = None;
-        }
-        continue;
-      }
-
-      if ch == '\\' {
-        // Skip escaped character.
-        let _ = chars.next();
-        continue;
-      }
-
-      match ch {
-        '(' => paren_depth += 1,
-        ')' => paren_depth = (paren_depth - 1).max(0),
-        '[' => bracket_depth += 1,
-        ']' => bracket_depth = (bracket_depth - 1).max(0),
-        '{' => brace_depth += 1,
-        '}' => brace_depth = (brace_depth - 1).max(0),
-        '"' | '\'' => in_string = Some(ch),
-        ch
-          if ch.is_ascii_whitespace()
-            && paren_depth == 0
-            && bracket_depth == 0
-            && brace_depth == 0 =>
-        {
-          last_ws = Some(idx);
-        }
-        _ => {}
-      }
+    // Notably, browsers accept entries like `(max-width:600px)50vw` without whitespace between the
+    // media condition and length. Split by identifying the last component value, instead of
+    // requiring whitespace as a separator.
+    let entry = trim_ascii_whitespace(entry);
+    if entry.is_empty() {
+      return (None, entry);
     }
 
-    let Some(ws_idx) = last_ws else {
-      return (None, trim_ascii_whitespace(entry));
+    let bytes = entry.as_bytes();
+    let end = bytes.len();
+    let last = bytes[end - 1];
+
+    // Identify the start index of the last component value.
+    let mut start = if matches!(last, b')' | b']' | b'}') {
+      // Walk backwards to find the matching opener.
+      let mut depth_paren = 0i32;
+      let mut depth_bracket = 0i32;
+      let mut depth_brace = 0i32;
+      let mut in_string: Option<u8> = None;
+      let mut open_idx: Option<usize> = None;
+
+      let is_escaped = |idx: usize| -> bool {
+        // CSS escapes are forward-looking, so when scanning backwards we need to inspect the
+        // backslashes immediately preceding the quote.
+        let mut backslashes = 0usize;
+        let mut pos = idx;
+        while pos > 0 && bytes[pos - 1] == b'\\' {
+          backslashes += 1;
+          pos -= 1;
+        }
+        backslashes % 2 == 1
+      };
+
+      for idx in (0..end).rev() {
+        let b = bytes[idx];
+        if let Some(q) = in_string {
+          if b == q && !is_escaped(idx) {
+            in_string = None;
+          }
+          continue;
+        }
+        if matches!(b, b'"' | b'\'') && !is_escaped(idx) {
+          in_string = Some(b);
+          continue;
+        }
+
+        match b {
+          b')' => depth_paren += 1,
+          b'(' => {
+            if depth_paren > 0 {
+              depth_paren -= 1;
+              if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 && last == b')' {
+                open_idx = Some(idx);
+                break;
+              }
+            }
+          }
+          b']' => depth_bracket += 1,
+          b'[' => {
+            if depth_bracket > 0 {
+              depth_bracket -= 1;
+              if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 && last == b']' {
+                open_idx = Some(idx);
+                break;
+              }
+            }
+          }
+          b'}' => depth_brace += 1,
+          b'{' => {
+            if depth_brace > 0 {
+              depth_brace -= 1;
+              if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 && last == b'}' {
+                open_idx = Some(idx);
+                break;
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+
+      let mut start = open_idx.unwrap_or(0);
+
+      // If this is a CSS function token, include the function name (`calc(`, `min(`, etc.).
+      if last == b')' && start > 0 {
+        let mut func_start = start;
+        while func_start > 0 {
+          let b = bytes[func_start - 1];
+          if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_') {
+            func_start -= 1;
+          } else {
+            break;
+          }
+        }
+        if func_start < start {
+          start = func_start;
+        }
+      }
+
+      start
+    } else {
+      // A single token (`100vw`, `32px`, `0`, `auto`, ...). Walk backwards until a non-token
+      // character is encountered (e.g. `)` in `(max-width:600px)50vw`).
+      let mut start = end;
+      while start > 0 {
+        let b = bytes[start - 1];
+        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'%' | b'+' | b'-') {
+          start -= 1;
+        } else {
+          break;
+        }
+      }
+      start
     };
 
-    let (head, tail) = entry.split_at(ws_idx);
-    let media = trim_ascii_whitespace(head);
-    let length = trim_ascii_whitespace(tail);
+    // If parsing failed to find a distinct last component value, treat the whole entry as the
+    // length (which will likely be rejected by `parse_sizes_length`).
+    if start > end {
+      start = 0;
+    }
 
+    let media = trim_ascii_whitespace(&entry[..start]);
+    let length = trim_ascii_whitespace(&entry[start..]);
     if media.is_empty() {
       (None, length)
     } else {
@@ -1470,6 +1539,25 @@ mod tests {
     };
     assert_eq!(len.unit, LengthUnit::Calc);
     assert!(len.calc.is_some());
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
+  }
+
+  #[test]
+  fn parse_sizes_allows_omitted_whitespace_between_media_and_length() {
+    // HTML's sizes parser uses CSS component values and identifies the length as the *last*
+    // component value. This means whitespace between the media condition and the length is not
+    // required.
+    let parsed = parse_sizes("(max-width: 600px)50vw, 100vw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 2);
+    assert!(parsed.entries[0].media.is_some());
+    assert_eq!(
+      parsed.entries[0].length,
+      Length::new(50.0, LengthUnit::Vw).into()
+    );
+    assert!(parsed.entries[1].media.is_none());
     assert_eq!(
       parsed.entries[1].length,
       Length::new(100.0, LengthUnit::Vw).into()

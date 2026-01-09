@@ -643,6 +643,18 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
       } else {
         Some(BackgroundImage::Url(inner))
       }
+    } else if (image_token.starts_with('"') && image_token.ends_with('"'))
+      || (image_token.starts_with('\'') && image_token.ends_with('\''))
+    {
+      // `image-set()` accepts string URL literals in addition to `url(...)`.
+      let inner = image_token
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_string();
+      if trim_ascii_whitespace(&inner).is_empty() {
+        None
+      } else {
+        Some(BackgroundImage::Url(inner))
+      }
     } else {
       crate::css::properties::parse_property_value("background-image", image_token)
         .and_then(|prop| parse_background_image_value(&prop))
@@ -650,9 +662,42 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
     let Some(image) = image else { continue };
 
     let mut density = 1.0;
+    let mut mime_type: Option<String> = None;
+    let mut valid = true;
     for token in tokens.iter().skip(1) {
       if let Some(res) = parse_image_set_resolution(token) {
         density = res;
+        continue;
+      }
+      if starts_with_ignore_ascii_case(trim_ascii_whitespace(token), "type(")
+        && trim_ascii_whitespace(token).ends_with(')')
+      {
+        if mime_type.is_some() {
+          valid = false;
+          break;
+        }
+        let open = token.find('(').unwrap_or(0);
+        let inner = trim_ascii_whitespace(token.get(open + 1..token.len() - 1).unwrap_or(""))
+          .trim_matches(|c| c == '"' || c == '\'');
+        if inner.is_empty() {
+          valid = false;
+          break;
+        }
+        mime_type = Some(inner.to_string());
+        continue;
+      }
+
+      // Unknown per-candidate tokens are invalid.
+      valid = false;
+      break;
+    }
+
+    if !valid {
+      continue;
+    }
+    if let Some(mime) = mime_type.as_deref() {
+      if !crate::html::images::is_supported_image_mime(mime) {
+        continue;
       }
     }
     candidates.push((image, density));

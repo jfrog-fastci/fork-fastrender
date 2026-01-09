@@ -200,10 +200,18 @@ fn picture_source_matches(source: &PictureSource, ctx: ImageSelectionContext<'_>
   }
 
   match &source.media {
-    Some(queries) => ctx
-      .media_context
-      .map(|m| m.evaluate_list(queries))
-      .unwrap_or(true),
+    Some(queries) => {
+      if let Some(media_ctx) = ctx.media_context {
+        media_ctx.evaluate_list(queries)
+      } else if let Some(viewport) = ctx.viewport {
+        MediaContext::screen(viewport.width, viewport.height)
+          .with_device_pixel_ratio(ctx.device_pixel_ratio)
+          .with_env_overrides()
+          .evaluate_list(queries)
+      } else {
+        true
+      }
+    }
     None => true,
   }
 }

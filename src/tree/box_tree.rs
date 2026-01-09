@@ -642,27 +642,23 @@ impl SizesList {
     font_size: f32,
     root_font_size: f32,
   ) -> f32 {
-    let mut last_entry: Option<&SizesLength> = None;
+    // https://html.spec.whatwg.org/multipage/images.html#parse-a-sizes-attribute
+    //
+    // The HTML `sizes` attribute algorithm returns the first `<source-size>` entry whose
+    // `<media-condition>` evaluates to true. If no entry matches (including when all entries have
+    // media conditions that evaluate to false), the fallback is `100vw`.
     for entry in &self.entries {
-      last_entry = Some(&entry.length);
       let media_matches = entry
         .media
         .as_ref()
         .map(|q| media_ctx.evaluate_list(q))
         .unwrap_or(true);
-      if media_matches {
-        if let Some(resolved) = entry
-          .length
-          .resolve(viewport, font_size, root_font_size)
-          .filter(|v| v.is_finite())
-        {
-          return resolved.max(0.0);
-        }
+      if !media_matches {
+        continue;
       }
-    }
 
-    if let Some(len) = last_entry {
-      if let Some(resolved) = len
+      if let Some(resolved) = entry
+        .length
         .resolve(viewport, font_size, root_font_size)
         .filter(|v| v.is_finite())
       {
@@ -670,7 +666,7 @@ impl SizesList {
       }
     }
 
-    // Spec fallback: 100vw when all entries are missing/invalid.
+    // Spec fallback: 100vw when the list is empty or when all entries are invalid/non-matching.
     resolve_sizes_length_value(
       crate::style::values::Length::new(100.0, crate::style::values::LengthUnit::Vw),
       viewport,
@@ -1914,6 +1910,23 @@ mod tests {
 
     // 10rem should resolve against the root font size, not the element font size.
     assert_eq!(list.evaluate(&media_ctx, viewport, 10.0, 20.0), 200.0);
+  }
+
+  #[test]
+  fn sizes_list_falls_back_to_100vw_when_no_media_condition_matches() {
+    // https://html.spec.whatwg.org/multipage/images.html#parse-a-sizes-attribute
+    //
+    // If none of the entries' media conditions evaluate to true, the fallback is 100vw (viewport
+    // width).
+    let list = SizesList {
+      entries: vec![SizesEntry {
+        media: Some(MediaQuery::parse_list("(min-width: 1000px)").unwrap()),
+        length: Length::px(50.0).into(),
+      }],
+    };
+    let viewport = Size::new(400.0, 300.0);
+    let media_ctx = MediaContext::screen(viewport.width, viewport.height);
+    assert!((list.evaluate(&media_ctx, viewport, 16.0, 16.0) - viewport.width).abs() < 0.001);
   }
 
   #[test]

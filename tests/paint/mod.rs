@@ -55,6 +55,7 @@ mod form_control_overflow_clip_padding_box;
 mod fragmented_root_paint;
 mod individual_transform_properties_test;
 mod iframe_background_compositing;
+mod image_set_type_and_dpr_selection;
 mod intrinsic_srcset;
 mod list_marker_fidelity;
 mod marker_paint_order;

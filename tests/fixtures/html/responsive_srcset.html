@@ -5,20 +5,73 @@
       body {
         margin: 0;
       }
-      img {
+      .cell {
+        float: left;
+        width: 16px;
+        height: 16px;
+      }
+      .cell > * {
         display: block;
-        width: 32px;
-        height: 32px;
+        width: 16px;
+        height: 16px;
+      }
+      .cell img {
+        display: block;
+        width: 16px;
+        height: 16px;
       }
     </style>
   </head>
   <body>
-    <img
-      alt="responsive srcset test"
-      src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNoaGj4DwAFhAKAjM1mJgAAAABJRU5ErkJggg=="
-      srcset="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg== 1x, data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPj/HwADAgH/5ncLrgAAAABJRU5ErkJggg== 2x"
-      width="32"
-      height="32"
-    />
+    <!-- 1. Density descriptor selection -->
+    <div class="cell">
+      <img
+        alt="density srcset"
+        src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='gray'/></svg>"
+        srcset="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='red'/></svg> 1x,
+                data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='lime'/></svg> 2x"
+      />
+    </div>
+
+    <!-- 2. Width descriptor selection -->
+    <div class="cell">
+      <img
+        alt="width srcset"
+        src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='black'/></svg>"
+        srcset="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='blue'/></svg> 16w,
+                data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='yellow'/></svg> 32w"
+        sizes="16px"
+      />
+    </div>
+
+    <!-- 3. <picture> type() filtering + dpr selection -->
+    <div class="cell">
+      <picture style="display:block;width:16px;height:16px;">
+        <source
+          srcset="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='magenta'/></svg> 1x"
+          media="(min-width: 1px)"
+          type="image/unsupported"
+        />
+        <source
+          srcset="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='cyan'/></svg> 1x,
+                  data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='purple'/></svg> 2x"
+          media="(min-width: 1px)"
+          type="image/svg+xml"
+        />
+        <img
+          alt="picture fallback"
+          src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='orange'/></svg>"
+        />
+      </picture>
+    </div>
+
+    <!-- 4. Invalid srcset descriptors fall back to src -->
+    <div class="cell">
+      <img
+        alt="invalid srcset falls back"
+        src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='brown'/></svg>"
+        srcset="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='white'/></svg> 16w 1x"
+      />
+    </div>
   </body>
 </html>
