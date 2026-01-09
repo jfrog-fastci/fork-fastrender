@@ -5,7 +5,12 @@ use std::process::Command;
 #[test]
 fn browser_headless_smoke_mode_runs_and_reports_success() {
   let _lock = super::stage_listener_test_lock();
-  let output = Command::new(env!("CARGO_BIN_EXE_browser"))
+  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("scripts/run_limited.sh");
+  let output = Command::new("bash")
+    .arg(run_limited)
+    .args(["--as", "64G", "--"])
+    .arg(env!("CARGO_BIN_EXE_browser"))
     // Keep the smoke test cheap/deterministic even if the parent environment has a larger Rayon
     // pool configured.
     .env("RAYON_NUM_THREADS", "1")

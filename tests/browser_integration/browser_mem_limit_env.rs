@@ -3,7 +3,13 @@
 use std::process::{Command, ExitStatus};
 
 fn run_browser_with_mem_env(value: Option<&str>) -> (ExitStatus, String, String) {
-  let mut cmd = Command::new(env!("CARGO_BIN_EXE_browser"));
+  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("scripts/run_limited.sh");
+  let mut cmd = Command::new("bash");
+  cmd
+    .arg(run_limited)
+    .args(["--as", "64G", "--"])
+    .arg(env!("CARGO_BIN_EXE_browser"));
   match value {
     Some(value) => {
       cmd.env("FASTR_BROWSER_MEM_LIMIT_MB", value);
