@@ -1031,7 +1031,7 @@ impl App {
     };
 
     let Some(SelectItem::Option {
-      node_id: option_node_id,
+      node_id: option_dom_id,
       disabled,
       ..
     }) = control.items.get(clicked_item_idx)
@@ -1047,11 +1047,11 @@ impl App {
     }
 
     // Apply selection directly rather than synthesizing key events.
-    self.send_worker_msg(UiToWorker::SelectDropdownChoose {
+    self.send_worker_msg(UiToWorker::select_dropdown_choose(
       tab_id,
       select_node_id,
-      option_node_id: *option_node_id,
-    });
+      *option_dom_id,
+    ));
 
     self.close_select_dropdown();
     self.window.request_redraw();
