@@ -439,15 +439,38 @@ impl TransitionState {
       let mut names: HashSet<Arc<str>> = HashSet::new();
       names.extend(eligible.keys().cloned());
       names.extend(element.running.keys().cloned());
+      names.extend(element.completed.keys().cloned());
 
       for name_arc in names {
         let name = name_arc.as_ref();
+
+        // CSS Transitions 1 step 3: if `transition-property` changes such that it no longer matches
+        // a running or completed transition, the transition must be cancelled/removed.
+        let eligible_idx = eligible.get(&name_arc).copied();
+        if eligible_idx.is_none()
+          && (element.running.contains_key(&name_arc) || element.completed.contains_key(&name_arc))
+        {
+          element.running.remove(&name_arc);
+          element.completed.remove(&name_arc);
+          continue;
+        }
 
         let Some(after_value) = TransitionRecord::extract_value(after_style, name, &cmp_ctx) else {
           element.running.remove(&name_arc);
           element.completed.remove(&name_arc);
           continue;
         };
+
+        // CSS Transitions 1 step 2: if a completed transition's end value no longer matches the
+        // after-change style value, drop it.
+        let completed_matches_after = element
+          .completed
+          .get(&name_arc)
+          .and_then(|record| TransitionRecord::extract_value(&record.to_style, name, &cmp_ctx))
+          .is_some_and(|end| end == after_value);
+        if !completed_matches_after {
+          element.completed.remove(&name_arc);
+        }
 
         let existing = element.running.get(&name_arc).cloned();
 
@@ -584,6 +607,12 @@ impl TransitionState {
         let Some(idx) = eligible.get(&name_arc).copied() else {
           continue;
         };
+
+        // CSS Transitions 1 step 1: if a completed transition exists and already ended at the
+        // after-change style value, don't start a new transition.
+        if completed_matches_after {
+          continue;
+        }
 
         let Some(before_value) = TransitionRecord::extract_value(before_style, name, &cmp_ctx) else {
           continue;
@@ -746,15 +775,23 @@ mod tests {
   use crate::style::types::{TransitionBehavior, TransitionProperty, TransitionTimingFunction};
   use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 
-  fn make_opacity_style(opacity: f32) -> Arc<ComputedStyle> {
+  fn make_opacity_style_with_transition(opacity: f32, transition_properties: Arc<[TransitionProperty]>, duration_ms: f32) -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
     style.opacity = opacity;
-    style.transition_properties = Arc::from([TransitionProperty::Name("opacity".to_string())]);
-    style.transition_durations = Arc::from([1000.0]);
+    style.transition_properties = transition_properties;
+    style.transition_durations = Arc::from([duration_ms]);
     style.transition_delays = Arc::from([0.0]);
     style.transition_timing_functions = Arc::from([TransitionTimingFunction::Linear]);
     style.transition_behaviors = Arc::from([TransitionBehavior::Normal]);
     Arc::new(style)
+  }
+
+  fn make_opacity_style(opacity: f32) -> Arc<ComputedStyle> {
+    make_opacity_style_with_transition(
+      opacity,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+    )
   }
 
   fn make_visibility_style(visibility: Visibility, behavior: TransitionBehavior) -> Arc<ComputedStyle> {
@@ -864,5 +901,153 @@ mod tests {
       .map(|el| el.running.contains_key("visibility"))
       .unwrap_or(false);
     assert!(has_visibility, "expected visibility transition when allow-discrete is enabled");
+  }
+
+  #[test]
+  fn transition_state_moves_finished_transitions_to_completed() {
+    let before_tree = make_box_tree(make_opacity_style(0.0));
+    let after_tree = make_box_tree(make_opacity_style(1.0));
+    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let element0 = state0.elements.get(&key).expect("element state");
+    assert!(element0.running.contains_key("opacity"), "expected running transition");
+    assert!(
+      !element0.completed.contains_key("opacity"),
+      "expected no completed transition initially"
+    );
+
+    let state1 =
+      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 1200.0);
+    let element1 = state1.elements.get(&key).expect("element state");
+    assert!(
+      !element1.running.contains_key("opacity"),
+      "expected running transition to be cleared after completion"
+    );
+    assert!(
+      element1.completed.contains_key("opacity"),
+      "expected completed transition entry after completion"
+    );
+  }
+
+  #[test]
+  fn transition_state_removes_completed_when_transition_property_no_longer_matches() {
+    let before_tree = make_box_tree(make_opacity_style(0.0));
+    let after_tree = make_box_tree(make_opacity_style(1.0));
+    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state1 =
+      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 1200.0);
+
+    let none_style = make_opacity_style_with_transition(
+      1.0,
+      Arc::from([TransitionProperty::None]),
+      1000.0,
+    );
+    let none_tree = make_box_tree(none_style);
+    let state2 =
+      TransitionState::update_for_style_change(Some(&state1), Some(&after_tree), &none_tree, 1300.0);
+    assert!(
+      state2.elements.is_empty(),
+      "expected completed transition to be removed when transition-property is none"
+    );
+  }
+
+  #[test]
+  fn transition_state_starting_new_transition_clears_completed() {
+    let before_tree = make_box_tree(make_opacity_style(0.0));
+    let after_tree = make_box_tree(make_opacity_style(1.0));
+    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state1 =
+      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 1200.0);
+
+    let next_tree = make_box_tree(make_opacity_style(0.0));
+    let state2 =
+      TransitionState::update_for_style_change(Some(&state1), Some(&after_tree), &next_tree, 2000.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let element = state2.elements.get(&key).expect("element state");
+    assert!(
+      element.running.contains_key("opacity"),
+      "expected new running transition to start"
+    );
+    assert!(
+      !element.completed.contains_key("opacity"),
+      "expected completed entry to be removed when starting a new transition"
+    );
+  }
+
+  #[test]
+  fn transition_state_removes_completed_when_value_changes_but_no_transition_starts() {
+    let before_tree = make_box_tree(make_opacity_style(0.0));
+    let after_tree = make_box_tree(make_opacity_style(1.0));
+    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let state1 =
+      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 1200.0);
+
+    let duration_zero_style = make_opacity_style_with_transition(
+      0.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      0.0,
+    );
+    let duration_zero_tree = make_box_tree(duration_zero_style);
+    let state2 = TransitionState::update_for_style_change(
+      Some(&state1),
+      Some(&after_tree),
+      &duration_zero_tree,
+      2000.0,
+    );
+    assert!(
+      state2.elements.is_empty(),
+      "expected completed transition to be removed when after-change value differs and duration is zero"
+    );
+  }
+
+  #[test]
+  fn transition_state_completed_gate_prevents_restart_when_end_matches_after_value() {
+    let before_style = make_opacity_style(0.0);
+    let after_style = make_opacity_style(1.0);
+    let completed_record = TransitionRecord {
+      property: Arc::from("opacity"),
+      start_time_ms: 0.0,
+      delay_ms: 0.0,
+      duration_ms: 1000.0,
+      timing_function: TransitionTimingFunction::Linear,
+      transition_behavior: TransitionBehavior::Normal,
+      allow_discrete: false,
+      from_style: before_style.clone(),
+      to_style: after_style.clone(),
+      reversing_shortening_factor: 1.0,
+    };
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let mut prev_element = ElementTransitionState::default();
+    prev_element
+      .completed
+      .insert(Arc::from("opacity"), completed_record);
+    let mut prev_state = TransitionState::default();
+    prev_state.elements.insert(key, prev_element);
+
+    let before_tree = make_box_tree(before_style);
+    let after_tree = make_box_tree(after_style);
+    let next_state =
+      TransitionState::update_for_style_change(Some(&prev_state), Some(&before_tree), &after_tree, 0.0);
+    let element = next_state.elements.get(&key).expect("element state");
+    assert!(
+      element.running.get("opacity").is_none(),
+      "expected no new transition to start when a matching completed transition exists"
+    );
+    assert!(
+      element.completed.get("opacity").is_some(),
+      "expected completed transition to remain present"
+    );
   }
 }
