@@ -22,6 +22,7 @@ pub mod events;
 pub mod ecma_embed;
 pub mod event_loop;
 pub mod ecma_microtasks;
+pub mod host_document;
 pub mod html_scripting;
 pub mod orchestrator;
 pub mod script_blocking_stylesheets;
@@ -48,6 +49,7 @@ pub use ecma_embed::{
   HostFunction, ScriptBudgetOverride, ScriptError, ScriptRealm, ScriptRealmOptions,
   ScriptTerminationReason, ScriptValue, VmJsScriptRealm,
 };
+pub use host_document::{event_target_for_node, DocumentHostState};
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
   ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
