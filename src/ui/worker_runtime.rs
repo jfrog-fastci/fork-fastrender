@@ -448,11 +448,11 @@ impl BrowserWorkerRuntime {
     let (Some(dom), Some(prepared)) = (tab.dom.as_mut(), tab.prepared.as_ref()) else {
       return;
     };
-    let page_point = Point::new(pos_css.0 + tab.scroll.viewport.x, pos_css.1 + tab.scroll.viewport.y);
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
     let changed =
       tab
         .interaction
-        .pointer_down(dom, prepared.box_tree(), prepared.fragment_tree(), page_point);
+        .pointer_down(dom, prepared.box_tree(), prepared.fragment_tree(), &tab.scroll, viewport_point);
     if changed {
       tab.dirty = true;
     }
@@ -470,13 +470,14 @@ impl BrowserWorkerRuntime {
     let (Some(dom), Some(prepared)) = (tab.dom.as_mut(), tab.prepared.as_ref()) else {
       return;
     };
-    let page_point = Point::new(pos_css.0 + tab.scroll.viewport.x, pos_css.1 + tab.scroll.viewport.y);
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
 
     let (dom_changed, action) = tab.interaction.pointer_up(
       dom,
       prepared.box_tree(),
       prepared.fragment_tree(),
-      page_point,
+      &tab.scroll,
+      viewport_point,
       base_url,
     );
     if dom_changed {
