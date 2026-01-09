@@ -2703,6 +2703,139 @@ fn break_before_column_does_not_force_page_without_columns() {
 }
 
 #[test]
+fn print_pagination_respects_widows_and_orphans() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 30px; margin: 0; }
+          body { margin: 0; }
+          p { margin: 0; font-size: 10px; line-height: 10px; widows: 2; orphans: 2; }
+        </style>
+      </head>
+      <body>
+        <p>
+          L1<br>
+          L2<br>
+          L3<br>
+          L4<br>
+          L5<br>
+          L6<br>
+          L7
+        </p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    3,
+    "expected 7 lines at 3 lines/page to paginate into 3 pages"
+  );
+
+  let lines = ["L1", "L2", "L3", "L4", "L5", "L6", "L7"];
+  let mut seen = std::collections::HashSet::<&'static str>::new();
+
+  for (idx, page) in page_roots.iter().enumerate() {
+    let content = page.children.first().expect("page content");
+    let text = collected_text_compacted(content);
+    let count = lines.iter().filter(|line| text.contains(**line)).count();
+    assert!(
+      count >= 2,
+      "widows/orphans=2 should prevent 1-line pages when alternatives exist; page {} had {count} lines: {text}",
+      idx + 1
+    );
+    for line in lines {
+      if text.contains(line) {
+        assert!(seen.insert(line), "line {line} duplicated across pages");
+      }
+    }
+  }
+
+  assert_eq!(seen.len(), lines.len(), "some lines were missing from output");
+}
+
+#[test]
+fn print_pagination_respects_break_before_avoid_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 40px; margin: 0; }
+          body { margin: 0; font-size: 8px; line-height: 8px; }
+          div { height: 24px; }
+          p { margin: 0; }
+          #avoid { break-before: avoid-page; }
+        </style>
+      </head>
+      <body>
+        <div>Before</div>
+        <p id="avoid">C1<br>C2<br>C3<br>C4<br>C5</p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected avoid-page test content to paginate"
+  );
+  let first_content = page_roots[0].children.first().expect("page content");
+  let first_text = collected_text_compacted(first_content);
+  assert!(
+    first_text.contains("C1"),
+    "break-before: avoid-page should prefer breaking inside the following block when possible; page1 text={first_text}"
+  );
+}
+
+#[test]
+fn print_pagination_honors_forced_breaks_even_when_content_fits() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .container { break-inside: avoid; }
+          .block { height: 40px; }
+          #forced { break-before: page; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="block">Before</div>
+          <div id="forced" class="block">Forced</div>
+          <div class="block">After</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected forced break to create multiple pages even though content fits"
+  );
+
+  assert!(find_text(page_roots[0], "Before").is_some());
+  assert!(find_text(page_roots[0], "Forced").is_none());
+  assert!(find_text(page_roots[1], "Forced").is_some());
+}
+
+#[test]
 fn margin_box_without_content_is_not_generated() {
   let html = r#"
     <html>

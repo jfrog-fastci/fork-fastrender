@@ -233,32 +233,47 @@ fn collect_running_element_occurrences(
   let node_abs_block = axes.abs_block_start(&logical_bounds, abs_block_start, parent_block_size);
   let node_block_size = axes.block_size(&logical_bounds);
 
-  match &node.content {
-    FragmentContent::RunningAnchor { name, snapshot } => {
-      let mut cleaned = (**snapshot).clone();
-      clean_running_snapshot(&mut cleaned);
-      out.push(RunningElementEvent {
-        abs_block: node_abs_block,
-        name: name.to_string(),
-        snapshot: cleaned,
-      });
-    }
-    _ if node.content.is_block() || node.content.is_inline() || node.content.is_replaced() => {
-      if let Some(name) = node
-        .style
-        .as_deref()
-        .and_then(|style| style.running_position.as_ref())
-      {
-        let mut clone = node.clone();
-        clean_running_snapshot(&mut clone);
+  let contains_style = node
+    .style
+    .as_deref()
+    .is_some_and(|style| style.containment.style);
+  let in_style_containment = in_style_containment || contains_style;
+
+  if !in_style_containment {
+    match &node.content {
+      FragmentContent::RunningAnchor { name, snapshot } => {
+        let mut cleaned = (**snapshot).clone();
+        clean_running_snapshot(&mut cleaned);
         out.push(RunningElementEvent {
           abs_block: node_abs_block,
-          name: name.clone(),
-          snapshot: clone,
+          name: name.to_string(),
+          snapshot: cleaned,
         });
       }
+      _ if node.content.is_block() || node.content.is_inline() || node.content.is_replaced() => {
+        if let Some(name) = node
+          .style
+          .as_deref()
+          .and_then(|style| style.running_position.as_ref())
+        {
+          let mut clone = node.clone();
+          clean_running_snapshot(&mut clone);
+          out.push(RunningElementEvent {
+            abs_block: node_abs_block,
+            name: name.clone(),
+            snapshot: clone,
+          });
+        }
+      }
+      _ => {}
     }
-    _ => {}
+  }
+
+  if in_style_containment {
+    // `contain: style` establishes a style containment boundary. Running elements are a style-side
+    // effect (they feed into `element()` in @page margin boxes), so events from inside the
+    // contained subtree must not update the running element state visible to outer contexts.
+    return;
   }
 
   for child in node.children() {

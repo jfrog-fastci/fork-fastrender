@@ -16,10 +16,9 @@ use crate::layout::formatting_context::{
 use crate::layout::fragmentation::{
   apply_flex_parallel_flow_forced_break_shifts, apply_float_parallel_flow_forced_break_shifts,
   apply_grid_parallel_flow_forced_break_shifts,
-  clip_node, collect_atomic_ranges_with_axes, collect_forced_boundaries_for_pagination_with_axes,
-  collect_table_repetition_info_with_axes, normalize_atomic_ranges, normalize_fragment_margins,
-  parallel_flow_content_extent, propagate_fragment_metadata, AtomicRange, ForcedBoundary,
-  FragmentAxis, FragmentationContext, TableRepetitionInfo,
+  clip_node, collect_forced_boundaries_for_pagination_with_axes, normalize_fragment_margins,
+  parallel_flow_content_extent, propagate_fragment_metadata, ForcedBoundary, FragmentAxis,
+  FragmentationAnalyzer, FragmentationContext,
 };
 use crate::layout::running_elements::{running_elements_for_page, running_elements_for_page_fragment};
 use crate::layout::running_strings::{StringSetEvent, StringSetEventCollector};
@@ -65,13 +64,6 @@ impl Default for PaginateOptions {
 
 const EPSILON: f32 = 0.01;
 
-fn subtree_has_text(node: &FragmentNode) -> bool {
-  if matches!(node.content, FragmentContent::Text { .. }) {
-    return true;
-  }
-  node.children.iter().any(subtree_has_text)
-}
-
 fn html_and_body_box_ids(node: &FragmentNode) -> (Option<usize>, Option<usize>) {
   // Synthetic fragment trees (mostly unit tests) sometimes wrap the true root element in a
   // single-child viewport fragment without a `box_id`. In renderer-produced trees, the root
@@ -86,7 +78,11 @@ fn html_and_body_box_ids(node: &FragmentNode) -> (Option<usize>, Option<usize>) 
   (html_id, body_id)
 }
 
-fn subtree_has_in_flow_content(node: &FragmentNode, html_id: Option<usize>, body_id: Option<usize>) -> bool {
+fn subtree_has_in_flow_content(
+  node: &FragmentNode,
+  html_id: Option<usize>,
+  body_id: Option<usize>,
+) -> bool {
   // Running/footnote anchors capture paintable snapshots, but the anchors themselves don't paint
   // into the in-flow content stream.
   if matches!(
@@ -143,123 +139,6 @@ fn page_has_in_flow_content(page: &FragmentNode) -> bool {
 
   false
 }
-
-fn pos_is_inside_atomic(pos: f32, atomic: &[AtomicRange]) -> bool {
-  // Atomic ranges treat their endpoints as break-safe (see `atomic_containing` in
-  // `layout::fragmentation`). Treat near-equal comparisons as outside the interval so pagination can
-  // still place boundaries exactly at atomic endpoints.
-  atomic.iter().any(|range| {
-    pos > range.start + EPSILON && pos < range.end - EPSILON && range.end > range.start + EPSILON
-  })
-}
-
-fn best_in_flow_block_boundary(
-  node: &FragmentNode,
-  abs_start: f32,
-  axis: &FragmentAxis,
-  parent_block_size: f32,
-  start: f32,
-  end: f32,
-  atomic: &[AtomicRange],
-  default_style: &ComputedStyle,
-) -> Option<f32> {
-  const MIN_FRACTION_OF_NEXT_BLOCK_ON_PAGE: f32 = 0.5;
-
-  let node_block_size = axis.block_size(&node.bounds);
-  if node_block_size <= EPSILON {
-    return None;
-  }
-  let node_abs_end = abs_start + node_block_size;
-  if node_abs_end <= start + EPSILON || abs_start >= end - EPSILON {
-    return None;
-  }
-
-  let style = node
-    .style
-    .as_ref()
-    .map(|s| s.as_ref())
-    .unwrap_or(default_style);
-  if style.float.is_floating() {
-    return None;
-  }
-
-  let mut best: Option<f32> = None;
-  for idx in 0..node.children.len().saturating_sub(1) {
-    let child = &node.children[idx];
-    let next = &node.children[idx + 1];
-    if !child.content.is_block() || !next.content.is_block() {
-      continue;
-    }
-
-    let (_child_abs_start, child_abs_end) =
-      axis.flow_range(abs_start, parent_block_size, &child.bounds);
-    let (next_abs_start, next_abs_end) =
-      axis.flow_range(abs_start, parent_block_size, &next.bounds);
-
-    let mut boundary = child_abs_end;
-    if let Some(meta) = child.block_metadata.as_ref() {
-      let mut candidate = child_abs_end + meta.margin_bottom;
-      if candidate < child_abs_end {
-        candidate = child_abs_end;
-      }
-      candidate = candidate.min(next_abs_start);
-      boundary = candidate;
-    }
-
-    if boundary <= start + EPSILON || boundary > end + EPSILON {
-      continue;
-    }
-    if pos_is_inside_atomic(boundary, atomic) {
-      continue;
-    }
-
-    // Only apply this heuristic when the fragmentainer boundary would cut through the start of
-    // `next` (i.e., `next` would be partially visible on this page), and that partial portion is a
-    // small fraction of the block. This avoids forcing earlier breaks for "spacer" blocks where
-    // clipping is acceptable (e.g. an empty div used for vertical space).
-    if next_abs_start >= end - EPSILON || next_abs_end <= end + EPSILON {
-      continue;
-    }
-    let next_block_size = next_abs_end - next_abs_start;
-    if next_block_size <= EPSILON {
-      continue;
-    }
-    if next_block_size > (end - start) + EPSILON {
-      continue;
-    }
-    let fraction_on_page = ((end - next_abs_start).max(0.0) / next_block_size).min(1.0);
-    if fraction_on_page >= MIN_FRACTION_OF_NEXT_BLOCK_ON_PAGE {
-      continue;
-    }
-    if !subtree_has_text(next) {
-      continue;
-    }
-    best = Some(best.map_or(boundary, |prev| prev.max(boundary)));
-  }
-
-  for child in node.children.iter() {
-    let child_block_size = axis.block_size(&child.bounds);
-    if child_block_size <= EPSILON {
-      continue;
-    }
-    let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
-    if let Some(candidate) = best_in_flow_block_boundary(
-      child,
-      child_abs_start,
-      axis,
-      child_block_size,
-      start,
-      end,
-      atomic,
-      default_style,
-    ) {
-      best = Some(best.map_or(candidate, |prev| prev.max(candidate)));
-    }
-  }
-
-  best
-}
-
 fn opposite_page_side(side: PageSide) -> PageSide {
   match side {
     PageSide::Left => PageSide::Right,
@@ -284,13 +163,6 @@ fn required_page_side(boundaries: &[ForcedBoundary], pos: f32) -> Option<PageSid
     .iter()
     .find(|b| (b.position - pos).abs() < EPSILON)
     .and_then(|b| b.page_side)
-}
-
-fn next_forced_boundary(boundaries: &[ForcedBoundary], start: f32, limit: f32) -> Option<f32> {
-  boundaries
-    .iter()
-    .map(|b| b.position)
-    .find(|p| *p > start + EPSILON && *p < limit - EPSILON)
 }
 
 fn dedup_forced_boundaries(mut boundaries: Vec<ForcedBoundary>) -> Vec<ForcedBoundary> {
@@ -318,39 +190,6 @@ fn dedup_forced_boundaries(mut boundaries: Vec<ForcedBoundary>) -> Vec<ForcedBou
     deduped.push(boundary);
   }
   deduped
-}
-
-fn split_atomic_ranges_at_forced_boundaries(
-  atomic_ranges: &mut Vec<AtomicRange>,
-  boundaries: &[ForcedBoundary],
-) {
-  if atomic_ranges.is_empty() || boundaries.is_empty() {
-    return;
-  }
-
-  let mut points: Vec<f32> = boundaries.iter().map(|b| b.position).collect();
-  points.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-  points.dedup_by(|a, b| (*a - *b).abs() < EPSILON);
-
-  let mut split: Vec<AtomicRange> = Vec::with_capacity(atomic_ranges.len());
-  for range in atomic_ranges.iter().copied() {
-    let mut start = range.start;
-    for pos in points.iter().copied() {
-      if pos <= start + EPSILON || pos >= range.end - EPSILON {
-        continue;
-      }
-      split.push(AtomicRange { start, end: pos });
-      start = pos;
-    }
-    split.push(AtomicRange {
-      start,
-      end: range.end,
-    });
-  }
-
-  atomic_ranges.clear();
-  atomic_ranges.extend(split);
-  normalize_atomic_ranges(atomic_ranges);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -403,8 +242,6 @@ struct CachedLayout {
   root: FragmentNode,
   total_height: f32,
   forced_boundaries: Vec<ForcedBoundary>,
-  atomic_ranges: Vec<AtomicRange>,
-  table_repetitions: Vec<TableRepetitionInfo>,
   page_name_transitions: Vec<PageNameTransition>,
   box_axis_ranges: HashMap<usize, BoxAxisRange>,
   string_set_events: Vec<StringSetEvent>,
@@ -443,26 +280,7 @@ impl CachedLayout {
     );
     let page_name_transitions = collect_page_name_transitions(&root, &axis, fallback_page_name);
 
-    let mut forced = collect_forced_boundaries_for_pagination_with_axes(&root, 0.0, axes);
-    forced.extend(
-      page_name_transitions
-        .iter()
-        .skip(1)
-        .map(|transition| ForcedBoundary {
-          position: transition.position,
-          page_side: None,
-        }),
-    );
-    let mut atomic_ranges = Vec::new();
-    collect_atomic_ranges_with_axes(
-      &root,
-      0.0,
-      axes,
-      &mut atomic_ranges,
-      FragmentationContext::Page,
-      Some(style_block_size),
-    );
-    normalize_atomic_ranges(&mut atomic_ranges);
+    let forced = collect_forced_boundaries_for_pagination_with_axes(&root, 0.0, axes);
 
     let content_height = parallel_flow_content_extent(
       &root,
@@ -475,17 +293,7 @@ impl CachedLayout {
     } else {
       style_block_size
     };
-    forced.push(ForcedBoundary {
-      position: total_height,
-      page_side: None,
-    });
-    forced = dedup_forced_boundaries(forced);
-    // Forced breaks override `break-inside: avoid-*` semantics; ensure atomic ranges don't span
-    // over forced boundaries so pagination doesn't incorrectly skip mandated breaks.
-    split_atomic_ranges_at_forced_boundaries(&mut atomic_ranges, &forced);
-
-    let table_repetitions =
-      collect_table_repetition_info_with_axes(&root, axes, FragmentationContext::Page);
+    let forced = dedup_forced_boundaries(forced);
 
     let mut box_axis_ranges = HashMap::new();
     collect_box_axis_ranges(
@@ -506,12 +314,54 @@ impl CachedLayout {
       root,
       total_height,
       forced_boundaries: forced,
-      atomic_ranges,
-      table_repetitions,
       page_name_transitions,
       box_axis_ranges,
       string_set_events,
     }
+  }
+}
+
+#[derive(Debug)]
+struct PageBreakPlanner {
+  analyzer: FragmentationAnalyzer,
+}
+
+impl PageBreakPlanner {
+  fn new(layout: &CachedLayout, axes: FragmentAxes, fragmentainer_size_hint: f32) -> Self {
+    let mut analyzer = FragmentationAnalyzer::new(
+      &layout.root,
+      FragmentationContext::Page,
+      axes,
+      true,
+      Some(fragmentainer_size_hint),
+    );
+    analyzer.add_forced_break_positions(
+      layout
+        .page_name_transitions
+        .iter()
+        .skip(1)
+        .map(|transition| transition.position),
+    );
+    // The generic fragmentation path (`fragment_tree`) assumes fixed-size fragmentainers and uses a
+    // heuristic to avoid selecting between-sibling boundaries that land far before the limit (which
+    // would shift subsequent fragments). For the @page-aware paginator we can safely enable early
+    // sibling breaks when paginating along a non-default axis (e.g. vertical writing modes). For
+    // the common horizontal flow we keep the heuristic enabled to avoid creating short pages when
+    // only large empty gaps are available.
+    let allow_early = axes.block_axis() != PhysicalAxis::Y || !axes.block_positive();
+    analyzer.set_allow_early_sibling_breaks(allow_early);
+    Self { analyzer }
+  }
+
+  fn next_boundary(
+    &mut self,
+    start: f32,
+    fragmentainer_size: f32,
+    total_extent: f32,
+  ) -> Result<f32, LayoutError> {
+    self
+      .analyzer
+      .next_boundary(start, fragmentainer_size, total_extent)
   }
 }
 
@@ -743,6 +593,7 @@ pub fn paginate_fragment_tree(
   let style_hash = layout_style_fingerprint(root_style);
   let font_generation = font_ctx.font_generation();
   let mut layouts: HashMap<PageLayoutKey, CachedLayout> = HashMap::new();
+  let mut break_planners: HashMap<PageLayoutKey, PageBreakPlanner> = HashMap::new();
   let base_style_for_margins = Some(root_style.as_ref());
   let fallback_page_name = initial_page_name.as_deref();
   let string_set_collector = StringSetEventCollector::new(box_tree);
@@ -945,65 +796,16 @@ pub fn paginate_fragment_tree(
         page_style.content_size.height
       }
       .max(1.0);
-      let natural_end = (start + page_block).min(total_height);
-      let mut end_candidate = natural_end;
-      let mut forced_break = false;
-      if let Some(boundary) = next_forced_boundary(&layout.forced_boundaries, start, end_candidate)
-      {
-        end_candidate = boundary;
-        forced_break = true;
-      }
-
-      end_candidate =
-        adjust_for_atomic_ranges(start, end_candidate, &layout.atomic_ranges).min(total_height);
-
-      // When the fragmentainer limit would clip into the start of an in-flow block (e.g. showing
-      // the first line of the next heading at the bottom of the page), prefer breaking at the
-      // prior in-flow boundary instead. This approximates the standard fragmentation algorithm of
-      // filling the fragmentainer until the next sibling would overflow, without forcing earlier
-      // breaks for spacer-only blocks.
-      //
-      // Keep forced breaks and atomic-range adjustments authoritative: those are already producing
-      // a deliberate boundary choice.
-      if !forced_break
-        && (end_candidate - natural_end).abs() < EPSILON
-        && natural_end + EPSILON < total_height
-      {
-        let default_style = ComputedStyle::default();
-        if let Some(boundary) = best_in_flow_block_boundary(
-          &layout.root,
-          0.0,
-          &axis,
-          root_block_size,
-          start,
-          end_candidate,
-          &layout.atomic_ranges,
-          &default_style,
-        ) {
-          end_candidate = boundary;
-        }
-      }
-
-      if !forced_break {
-        let adjusted = adjust_end_for_table_repetition(
-          start,
-          end_candidate,
-          page_block,
-          &layout.table_repetitions,
-        )
+      let planner = break_planners
+        .entry(key)
+        .or_insert_with(|| PageBreakPlanner::new(layout, root_axes, page_block));
+      let mut end_candidate = planner
+        .next_boundary(start, page_block, total_height)?
         .min(total_height);
-        if adjusted < end_candidate - EPSILON {
-          end_candidate = adjust_for_atomic_ranges(start, adjusted, &layout.atomic_ranges).min(total_height);
-        }
-      }
-
       if end_candidate <= start + EPSILON {
-        end_candidate = adjust_for_atomic_ranges(
-          start,
-          (start + page_block).min(total_height),
-          &layout.atomic_ranges,
-        )
-        .min(total_height);
+        // Guard against degenerate boundary selection. Pagination must always make progress; fall
+        // back to the fragmentainer limit if the analyzer returns a non-advancing boundary.
+        end_candidate = (start + page_block).min(total_height);
         if end_candidate <= start + EPSILON {
           break;
         }
@@ -1039,15 +841,25 @@ pub fn paginate_fragment_tree(
           &axis,
         );
         let provisional_footnotes = collect_footnotes_for_page(&provisional, &axis);
-        let adjusted_end = adjust_end_for_footnotes(
-          start,
-          end_candidate,
-          page_block,
-          &provisional_footnotes,
-          &axis,
-        );
-        if adjusted_end > start + EPSILON {
-          end = adjusted_end;
+        let adjusted_end =
+          adjust_end_for_footnotes(start, end_candidate, page_block, &provisional_footnotes, &axis);
+        // Re-run boundary selection against the reduced main-flow block-size so widows/orphans and
+        // avoid/forced break hints are evaluated against the *effective* fragmentainer size (page
+        // content box minus reserved footnote area).
+        if adjusted_end > start + EPSILON && adjusted_end + EPSILON < end_candidate {
+          let effective_block = (adjusted_end - start).max(0.0);
+          if effective_block > EPSILON {
+            let selected = planner
+              .next_boundary(start, effective_block, total_height)?
+              .min(adjusted_end);
+            if selected > start + EPSILON {
+              end = selected;
+            } else {
+              end = adjusted_end;
+            }
+          } else {
+            end = adjusted_end;
+          }
         }
 
         // If the footnote adjustment did not change the break position, we can reuse the clipped
@@ -1328,109 +1140,6 @@ pub fn paginate_fragment_tree_with_options(
   );
 
   Ok(pages)
-}
-
-fn adjust_for_atomic_ranges(start: f32, mut end: f32, ranges: &[AtomicRange]) -> f32 {
-  const EPSILON: f32 = 0.01;
-
-  // If the fragment starts inside an atomic range, extend the end so we don't split it.
-  //
-  // Atomic range endpoints are break-safe (see `atomic_containing` in `fragmentation.rs`), so treat
-  // `start == range.start` as being "inside" for this extension logic.
-  if let Some(containing) = ranges.iter().copied().find(|range| {
-    start >= range.start - EPSILON && start < range.end - EPSILON && range.end > range.start
-  }) {
-    if end < containing.end - EPSILON {
-      return containing.end;
-    }
-  }
-
-  // Only adjust when the chosen fragmentainer boundary would *split* an atomic range. Atomic
-  // ranges that are fully contained within `[start, end]` are already safe to paginate over, and
-  // shrinking `end` to their start would create empty pages when the first atomic content begins
-  // after `start` (e.g. a table preceded by default body margins).
-  if let Some(containing_end) = ranges
-    .iter()
-    .copied()
-    .filter(|range| {
-      end > range.start + EPSILON && end < range.end - EPSILON && range.end > range.start
-    })
-    .min_by(|a, b| {
-      a.start
-        .partial_cmp(&b.start)
-        .unwrap_or(std::cmp::Ordering::Equal)
-    })
-  {
-    if containing_end.start <= start + EPSILON {
-      end = end.max(containing_end.end);
-    } else {
-      end = end.min(containing_end.start);
-    }
-  }
-
-  end
-}
-
-fn table_header_overhead_at(tables: &[TableRepetitionInfo], pos: f32) -> f32 {
-  tables
-    .iter()
-    .filter(|info| {
-      info.header_block_size > EPSILON
-        && pos > info.start + EPSILON
-        && pos < info.end - EPSILON
-    })
-    .map(|info| info.header_block_size)
-    .sum()
-}
-
-fn innermost_footer_table_at<'a>(
-  tables: &'a [TableRepetitionInfo],
-  pos: f32,
-) -> Option<&'a TableRepetitionInfo> {
-  tables
-    .iter()
-    .filter(|info| {
-      info.footer_block_size > EPSILON
-        && pos > info.start + EPSILON
-        && pos < info.end - EPSILON
-    })
-    .max_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(Ordering::Equal))
-}
-
-fn adjust_end_for_table_repetition(
-  start: f32,
-  end_candidate: f32,
-  fragmentainer_size: f32,
-  tables: &[TableRepetitionInfo],
-) -> f32 {
-  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
-    return end_candidate;
-  }
-
-  let header_overhead =
-    table_header_overhead_at(tables, start).min((fragmentainer_size - EPSILON).max(0.0));
-  let max_without_footer = (fragmentainer_size - header_overhead).max(EPSILON);
-  let mut end = end_candidate.min(start + max_without_footer);
-
-  // Clamping the page end to account for repeated headers may move the boundary *into* a table, in
-  // which case we also need to reserve space for a repeated footer. Re-evaluate the footer table
-  // after applying the header clamp.
-  if let Some(table) = innermost_footer_table_at(tables, end) {
-    let footer_overhead = table
-      .footer_block_size
-      .min((fragmentainer_size - header_overhead - EPSILON).max(0.0));
-    if footer_overhead > EPSILON {
-      let max_with_footer = (fragmentainer_size - header_overhead - footer_overhead).max(EPSILON);
-      if start + max_with_footer <= table.start + EPSILON {
-        // Not enough space to include any of the table while reserving the repeated footer. Break
-        // before the table instead so preceding content can still fill the page.
-        return table.start.min(start + max_without_footer).min(end_candidate);
-      }
-      end = end.min(start + max_with_footer);
-    }
-  }
-
-  end
 }
 
 #[derive(Debug, Clone)]

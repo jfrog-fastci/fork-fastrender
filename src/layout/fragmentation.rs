@@ -822,6 +822,7 @@ pub struct FragmentationAnalyzer {
   _axis: FragmentAxis,
   context: FragmentationContext,
   enforce_fragmentainer_size: bool,
+  allow_early_sibling_breaks: bool,
   opportunities: Vec<BreakOpportunity>,
   line_containers: Vec<LineContainer>,
   line_starts: Vec<usize>,
@@ -1090,7 +1091,104 @@ impl FragmentationAnalyzer {
       content_extent,
       deadline_counter: 0,
       enforce_fragmentainer_size,
+      allow_early_sibling_breaks: false,
     }
+  }
+
+  /// When enabled, pagination will honour between-sibling break opportunities even when they fall
+  /// noticeably before the fragmentainer limit.
+  ///
+  /// The default behaviour (disabled) prefers the fragmentainer limit for such early sibling
+  /// boundaries to avoid perturbing the flow→fragment coordinate mapping used by the generic
+  /// `fragment_tree` pagination path. Consumers that perform their own coordinate mapping (e.g.
+  /// `layout::pagination` for @page-aware pagination) should enable this so the break selection
+  /// matches the CSS Break "find a break before the overflowing sibling" behaviour.
+  pub fn set_allow_early_sibling_breaks(&mut self, allow: bool) {
+    self.allow_early_sibling_breaks = allow;
+  }
+
+  /// Adds additional forced break positions.
+  ///
+  /// This is useful for pagination consumers that need to introduce mandatory boundaries that are
+  /// not expressed via `break-before/after` (e.g. CSS Paged Media named-page transitions).
+  pub fn add_forced_break_positions<I>(&mut self, positions: I)
+  where
+    I: IntoIterator<Item = f32>,
+  {
+    let added: Vec<f32> = positions
+      .into_iter()
+      .filter(|p| p.is_finite())
+      .collect();
+    if added.is_empty() {
+      return;
+    }
+
+    for pos in &added {
+      self.opportunities.push(BreakOpportunity {
+        pos: *pos,
+        strength: BreakStrength::Forced,
+        kind: BreakKind::BetweenSiblings,
+      });
+    }
+
+    self.opportunities.sort_by(|a, b| {
+      a.pos
+        .partial_cmp(&b.pos)
+        .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    self.opportunities.dedup_by(|a, b| {
+      (a.pos - b.pos).abs() < BREAK_EPSILON && a.kind == b.kind && a.strength == b.strength
+    });
+
+    // Atomic ranges are derived from the candidate set per fragmentainer size and will be split at
+    // these forced opportunities by `atomic_ranges_for(..)`.
+  }
+
+  /// Updates internal line-container state as if all breaks up to `start` have already been
+  /// consumed.
+  pub fn seek(&mut self, start: f32) {
+    for container in &self.line_containers {
+      if let Some(slot) = self.line_starts.get_mut(container.id) {
+        let advanced = container
+          .line_ends
+          .partition_point(|end| *end <= start + BREAK_EPSILON);
+        *slot = advanced.min(container.line_ends.len());
+      }
+    }
+  }
+
+  /// Selects the next fragmentation boundary starting at `start`.
+  ///
+  /// The returned boundary is expressed in the same block-axis coordinate system as the collected
+  /// break opportunities.
+  pub fn next_boundary(
+    &mut self,
+    start: f32,
+    fragmentainer_size: f32,
+    total_extent: f32,
+  ) -> Result<f32, LayoutError> {
+    if self.deadline_counter % 8 == 0 {
+      check_layout_deadline()?;
+    }
+    self.deadline_counter = self.deadline_counter.wrapping_add(1);
+
+    let effective_total = total_extent.max(self.content_extent);
+    if fragmentainer_size <= 0.0 {
+      self.seek(start);
+      return Ok(effective_total);
+    }
+
+    self.seek(start);
+    let mut cursor = self
+      .opportunities
+      .partition_point(|o| o.pos <= start + BREAK_EPSILON);
+    Ok(self.select_next_boundary(
+      start,
+      fragmentainer_size,
+      effective_total,
+      &mut cursor,
+      &self.atomic_ranges_for(fragmentainer_size),
+    ))
   }
 
   pub fn content_extent(&self) -> f32 {
@@ -1297,7 +1395,7 @@ impl FragmentationAnalyzer {
     opportunity_cursor: &mut usize,
     atomic: &[AtomicRange],
   ) -> f32 {
-    if let Some(range) = atomic_containing(start, atomic) {
+    if let Some(range) = atomic_containing_for_fragmentainer(start, fragmentainer, atomic) {
       let boundary = range.end.min(total_extent);
       self.advance_line_starts(boundary);
       return boundary;
@@ -1362,7 +1460,7 @@ impl FragmentationAnalyzer {
     // Avoid selecting a boundary that lands inside an atomic range. If the natural fragmentainer
     // limit would split an atomic range, clamp to the atomic start so the next fragment starts
     // before the atomic content.
-    if let Some(range) = atomic_containing(limit, atomic) {
+    if let Some(range) = atomic_containing_for_fragmentainer(limit, fragmentainer, atomic) {
       if range.start > start + BREAK_EPSILON {
         limit = limit.min(range.start);
       } else {
@@ -1384,7 +1482,9 @@ impl FragmentationAnalyzer {
     let window_end = window_end.min(ops.len());
     let window = *opportunity_cursor..window_end;
 
-    if let Some(pos) = self.forced_in_window(start, limit, total_extent, window.clone(), atomic) {
+    if let Some(pos) =
+      self.forced_in_window(start, limit, total_extent, window.clone(), fragmentainer, atomic)
+    {
       self.advance_line_starts(pos);
       return pos;
     }
@@ -1397,7 +1497,7 @@ impl FragmentationAnalyzer {
       if opportunity.pos > limit + BREAK_EPSILON {
         break;
       }
-      if pos_is_inside_atomic(opportunity.pos, atomic) {
+      if pos_is_inside_atomic_for_fragmentainer(opportunity.pos, fragmentainer, atomic) {
         continue;
       }
       if matches!(opportunity.strength, BreakStrength::Forced) {
@@ -1444,7 +1544,10 @@ impl FragmentationAnalyzer {
       // because fragment stacking assumes fixed-size fragmentainers (`fragmentainer_size +
       // fragmentainer_gap`). Prefer the natural fragmentainer limit unless the sibling boundary is
       // effectively at the limit.
-      if kind_rank == 0 && matches!(self.context, FragmentationContext::Page) {
+      if kind_rank == 0
+        && matches!(self.context, FragmentationContext::Page)
+        && !self.allow_early_sibling_breaks
+      {
         // Allow a small amount of slack for sibling boundaries near the limit: the closer the
         // boundary is, the less it perturbs the flow→fragment mapping. Cap the slack so huge pages
         // do not accept large shifts.
@@ -1467,7 +1570,10 @@ impl FragmentationAnalyzer {
       // hard fragmentainer size.
       if let Some(next) = self.opportunities[window_end..]
         .iter()
-        .find(|o| o.pos > limit + BREAK_EPSILON && !pos_is_inside_atomic(o.pos, atomic))
+        .find(|o| {
+          o.pos > limit + BREAK_EPSILON
+            && !pos_is_inside_atomic_for_fragmentainer(o.pos, fragmentainer, atomic)
+        })
       {
         let clamped = next.pos.min(total_extent);
         self.advance_line_starts(clamped);
@@ -1476,7 +1582,9 @@ impl FragmentationAnalyzer {
     }
 
     let mut fallback = limit;
-    if let Some(near_line) = self.near_line_boundary(start, limit, window.clone(), atomic) {
+    if let Some(near_line) =
+      self.near_line_boundary(start, limit, window.clone(), fragmentainer, atomic)
+    {
       fallback = near_line;
     }
 
@@ -1495,6 +1603,7 @@ impl FragmentationAnalyzer {
     limit: f32,
     total_extent: f32,
     window: std::ops::Range<usize>,
+    fragmentainer: f32,
     atomic: &[AtomicRange],
   ) -> Option<f32> {
     let forced = self.opportunities[window]
@@ -1503,7 +1612,7 @@ impl FragmentationAnalyzer {
         matches!(o.strength, BreakStrength::Forced)
           && o.pos > start + BREAK_EPSILON
           && o.pos <= limit + BREAK_EPSILON
-          && !pos_is_inside_atomic(o.pos, atomic)
+          && !pos_is_inside_atomic_for_fragmentainer(o.pos, fragmentainer, atomic)
       })
       .map(|o| o.pos.min(total_extent));
     if forced.is_some() {
@@ -1525,6 +1634,7 @@ impl FragmentationAnalyzer {
     start: f32,
     limit: f32,
     window: std::ops::Range<usize>,
+    fragmentainer: f32,
     atomic: &[AtomicRange],
   ) -> Option<f32> {
     self.opportunities[window].iter().find_map(|o| {
@@ -1534,7 +1644,7 @@ impl FragmentationAnalyzer {
       if o.pos - limit > LINE_FALLBACK_EPSILON {
         return None;
       }
-      if pos_is_inside_atomic(o.pos, atomic) {
+      if pos_is_inside_atomic_for_fragmentainer(o.pos, fragmentainer, atomic) {
         return None;
       }
       match o.kind {
@@ -3572,8 +3682,24 @@ fn constraint_key_for(
   }
 }
 
-fn pos_is_inside_atomic(pos: f32, atomic: &[AtomicRange]) -> bool {
-  atomic_containing(pos, atomic).is_some()
+fn atomic_containing_for_fragmentainer(
+  pos: f32,
+  fragmentainer: f32,
+  atomic: &[AtomicRange],
+) -> Option<AtomicRange> {
+  let range = atomic_containing(pos, atomic)?;
+  if fragmentainer <= 0.0 {
+    return None;
+  }
+  let size = range.end - range.start;
+  if size > fragmentainer + BREAK_EPSILON {
+    return None;
+  }
+  Some(range)
+}
+
+fn pos_is_inside_atomic_for_fragmentainer(pos: f32, fragmentainer: f32, atomic: &[AtomicRange]) -> bool {
+  atomic_containing_for_fragmentainer(pos, fragmentainer, atomic).is_some()
 }
 
 fn atomic_containing(pos: f32, atomic: &[AtomicRange]) -> Option<AtomicRange> {
