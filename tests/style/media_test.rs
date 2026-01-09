@@ -18,6 +18,9 @@ use fastrender::style::media::MediaType;
 use fastrender::style::media::PointerCapability;
 use fastrender::style::media::Scripting;
 use fastrender::style::media::UpdateFrequency;
+use fastrender::FastRender;
+use fastrender::FastRenderConfig;
+use fastrender::FragmentContent;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -27,6 +30,15 @@ fn with_test_toggles<T>(pairs: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
     .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
     .collect::<HashMap<_, _>>();
   with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(raw)), f)
+}
+
+fn collect_text(fragment: &fastrender::FragmentNode, texts: &mut Vec<String>) {
+  if let FragmentContent::Text { text, .. } = &fragment.content {
+    texts.push(text.to_string());
+  }
+  for child in fragment.children.iter() {
+    collect_text(child, texts);
+  }
 }
 
 #[test]
@@ -822,6 +834,63 @@ fn pointer_and_hover_reject_invalid_values() {
 // ============================================================================
 // Media Queries Level 5 additions
 // ============================================================================
+
+#[test]
+fn fastrender_default_config_reports_scripting_none() {
+  let html = r#"
+    <style>
+      #mq-none, #mq-enabled { display: none; }
+      @media (scripting: none) { #mq-none { display: block; } }
+      @media (scripting: enabled) { #mq-enabled { display: block; } }
+    </style>
+    <div id="mq-none">mq-none</div>
+    <div id="mq-enabled">mq-enabled</div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer.layout_document(&dom, 200, 100).expect("layout");
+  let mut texts = Vec::new();
+  collect_text(&tree.root, &mut texts);
+
+  assert!(
+    texts.iter().any(|t| t.contains("mq-none")),
+    "expected (scripting: none) to match by default; got texts: {texts:?}"
+  );
+  assert!(
+    !texts.iter().any(|t| t.contains("mq-enabled")),
+    "expected (scripting: enabled) to not match by default; got texts: {texts:?}"
+  );
+}
+
+#[test]
+fn fastrender_scripting_enabled_config_reports_scripting_enabled() {
+  let html = r#"
+    <style>
+      #mq-none, #mq-enabled { display: none; }
+      @media (scripting: none) { #mq-none { display: block; } }
+      @media (scripting: enabled) { #mq-enabled { display: block; } }
+    </style>
+    <div id="mq-none">mq-none</div>
+    <div id="mq-enabled">mq-enabled</div>
+  "#;
+
+  let mut renderer = FastRender::with_config(FastRenderConfig::new().with_dom_scripting_enabled(true))
+    .expect("renderer");
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer.layout_document(&dom, 200, 100).expect("layout");
+  let mut texts = Vec::new();
+  collect_text(&tree.root, &mut texts);
+
+  assert!(
+    texts.iter().any(|t| t.contains("mq-enabled")),
+    "expected (scripting: enabled) to match when scripting is enabled; got texts: {texts:?}"
+  );
+  assert!(
+    !texts.iter().any(|t| t.contains("mq-none")),
+    "expected (scripting: none) to not match when scripting is enabled; got texts: {texts:?}"
+  );
+}
 
 #[test]
 fn media_level5_features_evaluate() {

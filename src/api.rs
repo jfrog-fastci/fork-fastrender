@@ -159,8 +159,7 @@ use crate::style::cascade::ContainerQueryInfo;
 use crate::style::cascade::PreparedCascade;
 use crate::style::cascade::StyledNode;
 use crate::style::color::Rgba;
-use crate::style::media::MediaType;
-use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache};
+use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType, Scripting};
 use crate::style::page::resolve_page_style;
 use crate::style::page::PageSide;
 use crate::style::style_set::StyleSet;
@@ -545,7 +544,8 @@ pub struct FastRender {
   /// Whether HTML parsing should use "scripting enabled" semantics (e.g. `<noscript>` handling).
   ///
   /// Note: This does not execute scripts; it only affects HTML parsing and downstream render
-  /// semantics for elements like `<noscript>`.
+  /// semantics for elements like `<noscript>`. This value is also used as the default for Media
+  /// Queries Level 5 `(scripting: ...)` evaluation unless overridden by runtime toggles.
   dom_scripting_enabled: bool,
 
   /// Manual fragmentation options when no `@page` rules are present.
@@ -656,6 +656,9 @@ pub struct FastRenderConfig {
   /// This maps to `html5ever::tree_builder::TreeBuilderOpts::scripting_enabled`, but FastRender
   /// still does not execute scripts. When enabled, `<noscript>` fallback content is suppressed
   /// to match JS-enabled browser parsing behavior.
+  ///
+  /// This also sets the default value of the Media Queries Level 5 `(scripting: ...)` media
+  /// feature during rendering. Runtime toggles (e.g. `FASTR_SCRIPTING`) take precedence.
   pub dom_scripting_enabled: bool,
 
   /// Whether to honor `<meta name="viewport">` when computing the layout viewport.
@@ -885,6 +888,9 @@ impl FastRenderBuilder {
   }
 
   /// Enables or disables JS-enabled HTML parsing semantics (e.g. `<noscript>` handling).
+  ///
+  /// This also controls the default value of the Media Queries Level 5 `(scripting: ...)` media
+  /// feature during rendering. Runtime toggles (e.g. `FASTR_SCRIPTING`) take precedence.
   pub fn dom_scripting_enabled(mut self, enabled: bool) -> Self {
     self.config.dom_scripting_enabled = enabled;
     self
@@ -5301,7 +5307,7 @@ impl FastRender {
   fn box_generation_options(&self) -> BoxGenerationOptions {
     BoxGenerationOptions::default()
       .with_compat_profile(self.compat_profile)
-      .with_dom_scripting_enabled(self.dom_scripting_enabled)
+      .with_dom_scripting_enabled(self.dom_scripting_enabled())
   }
 
   fn from_parts(
@@ -8676,7 +8682,7 @@ impl FastRender {
     dom::parse_html_with_options(
       html,
       DomParseOptions {
-        scripting_enabled: self.dom_scripting_enabled,
+        scripting_enabled: self.dom_scripting_enabled(),
         compatibility_mode: self.dom_compat_mode,
         ..Default::default()
       },
@@ -8690,14 +8696,14 @@ impl FastRender {
   ///
   /// Notes:
   /// - Script execution is not performed; `<script>` boundaries are ignored and parsing continues.
-  /// - Scripting semantics (affecting `<noscript>` parsing) follow this renderer's
-  ///   `dom_scripting_enabled` configuration. For direct control, use
+  /// - Scripting semantics (affecting `<noscript>` parsing) follow this renderer's configuration
+  ///   and runtime overrides (e.g. `FASTR_SCRIPTING`). For direct control, use
   ///   [`crate::dom2::parse_html_with_options`].
   pub fn parse_html_dom2(&self, html: &str) -> Result<crate::dom2::Document> {
     crate::dom2::parse_html_with_options(
       html,
       DomParseOptions {
-        scripting_enabled: self.dom_scripting_enabled,
+        scripting_enabled: self.dom_scripting_enabled(),
         compatibility_mode: self.dom_compat_mode,
         ..Default::default()
       },
@@ -9935,6 +9941,7 @@ impl FastRender {
       }
       .with_device_size(device_size.width, device_size.height)
       .with_device_pixel_ratio(resolved_viewport.device_pixel_ratio)
+      .with_scripting(self.effective_scripting())
       .with_env_overrides();
       let mut media_query_cache = MediaQueryCache::default();
       record_stage(StageHeartbeat::CssInline);
@@ -10602,6 +10609,7 @@ impl FastRender {
     }
     .with_device_size(device_size.width, device_size.height)
     .with_device_pixel_ratio(self.device_pixel_ratio)
+    .with_scripting(self.effective_scripting())
     .with_env_overrides();
 
     let _image_probe_prefetch =
@@ -12320,6 +12328,26 @@ impl FastRender {
     self.background_color = color;
   }
 
+  fn effective_scripting(&self) -> Scripting {
+    let configured = if self.dom_scripting_enabled {
+      Scripting::Enabled
+    } else {
+      Scripting::None
+    };
+
+    // Runtime toggles (typically sourced from `FASTR_*` env vars or per-render overrides) take
+    // precedence so developers can simulate different environments without rebuilding.
+    runtime::runtime_toggles()
+      .config()
+      .media
+      .scripting
+      .unwrap_or(configured)
+  }
+
+  fn dom_scripting_enabled(&self) -> bool {
+    !matches!(self.effective_scripting(), Scripting::None)
+  }
+
   fn media_context_for_media(
     &self,
     media_type: MediaType,
@@ -12332,6 +12360,7 @@ impl FastRender {
     };
 
     base
+      .with_scripting(self.effective_scripting())
       .with_device_pixel_ratio(self.device_pixel_ratio)
       .with_env_overrides()
   }

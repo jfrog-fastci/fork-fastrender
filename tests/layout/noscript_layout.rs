@@ -37,3 +37,33 @@ fn noscript_content_is_rendered_when_scripting_disabled() {
     "expected normal text"
   );
 }
+
+#[test]
+fn noscript_and_scripting_media_queries_are_consistent() {
+  // When FastRender parses HTML with scripting disabled, <noscript> should be parsed/rendered AND
+  // MQ5 `(scripting: none)` should match so authors can style those fallbacks.
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          #noscript-only { display: none; }
+          @media (scripting: none) { #noscript-only { display: block; } }
+        </style>
+      </head>
+      <body>
+        <noscript><div id="noscript-only">noscript mq text</div></noscript>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer.layout_document(&dom, 200, 100).expect("layout");
+  let mut texts = Vec::new();
+  collect_text(&tree.root, &mut texts);
+
+  assert!(
+    texts.iter().any(|t| t.contains("noscript mq text")),
+    "expected <noscript> fallback styled by (scripting: none); got texts: {texts:?}"
+  );
+}
