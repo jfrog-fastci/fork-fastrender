@@ -30,6 +30,9 @@ fn describe_message(msg: &WorkerToUi) -> String {
     WorkerToUi::OpenSelectDropdown { select_node_id, .. } => {
       format!("OpenSelectDropdown(select_node_id={select_node_id})")
     }
+    WorkerToUi::SelectDropdownOpened { select_node_id, .. } => {
+      format!("SelectDropdownOpened(select_node_id={select_node_id})")
+    }
     WorkerToUi::LoadingState { loading, .. } => format!("LoadingState({loading})"),
     WorkerToUi::DebugLog { line, .. } => format!("DebugLog({})", line.trim_end()),
   }
@@ -95,6 +98,7 @@ fn handle_worker_message(tab: &mut BrowserTabState, ui_tx: &Sender<UiToWorker>, 
       tab.clear_scroll_restore();
     }
     WorkerToUi::OpenSelectDropdown { .. }
+    | WorkerToUi::SelectDropdownOpened { .. }
     | WorkerToUi::Stage { .. }
     | WorkerToUi::LoadingState { .. }
     | WorkerToUi::DebugLog { .. } => {}

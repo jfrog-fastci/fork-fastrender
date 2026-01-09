@@ -493,6 +493,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll_state;
         let base_url = tab.effective_base_url().unwrap_or("").to_string();
+        let document_url = tab.current_url.clone().unwrap_or_default();
         let engine = &mut tab.interaction;
         let Some(doc) = tab.document.as_mut() else {
           continue;
