@@ -4410,6 +4410,14 @@ pub fn apply_animated_properties(
   }
 }
 
+fn apply_animated_properties_ordered(style: &mut ComputedStyle, values: &[(String, AnimatedValue)]) {
+  for (name, value) in values {
+    if let Some(interpolator) = interpolator_for(name) {
+      (interpolator.apply)(style, value);
+    }
+  }
+}
+
 fn apply_animated_properties_with_composition(
   style: &mut ComputedStyle,
   values: &HashMap<String, AnimatedValue>,
@@ -6783,8 +6791,117 @@ pub fn apply_scroll_driven_animations(tree: &mut FragmentTree, scroll_state: &Sc
   apply_animations(tree, scroll_state, None);
 }
 
-fn interpolated_transition_names() -> impl Iterator<Item = &'static str> {
-  property_interpolators().iter().map(|p| p.name)
+/// Returns the set of *longhand* property names that can participate in CSS transitions.
+///
+/// CSS Transitions Level 2 defines transitions in terms of an "expanded transition property name",
+/// which is always a longhand property (or custom property). This means shorthands must be
+/// expanded before generating transition effects.
+fn transition_longhand_names() -> &'static [&'static str] {
+  static NAMES: &[&str] = &[
+    "opacity",
+    "visibility",
+    "color",
+    "background-color",
+    "transform",
+    "translate",
+    "rotate",
+    "scale",
+    "filter",
+    "backdrop-filter",
+    "clip-path",
+    "clip",
+    "transform-origin",
+    "perspective-origin",
+    "background-position",
+    "mask-position",
+    "background-size",
+    "mask-size",
+    "box-shadow",
+    "text-shadow",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+    "outline-color",
+    "outline-style",
+    "outline-width",
+    "outline-offset",
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-left-radius",
+    "border-bottom-right-radius",
+  ];
+  NAMES
+}
+
+/// Expands a `transition-property` entry into the corresponding longhand names.
+///
+/// This is a minimal subset aligned to the properties supported by the animation system.
+fn expand_transition_property_name(name: &str) -> Vec<&'static str> {
+  match name {
+    "border" => vec![
+      "border-top-width",
+      "border-right-width",
+      "border-bottom-width",
+      "border-left-width",
+      "border-top-color",
+      "border-right-color",
+      "border-bottom-color",
+      "border-left-color",
+      "border-top-style",
+      "border-right-style",
+      "border-bottom-style",
+      "border-left-style",
+    ],
+    "border-top" => vec!["border-top-width", "border-top-color", "border-top-style"],
+    "border-right" => vec![
+      "border-right-width",
+      "border-right-color",
+      "border-right-style",
+    ],
+    "border-bottom" => vec![
+      "border-bottom-width",
+      "border-bottom-color",
+      "border-bottom-style",
+    ],
+    "border-left" => vec!["border-left-width", "border-left-color", "border-left-style"],
+    "border-color" => vec![
+      "border-top-color",
+      "border-right-color",
+      "border-bottom-color",
+      "border-left-color",
+    ],
+    "border-width" => vec![
+      "border-top-width",
+      "border-right-width",
+      "border-bottom-width",
+      "border-left-width",
+    ],
+    "border-style" => vec![
+      "border-top-style",
+      "border-right-style",
+      "border-bottom-style",
+      "border-left-style",
+    ],
+    "border-radius" => vec![
+      "border-top-left-radius",
+      "border-top-right-radius",
+      "border-bottom-right-radius",
+      "border-bottom-left-radius",
+    ],
+    "outline" => vec!["outline-color", "outline-style", "outline-width"],
+    _ => interpolator_for(name)
+      .map(|interpolator| vec![interpolator.name])
+      .unwrap_or_default(),
+  }
 }
 
 fn transition_value_for_property(
@@ -6969,8 +7086,8 @@ fn transition_pairs<'a>(
   }
 
   // When `transition-property` contains `all`, we need to include custom properties in addition to
-  // the built-in interpolated properties. Custom property iteration order is not stable, so sort
-  // the candidate list to keep transition sampling deterministic.
+  // the built-in longhand properties. Custom property iteration order is not stable, so sort the
+  // candidate list to keep transition sampling deterministic.
   let mut all_custom_properties: Vec<&'a str> = Vec::new();
   if has_all {
     all_custom_properties = start_style
@@ -7001,14 +7118,28 @@ fn transition_pairs<'a>(
 
     match prop {
       TransitionProperty::All => {
-        for name in interpolated_transition_names() {
+        for name in transition_longhand_names() {
           insert(name);
         }
         for name in &all_custom_properties {
           insert(name);
         }
       }
-      TransitionProperty::Name(name) => insert(name.as_str()),
+      TransitionProperty::Name(name) => {
+        let name = name.as_str();
+        if name.starts_with("--") {
+          insert(name);
+        } else {
+          let expanded = expand_transition_property_name(name);
+          if expanded.is_empty() {
+            insert(name);
+          } else {
+            for name in expanded {
+              insert(name);
+            }
+          }
+        }
+      }
       TransitionProperty::None => {}
     }
   }
@@ -7076,7 +7207,7 @@ fn apply_transitions_to_fragment(
         viewport,
         Size::new(fragment.bounds.width(), fragment.bounds.height()),
       );
-      let mut updates: HashMap<String, AnimatedValue> = HashMap::new();
+      let mut updates: Vec<(String, AnimatedValue)> = Vec::new();
       let mut custom_updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
       for (name, idx) in pairs {
         let name_str = name;
@@ -7128,7 +7259,7 @@ fn apply_transitions_to_fragment(
           &ctx,
         );
         if let Some((animated, progress, delay, duration)) = value {
-          updates.insert(name_str.to_string(), animated);
+          updates.push((name_str.to_string(), animated));
           if log_enabled {
             let identifier = fragment
               .box_id()
@@ -7144,7 +7275,7 @@ fn apply_transitions_to_fragment(
 
       if !updates.is_empty() || !custom_updates.is_empty() {
         let mut updated_style = (*style_arc).clone();
-        apply_animated_properties(&mut updated_style, &updates);
+        apply_animated_properties_ordered(&mut updated_style, &updates);
         let mut custom_properties_changed = false;
         for (name, value) in custom_updates {
           let needs_update = updated_style
@@ -7161,7 +7292,7 @@ fn apply_transitions_to_fragment(
         if custom_properties_changed {
           let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
           updated_style.recompute_var_dependent_properties(parent_styles, viewport);
-          apply_animated_properties(&mut updated_style, &updates);
+          apply_animated_properties_ordered(&mut updated_style, &updates);
         }
         fragment.style = Some(Arc::new(updated_style));
       }
@@ -8897,5 +9028,201 @@ mod tests {
       settled_non_white > 0,
       "expected non-white pixels when animation_time is unset, got {settled_non_white}"
     );
+  }
+
+  #[test]
+  fn expand_transition_property_name_expands_supported_shorthands() {
+    assert_eq!(
+      expand_transition_property_name("border"),
+      vec![
+        "border-top-width",
+        "border-right-width",
+        "border-bottom-width",
+        "border-left-width",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color",
+        "border-top-style",
+        "border-right-style",
+        "border-bottom-style",
+        "border-left-style",
+      ]
+    );
+    assert_eq!(
+      expand_transition_property_name("border-top"),
+      vec!["border-top-width", "border-top-color", "border-top-style"]
+    );
+    assert_eq!(
+      expand_transition_property_name("border-color"),
+      vec![
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color",
+      ]
+    );
+    assert_eq!(
+      expand_transition_property_name("border-radius"),
+      vec![
+        "border-top-left-radius",
+        "border-top-right-radius",
+        "border-bottom-right-radius",
+        "border-bottom-left-radius",
+      ]
+    );
+    assert_eq!(
+      expand_transition_property_name("outline"),
+      vec!["outline-color", "outline-style", "outline-width"]
+    );
+    assert_eq!(expand_transition_property_name("opacity"), vec!["opacity"]);
+  }
+
+  #[test]
+  fn transition_property_all_generates_longhand_transitions_only() {
+    let mut start_style = ComputedStyle::default();
+    start_style.border_top_color = Rgba::BLACK;
+    start_style.border_right_color = Rgba::BLACK;
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![TransitionProperty::All].into();
+    style.transition_durations = vec![1000.0].into();
+    style.transition_delays = vec![0.0].into();
+    style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
+    style.border_top_color = Rgba::RED;
+    style.border_right_color = Rgba::GREEN;
+
+    let pairs =
+      transition_pairs(&style.transition_properties, &start_style, &style).expect("pairs");
+
+    assert!(pairs.iter().any(|(name, _)| *name == "border-top-color"));
+    assert!(pairs.iter().any(|(name, _)| *name == "border-right-color"));
+    assert!(
+      !pairs.iter().any(|(name, _)| {
+        matches!(
+          *name,
+          "border"
+            | "border-top"
+            | "border-right"
+            | "border-bottom"
+            | "border-left"
+            | "border-color"
+            | "border-style"
+            | "border-width"
+            | "border-radius"
+            | "outline"
+        )
+      }),
+      "expected shorthands to be excluded from `transition-property: all`"
+    );
+
+    let idx_top = pairs
+      .iter()
+      .find(|(name, _)| *name == "border-top-color")
+      .expect("top color idx")
+      .1;
+    let idx_right = pairs
+      .iter()
+      .find(|(name, _)| *name == "border-right-color")
+      .expect("right color idx")
+      .1;
+    let ctx = AnimationResolveContext::new(Size::new(800.0, 600.0), Size::new(100.0, 100.0));
+    let (top_value, _, _, _) = transition_value_for_property(
+      "border-top-color",
+      idx_top,
+      false,
+      &style,
+      &start_style,
+      &style.transition_durations,
+      &style.transition_delays,
+      &style.transition_timing_functions,
+      500.0,
+      &ctx,
+    )
+    .expect("sample top");
+    let (right_value, _, _, _) = transition_value_for_property(
+      "border-right-color",
+      idx_right,
+      false,
+      &style,
+      &start_style,
+      &style.transition_durations,
+      &style.transition_delays,
+      &style.transition_timing_functions,
+      500.0,
+      &ctx,
+    )
+    .expect("sample right");
+
+    let mut animated = style.clone();
+    apply_animated_properties_ordered(
+      &mut animated,
+      &vec![
+        ("border-top-color".to_string(), top_value),
+        ("border-right-color".to_string(), right_value),
+      ],
+    );
+    assert_eq!(animated.border_top_color, Rgba::rgb(128, 0, 0));
+    assert_eq!(animated.border_right_color, Rgba::rgb(0, 128, 0));
+  }
+
+  #[test]
+  fn transition_property_shorthand_border_radius_expands_to_corner_longhands() {
+    let mut start_style = ComputedStyle::default();
+    start_style.border_top_left_radius = BorderCornerRadius {
+      x: Length::px(0.0),
+      y: Length::px(0.0),
+    };
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![TransitionProperty::Name("border-radius".to_string())].into();
+    style.transition_durations = vec![1000.0].into();
+    style.transition_delays = vec![0.0].into();
+    style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
+    style.border_top_left_radius = BorderCornerRadius {
+      x: Length::px(10.0),
+      y: Length::px(10.0),
+    };
+
+    let pairs =
+      transition_pairs(&style.transition_properties, &start_style, &style).expect("pairs");
+    assert!(
+      pairs
+        .iter()
+        .any(|(name, _)| *name == "border-top-left-radius"),
+      "expected shorthand to expand into at least one corner longhand"
+    );
+    assert!(
+      !pairs.iter().any(|(name, _)| *name == "border-radius"),
+      "expected shorthand name to be removed after expansion"
+    );
+
+    let idx = pairs
+      .iter()
+      .find(|(name, _)| *name == "border-top-left-radius")
+      .expect("corner idx")
+      .1;
+    let ctx = AnimationResolveContext::new(Size::new(800.0, 600.0), Size::new(100.0, 100.0));
+    let (value, _, _, _) = transition_value_for_property(
+      "border-top-left-radius",
+      idx,
+      false,
+      &style,
+      &start_style,
+      &style.transition_durations,
+      &style.transition_delays,
+      &style.transition_timing_functions,
+      500.0,
+      &ctx,
+    )
+    .expect("sample corner");
+
+    let mut animated = style.clone();
+    apply_animated_properties_ordered(
+      &mut animated,
+      &[("border-top-left-radius".to_string(), value)],
+    );
+    assert!((animated.border_top_left_radius.x.to_px() - 5.0).abs() < 1e-6);
+    assert!((animated.border_top_left_radius.y.to_px() - 5.0).abs() < 1e-6);
   }
 }
