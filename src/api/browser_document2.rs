@@ -1,6 +1,6 @@
 use crate::dom::DomNode;
 use crate::dom2::{Document, RendererDomSnapshot};
-use crate::error::{Error, RenderError, Result};
+use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::Point;
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
@@ -101,7 +101,7 @@ impl BrowserDocument2 {
       self.last_dom_mapping = Some(snapshot);
     }
 
-    let pixmap = self.paint_from_cache()?;
+    let pixmap = self.paint_from_cache_with_deadline(None)?;
 
     // Clear flags only when a render was requested due to invalidation.
     if self.is_dirty() {
@@ -111,32 +111,71 @@ impl BrowserDocument2 {
     Ok(pixmap)
   }
 
-  fn paint_from_cache(&self) -> Result<super::Pixmap> {
-    let Some(prepared) = &self.prepared else {
+  /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
+  ///
+  /// Non-finite or non-positive values clear the override (falling back to the renderer default).
+  /// Changing DPR invalidates layout+paint.
+  pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
+    let sanitized = super::sanitize_scale(Some(dpr));
+    if sanitized != self.options.device_pixel_ratio {
+      self.options.device_pixel_ratio = sanitized;
+      self.layout_dirty = true;
+      self.paint_dirty = true;
+    }
+  }
+
+  /// Returns true when style/layout must be recomputed before painting.
+  pub fn needs_layout(&self) -> bool {
+    self.prepared.is_none() || self.style_dirty || self.layout_dirty
+  }
+
+  /// Paints the most recently laid-out document without re-running style/layout.
+  pub fn paint_from_cache_frame_with_deadline(
+    &mut self,
+    deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<super::PaintedFrame> {
+    let Some(prepared) = self.prepared.as_ref() else {
       return Err(Error::Render(RenderError::InvalidParameters {
         message: "BrowserDocument2 has no cached layout; call render_frame() first".to_string(),
       }));
     };
 
+    let _deadline_guard = if let Some(deadline) = deadline {
+      Some(crate::render_control::DeadlineGuard::install(Some(deadline)))
+    } else {
+      let deadline_enabled = self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+      deadline_enabled.then(|| {
+        let options_deadline =
+          crate::render_control::RenderDeadline::new(self.options.timeout, self.options.cancel_callback.clone());
+        crate::render_control::DeadlineGuard::install(Some(&options_deadline))
+      })
+    };
+    crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
+
     let scroll_state = ScrollState::from_parts(
       Point::new(self.options.scroll_x, self.options.scroll_y),
       self.options.element_scroll_offsets.clone(),
     );
-    let deadline_enabled =
-      self.options.timeout.is_some() || self.options.cancel_callback.is_some();
-    let _deadline_guard = deadline_enabled.then(|| {
-      let deadline = crate::render_control::RenderDeadline::new(
-        self.options.timeout,
-        self.options.cancel_callback.clone(),
-      );
-      crate::render_control::DeadlineGuard::install(Some(&deadline))
-    });
-    prepared.paint_with_options(PreparedPaintOptions {
+    let frame = prepared.paint_with_options_frame(PreparedPaintOptions {
       scroll: Some(scroll_state),
       viewport: None,
       background: None,
       animation_time: self.options.animation_time,
-    })
+    })?;
+
+    self.options.scroll_x = frame.scroll_state.viewport.x;
+    self.options.scroll_y = frame.scroll_state.viewport.y;
+    self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
+    self.paint_dirty = false;
+
+    Ok(frame)
+  }
+
+  pub fn paint_from_cache_with_deadline(
+    &mut self,
+    deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<super::Pixmap> {
+    Ok(self.paint_from_cache_frame_with_deadline(deadline)?.pixmap)
   }
 
   fn prepare_dom_with_options(&mut self, dom: &DomNode) -> Result<PreparedDocument> {

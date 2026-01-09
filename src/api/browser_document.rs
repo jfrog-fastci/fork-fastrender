@@ -1,5 +1,5 @@
 use crate::dom::DomNode;
-use crate::error::{Error, RenderError, Result};
+use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Size};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
@@ -205,6 +205,24 @@ impl BrowserDocument {
     self.paint_dirty = true;
   }
 
+  /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
+  ///
+  /// Non-finite or non-positive values clear the override (falling back to the renderer default).
+  /// Changing DPR invalidates layout+paint.
+  pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
+    let sanitized = super::sanitize_scale(Some(dpr));
+    if sanitized != self.options.device_pixel_ratio {
+      self.options.device_pixel_ratio = sanitized;
+      self.layout_dirty = true;
+      self.paint_dirty = true;
+    }
+  }
+
+  /// Returns true when style/layout must be recomputed before painting.
+  pub fn needs_layout(&self) -> bool {
+    self.prepared.is_none() || self.style_dirty || self.layout_dirty
+  }
+
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
   pub fn set_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
     if self.options.scroll_x != scroll_x || self.options.scroll_y != scroll_y {
@@ -279,13 +297,7 @@ impl BrowserDocument {
       self.prepared = Some(prepared);
     }
 
-    let frame = self.paint_from_cache_frame()?;
-    // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
-    // scroll snap/clamp). This must not mark the document dirty because the frame we just painted
-    // already reflects this state.
-    self.options.scroll_x = frame.scroll_state.viewport.x;
-    self.options.scroll_y = frame.scroll_state.viewport.y;
-    self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
+    let frame = self.paint_from_cache_frame_with_deadline(None)?;
 
     // Clear flags only when a render was requested due to invalidation.
     if self.is_dirty() {
@@ -295,29 +307,58 @@ impl BrowserDocument {
     Ok(frame)
   }
 
-  fn paint_from_cache_frame(&self) -> Result<super::PaintedFrame> {
-    let Some(prepared) = &self.prepared else {
+  /// Paints the most recently laid-out document without re-running style/layout.
+  ///
+  /// This is primarily intended for UI-driven repaints (scrolling, hit-testing highlights, etc)
+  /// where the caller wants to provide a [`crate::render_control::RenderDeadline`] for cooperative
+  /// cancellation. Callers should check [`BrowserDocument::needs_layout`] first and fall back to
+  /// [`BrowserDocument::render_frame_with_scroll_state`] when layout is required.
+  pub fn paint_from_cache_frame_with_deadline(
+    &mut self,
+    deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<super::PaintedFrame> {
+    let Some(prepared) = self.prepared.as_ref() else {
       return Err(Error::Render(RenderError::InvalidParameters {
         message: "BrowserDocument has no cached layout; call render_frame() first".to_string(),
       }));
     };
 
+    // Prefer an explicitly provided deadline; otherwise fall back to this document's configured
+    // `RenderOptions::{timeout,cancel_callback}`.
+    let _deadline_guard = if let Some(deadline) = deadline {
+      Some(crate::render_control::DeadlineGuard::install(Some(deadline)))
+    } else {
+      let deadline_enabled = self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+      deadline_enabled.then(|| {
+        let options_deadline =
+          crate::render_control::RenderDeadline::new(self.options.timeout, self.options.cancel_callback.clone());
+        crate::render_control::DeadlineGuard::install(Some(&options_deadline))
+      })
+    };
+    // Perform an early cancellation check so callers can deterministically abort repaints without
+    // relying on deep paint loops to periodically poll deadlines.
+    crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
+
     let scroll_state = self.scroll_state();
-    let deadline_enabled =
-      self.options.timeout.is_some() || self.options.cancel_callback.is_some();
-    let _deadline_guard = deadline_enabled.then(|| {
-      let deadline = crate::render_control::RenderDeadline::new(
-        self.options.timeout,
-        self.options.cancel_callback.clone(),
-      );
-      crate::render_control::DeadlineGuard::install(Some(&deadline))
-    });
-    prepared.paint_with_options_frame(PreparedPaintOptions {
+    let frame = prepared.paint_with_options_frame(PreparedPaintOptions {
       scroll: Some(scroll_state),
       viewport: None,
       background: None,
       animation_time: self.options.animation_time,
-    })
+    })?;
+
+    // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
+    // scroll snap/clamp). This must not mark the document dirty because the frame we just painted
+    // already reflects this state.
+    self.options.scroll_x = frame.scroll_state.viewport.x;
+    self.options.scroll_y = frame.scroll_state.viewport.y;
+    self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
+
+    // A successful paint always satisfies any outstanding paint invalidation, but must not clear
+    // pending style/layout dirtiness.
+    self.paint_dirty = false;
+
+    Ok(frame)
   }
 
   fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
@@ -479,7 +520,7 @@ pub(super) fn prepare_dom_inner(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::render_control::{push_stage_listener, StageHeartbeat};
+  use crate::render_control::{push_stage_listener, RenderDeadline, StageHeartbeat};
   use std::sync::{Arc, Mutex};
 
   fn capture_stages<T>(f: impl FnOnce() -> Result<T>) -> Result<Vec<StageHeartbeat>> {
@@ -537,6 +578,61 @@ mod tests {
     let nbsp = "\u{00A0}".to_string();
     document.set_navigation_urls(None, Some(nbsp.clone()));
     assert_eq!(document.renderer.base_url.as_deref(), Some(nbsp.as_str()));
+    Ok(())
+  }
+
+  #[test]
+  fn set_device_pixel_ratio_triggers_layout() -> Result<()> {
+    let mut document =
+      BrowserDocument::from_html("<div>hi</div>", RenderOptions::default().with_viewport(32, 32))?;
+    document.render_frame()?;
+
+    document.set_device_pixel_ratio(2.0);
+    let stages = capture_stages(|| document.render_if_needed().map(|_| ()))?;
+
+    assert!(
+      stages.contains(&StageHeartbeat::Layout),
+      "expected layout stage after DPR change; got {stages:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn needs_layout_transitions() -> Result<()> {
+    let mut document =
+      BrowserDocument::from_html("<div>hi</div>", RenderOptions::default().with_viewport(32, 32))?;
+
+    assert!(document.needs_layout(), "expected needs_layout before first render");
+    document.render_frame()?;
+    assert!(
+      !document.needs_layout(),
+      "expected needs_layout to be false after first render"
+    );
+
+    document.set_device_pixel_ratio(2.0);
+    assert!(
+      document.needs_layout(),
+      "expected needs_layout to be true after DPR change"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn paint_from_cache_frame_with_deadline_can_cancel() -> Result<()> {
+    let mut document =
+      BrowserDocument::from_html("<div>hi</div>", RenderOptions::default().with_viewport(32, 32))?;
+    document.render_frame()?;
+
+    let cancel: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
+    let deadline = RenderDeadline::new(None, Some(cancel));
+    let err = match document.paint_from_cache_frame_with_deadline(Some(&deadline)) {
+      Ok(_) => panic!("expected paint to be cancelled"),
+      Err(err) => err,
+    };
+    assert!(
+      matches!(err, Error::Render(RenderError::Timeout { stage: RenderStage::Paint, .. })),
+      "expected paint timeout error, got {err:?}"
+    );
     Ok(())
   }
 }
