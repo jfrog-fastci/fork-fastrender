@@ -18,9 +18,10 @@ FastRender has the **core building blocks** for a spec-shaped, streaming, parse-
 scripts, and keep observable document state like `Document.currentScript` correct). Some plumbing is
 still evolving, so treat this section as a “where is the real code?” map.
 
-There is not yet production-ready author-script execution integrated end-to-end with the renderer,
-but the host-side plumbing is laid out in explicit modules so the remaining integration work can
-stay spec-shaped.
+There is now an end-to-end “tab” integration point (`api::BrowserTab`) that ties together the live
+`dom2` document, classic script scheduling, an HTML-shaped event loop, and rendering invalidation.
+It still uses **best-effort post-parse `<script>` discovery** (not streaming-parser/parse-time
+execution), so treat it as an MVP integration surface rather than a final spec-correct pipeline.
 
 What exists today (in-tree):
 
@@ -53,6 +54,9 @@ What exists today (in-tree):
   - `crates/js-dom-bindings`: QuickJS-backed DOM bindings that expose host-maintained state like
     `document.currentScript` via `CurrentScriptStateHandle`.
 - **JS-enabled host container (early embedding surface):**
+  - `src/api/browser_tab.rs`: `BrowserTab` couples `BrowserDocumentDom2` + `EventLoop` +
+    `ScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. Script discovery is
+    currently best-effort post-parse and will be replaced by streaming-parser integration.
   - `src/api/browser_document_js.rs`: `BrowserDocumentJs` couples a live `dom2` document, a JS
     runtime adapter, an HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
 - **Mutable DOM for bindings (`dom2`):**

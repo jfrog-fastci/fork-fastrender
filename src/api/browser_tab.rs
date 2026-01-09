@@ -217,9 +217,9 @@ impl BrowserTabHost {
     &mut self,
     node_id: NodeId,
     spec: ScriptElementSpec,
+    base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
-  ) -> Result<()> {
-    let base_url_at_discovery = spec.base_url.clone();
+  ) -> Result<ScriptId> {
     let spec_for_table = spec.clone();
     let discovered = self
       .scheduler
@@ -232,7 +232,7 @@ impl BrowserTabHost {
       },
     );
     self.apply_scheduler_actions(discovered.actions, event_loop)?;
-    Ok(())
+    Ok(discovered.id)
   }
 
   fn apply_scheduler_actions(
@@ -528,16 +528,42 @@ impl BrowserTab {
     self.host.dom_mut()
   }
 
-  fn discover_and_schedule_scripts(&mut self, document_url: Option<&str>) -> Result<()> {
-    let discovered = self.host.discover_scripts_best_effort(document_url);
-    for (node_id, spec) in discovered {
-      self
-        .host
-        .register_and_schedule_script(node_id, spec, &mut self.event_loop)?;
-    }
+  /// Notify the tab that the HTML parser discovered a parser-inserted `<script>` element.
+  ///
+  /// This is intended for future streaming parser integration; the current `from_html` / navigation
+  /// APIs perform best-effort post-parse discovery instead.
+  pub(crate) fn on_parser_discovered_script(
+    &mut self,
+    node_id: NodeId,
+    spec: ScriptElementSpec,
+    base_url_at_discovery: Option<String>,
+  ) -> Result<ScriptId> {
+    self.host.register_and_schedule_script(
+      node_id,
+      spec,
+      base_url_at_discovery,
+      &mut self.event_loop,
+    )
+  }
 
+  /// Notify the tab that HTML parsing completed.
+  ///
+  /// This allows deferred scripts to be queued once parsing reaches EOF.
+  pub(crate) fn on_parsing_completed(&mut self) -> Result<()> {
     let actions = self.host.scheduler.parsing_completed()?;
     self.host.apply_scheduler_actions(actions, &mut self.event_loop)?;
     Ok(())
+  }
+
+  fn discover_and_schedule_scripts(&mut self, document_url: Option<&str>) -> Result<()> {
+    let discovered = self.host.discover_scripts_best_effort(document_url);
+    for (node_id, spec) in discovered {
+      let base_url_at_discovery = spec.base_url.clone();
+      self
+        .host
+        .register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut self.event_loop)?;
+    }
+
+    self.on_parsing_completed()
   }
 }

@@ -52,72 +52,75 @@ FastRender’s JS embedding is designed around a **tab-like** host object that o
 
 ### Current state (what exists today)
 
-The public “JS-enabled tab/document runtime” container is:
+FastRender currently exposes **two** “tab-like” host containers:
+
+- `fastrender::BrowserTab` (implementation: `src/api/browser_tab.rs`)
+  - owns a live `dom2` document via `BrowserDocumentDom2`,
+  - owns an HTML-shaped `EventLoop` plus a classic `<script>` scheduler (`ScriptScheduler`),
+  - executes classic scripts through a host-supplied `BrowserTabJsExecutor` trait (engine-agnostic).
 
 - `fastrender::api::BrowserDocumentJs` (implementation: `src/api/browser_document_js.rs`)
+  - couples `BrowserDocumentDom2` with the `vm-js`-backed `VmJsRuntime` used for WebIDL scaffolding,
+  - exposes an `EventLoop<BrowserDocumentJs>` and a `run_until_stable(...)` driver,
+  - does **not** (by itself) execute the HTML `<script>` processing model yet.
 
-`BrowserDocumentJs` couples:
+`BrowserTab` is the intended integration point for “HTML + DOM + JS + rendering”. The executor trait
+lets tests stub script execution deterministically today and lets a real JS engine (ecma-rs) plug in
+later without changing the public API.
 
-- `BrowserDocumentDom2` (live document + multi-frame rendering on top of `dom2`)
-- `VmJsRuntime` (WebIDL runtime adapter; **not** a full author-script engine yet)
-- `EventLoop<BrowserDocumentJs>` (tasks + microtasks + timers, with explicit budgets)
-- `ScriptOrchestrator` + `CurrentScriptState` (`Document.currentScript` bookkeeping)
+What `BrowserTab` does today:
 
-What it does today:
+- discovers and schedules classic `<script>` elements (currently via best-effort post-parse DOM
+  discovery),
+- fetches external scripts through the document’s `ResourceFetcher`,
+- runs microtask checkpoints after script execution,
+- rerenders when DOM mutations invalidate layout/paint (`render_if_needed` / `render_frame`).
 
-- provides a single host object that owns the “DOM + JS runtime + event loop” state,
-- lets you seed tasks/microtasks/timers and drive them with explicit run limits,
-- re-renders automatically when DOM mutations invalidate layout/paint via `run_until_stable(...)`.
+What it does **not** do yet (important gaps):
 
-What it does **not** do yet:
-
-- it does not execute author `<script>` elements from HTML parsing yet (see
-  [`docs/html_script_processing.md`](html_script_processing.md) for the planned integration),
-- it does not fetch external scripts,
-- it does not yet expose a full `Window`/`Document` Web API surface to JS (bindings are still being
-  built out).
+- spec-correct streaming-parser integration for scripts (true “scripts run during parsing” semantics),
+- module scripts / import maps,
+- a production author-script JS runtime + full DOM/WebIDL exposure (still being built out).
 
 ### Minimal Rust example (create doc → run loop → render)
 
-This is intentionally minimal and shows the *shape* of the embedding. It does **not** execute author
-`<script>` elements from the HTML string yet; instead, you would seed tasks (e.g. “execute this
-script” work) before calling `run_until_stable`.
+This is intentionally minimal and shows the *shape* of the embedding. It uses a no-op script
+executor; real integrations will wire this to a JS engine.
 
 ```rust
-use fastrender::{BrowserDocumentDom2, RenderOptions};
-use fastrender::api::BrowserDocumentJs;
-use fastrender::js::{RunLimits, TaskSource};
+use fastrender::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result};
+use fastrender::dom2::NodeId;
+use fastrender::js::{EventLoop, RunLimits, ScriptElementSpec};
 
-use std::time::Duration;
+#[derive(Default)]
+struct NoopExecutor;
 
-fn main() -> fastrender::Result<()> {
-    // 1) Create a live document ("tab") from HTML.
-    let doc = BrowserDocumentDom2::from_html(
+impl BrowserTabJsExecutor for NoopExecutor {
+    fn execute_classic_script(
+        &mut self,
+        _script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut fastrender::BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    // 1) Create a tab from HTML.
+    let mut tab = BrowserTab::from_html(
         "<!doctype html><html><body><h1>Hello</h1></body></html>",
         RenderOptions::new().with_viewport(800, 600),
-    )?;
-    let mut tab = BrowserDocumentJs::new(doc);
-
-    // 2) Optionally seed initial tasks (e.g. "execute this <script>" tasks).
-    tab
-        .event_loop_mut()
-        .queue_task(TaskSource::Script, |_tab, _event_loop| Ok(()))?;
-
-    // 3) Drive the event loop and re-render until no more work remains (bounded).
-    let _outcome = tab.run_until_stable(
-        RunLimits {
-            max_tasks: 1_000,
-            max_microtasks: 10_000,
-            max_wall_time: Some(Duration::from_millis(50)),
-        },
-        /* max_frames */ 10,
+        NoopExecutor::default(),
     )?;
 
-    // 4) Render the final frame.
-    //
-    // Note: `run_until_stable` renders internally while converging, but does not return a pixmap.
-    // Rendering again here reuses cached layout/paint results.
-    let pixmap = tab.document_mut().render_frame()?;
+    // 2) Drive the event loop (if scripts/tasks were queued).
+    let _ = tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    // 3) Render a frame.
+    let pixmap = tab.render_frame()?;
     pixmap.save_png("out.png")?;
     Ok(())
 }
@@ -135,6 +138,7 @@ hooks, tasks/microtasks, and Web APIs.
 The public API types that “own the embedding state” live in `src/api/`:
 
 - `src/api/browser_document_dom2.rs`: `BrowserDocumentDom2` (live `dom2` document + multi-frame rendering)
+- `src/api/browser_tab.rs`: `BrowserTab` (script scheduling + event loop + rendering integration)
 - `src/api/browser_document_js.rs`: `BrowserDocumentJs` (adds `VmJsRuntime` + `EventLoop` + `run_until_stable`)
 
 ### Host-side JS plumbing (`src/js/*`)
