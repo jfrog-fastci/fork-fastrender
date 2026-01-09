@@ -16,7 +16,6 @@ use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use crate::ui::worker::spawn_render_worker_thread;
-use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -598,7 +597,7 @@ impl BrowserRuntime {
             tab.last_committed_url = Some(url_string.clone());
             doc.set_document_url(Some(url_string.clone()));
 
-            let fragment = percent_decode_str(target_url.fragment().unwrap_or("")).decode_utf8_lossy();
+            let fragment = target_url.fragment().unwrap_or("");
             let offset = if matches!(reason, NavigationReason::BackForward) {
               tab
                 .history
@@ -611,7 +610,7 @@ impl BrowserRuntime {
               match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
                 let viewport = fragment_tree.viewport_size();
                 let offset =
-                  scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment.as_ref(), viewport);
+                  scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment, viewport);
                 (false, offset)
               }) {
                 Ok(Some(offset)) => offset,
@@ -1058,7 +1057,6 @@ impl BrowserRuntime {
     ));
     if apply_fragment_scroll {
       if let Some(fragment) = url_fragment(&committed_url) {
-        let fragment = percent_decode_str(fragment).decode_utf8_lossy();
         let offset = if fragment.is_empty() {
           Some(Point::ZERO)
         } else {
@@ -1066,7 +1064,7 @@ impl BrowserRuntime {
             document.dom(),
             document.box_tree(),
             document.fragment_tree(),
-            fragment.as_ref(),
+            fragment,
             document.layout_viewport(),
           )
         };
