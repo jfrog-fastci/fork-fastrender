@@ -729,8 +729,10 @@ impl App {
           return;
         }
 
-        // If the newer rect-anchored message already opened the dropdown for this control, ignore
-        // the legacy cursor-anchored message to avoid overriding the better anchor.
+        // Legacy cursor-anchored dropdown message (kept for backwards compatibility in the core
+        // protocol). Prefer `SelectDropdownOpened` (anchored to the `<select>` control); if the
+        // control-anchored dropdown is already open for the same `<select>`, ignore the legacy
+        // message so it doesn't override the better anchor.
         if self.open_select_dropdown.as_ref().is_some_and(|existing| {
           existing.tab_id == tab_id
             && existing.select_node_id == select_node_id
