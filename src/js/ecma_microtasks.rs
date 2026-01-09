@@ -265,11 +265,11 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
   }
 }
 
-#[cfg(test)]
-mod tests {
+  #[cfg(test)]
+  mod tests {
   use super::*;
   use crate::js::event_loop::{QueueLimits, RunUntilIdleOutcome, TaskSource};
-  use crate::js::RunLimits;
+  use crate::js::{RunLimits, WindowRealm, WindowRealmConfig};
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex, OnceLock};
@@ -787,33 +787,15 @@ mod tests {
   fn vm_js_promise_jobs_root_captured_values_until_run() -> crate::Result<()> {
     let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
 
-    struct Host {
-      vm: vm_js::Vm,
-      heap: vm_js::Heap,
-    }
-
-    impl VmJsEngineHost for Host {
-      fn vm_js_heap(&self) -> &vm_js::Heap {
-        &self.heap
-      }
-
-      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-        &mut self.heap
-      }
-
-      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
-        (&mut self.vm, &mut self.heap)
-      }
-    }
-
     let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
-    let mut host = Host {
-      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
-      heap: vm_js::Heap::new(limits),
-    };
-    let mut event_loop = EventLoop::<Host>::new();
+    let mut host = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com")
+        .with_heap_limits(limits),
+    )
+    .map_err(vm_err)?;
+    let mut event_loop = EventLoop::<WindowRealm>::new();
 
-    let call_id = host.vm.register_native_call(noop).map_err(vm_err)?;
+    let call_id = host.vm_mut().register_native_call(noop).map_err(vm_err)?;
 
     // Queue a PromiseReactionJob that captures heap values, then run GC before the microtask runs.
     // The job should keep the captures alive until it executes and cleans up its roots.
@@ -821,7 +803,7 @@ mod tests {
     let argument_obj;
     {
       let mut hooks = VmJsHostHooks::new(&mut event_loop);
-      let mut scope = host.heap.scope();
+      let mut scope = host.heap_mut().scope();
 
       callback_obj = {
         let name = scope.alloc_string("onFulfilled").map_err(vm_err)?;
@@ -850,13 +832,13 @@ mod tests {
       assert!(hooks.finish(&mut host).is_none());
     }
 
-    host.heap.collect_garbage();
+    host.heap_mut().collect_garbage();
     assert!(
-      host.heap.is_valid_object(callback_obj),
+      host.heap().is_valid_object(callback_obj),
       "Promise job should keep callback object alive until the microtask runs"
     );
     assert!(
-      host.heap.is_valid_object(argument_obj),
+      host.heap().is_valid_object(argument_obj),
       "Promise job should keep captured argument alive until the microtask runs"
     );
 
@@ -865,13 +847,13 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
 
-    host.heap.collect_garbage();
+    host.heap_mut().collect_garbage();
     assert!(
-      !host.heap.is_valid_object(callback_obj),
+      !host.heap().is_valid_object(callback_obj),
       "Job::run should remove persistent roots after execution"
     );
     assert!(
-      !host.heap.is_valid_object(argument_obj),
+      !host.heap().is_valid_object(argument_obj),
       "Job::run should remove persistent roots after execution"
     );
 
