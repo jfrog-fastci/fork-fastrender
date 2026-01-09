@@ -274,14 +274,17 @@ where
 /// This models a subset of the HTML Standard script processing model:
 /// - Inline classic scripts execute immediately and block parsing.
 /// - External classic scripts:
-///   - no `async`/`defer`: parsing-blocking (execute immediately on fetch completion).
-///   - `defer`: execute after parsing completes, in document order.
-///   - `async`: execute ASAP on fetch completion, not ordered.
+///   - parser-inserted, no `async`/`defer`: parsing-blocking (execute immediately on fetch
+///     completion).
+///   - parser-inserted + `defer` (and not `async`): execute after parsing completes, in document
+///     order.
+///   - `async` (and non-parser-inserted scripts by default): execute ASAP on fetch completion, not
+///     ordered.
 /// - A microtask checkpoint after each script execution (performed by the orchestrator).
 ///
 /// Out of scope (intentionally not modeled here):
 /// - Module scripts (`type="module"`) and import maps.
-/// - CSP, `nomodule`, stylesheet-blocking scripts, `document.write`, and dynamic insertion.
+/// - CSP, `nomodule`, stylesheet-blocking scripts, and `document.write`.
 ///
 /// ## Orchestrator contract
 ///
@@ -417,6 +420,27 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
     node_id: NodeId,
     base_url_at_discovery: Option<String>,
   ) -> Result<DiscoveredScript<NodeId>> {
+    // Force the parser-inserted flag on this code path; callers building specs at parse time should
+    // already set this, but doing it here keeps the API robust.
+    let mut element = element;
+    element.parser_inserted = true;
+    self.discovered_script(element, node_id, base_url_at_discovery)
+  }
+
+  /// Notify the scheduler that a `<script>` element has been discovered.
+  ///
+  /// This is a more general form of [`discovered_parser_script`](Self::discovered_parser_script)
+  /// that respects [`ScriptElementSpec::parser_inserted`]:
+  ///
+  /// - **Parser-inserted** external scripts may block parsing or be deferred.
+  /// - **Non-parser-inserted** external scripts are treated as async-by-default (matching the HTML
+  ///   script processing model for dynamically inserted scripts).
+  pub fn discovered_script(
+    &mut self,
+    element: ScriptElementSpec,
+    node_id: NodeId,
+    base_url_at_discovery: Option<String>,
+  ) -> Result<DiscoveredScript<NodeId>> {
     let id = self.alloc_script_id();
 
     if element.script_type != ScriptType::Classic {
@@ -431,7 +455,10 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
     let src = element.src.filter(|s| !s.is_empty());
     if let Some(url) = src {
-      let mode = if element.async_attr {
+      let mode = if !element.parser_inserted {
+        // HTML: dynamically inserted classic external scripts are async by default.
+        ExternalMode::Async
+      } else if element.async_attr {
         ExternalMode::Async
       } else if element.defer_attr {
         ExternalMode::Defer
@@ -465,11 +492,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         url,
       });
 
+      // Only parser-inserted blocking scripts are allowed to block parsing.
       if mode == ExternalMode::Blocking {
-        actions.push(ScriptSchedulerAction::BlockParserUntilExecuted {
-          script_id: id,
-          node_id,
-        });
+        actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id, node_id });
       }
     } else {
       // Inline classic scripts execute immediately and block parsing.
@@ -963,6 +988,30 @@ mod state_machine_tests {
     }
   }
 
+  fn classic_external_dynamic(src: &str, async_attr: bool, defer_attr: bool) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: Some(src.to_string()),
+      inline_text: String::new(),
+      async_attr,
+      defer_attr,
+      parser_inserted: false,
+      script_type: ScriptType::Classic,
+    }
+  }
+
+  fn classic_inline_dynamic(text: &str) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: None,
+      inline_text: text.to_string(),
+      async_attr: false,
+      defer_attr: false,
+      parser_inserted: false,
+      script_type: ScriptType::Classic,
+    }
+  }
+
   struct Harness {
     scheduler: ScriptScheduler<u32>,
     event_loop: EventLoop<Host>,
@@ -1033,6 +1082,15 @@ mod state_machine_tests {
       Ok(id)
     }
 
+    fn discover_dynamic(&mut self, element: ScriptElementSpec) -> Result<ScriptId> {
+      let discovered = self
+        .scheduler
+        .discovered_script(element, /* node_id */ 1, /* base_url_at_discovery */ None)?;
+      let id = discovered.id;
+      self.apply_actions(discovered.actions)?;
+      Ok(id)
+    }
+
     fn fetch_complete(&mut self, script_id: ScriptId, source_text: &str) -> Result<()> {
       let actions = self
         .scheduler
@@ -1068,6 +1126,62 @@ mod state_machine_tests {
         "script:b".to_string(),
         "microtask:b".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn non_parser_external_scripts_are_async_by_default_and_do_not_block_parsing() -> Result<()> {
+    let mut h = Harness::new();
+
+    let script_id = h.discover_dynamic(classic_external_dynamic("dyn.js", false, false))?;
+    assert_eq!(h.started_fetches.len(), 1);
+    assert!(h.blocked_parser_on.is_none(), "dynamic scripts must not block parsing");
+
+    h.fetch_complete(script_id, "DYN")?;
+    // Completion should queue as a task.
+    assert!(
+      h.host.log.is_empty(),
+      "async external scripts should not execute synchronously on fetch completion"
+    );
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:DYN".to_string(), "microtask:DYN".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn non_parser_defer_attribute_is_ignored_and_still_runs_async() -> Result<()> {
+    let mut h = Harness::new();
+
+    let script_id = h.discover_dynamic(classic_external_dynamic("dyn.js", false, true))?;
+    assert_eq!(h.started_fetches.len(), 1);
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "dynamic scripts must not block parsing"
+    );
+
+    h.fetch_complete(script_id, "DYN")?;
+    // Defer must not wait for parsing_completed for dynamic scripts.
+    h.parsing_completed()?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:DYN".to_string(), "microtask:DYN".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn non_parser_inline_scripts_execute_immediately() -> Result<()> {
+    let mut h = Harness::new();
+
+    h.discover_dynamic(classic_inline_dynamic("x"))?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:x".to_string(), "microtask:x".to_string()]
     );
     Ok(())
   }
