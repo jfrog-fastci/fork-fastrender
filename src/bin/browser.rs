@@ -413,6 +413,8 @@ struct App {
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
 
   page_rect_points: Option<egui::Rect>,
+  page_input_tab: Option<fastrender::ui::TabId>,
+  page_input_mapping: Option<fastrender::ui::InputMapping>,
   viewport_cache_tab: Option<fastrender::ui::TabId>,
   viewport_cache_css: (u32, u32),
   viewport_cache_dpr: f32,
@@ -507,6 +509,8 @@ impl App {
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
       page_rect_points: None,
+      page_input_tab: None,
+      page_input_mapping: None,
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
       viewport_cache_dpr: 0.0,
@@ -668,28 +672,6 @@ impl App {
     }
   }
 
-  fn active_input_mapping(
-    &self,
-    image_rect_points: egui::Rect,
-  ) -> Option<(fastrender::ui::TabId, fastrender::ui::InputMapping)> {
-    let tab_id = self.browser_state.active_tab_id()?;
-    let tab = self.browser_state.tab(tab_id)?;
-
-    // Prefer the viewport size that produced the currently displayed frame so hit-testing matches
-    // what is painted. Fall back to the last viewport size we sent to the worker (e.g. before the
-    // first `FrameReady` arrives).
-    let viewport_css = tab
-      .latest_frame_meta
-      .as_ref()
-      .map(|m| m.viewport_css)
-      .or_else(|| (self.viewport_cache_tab == Some(tab_id)).then_some(self.viewport_cache_css))?;
-
-    Some((
-      tab_id,
-      fastrender::ui::InputMapping::new(image_rect_points, viewport_css),
-    ))
-  }
-
   fn send_viewport_changed_if_needed(&mut self, viewport_css: (u32, u32), dpr: f32) {
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       return;
@@ -849,14 +831,17 @@ impl App {
         let Some(rect) = self.page_rect_points else {
           return;
         };
+        let Some(tab_id) = self.page_input_tab else {
+          return;
+        };
+        let Some(mapping) = self.page_input_mapping else {
+          return;
+        };
 
         if !self.pointer_captured && !rect.contains(pos_points) {
           return;
         }
 
-        let Some((tab_id, mapping)) = self.active_input_mapping(rect) else {
-          return;
-        };
         let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
           return;
         };
@@ -905,16 +890,18 @@ impl App {
             if !rect.contains(pos_points) {
               return;
             }
-            self.page_has_focus = true;
-            self.pointer_captured = true;
-            self.captured_button = mapped_button;
-
-            let Some((tab_id, mapping)) = self.active_input_mapping(rect) else {
+            let Some(tab_id) = self.page_input_tab else {
+              return;
+            };
+            let Some(mapping) = self.page_input_mapping else {
               return;
             };
             let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
               return;
             };
+            self.page_has_focus = true;
+            self.pointer_captured = true;
+            self.captured_button = mapped_button;
             let _ = self
               .ui_to_worker_tx
               .send(fastrender::ui::UiToWorker::PointerDown {
@@ -930,10 +917,13 @@ impl App {
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
 
-            let Some(rect) = self.page_rect_points else {
+            let Some(_rect) = self.page_rect_points else {
               return;
             };
-            let Some((tab_id, mapping)) = self.active_input_mapping(rect) else {
+            let Some(tab_id) = self.page_input_tab else {
+              return;
+            };
+            let Some(mapping) = self.page_input_mapping else {
               return;
             };
             let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
@@ -956,28 +946,28 @@ impl App {
         let Some(rect) = self.page_rect_points else {
           return;
         };
+        let Some(tab_id) = self.page_input_tab else {
+          return;
+        };
+        let Some(mapping) = self.page_input_mapping else {
+          return;
+        };
         if !rect.contains(pos_points) {
           return;
         }
-
-        let Some((tab_id, mapping)) = self.active_input_mapping(rect) else {
-          return;
-        };
-        let Some(pointer_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
-          return;
-        };
 
         let wheel_delta = fastrender::ui::WheelDelta::from_winit(*delta, self.pixels_per_point);
         let Some(delta_css) = mapping.wheel_delta_to_delta_css(wheel_delta) else {
           return;
         };
+        let pointer_css = mapping.pos_points_to_pos_css_clamped(pos_points);
 
         let _ = self
           .ui_to_worker_tx
           .send(fastrender::ui::UiToWorker::Scroll {
             tab_id,
             delta_css,
-            pointer_css: Some(pointer_css),
+            pointer_css,
           });
       }
       WindowEvent::KeyboardInput { input, .. } => {
@@ -1301,6 +1291,8 @@ impl App {
       self.send_viewport_changed_if_needed(viewport_css, dpr);
 
       self.page_rect_points = None;
+      self.page_input_tab = None;
+      self.page_input_mapping = None;
 
       let Some(active_tab) = self.browser_state.active_tab_id() else {
         ui.label("No active tab.");
@@ -1308,10 +1300,19 @@ impl App {
       };
 
       if let Some(tex) = self.tab_textures.get(&active_tab) {
+        let viewport_css_for_mapping = self
+          .browser_state
+          .tab(active_tab)
+          .and_then(|tab| tab.latest_frame_meta.as_ref().map(|m| m.viewport_css))
+          .or_else(|| (self.viewport_cache_tab == Some(active_tab)).then_some(self.viewport_cache_css))
+          .unwrap_or(viewport_css);
         let size_points = tex.size_points(self.pixels_per_point);
         let response =
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
         self.page_rect_points = Some(response.rect);
+        self.page_input_tab = Some(active_tab);
+        self.page_input_mapping =
+          Some(fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping));
       } else {
         let loading = self
           .browser_state
