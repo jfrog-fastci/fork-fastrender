@@ -34,6 +34,7 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
       StreamingParserYield::Finished { document } => break document,
     }
   };
+  document.scripting_enabled = options.scripting_enabled;
 
   if matches!(options.compatibility_mode, DomCompatibilityMode::Compatibility) {
     // Reuse the existing compatibility mutation logic (implemented for the renderer's immutable
@@ -55,6 +56,7 @@ pub fn parse_html(html: &str) -> Result<Document> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::dom::DomNodeType;
   use crate::debug::snapshot::snapshot_dom;
 
   #[test]
@@ -75,5 +77,21 @@ mod tests {
     let doc2 = parse_html(html).unwrap();
     let dom2_snapshot = doc2.to_renderer_dom();
     assert_eq!(snapshot_dom(&dom), snapshot_dom(&dom2_snapshot));
+  }
+
+  #[test]
+  fn parse_html_dom2_preserves_scripting_enabled_flag() {
+    let html = "<!doctype html><html><body><div>ok</div></body></html>";
+    let doc2 = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).unwrap();
+    let snapshot = doc2.to_renderer_dom();
+    match &snapshot.node_type {
+      DomNodeType::Document {
+        scripting_enabled, ..
+      } => assert!(
+        !*scripting_enabled,
+        "expected scripting_enabled=false in renderer snapshot"
+      ),
+      other => panic!("expected document root, got {other:?}"),
+    }
   }
 }

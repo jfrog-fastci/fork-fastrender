@@ -82,11 +82,15 @@ fn import_subtree(doc: &mut Document, parent: NodeId, root: &DomNode) -> NodeId 
 /// existing parsed DOM.
 impl Document {
   pub fn from_renderer_dom(root: &DomNode) -> Document {
-    let quirks_mode = match &root.node_type {
-      DomNodeType::Document { quirks_mode, .. } => *quirks_mode,
-      _ => QuirksMode::NoQuirks,
+    let (quirks_mode, scripting_enabled) = match &root.node_type {
+      DomNodeType::Document {
+        quirks_mode,
+        scripting_enabled,
+        ..
+      } => (*quirks_mode, *scripting_enabled),
+      _ => (QuirksMode::NoQuirks, true),
     };
-    let mut doc = Document::new(quirks_mode);
+    let mut doc = Document::new_with_scripting(quirks_mode, scripting_enabled);
     let doc_root = doc.root();
 
     match &root.node_type {

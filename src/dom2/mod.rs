@@ -121,6 +121,7 @@ pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
   events: web_events::EventListenerRegistry,
+  scripting_enabled: bool,
 }
 
 impl Clone for Document {
@@ -131,6 +132,7 @@ impl Clone for Document {
       // Cloning a DOM tree should not implicitly clone active event listeners. Start with an empty
       // registry so callers can snapshot structure without inheriting the old event graph.
       events: web_events::EventListenerRegistry::new(),
+      scripting_enabled: self.scripting_enabled,
     }
   }
 }
@@ -140,6 +142,7 @@ impl std::fmt::Debug for Document {
     f.debug_struct("Document")
       .field("nodes", &self.nodes)
       .field("root", &self.root)
+      .field("scripting_enabled", &self.scripting_enabled)
       .finish()
   }
 }
@@ -240,6 +243,7 @@ impl Document {
       nodes: self.nodes.clone(),
       root: self.root,
       events: self.events.clone(),
+      scripting_enabled: self.scripting_enabled,
     }
   }
 
@@ -295,11 +299,12 @@ impl Document {
     true
   }
 
-  pub fn new(quirks_mode: QuirksMode) -> Self {
+  pub fn new_with_scripting(quirks_mode: QuirksMode, scripting_enabled: bool) -> Self {
     let mut doc = Self {
       nodes: Vec::new(),
       root: NodeId(0),
       events: web_events::EventListenerRegistry::new(),
+      scripting_enabled,
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -309,6 +314,10 @@ impl Document {
     debug_assert_eq!(root, NodeId(0));
     doc.root = root;
     doc
+  }
+
+  pub fn new(quirks_mode: QuirksMode) -> Self {
+    Self::new_with_scripting(quirks_mode, true)
   }
 
   pub fn root(&self) -> NodeId {
@@ -541,13 +550,12 @@ impl Document {
       next_child: usize,
     }
 
-    fn node_kind_to_dom_node_type(kind: &NodeKind) -> Option<DomNodeType> {
+    let scripting_enabled = self.scripting_enabled;
+    fn node_kind_to_dom_node_type(kind: &NodeKind, scripting_enabled: bool) -> Option<DomNodeType> {
       Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
-          // dom2 does not currently track the HTML scripting flag; default to scripting enabled
-          // semantics when snapshotting back to the renderer DOM.
-          scripting_enabled: true,
+          scripting_enabled,
         },
         NodeKind::DocumentFragment => {
           // The renderer DOM snapshot format does not have a first-class DocumentFragment node
@@ -555,7 +563,7 @@ impl Document {
           // defensively to a plain document node to avoid panics if an invalid tree is constructed.
           DomNodeType::Document {
             quirks_mode: QuirksMode::NoQuirks,
-            scripting_enabled: true,
+            scripting_enabled,
           }
         }
         NodeKind::ShadowRoot {
@@ -596,7 +604,7 @@ impl Document {
     let root_id = self.root;
     let root_src = self.node(root_id);
     let mut root = DomNode {
-      node_type: node_kind_to_dom_node_type(&root_src.kind)
+      node_type: node_kind_to_dom_node_type(&root_src.kind, scripting_enabled)
         .expect("document root must be representable in renderer DOM snapshot"),
       children: Vec::with_capacity(root_src.children.len()),
     };
@@ -626,7 +634,9 @@ impl Document {
           continue;
         }
 
-        let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind) else {
+        let Some(child_node_type) =
+          node_kind_to_dom_node_type(&child_src.kind, scripting_enabled)
+        else {
           continue;
         };
 
@@ -668,15 +678,16 @@ impl Document {
       next_child: usize,
     }
 
-    fn node_kind_to_dom_node_type(kind: &NodeKind) -> Option<DomNodeType> {
+    let scripting_enabled = self.scripting_enabled;
+    fn node_kind_to_dom_node_type(kind: &NodeKind, scripting_enabled: bool) -> Option<DomNodeType> {
       Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
-          scripting_enabled: true,
+          scripting_enabled,
         },
         NodeKind::DocumentFragment => DomNodeType::Document {
           quirks_mode: QuirksMode::NoQuirks,
-          scripting_enabled: true,
+          scripting_enabled,
         },
         NodeKind::ShadowRoot {
           mode,
@@ -714,7 +725,7 @@ impl Document {
     }
 
     let root_src = self.nodes.get(root_id.index())?;
-    let root_type = node_kind_to_dom_node_type(&root_src.kind)?;
+    let root_type = node_kind_to_dom_node_type(&root_src.kind, scripting_enabled)?;
     let mut root = DomNode {
       node_type: root_type,
       children: Vec::with_capacity(root_src.children.len()),
@@ -744,7 +755,9 @@ impl Document {
         if child_src.parent != Some(parent_id) {
           continue;
         }
-        let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind) else {
+        let Some(child_node_type) =
+          node_kind_to_dom_node_type(&child_src.kind, scripting_enabled)
+        else {
           continue;
         };
         let extra_capacity = usize::from(self.should_inject_wbr_zwsp(child_id));
