@@ -88,6 +88,30 @@ fn inner_html_ignores_comments_for_now() {
 }
 
 #[test]
+fn inner_html_comment_prevents_text_merge_across_boundary() {
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  doc.set_inner_html(div, "a<!--comment-->b").unwrap();
+
+  let children = doc.node(div).children.clone();
+  assert_eq!(
+    children.len(),
+    2,
+    "comment boundary should prevent adjacent text node merging"
+  );
+  assert!(
+    matches!(&doc.node(children[0]).kind, NodeKind::Text { content } if content == "a"),
+    "first child should be a text node containing 'a'"
+  );
+  assert!(
+    matches!(&doc.node(children[1]).kind, NodeKind::Text { content } if content == "b"),
+    "second child should be a text node containing 'b'"
+  );
+}
+
+#[test]
 fn inner_html_preserves_template_contents_and_marks_inert() {
   let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
   let mut doc = Document::from_renderer_dom(&root);

@@ -65,8 +65,9 @@ pub enum NodeKind {
   },
   /// A document type node.
   ///
-  /// The renderer DOM representation currently drops doctypes, but html5ever's tree builder still
-  /// requires a place to store them.
+  /// Note: our html5ever-backed HTML parser does not currently materialize doctype nodes in `dom2`
+  /// (it only records the document's quirks mode), matching the renderer DOM which also drops
+  /// doctypes.
   Doctype {
     name: String,
     public_id: String,
