@@ -757,8 +757,9 @@ impl Dom {
       ..Default::default()
     };
 
-    // The last parameter is an html5ever fragment-parsing knob (currently a boolean). Keep it at
-    // the default `true` expected by our smoke tests.
+    // `html5ever::parse_fragment` takes `context_element_allows_scripting` as a separate boolean
+    // flag (it only affects the tokenizer initial state when the context element is `<noscript>`).
+    // Our DOM shims assume JS-enabled parsing semantics, so keep it enabled.
     let rcdom: RcDom = parse_fragment(RcDom::default(), opts, context, Vec::new(), true).one(html);
 
     let mut roots: Vec<NodeId> = Vec::new();

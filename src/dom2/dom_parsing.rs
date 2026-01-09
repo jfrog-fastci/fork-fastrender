@@ -104,10 +104,20 @@ pub(super) fn parse_html_fragment(
     ..ParseOpts::default()
   };
 
-  // `html5ever::parse_fragment` takes an extra boolean flag in v0.35. We currently don't expose the
-  // underlying knob; `true` matches the behaviour expected by our `innerHTML`/`outerHTML` tests.
+  // `html5ever::parse_fragment` takes `context_element_allows_scripting` as a separate boolean flag
+  // (it only affects the tokenizer initial state when the context element is `<noscript>`).
+  // Keep it in sync with the tree builder scripting flag so `innerHTML`/`outerHTML` parsing matches
+  // `parse_html_with_options`.
+  let context_element_allows_scripting = opts.tree_builder.scripting_enabled;
   let rcdom: RcDom =
-    parse_fragment(RcDom::default(), opts, context_name, Vec::new(), true).one(html);
+    parse_fragment(
+      RcDom::default(),
+      opts,
+      context_name,
+      Vec::new(),
+      context_element_allows_scripting,
+    )
+    .one(html);
 
   let mut roots: Vec<NodeId> = Vec::new();
 

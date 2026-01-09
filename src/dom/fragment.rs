@@ -48,8 +48,18 @@ pub fn parse_html_fragment(
   let mut reader = super::DeadlineCheckedRead::new(reader);
 
   // Note: we parse from UTF-8, matching `parse_html`.
-  let quirks = matches!(document_quirks, QuirksMode::Quirks);
-  let dom: RcDom = parse_fragment(RcDom::default(), opts, context_name, Vec::new(), quirks)
+  // `html5ever::parse_fragment` requires `context_element_allows_scripting` as a separate flag from
+  // `TreeBuilderOpts::scripting_enabled`. It is only used to determine the tokenizer initial state
+  // for `<noscript>` contexts; wire it through from `options.scripting_enabled` so fragment parsing
+  // matches `parse_html` / browser `innerHTML` semantics.
+  let context_element_allows_scripting = options.scripting_enabled;
+  let dom: RcDom = parse_fragment(
+    RcDom::default(),
+    opts,
+    context_name,
+    Vec::new(),
+    context_element_allows_scripting,
+  )
     .from_utf8()
     .read_from(&mut reader)
     .map_err(|e| {
@@ -384,6 +394,39 @@ mod tests {
         assert_eq!(stage, RenderStage::DomParse);
       }
       other => panic!("expected dom_parse timeout, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parse_fragment_noscript_context_respects_scripting_enabled() {
+    // When scripting is enabled, `<noscript>` is tokenized as rawtext, so markup becomes text.
+    let nodes = parse_html_fragment(
+      "<span>hi</span>",
+      "noscript",
+      HTML_NAMESPACE,
+      DomParseOptions::with_scripting_enabled(true),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+    assert_eq!(nodes.len(), 1);
+    match &nodes[0].node_type {
+      DomNodeType::Text { content } => assert_eq!(content, "<span>hi</span>"),
+      other => panic!("expected rawtext in noscript context, got {other:?}"),
+    }
+
+    // When scripting is disabled, `<noscript>` is tokenized normally and markup is parsed into DOM.
+    let nodes = parse_html_fragment(
+      "<span>hi</span>",
+      "noscript",
+      HTML_NAMESPACE,
+      DomParseOptions::with_scripting_enabled(false),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+    assert_eq!(nodes.len(), 1);
+    match &nodes[0].node_type {
+      DomNodeType::Element { tag_name, .. } => assert_eq!(tag_name, "span"),
+      other => panic!("expected element parsing in noscript context, got {other:?}"),
     }
   }
 }
