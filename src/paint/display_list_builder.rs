@@ -10009,7 +10009,7 @@ impl DisplayListBuilder {
     // so a placeholder would incorrectly obscure background content.
     if matches!(
       replaced_type,
-      ReplacedType::Image { .. } | ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
+      ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
     ) {
       return;
     }
@@ -10022,21 +10022,132 @@ impl DisplayListBuilder {
       self.list.push(DisplayItem::PushClip(clip.clone()));
     }
 
-    // Keep the placeholder styling stable and browser-like.
-    let (placeholder_color, stroke_color) = match replaced_type {
-      _ => (Rgba::rgb(200, 200, 200), Rgba::rgb(150, 150, 150)),
-    };
-    self.list.push(DisplayItem::FillRect(FillRectItem {
-      rect: content_rect,
-      color: placeholder_color,
-    }));
+    fn emit_inside_border(list: &mut DisplayList, rect: Rect, color: Rgba) {
+      if !rect.width().is_finite() || !rect.height().is_finite() {
+        return;
+      }
+      let w = rect.width().max(0.0);
+      let h = rect.height().max(0.0);
+      if w <= 0.0 || h <= 0.0 {
+        return;
+      }
 
-    self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
-      rect: content_rect,
-      color: stroke_color,
-      width: 1.0,
-      blend_mode: BlendMode::Normal,
-    }));
+      // Chrome's 1px border sits inside the image box. Using `StrokeRect` here would center the
+      // stroke on the edge, which gets clipped/anti-aliased and ends up darker than browsers.
+      let thickness: f32 = 1.0;
+      let th = thickness.min(h);
+      let tw = thickness.min(w);
+      let x = rect.x();
+      let y = rect.y();
+      let bottom_y = y + h - th;
+      let right_x = x + w - tw;
+
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh(x, y, w, th),
+        color,
+      }));
+      if bottom_y > y {
+        list.push(DisplayItem::FillRect(FillRectItem {
+          rect: Rect::from_xywh(x, bottom_y, w, th),
+          color,
+        }));
+      }
+
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh(x, y, tw, h),
+        color,
+      }));
+      if right_x > x {
+        list.push(DisplayItem::FillRect(FillRectItem {
+          rect: Rect::from_xywh(right_x, y, tw, h),
+          color,
+        }));
+      }
+    }
+
+    match replaced_type {
+      // Chrome renders a broken-image icon inside a 1px border, leaving the content area itself
+      // transparent. Filling the entire box creates huge mismatches on pages that purposefully
+      // style the background behind the `<img>` (including dark themes).
+      ReplacedType::Image { .. } => {
+        let stroke_color = Rgba::rgb(192, 192, 192);
+        emit_inside_border(&mut self.list, content_rect, stroke_color);
+
+        // Draw a small icon in the top-left when there is enough room.
+        let icon_inset = 2.0;
+        let icon_size = 16.0;
+        if content_rect.width() >= icon_inset * 2.0 + icon_size
+          && content_rect.height() >= icon_inset * 2.0 + icon_size
+        {
+          let icon_rect = Rect::from_xywh(
+            content_rect.x() + icon_inset,
+            content_rect.y() + icon_inset,
+            icon_size,
+            icon_size,
+          );
+          let inner_rect = Rect::from_xywh(
+            icon_rect.x() + 1.0,
+            icon_rect.y() + 1.0,
+            (icon_rect.width() - 2.0).max(0.0),
+            (icon_rect.height() - 2.0).max(0.0),
+          );
+
+          if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+            self.list.push(DisplayItem::FillRect(FillRectItem {
+              rect: inner_rect,
+              color: Rgba::WHITE,
+            }));
+
+            // Sky.
+            let sky_h = (inner_rect.height() * 0.62).floor().clamp(0.0, inner_rect.height());
+            if sky_h > 0.0 {
+              self.list.push(DisplayItem::FillRect(FillRectItem {
+                rect: Rect::from_xywh(inner_rect.x(), inner_rect.y(), inner_rect.width(), sky_h),
+                color: Rgba::rgb(198, 216, 244),
+              }));
+            }
+
+            // Ground.
+            let ground_h = (inner_rect.height() * 0.3).floor().clamp(0.0, inner_rect.height());
+            if ground_h > 0.0 {
+              self.list.push(DisplayItem::FillRect(FillRectItem {
+                rect: Rect::from_xywh(
+                  inner_rect.x(),
+                  inner_rect.y() + inner_rect.height() - ground_h,
+                  inner_rect.width(),
+                  ground_h,
+                ),
+                color: Rgba::rgb(88, 174, 57),
+              }));
+            }
+
+            // "Sun" highlight.
+            self.list.push(DisplayItem::FillRect(FillRectItem {
+              rect: Rect::from_xywh(inner_rect.x() + 2.0, inner_rect.y() + 2.0, 3.0, 3.0),
+              color: Rgba::WHITE,
+            }));
+          }
+
+          emit_inside_border(&mut self.list, icon_rect, Rgba::rgb(163, 163, 163));
+        }
+      }
+      _ => {
+        // Keep placeholder styling stable and browser-like for other replaced elements.
+        let placeholder_color = Rgba::rgb(200, 200, 200);
+        let stroke_color = Rgba::rgb(150, 150, 150);
+        self.list.push(DisplayItem::FillRect(FillRectItem {
+          rect: content_rect,
+          color: placeholder_color,
+        }));
+
+        self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
+          rect: content_rect,
+          color: stroke_color,
+          width: 1.0,
+          blend_mode: BlendMode::Normal,
+        }));
+      }
+    }
 
     let label = replaced_type.placeholder_label();
 
@@ -16297,16 +16408,60 @@ mod tests {
     let list = builder.build(&fragment);
 
     assert!(!list.is_empty());
-    let DisplayItem::Text(text) = &list.items()[0] else {
-      panic!("Expected text item for alt fallback");
-    };
+    let text = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Text(text) => Some(text),
+        _ => None,
+      })
+      .expect("Expected text item for alt fallback");
     assert!(text.advance_width > 0.0);
+    assert!(
+      list.items().iter().any(|item| {
+        matches!(
+          item,
+          DisplayItem::FillRect(fill)
+            if fill.rect == Rect::from_xywh(0.0, 0.0, 50.0, 1.0)
+        )
+      }),
+      "Expected placeholder border for missing image"
+    );
   }
 
   #[test]
   fn missing_image_without_alt_emits_placeholder() {
     let fragment = FragmentNode::new_replaced(
-      Rect::from_xywh(0.0, 0.0, 40.0, 20.0),
+      Rect::from_xywh(0.0, 0.0, 40.0, 10.0),
+      ReplacedType::Image {
+        src: String::new(),
+        alt: None,
+        decoding: ImageDecodingAttribute::Auto,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+    );
+    let builder = DisplayListBuilder::new();
+    let list = builder.build(&fragment);
+
+    assert_eq!(list.len(), 4, "expected 1px border placeholder items");
+    assert!(list
+      .items()
+      .iter()
+      .all(|item| matches!(item, DisplayItem::FillRect(_))));
+    assert!(
+      !list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 10.0))),
+      "missing images should not fill the entire content rect"
+    );
+  }
+
+  #[test]
+  fn missing_image_emits_icon_when_large_enough() {
+    let fragment = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
       ReplacedType::Image {
         src: String::new(),
         alt: None,
@@ -16322,8 +16477,22 @@ mod tests {
     let list = builder.build(&fragment);
 
     assert!(
-      list.is_empty(),
-      "missing images without alt should paint nothing rather than a placeholder"
+      list.items().iter().any(|item| {
+        matches!(
+          item,
+          DisplayItem::FillRect(fill)
+            if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 1.0)
+        )
+      }),
+      "expected broken-image border placeholder"
+    );
+    assert!(
+      list.len() > 4,
+      "expected broken-image icon items"
+    );
+    assert!(
+      !list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 40.0))),
+      "missing images should not fill the entire content rect"
     );
   }
 
