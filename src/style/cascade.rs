@@ -17246,6 +17246,9 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.svg_stroke_dashoffset = parent.svg_stroke_dashoffset;
   styles.svg_fill_opacity = parent.svg_fill_opacity;
   styles.svg_stroke_opacity = parent.svg_stroke_opacity;
+  styles.svg_marker_start = parent.svg_marker_start.clone();
+  styles.svg_marker_mid = parent.svg_marker_mid.clone();
+  styles.svg_marker_end = parent.svg_marker_end.clone();
 
   // CSS Custom Properties inherit according to registration.
   styles.custom_property_registry = parent.custom_property_registry.clone();

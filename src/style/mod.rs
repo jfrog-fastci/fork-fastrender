@@ -175,6 +175,7 @@ use types::ShapeOutside;
 use types::StrokeDasharray;
 use types::StrokeLinecap;
 use types::StrokeLinejoin;
+use types::SvgUrlOrNone;
 use types::TabSize;
 use types::TableLayout;
 use types::TextAlign;
@@ -1168,6 +1169,9 @@ pub struct ComputedStyle {
   pub svg_stroke_dashoffset: Option<LengthOrNumber>,
   pub svg_fill_opacity: Option<f32>,
   pub svg_stroke_opacity: Option<f32>,
+  pub svg_marker_start: Option<SvgUrlOrNone>,
+  pub svg_marker_mid: Option<SvgUrlOrNone>,
+  pub svg_marker_end: Option<SvgUrlOrNone>,
 
   pub background_color: Rgba,
   /// Author-specified background values (lists preserved for layer repetition rules)
@@ -1567,6 +1571,9 @@ impl Default for ComputedStyle {
       svg_stroke_dashoffset: None,
       svg_fill_opacity: None,
       svg_stroke_opacity: None,
+      svg_marker_start: None,
+      svg_marker_mid: None,
+      svg_marker_end: None,
       background_color: Rgba::TRANSPARENT,
       background_images: vec![default_layer.image.clone()].into(),
       background_positions: vec![default_layer.position.clone()].into(),

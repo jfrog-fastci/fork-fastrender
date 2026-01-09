@@ -980,6 +980,15 @@ pub enum ColorOrNone {
   None,
 }
 
+/// SVG property value that can be a URL reference (`url(...)`) or `none`.
+///
+/// Used for marker presentation properties (`marker-start`, `marker-mid`, `marker-end`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SvgUrlOrNone {
+  None,
+  Url(Arc<str>),
+}
+
 /// SVG length list items that accept either a `<length>` or a unitless number.
 ///
 /// Used for SVG presentation properties like `stroke-width` and `stroke-dasharray`.

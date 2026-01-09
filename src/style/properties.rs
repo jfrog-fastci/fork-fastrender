@@ -6626,6 +6626,9 @@ pub(crate) fn apply_property_from_source(
     "stroke-dashoffset" => styles.svg_stroke_dashoffset = source.svg_stroke_dashoffset,
     "fill-opacity" => styles.svg_fill_opacity = source.svg_fill_opacity,
     "stroke-opacity" => styles.svg_stroke_opacity = source.svg_stroke_opacity,
+    "marker-start" => styles.svg_marker_start = source.svg_marker_start.clone(),
+    "marker-mid" => styles.svg_marker_mid = source.svg_marker_mid.clone(),
+    "marker-end" => styles.svg_marker_end = source.svg_marker_end.clone(),
     "background-image" => {
       styles.background_images = source.background_images.clone();
       styles.rebuild_background_layers();
@@ -6897,6 +6900,18 @@ fn apply_global_keyword(
       }
       "stroke-opacity" => {
         styles.svg_stroke_opacity = Some(1.0);
+        return true;
+      }
+      "marker-start" => {
+        styles.svg_marker_start = Some(SvgUrlOrNone::None);
+        return true;
+      }
+      "marker-mid" => {
+        styles.svg_marker_mid = Some(SvgUrlOrNone::None);
+        return true;
+      }
+      "marker-end" => {
+        styles.svg_marker_end = Some(SvgUrlOrNone::None);
         return true;
       }
       _ => {}
@@ -8674,6 +8689,21 @@ fn apply_declaration_with_base_internal_with_order(
         parse_length(kw)
           .filter(|len| len.calc.is_none() && matches!(len.unit, LengthUnit::Percent))
           .map(|len| (len.value / 100.0).clamp(0.0, 1.0))
+      }
+      _ => None,
+    }
+  };
+
+  let resolve_svg_url_or_none = |value: &PropertyValue| -> Option<SvgUrlOrNone> {
+    match value {
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(SvgUrlOrNone::None),
+      PropertyValue::Url(url) => {
+        let trimmed = trim_ascii_whitespace(url);
+        if trimmed.is_empty() {
+          None
+        } else {
+          Some(SvgUrlOrNone::Url(Arc::<str>::from(trimmed)))
+        }
       }
       _ => None,
     }
@@ -13513,6 +13543,21 @@ fn apply_declaration_with_base_internal_with_order(
     "stroke-opacity" => {
       if let Some(value) = resolve_svg_opacity(resolved_value) {
         styles.svg_stroke_opacity = Some(value);
+      }
+    }
+    "marker-start" => {
+      if let Some(value) = resolve_svg_url_or_none(resolved_value) {
+        styles.svg_marker_start = Some(value);
+      }
+    }
+    "marker-mid" => {
+      if let Some(value) = resolve_svg_url_or_none(resolved_value) {
+        styles.svg_marker_mid = Some(value);
+      }
+    }
+    "marker-end" => {
+      if let Some(value) = resolve_svg_url_or_none(resolved_value) {
+        styles.svg_marker_end = Some(value);
       }
     }
 

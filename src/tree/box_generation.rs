@@ -1356,6 +1356,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
   use crate::style::types::StrokeDasharray;
   use crate::style::types::StrokeLinecap;
   use crate::style::types::StrokeLinejoin;
+  use crate::style::types::SvgUrlOrNone;
   use std::fmt::Write as _;
 
   let mut out = String::new();
@@ -1406,6 +1407,15 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
     LengthOrNumber::Length(len) => {
       let _ = write!(out, "{}", len);
+    }
+  };
+
+  let mut push_svg_url_or_none = |out: &mut String, value: &SvgUrlOrNone| match value {
+    SvgUrlOrNone::None => out.push_str("none"),
+    SvgUrlOrNone::Url(url) => {
+      out.push_str("url(");
+      out.push_str(url);
+      out.push(')');
     }
   };
 
@@ -1532,6 +1542,30 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     if parent.and_then(|p| p.svg_stroke_opacity) != Some(opacity) {
       start_decl(&mut out, &mut any);
       let _ = write!(&mut out, "stroke-opacity: {:.3}", opacity);
+    }
+  }
+
+  if let Some(marker) = style.svg_marker_start.as_ref() {
+    if parent.and_then(|p| p.svg_marker_start.as_ref()) != Some(marker) {
+      start_decl(&mut out, &mut any);
+      out.push_str("marker-start: ");
+      push_svg_url_or_none(&mut out, marker);
+    }
+  }
+
+  if let Some(marker) = style.svg_marker_mid.as_ref() {
+    if parent.and_then(|p| p.svg_marker_mid.as_ref()) != Some(marker) {
+      start_decl(&mut out, &mut any);
+      out.push_str("marker-mid: ");
+      push_svg_url_or_none(&mut out, marker);
+    }
+  }
+
+  if let Some(marker) = style.svg_marker_end.as_ref() {
+    if parent.and_then(|p| p.svg_marker_end.as_ref()) != Some(marker) {
+      start_decl(&mut out, &mut any);
+      out.push_str("marker-end: ");
+      push_svg_url_or_none(&mut out, marker);
     }
   }
 

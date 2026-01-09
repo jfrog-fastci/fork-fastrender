@@ -216,6 +216,41 @@ fn inline_svg_serializes_css_transform_for_child_elements_when_document_css_inje
 }
 
 #[test]
+fn inline_svg_marker_end_from_css_works_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin:0; background:black; }
+        svg { display:block; }
+        .line { marker-end: url(#arrow); }
+      </style>
+      <svg width="100" height="20" viewBox="0 0 100 20">
+        <defs>
+          <marker id="arrow" viewBox="0 0 20 20" refX="0" refY="10" markerWidth="20" markerHeight="20" orient="auto">
+            <polygon points="0,0 20,10 0,20" fill="red"/>
+          </marker>
+        </defs>
+        <path class="line" d="M0 10 L80 10" fill="none" stroke="red" stroke-width="2"/>
+      </svg>
+      "#;
+
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 100, 20);
+      assert_eq!(
+        pixel(&pixmap, 95, 10),
+        [255, 0, 0, 255],
+        "marker should paint an arrowhead even when document CSS injection is disabled"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_root_opacity_is_not_double_applied() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
