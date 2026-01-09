@@ -481,46 +481,52 @@ impl VmJsRuntime {
       return Ok(f64::NEG_INFINITY);
     }
     // Hex/binary/octal integer literals (ToNumber per ECMA-262).
-    let (sign, digits) = if let Some(rest) = trimmed.strip_prefix('-') {
-      (-1.0, rest)
+    //
+    // Note: StringToNumber does *not* accept a leading sign for these forms:
+    // `Number("-0x10")` is `NaN` (use `parseInt` for signed radix parsing).
+    let (has_sign, rest) = if let Some(rest) = trimmed.strip_prefix('-') {
+      (true, rest)
     } else if let Some(rest) = trimmed.strip_prefix('+') {
-      (1.0, rest)
+      (true, rest)
     } else {
-      (1.0, trimmed)
+      (false, trimmed)
     };
-    if let Some(rest) = digits
-      .strip_prefix("0x")
-      .or_else(|| digits.strip_prefix("0X"))
-    {
+    if has_sign {
+      if rest.starts_with("0x")
+        || rest.starts_with("0X")
+        || rest.starts_with("0b")
+        || rest.starts_with("0B")
+        || rest.starts_with("0o")
+        || rest.starts_with("0O")
+      {
+        return Ok(f64::NAN);
+      }
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
       if let Ok(v) = u64::from_str_radix(rest, 16) {
-        return Ok((v as f64) * sign);
+        return Ok(v as f64);
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = digits
-      .strip_prefix("0b")
-      .or_else(|| digits.strip_prefix("0B"))
-    {
+    if let Some(rest) = trimmed.strip_prefix("0b").or_else(|| trimmed.strip_prefix("0B")) {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
       if let Ok(v) = u64::from_str_radix(rest, 2) {
-        return Ok((v as f64) * sign);
+        return Ok(v as f64);
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = digits
-      .strip_prefix("0o")
-      .or_else(|| digits.strip_prefix("0O"))
-    {
+    if let Some(rest) = trimmed.strip_prefix("0o").or_else(|| trimmed.strip_prefix("0O")) {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
       if let Ok(v) = u64::from_str_radix(rest, 8) {
-        return Ok((v as f64) * sign);
+        return Ok(v as f64);
       }
       return Ok(f64::NAN);
     }
@@ -1319,6 +1325,12 @@ mod tests {
     assert_eq!(rt.to_number(Value::Bool(false)).unwrap(), 0.0);
     let s = rt.alloc_string_value("  123  ").unwrap();
     assert_eq!(rt.to_number(s).unwrap(), 123.0);
+
+    // Per ECMA-262 StringToNumber, signed hex strings are not valid numeric literals.
+    let s = rt.alloc_string_value("-0x10").unwrap();
+    assert!(rt.to_number(s).unwrap().is_nan());
+    let s = rt.alloc_string_value("+0x10").unwrap();
+    assert!(rt.to_number(s).unwrap().is_nan());
   }
 
   #[test]
