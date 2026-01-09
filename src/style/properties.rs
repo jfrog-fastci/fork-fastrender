@@ -33736,6 +33736,82 @@ mod tests {
   }
 
   #[test]
+  fn font_variant_alternates_empty_function_args_invalidates_declaration() {
+    let mut style = ComputedStyle::default();
+    style.font_variant_alternates.stylesets =
+      vec![FontVariantAlternateValue::Name("Keep".to_string())];
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword("styleset()".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![FontVariantAlternateValue::Name("Keep".to_string())]
+    );
+  }
+
+  #[test]
+  fn font_variant_alternates_trailing_comma_invalidates_declaration() {
+    let mut style = ComputedStyle::default();
+    style.font_variant_alternates.stylesets =
+      vec![FontVariantAlternateValue::Name("Keep".to_string())];
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword("styleset(AltG,)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![FontVariantAlternateValue::Name("Keep".to_string())]
+    );
+  }
+
+  #[test]
+  fn font_variant_alternates_multi_ident_single_arg_function_invalidates_declaration() {
+    let mut style = ComputedStyle::default();
+    style.font_variant_alternates.stylistic =
+      Some(FontVariantAlternateValue::Name("Keep".to_string()));
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword("stylistic(AltG AltA)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylistic,
+      Some(FontVariantAlternateValue::Name("Keep".to_string()))
+    );
+  }
+
+  #[test]
+  fn font_variant_alternates_double_comma_invalidates_declaration() {
+    let mut style = ComputedStyle::default();
+    style.font_variant_alternates.stylesets =
+      vec![FontVariantAlternateValue::Name("Keep".to_string())];
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword("styleset(AltG,,AltA)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![FontVariantAlternateValue::Name("Keep".to_string())]
+    );
+  }
+
+  #[test]
   fn font_variant_numeric_invalid_token_is_ignored() {
     let mut style = ComputedStyle::default();
     style.font_variant_numeric.figure = NumericFigure::Lining;
