@@ -2132,7 +2132,7 @@ fn serialize_svg_subtree(
     .with(|cell| cell.borrow().is_some())
     .then(Instant::now);
 
-  fn root_style(style: &ComputedStyle) -> String {
+  fn root_style_base(style: &ComputedStyle) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::with_capacity(64);
@@ -2147,9 +2147,6 @@ fn serialize_svg_subtree(
       color.a.clamp(0.0, 1.0)
     );
     out.push(')');
-
-    // Make unstyled shapes pick up the computed text color (common for icon SVGs).
-    out.push_str("; fill: currentColor");
 
     if !style.font_family.is_empty() {
       out.push_str("; font-family: ");
@@ -2183,6 +2180,23 @@ fn serialize_svg_subtree(
     }
 
     out
+  }
+
+  fn root_style_includes_fill_current_color(attrs: &[(String, String)]) -> bool {
+    if attrs
+      .iter()
+      .any(|(name, _)| name.eq_ignore_ascii_case("fill"))
+    {
+      return false;
+    }
+    let Some((_, style)) = attrs
+      .iter()
+      .find(|(name, _)| name.eq_ignore_ascii_case("style"))
+    else {
+      return true;
+    };
+    let declarations = crate::css::parser::parse_declarations(style);
+    !declarations.iter().any(|decl| decl.property.as_str() == "fill")
   }
 
   let embed_document_css = svg_document_css_style_element.is_some();
@@ -2544,6 +2558,7 @@ fn serialize_svg_subtree(
 
         let mut owned_attrs: Option<Vec<(String, String)>> = None;
         if is_root {
+          let include_fill_current_color = root_style_includes_fill_current_color(attributes);
           let mut attrs = attributes.clone();
           let has_xmlns = attrs
             .iter()
@@ -2562,8 +2577,12 @@ fn serialize_svg_subtree(
             ));
           }
 
-          let style_attr = root_style(&styled.styles);
+          let style_attr = root_style_base(&styled.styles);
           merge_style_attribute(&mut attrs, &style_attr);
+          if include_fill_current_color {
+            // Make unstyled shapes pick up the computed text color (common for icon SVGs).
+            merge_style_attribute(&mut attrs, "fill: currentColor");
+          }
           owned_attrs = Some(attrs);
         } else if !current_ns.is_empty() && parent_ns != Some(current_ns) {
           let has_xmlns = attributes

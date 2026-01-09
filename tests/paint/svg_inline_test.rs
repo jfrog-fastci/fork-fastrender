@@ -220,6 +220,75 @@ fn inline_svg_root_opacity_is_not_double_applied() {
 }
 
 #[test]
+fn inline_svg_root_fill_presentation_attribute_is_not_overridden() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="20" height="20" fill="rgb(255,0,0)" viewBox="0 0 20 20">
+        <rect width="20" height="20"></rect>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
+      assert_eq!(pixel(&pixmap, 10, 10), [255, 0, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_root_fill_style_attribute_is_not_overridden() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="20" height="20" viewBox="0 0 20 20" style="fill: url(#grad)">
+        <defs>
+          <linearGradient id="grad" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stop-color="red" />
+            <stop offset="100%" stop-color="blue" />
+          </linearGradient>
+        </defs>
+        <rect width="100%" height="100%"></rect>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
+      let left = pixel(&pixmap, 5, 10);
+      let right = pixel(&pixmap, 15, 10);
+      assert_ne!(
+        left,
+        [0, 0, 0, 255],
+        "left pixel should render gradient fill, got {left:?}"
+      );
+      assert_ne!(
+        right,
+        [0, 0, 0, 255],
+        "right pixel should render gradient fill, got {right:?}"
+      );
+      assert_eq!(left[3], 255, "left pixel should be opaque, got {left:?}");
+      assert_eq!(right[3], 255, "right pixel should be opaque, got {right:?}");
+      assert!(
+        left[0] > right[0],
+        "expected more red on the left side of the gradient, got left={left:?} right={right:?}"
+      );
+      assert!(
+        right[2] > left[2],
+        "expected more blue on the right side of the gradient, got left={left:?} right={right:?}"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_does_not_record_spurious_fetch_errors() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
