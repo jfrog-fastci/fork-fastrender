@@ -338,16 +338,16 @@ fn error_mapping_and_invalid_selectors() {
     let same: bool = ctx.eval(r#"document.body === document.querySelector("body")"#).unwrap();
     assert!(same);
 
-    // Invalid selector should throw SyntaxError.
+    // Invalid selector should throw a SyntaxError DOMException (not a JS SyntaxError object).
     let selector_out: String = ctx
       .eval(
         r#"(() => {
           try { document.querySelector("["); return "no throw"; }
-          catch (e) { return String(e.name) + "|" + String(e instanceof SyntaxError); }
+          catch (e) { return String(e.name) + "|" + String(e instanceof DOMException) + "|" + String(e instanceof SyntaxError); }
         })()"#,
       )
       .unwrap();
-    assert_eq!(selector_out, "SyntaxError|true");
+    assert_eq!(selector_out, "SyntaxError|true|false");
 
     // DOM mutation errors should be surfaced as DOMException instances with the right name.
     let hierarchy_out: String = ctx

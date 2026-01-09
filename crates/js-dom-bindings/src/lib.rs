@@ -381,7 +381,9 @@ where
           .mutate_dom(|dom| (dom.query_selector(&selectors, scope), false));
         match result {
           Ok(found) => Ok(found.map(|id| id.index() as u32)),
-          Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
+          Err(DomException::SyntaxError { message }) => {
+            throw_dom_exception(ctx, "SyntaxError", &message)
+          }
         }
       }
     })?,
@@ -404,7 +406,9 @@ where
           .mutate_dom(|dom| (dom.query_selector_all(&selectors, scope), false));
         match result {
           Ok(found) => Ok(found.into_iter().map(|id| id.index() as u32).collect::<Vec<_>>()),
-          Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
+          Err(DomException::SyntaxError { message }) => {
+            throw_dom_exception(ctx, "SyntaxError", &message)
+          }
         }
       }
     })?,
@@ -424,7 +428,9 @@ where
           .mutate_dom(|dom| (dom.matches_selector(node_id, &selectors), false));
         match result {
           Ok(matched) => Ok(matched),
-          Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
+          Err(DomException::SyntaxError { message }) => {
+            throw_dom_exception(ctx, "SyntaxError", &message)
+          }
         }
       }
     })?,
@@ -717,23 +723,18 @@ where
   Ok(())
 }
 
-fn throw_dom_error<'js, T>(ctx: Ctx<'js>, err: DomError) -> JsResult<T> {
+fn throw_dom_exception<'js, T>(ctx: Ctx<'js>, name: &str, message: &str) -> JsResult<T> {
   let globals = ctx.globals();
   let thrower: Function<'js> = globals.get("__fastrender_throw_dom_exception")?;
-  let name = err.code();
-  match thrower.call::<_, ()>((name, name)) {
+  match thrower.call::<_, ()>((name, message)) {
     Ok(_) => unreachable!("thrower must throw"),
     Err(e) => Err(e),
   }
 }
 
-fn throw_syntax_error<'js, T>(ctx: Ctx<'js>, message: &str) -> JsResult<T> {
-  let globals = ctx.globals();
-  let thrower: Function<'js> = globals.get("__fastrender_throw_syntax_error")?;
-  match thrower.call::<_, ()>((message,)) {
-    Ok(_) => unreachable!("thrower must throw"),
-    Err(e) => Err(e),
-  }
+fn throw_dom_error<'js, T>(ctx: Ctx<'js>, err: DomError) -> JsResult<T> {
+  let name = err.code();
+  throw_dom_exception(ctx, name, name)
 }
 
 // Note: use `r##"..."##` (double-hash) so the shim can contain `"#` sequences (e.g. CSS selectors
@@ -757,9 +758,6 @@ const DOM_BINDINGS_SHIM: &str = r##"
   // Helpers used by Rust host functions to throw the desired error type.
   g.__fastrender_throw_dom_exception = function (name, message) {
     throw new g.DOMException(message, name);
-  };
-  g.__fastrender_throw_syntax_error = function (message) {
-    throw new SyntaxError(message === undefined ? "" : String(message));
   };
 
   var doc = g.document;
@@ -1904,7 +1902,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
   }
 
   #[test]
-  fn maps_dom_errors_to_domexception_and_selector_errors_to_syntaxerror() -> Result<()> {
+  fn maps_dom_errors_to_domexception_and_selector_errors_to_syntaxerror_domexception() -> Result<()> {
     let renderer_dom = fastrender::dom::parse_html("<!doctype html>")?;
     let dom = Rc::new(RefCell::new(TestDomHost {
       dom: Dom2Document::from_renderer_dom(&renderer_dom),
@@ -1943,18 +1941,18 @@ const DOM_BINDINGS_SHIM: &str = r##"
       );
       assert_eq!(out, "NotFoundError");
 
-      let out = eval_str(
-        &ctx,
-        r#"(() => {
-          try {
-            document.querySelector("[");
-            return "no throw";
-          } catch (e) {
-            return String(e.name) + "|" + String(e instanceof SyntaxError);
-          }
-        })()"#,
-      );
-      assert_eq!(out, "SyntaxError|true");
+       let out = eval_str(
+         &ctx,
+         r#"(() => {
+           try {
+             document.querySelector("[");
+             return "no throw";
+           } catch (e) {
+            return String(e.name) + "|" + String(e instanceof DOMException) + "|" + String(e instanceof SyntaxError);
+           }
+         })()"#,
+       );
+      assert_eq!(out, "SyntaxError|true|false");
 
       let out = eval_str(
         &ctx,

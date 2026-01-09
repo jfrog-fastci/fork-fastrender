@@ -886,15 +886,6 @@ fn throw_type_error<'js>(ctx: &Ctx<'js>, msg: &str) -> rquickjs::Error {
   rquickjs::Error::Exception
 }
 
-fn throw_syntax_error<'js>(ctx: &Ctx<'js>, msg: &str) -> rquickjs::Error {
-  let fmt = cstring_for_quickjs("%s");
-  let msg = cstring_for_quickjs(msg);
-  unsafe {
-    rquickjs::qjs::JS_ThrowSyntaxError(ctx.as_raw().as_ptr(), fmt.as_ptr(), msg.as_ptr());
-  }
-  rquickjs::Error::Exception
-}
-
 fn throw_dom_exception<'js>(ctx: &Ctx<'js>, name: &str, message: &str) -> rquickjs::Error {
   let globals = ctx.globals();
   let Ok(thrower) = globals.get::<_, Function<'js>>(DOM_EXCEPTION_GLOBAL) else {
@@ -908,19 +899,23 @@ fn throw_dom_exception<'js>(ctx: &Ctx<'js>, name: &str, message: &str) -> rquick
   }
 }
 
+fn throw_syntax_dom_exception<'js>(ctx: &Ctx<'js>, message: &str) -> rquickjs::Error {
+  throw_dom_exception(ctx, "SyntaxError", message)
+}
+
 fn dom_error_to_js<'js>(ctx: &Ctx<'js>, err: DomError) -> rquickjs::Error {
   match err {
     DomError::HierarchyRequestError | DomError::NotFoundError | DomError::InvalidNodeType => {
       let name = err.code();
       throw_dom_exception(ctx, name, name)
     }
-    DomError::SyntaxError => throw_syntax_error(ctx, err.code()),
+    DomError::SyntaxError => throw_syntax_dom_exception(ctx, err.code()),
   }
 }
 
 fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Error {
   match err {
-    DomException::SyntaxError { message } => throw_syntax_error(ctx, &message),
+    DomException::SyntaxError { message } => throw_syntax_dom_exception(ctx, &message),
   }
 }
 
@@ -1013,7 +1008,7 @@ fn validate_token_or_throw<'js>(ctx: &Ctx<'js>, token: &str) -> JsResult<()> {
   if validate_token(token) {
     Ok(())
   } else {
-    Err(throw_syntax_error(ctx, "InvalidToken"))
+    Err(throw_syntax_dom_exception(ctx, "InvalidToken"))
   }
 }
 
@@ -1073,6 +1068,30 @@ mod tests {
         )
         .unwrap();
       assert_eq!(outcome, "NotFoundError|true");
+    });
+  }
+
+  #[test]
+  fn invalid_selectors_throw_syntaxerror_domexception() {
+    let dom = make_dom(r#"<!doctype html><html><body><div id="x"></div></body></html>"#);
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::full(&rt).unwrap();
+    ctx.with(|ctx| {
+      install_dom_bindings(ctx.clone(), dom).unwrap();
+
+      let outcome: String = ctx
+        .eval(
+          r#"(() => {
+            try {
+              document.querySelector("[");
+              return "no throw";
+            } catch (e) {
+              return String(e.name) + "|" + String(e instanceof DOMException) + "|" + String(e instanceof SyntaxError);
+            }
+          })()"#,
+        )
+        .unwrap();
+      assert_eq!(outcome, "SyntaxError|true|false");
     });
   }
 }
