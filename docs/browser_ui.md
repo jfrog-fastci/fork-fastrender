@@ -4,6 +4,9 @@ FastRender has an experimental desktop “browser” binary at [`src/bin/browser
 
 This is **feature-gated** so the core renderer can compile without pulling in the heavy GUI stack.
 
+For a higher-level overview of the `browser` binary (current capabilities, env vars, and how to run
+it), see [browser.md](browser.md).
+
 ## Build / run
 
 The `browser` binary is behind the Cargo feature `browser_ui` (note the underscore) and is **not**
@@ -29,21 +32,6 @@ scripts/run_limited.sh --as 64G -- cargo run --release --features browser_ui --b
 
 The `browser` binary also supports an in-process, best-effort address-space cap via
 `FASTR_BROWSER_MEM_LIMIT_MB` (see [env-vars.md](env-vars.md)).
-
-## Current UI capabilities (MVP)
-
-The browser UI is still experimental, but it is intended to be a **real interactive surface** over
-the renderer:
-
-- **Navigation**
-  - address bar URL entry (including `about:*` pages and `file://` URLs / filesystem paths)
-  - back/forward/reload with per-tab history
-- **Tabs**: create/close/switch tabs (each tab has its own navigation state)
-- **Scrolling**: mouse wheel/trackpad updates the viewport scroll offset and repaints
-- **Pointer + basic forms** (non-JS):
-  - link clicking (hit-test fragments → navigate)
-  - basic focus + text input for `<input>` / `<textarea>`
-  - checkbox/radio toggling
 
 ## Code layout
 
