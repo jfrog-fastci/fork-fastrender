@@ -180,6 +180,7 @@ fn js_value_for_phase(phase: EventPhase) -> Value {
   // Mirror the DOM `Event.eventPhase` numeric values.
   // https://dom.spec.whatwg.org/#dom-event-eventphase
   Value::Number(match phase {
+    EventPhase::None => 0.0,
     EventPhase::CapturingPhase => 1.0,
     EventPhase::AtTarget => 2.0,
     EventPhase::BubblingPhase => 3.0,
@@ -192,6 +193,7 @@ fn js_value_for_target(
 ) -> std::result::Result<Value, VmError> {
   Ok(match target {
     None => Value::Null,
+    Some(EventTargetId::Window) => rt.alloc_string_value("window")?,
     Some(EventTargetId::Document) => rt.alloc_string_value("document")?,
     Some(EventTargetId::Node(node_id)) => Value::Number(node_id.index() as f64),
   })
@@ -360,7 +362,12 @@ impl JsDomEvents {
 }
 
 impl EventListenerInvoker for JsDomEvents {
-  fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> Result<()> {
+  fn invoke(
+    &mut self,
+    listener_id: ListenerId,
+    event: &mut Event,
+    _ctx: &mut dyn dom2::events::EventListenerContext,
+  ) -> Result<()> {
     let entry = self.listeners.get(&listener_id).copied().ok_or_else(|| {
       Error::Other(format!(
         "unknown event listener id during dispatch: {listener_id:?}"

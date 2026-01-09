@@ -8,6 +8,7 @@ use std::{
 
 use vm_js::{
   Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
+  VmHostHooks,
 };
 
 /// Deterministic web time model for JavaScript APIs.
@@ -193,6 +194,7 @@ fn with_time_context<T>(scope: &Scope<'_>, f: impl FnOnce(&TimeContext) -> T) ->
 
 fn date_now_native(
   _vm: &mut Vm,
+  _host: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
   _this: Value,
   _args: &[Value],
@@ -207,6 +209,7 @@ fn date_now_native(
 
 fn performance_now_native(
   _vm: &mut Vm,
+  _host: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
   _this: Value,
   _args: &[Value],
@@ -237,6 +240,15 @@ mod tests {
   use crate::js::clock::VirtualClock;
   use std::sync::Arc;
 
+  #[derive(Default)]
+  struct NoopHostHooks;
+
+  impl VmHostHooks for NoopHostHooks {
+    fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
+      // This test only uses synchronous native functions (no Promise jobs).
+    }
+  }
+
   fn get_global_property(heap: &mut Heap, realm: &Realm, name: &str) -> Value {
     let mut scope = heap.scope();
     let key_s = scope.alloc_string(name).expect("alloc key string");
@@ -264,8 +276,9 @@ mod tests {
 
   fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
     let mut scope = heap.scope();
+    let mut host = NoopHostHooks::default();
     vm
-      .call(&mut scope, callee, this, &[])
+      .call(&mut host, &mut scope, callee, this, &[])
       .expect("call should succeed")
   }
 

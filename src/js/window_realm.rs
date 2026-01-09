@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use vm_js::{Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+  VmError, VmHostHooks, VmOptions,
+};
 
 pub type ConsoleSink =
   Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -130,6 +133,7 @@ fn unregister_console_sink(id: u64) {
 
 fn console_log_native(
   _vm: &mut Vm,
+  _host: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
   this: Value,
   args: &[Value],
@@ -241,6 +245,15 @@ fn init_window_globals(
 mod tests {
   use super::*;
 
+  #[derive(Default)]
+  struct NoopHostHooks;
+
+  impl vm_js::VmHostHooks for NoopHostHooks {
+    fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
+      // This test only calls synchronous native functions.
+    }
+  }
+
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
       panic!("expected string value");
@@ -297,8 +310,9 @@ mod tests {
       panic!("expected object");
     };
     let log = get_prop(&mut scope, console_obj, "log");
+    let mut host_hooks = NoopHostHooks::default();
     let call_result =
-      vm.call(&mut scope, log, Value::Object(console_obj), &[Value::Number(1.0), Value::Null])?;
+      vm.call(&mut host_hooks, &mut scope, log, Value::Object(console_obj), &[Value::Number(1.0), Value::Null])?;
     assert_eq!(call_result, Value::Undefined);
 
     Ok(())
