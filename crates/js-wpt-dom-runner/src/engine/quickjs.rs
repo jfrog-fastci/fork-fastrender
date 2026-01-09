@@ -1,8 +1,12 @@
 use super::{Backend, BackendInit, HostEnvironment};
 use crate::dom_shims::install_dom_shims;
+use crate::window_or_worker_global_scope::{
+  forgiving_base64_decode, forgiving_base64_encode, is_secure_context_for_document_url,
+  latin1_encode, serialized_origin_for_document_url,
+};
 use crate::wpt_report::WptReport;
 use crate::RunError;
-use rquickjs::{Context, Object, Runtime};
+use rquickjs::{Context, Function, Object, Runtime};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -300,7 +304,7 @@ fn install_window_shims<'js>(
 
   // Tiny console shim.
   let console = Object::new(ctx.clone()).map_err(|e| RunError::Js(e.to_string()))?;
-  let log = rquickjs::Function::new(ctx, |msg: String| {
+  let log = rquickjs::Function::new(ctx.clone(), |msg: String| {
     eprintln!("[wpt] {msg}");
   })
   .map_err(|e| RunError::Js(e.to_string()))?;
@@ -311,8 +315,91 @@ fn install_window_shims<'js>(
     .set("console", console)
     .map_err(|e| RunError::Js(e.to_string()))?;
 
+  // WindowOrWorkerGlobalScope primitives.
+  let origin = serialized_origin_for_document_url(href);
+  globals
+    .set("origin", origin)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("isSecureContext", is_secure_context_for_document_url(href))
+    .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("crossOriginIsolated", false)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  // Install JS shims for `reportError` and a tiny DOMException-like throw helper.
+  eval_script(ctx.clone(), WINDOW_OR_WORKER_GLOBAL_SCOPE_SHIM).map_err(RunError::Js)?;
+
+  let atob = Function::new(ctx.clone(), |ctx: rquickjs::Ctx<'js>, data: String| {
+    let decoded = match forgiving_base64_decode(&data) {
+      Ok(bytes) => bytes,
+      Err(_) => return Err(throw_dom_exception(&ctx, "InvalidCharacterError", "The string to be decoded is not correctly encoded.")),
+    };
+    Ok(decoded.iter().map(|&b| b as char).collect::<String>())
+  })
+  .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("atob", atob)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  let btoa = Function::new(ctx, |ctx: rquickjs::Ctx<'js>, data: String| {
+    let bytes = match latin1_encode(&data) {
+      Ok(bytes) => bytes,
+      Err(_) => return Err(throw_dom_exception(&ctx, "InvalidCharacterError", "The string to be encoded contains characters outside of the Latin1 range.")),
+    };
+    let encoded = match forgiving_base64_encode(&bytes) {
+      Ok(encoded) => encoded,
+      Err(_) => return Err(throw_dom_exception(&ctx, "InvalidCharacterError", "The string to be encoded is too large.")),
+    };
+    Ok(encoded)
+  })
+  .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("btoa", btoa)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
   Ok(())
 }
+
+fn throw_dom_exception<'js>(
+  ctx: &rquickjs::Ctx<'js>,
+  name: &'static str,
+  message: &str,
+) -> rquickjs::Error {
+  let globals = ctx.globals();
+  let Ok(thrower) = globals.get::<_, Function<'js>>("__fastrender_throw_dom_exception") else {
+    return rquickjs::Error::new_from_js_message("DOMException", name, message);
+  };
+  match thrower.call::<_, ()>((name, message)) {
+    Ok(_) => rquickjs::Error::new_from_js_message("DOMException", name, message),
+    Err(e) => e,
+  }
+}
+
+const WINDOW_OR_WORKER_GLOBAL_SCOPE_SHIM: &str = r#"
+(function () {
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+
+  if (typeof g.__fastrender_throw_dom_exception !== "function") {
+    g.__fastrender_throw_dom_exception = function (name, message) {
+      throw { name: String(name), message: String(message) };
+    };
+  }
+
+  if (typeof g.reportError !== "function") {
+    g.reportError = function (e) {
+      try {
+        // `String(Symbol("x"))` is allowed; avoid `e + ""` which throws for Symbols.
+        g.console && g.console.log && g.console.log(String(e));
+      } catch (_err) {
+        try {
+          g.console && g.console.log && g.console.log("[reportError]");
+        } catch (_err2) {}
+      }
+    };
+  }
+})();
+"#;
 
 const TIMER_SHIM: &str = r#"
 (function () {

@@ -20,6 +20,10 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
+use crate::window_or_worker_global_scope::{
+  forgiving_base64_decode, forgiving_base64_encode, is_secure_context_for_document_url,
+  latin1_encode, serialized_origin_for_document_url,
+};
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm,
   VmError, VmOptions,
@@ -778,6 +782,7 @@ struct JsWptRuntime {
   promise_prototype: Option<GcObject>,
   array_prototype: Option<GcObject>,
   error_prototype: Option<GcObject>,
+  string_char_code_at: Option<GcObject>,
   event_target_proto: Option<GcObject>,
   node_proto: Option<GcObject>,
   global_object: GcObject,
@@ -835,6 +840,7 @@ impl JsWptRuntime {
       promise_prototype: None,
       array_prototype: None,
       error_prototype: None,
+      string_char_code_at: None,
       event_target_proto: None,
       node_proto: None,
       global_object,
@@ -851,6 +857,17 @@ impl JsWptRuntime {
     rt.env.set("self", global_value);
     // Fundamental global binding: scripts frequently reference `undefined` as an identifier.
     rt.env.set("undefined", Value::Undefined);
+
+    // `Symbol(...)` is used by some tests for smoke coverage (e.g. `reportError(Symbol("x"))`).
+    let symbol = rt.alloc_native_function(native_symbol).expect("alloc Symbol");
+    rt.env.set("Symbol", Value::Object(symbol));
+    let symbol_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("Symbol").expect("alloc Symbol key"))
+    };
+    rt
+      .define_data_prop(rt.global_object, symbol_key, Value::Object(symbol))
+      .expect("define Symbol");
 
     // Report hook.
     let report_fn = rt.alloc_native_function(native_wpt_report).expect("alloc report fn");
@@ -875,6 +892,7 @@ impl JsWptRuntime {
     rt.install_promise_shim().expect("install Promise");
     rt.install_array_shim().expect("install Array");
     rt.install_error_shim().expect("install Error");
+    rt.install_string_shim().expect("install String");
     rt
       .install_event_target_and_event()
       .expect("install EventTarget/Event");
@@ -889,6 +907,10 @@ impl JsWptRuntime {
 
     rt.install_location_and_document(test_url)
       .expect("install location/document");
+
+    rt
+      .install_window_or_worker_global_scope_primitives(test_url)
+      .expect("install WindowOrWorkerGlobalScope primitives");
 
     rt
   }
@@ -1165,6 +1187,63 @@ impl JsWptRuntime {
     Ok(())
   }
 
+  fn install_window_or_worker_global_scope_primitives(&mut self, test_url: &str) -> Result<(), JsError> {
+    let origin = serialized_origin_for_document_url(test_url);
+    let origin_value = self.alloc_string_value(&origin)?;
+    let origin_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("origin")?)
+    };
+    self.define_data_prop(self.global_object, origin_key, origin_value)?;
+    self.env.set("origin", origin_value);
+
+    let is_secure_context = Value::Bool(is_secure_context_for_document_url(test_url));
+    let is_secure_context_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("isSecureContext")?)
+    };
+    self.define_data_prop(self.global_object, is_secure_context_key, is_secure_context)?;
+    self.env.set("isSecureContext", is_secure_context);
+
+    let cross_origin_isolated = Value::Bool(false);
+    let cross_origin_isolated_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("crossOriginIsolated")?)
+    };
+    self.define_data_prop(self.global_object, cross_origin_isolated_key, cross_origin_isolated)?;
+    self.env.set("crossOriginIsolated", cross_origin_isolated);
+
+    let atob_fn = self.alloc_native_function(native_atob)?;
+    let atob_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("atob")?)
+    };
+    self.define_data_prop(self.global_object, atob_key, Value::Object(atob_fn))?;
+    self.env.set("atob", Value::Object(atob_fn));
+
+    let btoa_fn = self.alloc_native_function(native_btoa)?;
+    let btoa_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("btoa")?)
+    };
+    self.define_data_prop(self.global_object, btoa_key, Value::Object(btoa_fn))?;
+    self.env.set("btoa", Value::Object(btoa_fn));
+
+    let report_error_fn = self.alloc_native_function(native_report_error)?;
+    let report_error_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("reportError")?)
+    };
+    self.define_data_prop(
+      self.global_object,
+      report_error_key,
+      Value::Object(report_error_fn),
+    )?;
+    self.env.set("reportError", Value::Object(report_error_fn));
+
+    Ok(())
+  }
+
   fn install_promise_shim(&mut self) -> Result<(), JsError> {
     let proto = self.alloc_object()?;
     let then_fn = self.alloc_native_function(native_promise_then)?;
@@ -1224,6 +1303,15 @@ impl JsWptRuntime {
     self.env.set("Error", Value::Object(ctor));
 
     self.error_prototype = Some(proto);
+    Ok(())
+  }
+
+  fn install_string_shim(&mut self) -> Result<(), JsError> {
+    // The runner does not implement the full `String` constructor or `String.prototype`.
+    // Instead, we expose a few string primitives required by the curated WPT corpus (e.g.
+    // `atob(...).length` and `.charCodeAt(...)`).
+    let char_code_at = self.alloc_native_function(native_string_char_code_at)?;
+    self.string_char_code_at = Some(char_code_at);
     Ok(())
   }
 
@@ -2350,28 +2438,43 @@ impl JsWptRuntime {
   }
 
   fn eval_member(&mut self, expr: &MemberExpr) -> Result<Value, JsError> {
-    let obj = self.eval_expr(&expr.left)?;
-    let Value::Object(obj) = obj else {
-      return Err(JsError::Vm(VmError::Unimplemented("member access on non-object")));
-    };
-    let key = {
-      let mut scope = self.heap.scope();
-      PropertyKey::from_string(scope.alloc_string(&expr.right)?)
-    };
-    let Some(desc) = self.heap.get_property(obj, &key)? else {
-      return Ok(Value::Undefined);
-    };
-    match desc.kind {
-      PropertyKind::Data { value, .. } => Ok(value),
-      PropertyKind::Accessor { get, .. } => {
-        if matches!(get, Value::Undefined) {
+    let obj_value = self.eval_expr(&expr.left)?;
+    match obj_value {
+      Value::Object(obj) => {
+        let key = {
+          let mut scope = self.heap.scope();
+          PropertyKey::from_string(scope.alloc_string(&expr.right)?)
+        };
+        let Some(desc) = self.heap.get_property(obj, &key)? else {
           return Ok(Value::Undefined);
+        };
+        match desc.kind {
+          PropertyKind::Data { value, .. } => Ok(value),
+          PropertyKind::Accessor { get, .. } => {
+            if matches!(get, Value::Undefined) {
+              return Ok(Value::Undefined);
+            }
+            if !self.is_callable_value(get) {
+              return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+            }
+            self.call(get, Value::Object(obj), &[])
+          }
         }
-        if !self.is_callable_value(get) {
-          return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
-        }
-        self.call(get, Value::Object(obj), &[])
       }
+      Value::String(s) => match expr.right.as_str() {
+        "length" => {
+          let len = self.heap.get_string(s)?.as_code_units().len();
+          Ok(Value::Number(len as f64))
+        }
+        "charCodeAt" => {
+          let Some(func) = self.string_char_code_at else {
+            return Err(JsError::Vm(VmError::Unimplemented("String.charCodeAt")));
+          };
+          Ok(Value::Object(func))
+        }
+        _ => Ok(Value::Undefined),
+      },
+      _ => Err(JsError::Vm(VmError::Unimplemented("member access on non-object"))),
     }
   }
 
@@ -2418,30 +2521,44 @@ impl JsWptRuntime {
     match &*expr.stx {
       Expr::Member(member) => {
         let this = self.eval_expr(&member.stx.left)?;
-        let Value::Object(obj) = this else {
-          return Err(JsError::Vm(VmError::NotCallable));
-        };
-        let key = {
-          let mut scope = self.heap.scope();
-          PropertyKey::from_string(scope.alloc_string(&member.stx.right)?)
-        };
-        let value = match self.heap.get_property(obj, &key)? {
-          Some(desc) => match desc.kind {
-            PropertyKind::Data { value, .. } => value,
-            PropertyKind::Accessor { get, .. } => {
-              if matches!(get, Value::Undefined) {
-                Value::Undefined
-              } else {
-                if !self.is_callable_value(get) {
-                  return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+        match this {
+          Value::Object(obj) => {
+            let key = {
+              let mut scope = self.heap.scope();
+              PropertyKey::from_string(scope.alloc_string(&member.stx.right)?)
+            };
+            let value = match self.heap.get_property(obj, &key)? {
+              Some(desc) => match desc.kind {
+                PropertyKind::Data { value, .. } => value,
+                PropertyKind::Accessor { get, .. } => {
+                  if matches!(get, Value::Undefined) {
+                    Value::Undefined
+                  } else {
+                    if !self.is_callable_value(get) {
+                      return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+                    }
+                    self.call(get, Value::Object(obj), &[])?
+                  }
                 }
-                self.call(get, Value::Object(obj), &[])?
+              },
+              None => Value::Undefined,
+            };
+            Ok((value, Value::Object(obj)))
+          }
+          Value::String(_) => {
+            let value = match member.stx.right.as_str() {
+              "charCodeAt" => {
+                let Some(func) = self.string_char_code_at else {
+                  return Err(JsError::Vm(VmError::Unimplemented("String.charCodeAt")));
+                };
+                Value::Object(func)
               }
-            }
-          },
-          None => Value::Undefined,
-        };
-        Ok((value, Value::Object(obj)))
+              _ => Value::Undefined,
+            };
+            Ok((value, this))
+          }
+          _ => Err(JsError::Vm(VmError::NotCallable)),
+        }
       }
       Expr::ComputedMember(member) => {
         let this = self.eval_expr(&member.stx.object)?;
@@ -2531,8 +2648,13 @@ impl JsWptRuntime {
         Ok(Value::Bool(!to_boolean(&mut self.heap, arg)?))
       }
       OperatorName::Typeof => {
-        let arg = self.eval_expr(&expr.argument)?;
-        let typ = match arg {
+        // `typeof` is special: it does not throw for unbound identifiers.
+        let value = match &*expr.argument.stx {
+          Expr::Id(id) => self.env.get(&id.stx.name).unwrap_or(Value::Undefined),
+          _ => self.eval_expr(&expr.argument)?,
+        };
+
+        let kind = match value {
           Value::Undefined => "undefined",
           Value::Null => "object",
           Value::Bool(_) => "boolean",
@@ -2548,7 +2670,7 @@ impl JsWptRuntime {
             }
           }
         };
-        self.alloc_string_value(typ)
+        self.alloc_string_value(kind)
       }
       OperatorName::New => self.eval_new(&expr.argument),
       _ => Err(JsError::Vm(VmError::Unimplemented("unary operator"))),
@@ -2915,6 +3037,93 @@ fn native_console_log(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Re
     .collect::<Vec<_>>();
   eprintln!("[wpt] {}", parts.join(" "));
   Ok(Value::Undefined)
+}
+
+fn native_symbol(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let desc_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let desc = if desc_value == Value::Undefined {
+    None
+  } else {
+    let s = rt.heap.to_string(desc_value)?;
+    Some(rt.heap.get_string(s)?.to_utf8_lossy())
+  };
+  let sym = {
+    let mut scope = rt.heap.scope();
+    scope.alloc_symbol(desc.as_deref())?
+  };
+  Ok(Value::Symbol(sym))
+}
+
+fn native_report_error(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  // `reportError` must never throw. Our vm-js harness does not implement full `ToString`, so we use
+  // the runner's best-effort stringification helper.
+  let msg = rt.value_to_string_lossy(value);
+  eprintln!("[wpt][reportError] {msg}");
+  Ok(Value::Undefined)
+}
+
+fn native_btoa(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = rt.heap.to_string(value)?;
+  let s = rt.heap.get_string(s)?.to_utf8_lossy();
+
+  let bytes = match latin1_encode(&s) {
+    Ok(bytes) => bytes,
+    Err(_) => {
+      return dom_throw_invalid_character_error(
+        rt,
+        "The string to be encoded contains characters outside of the Latin1 range.",
+      );
+    }
+  };
+  let encoded = match forgiving_base64_encode(&bytes) {
+    Ok(encoded) => encoded,
+    Err(_) => {
+      return dom_throw_invalid_character_error(rt, "The string to be encoded is too large.");
+    }
+  };
+  Ok(rt.alloc_string_value(&encoded)?)
+}
+
+fn native_atob(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = rt.heap.to_string(value)?;
+  let s = rt.heap.get_string(s)?.to_utf8_lossy();
+
+  let decoded = match forgiving_base64_decode(&s) {
+    Ok(bytes) => bytes,
+    Err(_) => {
+      return dom_throw_invalid_character_error(
+        rt,
+        "The string to be decoded is not correctly encoded.",
+      );
+    }
+  };
+  let out = decoded.iter().map(|&b| b as char).collect::<String>();
+  Ok(rt.alloc_string_value(&out)?)
+}
+
+fn native_string_char_code_at(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let index_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
+  let mut idx = rt.heap.to_number(index_value)?;
+  if !idx.is_finite() {
+    idx = 0.0;
+  }
+  if idx < 0.0 {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let idx = idx.trunc() as usize;
+
+  let s = rt.heap.to_string(this)?;
+  let unit = {
+    let code_units = rt.heap.get_string(s)?.as_code_units();
+    code_units.get(idx).copied()
+  };
+  let Some(unit) = unit else {
+    return Ok(Value::Number(f64::NAN));
+  };
+  Ok(Value::Number(unit as f64))
 }
 
 fn native_error_ctor(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
@@ -3817,7 +4026,7 @@ fn dispatch_listeners(
   Ok(())
 }
 
-fn dom_throw_syntax_error(rt: &mut JsWptRuntime, message: &str) -> Result<Value, JsError> {
+fn dom_throw_named_error(rt: &mut JsWptRuntime, name: &str, message: &str) -> Result<Value, JsError> {
   let obj = rt.alloc_object()?;
 
   let name_key = {
@@ -3828,11 +4037,19 @@ fn dom_throw_syntax_error(rt: &mut JsWptRuntime, message: &str) -> Result<Value,
     let mut scope = rt.heap.scope();
     PropertyKey::from_string(scope.alloc_string("message")?)
   };
-  let name_value = rt.alloc_string_value("SyntaxError")?;
+  let name_value = rt.alloc_string_value(name)?;
   let message_value = rt.alloc_string_value(message)?;
   rt.define_data_prop(obj, name_key, name_value)?;
   rt.define_data_prop(obj, message_key, message_value)?;
   Err(JsError::Vm(VmError::Throw(Value::Object(obj))))
+}
+
+fn dom_throw_syntax_error(rt: &mut JsWptRuntime, message: &str) -> Result<Value, JsError> {
+  dom_throw_named_error(rt, "SyntaxError", message)
+}
+
+fn dom_throw_invalid_character_error(rt: &mut JsWptRuntime, message: &str) -> Result<Value, JsError> {
+  dom_throw_named_error(rt, "InvalidCharacterError", message)
 }
 
 fn parse_dom_selector_list(input: &str) -> Result<Vec<DomSelector>, ()> {

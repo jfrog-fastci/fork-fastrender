@@ -82,6 +82,11 @@ fn runs_html_smoke_test() {
 }
 
 #[test]
+fn window_or_worker_global_scope_primitives() {
+  assert_wpt_pass("smoke/window_or_worker_global_scope.window.js");
+}
+
+#[test]
 fn runs_html_async_test() {
   assert_wpt_pass("smoke/async-timeout-pass.html");
 }

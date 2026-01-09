@@ -16,6 +16,7 @@ quickjs = ["dep:rquickjs", "dep:markup5ever"]
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 conformance-harness = { path = "../../engines/ecma-rs/conformance-harness" }
 globset = "0.4"

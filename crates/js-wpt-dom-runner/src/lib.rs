@@ -18,6 +18,7 @@ mod engine;
 mod backend_vmjs;
 #[cfg(feature = "quickjs")]
 mod dom_shims;
+mod window_or_worker_global_scope;
 mod meta;
 mod runner;
 mod suite;
