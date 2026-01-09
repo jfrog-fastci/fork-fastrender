@@ -12,7 +12,7 @@ mod response;
 pub use adapter::{execute_web_fetch, WebFetchExecutionContext};
 pub use body::Body;
 pub use headers::{Headers, HeadersGuard};
-pub use request::{ReferrerPolicy, Request, RequestCredentials, RequestMode, RequestRedirect};
+pub use request::{Request, RequestCredentials, RequestMode, RequestRedirect};
 pub use response::{Response, ResponseType};
 
 /// Errors returned by the Fetch core types.
@@ -42,6 +42,7 @@ pub type Result<T> = std::result::Result<T, WebFetchError>;
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::resource::{FetchCredentialsMode, ReferrerPolicy};
 
   #[test]
   fn headers_validation_invalid_name() {
@@ -117,5 +118,27 @@ mod tests {
     let mut cloned = body.clone();
     assert!(!cloned.body_used());
     assert_eq!(cloned.consume_bytes().unwrap(), b"hello".to_vec());
+  }
+
+  #[test]
+  fn request_referrer_policy_uses_resource_referrer_policy_type() {
+    let mut req = Request::new("GET", "https://example.com/");
+    req.referrer_policy = ReferrerPolicy::StrictOriginWhenCrossOrigin;
+    assert_eq!(
+      req.referrer_policy.as_str(),
+      "strict-origin-when-cross-origin"
+    );
+  }
+
+  #[test]
+  fn request_credentials_converts_to_resource_fetch_credentials_mode() {
+    assert_eq!(
+      FetchCredentialsMode::from(RequestCredentials::Include),
+      FetchCredentialsMode::Include
+    );
+    assert_eq!(
+      RequestCredentials::from(FetchCredentialsMode::Omit),
+      RequestCredentials::Omit
+    );
   }
 }

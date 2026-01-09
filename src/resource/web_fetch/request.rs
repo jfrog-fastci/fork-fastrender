@@ -1,4 +1,5 @@
 use super::{Body, Headers, HeadersGuard};
+use crate::resource::{FetchCredentialsMode, ReferrerPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestMode {
@@ -15,24 +16,31 @@ pub enum RequestCredentials {
   Include,
 }
 
+impl From<RequestCredentials> for FetchCredentialsMode {
+  fn from(value: RequestCredentials) -> Self {
+    match value {
+      RequestCredentials::Omit => Self::Omit,
+      RequestCredentials::SameOrigin => Self::SameOrigin,
+      RequestCredentials::Include => Self::Include,
+    }
+  }
+}
+
+impl From<FetchCredentialsMode> for RequestCredentials {
+  fn from(value: FetchCredentialsMode) -> Self {
+    match value {
+      FetchCredentialsMode::Omit => Self::Omit,
+      FetchCredentialsMode::SameOrigin => Self::SameOrigin,
+      FetchCredentialsMode::Include => Self::Include,
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestRedirect {
   Follow,
   Error,
   Manual,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReferrerPolicy {
-  EmptyString,
-  NoReferrer,
-  NoReferrerWhenDowngrade,
-  Origin,
-  OriginWhenCrossOrigin,
-  SameOrigin,
-  StrictOrigin,
-  StrictOriginWhenCrossOrigin,
-  UnsafeUrl,
 }
 
 /// A minimal, spec-shaped request object.
@@ -86,4 +94,3 @@ impl Clone for Request {
     }
   }
 }
-
