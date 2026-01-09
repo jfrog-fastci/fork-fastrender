@@ -19,10 +19,12 @@
 pub mod dom_scripts;
 pub mod clock;
 pub mod event_loop;
+pub mod orchestrator;
 pub mod script_scheduler;
+pub mod runtime;
+pub mod time;
 pub mod url;
 pub mod window_timers;
-pub mod orchestrator;
 pub mod streaming;
 
 #[allow(deprecated)]
@@ -32,16 +34,18 @@ pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, Task, TaskSource,
   TimerId,
 };
+pub use orchestrator::{
+  CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator,
+};
+pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler,
   ScriptSchedulerAction,
 };
+pub use time::{install_time_bindings, WebTime};
 pub use url::{Url, UrlError, UrlSearchParams};
 pub use window_timers::{
   clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
-};
-pub use orchestrator::{
-  CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator,
 };
 
 /// The script processing mode for a `<script>` element.
