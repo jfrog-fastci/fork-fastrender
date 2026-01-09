@@ -130,15 +130,17 @@ pointer again.
 
 `vm-js` occasionally changes the embedding surface in ways that ripple into FastRender:
 
-- `Vm::call` / `Vm::construct` may gain an explicit embedder host parameter (in addition to
-  `VmHostHooks`), and `NativeCall` / `NativeConstruct` signatures change accordingly.
+- `Vm::call` / `Vm::construct` may change how host integration is threaded (for example: adding or
+  removing an explicit `VmHostHooks` parameter, and/or moving embedder state between an explicit
+  argument vs `Vm::user_data`). `NativeCall` / `NativeConstruct` signatures change accordingly.
 - `webidl-vm-js` sometimes calls `Vm::call` internally (e.g. iterator helpers). When the embedder
-  host becomes required, those internal calls must switch to the corresponding helper
-  (typically `Vm::call_without_host`) or be threaded with a real host object.
+  host becomes required, those internal calls must switch to the corresponding "no host" helper
+  (often `Vm::{call_without_host,construct_without_host}`), or be threaded with a real host context
+  / hook implementation.
 - `vm-js::spec_ops` (small spec-shaped helpers used by Promise/builtins) can also call into
-  `Vm::call`/`Vm::construct`. When the host parameter becomes required, these helpers should use
-  `Vm::call_without_host` (or be threaded with a real host) and avoid referencing removed internal
-  APIs (for example older `Heap::get_function_call_id`/`get_function_construct_id` helpers).
+  `Vm::{call,construct}`. When the host parameter becomes required, these helpers should use the same
+  approach (`*_without_host` or explicit host threading) and avoid referencing removed internal APIs
+  (for example older `Heap::get_function_call_id`/`get_function_construct_id` helpers).
 
 If a submodule bump breaks compilation with errors around `Vm::call` arity or native call handler
 signatures, update both FastRender's native handlers and any engine-internal callers like
