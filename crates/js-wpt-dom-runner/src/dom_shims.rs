@@ -528,6 +528,50 @@ const DOM_SHIM: &str = r##"
     configurable: true,
   });
 
+  Object.defineProperty(Node.prototype, "firstChild", {
+    get: function () {
+      nodeIdFromThis(this);
+      var nodes = this.childNodes || [];
+      return nodes.length ? nodes[0] : null;
+    },
+    configurable: true,
+  });
+ 
+  Object.defineProperty(Node.prototype, "lastChild", {
+    get: function () {
+      nodeIdFromThis(this);
+      var nodes = this.childNodes || [];
+      return nodes.length ? nodes[nodes.length - 1] : null;
+    },
+    configurable: true,
+  });
+ 
+  Object.defineProperty(Node.prototype, "previousSibling", {
+    get: function () {
+      nodeIdFromThis(this);
+      var parent = this.parentNode;
+      if (!parent) return null;
+      var siblings = parent.childNodes || [];
+      var idx = siblings.indexOf(this);
+      if (idx <= 0) return null;
+      return siblings[idx - 1] || null;
+    },
+    configurable: true,
+  });
+ 
+  Object.defineProperty(Node.prototype, "nextSibling", {
+    get: function () {
+      nodeIdFromThis(this);
+      var parent = this.parentNode;
+      if (!parent) return null;
+      var siblings = parent.childNodes || [];
+      var idx = siblings.indexOf(this);
+      if (idx < 0 || idx >= siblings.length - 1) return null;
+      return siblings[idx + 1] || null;
+    },
+    configurable: true,
+  });
+ 
   Object.defineProperty(Node.prototype, "textContent", {
     get: function () {
       var v = g.__fastrender_dom_get_text_content(nodeIdFromThis(this));

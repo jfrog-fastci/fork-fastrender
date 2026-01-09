@@ -25,10 +25,18 @@ test(() => {
   assert_equals(span.tagName, "SPAN");
   assert_equals(span.id, "x");
   assert_equals(span.className, "y");
+  assert_equals(el.firstChild, span);
+  assert_equals(el.lastChild, span);
+  assert_equals(span.previousSibling, null);
+  assert_equals(span.nextSibling, null);
   assert_equals(span.childNodes.length, 1);
   const text = span.childNodes[0];
   assert_true(text instanceof Text);
   assert_equals(text.data, "hi");
+  assert_equals(span.firstChild, text);
+  assert_equals(span.lastChild, text);
+  assert_equals(text.previousSibling, null);
+  assert_equals(text.nextSibling, null);
 
   el.removeAttribute("id");
   assert_equals(el.id, "");
@@ -135,6 +143,10 @@ test(() => {
   host.appendChild(frag);
 
   assert_equals(host.innerHTML, "<span>a</span><span>b</span>");
+  assert_equals(a.previousSibling, null);
+  assert_equals(a.nextSibling, b);
+  assert_equals(b.previousSibling, a);
+  assert_equals(b.nextSibling, null);
 
   // Fragment insertion should be by "moving children"; appending again is a no-op.
   host.appendChild(frag);
