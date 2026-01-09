@@ -71,6 +71,9 @@ exit 0
   make_executable(&stub_cargo);
 
   // Build a minimal test262-like directory so the xtask wrapper's sanity checks pass.
+  //
+  // Note: we intentionally do *not* create `harness/` here. In `--harness none` mode,
+  // the runner should not require the upstream harness directory to exist.
   let test262_dir = temp.path().join("test262");
   fs::create_dir_all(test262_dir.join("test/language/expressions/addition"))
     .expect("create test dir");
@@ -102,8 +105,6 @@ exit 0
       "test262",
       "--suite",
       "smoke",
-      "--harness",
-      "minimal",
       "--fail-on",
       "none",
       "--harness",
