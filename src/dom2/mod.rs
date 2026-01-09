@@ -202,6 +202,19 @@ impl SelectorDomMapping {
 }
 
 pub struct RendererDomSnapshot {
+  /// Immutable renderer DOM snapshot plus a `dom2` ↔ renderer preorder mapping.
+  ///
+  /// Mapping semantics:
+  /// - Preorder ids are the same ids produced by [`crate::dom::enumerate_dom_ids`] over `dom`
+  ///   (1-based, depth-first pre-order traversal).
+  /// - This traversal includes inert `<template>` contents and declarative shadow roots, mirroring
+  ///   the renderer's id scheme.
+  /// - Some renderer nodes are synthetic (currently: the implicit ZWSP text child for HTML `<wbr>`);
+  ///   these ids map back to the real owning `NodeId` (the `<wbr>` element), so `node_id_for_preorder`
+  ///   is not necessarily 1:1.
+  ///
+  /// Note: selector/query APIs (`query_selector`, `matches_selector`, ...) use a separate internal
+  /// snapshot mapping that follows selector traversal semantics (skipping inert template contents).
   pub dom: DomNode,
   pub mapping: RendererDomMapping,
 }
