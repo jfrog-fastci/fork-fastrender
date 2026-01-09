@@ -43,6 +43,7 @@ pub mod time;
 pub mod url;
 pub mod url_bindings;
 pub mod window_animation_frame;
+pub mod vm_dom;
 pub mod window_timers;
 pub mod vm_host;
 pub mod streaming;
@@ -92,6 +93,7 @@ pub use script_loader_resource::ResourceScriptLoader;
 pub use page_load::{
   HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
 };
+pub use vm_dom::install_dom_bindings;
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_bindings::install_url_bindings;
