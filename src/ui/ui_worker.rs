@@ -102,10 +102,34 @@ impl UiWorker {
       } => {
         let _ = self.navigate(tab_id, url, reason);
       }
-      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
-        // Navigation history in this worker is driven through `UiToWorker::Navigate` with an
-        // explicit `NavigationReason`. The newer dedicated history commands are handled by the
-        // main browser tab engine.
+      UiToWorker::GoBack { tab_id } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+        let target = tab.history.go_back().map(|entry| entry.url.clone());
+        let Some(url) = target else {
+          return;
+        };
+        let _ = self.navigate(tab_id, url, NavigationReason::BackForward);
+      }
+      UiToWorker::GoForward { tab_id } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+        let target = tab.history.go_forward().map(|entry| entry.url.clone());
+        let Some(url) = target else {
+          return;
+        };
+        let _ = self.navigate(tab_id, url, NavigationReason::BackForward);
+      }
+      UiToWorker::Reload { tab_id } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+        let Some(url) = tab.history.current().map(|entry| entry.url.clone()) else {
+          return;
+        };
+        let _ = self.navigate(tab_id, url, NavigationReason::Reload);
       }
       UiToWorker::Scroll {
         tab_id,

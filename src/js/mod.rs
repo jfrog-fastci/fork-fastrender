@@ -43,7 +43,7 @@ pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome, Task,
   TaskSource, TimerId,
 };
-pub use ecma_microtasks::{VmJsHostHooks, VmJsJobContext};
+pub use ecma_microtasks::{VmJsEngineHost, VmJsHostHooks, VmJsJobContext};
 pub use ecma_embed::{
   HostFunction, ScriptBudgetOverride, ScriptError, ScriptRealm, ScriptRealmOptions,
   ScriptTerminationReason, ScriptValue, VmJsScriptRealm,

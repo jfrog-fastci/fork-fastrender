@@ -16,7 +16,16 @@ use crate::error::Error;
 
 use super::event_loop::EventLoop;
 
-/// Execution context passed to `vm-js` [`vm_js::Job`]s.
+/// Trait for event-loop hosts that embed a `vm-js` VM + heap.
+///
+/// `vm-js` Promise jobs require the ability to:
+/// - call/construct JS values (via [`vm_js::Vm`]),
+/// - and keep GC handles alive while queued (persistent roots on [`vm_js::Heap`]).
+pub trait VmJsEngineHost {
+  fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
+}
+
+/// Execution context passed to `vm-js` job closures.
 ///
 /// `vm-js` currently models job execution via an opaque [`vm_js::VmJobContext`] trait. The trait is
 /// intentionally minimal so it can exist before the full evaluator is implemented.
@@ -30,39 +39,37 @@ pub struct VmJsJobContext<'a, Host> {
   pub realm: Option<vm_js::RealmId>,
 }
 
-impl<Host> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
+impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   fn call(
     &mut self,
-    _callee: vm_js::Value,
-    _this: vm_js::Value,
-    _args: &[vm_js::Value],
+    callee: vm_js::Value,
+    this: vm_js::Value,
+    args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "VmJsJobContext::call (FastRender microtask context: no JS evaluator)",
-    ))
+    let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
+    let mut scope = heap.scope();
+    vm.call(&mut scope, callee, this, args)
   }
 
   fn construct(
     &mut self,
-    _callee: vm_js::Value,
-    _args: &[vm_js::Value],
-    _new_target: vm_js::Value,
+    callee: vm_js::Value,
+    args: &[vm_js::Value],
+    new_target: vm_js::Value,
   ) -> Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "VmJsJobContext::construct (FastRender microtask context: no JS evaluator)",
-    ))
+    let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
+    let mut scope = heap.scope();
+    vm.construct(&mut scope, callee, args, new_target)
   }
 
-  fn add_root(&mut self, _value: vm_js::Value) -> vm_js::RootId {
-    // A correct implementation needs access to the `vm-js` heap so this can call
-    // `Heap::add_root`. FastRender has not yet plumbed the VM/heap into the HTML event-loop
-    // microtask runner, so for now this is a hard failure to avoid silently leaking/storing invalid
-    // root IDs.
-    panic!("VmJsJobContext::add_root is unimplemented (no Heap available)"); // fastrender-allow-panic
+  fn add_root(&mut self, value: vm_js::Value) -> vm_js::RootId {
+    let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
+    heap.add_root(value)
   }
 
-  fn remove_root(&mut self, _id: vm_js::RootId) {
-    panic!("VmJsJobContext::remove_root is unimplemented (no Heap available)"); // fastrender-allow-panic
+  fn remove_root(&mut self, id: vm_js::RootId) {
+    let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
+    heap.remove_root(id)
   }
 }
 
@@ -75,45 +82,75 @@ impl<Host> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
 /// due to queue limits (the JS runtime is untrusted input).
 ///
 /// When queueing fails, the adapter stores the first error and ignores subsequent jobs. Call
-/// [`VmJsHostHooks::take_error`] after script execution to surface the error to the caller.
-pub struct VmJsHostHooks<'a, Host: 'static> {
+/// [`VmJsHostHooks::finish`] after script execution to surface the error to the caller and tear
+/// down any jobs that failed to enqueue.
+pub struct VmJsHostHooks<'a, Host: VmJsEngineHost + 'static> {
   event_loop: &'a mut EventLoop<Host>,
+  pending_discard: Vec<(vm_js::Job, Option<vm_js::RealmId>)>,
   enqueue_error: Option<Error>,
 }
 
-impl<'a, Host: 'static> VmJsHostHooks<'a, Host> {
+impl<'a, Host: VmJsEngineHost + 'static> VmJsHostHooks<'a, Host> {
   pub fn new(event_loop: &'a mut EventLoop<Host>) -> Self {
     Self {
       event_loop,
+      pending_discard: Vec::new(),
       enqueue_error: None,
     }
   }
 
-  pub fn take_error(&mut self) -> Option<Error> {
+  /// Finish using this host hook adapter.
+  ///
+  /// This discards any jobs that could not be enqueued (cleaning up any persistent roots they
+  /// captured) and returns the first queueing error (if any).
+  pub fn finish(mut self, host: &mut Host) -> Option<Error> {
+    if !self.pending_discard.is_empty() {
+      for (job, realm) in self.pending_discard.drain(..) {
+        let mut ctx = VmJsJobContext { host, realm };
+        job.discard(&mut ctx);
+      }
+    }
     self.enqueue_error.take()
   }
 }
 
-impl<Host: 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Host> {
+impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Host> {
   fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<vm_js::RealmId>) {
     if self.enqueue_error.is_some() {
+      self.pending_discard.push((job, realm));
       return;
     }
 
+    let job_cell: std::rc::Rc<std::cell::RefCell<Option<vm_js::Job>>> =
+      std::rc::Rc::new(std::cell::RefCell::new(Some(job)));
+    let job_cell_for_closure = std::rc::Rc::clone(&job_cell);
+
     let result = self.event_loop.queue_microtask(move |host, event_loop| {
-      let mut ctx = VmJsJobContext { host, realm };
       // Promise jobs can enqueue additional Promise jobs (e.g. thenable chains). Provide a fresh
       // host hook adapter for each run so nested jobs are queued onto the same microtask queue.
       let mut hooks = VmJsHostHooks::new(event_loop);
-      job.run(&mut ctx, &mut hooks)
-        .map_err(|err| Error::Other(format!("vm-js job failed: {err}")))?;
-      if let Some(err) = hooks.take_error() {
+      let mut ctx = VmJsJobContext { host, realm };
+      let mut job = job_cell_for_closure
+        .borrow_mut()
+        .take()
+        .expect("vm-js promise job should run at most once");
+      let job_result = job
+        .run(&mut ctx, &mut hooks)
+        .map_err(|err| Error::Other(format!("vm-js job failed: {err}")));
+      drop(ctx);
+
+      let enqueue_err = hooks.finish(host);
+      if let Some(err) = enqueue_err {
         return Err(err);
       }
+      job_result?;
       Ok(())
     });
 
     if let Err(err) = result {
+      if let Some(mut job) = job_cell.borrow_mut().take() {
+        self.pending_discard.push((job, realm));
+      }
       self.enqueue_error = Some(err);
     }
   }
@@ -133,20 +170,33 @@ impl<Host: 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Host> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::event_loop::{RunLimits, RunUntilIdleOutcome, TaskSource};
+  use crate::js::event_loop::{RunUntilIdleOutcome, TaskSource};
+  use crate::js::RunLimits;
   use std::sync::{Arc, Mutex};
   use vm_js::VmHostHooks as _;
 
   #[test]
   fn vm_js_promise_jobs_run_after_a_task_and_before_the_next_task() -> crate::Result<()> {
-    #[derive(Clone)]
     struct Host {
       log: Arc<Mutex<Vec<&'static str>>>,
+      vm: vm_js::Vm,
+      heap: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
+      }
     }
 
     let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
     let log_for_task = Arc::clone(&log);
-    let mut host = Host { log: log.clone() };
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+    let mut host = Host {
+      log: log.clone(),
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap: vm_js::Heap::new(limits),
+    };
     let mut event_loop = EventLoop::<Host>::new();
 
     // Simulate a script task that enqueues Promise jobs and then queues another task.
@@ -170,8 +220,7 @@ mod tests {
         }),
         None,
       );
-      let enqueue_err = hooks.take_error();
-      drop(hooks);
+      let enqueue_err = hooks.finish(host);
       if let Some(err) = enqueue_err {
         return Err(err);
       }
