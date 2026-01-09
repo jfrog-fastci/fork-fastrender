@@ -86,18 +86,18 @@ fn matches_host_and_host_context_selectors() {
         <div class="ctx">
           <div id="host" class="foo">
             <template shadowroot="open">
+              <style>
+                :host { color: rgb(1, 2, 3); }
+                :host(.foo) { background-color: rgb(4, 5, 6); }
+                :host-context(.ctx) .x { color: rgb(7, 8, 9); }
+              </style>
               <div id="inner" class="x"></div>
             </template>
           </div>
         </div>
       "#;
       let dom = fastrender::dom::parse_html(html).unwrap();
-      let css = r#"
-        :host { color: rgb(1, 2, 3); }
-        :host(.foo) { background-color: rgb(4, 5, 6); }
-        :host-context(.ctx) .x { color: rgb(7, 8, 9); }
-      "#;
-      let stylesheet = parse_stylesheet(css).unwrap();
+      let stylesheet = parse_stylesheet("").unwrap();
 
       let (host_node, host_ancestors) =
         find_node_with_ancestors(&dom, "host", &mut Vec::new()).expect("host node");

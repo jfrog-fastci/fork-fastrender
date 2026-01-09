@@ -25,15 +25,17 @@ fn focus_within_considers_slotted_descendants() {
   let html = r#"
     <div id="host">
       <template shadowroot="open">
+        <style>
+          #wrap:focus-within { display: inline; }
+          #wrap { display: block; }
+        </style>
         <div id="wrap"><slot></slot></div>
       </template>
       <input id="slotted" type="text" data-fastr-focus="true" />
     </div>
   "#;
   let dom = dom::parse_html(html).expect("parse html");
-  let stylesheet =
-    parse_stylesheet("#wrap:focus-within { display: inline; } #wrap { display: block; }")
-      .expect("stylesheet");
+  let stylesheet = parse_stylesheet("").expect("stylesheet");
   let styled = apply_styles(&dom, &stylesheet);
 
   let wrap = find_by_id(&styled, "wrap").expect("wrap element");
@@ -45,15 +47,17 @@ fn target_within_considers_slotted_descendants() {
   let html = r#"
     <div id="host">
       <template shadowroot="open">
+        <style>
+          #wrap:target-within { display: inline; }
+          #wrap { display: block; }
+        </style>
         <div id="wrap"><slot></slot></div>
       </template>
       <input id="slotted" type="text" />
     </div>
   "#;
   let dom = dom::parse_html(html).expect("parse html");
-  let stylesheet =
-    parse_stylesheet("#wrap:target-within { display: inline; } #wrap { display: block; }")
-      .expect("stylesheet");
+  let stylesheet = parse_stylesheet("").expect("stylesheet");
   let styled = apply_styles_with_target(&dom, &stylesheet, Some("#slotted"));
 
   let wrap = find_by_id(&styled, "wrap").expect("wrap element");

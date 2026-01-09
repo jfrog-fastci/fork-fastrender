@@ -325,6 +325,11 @@ fn has_inside_shadow_root_skips_nested_shadow_trees() {
   let html = r#"
     <div id="host">
       <template shadowroot="open">
+        <style>
+          #outer { display: block; }
+          #outer:has(.light) { display: inline; }
+          #outer:has(.inner) { display: inline-block; }
+        </style>
         <div id="outer">
           <div class="light"></div>
           <div id="nested-host">
@@ -337,12 +342,7 @@ fn has_inside_shadow_root_skips_nested_shadow_trees() {
     </div>
   "#;
   let dom = dom::parse_html(html).unwrap();
-  let css = r#"
-    #outer { display: block; }
-    #outer:has(.light) { display: inline; }
-    #outer:has(.inner) { display: inline-block; }
-  "#;
-  let stylesheet = parse_stylesheet(css).unwrap();
+  let stylesheet = parse_stylesheet("").unwrap();
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
   assert_eq!(

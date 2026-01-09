@@ -1615,6 +1615,16 @@ fn parse_overflow_keyword(value: &str) -> Option<Overflow> {
   }
 }
 
+fn normalize_style_query_snapshot(styles: &mut ComputedStyle) {
+  // Container style queries compare the computed value of the queried property.
+  //
+  // `ComputedStyle` contains additional bookkeeping fields (e.g. whether an inherited property came
+  // from inheritance or a specified declaration). Those should not affect `style()` query results,
+  // so strip them from the snapshot used for comparisons.
+  styles.color_is_inherited = false;
+  styles.visibility_is_inherited = false;
+}
+
 fn eval_plain_style_feature(
   name: &str,
   value: &str,
@@ -1797,6 +1807,8 @@ fn eval_plain_style_feature(
   if !apply_property_from_source(&mut expected_snapshot, &expected, name, 0) {
     return QueryResult::False;
   }
+  normalize_style_query_snapshot(&mut actual_snapshot);
+  normalize_style_query_snapshot(&mut expected_snapshot);
   QueryResult::from_bool(actual_snapshot == expected_snapshot)
 }
 
@@ -1896,6 +1908,8 @@ fn eval_boolean_style_feature(
   if !apply_property_from_source(&mut initial_snapshot, &initial_style, name, 0) {
     return false;
   }
+  normalize_style_query_snapshot(&mut actual_snapshot);
+  normalize_style_query_snapshot(&mut initial_snapshot);
   actual_snapshot != initial_snapshot
 }
 
