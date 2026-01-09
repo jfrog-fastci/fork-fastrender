@@ -48,6 +48,13 @@ pub struct ImportPageFixtureArgs {
   #[arg(long)]
   pub legacy_rewrite: bool,
 
+  /// Rewrite script subresources (<script src>, script preloads, modulepreload) so JS-capable
+  /// fixtures can be fully offline.
+  ///
+  /// This is opt-in so existing JS-off fixtures keep their original script references.
+  #[arg(long)]
+  pub rewrite_scripts: bool,
+
   /// Validate without writing any files
   #[arg(long)]
   pub dry_run: bool,
@@ -104,7 +111,7 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
   }
 
   catalog.rewrite_stylesheets()?;
-  catalog.rewrite_html_assets(args.legacy_rewrite)?;
+  catalog.rewrite_html_assets(args.legacy_rewrite, args.rewrite_scripts)?;
 
   let rewritten_html = rewrite_html(
     &document_html,
@@ -112,14 +119,19 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
     ReferenceContext::Html,
     &mut catalog,
     args.legacy_rewrite,
+    args.rewrite_scripts,
   )?;
 
   catalog.fail_if_missing()?;
 
   if !args.allow_http_references {
-    validate_no_remote_fetchable_subresources_in_html("index.html", &rewritten_html)?;
+    validate_no_remote_fetchable_subresources_in_html(
+      "index.html",
+      &rewritten_html,
+      args.rewrite_scripts,
+    )?;
     catalog.validate_no_remote_fetchable_subresources_in_css()?;
-    catalog.validate_no_remote_fetchable_subresources_in_html_assets()?;
+    catalog.validate_no_remote_fetchable_subresources_in_html_assets(args.rewrite_scripts)?;
   }
 
   if args.dry_run {
@@ -301,7 +313,7 @@ impl AssetCatalog {
     Ok(())
   }
 
-  fn rewrite_html_assets(&mut self, legacy_rewrite: bool) -> Result<()> {
+  fn rewrite_html_assets(&mut self, legacy_rewrite: bool, rewrite_scripts: bool) -> Result<()> {
     let names: Vec<String> = self.assets.keys().cloned().collect();
     for name in names {
       let Some(asset) = self.assets.get(&name).cloned() else {
@@ -327,6 +339,7 @@ impl AssetCatalog {
         ReferenceContext::Css,
         self,
         legacy_rewrite,
+        rewrite_scripts,
       )
       .with_context(|| format!("failed to rewrite HTML asset {}", name))?;
 
@@ -467,13 +480,16 @@ impl AssetCatalog {
     bail!(msg)
   }
 
-  fn validate_no_remote_fetchable_subresources_in_html_assets(&self) -> Result<()> {
+  fn validate_no_remote_fetchable_subresources_in_html_assets(
+    &self,
+    validate_scripts: bool,
+  ) -> Result<()> {
     for asset in self.assets.values() {
       if !is_html_asset(asset) {
         continue;
       }
       let html = String::from_utf8_lossy(&asset.bytes);
-      validate_no_remote_fetchable_subresources_in_html(&asset.filename, &html)?;
+      validate_no_remote_fetchable_subresources_in_html(&asset.filename, &html, validate_scripts)?;
     }
     Ok(())
   }
@@ -485,6 +501,7 @@ fn rewrite_html(
   ctx: ReferenceContext,
   catalog: &mut AssetCatalog,
   legacy_rewrite: bool,
+  rewrite_scripts: bool,
 ) -> Result<String> {
   let mut rewritten = input.to_string();
 
@@ -542,7 +559,7 @@ fn rewrite_html(
       return Err(err);
     }
   } else {
-    rewritten = rewrite_html_resource_attrs(&rewritten, base_url, ctx, catalog)?;
+    rewritten = rewrite_html_resource_attrs(&rewritten, base_url, ctx, catalog, rewrite_scripts)?;
   }
 
   let mut style_attr_error: Option<anyhow::Error> = None;
@@ -811,6 +828,9 @@ fn extension_from_resource(path: &str, content_type: Option<&str>) -> String {
   if lower.contains("css") {
     return "css".to_string();
   }
+  if lower.contains("javascript") || lower.contains("ecmascript") {
+    return "js".to_string();
+  }
   ext
 }
 
@@ -846,6 +866,7 @@ fn rewrite_and_strip_link_tags(
   ctx: ReferenceContext,
   catalog: &mut AssetCatalog,
   screen_stylesheets: &HashSet<String>,
+  rewrite_scripts: bool,
 ) -> Result<String> {
   fn capture_first_match<'t>(
     caps: &'t regex::Captures<'t>,
@@ -859,6 +880,8 @@ fn rewrite_and_strip_link_tags(
     .expect("link rel regex must compile");
   let attr_href = Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
     .expect("link href regex must compile");
+  let attr_as = Regex::new("(?is)(?:^|\\s)as\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+    .expect("link as regex must compile");
 
   let mut out = String::with_capacity(input.len());
   let mut last = 0usize;
@@ -869,12 +892,21 @@ fn rewrite_and_strip_link_tags(
       .captures(tag)
       .and_then(|c| capture_first_match(&c, &[1, 2, 3]).map(|m| m.as_str().to_string()))
       .unwrap_or_default();
+    let as_value = attr_as
+      .captures(tag)
+      .and_then(|c| capture_first_match(&c, &[1, 2, 3]).map(|m| m.as_str().to_string()))
+      .unwrap_or_default();
 
     let mut has_stylesheet = false;
     let mut is_strippable_fetchable = false;
+    let mut is_script_fetchable = false;
     for token in rel_value.split_ascii_whitespace() {
       if token.eq_ignore_ascii_case("stylesheet") {
         has_stylesheet = true;
+      } else if token.eq_ignore_ascii_case("modulepreload") {
+        if rewrite_scripts {
+          is_script_fetchable = true;
+        }
       } else if token.eq_ignore_ascii_case("preload")
         || token.eq_ignore_ascii_case("prefetch")
         || token.eq_ignore_ascii_case("icon")
@@ -886,29 +918,41 @@ fn rewrite_and_strip_link_tags(
         || token.eq_ignore_ascii_case("dns-prefetch")
       {
         is_strippable_fetchable = true;
+        if rewrite_scripts
+          && token.eq_ignore_ascii_case("preload")
+          && (as_value.eq_ignore_ascii_case("script")
+            || as_value.eq_ignore_ascii_case("worker")
+            || as_value.eq_ignore_ascii_case("sharedworker"))
+        {
+          is_script_fetchable = true;
+        }
       }
     }
 
     // Strip link tags that would trigger network loads in browsers but are not needed for
     // FastRender output correctness (preloads, icons, preconnect/dns-prefetch, etc).
-    if !has_stylesheet && is_strippable_fetchable {
+    if !has_stylesheet && is_strippable_fetchable && !is_script_fetchable {
       out.push_str(&input[last..tag_match.start()]);
       last = tag_match.end();
       continue;
     }
 
     let mut rewritten_tag = tag.to_string();
-    if has_stylesheet {
+    if has_stylesheet || is_script_fetchable {
       if let Some(href_caps) = attr_href.captures(tag) {
         if let Some(href_match) = capture_first_match(&href_caps, &[1, 2, 3]) {
-          let decoded = decode_html_entities_if_needed(href_match.as_str());
-          let resolved =
-            resolve_href(base_url.as_str(), decoded.trim()).unwrap_or_else(|| "".to_string());
-          let required = !resolved.is_empty() && screen_stylesheets.contains(&resolved);
-          let rewritten_href = if required {
-            rewrite_reference(href_match.as_str(), base_url, ctx, catalog)?
+          let rewritten_href = if has_stylesheet {
+            let decoded = decode_html_entities_if_needed(href_match.as_str());
+            let resolved =
+              resolve_href(base_url.as_str(), decoded.trim()).unwrap_or_else(|| "".to_string());
+            let required = !resolved.is_empty() && screen_stylesheets.contains(&resolved);
+            if required {
+              rewrite_reference(href_match.as_str(), base_url, ctx, catalog)?
+            } else {
+              rewrite_reference_optional(href_match.as_str(), base_url, ctx, catalog)?
+            }
           } else {
-            rewrite_reference_optional(href_match.as_str(), base_url, ctx, catalog)?
+            rewrite_reference(href_match.as_str(), base_url, ctx, catalog)?
           };
           if let Some(new_value) = rewritten_href {
             let start = href_match.start();
@@ -937,6 +981,7 @@ fn rewrite_html_resource_attrs(
   base_url: &Url,
   ctx: ReferenceContext,
   catalog: &mut AssetCatalog,
+  rewrite_scripts: bool,
 ) -> Result<String> {
   let stylesheet_urls: HashSet<String> = fastrender::css::loader::extract_css_links(
     input,
@@ -947,7 +992,23 @@ fn rewrite_html_resource_attrs(
   .into_iter()
   .collect();
 
-  let mut rewritten = rewrite_and_strip_link_tags(input, base_url, ctx, catalog, &stylesheet_urls)?;
+  let mut rewritten = rewrite_and_strip_link_tags(
+    input,
+    base_url,
+    ctx,
+    catalog,
+    &stylesheet_urls,
+    rewrite_scripts,
+  )?;
+
+  if rewrite_scripts {
+    let script_src =
+      Regex::new("(?is)<script[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+        .expect("script src regex must compile");
+    rewritten = replace_attr_values_with(&script_src, &rewritten, &[1, 2, 3], |raw| {
+      rewrite_reference(raw, base_url, ctx, catalog)
+    })?;
+  }
 
   let img_src = Regex::new("(?is)<img[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
     .expect("img src regex must compile");
@@ -1069,7 +1130,11 @@ where
   Ok(out)
 }
 
-fn validate_no_remote_fetchable_subresources_in_html(label: &str, html: &str) -> Result<()> {
+fn validate_no_remote_fetchable_subresources_in_html(
+  label: &str,
+  html: &str,
+  validate_scripts: bool,
+) -> Result<()> {
   let mut remote: BTreeSet<String> = BTreeSet::new();
 
   fn capture_first_match<'t>(
@@ -1108,6 +1173,7 @@ fn validate_no_remote_fetchable_subresources_in_html(label: &str, html: &str) ->
         || token.eq_ignore_ascii_case("mask-icon")
         || token.eq_ignore_ascii_case("preconnect")
         || token.eq_ignore_ascii_case("dns-prefetch")
+        || (validate_scripts && token.eq_ignore_ascii_case("modulepreload"))
       {
         is_fetchable = true;
         break;
@@ -1183,6 +1249,13 @@ fn validate_no_remote_fetchable_subresources_in_html(label: &str, html: &str) ->
     Regex::new("(?is)<source[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
       .expect("source src validation regex");
   collect_remote_attr_values(&source_src, html, &[1, 2, 3], &mut remote);
+
+  if validate_scripts {
+    let script_src =
+      Regex::new("(?is)<script[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+        .expect("script src validation regex");
+    collect_remote_attr_values(&script_src, html, &[1, 2, 3], &mut remote);
+  }
 
   let img_srcset = Regex::new("(?is)<img[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
     .expect("img srcset validation regex");
@@ -1645,6 +1718,7 @@ mod tests {
       allow_missing: false,
       allow_http_references: false,
       legacy_rewrite: false,
+      rewrite_scripts: false,
       dry_run: false,
     })?;
 
@@ -1739,6 +1813,7 @@ mod tests {
       allow_missing: false,
       allow_http_references: false,
       legacy_rewrite: false,
+      rewrite_scripts: false,
       dry_run: false,
     });
     assert!(
@@ -1778,6 +1853,143 @@ mod tests {
     assert!(
       rewritten.contains("assets/missing_"),
       "expected placeholder asset to be inserted, got: {rewritten}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn rewrite_html_rewrites_script_src_only_when_enabled() -> Result<()> {
+    let base = Url::parse("https://example.test/")?;
+    let script_url = "https://example.test/app.js";
+    let script_bytes = b"console.log('hi');".to_vec();
+
+    let info = BundledResourceInfo {
+      path: "resources/00000_app.bin".to_string(),
+      content_type: Some("application/javascript".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(script_url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      vary: None,
+      access_control_allow_origin: None,
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+    let res = FetchedResource::new(
+      script_bytes.clone(),
+      Some("application/javascript".to_string()),
+    );
+
+    let html = format!("<!doctype html><script src=\"{script_url}\"></script>");
+    let expected_filename = format!("{}.js", hash_bytes(&script_bytes));
+
+    let mut catalog = AssetCatalog::new(false);
+    catalog.add_resource(script_url, &info, &res)?;
+    let rewritten = rewrite_html(
+      &html,
+      &base,
+      ReferenceContext::Html,
+      &mut catalog,
+      false,
+      true,
+    )?;
+    assert!(
+      rewritten.contains(&format!("src=\"assets/{expected_filename}\"")),
+      "expected script src to be rewritten, got: {rewritten}"
+    );
+
+    let mut catalog = AssetCatalog::new(false);
+    catalog.add_resource(script_url, &info, &res)?;
+    let not_rewritten = rewrite_html(
+      &html,
+      &base,
+      ReferenceContext::Html,
+      &mut catalog,
+      false,
+      false,
+    )?;
+    assert!(
+      not_rewritten.contains(script_url),
+      "expected script src to remain untouched, got: {not_rewritten}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn rewrite_html_rewrites_script_preload_link_only_when_enabled() -> Result<()> {
+    let base = Url::parse("https://example.test/")?;
+    let script_url = "https://example.test/app.js";
+    let script_bytes = b"console.log('hi');".to_vec();
+
+    let info = BundledResourceInfo {
+      path: "resources/00000_app.bin".to_string(),
+      content_type: Some("application/javascript".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(script_url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      vary: None,
+      access_control_allow_origin: None,
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+    let res = FetchedResource::new(
+      script_bytes.clone(),
+      Some("application/javascript".to_string()),
+    );
+    let expected_filename = format!("{}.js", hash_bytes(&script_bytes));
+
+    let html = format!("<!doctype html><link rel=\"preload\" as=\"script\" href=\"{script_url}\">");
+
+    let mut catalog = AssetCatalog::new(false);
+    catalog.add_resource(script_url, &info, &res)?;
+    let rewritten = rewrite_html(
+      &html,
+      &base,
+      ReferenceContext::Html,
+      &mut catalog,
+      false,
+      true,
+    )?;
+    assert!(
+      rewritten.contains("rel=\"preload\""),
+      "expected preload link tag to remain in output, got: {rewritten}"
+    );
+    assert!(
+      rewritten.contains(&format!("href=\"assets/{expected_filename}\"")),
+      "expected preload href to be rewritten, got: {rewritten}"
+    );
+
+    let mut catalog = AssetCatalog::new(false);
+    catalog.add_resource(script_url, &info, &res)?;
+    let not_rewritten = rewrite_html(
+      &html,
+      &base,
+      ReferenceContext::Html,
+      &mut catalog,
+      false,
+      false,
+    )?;
+    assert!(
+      !not_rewritten.contains("rel=\"preload\""),
+      "expected preload link tag to be stripped, got: {not_rewritten}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn validate_html_rejects_remote_script_src_only_when_enabled() -> Result<()> {
+    let html = r#"<!doctype html><script src="https://example.test/app.js"></script>"#;
+    validate_no_remote_fetchable_subresources_in_html("index.html", html, false)?;
+    let err = validate_no_remote_fetchable_subresources_in_html("index.html", html, true)
+      .expect_err("validation should fail when script validation is enabled");
+    assert!(
+      err.to_string().contains("https://example.test/app.js"),
+      "error should mention the remote script URL, got: {err}"
     );
     Ok(())
   }
