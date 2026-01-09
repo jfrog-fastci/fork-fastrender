@@ -2449,6 +2449,7 @@ fn clone_without_children(node: &FragmentNode) -> FragmentNode {
     children: FragmentChildren::default(),
     style: node.style.clone(),
     starting_style: node.starting_style.clone(),
+    stacking_context: node.stacking_context,
     fragment_index: node.fragment_index,
     fragment_count: node.fragment_count,
     fragmentainer_index: node.fragmentainer_index,

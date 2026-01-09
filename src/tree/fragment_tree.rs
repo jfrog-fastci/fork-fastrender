@@ -163,6 +163,29 @@ pub fn enable_fragment_instrumentation_for_current_thread(
   FragmentInstrumentationThreadGuard { previous }
 }
 
+/// Overrides for paint-time stacking context behavior.
+///
+/// Most fragments follow the normal CSS stacking context rules derived from their computed style.
+/// Some synthetic fragments (e.g. CSS Paged Media page boxes / margin boxes) need special
+/// stacking behavior that cannot be expressed purely via style properties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FragmentStackingContext {
+  /// Use normal CSS stacking context creation rules.
+  #[default]
+  Normal,
+  /// Force this fragment to establish a stacking context with the provided z-index.
+  Forced { z_index: i32 },
+}
+
+impl FragmentStackingContext {
+  pub fn forced_z_index(&self) -> Option<i32> {
+    match *self {
+      FragmentStackingContext::Forced { z_index } => Some(z_index),
+      FragmentStackingContext::Normal => None,
+    }
+  }
+}
+
 /// Shared, copy-on-write fragment children storage.
 ///
 /// Fragment nodes clone cheaply by sharing their children vectors through an `Arc`. Mutable access
@@ -672,6 +695,9 @@ pub struct FragmentNode {
   /// Starting style snapshot (pre-transition) when available.
   pub starting_style: Option<Arc<ComputedStyle>>,
 
+  /// Paint-time stacking context override for this fragment.
+  pub stacking_context: FragmentStackingContext,
+
   /// Index of this fragment within a fragmented sequence for the same box
   /// (e.g., when flowing across pages or columns).
   pub fragment_index: usize,
@@ -725,6 +751,7 @@ impl Clone for FragmentNode {
       children: self.children.clone(),
       style: self.style.clone(),
       starting_style: self.starting_style.clone(),
+      stacking_context: self.stacking_context,
       fragment_index: self.fragment_index,
       fragment_count: self.fragment_count,
       fragmentainer_index: self.fragmentainer_index,
@@ -822,6 +849,7 @@ impl FragmentNode {
       children: children.into(),
       style: None,
       starting_style: None,
+      stacking_context: FragmentStackingContext::Normal,
       fragment_index: 0,
       fragment_count: 1,
       fragmentainer_index: fragmentainer.flattened_index(),
@@ -854,6 +882,7 @@ impl FragmentNode {
       children: children.into(),
       style: Some(style),
       starting_style: None,
+      stacking_context: FragmentStackingContext::Normal,
       fragment_index: 0,
       fragment_count: 1,
       fragmentainer_index: fragmentainer.flattened_index(),
@@ -864,6 +893,10 @@ impl FragmentNode {
       fragmentation: None,
       grid_fragmentation: None,
     }
+  }
+
+  pub fn force_stacking_context_with_z_index(&mut self, z_index: i32) {
+    self.stacking_context = FragmentStackingContext::Forced { z_index };
   }
 
   /// Creates a new block fragment
@@ -1277,6 +1310,7 @@ impl FragmentNode {
         .into(),
       style: self.style.clone(),
       starting_style: None,
+      stacking_context: self.stacking_context,
       fragment_index: self.fragment_index,
       fragment_count: self.fragment_count,
       fragmentainer_index: self.fragmentainer_index,
@@ -1468,6 +1502,7 @@ impl FragmentNode {
       children: FragmentChildren::default(),
       style: self.style.clone(),
       starting_style: self.starting_style.clone(),
+      stacking_context: self.stacking_context,
       fragment_index: self.fragment_index,
       fragment_count: self.fragment_count,
       fragmentainer_index: self.fragmentainer_index,
@@ -1514,6 +1549,7 @@ impl FragmentNode {
       children: self.children.deep_clone(),
       style: self.style.clone(),
       starting_style: self.starting_style.clone(),
+      stacking_context: self.stacking_context,
       fragment_index: self.fragment_index,
       fragment_count: self.fragment_count,
       fragmentainer_index: self.fragmentainer_index,

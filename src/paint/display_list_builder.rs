@@ -6082,16 +6082,62 @@ impl DisplayListBuilder {
     fragment: &FragmentNode,
     origin: Point,
   ) -> Option<(Arc<ComputedStyle>, usize, Rect)> {
-    // Some unit tests construct a synthetic viewport fragment with a single child representing the
-    // root element. Renderer-produced fragment trees always use the root element itself as the
-    // fragment tree root (even when it only has one child), so only treat a single-child root as a
-    // wrapper when there is no originating box.
-    let (html, html_origin) = if Self::get_box_id(fragment).is_none() && fragment.children.len() == 1 {
-      let child = fragment.children.first().unwrap_or(fragment);
-      (child, origin.translate(child.bounds.origin))
-    } else {
-      (fragment, origin)
-    };
+    // Most renderer-produced fragment trees use the root element (the `<html>` box) as the tree
+    // root, so `fragment` already has a `box_id`.
+    //
+    // However, pagination introduces synthetic page fragments (page box + margin boxes) that do not
+    // originate from a DOM box and therefore have no `box_id`. In that case we still want to apply
+    // the usual HTML canvas background propagation (from `<html>` or `<body>`) without accidentally
+    // treating @page margin boxes as candidates.
+    //
+    // To do that, when the root has no `box_id` and multiple children (page root + margin boxes),
+    // we locate the first *non-fixed* fragment with a `box_id` inside the "document wrapper"
+    // subtree (the first non-box-id child). This reliably finds the real `<html>` element for
+    // paginated pages while ignoring margin boxes.
+    let mut html = fragment;
+    let mut html_origin = origin;
+    if Self::get_box_id(fragment).is_none() {
+      if fragment.children.len() == 1 {
+        // Some unit tests construct a synthetic viewport fragment with a single child representing
+        // the root element. Renderer-produced fragment trees always use the root element itself as
+        // the fragment tree root (even when it only has one child), so only treat a single-child
+        // root as a wrapper when there is no originating box.
+        let child = fragment.children.first().unwrap_or(fragment);
+        html = child;
+        html_origin = origin.translate(child.bounds.origin);
+      } else if !fragment.children.is_empty() {
+        let doc_root = fragment
+          .children
+          .iter()
+          .find(|child| Self::get_box_id(child).is_none())
+          .unwrap_or(&fragment.children[0]);
+        let doc_origin = origin.translate(doc_root.bounds.origin);
+
+        // Iterative DFS (tree order) so we can compute absolute origins without recursion.
+        let mut stack: Vec<(&FragmentNode, Point)> = Vec::new();
+        stack.push((doc_root, doc_origin));
+        while let Some((node, node_origin)) = stack.pop() {
+          let is_fixed = node
+            .style
+            .as_deref()
+            .is_some_and(|style| style.position == Position::Fixed);
+          if !is_fixed && Self::get_box_id(node).is_some() {
+            html = node;
+            html_origin = node_origin;
+            break;
+          }
+          for child in node.children.iter().rev() {
+            stack.push((child, node_origin.translate(child.bounds.origin)));
+          }
+        }
+
+        // If we couldn't find a DOM-backed fragment, don't guess: skip canvas propagation rather
+        // than accidentally selecting a page-margin box or fixed fragment.
+        if Self::get_box_id(html).is_none() {
+          return None;
+        }
+      }
+    }
 
     if let Some(style) = html.style.clone() {
       if Self::has_paintable_background(&style) {
@@ -6126,7 +6172,9 @@ impl DisplayListBuilder {
     for child in html.children.iter() {
       if let Some(style) = child.style.clone() {
         if Self::has_paintable_background(&style) {
-          let box_id = Self::get_box_id(child)?;
+          let Some(box_id) = Self::get_box_id(child) else {
+            continue;
+          };
           let rect = Rect::new(html_origin.translate(child.bounds.origin), child.bounds.size);
           return Some((style, box_id, rect));
         }

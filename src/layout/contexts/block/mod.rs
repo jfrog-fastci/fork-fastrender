@@ -2382,6 +2382,29 @@ impl BlockFormattingContext {
       })
   }
 
+  fn subtree_contains_floats(node: &BoxNode) -> bool {
+    // Parallel block layout currently assumes float layout is a no-op and provides each sibling with
+    // a fresh float context. This is only correct if there are no floats anywhere in the subtree.
+    //
+    // Keep this conservative (treat any in-flow `float` as disabling parallelism) rather than
+    // trying to reason about BFC boundaries; correctness > parallelism coverage.
+    let mut stack: Vec<&BoxNode> = node.children.iter().collect();
+    while let Some(node) = stack.pop() {
+      if node.style.float.is_floating()
+        && matches!(node.style.position, Position::Static | Position::Relative)
+      {
+        return true;
+      }
+      for child in node.children.iter() {
+        stack.push(child);
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+    }
+    false
+  }
+
   fn translate_fragment_tree(fragment: &mut FragmentNode, delta: Point) {
     if delta.x == 0.0 && delta.y == 0.0 {
       return;
@@ -2412,6 +2435,7 @@ impl BlockFormattingContext {
     if !self.parallelism.should_parallelize(parent.children.len())
       || !float_ctx_empty
       || !Self::can_parallelize_block_children(parent)
+      || Self::subtree_contains_floats(parent)
       || Self::is_multicol_container(&parent.style)
     {
       return None;
@@ -3194,20 +3218,18 @@ impl BlockFormattingContext {
 
     let trace_positioned = trace_positioned_ids();
     let trace_block_text = trace_block_text_ids();
-    if !has_external_float_ctx {
-      if let Some(result) = self.try_parallel_block_children(
-        parent,
-        constraints,
-        nearest_positioned_cb,
-        nearest_fixed_cb,
-        margin_ctx.clone(),
-        &relative_cb,
-        containing_width,
-        float_ctx.is_empty(),
-        paint_viewport,
-      ) {
-        return result;
-      }
+    if let Some(result) = self.try_parallel_block_children(
+      parent,
+      constraints,
+      nearest_positioned_cb,
+      nearest_fixed_cb,
+      margin_ctx.clone(),
+      &relative_cb,
+      containing_width,
+      float_ctx.is_empty(),
+      paint_viewport,
+    ) {
+      return result;
     }
 
     let inline_fc_owned: Option<Box<InlineFormattingContext>> = if *nearest_positioned_cb

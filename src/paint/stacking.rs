@@ -245,6 +245,9 @@ pub enum StackingContextReason {
   /// Root element of the document
   Root,
 
+  /// Forced stacking context for synthetic fragments (e.g. paged-media wrappers/margin boxes).
+  Forced,
+
   /// Synthetic context used to track `backface-visibility` isolation in 3D rendering.
   ///
   /// This is not a CSS stacking context trigger; it exists to keep display-list backface handling
@@ -1139,26 +1142,34 @@ fn build_stacking_tree_internal(
   *tree_order += 1;
 
   // Check if this fragment creates a stacking context
-  let creates_context = if let Some(s) = style {
-    creates_stacking_context(s, parent_style, is_root)
-  } else {
-    is_root
-  };
+  let forced_z_index = fragment.stacking_context.forced_z_index();
+  let creates_context = forced_z_index.is_some()
+    || if let Some(s) = style {
+      creates_stacking_context(s, parent_style, is_root)
+    } else {
+      is_root
+    };
 
   if creates_context {
     // Create a new stacking context
-    let z_index = style
-      .map(|s| {
-        if s.top_layer.is_some() {
-          i32::MAX
-        } else {
-          s.z_index.unwrap_or(0)
-        }
-      })
-      .unwrap_or(0);
-    let reason = style
-      .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
-      .unwrap_or(StackingContextReason::Root);
+    let z_index = forced_z_index.unwrap_or_else(|| {
+      style
+        .map(|s| {
+          if s.top_layer.is_some() {
+            i32::MAX
+          } else {
+            s.z_index.unwrap_or(0)
+          }
+        })
+        .unwrap_or(0)
+    });
+    let reason = if forced_z_index.is_some() {
+      StackingContextReason::Forced
+    } else {
+      style
+        .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
+        .unwrap_or(StackingContextReason::Root)
+    };
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
     context.offset_from_parent_context = offset_from_parent_context;
@@ -1513,14 +1524,23 @@ where
   let current_order = *tree_order;
   *tree_order += 1;
 
-  let creates_context = if let Some(s) = style.as_deref() {
-    creates_stacking_context(s, parent_style, is_root)
-  } else {
-    is_root
-  };
+  let forced_z_index = fragment.stacking_context.forced_z_index();
+  let creates_context = forced_z_index.is_some()
+    || if let Some(s) = style.as_deref() {
+      creates_stacking_context(s, parent_style, is_root)
+    } else {
+      is_root
+    };
+  // Treat synthetic forced stacking contexts (used by paged-media page wrappers) as fixed
+  // containing blocks. This prevents `position: fixed` descendants from cancelling fragmentainer
+  // translations and ending up stacked at the same viewport coordinates across pages.
+  //
+  // We scope this to synthetic fragments (`box_id == None`) to avoid affecting regular DOM content
+  // that might be forced into a stacking context for other reasons.
   let establishes_fixed_cb = style
     .as_deref()
-    .is_some_and(|style| style.establishes_fixed_containing_block());
+    .is_some_and(|style| style.establishes_fixed_containing_block())
+    || (forced_z_index.is_some() && fragment.box_id().is_none());
   let is_viewport_fixed = style
     .as_deref()
     .is_some_and(|style| matches!(style.position, Position::Fixed))
@@ -1549,20 +1569,26 @@ where
     .unwrap_or(Point::ZERO);
 
   if creates_context {
-    let z_index = style
-      .as_deref()
-      .map(|s| {
-        if s.top_layer.is_some() {
-          i32::MAX
-        } else {
-          s.z_index.unwrap_or(0)
-        }
-      })
-      .unwrap_or(0);
-    let reason = style
-      .as_deref()
-      .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
-      .unwrap_or(StackingContextReason::Root);
+    let z_index = forced_z_index.unwrap_or_else(|| {
+      style
+        .as_deref()
+        .map(|s| {
+          if s.top_layer.is_some() {
+            i32::MAX
+          } else {
+            s.z_index.unwrap_or(0)
+          }
+        })
+        .unwrap_or(0)
+    });
+    let reason = if forced_z_index.is_some() {
+      StackingContextReason::Forced
+    } else {
+      style
+        .as_deref()
+        .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
+        .unwrap_or(StackingContextReason::Root)
+    };
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
     context.clip_chain = clip_stack.clone();
@@ -1816,14 +1842,18 @@ where
   let current_order = *tree_order;
   *tree_order += 1;
 
-  let creates_context = if let Some(s) = style.as_deref() {
-    creates_stacking_context(s, parent_style, is_root)
-  } else {
-    is_root
-  };
+  let forced_z_index = fragment.stacking_context.forced_z_index();
+  let creates_context = forced_z_index.is_some()
+    || if let Some(s) = style.as_deref() {
+      creates_stacking_context(s, parent_style, is_root)
+    } else {
+      is_root
+    };
+  // See the checked variant for rationale.
   let establishes_fixed_cb = style
     .as_deref()
-    .is_some_and(|style| style.establishes_fixed_containing_block());
+    .is_some_and(|style| style.establishes_fixed_containing_block())
+    || (forced_z_index.is_some() && fragment.box_id().is_none());
   let is_viewport_fixed = style
     .as_deref()
     .is_some_and(|style| matches!(style.position, Position::Fixed))
@@ -1852,20 +1882,26 @@ where
     .unwrap_or(Point::ZERO);
 
   if creates_context {
-    let z_index = style
-      .as_deref()
-      .map(|s| {
-        if s.top_layer.is_some() {
-          i32::MAX
-        } else {
-          s.z_index.unwrap_or(0)
-        }
-      })
-      .unwrap_or(0);
-    let reason = style
-      .as_deref()
-      .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
-      .unwrap_or(StackingContextReason::Root);
+    let z_index = forced_z_index.unwrap_or_else(|| {
+      style
+        .as_deref()
+        .map(|s| {
+          if s.top_layer.is_some() {
+            i32::MAX
+          } else {
+            s.z_index.unwrap_or(0)
+          }
+        })
+        .unwrap_or(0)
+    });
+    let reason = if forced_z_index.is_some() {
+      StackingContextReason::Forced
+    } else {
+      style
+        .as_deref()
+        .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
+        .unwrap_or(StackingContextReason::Root)
+    };
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
     context.clip_chain = clip_stack.clone();

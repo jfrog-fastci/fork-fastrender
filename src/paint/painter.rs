@@ -2105,9 +2105,11 @@ impl Painter {
       );
     }
 
-    let establishes_context = style_ref
-      .map(|s| creates_stacking_context(s, parent_style, is_root_context))
-      .unwrap_or(is_root_context);
+    let forced_z_index = fragment.stacking_context.forced_z_index();
+    let establishes_context = forced_z_index.is_some()
+      || style_ref
+        .map(|s| creates_stacking_context(s, parent_style, is_root_context))
+        .unwrap_or(is_root_context);
     let element_scroll = self.element_scroll_offset(fragment);
     let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
     let child_offset = Point::new(
@@ -2137,6 +2139,15 @@ impl Painter {
       let mut positioned_auto = Vec::new();
 
       for (idx, child) in fragment.children.iter().enumerate() {
+        if let Some(z) = child.stacking_context.forced_z_index() {
+          match z.cmp(&0) {
+            std::cmp::Ordering::Less => negative_contexts.push((z, idx)),
+            std::cmp::Ordering::Equal => zero_contexts.push((z, idx)),
+            std::cmp::Ordering::Greater => positive_contexts.push((z, idx)),
+          }
+          continue;
+        }
+
         if let Some(style) = child.style.as_deref() {
           if creates_stacking_context(style, style_ref, false) {
             let z = style.z_index.unwrap_or(0);
@@ -2318,6 +2329,15 @@ impl Painter {
     let mut positioned_auto = Vec::new();
 
     for (idx, child) in fragment.children.iter().enumerate() {
+      if let Some(z) = child.stacking_context.forced_z_index() {
+        match z.cmp(&0) {
+          std::cmp::Ordering::Less => negative_contexts.push((z, idx)),
+          std::cmp::Ordering::Equal => zero_contexts.push((z, idx)),
+          std::cmp::Ordering::Greater => positive_contexts.push((z, idx)),
+        }
+        continue;
+      }
+
       if let Some(style) = child.style.as_deref() {
         if creates_stacking_context(style, style_ref, false) {
           let z = style.z_index.unwrap_or(0);

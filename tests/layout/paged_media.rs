@@ -11,6 +11,17 @@ fn pages<'a>(tree: &'a FragmentTree) -> Vec<&'a FragmentNode> {
   roots
 }
 
+fn page_document_wrapper<'a>(page: &'a FragmentNode) -> &'a FragmentNode {
+  page.children.first().expect("page document wrapper")
+}
+
+fn page_content<'a>(page: &'a FragmentNode) -> &'a FragmentNode {
+  page_document_wrapper(page)
+    .children
+    .first()
+    .expect("page content")
+}
+
 fn find_text<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
   if let FragmentContent::Text { text, .. } = &node.content {
     if text.contains(needle) {
@@ -104,8 +115,7 @@ fn collected_page_content_texts_compacted(page_roots: &[&FragmentNode]) -> Vec<S
   page_roots
     .iter()
     .map(|page| {
-      let content = page.children.first().expect("page content");
-      collected_text_compacted(content)
+      collected_text_compacted(page_content(page))
     })
     .collect()
 }
@@ -113,8 +123,7 @@ fn collected_page_content_texts_compacted(page_roots: &[&FragmentNode]) -> Vec<S
 fn collect_label_sequence(page_roots: &[&FragmentNode], re: &Regex) -> Vec<String> {
   let mut labels = Vec::new();
   for page in page_roots {
-    let content = page.children.first().expect("page content");
-    let text = collected_text_compacted(content);
+    let text = collected_text_compacted(page_content(page));
     labels.extend(
       re.captures_iter(&text)
         .map(|cap| cap.get(1).expect("label group").as_str().to_string()),
@@ -124,7 +133,7 @@ fn collect_label_sequence(page_roots: &[&FragmentNode], re: &Regex) -> Vec<Strin
 }
 
 fn count_text_fragments_by_column(page: &FragmentNode, needle: &str) -> (usize, usize) {
-  let content = page.children.first().expect("page content");
+  let content = page_content(page);
   let mut texts = Vec::new();
   collect_text_fragments(content, (0.0, 0.0), &mut texts);
   let split_x = content.bounds.x() + content.bounds.width() / 2.0;
@@ -289,7 +298,7 @@ fn page_rule_sets_size_and_margins() {
   assert!((page_roots[0].bounds.width() - 200.0).abs() < 0.1);
   assert!((page_roots[0].bounds.height() - 400.0).abs() < 0.1);
 
-  let content = page_roots[0].children.first().expect("page content");
+  let content = page_content(page_roots[0]);
   assert!((content.bounds.x() - 50.0).abs() < 0.1);
   assert!((content.bounds.y() - 20.0).abs() < 0.1);
   assert!((content.bounds.height() - 340.0).abs() < 0.1);
@@ -316,7 +325,7 @@ fn page_rule_important_overrides_non_important() {
   let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page = pages(&tree)[0];
 
-  let content = page.children.first().expect("page content");
+  let content = page_content(page);
   assert!(
     (content.bounds.y() - 10.0).abs() < 0.1,
     "expected margin-top=10px from !important declaration; got {}",
@@ -343,7 +352,7 @@ fn page_rule_layers_invert_for_important() {
   let dom = renderer.parse_html(html_normal).unwrap();
   let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page = pages(&tree)[0];
-  let content = page.children.first().expect("page content");
+  let content = page_content(page);
   assert!(
     (content.bounds.y() - 20.0).abs() < 0.1,
     "expected later layer b to win for normal declarations; got {}",
@@ -366,7 +375,7 @@ fn page_rule_layers_invert_for_important() {
   let dom = renderer.parse_html(html_important).unwrap();
   let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
   let page = pages(&tree)[0];
-  let content = page.children.first().expect("page content");
+  let content = page_content(page);
   assert!(
     (content.bounds.y() - 10.0).abs() < 0.1,
     "expected earlier layer a to win for !important declarations; got {}",
@@ -399,8 +408,8 @@ fn page_rule_left_and_right_offsets_differ() {
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
-  let first = page_roots[0].children.first().unwrap();
-  let second = page_roots[1].children.first().unwrap();
+  let first = page_content(page_roots[0]);
+  let second = page_content(page_roots[1]);
 
   assert!((first.bounds.x() - 10.0).abs() < 0.1);
   assert!((second.bounds.x() - 40.0).abs() < 0.1);
@@ -520,8 +529,8 @@ fn left_right_page_relayout_does_not_skip_or_duplicate_text() {
     page_roots.len()
   );
 
-  let width_right = page_roots[0].children.first().unwrap().bounds.width();
-  let width_left = page_roots[1].children.first().unwrap().bounds.width();
+  let width_right = page_content(page_roots[0]).bounds.width();
+  let width_left = page_content(page_roots[1]).bounds.width();
   assert!(
     width_right > width_left + 40.0,
     "expected :right page content to be significantly wider than :left (right={width_right}, left={width_left})"
@@ -563,7 +572,7 @@ fn named_pages_change_page_size() {
   let page_roots = pages(&tree);
 
   assert!((page_roots[0].bounds.width() - 300.0).abs() < 0.1);
-  let content = page_roots[0].children.first().unwrap();
+  let content = page_content(page_roots[0]);
   assert!((content.bounds.width() - 280.0).abs() < 0.1);
 }
 
@@ -669,8 +678,7 @@ fn named_page_size_change_mid_document_does_not_skip_or_duplicate_text() {
   );
 
   for (idx, page) in page_roots.iter().enumerate() {
-    let content = page.children.first().expect("page content");
-    let text = collected_text_compacted(content);
+    let text = collected_text_compacted(page_content(page));
     let has_preface = text.contains("[P");
     let has_chapter = text.contains("[C");
     assert!(
@@ -696,15 +704,13 @@ fn named_page_size_change_mid_document_does_not_skip_or_duplicate_text() {
   let preface_last_page = page_roots
     .iter()
     .position(|page| {
-      let content = page.children.first().unwrap();
-      find_text(content, "P049").is_some()
+      find_text(page_content(page), "P049").is_some()
     })
     .expect("last preface label should exist");
   let chapter_first_page = page_roots
     .iter()
     .position(|page| {
-      let content = page.children.first().unwrap();
-      find_text(content, "C000").is_some()
+      find_text(page_content(page), "C000").is_some()
     })
     .expect("first chapter label should exist");
   assert!(
@@ -908,7 +914,7 @@ fn margin_box_content_is_positioned_in_margins() {
   let page_roots = pages(&tree);
   let page = page_roots[0];
 
-  let content = page.children.first().expect("content");
+  let content = page_content(page);
   let content_y = page.bounds.y() + content.bounds.y();
   let header_y = find_text_position(page, "Header", (0.0, 0.0))
     .expect("header margin box")
@@ -1102,7 +1108,7 @@ fn running_element_in_flex_is_out_of_flow_and_available_to_margin_boxes() {
   );
 
   let first_page = page_roots[0];
-  let content = first_page.children.first().expect("page content");
+  let content = page_content(first_page);
   assert!(
     !collected_text_compacted(content).contains("FlexHeader"),
     "running element should not consume space in main content"
@@ -1163,7 +1169,7 @@ fn running_element_in_grid_is_available_to_margin_boxes() {
   );
 
   let first_page = page_roots[0];
-  let content = first_page.children.first().expect("page content");
+  let content = page_content(first_page);
   assert!(
     !collected_text_compacted(content).contains("GridHeader"),
     "running element should not paint in normal flow"
@@ -1230,7 +1236,7 @@ fn inline_running_element_used_in_margin_box() {
     margin_boxes_contain_text(page, "Inline Header"),
     "running header should appear in margin box"
   );
-  let content = page.children.first().expect("page content");
+  let content = page_content(page);
   assert!(
     !collected_text_compacted(content).contains("InlineHeader"),
     "running element should not paint in normal flow"
@@ -1261,7 +1267,7 @@ fn content_descendants_use_local_coordinates() {
     .unwrap();
   let page_roots = pages(&tree);
   let page = page_roots[0];
-  let content = page.children.first().expect("page content");
+  let content = page_content(page);
 
   let target_child = content
     .children
@@ -1307,12 +1313,7 @@ fn header_repeats_across_pages() {
   assert!(page_roots.len() >= 2);
 
   for page in page_roots {
-    let content_y = page.bounds.y()
-      + page
-        .children
-        .first()
-        .map(|n| n.bounds.y())
-        .unwrap_or(f32::MAX);
+    let content_y = page.bounds.y() + page_content(page).bounds.y();
 
     let header_pos =
       find_text_position_matching(page, "Title", (0.0, 0.0), &|pos| pos.1 < content_y)
@@ -1599,7 +1600,7 @@ fn string_set_from_split_inline_updates_once() {
   let page = page_roots.first().expect("page");
   let expected = "Very long header text that wraps across lines";
 
-  let content = page.children.first().expect("page content");
+  let content = page_content(page);
   let content_y = page.bounds.y() + content.bounds.y();
 
   let mut texts = Vec::new();
@@ -1662,12 +1663,7 @@ fn start_vs_first() {
   let mut content_y = f32::MAX;
   for page in &page_roots {
     let candidate = *page;
-    let candidate_content_y = candidate.bounds.y()
-      + candidate
-        .children
-        .first()
-        .map(|n| n.bounds.y())
-        .unwrap_or(f32::MAX);
+    let candidate_content_y = candidate.bounds.y() + page_content(candidate).bounds.y();
     let has_chapter_2_in_content =
       find_text_position_matching(candidate, "2", (0.0, 0.0), &|pos| {
         pos.1 >= candidate_content_y
@@ -1744,12 +1740,7 @@ fn running_strings_follow_page_relayout_left_right() {
   let mut content_y = f32::MAX;
   for page in &page_roots {
     let candidate = *page;
-    let candidate_content_y = candidate.bounds.y()
-      + candidate
-        .children
-        .first()
-        .map(|n| n.bounds.y())
-        .unwrap_or(f32::MAX);
+    let candidate_content_y = candidate.bounds.y() + page_content(candidate).bounds.y();
     let has_chapter_2_in_content =
       find_text_position_matching(candidate, "Chapter2", (0.0, 0.0), &|pos| {
         pos.1 >= candidate_content_y
@@ -1828,12 +1819,7 @@ fn running_strings_update_across_named_page_width_change() {
     .find(|page| find_text(*page, "ChapterWide").is_some())
     .copied()
     .expect("page containing ChapterWide");
-  let content_y = wide_page.bounds.y()
-    + wide_page
-      .children
-      .first()
-      .map(|n| n.bounds.y())
-      .unwrap_or(f32::MAX);
+  let content_y = wide_page.bounds.y() + page_content(wide_page).bounds.y();
 
   assert!(
     find_text_position_matching(wide_page, "ChapterWide", (0.0, 0.0), &|pos| pos.1
@@ -2794,8 +2780,7 @@ fn print_pagination_respects_widows_and_orphans() {
   let mut seen = std::collections::HashSet::<&'static str>::new();
 
   for (idx, page) in page_roots.iter().enumerate() {
-    let content = page.children.first().expect("page content");
-    let text = collected_text_compacted(content);
+    let text = collected_text_compacted(page_content(page));
     let count = lines.iter().filter(|line| text.contains(**line)).count();
     assert!(
       count >= 2,
@@ -2841,8 +2826,7 @@ fn print_pagination_respects_break_before_avoid_page() {
     page_roots.len() >= 2,
     "expected avoid-page test content to paginate"
   );
-  let first_content = page_roots[0].children.first().expect("page content");
-  let first_text = collected_text_compacted(first_content);
+  let first_text = collected_text_compacted(page_content(page_roots[0]));
   assert!(
     first_text.contains("C1"),
     "break-before: avoid-page should prefer breaking inside the following block when possible; page1 text={first_text}"
@@ -3940,7 +3924,7 @@ fn var_in_string_set_is_used_in_running_header() {
   );
 
   for (idx, page) in page_roots.iter().take(2).enumerate() {
-    let content = page.children.first().expect("page content");
+    let content = page_content(page);
     let content_y = page.bounds.y() + content.bounds.y();
 
     let mut texts = Vec::new();
@@ -4020,7 +4004,7 @@ fn var_in_string_argument_selects_last_running_string() {
   );
 
   let page = page_roots[1];
-  let content = page.children.first().expect("page content");
+  let content = page_content(page);
   let content_y = page.bounds.y() + content.bounds.y();
 
   let mut texts = Vec::new();
@@ -4104,6 +4088,141 @@ fn page_border_is_painted() {
 }
 
 #[test]
+fn margin_boxes_paint_above_fixed_high_z_content_by_default() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 50px;
+            @top-left-corner {
+              content: "";
+              background: rgb(255, 0, 0);
+            }
+          }
+          html, body { margin: 0; background: transparent; }
+          #fixed {
+            position: fixed;
+            /* Move into the page margin area so it overlaps @top-left-corner. */
+            top: -30px;
+            left: -30px;
+            width: 200px;
+            height: 200px;
+            background: rgb(0, 0, 255);
+            z-index: 9999;
+          }
+        </style>
+      </head>
+      <body>
+        <div id="fixed"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render paged media");
+
+  assert_eq!(pixel(&pixmap, 30, 30), [255, 0, 0, 255]);
+}
+
+#[test]
+fn negative_z_margin_boxes_paint_behind_document_contents() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 50px;
+            @top-left-corner {
+              content: "";
+              background: rgb(255, 0, 0);
+              z-index: -1;
+            }
+          }
+          html, body { margin: 0; background: transparent; }
+          #fixed {
+            position: fixed;
+            /* Move into the page margin area so it overlaps @top-left-corner. */
+            top: -30px;
+            left: -30px;
+            width: 200px;
+            height: 200px;
+            background: rgb(0, 0, 255);
+            z-index: 9999;
+          }
+        </style>
+      </head>
+      <body>
+        <div id="fixed"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render paged media");
+
+  assert_eq!(pixel(&pixmap, 30, 30), [0, 0, 255, 255]);
+}
+
+#[test]
+fn margin_box_z_index_orders_overlapping_boxes() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 50px;
+            @top-left-corner {
+              content: "";
+              background: rgb(255, 0, 0);
+              z-index: 2;
+            }
+            @bottom-right-corner {
+              content: "";
+              background: rgb(0, 255, 0);
+              /* Translate into the top-left-corner so the two margin boxes overlap. */
+              transform: translate(-150px, -150px);
+              z-index: 1;
+            }
+          }
+          html, body { margin: 0; background: transparent; }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render paged media");
+
+  assert_eq!(pixel(&pixmap, 30, 30), [255, 0, 0, 255]);
+}
+
+#[test]
 fn vertical_writing_mode_paginate_along_block_axis() {
   let html = r#"
     <html>
@@ -4134,14 +4253,14 @@ fn vertical_writing_mode_paginate_along_block_axis() {
     "expected pagination along the horizontal block axis to create multiple pages"
   );
 
-  let first_content = page_roots[0].children.first().expect("page content");
+  let first_content = page_content(page_roots[0]);
   assert!(find_text(first_content, "Before").is_some());
   assert!(
     find_text(first_content, "After").is_none(),
     "later content should not appear on the first page"
   );
 
-  let second_content = page_roots[1].children.first().expect("second page content");
+  let second_content = page_content(page_roots[1]);
   assert!(find_text(second_content, "After").is_some());
 }
 
@@ -4178,11 +4297,11 @@ fn vertical_writing_forced_break_respected() {
     "expected forced break to create a new page in vertical writing mode"
   );
 
-  let first_content = page_roots[0].children.first().expect("page content");
+  let first_content = page_content(page_roots[0]);
   assert!(find_text(first_content, "Start").is_some());
   assert!(find_text(first_content, "Forced").is_none());
 
-  let second_content = page_roots[1].children.first().expect("second page content");
+  let second_content = page_content(page_roots[1]);
   assert!(find_text(second_content, "Forced").is_some());
 }
 
@@ -4257,10 +4376,11 @@ fn footnote_counter_increment_can_override_implicit_footnote_numbering() {
   let page_roots = pages(&tree);
   assert!(!page_roots.is_empty());
   let page1 = page_roots[0];
-  assert_eq!(page1.children.len(), 2);
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(wrapper.children.len(), 2);
 
-  let content = page1.children.first().expect("page content");
-  let footnote_area = page1.children.get(1).expect("footnote area");
+  let content = page_content(page1);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
 
   assert!(find_text(content, "Main").is_some());
   assert!(
@@ -4308,10 +4428,11 @@ fn footnote_counter_set_can_override_implicit_footnote_numbering() {
   let page_roots = pages(&tree);
   assert!(!page_roots.is_empty());
   let page1 = page_roots[0];
-  assert_eq!(page1.children.len(), 2);
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(wrapper.children.len(), 2);
 
-  let content = page1.children.first().expect("page content");
-  let footnote_area = page1.children.get(1).expect("footnote area");
+  let content = page_content(page1);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
 
   assert!(find_text(content, "Main").is_some());
   assert!(
@@ -4364,13 +4485,14 @@ fn footnote_body_images_resolve_intrinsic_sizes() {
     "expected the single page to accommodate a 1x1 intrinsic image footnote"
   );
   let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
   assert_eq!(
-    page1.children.len(),
+    wrapper.children.len(),
     2,
     "page with footnote should have content + footnote area"
   );
 
-  let footnote_area = page1.children.get(1).expect("footnote area");
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
   let image = find_replaced_image(footnote_area).expect("expected image fragment in footnote area");
   assert!(
     (image.bounds.width() - 1.0).abs() < 0.1,
@@ -4413,13 +4535,14 @@ fn footnote_float_generates_call_and_page_footnote_area() {
   assert!(page_roots.len() >= 2);
 
   let page1 = page_roots[0];
+  let wrapper1 = page_document_wrapper(page1);
   assert_eq!(
-    page1.children.len(),
+    wrapper1.children.len(),
     2,
     "page with footnote should have content + footnote area"
   );
-  let content = page1.children.first().expect("page content");
-  let footnote_area = page1.children.get(1).expect("footnote area");
+  let content = page_content(page1);
+  let footnote_area = wrapper1.children.get(1).expect("footnote area");
 
   assert!(find_text(content, "Main").is_some());
   assert!(
@@ -4438,11 +4561,8 @@ fn footnote_float_generates_call_and_page_footnote_area() {
   );
 
   let page2 = page_roots[1];
-  assert_eq!(
-    page2.children.len(),
-    1,
-    "pages without footnotes should not include a footnote area"
-  );
+  let wrapper2 = page_document_wrapper(page2);
+  assert_eq!(wrapper2.children.len(), 1, "pages without footnotes should not include a footnote area");
   assert!(find_text(page2, "Page2").is_some());
 }
 
@@ -4481,15 +4601,15 @@ fn footnote_body_in_multicol_uses_page_width_in_footnote_area() {
   assert!(!page_roots.is_empty());
 
   let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
   assert_eq!(
-    page1.children.len(),
+    wrapper.children.len(),
     2,
     "page with footnote should have content + footnote area"
   );
-  let content = page1.children.first().expect("page content");
-  let page_width = content.bounds.width();
+  let page_width = page_content(page1).bounds.width();
 
-  let footnote_area = page1.children.get(1).expect("footnote area");
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
   assert!(
     footnote_area.children.len() >= 2,
     "expected footnote area to include separator + footnote body"
@@ -4539,9 +4659,10 @@ fn footnote_overflow_defers_later_calls_to_next_page() {
   );
 
   let page1 = page_roots[0];
-  assert_eq!(page1.children.len(), 2);
-  let content1 = page1.children.first().expect("page 1 content");
-  let footnote_area1 = page1.children.get(1).expect("page 1 footnote area");
+  let wrapper1 = page_document_wrapper(page1);
+  assert_eq!(wrapper1.children.len(), 2);
+  let content1 = page_content(page1);
+  let footnote_area1 = wrapper1.children.get(1).expect("page 1 footnote area");
 
   assert!(find_text(content1, "Alpha").is_some());
   assert!(find_text(content1, "Beta").is_none());
@@ -4554,9 +4675,10 @@ fn footnote_overflow_defers_later_calls_to_next_page() {
   assert!(find_text(footnote_area1, "2").is_none());
 
   let page2 = page_roots[1];
-  assert_eq!(page2.children.len(), 2);
-  let content2 = page2.children.first().expect("page 2 content");
-  let footnote_area2 = page2.children.get(1).expect("page 2 footnote area");
+  let wrapper2 = page_document_wrapper(page2);
+  assert_eq!(wrapper2.children.len(), 2);
+  let content2 = page_content(page2);
+  let footnote_area2 = wrapper2.children.get(1).expect("page 2 footnote area");
 
   assert!(find_text(content2, "Beta").is_some());
   assert!(find_text(content2, "Alpha").is_none());
@@ -4609,8 +4731,9 @@ fn huge_footnote_body_continues_across_pages() {
   );
 
   for (idx, page) in page_roots.iter().enumerate() {
+    let wrapper = page_document_wrapper(page);
     assert_eq!(
-      page.children.len(),
+      wrapper.children.len(),
       2,
       "page {} should include content + footnote area",
       idx + 1
@@ -4618,8 +4741,11 @@ fn huge_footnote_body_continues_across_pages() {
   }
 
   let page1 = page_roots[0];
-  let content1 = page1.children.first().expect("page 1 content");
-  let footnote_area1 = page1.children.get(1).expect("page 1 footnote area");
+  let content1 = page_content(page1);
+  let footnote_area1 = page_document_wrapper(page1)
+    .children
+    .get(1)
+    .expect("page 1 footnote area");
   assert!(find_text(content1, "Main").is_some());
   assert!(find_text(footnote_area1, "Footnote line 1").is_some());
   assert!(
@@ -4628,7 +4754,10 @@ fn huge_footnote_body_continues_across_pages() {
   );
 
   let last = *page_roots.last().expect("last page");
-  let last_footnote_area = last.children.get(1).expect("last page footnote area");
+  let last_footnote_area = page_document_wrapper(last)
+    .children
+    .get(1)
+    .expect("last page footnote area");
   assert!(
     find_text(last_footnote_area, "Footnote line 40").is_some(),
     "expected last footnote line to appear on a later page"
@@ -4677,25 +4806,30 @@ fn mixed_footnotes_preserve_order_when_one_is_huge() {
   );
 
   let page1 = page_roots[0];
-  assert_eq!(page1.children.len(), 2);
-  let content1 = page1.children.first().expect("page 1 content");
-  let footnote_area1 = page1.children.get(1).expect("page 1 footnote area");
+  let wrapper1 = page_document_wrapper(page1);
+  assert_eq!(wrapper1.children.len(), 2);
+  let content1 = page_content(page1);
+  let footnote_area1 = wrapper1.children.get(1).expect("page 1 footnote area");
   assert!(find_text(content1, "Alpha").is_some());
   assert!(find_text(content1, "Beta").is_none());
   assert!(find_text(footnote_area1, "Footnote one").is_some());
   assert!(find_text(footnote_area1, "Footnote two").is_none());
 
   let page2 = page_roots[1];
-  assert_eq!(page2.children.len(), 2);
-  let content2 = page2.children.first().expect("page 2 content");
-  let footnote_area2 = page2.children.get(1).expect("page 2 footnote area");
+  let wrapper2 = page_document_wrapper(page2);
+  assert_eq!(wrapper2.children.len(), 2);
+  let content2 = page_content(page2);
+  let footnote_area2 = wrapper2.children.get(1).expect("page 2 footnote area");
   assert!(find_text(content2, "Beta").is_some());
   assert!(find_text(content2, "Alpha").is_none());
   assert!(find_text(footnote_area2, "Footnote two line 1").is_some());
   assert!(find_text(footnote_area2, "Footnote one").is_none());
 
   let last = *page_roots.last().expect("last page");
-  let last_footnote_area = last.children.get(1).expect("last page footnote area");
+  let last_footnote_area = page_document_wrapper(last)
+    .children
+    .get(1)
+    .expect("last page footnote area");
   assert!(find_text(last_footnote_area, "Footnote two line 40").is_some());
   assert!(find_text(last_footnote_area, "Footnote one").is_none());
 }

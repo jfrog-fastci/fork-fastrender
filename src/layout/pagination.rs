@@ -719,16 +719,43 @@ pub fn paginate_fragment_tree(
 
     let mut fixed_fragments = Vec::new();
     collect_fixed_fragments(&layout.root, Point::ZERO, &mut fixed_fragments);
-    let mut page_root = FragmentNode::new_block_styled(
-      Rect::from_xywh(
-        0.0,
-        0.0,
-        page_style.total_size.width,
-        page_style.total_size.height,
-      ),
-      Vec::new(),
-      Arc::new(page_style.page_style.clone()),
+
+    // CSS Page 3 requires:
+    // - page background is always the bottom-most layer.
+    // - the page border/box-shadow + document contents behave as a single stacking context at z=0
+    //   relative to page-margin boxes (which can paint in front or behind via z-index).
+    //
+    // We implement this by splitting the @page style into:
+    // - `page_background_style`: background only (painted by the page root fragment).
+    // - `document_wrapper_style`: border/box-shadow only (painted by a synthetic wrapper fragment
+    //   that also contains all document content and establishes a stacking context at z=0).
+    let mut page_background_style = page_style.page_style.clone();
+    page_background_style.box_shadow.clear();
+    page_background_style.border_top_width = Length::px(0.0);
+    page_background_style.border_right_width = Length::px(0.0);
+    page_background_style.border_bottom_width = Length::px(0.0);
+    page_background_style.border_left_width = Length::px(0.0);
+
+    let mut document_wrapper_style = page_style.page_style.clone();
+    document_wrapper_style.reset_background_to_initial();
+
+    let page_bounds = Rect::from_xywh(
+      0.0,
+      0.0,
+      page_style.total_size.width,
+      page_style.total_size.height,
     );
+    let mut page_root = FragmentNode::new_block_styled(
+      page_bounds,
+      Vec::new(),
+      Arc::new(page_background_style),
+    );
+    let mut document_wrapper = FragmentNode::new_block_styled(
+      page_bounds,
+      Vec::new(),
+      Arc::new(document_wrapper_style),
+    );
+    document_wrapper.force_stacking_context_with_z_index(0);
     let mut page_running_elements: HashMap<String, RunningElementValues> = HashMap::new();
 
     let mut end_in_base = start_in_base;
@@ -746,7 +773,7 @@ pub fn paginate_fragment_tree(
           page_style.content_size.width,
           page_style.content_size.height,
         );
-        page_root
+        document_wrapper
           .children_mut()
           .push(FragmentNode::new_block(content_bounds, Vec::new()));
 
@@ -817,7 +844,7 @@ pub fn paginate_fragment_tree(
         }
 
         if let Some(footnote_area) = build_footnote_area_fragment(&page_style, &axis, &slices) {
-          page_root.children_mut().push(footnote_area);
+          document_wrapper.children_mut().push(footnote_area);
         }
       } else {
         let mut start = {
@@ -1145,9 +1172,9 @@ pub fn paginate_fragment_tree(
             page_index, counts, previews
           );
         }
-        page_root.children_mut().push(content);
+        document_wrapper.children_mut().push(content);
         if let Some(footnote_area) = footnote_area {
-          page_root.children_mut().push(footnote_area);
+          document_wrapper.children_mut().push(footnote_area);
         }
       }
 
@@ -1182,8 +1209,10 @@ pub fn paginate_fragment_tree(
         page_style.content_origin.x,
         page_style.content_origin.y,
       );
-      page_root.children_mut().push(fixed);
+      document_wrapper.children_mut().push(fixed);
     }
+
+    page_root.children_mut().push(document_wrapper);
 
     let page_strings = if is_blank_page {
       snapshot_running_strings(&string_set_carry)
@@ -2099,11 +2128,13 @@ fn build_margin_box_fragments(
 
     match &plan.content {
       MarginBoxPlanContent::SnapshotOnly { snapshot } => {
-        fragments.push(FragmentNode::new_block_styled(
+        let mut fragment = FragmentNode::new_block_styled(
           bounds,
           vec![snapshot.clone()],
           plan.style.clone(),
-        ));
+        );
+        fragment.force_stacking_context_with_z_index(plan.style.z_index.unwrap_or(0));
+        fragments.push(fragment);
       }
       MarginBoxPlanContent::BoxTree {
         tree: box_tree,
@@ -2131,6 +2162,9 @@ fn build_margin_box_fragments(
             tree.root.children_mut().push(snapshot);
           }
           translate_fragment(&mut tree.root, bounds.x(), bounds.y());
+          tree
+            .root
+            .force_stacking_context_with_z_index(plan.style.z_index.unwrap_or(0));
           fragments.push(tree.root);
         }
       }
