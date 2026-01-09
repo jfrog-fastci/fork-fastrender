@@ -3006,8 +3006,13 @@ impl DisplayListBuilder {
         &self.font_ctx,
         reference,
       );
-      let image = self.decode_clip_path_url(src, style, reference_rect)?;
-      Some((image, reference_rect))
+      // `clip-path: url(#id)` is defined in the coordinate space of the chosen reference box, but
+      // the clipPath geometry may extend outside that box (e.g. `clipPathUnits="userSpaceOnUse"`
+      // with negative coordinates). Rasterize the clip-path mask over the full stacking context
+      // bounds and shift the SVG viewBox so (0,0) still corresponds to the reference box origin.
+      let mask_bounds_css = context_bounds;
+      let image = self.decode_clip_path_url(src, style, reference_rect, mask_bounds_css)?;
+      Some((image, mask_bounds_css))
     });
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), clip_path_timer) {
       breakdown.record_clip_path(start.elapsed());
@@ -3069,9 +3074,8 @@ impl DisplayListBuilder {
     if let Some(bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
     } else if let Some((_, rect)) = clip_path_mask.as_ref() {
-      // Rasterized fragment-only `clip-path: url(#id)` masks always cover at most the chosen
-      // reference box (we render a rect and apply the clip-path), so the reference bounds are a
-      // safe hard-clip rectangle for culling purposes.
+      // Fragment-only `clip-path: url(#id)` masks are rasterized over the stacking context bounds,
+      // so those bounds are a safe hard-clip rectangle for culling purposes.
       child_visibility = child_visibility.intersect(Some(*rect), true);
     }
     if let Some(bounds) = clip_rect.as_ref().and_then(|clip| Self::clip_bounds(clip)) {
@@ -3990,15 +3994,26 @@ impl DisplayListBuilder {
     crate::paint::svg_mask_image::inline_svg_for_mask_id(defs, mask_id, width, height)
   }
 
-  fn inline_svg_for_svg_clip_path(&self, clip_id: &str, bounds: Rect) -> Option<String> {
+  fn inline_svg_for_svg_clip_path(
+    &self,
+    clip_id: &str,
+    reference_rect: Rect,
+    mask_bounds_css: Rect,
+  ) -> Option<String> {
     let defs = self.svg_id_defs.as_ref()?;
-    let view_w = if bounds.width().is_finite() && bounds.width() > 0.0 {
-      bounds.width()
+    let viewbox_x = mask_bounds_css.x() - reference_rect.x();
+    let viewbox_y = mask_bounds_css.y() - reference_rect.y();
+    if !viewbox_x.is_finite() || !viewbox_y.is_finite() {
+      return None;
+    }
+
+    let view_w = if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0 {
+      mask_bounds_css.width()
     } else {
       1.0
     };
-    let view_h = if bounds.height().is_finite() && bounds.height() > 0.0 {
-      bounds.height()
+    let view_h = if mask_bounds_css.height().is_finite() && mask_bounds_css.height() > 0.0 {
+      mask_bounds_css.height()
     } else {
       1.0
     };
@@ -4010,13 +4025,8 @@ impl DisplayListBuilder {
     };
     let width = (view_w * dpr).ceil().max(1.0) as u32;
     let height = (view_h * dpr).ceil().max(1.0) as u32;
-    crate::paint::svg_mask_image::inline_svg_for_clip_path_id_with_view_box(
-      defs,
-      clip_id,
-      view_w,
-      view_h,
-      width,
-      height,
+    crate::paint::svg_mask_image::inline_svg_for_clip_path_id_with_view_box_offset(
+      defs, clip_id, viewbox_x, viewbox_y, view_w, view_h, width, height,
     )
   }
 
@@ -4087,11 +4097,12 @@ impl DisplayListBuilder {
     &self,
     src: &str,
     style: &ComputedStyle,
-    bounds: Rect,
+    reference_rect: Rect,
+    mask_bounds_css: Rect,
   ) -> Option<Arc<ImageData>> {
     let trimmed = trim_ascii_whitespace(src);
     if let Some(id) = trimmed.strip_prefix('#') {
-      if let Some(svg) = self.inline_svg_for_svg_clip_path(id, bounds) {
+      if let Some(svg) = self.inline_svg_for_svg_clip_path(id, reference_rect, mask_bounds_css) {
         return self.decode_image(
           &svg,
           Some(style),
@@ -12707,12 +12718,14 @@ mod tests {
     let bounds = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
     assert!(
-      builder.decode_clip_path_url("#clip", &style, bounds).is_some(),
+      builder
+        .decode_clip_path_url("#clip", &style, bounds, bounds)
+        .is_some(),
       "expected fragment-only URL to resolve with SVG id defs"
     );
     assert!(
       builder
-        .decode_clip_path_url(&format!("#clip{nbsp}"), &style, bounds)
+        .decode_clip_path_url(&format!("#clip{nbsp}"), &style, bounds, bounds)
         .is_none(),
       "expected NBSP-suffixed fragment to not match existing SVG ids"
     );

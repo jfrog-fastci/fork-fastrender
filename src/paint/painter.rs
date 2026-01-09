@@ -2576,8 +2576,8 @@ impl Painter {
       },
       None => None,
     };
-    let style_has_clip_path =
-      style_ref.is_some_and(|style| !matches!(style.clip_path, crate::style::types::ClipPath::None));
+    let style_has_clip_path = style_ref
+      .is_some_and(|style| !matches!(style.clip_path, crate::style::types::ClipPath::None));
     let mask = fragment
       .style
       .clone()
@@ -3536,26 +3536,49 @@ impl Painter {
                   return Ok(());
                 };
 
-                let view_w = reference_rect.width().ceil().max(1.0) as u32;
-                let view_h = reference_rect.height().ceil().max(1.0) as u32;
+                // Rasterize the SVG clip-path over the full stacking context bounds (not just the
+                // reference box) so `clipPathUnits="userSpaceOnUse"` clip paths can expose pixels
+                // outside the border box.
+                let mask_bounds_css = bounds;
+                let viewbox_x = mask_bounds_css.x() - reference_rect.x();
+                let viewbox_y = mask_bounds_css.y() - reference_rect.y();
+                if !viewbox_x.is_finite() || !viewbox_y.is_finite() {
+                  return Ok(());
+                }
+
+                let view_w = if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0 {
+                  mask_bounds_css.width()
+                } else {
+                  1.0
+                };
+                let view_h =
+                  if mask_bounds_css.height().is_finite() && mask_bounds_css.height() > 0.0 {
+                    mask_bounds_css.height()
+                  } else {
+                    1.0
+                  };
+
                 let Some(svg) =
-                  crate::paint::svg_mask_image::inline_svg_for_clip_path_id(defs, id, view_w, view_h)
+                  crate::paint::svg_mask_image::inline_svg_for_clip_path_id_with_view_box_offset(
+                    defs,
+                    id,
+                    viewbox_x,
+                    viewbox_y,
+                    view_w,
+                    view_h,
+                    canvas_w,
+                    canvas_h,
+                  )
                 else {
                   // Missing defs: treat as `clip-path: none`.
                   return Ok(());
                 };
 
-                // Rasterize the SVG clip-path at device resolution so the alpha mask isn't later
-                // upscaled by `device_pixel_ratio`.
-                let rect_device = base_painter.device_rect(*reference_rect);
-                let render_w = rect_device.width().ceil().max(1.0) as u32;
-                let render_h = rect_device.height().ceil().max(1.0) as u32;
-
                 let cache_key = format!("svg-clip-path-fragment:{id}");
                 let clip_pixmap = match base_painter.image_cache.render_svg_pixmap_at_size(
                   &svg,
-                  render_w,
-                  render_h,
+                  canvas_w,
+                  canvas_h,
                   &cache_key,
                   self.scale,
                 ) {
@@ -3566,74 +3589,14 @@ impl Painter {
                   Err(_) => return Ok(()),
                 };
 
-                let dirty = clip_mask_dirty_bounds(rect_device, canvas_w, canvas_h);
-
-                let Some(mut scratch) = new_pixmap(canvas_w, canvas_h) else {
-                  // Soft failure: skip clip-path.
-                  return Ok(());
-                };
-
-                let scale_x = if clip_pixmap.width() > 0 {
-                  rect_device.width() / clip_pixmap.width() as f32
-                } else {
-                  1.0
-                };
-                let scale_y = if clip_pixmap.height() > 0 {
-                  rect_device.height() / clip_pixmap.height() as f32
-                } else {
-                  1.0
-                };
-                let draw_transform =
-                  Transform::from_row(scale_x, 0.0, 0.0, scale_y, rect_device.x(), rect_device.y());
-
-                let mut paint = PixmapPaint::default();
-                paint.opacity = 1.0;
-                paint.blend_mode = tiny_skia::BlendMode::SourceOver;
-                paint.quality = tiny_skia::FilterQuality::Bilinear;
-                scratch.draw_pixmap(
-                  0,
-                  0,
-                  clip_pixmap.as_ref().as_ref(),
-                  &paint,
-                  draw_transform,
-                  None,
-                );
-
-                let Some(mut mask) = Mask::new(canvas_w, canvas_h) else {
-                  return Ok(());
-                };
-                mask.data_mut().fill(0);
-
-                if let Some(dirty) = dirty {
-                  let width = mask.width() as usize;
-                  let mask_stride = width;
-                  let pixmap_stride = width * 4;
-                  let mask_data = mask.data_mut();
-                  let pixmap_data = scratch.data();
-                  let x0 = dirty.x0 as usize;
-                  let x1 = dirty.x1 as usize;
-                  let y0 = dirty.y0 as usize;
-                  let y1 = dirty.y1 as usize;
-
-                  let mut deadline_counter = 0usize;
-                  for y in y0..y1 {
-                    let dst_start = y * mask_stride + x0;
-                    let dst_end = y * mask_stride + x1;
-                    let dst = &mut mask_data[dst_start..dst_end];
-                    let mut src_idx = y * pixmap_stride + x0 * 4 + 3;
-                    let mut x = 0usize;
-                    while x < dst.len() {
-                      check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-                      let x_end = (x + CLIP_MASK_DEADLINE_STRIDE).min(dst.len());
-                      for px in dst[x..x_end].iter_mut() {
-                        *px = pixmap_data[src_idx];
-                        src_idx += 4;
-                      }
-                      x = x_end;
-                    }
-                  }
-                }
-
+                let mask =
+                  Mask::from_pixmap(clip_pixmap.as_ref().as_ref(), tiny_skia::MaskType::Alpha);
+                let dirty = Some(ClipMaskDirtyRect {
+                  x0: 0,
+                  y0: 0,
+                  x1: canvas_w,
+                  y1: canvas_h,
+                });
                 apply_mask_with_dirty_bounds_rgba(&mut base_painter.pixmap, &mask, dirty)?;
                 Ok(())
               })()?;
@@ -13445,11 +13408,20 @@ fn stacking_context_bounds(
     base = base.union(clipped);
   }
   if let Some(path) = clip_path {
-    let clip_bounds = match path {
-      StackingClipPath::Shape(path) => path.bounds(),
-      StackingClipPath::Svg { reference_rect, .. } => *reference_rect,
-    };
-    base = base.intersection(clip_bounds).unwrap_or(clip_bounds);
+    match path {
+      StackingClipPath::Shape(path) => {
+        base = base
+          .intersection(path.bounds())
+          .unwrap_or_else(|| path.bounds());
+      }
+      StackingClipPath::Svg { .. } => {
+        // Unlike basic shapes, SVG `clip-path: url(#id)` can legitimately expose pixels outside the
+        // element's reference box (e.g. `clipPathUnits="userSpaceOnUse"` with negative
+        // coordinates). We don't currently compute tight bounds for SVG clip paths, so avoid
+        // intersecting the stacking-context bounds with the reference rect here (which would
+        // incorrectly cull overflow-visible content).
+      }
+    }
   }
   if let Some(outline_bounds) = outline_bounds {
     base = base.union(outline_bounds);

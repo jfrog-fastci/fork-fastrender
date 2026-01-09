@@ -2798,6 +2798,9 @@ fn extract_clip_path(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
 ) -> Option<AnimatedValue> {
+  if matches!(style.clip_path, ClipPath::Url(_, _)) {
+    return Some(AnimatedValue::ClipPath(style.clip_path.clone()));
+  }
   resolve_clip_path(&style.clip_path, style, ctx)
     .map(|resolved| AnimatedValue::ClipPath(resolved_clip_to_clip_path(&resolved)))
 }
@@ -2810,6 +2813,20 @@ fn interpolate_clip_path_value(
   let (AnimatedValue::ClipPath(pa), AnimatedValue::ClipPath(pb)) = (a, b) else {
     return None;
   };
+  if matches!(pa, ClipPath::Url(_, _)) || matches!(pb, ClipPath::Url(_, _)) {
+    // SVG `url(#id)` clip paths are discrete.
+    if t <= f32::EPSILON {
+      return Some(AnimatedValue::ClipPath(pa.clone()));
+    }
+    if (1.0 - t).abs() <= f32::EPSILON {
+      return Some(AnimatedValue::ClipPath(pb.clone()));
+    }
+    return Some(AnimatedValue::ClipPath(if t < 0.5 {
+      pa.clone()
+    } else {
+      pb.clone()
+    }));
+  }
   let ra = clip_path_to_resolved(pa)?;
   let rb = clip_path_to_resolved(pb)?;
   let interpolated = interpolate_clip_paths(&ra, &rb, t)?;

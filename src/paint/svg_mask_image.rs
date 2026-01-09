@@ -3,6 +3,7 @@ use roxmltree::Document;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::fmt::Write;
 
 fn parse_svg_fragment(fragment: &str) -> Option<Document<'_>> {
   match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(fragment))) {
@@ -294,6 +295,58 @@ pub(crate) fn inline_svg_for_clip_path_id(
     width.max(1),
     height.max(1),
   )
+}
+
+/// Inline an SVG that rasterizes `clip-path: url(#id)` over an arbitrary viewBox origin.
+///
+/// This is used to render clip paths over a larger mask surface (e.g. the stacking context bounds)
+/// without changing the clipPath coordinate system, which remains anchored at (0,0) of the
+/// reference box passed in by the caller.
+pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
+  defs: &HashMap<String, String>,
+  clip_id: &str,
+  viewbox_x: f32,
+  viewbox_y: f32,
+  view_width: f32,
+  view_height: f32,
+  render_width: u32,
+  render_height: u32,
+) -> Option<String> {
+  if !viewbox_x.is_finite() || !viewbox_y.is_finite() {
+    return None;
+  }
+  if !view_width.is_finite() || !view_height.is_finite() || view_width <= 0.0 || view_height <= 0.0
+  {
+    return None;
+  }
+  if render_width == 0 || render_height == 0 {
+    return None;
+  }
+
+  let include = svg_ids_to_inline(defs, clip_id)?;
+
+  let mut out = String::new();
+  out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+  out.push_str(&render_width.to_string());
+  out.push_str("\" height=\"");
+  out.push_str(&render_height.to_string());
+  let _ = write!(
+    &mut out,
+    "\" viewBox=\"{} {} {} {}\"><defs>",
+    viewbox_x, viewbox_y, view_width, view_height
+  );
+  for id in include {
+    if let Some(serialized) = defs.get(&id) {
+      out.push_str(serialized);
+    }
+  }
+  out.push_str("</defs>");
+  let _ = write!(
+    &mut out,
+    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"white\" clip-path=\"url(#{})\"/></svg>",
+    viewbox_x, viewbox_y, view_width, view_height, clip_id
+  );
+  Some(out)
 }
 
 #[cfg(test)]
