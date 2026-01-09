@@ -1592,7 +1592,20 @@ impl FontDatabase {
   pub fn query(&self, family: &str, weight: FontWeight, style: FontStyle) -> Option<ID> {
     // Check if this is a generic family
     let families = if let Some(generic) = GenericFamily::parse(family) {
-      vec![generic.to_fontdb()]
+      // `fontdb` does not have a dedicated "math" generic, so `GenericFamily::Math` maps to
+      // sans-serif by default. Prefer known math fonts first so `font-family: math` resolves to a
+      // real OpenType MATH font when available.
+      if matches!(generic, GenericFamily::Math) {
+        let mut families: Vec<FontDbFamily> = generic
+          .fallback_families()
+          .iter()
+          .map(|name| FontDbFamily::Name(*name))
+          .collect();
+        families.push(generic.to_fontdb());
+        families
+      } else {
+        vec![generic.to_fontdb()]
+      }
     } else {
       vec![FontDbFamily::Name(family)]
     };
@@ -1618,7 +1631,17 @@ impl FontDatabase {
     stretch: FontStretch,
   ) -> Option<ID> {
     let families = if let Some(generic) = GenericFamily::parse(family) {
-      vec![generic.to_fontdb()]
+      if matches!(generic, GenericFamily::Math) {
+        let mut families: Vec<FontDbFamily> = generic
+          .fallback_families()
+          .iter()
+          .map(|name| FontDbFamily::Name(*name))
+          .collect();
+        families.push(generic.to_fontdb());
+        families
+      } else {
+        vec![generic.to_fontdb()]
+      }
     } else {
       vec![FontDbFamily::Name(family)]
     };

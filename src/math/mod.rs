@@ -3686,12 +3686,28 @@ impl MathLayoutContext {
     let index_style = style.script_with_constants(constants.as_ref());
     let index_layout = self.layout_node(index, &index_style, base_style);
     let sqrt_layout = self.layout_sqrt(radicand, style, base_style);
-    let base_gap = constants
+    // OpenType MATH radical-with-degree positioning:
+    // Insert RadicalKernBeforeDegree before the degree (index), then insert
+    // RadicalKernAfterDegree between the degree and the radical. The after-kern is often negative
+    // so the degree overlaps the radical sign.
+    let kern_before = constants
       .as_ref()
       .and_then(|c| c.radical_kern_before_degree)
+      .unwrap_or(0.0);
+    let kern_after = constants
+      .as_ref()
+      .and_then(|c| c.radical_kern_after_degree)
       .unwrap_or_else(|| Self::script_gap(style));
 
-    let offset_x = index_layout.width + base_gap;
+    let index_x = kern_before;
+    let radical_x = kern_before + index_layout.width + kern_after;
+    // If the kerns cause either the degree or the radical to extend left of the origin, shift the
+    // whole construct right so the layout starts at x=0. (Positive kerns are preserved as leading
+    // space.)
+    let min_x = 0.0_f32.min(index_x.min(radical_x));
+    let shift_x = -min_x;
+    let index_x = index_x + shift_x;
+    let radical_x = radical_x + shift_x;
     let mut fragments = Vec::new();
 
     let raise_percent = constants
@@ -3702,15 +3718,16 @@ impl MathLayoutContext {
     let raise = sqrt_layout.baseline * raise_percent;
     let index_y = (sqrt_layout.baseline - sqrt_layout.height * 0.6) - index_layout.baseline - raise;
     for frag in index_layout.fragments {
-      fragments.push(frag.translate(Point::new(0.0, index_y)));
+      fragments.push(frag.translate(Point::new(index_x, index_y)));
     }
 
     for frag in sqrt_layout.fragments {
-      fragments.push(frag.translate(Point::new(offset_x, 0.0)));
+      fragments.push(frag.translate(Point::new(radical_x, 0.0)));
     }
 
+    let width = (index_x + index_layout.width).max(radical_x + sqrt_layout.width);
     MathLayout {
-      width: offset_x + sqrt_layout.width,
+      width,
       height: sqrt_layout.height.max(index_y + index_layout.height),
       baseline: sqrt_layout.baseline,
       fragments,
@@ -5498,6 +5515,70 @@ mod tests {
       "expected dashed frame to increase table height ({} -> {})",
       layout_without.height,
       layout_with.height
+    );
+  }
+
+  #[test]
+  fn mroot_degree_overlaps_radical_using_opentype_math_kerns() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 22.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+    let mut ctx = MathLayoutContext::new(font_ctx);
+    let math_style = MathStyle::from_computed(&style);
+    let font = ctx
+      .resolve_math_font(&style, &math_style, MathVariant::Normal)
+      .expect("resolve STIX Two Math font");
+    let constants = ctx.font_ctx.math_constants(&font, style.font_size);
+    assert!(
+      constants.is_some(),
+      "expected OpenType MATH constants for resolved math font (family={})",
+      font.family
+    );
+    let constants = constants.unwrap();
+    let kern_before = constants.radical_kern_before_degree.unwrap_or(0.0);
+    let kern_after = constants.radical_kern_after_degree.unwrap_or(f32::NAN);
+    let index_style = math_style.script_with_constants(Some(&constants));
+
+    let index_node = MathNode::Number {
+      text: "3".into(),
+      variant: None,
+    };
+    let index_layout = ctx.layout_node(&index_node, &index_style, &style);
+    let root_node = MathNode::Root {
+      radicand: Box::new(MathNode::Identifier {
+        text: "x".into(),
+        variant: None,
+      }),
+      index: Box::new(index_node),
+    };
+    let root_layout = ctx.layout_node(&root_node, &math_style, &style);
+
+    let radical_start_x = root_layout
+      .fragments
+      .iter()
+      .filter_map(|frag| match frag {
+        MathFragment::Glyph { origin, .. } => (origin.y >= 0.0).then_some(origin.x),
+        MathFragment::Rule(rect) => (rect.y() >= 0.0).then_some(rect.x()),
+        MathFragment::StrokeRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
+        MathFragment::Line { from, to, .. } => {
+          (from.y.min(to.y) >= 0.0).then_some(from.x.min(to.x))
+        }
+      })
+      .fold(f32::INFINITY, |acc, x| acc.min(x));
+
+    assert!(
+      radical_start_x.is_finite(),
+      "expected to find sqrt/radical fragments when laying out mroot"
+    );
+    assert!(
+      radical_start_x < index_layout.width,
+      "expected degree to overlap radical sign: radical_start_x={} index_width={} kern_before={} kern_after={}",
+      radical_start_x,
+      index_layout.width,
+      kern_before,
+      kern_after
     );
   }
 

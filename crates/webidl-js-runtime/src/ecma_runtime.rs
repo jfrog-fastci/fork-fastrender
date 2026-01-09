@@ -1012,7 +1012,7 @@ impl JsRuntime for VmJsRuntime {
       Value::Undefined | Value::Null => false,
       Value::Bool(b) => b,
       Value::Number(n) => !(n == 0.0 || n.is_nan()),
-      Value::BigInt(b) => !b.is_zero(),
+      Value::BigInt(bi) => !bi.is_zero(),
       Value::String(s) => !self.heap.get_string(s)?.is_empty(),
       Value::Symbol(_) | Value::Object(_) => true,
     })

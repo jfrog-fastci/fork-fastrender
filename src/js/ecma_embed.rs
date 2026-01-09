@@ -943,7 +943,7 @@ fn to_boolean(heap: &Heap, value: Value) -> Result<bool, VmError> {
     Value::Undefined | Value::Null => false,
     Value::Bool(b) => b,
     Value::Number(n) => n != 0.0 && !n.is_nan(),
-    Value::BigInt(n) => !n.is_zero(),
+    Value::BigInt(bi) => !bi.is_zero(),
     Value::String(s) => !heap.get_string(s)?.as_code_units().is_empty(),
     Value::Symbol(_) | Value::Object(_) => true,
   })
