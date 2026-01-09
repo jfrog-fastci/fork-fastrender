@@ -7,6 +7,12 @@ use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
+// Some of these tests intentionally render "heavy" pages and may run under significant CPU
+// contention when `cargo test` runs integration tests in parallel. Use a deadline + short
+// `recv_timeout` slices so a long silence doesn't prematurely end a wait loop.
+const WAIT_SLICE: Duration = Duration::from_millis(25);
+const LONG_WAIT: Duration = Duration::from_secs(60);
+
 #[test]
 fn cancellation_on_new_navigation() {
   let _stage_lock = super::stage_listener_test_lock();
@@ -69,25 +75,30 @@ fn cancellation_on_new_navigation() {
   let mut saw_commit_url2 = false;
   let mut saw_frame_after_commit = false;
 
-  while let Ok(msg) = ui_rx.recv_timeout(Duration::from_secs(30)) {
-    match msg {
-      WorkerToUi::NavigationCommitted { tab_id: msg_id, url, .. } if msg_id == tab_id => {
-        assert_ne!(url, url1, "first navigation should not commit after cancellation");
-        if url == url2 {
-          saw_commit_url2 = true;
+  let deadline = std::time::Instant::now() + LONG_WAIT;
+  while std::time::Instant::now() < deadline {
+    match ui_rx.recv_timeout(WAIT_SLICE) {
+      Ok(msg) => match msg {
+        WorkerToUi::NavigationCommitted { tab_id: msg_id, url, .. } if msg_id == tab_id => {
+          assert_ne!(url, url1, "first navigation should not commit after cancellation");
+          if url == url2 {
+            saw_commit_url2 = true;
+          }
         }
-      }
-      WorkerToUi::FrameReady { tab_id: msg_id, .. } if msg_id == tab_id => {
-        if saw_commit_url2 {
-          saw_frame_after_commit = true;
-          break;
+        WorkerToUi::FrameReady { tab_id: msg_id, .. } if msg_id == tab_id => {
+          if saw_commit_url2 {
+            saw_frame_after_commit = true;
+            break;
+          }
         }
-      }
-      WorkerToUi::NavigationFailed { tab_id: msg_id, url, .. } if msg_id == tab_id => {
-        // Cancellation may surface as a timeout/cancel failure; just ensure it doesn't commit.
-        assert_ne!(url, url2, "second navigation should not fail");
-      }
-      _ => {}
+        WorkerToUi::NavigationFailed { tab_id: msg_id, url, .. } if msg_id == tab_id => {
+          // Cancellation may surface as a timeout/cancel failure; just ensure it doesn't commit.
+          assert_ne!(url, url2, "second navigation should not fail");
+        }
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
   }
 
@@ -133,24 +144,29 @@ fn cancellation_on_scroll_drops_stale_frames() {
   // Wait for the initial navigation to commit and produce a frame.
   let mut committed = false;
   let mut saw_initial_frame = false;
-  while let Ok(msg) = ui_rx.recv_timeout(Duration::from_secs(30)) {
-    match msg {
-      WorkerToUi::NavigationCommitted { tab_id: msg_id, url: committed_url, .. }
-        if msg_id == tab_id =>
-      {
-        assert_eq!(committed_url, url);
-        committed = true;
-        if saw_initial_frame {
-          break;
+  let deadline = std::time::Instant::now() + LONG_WAIT;
+  while std::time::Instant::now() < deadline {
+    match ui_rx.recv_timeout(WAIT_SLICE) {
+      Ok(msg) => match msg {
+        WorkerToUi::NavigationCommitted { tab_id: msg_id, url: committed_url, .. }
+          if msg_id == tab_id =>
+        {
+          assert_eq!(committed_url, url);
+          committed = true;
+          if saw_initial_frame {
+            break;
+          }
         }
-      }
-      WorkerToUi::FrameReady { tab_id: msg_id, .. } if msg_id == tab_id => {
-        saw_initial_frame = true;
-        if committed {
-          break;
+        WorkerToUi::FrameReady { tab_id: msg_id, .. } if msg_id == tab_id => {
+          saw_initial_frame = true;
+          if committed {
+            break;
+          }
         }
-      }
-      _ => {}
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
   }
   assert!(
