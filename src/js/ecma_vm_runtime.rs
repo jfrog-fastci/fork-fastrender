@@ -1168,6 +1168,28 @@ mod tests {
     Ok(Value::Undefined)
   }
 
+  fn enqueue_nested_microtask(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, event_loop_ptr| unsafe {
+      (*host_ptr).state.log.push("then");
+      let event_loop = &mut *event_loop_ptr;
+      event_loop
+        .queue_microtask(|host, event_loop| {
+          let _guard = ExecCtxGuard::install(host, event_loop);
+          host.state.log.push("nested");
+          Ok(())
+        })
+        .expect("queue nested microtask");
+    });
+    Ok(Value::Undefined)
+  }
+
   fn log_timeout(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
@@ -1251,6 +1273,27 @@ mod tests {
 
     event_loop.perform_microtask_checkpoint(&mut host)?;
     assert_eq!(host.state.log, vec!["sync", "micro"]);
+    Ok(())
+  }
+
+  #[test]
+  fn microtask_enqueued_by_promise_then_runs_in_same_checkpoint() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock);
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+
+    host.define_global_native_function("__log_sync", 0, log_sync)?;
+    host.define_global_native_function("__enqueue_nested", 0, enqueue_nested_microtask)?;
+
+    host.execute_classic_script(
+      "Promise.resolve().then(__enqueue_nested); __log_sync();",
+      &classic_spec(),
+      &mut event_loop,
+    )?;
+    assert_eq!(host.state.log, vec!["sync"]);
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(host.state.log, vec!["sync", "then", "nested"]);
     Ok(())
   }
 
