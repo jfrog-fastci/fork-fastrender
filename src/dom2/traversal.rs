@@ -89,16 +89,13 @@ impl Document {
   /// `<template>` element as `inert_subtree`. The HTML script preparation algorithm must treat such
   /// scripts as "not connected" so they do not execute.
   pub fn is_descendant_of_inert_template(&self, node: NodeId) -> bool {
-    self.ancestors(node).skip(1).any(|ancestor_id| {
-      let Some(ancestor) = self.get_node(ancestor_id) else {
-        return false;
-      };
-      ancestor.inert_subtree
-        && matches!(
-          &ancestor.kind,
-          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template")
-        )
-    })
+    // Today, `Node::inert_subtree` is used to represent `<template>` contents. Keep this predicate
+    // based on the generic inert flag so future inert subtrees (if any) automatically become
+    // disconnected for script preparation.
+    self
+      .ancestors(node)
+      .skip(1)
+      .any(|ancestor_id| self.node(ancestor_id).inert_subtree)
   }
 
   /// Connectedness predicate for `<script>` preparation/execution.
@@ -242,6 +239,40 @@ mod tests {
     assert!(
       !doc.is_connected_for_scripting(script_id),
       "detached script should not be connected for scripting"
+    );
+  }
+
+  #[test]
+  fn connected_for_scripting_respects_generic_inert_subtree_flags() {
+    let root = parse_html(r#"<!doctype html><div><script>live</script></div>"#).unwrap();
+    let mut doc = Document::from_renderer_dom(&root);
+
+    let script_id = doc
+      .nodes()
+      .iter()
+      .enumerate()
+      .find_map(|(idx, node)| match &node.kind {
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script") => Some(NodeId(idx)),
+        _ => None,
+      })
+      .expect("script node not found");
+
+    let div_id = doc
+      .nodes()
+      .iter()
+      .enumerate()
+      .find_map(|(idx, node)| match &node.kind {
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => Some(NodeId(idx)),
+        _ => None,
+      })
+      .expect("div node not found");
+
+    assert!(doc.is_connected_for_scripting(script_id));
+
+    doc.node_mut(div_id).inert_subtree = true;
+    assert!(
+      !doc.is_connected_for_scripting(script_id),
+      "inert subtrees should disconnect descendants for scripting"
     );
   }
 }
