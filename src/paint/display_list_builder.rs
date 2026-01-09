@@ -10316,10 +10316,17 @@ impl DisplayListBuilder {
         } else {
           let denom = if *max > 0.0 && max.is_finite() { *max } else { 1.0 };
           let ratio = (*value / denom).clamp(0.0, 1.0);
+          let fill_w = (track_rect.width() * ratio).max(0.0);
+          let fill_x = if style.direction == crate::style::types::Direction::Rtl {
+            // Match common browser behaviour: RTL progress fills from the right edge.
+            (track_rect.max_x() - fill_w).max(track_rect.x())
+          } else {
+            track_rect.x()
+          };
           Rect::from_xywh(
-            track_rect.x(),
+            fill_x,
             track_rect.y(),
-            (track_rect.width() * ratio).max(0.0),
+            fill_w,
             track_rect.height(),
           )
         };
@@ -10329,8 +10336,13 @@ impl DisplayListBuilder {
 
         let mut fill_radii = track_radii.clamped(fill_rect.width(), fill_rect.height());
         if !is_indeterminate && fill_rect.width() + 0.01 < track_rect.width() {
-          fill_radii.top_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
-          fill_radii.bottom_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+          if style.direction == crate::style::types::Direction::Rtl {
+            fill_radii.top_left = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+            fill_radii.bottom_left = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+          } else {
+            fill_radii.top_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+            fill_radii.bottom_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+          }
         }
 
         self
@@ -10385,10 +10397,16 @@ impl DisplayListBuilder {
 
         let span = (*max - *min).abs().max(0.0001);
         let ratio = ((*value - *min) / span).clamp(0.0, 1.0);
+        let fill_w = (track_rect.width() * ratio).max(0.0);
+        let fill_x = if style.direction == crate::style::types::Direction::Rtl {
+          (track_rect.max_x() - fill_w).max(track_rect.x())
+        } else {
+          track_rect.x()
+        };
         let fill_rect = Rect::from_xywh(
-          track_rect.x(),
+          fill_x,
           track_rect.y(),
-          (track_rect.width() * ratio).max(0.0),
+          fill_w,
           track_rect.height(),
         );
         if fill_rect.width() <= 0.0 {
@@ -10447,8 +10465,13 @@ impl DisplayListBuilder {
 
         let mut fill_radii = track_radii.clamped(fill_rect.width(), fill_rect.height());
         if fill_rect.width() + 0.01 < track_rect.width() {
-          fill_radii.top_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
-          fill_radii.bottom_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+          if style.direction == crate::style::types::Direction::Rtl {
+            fill_radii.top_left = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+            fill_radii.bottom_left = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+          } else {
+            fill_radii.top_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+            fill_radii.bottom_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+          }
         }
 
         self
