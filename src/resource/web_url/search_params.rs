@@ -773,3 +773,55 @@ fn cmp_utf16(a: &str, b: &str) -> std::cmp::Ordering {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::WebUrlSearchParams;
+  use crate::resource::web_url::{WebUrlError, WebUrlLimitKind, WebUrlLimits};
+
+  #[test]
+  fn serializes_tilde_using_form_encode_set() {
+    let limits = WebUrlLimits::default();
+    let params = WebUrlSearchParams::parse("a=b ~", &limits).unwrap();
+    assert_eq!(params.serialize().unwrap(), "a=b+%7E");
+  }
+
+  #[test]
+  fn serializes_asterisk_without_encoding() {
+    let limits = WebUrlLimits::default();
+    let params = WebUrlSearchParams::parse("a=b*", &limits).unwrap();
+    assert_eq!(params.serialize().unwrap(), "a=b*");
+  }
+
+  #[test]
+  fn roundtrips_plus_and_percent2b() {
+    let limits = WebUrlLimits::default();
+    let params = WebUrlSearchParams::parse("a+b=c%2B+d", &limits).unwrap();
+    assert_eq!(
+      params.pairs().unwrap(),
+      vec![("a b".to_string(), "c+ d".to_string())]
+    );
+    assert_eq!(params.serialize().unwrap(), "a+b=c%2B+d");
+  }
+
+  #[test]
+  fn serialize_limit_counts_percent_encoding_expansion() {
+    // "~" is not in the WHATWG application/x-www-form-urlencoded safe set, so serializing expands
+    // it to "%7E". Ensure we correctly enforce `max_input_bytes` after that expansion.
+    let limits = WebUrlLimits {
+      max_input_bytes: 3, // "a=~" fits, but "a=%7E" does not.
+      max_query_pairs: 8,
+      max_total_query_bytes: 64,
+    };
+    let params = WebUrlSearchParams::parse("a=~", &limits).unwrap();
+    let err = params.serialize().unwrap_err();
+    assert_eq!(
+      err,
+      WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::InputBytes,
+        limit: 3,
+        attempted: 5,
+      }
+    );
+  }
+}
