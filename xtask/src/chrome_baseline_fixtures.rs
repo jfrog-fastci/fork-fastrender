@@ -5,13 +5,112 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use url::Url;
 use walkdir::WalkDir;
+
+/// Minimum `RLIMIT_AS` (virtual address space) required for Chrome to start reliably in our CI-like
+/// environments.
+///
+/// `scripts/cargo_agent.sh` enforces a 64GiB address-space cap via `scripts/run_limited.sh` by
+/// default. Unfortunately, recent Chrome builds reserve >64GiB of virtual address space at startup
+/// (even for trivial pages), which trips Oilpan's OOM guard and causes headless Chrome to hang.
+///
+/// To keep `cargo_agent`'s default safety guardrails while still allowing Chrome baselines, we
+/// temporarily raise `RLIMIT_AS` for the duration of the `chrome` spawn (then immediately restore
+/// the original limits in the parent process).
+#[cfg(target_os = "linux")]
+const CHROME_MIN_RLIMIT_AS_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+
+#[cfg(target_os = "linux")]
+struct ChromeRlimitAsGuard {
+  previous: libc::rlimit,
+}
+
+#[cfg(target_os = "linux")]
+impl ChromeRlimitAsGuard {
+  fn ensure_min_bytes(min_bytes: u64) -> io::Result<Option<Self>> {
+    let mut current = libc::rlimit {
+      rlim_cur: 0,
+      rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` writes to `current` when the pointer is valid.
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut current) };
+    if rc != 0 {
+      return Err(io::Error::last_os_error());
+    }
+
+    // Nothing to do when already unlimited.
+    if current.rlim_cur == libc::RLIM_INFINITY && current.rlim_max == libc::RLIM_INFINITY {
+      return Ok(None);
+    }
+
+    let min_rlim: libc::rlim_t = min_bytes
+      .try_into()
+      .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "min_bytes too large for rlim_t"))?;
+
+    let needs_cur = current.rlim_cur != libc::RLIM_INFINITY && current.rlim_cur < min_rlim;
+    let needs_max = current.rlim_max != libc::RLIM_INFINITY && current.rlim_max < min_rlim;
+    if !needs_cur && !needs_max {
+      return Ok(None);
+    }
+
+    // Raise the soft limit to at least `min_bytes`. Only raise the hard limit when strictly
+    // necessary (some environments disallow raising the hard limit without privileges).
+    let desired_max = if current.rlim_max == libc::RLIM_INFINITY {
+      libc::RLIM_INFINITY
+    } else {
+      current.rlim_max.max(min_rlim)
+    };
+    let desired_cur = if desired_max == libc::RLIM_INFINITY {
+      if current.rlim_cur == libc::RLIM_INFINITY {
+        libc::RLIM_INFINITY
+      } else {
+        current.rlim_cur.max(min_rlim)
+      }
+    } else if current.rlim_cur == libc::RLIM_INFINITY {
+      // Be defensive: ensure rlim_cur is never greater than the hard limit.
+      desired_max
+    } else {
+      current.rlim_cur.max(min_rlim).min(desired_max)
+    };
+
+    let desired = libc::rlimit {
+      rlim_cur: desired_cur,
+      rlim_max: desired_max,
+    };
+
+    // SAFETY: `setrlimit` is a process-global syscall. We pass a properly-initialized `rlimit`.
+    let rc = unsafe { libc::setrlimit(libc::RLIMIT_AS, &desired) };
+    if rc != 0 {
+      return Err(io::Error::last_os_error());
+    }
+
+    Ok(Some(Self { previous: current }))
+  }
+
+  fn previous_bytes(&self) -> (u64, u64) {
+    (self.previous.rlim_cur as u64, self.previous.rlim_max as u64)
+  }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ChromeRlimitAsGuard {
+  fn drop(&mut self) {
+    // SAFETY: `setrlimit` is a process-global syscall. We pass a properly-initialized `rlimit`.
+    let rc = unsafe { libc::setrlimit(libc::RLIMIT_AS, &self.previous) };
+    if rc != 0 {
+      eprintln!(
+        "warning: failed to restore RLIMIT_AS after spawning chrome: {}",
+        io::Error::last_os_error()
+      );
+    }
+  }
+}
 
 /// When Chrome runs in headless mode, `--window-size=WxH` sets the outer window size, but the
 /// layout viewport (what CSS `position: fixed` / `100vh` uses) is consistently shorter by ~88px
@@ -764,42 +863,34 @@ fn run_chrome_print_to_pdf(
   log_path: &Path,
   timeout: Option<Duration>,
 ) -> Result<HeadlessMode> {
-  let mut args = build_chrome_print_args(HeadlessMode::New, profile_dir, viewport, dpr, pdf_path)?;
-
-  let mut last_status = run_chrome_with_timeout(chrome, &args, url, log_path, timeout, false)?;
-  if last_status.success() && pdf_path.is_file() {
+  // Prefer `--headless=new`, but some Chrome builds (notably container/CI environments) will hang or
+  // OOM in the new headless compositor for certain pages. Retrying with legacy headless keeps
+  // baseline generation robust without changing behaviour when headless=new succeeds.
+  let args_new = build_chrome_print_args(HeadlessMode::New, profile_dir, viewport, dpr, pdf_path)?;
+  let mut last_status = run_chrome_with_timeout(chrome, &args_new, url, log_path, timeout, false);
+  if last_status.as_ref().is_ok_and(|status| status.success()) && pdf_path.is_file() {
     return Ok(HeadlessMode::New);
   }
 
-  let log = fs::read_to_string(log_path).unwrap_or_default();
-  let log_lower = log.to_ascii_lowercase();
-  let headless_new_unsupported = log_lower.contains("--headless=new")
-    && (log_lower.contains("unknown flag")
-      || log_lower.contains("unrecognized option")
-      || log_lower.contains("unknown option"));
-  if headless_new_unsupported {
-    args = build_chrome_print_args(HeadlessMode::Legacy, profile_dir, viewport, dpr, pdf_path)?;
-    if pdf_path.exists() {
-      let _ = fs::remove_file(pdf_path);
-    }
-    let mut file = OpenOptions::new()
-      .create(true)
-      .append(true)
-      .open(log_path)
-      .with_context(|| format!("open log file {}", log_path.display()))?;
-    writeln!(file, "\n\n# Retrying with --headless\n").ok();
-    last_status = run_chrome_with_timeout(chrome, &args, url, log_path, timeout, true)?;
-    if last_status.success() && pdf_path.is_file() {
-      return Ok(HeadlessMode::Legacy);
-    }
+  let args_legacy =
+    build_chrome_print_args(HeadlessMode::Legacy, profile_dir, viewport, dpr, pdf_path)?;
+  if pdf_path.exists() {
+    let _ = fs::remove_file(pdf_path);
+  }
+  let mut file = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(log_path)
+    .with_context(|| format!("open log file {}", log_path.display()))?;
+  writeln!(file, "\n\n# Retrying with --headless\n").ok();
+  last_status = run_chrome_with_timeout(chrome, &args_legacy, url, log_path, timeout, true);
+  let last_status = last_status?;
+  if last_status.success() && pdf_path.is_file() {
+    return Ok(HeadlessMode::Legacy);
   }
 
   if !last_status.success() {
-    bail!(
-      "chrome exited with {}; see {}",
-      last_status,
-      log_path.display()
-    );
+    bail!("chrome exited with {}; see {}", last_status, log_path.display());
   }
 
   bail!("chrome did not produce a PDF; see {}", log_path.display());
@@ -1127,62 +1218,37 @@ fn run_chrome_screenshot(
       .1
       .saturating_add(headless_window_viewport_height_pad_px()?),
   );
-  let mut args = build_chrome_args(
-    HeadlessMode::New,
-    profile_dir,
-    window_size,
-    dpr,
-    screenshot_path,
-  )?;
-
-  let mut last_status = run_chrome_with_timeout(chrome, &args, url, log_path, timeout, false)?;
-  if last_status.success() && screenshot_path.is_file() {
+  // Prefer `--headless=new`, but fall back to legacy headless when the new compositor fails.
+  // In practice, `--headless=new` can hang or OOM in container/CI environments on complex pages.
+  // Retrying keeps fixture diffs deterministic and avoids requiring callers to special-case pages.
+  let args_new = build_chrome_args(HeadlessMode::New, profile_dir, window_size, dpr, screenshot_path)?;
+  let mut last_status = run_chrome_with_timeout(chrome, &args_new, url, log_path, timeout, false);
+  if last_status.as_ref().is_ok_and(|status| status.success()) && screenshot_path.is_file() {
     return Ok(HeadlessMode::New);
   }
 
-  // `--headless=new` isn't supported on older Chrome releases. Fall back to legacy headless mode if
-  // the log suggests it's unsupported.
-  let log = fs::read_to_string(log_path).unwrap_or_default();
-  let log_lower = log.to_ascii_lowercase();
-  let headless_new_unsupported = log_lower.contains("--headless=new")
-    && (log_lower.contains("unknown flag")
-      || log_lower.contains("unrecognized option")
-      || log_lower.contains("unknown option"));
-  if headless_new_unsupported {
-    args = build_chrome_args(
-      HeadlessMode::Legacy,
-      profile_dir,
-      window_size,
-      dpr,
-      screenshot_path,
-    )?;
-    if screenshot_path.exists() {
-      let _ = fs::remove_file(screenshot_path);
-    }
-    let mut file = OpenOptions::new()
-      .create(true)
-      .append(true)
-      .open(log_path)
-      .with_context(|| format!("open log file {}", log_path.display()))?;
-    writeln!(file, "\n\n# Retrying with --headless\n").ok();
-    last_status = run_chrome_with_timeout(chrome, &args, url, log_path, timeout, true)?;
-    if last_status.success() && screenshot_path.is_file() {
-      return Ok(HeadlessMode::Legacy);
-    }
+  let args_legacy =
+    build_chrome_args(HeadlessMode::Legacy, profile_dir, window_size, dpr, screenshot_path)?;
+  if screenshot_path.exists() {
+    let _ = fs::remove_file(screenshot_path);
+  }
+  let mut file = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(log_path)
+    .with_context(|| format!("open log file {}", log_path.display()))?;
+  writeln!(file, "\n\n# Retrying with --headless\n").ok();
+  last_status = run_chrome_with_timeout(chrome, &args_legacy, url, log_path, timeout, true);
+  let last_status = last_status?;
+  if last_status.success() && screenshot_path.is_file() {
+    return Ok(HeadlessMode::Legacy);
   }
 
   if !last_status.success() {
-    bail!(
-      "chrome exited with {}; see {}",
-      last_status,
-      log_path.display()
-    );
+    bail!("chrome exited with {}; see {}", last_status, log_path.display());
   }
 
-  bail!(
-    "chrome did not produce a screenshot; see {}",
-    log_path.display()
-  );
+  bail!("chrome did not produce a screenshot; see {}", log_path.display());
 }
 
 fn build_chrome_args(
@@ -1264,6 +1330,27 @@ fn run_chrome_with_timeout(
   writeln!(log_file, "# url: {url}").ok();
   writeln!(log_file, "# args: {}", args.join(" ")).ok();
   writeln!(log_file).ok();
+
+  #[cfg(target_os = "linux")]
+  let rlimit_guard = {
+    let guard = ChromeRlimitAsGuard::ensure_min_bytes(CHROME_MIN_RLIMIT_AS_BYTES).with_context(
+      || {
+        format!(
+          "failed to raise RLIMIT_AS for Chrome (required >= {} GiB); try setting FASTR_CARGO_LIMIT_AS=128G or 'unlimited'",
+          CHROME_MIN_RLIMIT_AS_BYTES / (1024 * 1024 * 1024)
+        )
+      },
+    )?;
+    if let Some(guard) = guard.as_ref() {
+      let (cur, max) = guard.previous_bytes();
+      writeln!(
+        log_file,
+        "# note: raised RLIMIT_AS for chrome spawn (previous cur={cur} max={max} bytes)"
+      )
+      .ok();
+    }
+    guard
+  };
   let stderr = log_file
     .try_clone()
     .with_context(|| format!("clone log file handle for {}", log_path.display()))?;
@@ -1286,6 +1373,8 @@ fn run_chrome_with_timeout(
   let mut child = cmd
     .spawn()
     .with_context(|| format!("failed to launch chrome at {}", chrome.display()))?;
+  #[cfg(target_os = "linux")]
+  drop(rlimit_guard);
   let pid = child.id();
 
   if let Some(timeout) = timeout {

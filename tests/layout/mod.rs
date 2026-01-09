@@ -44,6 +44,7 @@ mod flex_box_sizing_test;
 mod flex_constraints_viewport_clamp;
 mod flex_fragmentation;
 mod flex_intrinsic_sizing_keywords;
+mod flex_item_used_border_box_override;
 mod flex_justify_content_reverse;
 mod flex_justify_content_start_end;
 mod flex_forced_breaks;

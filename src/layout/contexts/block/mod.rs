@@ -5963,27 +5963,30 @@ impl FormattingContext for BlockFormattingContext {
       }
     }
 
-    if width_auto {
-      if let Some(used_border_box) = constraints.used_border_box_width {
-        let used_content = (used_border_box - horizontal_edges).max(0.0);
-        if self.flex_item_mode {
-          computed_width.content_width = used_content;
-        } else {
-          let (margin_left, margin_right) = recompute_margins_for_width(
-            style,
-            containing_width,
-            used_content,
-            computed_width.border_left,
-            computed_width.padding_left,
-            computed_width.padding_right,
-            computed_width.border_right,
-            self.viewport_size,
-            &self.font_context,
-          );
-          computed_width.content_width = used_content;
-          computed_width.margin_left = margin_left;
-          computed_width.margin_right = margin_right;
-        }
+    // When a parent layout mode (flex/grid) has already resolved a *used border-box* size for this
+    // block formatting context root, honor it during block layout even if the authored width is
+    // non-auto. Otherwise percentage widths can be applied twice (e.g. `width: 50%` resolved
+    // against the flex item's used width instead of the flex container), producing children laid
+    // out in a smaller coordinate space than the final fragment bounds.
+    if let Some(used_border_box) = constraints.used_border_box_width {
+      let used_content = (used_border_box - horizontal_edges).max(0.0);
+      if self.flex_item_mode {
+        computed_width.content_width = used_content;
+      } else {
+        let (margin_left, margin_right) = recompute_margins_for_width(
+          style,
+          containing_width,
+          used_content,
+          computed_width.border_left,
+          computed_width.padding_left,
+          computed_width.padding_right,
+          computed_width.border_right,
+          self.viewport_size,
+          &self.font_context,
+        );
+        computed_width.content_width = used_content;
+        computed_width.margin_left = margin_left;
+        computed_width.margin_right = margin_right;
       }
     }
 
@@ -6048,7 +6051,6 @@ impl FormattingContext for BlockFormattingContext {
     } else {
       style.max_width_keyword
     };
-    let height_auto = block_length.is_none() && block_keyword.is_none();
     let margin_top = style
       .margin_top
       .as_ref()
@@ -6183,15 +6185,15 @@ impl FormattingContext for BlockFormattingContext {
       };
       resolved_height = Some((used_border_box - vertical_edges).max(0.0));
     }
-    if resolved_height.is_none() && height_auto {
-      let used_border_box = if inline_is_horizontal {
-        constraints.used_border_box_height
-      } else {
-        constraints.used_border_box_width
-      };
-      if let Some(used_border_box) = used_border_box {
-        resolved_height = Some((used_border_box - vertical_edges).max(0.0));
-      }
+    // Like the inline axis override above, honor a parent-resolved used border-box block size even
+    // when the authored height is non-auto.
+    let used_border_box = if inline_is_horizontal {
+      constraints.used_border_box_height
+    } else {
+      constraints.used_border_box_width
+    };
+    if let Some(used_border_box) = used_border_box {
+      resolved_height = Some((used_border_box - vertical_edges).max(0.0));
     }
     let child_height_space = resolved_height
       .map(|h| AvailableSpace::Definite(h.max(0.0)))

@@ -20,6 +20,7 @@ conformance-harness = { path = "../engines/ecma-rs/conformance-harness" }
 fastrender = { path = ".." }
 js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner" }
 webidl-ir = { path = "../crates/webidl-ir" }
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
