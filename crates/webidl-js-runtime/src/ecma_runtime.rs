@@ -155,8 +155,8 @@ impl VmJsRuntime {
       let id = match self.heap.add_root(v) {
         Ok(id) => id,
         Err(err) => {
-          // Best-effort cleanup: remove any roots we successfully installed so callers don't leak
-          // persistent roots when we hit an allocation failure.
+          // Roll back any roots we successfully added so callers don't leak persistent roots when
+          // rooting fails (e.g. due to OOM limits).
           for id in root_ids.drain(..) {
             self.heap.remove_root(id);
           }
@@ -164,6 +164,7 @@ impl VmJsRuntime {
         }
       };
       if root_ids.try_reserve_exact(1).is_err() {
+        // Avoid aborting on OOM: if we can't record the ID, roll back the newly-added root.
         self.heap.remove_root(id);
         for id in root_ids.drain(..) {
           self.heap.remove_root(id);

@@ -1129,7 +1129,7 @@ fn select_listbox_click_marks_user_validity() {
     &box_tree,
     &fragment_tree,
     &ScrollState::default(),
-    Point::new(5.0, 5.0),
+    Point::new(5.0, 25.0),
   );
   let (changed, _action) = engine.pointer_up(
     &mut dom,

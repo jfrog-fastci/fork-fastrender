@@ -201,7 +201,6 @@ pub fn apply_wheel_scroll_at_point(
           next.elements.insert(id, state.scroll);
         }
       }
-
       if result.remaining != Point::ZERO {
         next.viewport = apply_viewport_delta(
           fragment_tree,
@@ -213,6 +212,10 @@ pub fn apply_wheel_scroll_at_point(
       }
     }
   }
+
+  // Keep a canonical representation so "missing" and "zero" element offsets don't create spurious
+  // scroll state diffs.
+  next.elements.retain(|_, offset| *offset != Point::ZERO);
 
   next
 }
