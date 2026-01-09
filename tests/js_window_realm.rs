@@ -1240,6 +1240,125 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
 }
 
 #[test]
+fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/bytes", b"hello", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher,
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  globalThis.__bytes = null;
+  globalThis.__bytes_err = null;
+  fetch("https://example.com/bytes")
+    .then(function (r) { return r.arrayBuffer(); })
+    .then(function (b) { globalThis.__bytes = b; })
+    .catch(function (e) { globalThis.__bytes_err = e && e.name; });
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let (bytes, err) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    (
+      get_data_prop(&mut scope, global, "__bytes"),
+      get_data_prop(&mut scope, global, "__bytes_err"),
+    )
+  };
+
+  assert_eq!(err, Value::Null);
+  assert_eq!(get_string(host.window_mut().heap(), bytes), "hello");
+  Ok(())
+}
+
+#[test]
+fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/once-bytes", b"hello", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher,
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  globalThis.__ab_first = "";
+  globalThis.__ab_second_err = "";
+  fetch("https://example.com/once-bytes")
+    .then(function (r) {
+      return r.arrayBuffer().then(function (b) {
+        globalThis.__ab_first = b;
+        return r.arrayBuffer().then(
+          function () { globalThis.__ab_second_err = "no error"; },
+          function (e) { globalThis.__ab_second_err = e && e.name; }
+        );
+      });
+    });
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let (first, second_err) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    let first = get_data_prop(&mut scope, global, "__ab_first");
+    let second_err = get_data_prop(&mut scope, global, "__ab_second_err");
+    (get_string(scope.heap(), first), get_string(scope.heap(), second_err))
+  };
+
+  assert_eq!(first, "hello");
+  assert_eq!(second_err, "TypeError");
+  Ok(())
+}
+
+#[test]
 fn window_fetch_accepts_request_object() -> Result<()> {
   let fetcher: Arc<InMemoryFetcher> = Arc::new(
     InMemoryFetcher::new().with_response("https://example.com/headers2", b"ok", 200),

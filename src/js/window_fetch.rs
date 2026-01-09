@@ -1594,6 +1594,52 @@ fn response_text_native(
   Ok(cap.promise)
 }
 
+fn response_array_buffer_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Note: `vm-js` does not yet expose a real `ArrayBuffer`/typed array implementation. As an MVP,
+  // `Response.arrayBuffer()` resolves to a binary string where each UTF-16 code unit is one byte
+  // (`0..=255`). This provides a deterministic, bounded way for tests/scripts to access raw bytes
+  // without allocating per-byte JS objects.
+  let (env_id, response_id) = response_info_from_this(scope, this)?;
+
+  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+
+  let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, |state| {
+    let res = state
+      .responses
+      .get_mut(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    let result = match res.body.as_mut() {
+      Some(body) => body.consume_bytes(),
+      None => Ok(Vec::new()),
+    };
+    Ok(result)
+  })?;
+
+  match result {
+    Ok(bytes) => {
+      let mut units: Vec<u16> = Vec::new();
+      units.try_reserve_exact(bytes.len()).map_err(|_| VmError::OutOfMemory)?;
+      units.extend(bytes.into_iter().map(u16::from));
+      let s = scope.alloc_string_from_u16_vec(units)?;
+      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::String(s)])?;
+    }
+    Err(err) => {
+      let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
+      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
 fn json_to_js(vm: &mut Vm, scope: &mut Scope<'_>, value: &serde_json::Value) -> Result<Value, VmError> {
   let intr = vm
     .intrinsics()
@@ -2555,6 +2601,21 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     let json_fn = scope.alloc_native_function(json_id, None, json_name, 0)?;
     scope.heap_mut().object_set_prototype(json_fn, Some(func_proto))?;
     set_data_prop(&mut scope, proto, "json", Value::Object(json_fn), true)?;
+
+    let array_buffer_id = vm.register_native_call(response_array_buffer_native)?;
+    let array_buffer_name = scope.alloc_string("arrayBuffer")?;
+    scope.push_root(Value::String(array_buffer_name))?;
+    let array_buffer_fn = scope.alloc_native_function(array_buffer_id, None, array_buffer_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(array_buffer_fn, Some(func_proto))?;
+    set_data_prop(
+      &mut scope,
+      proto,
+      "arrayBuffer",
+      Value::Object(array_buffer_fn),
+      true,
+    )?;
 
     let clone_id = vm.register_native_call(response_clone_native)?;
     let clone_name = scope.alloc_string("clone")?;
