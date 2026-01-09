@@ -78,6 +78,48 @@ where
   Ok(())
 }
 
+/// Prepare any dynamic `<script>` elements within a newly-inserted subtree.
+///
+/// When DOM operations insert a subtree (e.g. appending a `<div>` that already contains a
+/// `<script>` child), the HTML spec requires that the insertion steps for each `<script>` element
+/// in the subtree run once it becomes connected.
+///
+/// This helper scans `inserted_root` and all of its descendants (in tree order) and runs
+/// [`prepare_dynamic_script_on_insertion`] for each HTML `<script>` element found.
+///
+/// Note: DOM insertion of a `DocumentFragment` inserts its children rather than the fragment node
+/// itself. Callers should pass each inserted child root (captured before insertion) instead of the
+/// fragment node.
+pub fn prepare_dynamic_scripts_on_subtree_insertion<Host>(
+  host: &mut Host,
+  scheduler: &mut ClassicScriptScheduler<Host>,
+  event_loop: &mut EventLoop<Host>,
+  inserted_root: NodeId,
+) -> Result<()>
+where
+  Host: DomHost + ScriptLoader + ScriptExecutor,
+{
+  let script_nodes = host.with_dom(|dom| {
+    let mut out = Vec::new();
+    collect_html_script_elements(dom, inserted_root, &mut out);
+    out
+  });
+
+  for node in script_nodes {
+    prepare_dynamic_script_on_insertion(host, scheduler, event_loop, node)?;
+  }
+  Ok(())
+}
+
+fn collect_html_script_elements(dom: &Document, node: NodeId, out: &mut Vec<NodeId>) {
+  if is_html_script_element(dom, node) {
+    out.push(node);
+  }
+  for &child in &dom.node(node).children {
+    collect_html_script_elements(dom, child, out);
+  }
+}
+
 fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> ScriptElementSpec {
   let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);

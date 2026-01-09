@@ -1,6 +1,6 @@
 use fastrender::dom::DomNode;
-use fastrender::dom2::{Document, NodeId};
-use fastrender::js::dom_integration::prepare_dynamic_script_on_insertion;
+use fastrender::dom2::{Document, NodeId, NodeKind};
+use fastrender::js::dom_integration::prepare_dynamic_scripts_on_subtree_insertion;
 use fastrender::js::{
   ClassicScriptScheduler, CurrentScriptStateHandle, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome,
   ScriptElementSpec, ScriptExecutor, ScriptLoader, ScriptOrchestrator, VirtualClock,
@@ -139,6 +139,7 @@ const JS_BOOTSTRAP: &str = r##"
     getElementById: function (id) { return this.querySelector("#" + String(id)); },
     createElement: function (tag) { return wrap(g.__fastrender_dom_create_element(String(tag))); },
     createTextNode: function (data) { return wrap(g.__fastrender_dom_create_text(String(data))); },
+    createDocumentFragment: function () { return wrap(g.__fastrender_dom_create_document_fragment()); },
   };
   Object.defineProperty(document, "body", {
     get: function () { return document.querySelector("body"); }
@@ -409,6 +410,16 @@ impl HostState {
         )?;
 
         globals.set(
+          "__fastrender_dom_create_document_fragment",
+          Function::new(ctx.clone(), || -> rquickjs::Result<u32> {
+            with_env_mut(|host, _event_loop| {
+              let id = host.dom.create_document_fragment();
+              Ok(host.alloc_node_handle(id))
+            })
+          })?,
+        )?;
+
+        globals.set(
           "__fastrender_dom_append_child",
           Function::new(ctx.clone(), |parent: u32, child: u32| {
             with_env_mut(|host, event_loop| {
@@ -418,14 +429,30 @@ impl HostState {
               let child = host
                 .resolve_node_handle(child)
                 .expect("invalid child node handle");
-              host
+              let insertion_roots: Vec<NodeId> = {
+                let dom = &host.dom;
+                if matches!(dom.node(child).kind, NodeKind::DocumentFragment) {
+                  dom
+                    .children(child)
+                    .expect("failed to read fragment children")
+                    .to_vec()
+                } else {
+                  vec![child]
+                }
+              };
+              let changed = host
                 .dom
                 .append_child(parent, child)
                 .expect("appendChild failed");
+              if !changed {
+                return;
+              }
 
               let mut scheduler = std::mem::take(&mut host.script_scheduler);
-              prepare_dynamic_script_on_insertion(host, &mut scheduler, event_loop, child)
-                .expect("prepare_dynamic_script_on_insertion failed");
+              for root in insertion_roots {
+                prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
+                  .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
+              }
               host.script_scheduler = scheduler;
             })
           })?,
@@ -450,14 +477,30 @@ impl HostState {
                     .expect("invalid reference node handle"),
                 )
               };
-              host
+              let insertion_roots: Vec<NodeId> = {
+                let dom = &host.dom;
+                if matches!(dom.node(child).kind, NodeKind::DocumentFragment) {
+                  dom
+                    .children(child)
+                    .expect("failed to read fragment children")
+                    .to_vec()
+                } else {
+                  vec![child]
+                }
+              };
+              let changed = host
                 .dom
                 .insert_before(parent, child, reference)
                 .expect("insertBefore failed");
+              if !changed {
+                return;
+              }
 
               let mut scheduler = std::mem::take(&mut host.script_scheduler);
-              prepare_dynamic_script_on_insertion(host, &mut scheduler, event_loop, child)
-                .expect("prepare_dynamic_script_on_insertion failed");
+              for root in insertion_roots {
+                prepare_dynamic_scripts_on_subtree_insertion(host, &mut scheduler, event_loop, root)
+                  .expect("prepare_dynamic_scripts_on_subtree_insertion failed");
+              }
               host.script_scheduler = scheduler;
             })
           })?,
