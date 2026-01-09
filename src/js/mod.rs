@@ -78,7 +78,7 @@ pub use ecma_embed::{
   HostFunction, ScriptBudgetOverride, ScriptError, ScriptRealm, ScriptRealmOptions,
   ScriptTerminationReason, ScriptValue, VmJsScriptRealm,
 };
-pub use host_document::{event_target_for_node, DocumentHostState};
+pub use host_document::{DocumentHostState, HostDocumentState};
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
   ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
