@@ -123,6 +123,10 @@ pub struct AccessibilityRelations {
   pub controls: Vec<String>,
   #[serde(skip_serializing_if = "Vec::is_empty")]
   pub owns: Vec<String>,
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  pub labelled_by: Vec<String>,
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  pub described_by: Vec<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub active_descendant: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -2283,6 +2287,18 @@ fn compute_relations(
     .map(|value| resolve_idref_list(ctx, node, value))
     .unwrap_or_default();
 
+  let labelled_by = node
+    .node
+    .get_attribute_ref("aria-labelledby")
+    .map(|value| resolve_idref_list(ctx, node, value))
+    .unwrap_or_default();
+
+  let described_by = node
+    .node
+    .get_attribute_ref("aria-describedby")
+    .map(|value| resolve_idref_list(ctx, node, value))
+    .unwrap_or_default();
+
   let active_descendant = node
     .node
     .get_attribute_ref("aria-activedescendant")
@@ -2304,6 +2320,8 @@ fn compute_relations(
 
   if controls.is_empty()
     && owns.is_empty()
+    && labelled_by.is_empty()
+    && described_by.is_empty()
     && active_descendant.is_none()
     && details.is_none()
     && error_message.is_none()
@@ -2313,6 +2331,8 @@ fn compute_relations(
     Some(AccessibilityRelations {
       controls,
       owns,
+      labelled_by,
+      described_by,
       active_descendant,
       details,
       error_message,

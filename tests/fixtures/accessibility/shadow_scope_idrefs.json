@@ -30,6 +30,9 @@
         "invalid": false,
         "visited": false,
         "readonly": false
+      },
+      "relations": {
+        "labelled_by": ["shadow-label"]
       }
     },
     "doc-refs-dup": {
@@ -46,6 +49,9 @@
         "invalid": false,
         "visited": false,
         "readonly": false
+      },
+      "relations": {
+        "labelled_by": ["dup"]
       }
     },
     "shadow-refs-dup": {
@@ -62,6 +68,9 @@
         "invalid": false,
         "visited": false,
         "readonly": false
+      },
+      "relations": {
+        "labelled_by": ["dup"]
       }
     }
   }

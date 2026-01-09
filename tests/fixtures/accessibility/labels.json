@@ -47,6 +47,9 @@
         "invalid": false,
         "visited": false,
         "readonly": false
+      },
+      "relations": {
+        "labelled_by": ["lbl"]
       }
     }
   }
