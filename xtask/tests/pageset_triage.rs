@@ -157,3 +157,123 @@ Pages: 2
   assert_eq!(report, expected);
 }
 
+#[test]
+fn pageset_triage_includes_first_mismatch_when_present() {
+  let tmp = tempdir().expect("create tempdir");
+  let progress_dir = tmp.path().join("progress_pages");
+  fs::create_dir_all(&progress_dir).expect("create progress dir");
+
+  fs::write(
+    progress_dir.join("a.com.json"),
+    r#"{
+  "url": "https://a.com/",
+  "status": "ok",
+  "hotspot": "paint",
+  "total_ms": 123.0,
+  "accuracy": {
+    "diff_percent": 12.5,
+    "perceptual": 0.25,
+    "first_mismatch": {
+      "x": 1,
+      "y": 2,
+      "baseline_rgba": [1, 2, 3, 4],
+      "rendered_rgba": [250, 251, 252, 253]
+    }
+  }
+}
+"#,
+  )
+  .expect("write progress a.com");
+
+  fs::write(
+    progress_dir.join("b.com.json"),
+    r#"{
+  "url": "https://b.com/",
+  "status": "ok",
+  "hotspot": "paint",
+  "total_ms": 456.0
+}
+"#,
+  )
+  .expect("write progress b.com");
+
+  let report_path = tmp.path().join("report.json");
+  fs::write(
+    &report_path,
+    r#"{
+  "results": [
+    {
+      "name": "a.com",
+      "status": "diff",
+      "metrics": {
+        "diff_percentage": 12.5,
+        "perceptual_distance": 0.25,
+        "first_mismatch": {
+          "x": 99,
+          "y": 88,
+          "before_rgba": [0, 0, 0, 0],
+          "after_rgba": [255, 255, 255, 255]
+        }
+      }
+    },
+    {
+      "name": "b.com",
+      "status": "diff",
+      "metrics": {
+        "diff_percentage": 55.0,
+        "perceptual_distance": 0.75,
+        "first_mismatch": {
+          "x": 10,
+          "y": 20,
+          "before_rgba": [5, 6, 7, 8],
+          "after_rgba": [9, 10, 11, 12]
+        }
+      }
+    }
+  ]
+}
+"#,
+  )
+  .expect("write report.json");
+
+  let out_path = tmp.path().join("report.md");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args([
+      "pageset-triage",
+      "--progress-dir",
+      progress_dir.to_str().unwrap(),
+      "--report",
+      report_path.to_str().unwrap(),
+      "--only",
+      "a.com,b.com",
+      "--out",
+      out_path.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run cargo xtask pageset-triage");
+
+  assert!(
+    output.status.success(),
+    "pageset-triage should exit successfully; stderr:\n{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let report = fs::read_to_string(&out_path).expect("read report.md");
+
+  // When progress JSON contains `accuracy.first_mismatch`, we should prefer it over the diff report.
+  assert!(
+    report.contains(
+      "  - first_mismatch: (1, 2) baseline_rgba=[1, 2, 3, 4] rendered_rgba=[250, 251, 252, 253]\n"
+    ),
+    "expected progress first_mismatch to be rendered.\nreport:\n{report}"
+  );
+
+  // When progress JSON has no accuracy block, fall back to diff report metrics (including first_mismatch).
+  assert!(
+    report.contains(
+      "  - first_mismatch: (10, 20) baseline_rgba=[5, 6, 7, 8] rendered_rgba=[9, 10, 11, 12]\n"
+    ),
+    "expected diff report first_mismatch to be rendered.\nreport:\n{report}"
+  );
+}

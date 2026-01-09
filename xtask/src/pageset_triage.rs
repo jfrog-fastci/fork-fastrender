@@ -82,8 +82,20 @@ struct ProgressAccuracy {
   diff_percent: Option<f64>,
   #[serde(default)]
   perceptual: Option<f64>,
+  #[serde(default)]
+  first_mismatch: Option<ProgressFirstMismatch>,
 }
- 
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProgressFirstMismatch {
+  x: u32,
+  y: u32,
+  #[serde(default)]
+  baseline_rgba: Option<[u8; 4]>,
+  #[serde(default)]
+  rendered_rgba: Option<[u8; 4]>,
+}
+
 #[derive(Debug, Deserialize)]
 struct DiffReport {
   results: Vec<DiffReportEntry>,
@@ -133,6 +145,18 @@ impl EntryStatus {
 struct DiffMetrics {
   diff_percentage: f64,
   perceptual_distance: f64,
+  #[serde(default)]
+  first_mismatch: Option<DiffFirstMismatch>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct DiffFirstMismatch {
+  x: u32,
+  y: u32,
+  #[serde(default)]
+  before_rgba: Option<[u8; 4]>,
+  #[serde(default)]
+  after_rgba: Option<[u8; 4]>,
 }
  
 pub fn run_pageset_triage(mut args: PagesetTriageArgs) -> Result<()> {
@@ -387,12 +411,40 @@ fn render_page_section(page: &PageTriageRow, diff: Option<&DiffReportEntry>) -> 
         "- Accuracy: diff_percent={:.4}% perceptual={:.4}\n",
         diff_percent, perceptual
       ));
+      if let Some(mismatch) = page
+        .accuracy
+        .as_ref()
+        .and_then(|acc| acc.first_mismatch.as_ref())
+      {
+        out.push_str(&format!(
+          "  - first_mismatch: ({}, {})",
+          mismatch.x, mismatch.y
+        ));
+        if let (Some(baseline), Some(rendered)) = (mismatch.baseline_rgba, mismatch.rendered_rgba) {
+          out.push_str(&format!(
+            " baseline_rgba={baseline:?} rendered_rgba={rendered:?}"
+          ));
+        }
+        out.push('\n');
+      }
     }
     (None, Some(metrics)) if metrics.diff_percentage.is_finite() && metrics.perceptual_distance.is_finite() => {
       out.push_str(&format!(
         "- Accuracy (from diff report): diff_percent={:.4}% perceptual={:.4}\n",
         metrics.diff_percentage, metrics.perceptual_distance
       ));
+      if let Some(mismatch) = metrics.first_mismatch.as_ref() {
+        out.push_str(&format!(
+          "  - first_mismatch: ({}, {})",
+          mismatch.x, mismatch.y
+        ));
+        if let (Some(baseline), Some(rendered)) = (mismatch.before_rgba, mismatch.after_rgba) {
+          out.push_str(&format!(
+            " baseline_rgba={baseline:?} rendered_rgba={rendered:?}"
+          ));
+        }
+        out.push('\n');
+      }
     }
     _ => {}
   }
