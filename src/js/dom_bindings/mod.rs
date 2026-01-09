@@ -282,9 +282,10 @@ impl DomJsRealm {
         "alloc_object_value must return an object",
       ));
     };
-    platform_objects
-      .borrow_mut()
-      .insert(WeakGcObject::from(event_obj), PlatformObjectKind::Event { event_id });
+    platform_objects.borrow_mut().insert(
+      WeakGcObject::from(event_obj),
+      PlatformObjectKind::Event { event_id },
+    );
 
     // Temporarily move the event out of the events table so we can hold an `&mut Event` for the
     // duration of dispatch.

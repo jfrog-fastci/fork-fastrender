@@ -157,11 +157,19 @@ fn fire_dom_content_loaded<Host: DocumentLifecycleHost>(host: &mut Host) -> Resu
 
   // `document.readyState` transitions to `interactive` once parsing is complete and deferred
   // scripts have finished executing, immediately before dispatching DOMContentLoaded.
-  host.with_dom_mut(|dom| {
+  let ready_state_changed = host.with_dom_mut(|dom| {
     if dom.ready_state() == DocumentReadyState::Loading {
       dom.set_ready_state(DocumentReadyState::Interactive);
+      true
+    } else {
+      false
     }
   });
+
+  // Fire `readystatechange` whenever `document.readyState` changes.
+  if ready_state_changed {
+    fire_ready_state_change(host)?;
+  }
 
   let mut event = Event::new(
     "DOMContentLoaded",
@@ -187,9 +195,18 @@ fn fire_load<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
   }
 
   // `document.readyState` becomes `complete` immediately before dispatching `load`.
-  host.with_dom_mut(|dom| {
-    dom.set_ready_state(DocumentReadyState::Complete);
+  let ready_state_changed = host.with_dom_mut(|dom| {
+    if dom.ready_state() != DocumentReadyState::Complete {
+      dom.set_ready_state(DocumentReadyState::Complete);
+      true
+    } else {
+      false
+    }
   });
+
+  if ready_state_changed {
+    fire_ready_state_change(host)?;
+  }
 
   let mut event = Event::new(
     "load",
@@ -201,6 +218,20 @@ fn fire_load<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
   );
   event.is_trusted = true;
   host.dispatch_lifecycle_event(EventTargetId::Window, event)?;
+  Ok(())
+}
+
+fn fire_ready_state_change<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
+  let mut event = Event::new(
+    "readystatechange",
+    EventInit {
+      bubbles: false,
+      cancelable: false,
+      composed: false,
+    },
+  );
+  event.is_trusted = true;
+  host.dispatch_lifecycle_event(EventTargetId::Document, event)?;
   Ok(())
 }
 
@@ -286,6 +317,24 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
 
+    let rs_listener = ListenerId::new(3);
+    host.invoker.register(rs_listener, {
+      let log = Rc::clone(&log);
+      move |_event| {
+        log.borrow_mut().push("rs".to_string());
+        Ok(())
+      }
+    });
+    assert!(
+      host.dom.events().add_event_listener(
+        EventTargetId::Document,
+        "readystatechange",
+        rs_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected readystatechange listener to be inserted",
+    );
+
     let dom_listener = ListenerId::new(1);
     host.invoker.register(dom_listener, {
       let log = Rc::clone(&log);
@@ -337,17 +386,33 @@ mod tests {
 
     // DOMContentLoaded task.
     assert!(event_loop.run_next_task(&mut host)?);
-    assert_eq!(&*log.borrow(), &vec!["dom".to_string()]);
+    assert_eq!(&*log.borrow(), &vec!["rs".to_string(), "dom".to_string()]);
     assert_eq!(host.dom.ready_state().as_str(), "interactive");
 
     // load task.
     assert!(event_loop.run_next_task(&mut host)?);
-    assert_eq!(&*log.borrow(), &vec!["dom".to_string(), "load".to_string()]);
+    assert_eq!(
+      &*log.borrow(),
+      &vec![
+        "rs".to_string(),
+        "dom".to_string(),
+        "rs".to_string(),
+        "load".to_string()
+      ]
+    );
     assert_eq!(host.dom.ready_state().as_str(), "complete");
 
     // No additional firings.
     assert!(!event_loop.run_next_task(&mut host)?);
-    assert_eq!(&*log.borrow(), &vec!["dom".to_string(), "load".to_string()]);
+    assert_eq!(
+      &*log.borrow(),
+      &vec![
+        "rs".to_string(),
+        "dom".to_string(),
+        "rs".to_string(),
+        "load".to_string()
+      ]
+    );
     Ok(())
   }
 
@@ -403,6 +468,21 @@ mod tests {
     let mut host = Host::new();
     let mut event_loop = EventLoop::<Host>::new();
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let rs_listener = ListenerId::new(3);
+    host.invoker.register(rs_listener, {
+      let log = Rc::clone(&log);
+      move |_event| {
+        log.borrow_mut().push("rs".to_string());
+        Ok(())
+      }
+    });
+    host.dom.events().add_event_listener(
+      EventTargetId::Document,
+      "readystatechange",
+      rs_listener,
+      AddEventListenerOptions::default(),
+    );
 
     let dom_listener = ListenerId::new(1);
     host.invoker.register(dom_listener, {
@@ -481,6 +561,7 @@ mod tests {
       &vec![
         "script:d1".to_string(),
         "microtask:d1".to_string(),
+        "rs".to_string(),
         "dom".to_string()
       ]
     );
@@ -493,7 +574,9 @@ mod tests {
       &vec![
         "script:d1".to_string(),
         "microtask:d1".to_string(),
+        "rs".to_string(),
         "dom".to_string(),
+        "rs".to_string(),
         "load".to_string()
       ]
     );
@@ -559,6 +642,36 @@ mod tests {
 
     let document = host.realm.document();
     let window = host.realm.window();
+
+    // document.addEventListener("readystatechange", ...)
+    {
+      let log = Rc::clone(&log);
+      let document_for_cb = document;
+      let callback = host
+        .realm
+        .runtime_mut()
+        .alloc_function_value(move |rt, _this, _args| {
+          let ready_state_key = pk(rt, "readyState");
+          let ready_state_value = rt.get(document_for_cb, ready_state_key)?;
+          let ready_state = value_as_string(rt, ready_state_value);
+          log.borrow_mut().push(format!("rs:{ready_state}"));
+          Ok(Value::Undefined)
+        })
+        .unwrap();
+
+      let add_key = pk(host.realm.runtime_mut(), "addEventListener");
+      let add = host.realm.runtime_mut().get(document, add_key).unwrap();
+      let event_type = host
+        .realm
+        .runtime_mut()
+        .alloc_string_value("readystatechange")
+        .unwrap();
+      host
+        .realm
+        .runtime_mut()
+        .call_function(add, document, &[event_type, callback, Value::Undefined])
+        .unwrap();
+    }
 
     // document.addEventListener("DOMContentLoaded", ...)
     {
@@ -633,7 +746,10 @@ mod tests {
 
     // DOMContentLoaded task.
     assert!(event_loop.run_next_task(&mut host)?);
-    assert_eq!(&*log.borrow(), &vec!["dom:interactive".to_string()]);
+    assert_eq!(
+      &*log.borrow(),
+      &vec!["rs:interactive".to_string(), "dom:interactive".to_string()]
+    );
 
     // Add a late DOMContentLoaded listener; it must not be invoked retroactively.
     {
@@ -659,13 +775,21 @@ mod tests {
         .call_function(add, document, &[event_type, late_cb, Value::Undefined])
         .unwrap();
     }
-    assert_eq!(&*log.borrow(), &vec!["dom:interactive".to_string()]);
+    assert_eq!(
+      &*log.borrow(),
+      &vec!["rs:interactive".to_string(), "dom:interactive".to_string()]
+    );
 
     // load task.
     assert!(event_loop.run_next_task(&mut host)?);
     assert_eq!(
       &*log.borrow(),
-      &vec!["dom:interactive".to_string(), "load:complete".to_string()]
+      &vec![
+        "rs:interactive".to_string(),
+        "dom:interactive".to_string(),
+        "rs:complete".to_string(),
+        "load:complete".to_string()
+      ]
     );
 
     assert!(!event_loop.run_next_task(&mut host)?);
