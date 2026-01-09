@@ -1253,6 +1253,7 @@ fn apply_backdrop_filters_with_region_filler<F>(
   backdrop_cache: Option<&mut (dyn BackdropFilterCacheOps + 'static)>,
   fill_region: F,
   projective_backdrop: Option<ProjectiveBackdropFilterContext>,
+  post_filter_path: Option<&tiny_skia::Path>,
 ) -> RenderResult<()>
 where
   F: FnOnce(&mut Pixmap, u32, u32) -> RenderResult<()>,
@@ -1691,6 +1692,16 @@ where
     || shape_bounds.width().fract().abs() > 1e-6
     || shape_bounds.height().fract().abs() > 1e-6;
 
+  let region_origin_dest_x = clamped_x as i32 - dest_origin_in_src.0;
+  let region_origin_dest_y = clamped_y as i32 - dest_origin_in_src.1;
+  let world_to_region = concat_transforms(
+    Transform::from_translate(
+      -(region_origin_dest_x as f32),
+      -(region_origin_dest_y as f32),
+    ),
+    world_to_dest,
+  );
+
   let radii_mask = if needs_shape_mask {
     let mut mask = match scratch.radii_mask.take() {
       Some(existing) if existing.width() == region_w && existing.height() == region_h => existing,
@@ -1715,16 +1726,6 @@ where
     }
     mask.data_mut().fill(0);
 
-    let region_origin_dest_x = clamped_x as i32 - dest_origin_in_src.0;
-    let region_origin_dest_y = clamped_y as i32 - dest_origin_in_src.1;
-    let world_to_region = concat_transforms(
-      Transform::from_translate(
-        -(region_origin_dest_x as f32),
-        -(region_origin_dest_y as f32),
-      ),
-      world_to_dest,
-    );
-
     let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
       shape_bounds.x(),
       shape_bounds.y(),
@@ -1740,6 +1741,41 @@ where
       return Ok(());
     };
     mask.fill_path(&path, tiny_skia::FillRule::Winding, true, world_to_region);
+    Some(mask)
+  } else {
+    None
+  };
+
+  let path_mask = if let Some(path) = post_filter_path {
+    let mut mask = match scratch.path_mask.take() {
+      Some(existing) if existing.width() == region_w && existing.height() == region_h => existing,
+      _ => match Mask::new(region_w, region_h) {
+        Some(m) => m,
+        None => {
+          scratch.region = Some(region);
+          if let Some(mask) = radii_mask {
+            scratch.radii_mask = Some(mask);
+          }
+          BACKDROP_FILTER_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = scratch;
+          });
+          return Ok(());
+        }
+      },
+    };
+    if let Err(err) = check_active(RenderStage::Paint) {
+      scratch.region = Some(region);
+      if let Some(mask) = radii_mask {
+        scratch.radii_mask = Some(mask);
+      }
+      scratch.path_mask = Some(mask);
+      BACKDROP_FILTER_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = scratch;
+      });
+      return Err(err);
+    }
+    mask.data_mut().fill(0);
+    mask.fill_path(path, tiny_skia::FillRule::Winding, true, world_to_region);
     Some(mask)
   } else {
     None
@@ -1769,6 +1805,9 @@ where
       if let Some(mask) = radii_mask {
         scratch.radii_mask = Some(mask);
       }
+      if let Some(mask) = path_mask {
+        scratch.path_mask = Some(mask);
+      }
       BACKDROP_FILTER_SCRATCH.with(|cell| {
         *cell.borrow_mut() = scratch;
       });
@@ -1780,6 +1819,9 @@ where
     scratch.region = Some(region);
     if let Some(mask) = radii_mask {
       scratch.radii_mask = Some(mask);
+    }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
     }
     BACKDROP_FILTER_SCRATCH.with(|cell| {
       *cell.borrow_mut() = scratch;
@@ -1802,6 +1844,9 @@ where
     if let Some(mask) = radii_mask {
       scratch.radii_mask = Some(mask);
     }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
     BACKDROP_FILTER_SCRATCH.with(|cell| {
       *cell.borrow_mut() = scratch;
     });
@@ -1815,10 +1860,11 @@ where
   let clip_mask_data =
     clip_mask.map(|mask| (mask.data(), mask.width() as i32, mask.height() as i32));
   let radii_mask_data = radii_mask.as_ref().map(|mask| mask.data());
+  let path_mask_data = path_mask.as_ref().map(|mask| mask.data());
 
   let write_result = (|| -> RenderResult<()> {
     let dest_data = dest.data_mut();
-    if clip_mask_data.is_none() && radii_mask_data.is_none() {
+    if clip_mask_data.is_none() && radii_mask_data.is_none() && path_mask_data.is_none() {
       let row_bytes = write_w as usize * 4;
       let mut deadline_counter = 0usize;
       for row in 0..write_h as usize {
@@ -1866,6 +1912,16 @@ where
             coverage = div_255(coverage * mask_data[mask_idx] as u16);
           }
 
+          if coverage == 0 {
+            continue;
+          }
+
+          if let Some(mask_data) = path_mask_data {
+            let mask_idx =
+              (src_start_y as usize + row) * filtered_width + (src_start_x as usize + col);
+            coverage = div_255(coverage * mask_data[mask_idx] as u16);
+          }
+
           if coverage >= 255 {
             dest_data[dest_offset..dest_offset + 4]
               .copy_from_slice(&filtered_data[src_offset..src_offset + 4]);
@@ -1896,6 +1952,9 @@ where
     if let Some(mask) = radii_mask {
       scratch.radii_mask = Some(mask);
     }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
     BACKDROP_FILTER_SCRATCH.with(|cell| {
       *cell.borrow_mut() = scratch;
     });
@@ -1905,6 +1964,9 @@ where
   scratch.region = Some(region);
   if let Some(mask) = radii_mask {
     scratch.radii_mask = Some(mask);
+  }
+  if let Some(mask) = path_mask {
+    scratch.path_mask = Some(mask);
   }
   BACKDROP_FILTER_SCRATCH.with(|cell| {
     *cell.borrow_mut() = scratch;
@@ -1969,6 +2031,7 @@ fn apply_backdrop_filters(
       Ok(())
     },
     None,
+    None,
   )
 }
 
@@ -2026,6 +2089,7 @@ thread_local! {
 struct BackdropFilterScratch {
   region: Option<Pixmap>,
   radii_mask: Option<Mask>,
+  path_mask: Option<Mask>,
   svg_backdrop: Option<Pixmap>,
 }
 
@@ -8288,6 +8352,7 @@ impl DisplayListRenderer {
         }
       },
       projective_backdrop,
+      None,
     )?;
     self.mark_current_pixmap_mutated();
     Ok(())
@@ -9667,6 +9732,7 @@ impl DisplayListRenderer {
                   .then(|| renderer.canvas.clip_mask_rc())
                   .flatten();
                 let clip_mask = clip_override.or_else(|| clip_mask_rc.as_deref());
+                let scale = renderer.scale;
                 let radii = renderer.ds_radii(scene_item.radii);
                 let shape_bounds = Rect::from_xywh(
                   bounds_in_src.x() - layer_origin.0 as f32,
@@ -9674,6 +9740,65 @@ impl DisplayListRenderer {
                   bounds_in_src.width(),
                   bounds_in_src.height(),
                 );
+                let projected_quad_path = (renderer.projective_warp_enabled
+                  && !Homography::from_transform3d_z0(&adjusted_transform).is_affine())
+                .then(|| {
+                  let local_bounds = Rect::from_xywh(
+                    scene_item.filter_bounds.x() - scene_item.bounds.x(),
+                    scene_item.filter_bounds.y() - scene_item.bounds.y(),
+                    scene_item.filter_bounds.width(),
+                    scene_item.filter_bounds.height(),
+                  );
+                  if local_bounds.width() <= 0.0
+                    || local_bounds.height() <= 0.0
+                    || !local_bounds.x().is_finite()
+                    || !local_bounds.y().is_finite()
+                    || !local_bounds.width().is_finite()
+                    || !local_bounds.height().is_finite()
+                  {
+                    return None;
+                  }
+
+                  let corners = [
+                    (local_bounds.min_x(), local_bounds.min_y()),
+                    (local_bounds.max_x(), local_bounds.min_y()),
+                    (local_bounds.max_x(), local_bounds.max_y()),
+                    (local_bounds.min_x(), local_bounds.max_y()),
+                  ];
+                  let mut builder = PathBuilder::new();
+                  for (idx, (x, y)) in corners.iter().enumerate() {
+                    let (tx, ty, _tz, tw) = adjusted_transform.transform_point(*x, *y, 0.0);
+                    if !tw.is_finite()
+                      || tw.abs() < Transform3D::MIN_PROJECTIVE_W
+                      || tw < 0.0
+                      || !tx.is_finite()
+                      || !ty.is_finite()
+                    {
+                      return None;
+                    }
+                    let px = (tx / tw) * scale;
+                    let py = (ty / tw) * scale;
+                    let dst_x = px * parent_transform.sx
+                      + py * parent_transform.kx
+                      + parent_transform.tx
+                      - layer_origin.0 as f32;
+                    let dst_y = px * parent_transform.ky
+                      + py * parent_transform.sy
+                      + parent_transform.ty
+                      - layer_origin.1 as f32;
+                    if !dst_x.is_finite() || !dst_y.is_finite() {
+                      return None;
+                    }
+                    if idx == 0 {
+                      builder.move_to(dst_x, dst_y);
+                    } else {
+                      builder.line_to(dst_x, dst_y);
+                    }
+                  }
+                  builder.close();
+                  builder.finish()
+                })
+                .flatten();
 
                 let (layer_stack, dest_pixmap) = renderer.canvas.split_layer_stack_and_pixmap_mut();
                 let Some(parent_surface) = layer_stack.last().map(|record| &record.pixmap) else {
@@ -9691,7 +9816,6 @@ impl DisplayListRenderer {
                     parent_depth.saturating_sub(root_depth)
                   );
                 }
-                let scale = renderer.scale;
                 let blur_cache: &mut (dyn BlurCacheOps + 'static) =
                   match renderer.shared_blur_cache.as_mut() {
                     Some(shared) => shared,
@@ -9738,6 +9862,7 @@ impl DisplayListRenderer {
                     }
                   },
                   None,
+                  projected_quad_path.as_ref(),
                 )?;
               }
 
