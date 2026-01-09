@@ -302,3 +302,50 @@ fn quickjs_dom_inner_html_and_outer_html_round_trip() {
     })
     .expect("js eval");
 }
+
+#[test]
+fn quickjs_dom_insert_adjacent_html_round_trip() {
+  let html = "<!doctype html><html><head></head><body><div id=target></div></body></html>";
+  let renderer_dom = parse_html(html).expect("parse html");
+  let dom = Document::from_renderer_dom(&renderer_dom);
+  let dom: SharedDom2Document = Rc::new(RefCell::new(dom));
+
+  let rt = Runtime::new().expect("quickjs runtime");
+  let ctx = Context::full(&rt).expect("quickjs context");
+
+  ctx
+    .with(|ctx| -> rquickjs::Result<()> {
+      install_dom2_bindings(ctx.clone(), Rc::clone(&dom))?;
+
+      ctx.eval::<(), _>("globalThis.div = document.firstChild.lastChild.firstChild;")?;
+      assert_eq!(ctx.eval::<String, _>("div.tagName")?, "DIV");
+      assert_eq!(ctx.eval::<String, _>("div.id")?, "target");
+
+      // Live insertion via insertAdjacentHTML.
+      ctx.eval::<(), _>("div.insertAdjacentHTML('beforeend', '<span id=child>hi</span>tail');")?;
+      assert_eq!(ctx.eval::<String, _>("div.innerHTML")?, "<span id=\"child\">hi</span>tail");
+
+      // Invalid position throws SyntaxError.
+      ctx.eval::<(), _>(
+        "globalThis.__bad = false; try { div.insertAdjacentHTML('nope', '<b>x</b>'); } catch(e) { __bad = (e.name === 'SyntaxError'); }",
+      )?;
+      assert_eq!(ctx.eval::<bool, _>("__bad")?, true);
+
+      // Insert a <script>; it should be marked already started in Rust.
+      ctx.eval::<(), _>("div.insertAdjacentHTML('beforeend', '<script id=s>console.log(1)</script>');")?;
+      assert_eq!(ctx.eval::<String, _>("div.lastChild.nodeName")?, "SCRIPT");
+      Ok(())
+    })
+    .expect("js eval");
+
+  let script_id = {
+    let dom_ref = dom.borrow();
+    dom_ref
+      .get_element_by_id("s")
+      .expect("expected script inserted via insertAdjacentHTML")
+  };
+  assert!(
+    dom.borrow().node(script_id).script_already_started,
+    "expected insertAdjacentHTML-inserted script to be marked already started"
+  );
+}

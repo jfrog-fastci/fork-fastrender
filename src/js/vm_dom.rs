@@ -450,6 +450,18 @@ fn require_node_arg<'a>(
   Ok(node_id)
 }
 
+fn require_element_arg<'a>(
+  scope: &mut Scope<'a>,
+  host: &DomHost,
+  value: Value,
+) -> Result<NodeId, VmError> {
+  let (kind, node_id) = wrapper_meta(scope, host, value)?;
+  if kind != DomKind::Element {
+    return throw_type_error(scope, host, "argument must be an Element");
+  }
+  Ok(node_id)
+}
+
 fn require_this_dom_token_list<'a>(
   scope: &mut Scope<'a>,
   host: &DomHost,
@@ -1814,6 +1826,99 @@ fn dom_element_outer_html_setter(
   Ok(Value::Undefined)
 }
 
+fn dom_element_insert_adjacent_html(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let position_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let position = to_dom_string(scope, host, position_val)?;
+  let html = to_dom_string(scope, host, html_val)?;
+
+  if let Err(err) = host
+    .dom
+    .borrow_mut()
+    .insert_adjacent_html(element_id, &position, &html)
+  {
+    return throw_dom_error(scope, host, err);
+  }
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Undefined)
+}
+
+fn dom_element_insert_adjacent_element(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let where_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_element_val = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let where_ = to_dom_string(scope, host, where_val)?;
+  let new_element_id = require_element_arg(scope, host, new_element_val)?;
+
+  let inserted = match host
+    .dom
+    .borrow_mut()
+    .insert_adjacent_element(element_id, &where_, new_element_id)
+  {
+    Ok(v) => v,
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+
+  let Some(inserted_id) = inserted else {
+    return Ok(Value::Null);
+  };
+
+  host.sync_live_collections(scope)?;
+  wrap_node(host, scope, inserted_id, DomKind::Element)
+}
+
+fn dom_element_insert_adjacent_text(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let where_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let data_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let where_ = to_dom_string(scope, host, where_val)?;
+  let data = to_dom_string(scope, host, data_val)?;
+
+  if let Err(err) = host
+    .dom
+    .borrow_mut()
+    .insert_adjacent_text(element_id, &where_, &data)
+  {
+    return throw_dom_error(scope, host, err);
+  }
+
+  host.sync_live_collections(scope)?;
+  Ok(Value::Undefined)
+}
+
 fn dom_node_text_content_getter(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2246,6 +2351,9 @@ pub fn install_dom_bindings_with_limits(
   let call_inner_html_set = vm.register_native_call(dom_element_inner_html_setter)?;
   let call_outer_html_get = vm.register_native_call(dom_element_outer_html_getter)?;
   let call_outer_html_set = vm.register_native_call(dom_element_outer_html_setter)?;
+  let call_insert_adjacent_html = vm.register_native_call(dom_element_insert_adjacent_html)?;
+  let call_insert_adjacent_element = vm.register_native_call(dom_element_insert_adjacent_element)?;
+  let call_insert_adjacent_text = vm.register_native_call(dom_element_insert_adjacent_text)?;
   let call_current_script = vm.register_native_call(dom_document_current_script_getter)?;
   let call_text_content_get = vm.register_native_call(dom_node_text_content_getter)?;
   let call_text_content_set = vm.register_native_call(dom_node_text_content_setter)?;
@@ -2315,6 +2423,27 @@ pub fn install_dom_bindings_with_limits(
     call_class_name_set,
   )?;
   install_method(&mut scope, proto_element, "setAttribute", call_set_attribute, 2)?;
+  install_method(
+    &mut scope,
+    proto_element,
+    "insertAdjacentHTML",
+    call_insert_adjacent_html,
+    2,
+  )?;
+  install_method(
+    &mut scope,
+    proto_element,
+    "insertAdjacentElement",
+    call_insert_adjacent_element,
+    2,
+  )?;
+  install_method(
+    &mut scope,
+    proto_element,
+    "insertAdjacentText",
+    call_insert_adjacent_text,
+    2,
+  )?;
   install_method(
     &mut scope,
     proto_element,

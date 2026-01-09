@@ -200,6 +200,12 @@ const DOM_BOOTSTRAP: &str = r#"
       assertValidId(id);
       __dom_set_outer_html(id, String(v));
     }
+
+    insertAdjacentHTML(position, text) {
+      const id = idOf(this);
+      assertValidId(id);
+      __dom_insert_adjacent_html(id, String(position), String(text));
+    }
   }
 
   class Text extends Node {}
@@ -679,6 +685,27 @@ pub fn install_dom2_bindings<'js>(ctx: Ctx<'js>, dom: SharedDom2Document) -> rqu
     },
     )?;
     globals.set("__dom_set_outer_html", f)?;
+  }
+
+  {
+    let dom = Rc::clone(&dom);
+    let f = Function::new(
+      ctx.clone(),
+      move |js_ctx: Ctx<'_>, raw: u32, position: String, html: String| -> rquickjs::Result<()> {
+      let result = {
+        let mut dom = dom.borrow_mut();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(());
+        };
+        dom.insert_adjacent_html(id, &position, &html)
+      };
+      match result {
+        Ok(()) => Ok(()),
+        Err(err) => throw_dom_error(js_ctx, err),
+      }
+    },
+    )?;
+    globals.set("__dom_insert_adjacent_html", f)?;
   }
 
   // Define JS wrapper classes + cache.

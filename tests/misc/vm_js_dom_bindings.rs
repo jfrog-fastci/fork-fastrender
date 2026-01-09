@@ -495,48 +495,52 @@ fn dom_bindings_rejects_strings_over_max_string_bytes() -> Result<(), VmError> {
   )?;
 
   let mut scope = heap.scope();
-  let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
-  let document_val = scope
-    .heap()
-    .object_get_own_data_property_value(realm.global_object(), &key_document)?
-    .expect("globalThis.document should be defined");
+  let msg: Result<String, VmError> = (|| {
+    let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+    let document_val = scope
+      .heap()
+      .object_get_own_data_property_value(realm.global_object(), &key_document)?
+      .expect("globalThis.document should be defined");
 
-  let document_obj = match document_val {
-    Value::Object(o) => o,
-    _ => panic!("document should be an object"),
-  };
+    let document_obj = match document_val {
+      Value::Object(o) => o,
+      _ => panic!("document should be an object"),
+    };
 
-  let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
-  let create_element =
-    get_data_property_value(scope.heap(), document_obj, &key_create_element)
-      .expect("document.createElement should exist");
+    let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+    let create_element =
+      get_data_property_value(scope.heap(), document_obj, &key_create_element)
+        .expect("document.createElement should exist");
 
-  // "ééé" is 3 UTF-16 code units but 6 UTF-8 bytes.
-  let tag = Value::String(scope.alloc_string("ééé")?);
-  let err = vm
-    .call_without_host(&mut scope, create_element, document_val, &[tag])
-    .expect_err("expected createElement to throw");
+    // "ééé" is 3 UTF-16 code units but 6 UTF-8 bytes.
+    let tag = Value::String(scope.alloc_string("ééé")?);
+    let err = vm
+      .call_without_host(&mut scope, create_element, document_val, &[tag])
+      .expect_err("expected createElement to throw");
 
-  let Some(thrown) = err.thrown_value() else {
-    panic!("expected a thrown TypeError, got {err:?}");
-  };
+    let thrown = match err.thrown_value() {
+      Some(v) => v,
+      None => return Err(err),
+    };
 
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-  let message = match thrown {
-    Value::Object(obj) => get_data_property_value(scope.heap(), obj, &message_key)
-      .expect("thrown error should have message"),
-    other => panic!("expected error object, got {other:?}"),
-  };
-  let Value::String(message_str) = message else {
-    panic!("expected message string, got {message:?}");
-  };
-  let msg = scope.heap().get_string(message_str)?.to_utf8_lossy();
+    let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+    let message = match thrown {
+      Value::Object(obj) => get_data_property_value(scope.heap(), obj, &message_key)
+        .expect("thrown error should have message"),
+      other => panic!("expected error object, got {other:?}"),
+    };
+    let Value::String(message_str) = message else {
+      panic!("expected message string, got {message:?}");
+    };
+    Ok(scope.heap().get_string(message_str)?.to_utf8_lossy().to_string())
+  })();
 
   // Ensure teardown runs even if assertions fail, otherwise `Realm` will panic in Drop while the
   // test is already unwinding.
   drop(scope);
   realm.teardown(&mut heap);
 
+  let msg = msg?;
   assert!(msg.contains("max_string_bytes"), "unexpected error message: {msg}");
   Ok(())
 }
@@ -1019,6 +1023,282 @@ fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
   assert_eq!(recorded.replaced_text, "ok");
   assert!(recorded.target_node_detached);
 
+  Ok(())
+}
+
+#[test]
+fn element_insert_adjacent_html_element_and_text() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+  install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+
+  struct Recorded {
+    bad_position_error_name: String,
+    insert_adjacent_element_returns_arg: bool,
+    body_child_ids: Vec<Option<String>>,
+    target_child_repr: Vec<String>,
+    script_already_started: bool,
+  }
+
+  let mut scope = heap.scope();
+  let recorded: Result<Recorded, VmError> = (|| {
+    let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+    let document_val = scope
+      .heap()
+      .object_get_own_data_property_value(realm.global_object(), &key_document)?
+      .ok_or(VmError::InvariantViolation(
+        "globalThis.document should be defined",
+      ))?;
+    let Value::Object(document_obj) = document_val else {
+      return Err(VmError::InvariantViolation("document should be an object"));
+    };
+
+    let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+    let create_element =
+      get_data_property_value(scope.heap(), document_obj, &key_create_element).ok_or(
+        VmError::InvariantViolation("document.createElement should exist"),
+      )?;
+
+    let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
+    let append_child =
+      get_data_property_value(scope.heap(), document_obj, &key_append_child).ok_or(
+        VmError::InvariantViolation("appendChild should exist"),
+      )?;
+
+    let tag_body = Value::String(scope.alloc_string("body")?);
+    let body_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_body])?;
+    vm.call_without_host(&mut scope, append_child, document_val, &[body_val])?;
+
+    // <div id="target"></div>
+    let tag_div = Value::String(scope.alloc_string("div")?);
+    let target_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div])?;
+    let Value::Object(target_obj) = target_val else {
+      return Err(VmError::InvariantViolation("expected target element wrapper"));
+    };
+    let key_set_attribute = PropertyKey::from_string(scope.alloc_string("setAttribute")?);
+    let set_attribute =
+      get_data_property_value(scope.heap(), target_obj, &key_set_attribute).ok_or(
+        VmError::InvariantViolation("setAttribute should exist"),
+      )?;
+    let arg_id = Value::String(scope.alloc_string("id")?);
+    let arg_target = Value::String(scope.alloc_string("target")?);
+    vm.call_without_host(&mut scope, set_attribute, target_val, &[arg_id, arg_target])?;
+    vm.call_without_host(&mut scope, append_child, body_val, &[target_val])?;
+
+    // Grab insertAdjacent* methods.
+    let key_insert_adjacent_html =
+      PropertyKey::from_string(scope.alloc_string("insertAdjacentHTML")?);
+    let insert_adjacent_html =
+      get_data_property_value(scope.heap(), target_obj, &key_insert_adjacent_html).ok_or(
+        VmError::InvariantViolation("insertAdjacentHTML should exist"),
+      )?;
+    let key_insert_adjacent_element =
+      PropertyKey::from_string(scope.alloc_string("insertAdjacentElement")?);
+    let insert_adjacent_element =
+      get_data_property_value(scope.heap(), target_obj, &key_insert_adjacent_element).ok_or(
+        VmError::InvariantViolation("insertAdjacentElement should exist"),
+      )?;
+    let key_insert_adjacent_text =
+      PropertyKey::from_string(scope.alloc_string("insertAdjacentText")?);
+    let insert_adjacent_text =
+      get_data_property_value(scope.heap(), target_obj, &key_insert_adjacent_text).ok_or(
+        VmError::InvariantViolation("insertAdjacentText should exist"),
+      )?;
+
+    // Invalid position throws SyntaxError.
+    let bad_position_error_name = {
+      let bad = Value::String(scope.alloc_string("nope")?);
+      let html = Value::String(scope.alloc_string("<b>bad</b>")?);
+      let thrown =
+        match vm.call_without_host(&mut scope, insert_adjacent_html, target_val, &[bad, html]) {
+          Ok(_) => {
+            return Err(VmError::InvariantViolation(
+              "expected insertAdjacentHTML to throw",
+            ));
+          }
+          Err(err) => match err.thrown_value() {
+            Some(v) => v,
+            None => return Err(err),
+          },
+        };
+      let Value::Object(thrown_obj) = thrown else {
+        return Err(VmError::InvariantViolation("thrown value should be an object"));
+      };
+      let key_name = PropertyKey::from_string(scope.alloc_string("name")?);
+      let name_val = get_data_property_value(scope.heap(), thrown_obj, &key_name)
+        .ok_or(VmError::InvariantViolation("thrown error should have .name"))?;
+      let Value::String(name_val) = name_val else {
+        return Err(VmError::InvariantViolation(".name should be a string"));
+      };
+      scope.heap().get_string(name_val)?.to_utf8_lossy().to_string()
+    };
+
+    // beforebegin + afterend around the target.
+    let pos_before = Value::String(scope.alloc_string("beforebegin")?);
+    let html_before = Value::String(scope.alloc_string("<p id=before>one</p>")?);
+    vm.call_without_host(&mut scope, insert_adjacent_html, target_val, &[pos_before, html_before])?;
+
+    let pos_after = Value::String(scope.alloc_string("afterend")?);
+    let html_after = Value::String(scope.alloc_string("<p id=after>two</p>")?);
+    vm.call_without_host(&mut scope, insert_adjacent_html, target_val, &[pos_after, html_after])?;
+
+    // afterbegin + beforeend inside the target.
+    let pos_after_begin = Value::String(scope.alloc_string("afterbegin")?);
+    let html_first = Value::String(scope.alloc_string("<span id=first>first</span>")?);
+    vm.call_without_host(
+      &mut scope,
+      insert_adjacent_html,
+      target_val,
+      &[pos_after_begin, html_first],
+    )?;
+
+    let pos_before_end = Value::String(scope.alloc_string("beforeend")?);
+    let html_last = Value::String(scope.alloc_string("<span id=last>last</span>")?);
+    vm.call_without_host(
+      &mut scope,
+      insert_adjacent_html,
+      target_val,
+      &[pos_before_end, html_last],
+    )?;
+
+    // insertAdjacentElement(beforebegin, <section id=moved>).
+    let tag_section = Value::String(scope.alloc_string("section")?);
+    let moved_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_section])?;
+    let Value::Object(moved_obj) = moved_val else {
+      return Err(VmError::InvariantViolation("expected moved element wrapper"));
+    };
+    let set_attribute_moved =
+      get_data_property_value(scope.heap(), moved_obj, &key_set_attribute).ok_or(
+        VmError::InvariantViolation("setAttribute should exist on moved element"),
+      )?;
+    let arg_id2 = Value::String(scope.alloc_string("id")?);
+    let arg_moved = Value::String(scope.alloc_string("moved")?);
+    vm.call_without_host(&mut scope, set_attribute_moved, moved_val, &[arg_id2, arg_moved])?;
+
+    let where_before_begin = Value::String(scope.alloc_string("beforebegin")?);
+    let inserted =
+      vm.call_without_host(&mut scope, insert_adjacent_element, target_val, &[where_before_begin, moved_val])?;
+    let insert_adjacent_element_returns_arg = inserted == moved_val;
+
+    // insertAdjacentText(beforeend, "tail") and then a script.
+    let where_before_end = Value::String(scope.alloc_string("beforeend")?);
+    let data_tail = Value::String(scope.alloc_string("tail")?);
+    vm.call_without_host(
+      &mut scope,
+      insert_adjacent_text,
+      target_val,
+      &[where_before_end, data_tail],
+    )?;
+
+    let where_before_end2 = Value::String(scope.alloc_string("beforeend")?);
+    let html_script =
+      Value::String(scope.alloc_string("<script id=s>console.log(1)</script>")?);
+    vm.call_without_host(
+      &mut scope,
+      insert_adjacent_html,
+      target_val,
+      &[where_before_end2, html_script],
+    )?;
+
+    // Inspect the Rust-side dom2 tree for structure and script flags.
+    let (body_child_ids, target_child_repr, script_already_started) = {
+      let dom_ref = dom.borrow();
+      let body_id = dom_ref
+        .document_element()
+        .ok_or(VmError::InvariantViolation("missing <body> element"))?;
+
+      let body_child_ids: Vec<Option<String>> = dom_ref
+        .children(body_id)
+        .map_err(|_| VmError::InvariantViolation("dom.children(body) failed"))?
+        .iter()
+        .map(|&child| {
+          dom_ref
+            .get_attribute(child, "id")
+            .ok()
+            .flatten()
+            .map(str::to_string)
+        })
+        .collect();
+
+      let target_id = dom_ref
+        .get_element_by_id("target")
+        .ok_or(VmError::InvariantViolation("missing #target element"))?;
+      let target_children = dom_ref
+        .children(target_id)
+        .map_err(|_| VmError::InvariantViolation("dom.children(target) failed"))?;
+
+      let target_child_repr: Vec<String> = target_children
+        .iter()
+        .map(|&child| {
+          let node = dom_ref.node(child);
+          match &node.kind {
+            fastrender::dom2::NodeKind::Text { content } => format!("#text:{content}"),
+            fastrender::dom2::NodeKind::Element { tag_name, .. } => {
+              let tag = tag_name.to_ascii_lowercase();
+              let id = dom_ref.get_attribute(child, "id").ok().flatten().unwrap_or("");
+              if id.is_empty() {
+                tag
+              } else {
+                format!("{tag}#{id}")
+              }
+            }
+            fastrender::dom2::NodeKind::Slot { .. } => "slot".to_string(),
+            other => format!("{other:?}"),
+          }
+        })
+        .collect();
+
+      let script_id = dom_ref
+        .get_element_by_id("s")
+        .ok_or(VmError::InvariantViolation("missing inserted script"))?;
+      let script_already_started = dom_ref.node(script_id).script_already_started;
+
+      (body_child_ids, target_child_repr, script_already_started)
+    };
+
+    Ok(Recorded {
+      bad_position_error_name,
+      insert_adjacent_element_returns_arg,
+      body_child_ids,
+      target_child_repr,
+      script_already_started,
+    })
+  })();
+
+  drop(scope);
+  realm.teardown(&mut heap);
+
+  let recorded = recorded?;
+  assert_eq!(recorded.bad_position_error_name, "SyntaxError");
+  assert!(recorded.insert_adjacent_element_returns_arg);
+
+  let body_ids: Vec<Option<&str>> = recorded
+    .body_child_ids
+    .iter()
+    .map(|v| v.as_deref())
+    .collect();
+  assert_eq!(
+    body_ids,
+    vec![Some("before"), Some("moved"), Some("target"), Some("after")]
+  );
+
+  // Expected child order:
+  // <span id=first>, <span id=last>, "tail", <script id=s>
+  assert_eq!(
+    recorded.target_child_repr,
+    vec![
+      "span#first".to_string(),
+      "span#last".to_string(),
+      "#text:tail".to_string(),
+      "script#s".to_string(),
+    ]
+  );
+  assert!(recorded.script_already_started);
   Ok(())
 }
 
