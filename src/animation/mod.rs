@@ -8187,21 +8187,33 @@ fn transition_value_for_property_with_duration_override(
   if let Some(override_ms) = duration_override_ms {
     duration = override_ms;
   }
-  if duration <= 0.0 {
-    return None;
-  }
+  let duration = duration.max(0.0);
   let delay = pick(delays, idx, *delays.last().unwrap_or(&0.0));
-  let elapsed = time_ms - delay;
-  if elapsed >= duration {
+  // CSS Transitions 1: combined duration is max(duration, 0) + delay. A 0-duration transition can
+  // still be active due to a positive delay (it holds the start value during the delay, then snaps
+  // to the end value at the start time).
+  if duration + delay <= 0.0 {
     return None;
   }
-  let raw_progress = if elapsed <= 0.0 {
+  let elapsed = time_ms - delay;
+  let timing = pick(timings, idx, TransitionTimingFunction::Ease);
+  let progress = if duration == 0.0 {
+    if elapsed >= 0.0 {
+      return None;
+    }
     0.0
   } else {
-    (elapsed / duration).clamp(0.0, 1.0)
+    if elapsed >= duration {
+      return None;
+    }
+    if elapsed < 0.0 {
+      // During the delay, always sample the start value regardless of the timing function.
+      0.0
+    } else {
+      let raw_progress = (elapsed / duration).clamp(0.0, 1.0);
+      timing.value_at(raw_progress)
+    }
   };
-  let timing = pick(timings, idx, TransitionTimingFunction::Ease);
-  let progress = timing.value_at(raw_progress);
 
   if !allow_discrete
     && matches!(
@@ -8322,21 +8334,29 @@ fn transition_value_for_custom_property_with_duration_override(
   if let Some(override_ms) = duration_override_ms {
     duration = override_ms;
   }
-  if duration <= 0.0 {
-    return None;
-  }
+  let duration = duration.max(0.0);
   let delay = pick(delays, idx, *delays.last().unwrap_or(&0.0));
-  let elapsed = time_ms - delay;
-  if elapsed >= duration {
+  if duration + delay <= 0.0 {
     return None;
   }
-  let raw_progress = if elapsed <= 0.0 {
+  let elapsed = time_ms - delay;
+  let timing = pick(timings, idx, TransitionTimingFunction::Ease);
+  let progress = if duration == 0.0 {
+    if elapsed >= 0.0 {
+      return None;
+    }
     0.0
   } else {
-    (elapsed / duration).clamp(0.0, 1.0)
+    if elapsed >= duration {
+      return None;
+    }
+    if elapsed < 0.0 {
+      0.0
+    } else {
+      let raw_progress = (elapsed / duration).clamp(0.0, 1.0);
+      timing.value_at(raw_progress)
+    }
   };
-  let timing = pick(timings, idx, TransitionTimingFunction::Ease);
-  let progress = timing.value_at(raw_progress);
 
   let from_val = start_style.custom_properties.get(name)?.clone();
   let to_val = style.custom_properties.get(name)?.clone();
@@ -10589,6 +10609,136 @@ mod tests {
     );
     assert_eq!(animated.border_top_color, Rgba::rgb(128, 0, 0));
     assert_eq!(animated.border_right_color, Rgba::rgb(0, 128, 0));
+  }
+
+  #[test]
+  fn transition_value_for_property_zero_duration_with_positive_delay_holds_start_value_until_delay_elapses() {
+    let mut start_style = ComputedStyle::default();
+    start_style.opacity = 0.0;
+
+    let mut style = ComputedStyle::default();
+    style.opacity = 1.0;
+    style.transition_properties = vec![TransitionProperty::Name("opacity".to_string())].into();
+    style.transition_durations = vec![0.0].into();
+    style.transition_delays = vec![1000.0].into();
+    style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+    let pairs =
+      transition_pairs(&style.transition_properties, &start_style, &style).expect("pairs");
+    let idx = pairs
+      .iter()
+      .find(|(name, _)| *name == "opacity")
+      .expect("opacity in pairs")
+      .1;
+
+    let ctx = AnimationResolveContext::new(Size::new(800.0, 600.0), Size::new(100.0, 100.0));
+
+    for time_ms in [0.0, 500.0] {
+      let (value, progress, delay, duration) = transition_value_for_property(
+        "opacity",
+        idx,
+        false,
+        &style,
+        &start_style,
+        &style.transition_durations,
+        &style.transition_delays,
+        &style.transition_timing_functions,
+        time_ms,
+        &ctx,
+      )
+      .expect("expected delay-only transition sample");
+      assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
+      assert_eq!(delay, 1000.0);
+      assert_eq!(duration, 0.0);
+      match value {
+        AnimatedValue::Opacity(v) => assert!((v - 0.0).abs() < 1e-6, "opacity={v}"),
+        other => panic!("expected opacity, got {other:?}"),
+      }
+    }
+
+    assert!(
+      transition_value_for_property(
+        "opacity",
+        idx,
+        false,
+        &style,
+        &start_style,
+        &style.transition_durations,
+        &style.transition_delays,
+        &style.transition_timing_functions,
+        1000.0,
+        &ctx,
+      )
+      .is_none(),
+      "expected delay-only transition to snap at start time"
+    );
+  }
+
+  #[test]
+  fn transition_value_for_custom_property_zero_duration_with_positive_delay_holds_start_value_until_delay_elapses()
+  {
+    let mut start_style = ComputedStyle::default();
+    start_style.custom_properties.insert(
+      Arc::from("--x"),
+      CustomPropertyValue::new("0", Some(CustomPropertyTypedValue::Number(0.0))),
+    );
+
+    let mut style = ComputedStyle::default();
+    style.custom_properties.insert(
+      Arc::from("--x"),
+      CustomPropertyValue::new("1", Some(CustomPropertyTypedValue::Number(1.0))),
+    );
+    style.transition_properties = vec![TransitionProperty::Name("--x".to_string())].into();
+    style.transition_durations = vec![0.0].into();
+    style.transition_delays = vec![1000.0].into();
+    style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+    let pairs =
+      transition_pairs(&style.transition_properties, &start_style, &style).expect("pairs");
+    let idx = pairs
+      .iter()
+      .find(|(name, _)| *name == "--x")
+      .expect("--x in pairs")
+      .1;
+
+    let ctx = AnimationResolveContext::new(Size::new(800.0, 600.0), Size::new(100.0, 100.0));
+
+    for time_ms in [0.0, 500.0] {
+      let (value, progress, delay, duration) = transition_value_for_custom_property(
+        "--x",
+        idx,
+        true,
+        &style,
+        &start_style,
+        &style.transition_durations,
+        &style.transition_delays,
+        &style.transition_timing_functions,
+        time_ms,
+        &ctx,
+      )
+      .expect("expected delay-only custom property transition sample");
+      assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
+      assert_eq!(delay, 1000.0);
+      assert_eq!(duration, 0.0);
+      assert_eq!(value.value, "0");
+    }
+
+    assert!(
+      transition_value_for_custom_property(
+        "--x",
+        idx,
+        true,
+        &style,
+        &start_style,
+        &style.transition_durations,
+        &style.transition_delays,
+        &style.transition_timing_functions,
+        1000.0,
+        &ctx,
+      )
+      .is_none(),
+      "expected delay-only custom property transition to snap at start time"
+    );
   }
 
   #[test]

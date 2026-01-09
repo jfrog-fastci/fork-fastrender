@@ -9,6 +9,36 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+/// Remove a trailing `!important` flag from a declaration value string.
+///
+/// `@supports` conditions accept full `<declaration>` syntax, including optional `!important`.
+/// When evaluating support we want to validate the underlying value grammar, so we strip the
+/// important flag if present.
+///
+/// Notes:
+/// - CSS treats `important` as an ASCII case-insensitive identifier.
+/// - Whitespace between `!` and `important` is allowed (`! important`).
+fn strip_trailing_important(value: &str) -> &str {
+  let trimmed = trim_ascii_whitespace(value);
+  const IMPORTANT: &str = "important";
+  if trimmed.len() < IMPORTANT.len() {
+    return trimmed;
+  }
+
+  let important_start = trimmed.len() - IMPORTANT.len();
+  if !trimmed[important_start..].eq_ignore_ascii_case(IMPORTANT) {
+    return trimmed;
+  }
+
+  let before_ident = trim_ascii_whitespace(&trimmed[..important_start]);
+  if !before_ident.ends_with('!') {
+    return trimmed;
+  }
+
+  let without_bang = &before_ident[..before_ident.len() - 1];
+  trim_ascii_whitespace(without_bang)
+}
+
 /// Validates a (property, value) pair for use in @supports queries.
 ///
 /// Returns true when the property is recognized and either the value is a CSS-wide keyword,
@@ -34,7 +64,7 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
     Cow::Borrowed(trimmed_property)
   };
   let raw_value = trim_ascii_whitespace(value).trim_end_matches(';');
-  let value_without_important = trim_ascii_whitespace(raw_value.trim_end_matches("!important"));
+  let value_without_important = strip_trailing_important(raw_value);
 
   // Tailwind v4 gates its `@layer properties` reset behind vendor-prefixed probes:
   // `(-webkit-hyphens:none)` and `(-moz-orient:inline)`. These should evaluate true so the global
@@ -293,5 +323,15 @@ mod tests {
       !supports_declaration(&format!("{nbsp}display"), "block"),
       "NBSP must not be treated as whitespace in @supports property names"
     );
+  }
+
+  #[test]
+  fn supports_declaration_strips_important_case_insensitive_and_whitespace() {
+    assert!(supports_declaration("color", "red !IMPORTANT"));
+    assert!(supports_declaration("color", "red ! important"));
+    assert!(supports_declaration("color", "red!important"));
+
+    // `!important` must be at the end of the value to be treated as the important flag.
+    assert!(!supports_declaration("color", "red !important bogus"));
   }
 }
