@@ -16393,6 +16393,18 @@ fn box_style_key(node: &BoxNode) -> Option<usize> {
     Some(crate::tree::box_tree::GeneratedPseudoElement::FootnoteMarker) => {
       return Some(base | STYLE_KEY_FOOTNOTE_MARKER);
     }
+    Some(crate::tree::box_tree::GeneratedPseudoElement::Placeholder) => {
+      return Some(base | STYLE_KEY_PLACEHOLDER);
+    }
+    Some(crate::tree::box_tree::GeneratedPseudoElement::SliderThumb) => {
+      return Some(base | STYLE_KEY_SLIDER_THUMB);
+    }
+    Some(crate::tree::box_tree::GeneratedPseudoElement::SliderTrack) => {
+      return Some(base | STYLE_KEY_SLIDER_TRACK);
+    }
+    Some(crate::tree::box_tree::GeneratedPseudoElement::FileSelectorButton) => {
+      return Some(base | STYLE_KEY_FILE_SELECTOR_BUTTON);
+    }
     None => {}
   }
 

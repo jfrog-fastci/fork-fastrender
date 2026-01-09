@@ -32,13 +32,18 @@ use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
 use crate::style::float::Float;
 use crate::style::media::MediaQuery;
+use crate::style::position::Position;
 use crate::style::types::Direction;
 use crate::style::types::FontStyle;
+use crate::style::types::InsetValue;
 use crate::style::types::ListStyleType;
 use crate::style::types::TextTransform;
 use crate::style::types::WhiteSpace;
 use crate::style::types::WritingMode;
+use crate::style::values::Length;
+use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
+use crate::css::types::TranslateValue;
 use crate::svg::parse_svg_length;
 use crate::svg::parse_svg_length_px;
 use crate::svg::parse_svg_view_box;
@@ -2787,6 +2792,7 @@ fn generate_boxes_for_styled_into(
     entered_counter_scope: bool,
     counter_containment_snapshot: Option<CounterManager>,
     in_footnote: bool,
+    force_position_relative: bool,
     composed_children: Option<ComposedChildren<'a>>,
     child_idx: usize,
     pending_children: Vec<&'a StyledNode>,
@@ -2801,6 +2807,7 @@ fn generate_boxes_for_styled_into(
         entered_counter_scope: false,
         counter_containment_snapshot: None,
         in_footnote,
+        force_position_relative: false,
         composed_children: None,
         child_idx: 0,
         pending_children: Vec::new(),
@@ -3004,26 +3011,32 @@ fn generate_boxes_for_styled_into(
           }
         }
 
-        // Form controls render as replaced elements with intrinsic sizing and native painting.
+        let mut appearance_none_form_control: Option<FormControl> = None;
         if let Some(form_control) = create_form_control_replaced(styled) {
-          let frame = stack.pop().expect("frame exists");
-          counters.leave_scope();
-          if let Some(snapshot) = frame.counter_containment_snapshot {
-            *counters = snapshot;
+          if !matches!(
+            form_control.appearance,
+            crate::style::types::Appearance::None
+          ) {
+            let frame = stack.pop().expect("frame exists");
+            counters.leave_scope();
+            if let Some(snapshot) = frame.counter_containment_snapshot {
+              *counters = snapshot;
+            }
+            let box_node = BoxNode::new_replaced(
+              Arc::clone(&styled.styles),
+              ReplacedType::FormControl(form_control),
+              None,
+              None,
+            );
+            let box_node = attach_debug_info(box_node, styled);
+            if let Some(parent) = stack.last_mut() {
+              parent.children.push(box_node);
+            } else {
+              out.push(box_node);
+            }
+            continue;
           }
-          let box_node = BoxNode::new_replaced(
-            Arc::clone(&styled.styles),
-            ReplacedType::FormControl(form_control),
-            None,
-            None,
-          );
-          let box_node = attach_debug_info(box_node, styled);
-          if let Some(parent) = stack.last_mut() {
-            parent.children.push(box_node);
-          } else {
-            out.push(box_node);
-          }
-          continue;
+          appearance_none_form_control = Some(form_control);
         }
 
         // Replaced elements short-circuit to a single replaced box unless they're display: contents.
@@ -3091,19 +3104,32 @@ fn generate_boxes_for_styled_into(
           None
         };
 
-        let composed_children = composed_children(styled, styled_lookup);
+        let (fallback_children, suppress_dom_children, force_position_relative) =
+          if let Some(form_control) = appearance_none_form_control.as_ref() {
+            build_appearance_none_form_control_fallback(styled, form_control)
+          } else {
+            (Vec::new(), false, false)
+          };
+
+        let composed_children = if suppress_dom_children {
+          ComposedChildren::Slice(&[])
+        } else {
+          composed_children(styled, styled_lookup)
+        };
         let composed_len = composed_children.len();
         let frame = stack.last_mut().expect("frame exists");
         frame.composed_children = Some(composed_children);
-        frame.children = Vec::with_capacity(composed_len + 3);
+        frame.children = Vec::with_capacity(composed_len + 3 + fallback_children.len());
         frame.child_idx = 0;
         frame.pending_children.clear();
+        frame.force_position_relative = force_position_relative;
         if let Some(marker_box) = marker_box {
           frame.children.push(marker_box);
         }
         if let Some(before_box) = before_box {
           frame.children.push(before_box);
         }
+        frame.children.extend(fallback_children);
         frame.state = FrameState::Children;
       }
       FrameState::Children => {
@@ -3180,6 +3206,7 @@ fn generate_boxes_for_styled_into(
         let frame = stack.pop().expect("frame exists");
         debug_assert!(frame.entered_counter_scope);
         let in_footnote = frame.in_footnote;
+        let force_position_relative = frame.force_position_relative;
         let styled = frame.styled;
         let mut children = frame.children;
         let counter_containment_snapshot = frame.counter_containment_snapshot;
@@ -3213,7 +3240,13 @@ fn generate_boxes_for_styled_into(
           continue;
         }
 
-        let style = Arc::clone(&styled.styles);
+        let style = if force_position_relative && styled.styles.position == Position::Static {
+          let mut patched = styled.styles.as_ref().clone();
+          patched.position = Position::Relative;
+          Arc::new(patched)
+        } else {
+          Arc::clone(&styled.styles)
+        };
         let fc_type = styled
           .styles
           .display
@@ -3747,6 +3780,234 @@ fn create_pseudo_element_box(
     *counters = snapshot;
   }
   Some(pseudo_box)
+}
+
+fn create_box_from_style(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> Option<BoxNode> {
+  if matches!(style.display, Display::None) {
+    return None;
+  }
+
+  let fc_type = style
+    .display
+    .formatting_context_type()
+    .unwrap_or(FormattingContextType::Block);
+
+  Some(match style.display {
+    Display::Block | Display::FlowRoot | Display::ListItem => BoxNode::new_block(style, fc_type, children),
+    Display::Inline
+    | Display::Ruby
+    | Display::RubyBase
+    | Display::RubyText
+    | Display::RubyBaseContainer
+    | Display::RubyTextContainer => BoxNode::new_inline(style, children),
+    Display::InlineBlock => BoxNode::new_inline_block(style, fc_type, children),
+    Display::Flex => BoxNode::new_block(style, FormattingContextType::Flex, children),
+    Display::InlineFlex => BoxNode::new_inline_block(style, FormattingContextType::Flex, children),
+    Display::Grid => BoxNode::new_block(style, FormattingContextType::Grid, children),
+    Display::InlineGrid => BoxNode::new_inline_block(style, FormattingContextType::Grid, children),
+    Display::Table => BoxNode::new_block(style, FormattingContextType::Table, children),
+    Display::InlineTable => BoxNode::new_inline_block(style, FormattingContextType::Table, children),
+    Display::TableRow
+    | Display::TableCell
+    | Display::TableRowGroup
+    | Display::TableHeaderGroup
+    | Display::TableFooterGroup
+    | Display::TableColumn
+    | Display::TableColumnGroup
+    | Display::TableCaption => BoxNode::new_block(style, FormattingContextType::Block, children),
+    Display::Contents => BoxNode::new_inline(style, children),
+    Display::None => unreachable!("handled above"),
+  })
+}
+
+fn build_appearance_none_form_control_fallback(
+  styled: &StyledNode,
+  form_control: &FormControl,
+) -> (Vec<BoxNode>, bool, bool) {
+  let mut children: Vec<BoxNode> = Vec::new();
+  let mut suppress_dom_children = false;
+  let mut force_position_relative = false;
+
+  let styled_id = styled.node_id;
+
+  let push_text = |children: &mut Vec<BoxNode>,
+                   style: Arc<ComputedStyle>,
+                   text: String,
+                   pseudo: Option<GeneratedPseudoElement>| {
+    let mut node = BoxNode::new_text(style, text);
+    node.styled_node_id = Some(styled_id);
+    node.generated_pseudo = pseudo;
+    children.push(node);
+  };
+
+  match &form_control.control {
+    FormControlKind::Text {
+      value,
+      placeholder,
+      placeholder_style,
+      kind,
+      ..
+    } => {
+      let mut text: Option<String> = None;
+      let mut style = Arc::clone(&styled.styles);
+      let mut pseudo = None;
+
+      if !value.is_empty() {
+        text = Some(value.clone());
+      } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
+        text = Some(ph.clone());
+        if let Some(ph_style) = placeholder_style.as_ref().or(form_control.placeholder_style.as_ref()) {
+          style = Arc::clone(ph_style);
+          pseudo = Some(GeneratedPseudoElement::Placeholder);
+        }
+      }
+
+      if matches!(kind, TextControlKind::Password) {
+        if let Some(raw) = text.as_ref().filter(|t| *t == value) {
+          let mask_len = raw.chars().count().clamp(3, 50);
+          text = Some("•".repeat(mask_len));
+        }
+      }
+
+      if let Some(text) = text {
+        push_text(&mut children, style, text, pseudo);
+      }
+    }
+    FormControlKind::TextArea {
+      value,
+      placeholder,
+      placeholder_style,
+      ..
+    } => {
+      suppress_dom_children = true;
+      let mut text: Option<String> = None;
+      let mut style = Arc::clone(&styled.styles);
+      let mut pseudo = None;
+      if !value.is_empty() {
+        text = Some(value.clone());
+      } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
+        text = Some(ph.clone());
+        if let Some(ph_style) = placeholder_style.as_ref().or(form_control.placeholder_style.as_ref()) {
+          style = Arc::clone(ph_style);
+          pseudo = Some(GeneratedPseudoElement::Placeholder);
+        }
+      }
+
+      if let Some(text) = text {
+        push_text(&mut children, style, text, pseudo);
+      }
+    }
+    FormControlKind::Button { label } => {
+      if styled
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+        && !label.is_empty()
+      {
+        push_text(&mut children, Arc::clone(&styled.styles), label.clone(), None);
+      }
+    }
+    FormControlKind::Select(select) => {
+      suppress_dom_children = true;
+      let label = select
+        .selected
+        .first()
+        .and_then(|&idx| match select.items.get(idx) {
+          Some(SelectItem::Option { label, value, .. }) => {
+            let trimmed = trim_ascii_whitespace(label);
+            if trimmed.is_empty() { Some(value.as_str()) } else { Some(label.as_str()) }
+          }
+          _ => None,
+        })
+        .unwrap_or("Select");
+      if !label.is_empty() {
+        push_text(&mut children, Arc::clone(&styled.styles), label.to_string(), None);
+      }
+    }
+    FormControlKind::Range { value, min, max } => {
+      force_position_relative = true;
+      suppress_dom_children = true;
+
+      let min_val = *min;
+      let max_val = *max;
+      let span = (max_val - min_val).abs().max(0.0001);
+      let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
+      let clamped_pct = (clamped * 100.0).clamp(0.0, 100.0);
+
+      if let Some(track_style) = form_control.slider_track_style.as_ref() {
+        let mut style = (**track_style).clone();
+        style.position = Position::Absolute;
+        style.left = InsetValue::Length(Length::px(0.0));
+        style.right = InsetValue::Length(Length::px(0.0));
+        style.top = InsetValue::Length(Length::new(50.0, LengthUnit::Percent));
+        style.bottom = InsetValue::Auto;
+        style.translate = TranslateValue::Values {
+          x: Length::px(0.0),
+          y: Length::new(-50.0, LengthUnit::Percent),
+          z: Length::px(0.0),
+        };
+        let style = Arc::new(style);
+        if let Some(mut node) = create_box_from_style(Arc::clone(&style), Vec::new()) {
+          node.styled_node_id = Some(styled_id);
+          node.generated_pseudo = Some(GeneratedPseudoElement::SliderTrack);
+          children.push(node);
+        }
+      }
+
+      if let Some(thumb_style) = form_control.slider_thumb_style.as_ref() {
+        let mut style = (**thumb_style).clone();
+        style.position = Position::Absolute;
+        style.left = InsetValue::Length(Length::new(clamped_pct, LengthUnit::Percent));
+        style.right = InsetValue::Auto;
+        style.top = InsetValue::Length(Length::new(50.0, LengthUnit::Percent));
+        style.bottom = InsetValue::Auto;
+        style.translate = TranslateValue::Values {
+          x: Length::new(-clamped_pct, LengthUnit::Percent),
+          y: Length::new(-50.0, LengthUnit::Percent),
+          z: Length::px(0.0),
+        };
+        let style = Arc::new(style);
+        if let Some(mut node) = create_box_from_style(Arc::clone(&style), Vec::new()) {
+          node.styled_node_id = Some(styled_id);
+          node.generated_pseudo = Some(GeneratedPseudoElement::SliderThumb);
+          children.push(node);
+        }
+      }
+    }
+    FormControlKind::File { value } => {
+      let file_label = value
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(|v| v.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(v))
+        .filter(|v| !v.is_empty())
+        .unwrap_or("No file chosen");
+
+      if let Some(button_style) = form_control.file_selector_button_style.as_ref() {
+        let mut button_children: Vec<BoxNode> = Vec::new();
+
+        let mut text_box = BoxNode::new_text(Arc::clone(button_style), "Choose File".to_string());
+        text_box.styled_node_id = Some(styled_id);
+        text_box.generated_pseudo = Some(GeneratedPseudoElement::FileSelectorButton);
+        button_children.push(text_box);
+
+        if let Some(mut button_node) = create_box_from_style(Arc::clone(button_style), button_children) {
+          button_node.styled_node_id = Some(styled_id);
+          button_node.generated_pseudo = Some(GeneratedPseudoElement::FileSelectorButton);
+          children.push(button_node);
+        }
+      }
+
+      push_text(&mut children, Arc::clone(&styled.styles), file_label.to_string(), None);
+    }
+    FormControlKind::Unknown { label } => {
+      if let Some(text) = label.as_ref().filter(|t| !t.is_empty()) {
+        push_text(&mut children, Arc::clone(&styled.styles), text.clone(), None);
+      }
+    }
+    FormControlKind::Checkbox { .. } | FormControlKind::Color { .. } => {}
+  }
+
+  (children, suppress_dom_children, force_position_relative)
 }
 
 fn create_marker_box(styled: &StyledNode, counters: &mut CounterManager) -> Option<BoxNode> {
@@ -5410,7 +5671,7 @@ mod tests {
   }
 
   #[test]
-  fn appearance_none_form_controls_still_generate_replaced_boxes() {
+  fn appearance_none_form_controls_generate_fallback_children() {
     fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
       match &mut node.node.node_type {
         DomNodeType::Element { attributes, .. } => {
@@ -5436,20 +5697,36 @@ mod tests {
     assert_eq!(tree.root.children.len(), 1);
 
     let child = &tree.root.children[0];
-    let BoxType::Replaced(replaced) = &child.box_type else {
-      panic!("expected replaced box, got {:?}", child.box_type);
-    };
-    let ReplacedType::FormControl(control) = &replaced.replaced_type else {
-      panic!(
-        "expected form control replaced type, got {:?}",
-        replaced.replaced_type
-      );
-    };
-    assert!(matches!(control.appearance, Appearance::None));
+
+    fn count_form_controls(node: &BoxNode) -> usize {
+      let mut count = 0usize;
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if matches!(repl.replaced_type, ReplacedType::FormControl(_)) {
+          count += 1;
+        }
+      }
+      for child in node.children.iter() {
+        count += count_form_controls(child);
+      }
+      count
+    }
+
+    assert_eq!(
+      count_form_controls(&tree.root),
+      0,
+      "appearance:none should disable native form control replacement"
+    );
+
+    fn has_text(node: &BoxNode, value: &str) -> bool {
+      if node.text().is_some_and(|text| text == value) {
+        return true;
+      }
+      node.children.iter().any(|child| has_text(child, value))
+    }
+
     assert!(
-      matches!(&control.control, FormControlKind::Text { value, .. } if value == "x"),
-      "expected input to preserve value for painting, got {:?}",
-      control.control
+      has_text(child, "x"),
+      "expected appearance:none input to expose its value as a text node"
     );
   }
 
@@ -6925,9 +7202,9 @@ mod tests {
   }
 
   #[test]
-  fn appearance_none_does_not_disable_form_control_replacement() {
+  fn appearance_none_disables_form_control_replacement_and_generates_placeholder_text() {
     let html =
-      "<html><body><input id=\"plain\" style=\"appearance: none; border: 0\"></body></html>";
+      "<html><body><input id=\"plain\" placeholder=\"hello\" style=\"appearance: none; border: 0\"></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
@@ -6947,51 +7224,110 @@ mod tests {
 
     assert_eq!(
       count_replaced(&box_tree.root),
-      1,
-      "appearance:none should not disable native control replacement"
+      0,
+      "appearance:none should disable native control replacement"
+    );
+
+    fn find_placeholder(node: &BoxNode) -> Option<&BoxNode> {
+      if node.generated_pseudo == Some(GeneratedPseudoElement::Placeholder) && node.text() == Some("hello") {
+        return Some(node);
+      }
+      node.children.iter().find_map(find_placeholder)
+    }
+    assert!(
+      find_placeholder(&box_tree.root).is_some(),
+      "expected placeholder text to be represented in the box tree when appearance:none"
     );
   }
 
   #[test]
-  fn webkit_appearance_none_propagates_to_form_control() {
+  fn webkit_appearance_none_disables_form_control_replacement() {
     let html =
-      "<html><body><input id=\"plain\" style=\"-webkit-appearance: none; border: 0\"></body></html>";
+      "<html><body><input id=\"plain\" placeholder=\"hello\" style=\"-webkit-appearance: none; border: 0\"></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
 
-    fn find_form_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+    fn count_replaced(node: &BoxNode) -> usize {
+      let mut count = 0;
       if let BoxType::Replaced(repl) = &node.box_type {
-        if let ReplacedType::FormControl(control) = &repl.replaced_type {
-          return Some(control);
+        if matches!(repl.replaced_type, ReplacedType::FormControl(_)) {
+          count += 1;
         }
       }
-      node.children.iter().find_map(find_form_control)
+      for child in node.children.iter() {
+        count += count_replaced(child);
+      }
+      count
     }
 
-    let control = find_form_control(&box_tree.root).expect("expected form control");
-    assert!(matches!(control.appearance, Appearance::None));
+    assert_eq!(
+      count_replaced(&box_tree.root),
+      0,
+      "-webkit-appearance:none should disable native control replacement"
+    );
+
+    fn find_input_box<'a>(node: &'a BoxNode) -> Option<&'a BoxNode> {
+      if node
+        .debug_info
+        .as_ref()
+        .and_then(|info| info.tag_name.as_deref())
+        == Some("input")
+        && matches!(node.style.appearance, Appearance::None)
+      {
+        return Some(node);
+      }
+      node.children.iter().find_map(find_input_box)
+    }
+    assert!(
+      find_input_box(&box_tree.root).is_some(),
+      "expected -webkit-appearance:none to compute to appearance:none"
+    );
   }
 
   #[test]
-  fn moz_appearance_none_propagates_to_form_control() {
+  fn moz_appearance_none_disables_form_control_replacement() {
     let html =
-      "<html><body><input id=\"plain\" style=\"-moz-appearance: none; border: 0\"></body></html>";
+      "<html><body><input id=\"plain\" placeholder=\"hello\" style=\"-moz-appearance: none; border: 0\"></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
 
-    fn find_form_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+    fn count_replaced(node: &BoxNode) -> usize {
+      let mut count = 0;
       if let BoxType::Replaced(repl) = &node.box_type {
-        if let ReplacedType::FormControl(control) = &repl.replaced_type {
-          return Some(control);
+        if matches!(repl.replaced_type, ReplacedType::FormControl(_)) {
+          count += 1;
         }
       }
-      node.children.iter().find_map(find_form_control)
+      for child in node.children.iter() {
+        count += count_replaced(child);
+      }
+      count
     }
 
-    let control = find_form_control(&box_tree.root).expect("expected form control");
-    assert!(matches!(control.appearance, Appearance::None));
+    assert_eq!(
+      count_replaced(&box_tree.root),
+      0,
+      "-moz-appearance:none should disable native control replacement"
+    );
+
+    fn find_input_box<'a>(node: &'a BoxNode) -> Option<&'a BoxNode> {
+      if node
+        .debug_info
+        .as_ref()
+        .and_then(|info| info.tag_name.as_deref())
+        == Some("input")
+        && matches!(node.style.appearance, Appearance::None)
+      {
+        return Some(node);
+      }
+      node.children.iter().find_map(find_input_box)
+    }
+    assert!(
+      find_input_box(&box_tree.root).is_some(),
+      "expected -moz-appearance:none to compute to appearance:none"
+    );
   }
 
   #[test]

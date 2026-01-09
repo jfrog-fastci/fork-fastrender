@@ -1067,6 +1067,10 @@ pub enum GeneratedPseudoElement {
   Backdrop,
   FootnoteCall,
   FootnoteMarker,
+  Placeholder,
+  FileSelectorButton,
+  SliderThumb,
+  SliderTrack,
 }
 
 impl Drop for BoxNode {

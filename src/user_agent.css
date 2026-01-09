@@ -406,6 +406,17 @@ input[type="submit"], input[type="button"], input[type="reset"], button {
     cursor: pointer;
 }
 
+input[type="file"]::file-selector-button,
+input[type="file"]::-webkit-file-upload-button {
+    display: inline-block;
+    padding: 4px 10px;
+    background-color: rgb(240, 240, 240);
+    border: 1px solid #767676;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-right: 6px;
+}
+
 textarea {
     white-space: pre-wrap;
     min-height: 3em;
@@ -448,6 +459,7 @@ input[type="range"] {
     padding: 0;
     border: none;
     background-color: transparent;
+    min-height: 16px;
 }
 
 input[type="range"]::-webkit-slider-runnable-track,

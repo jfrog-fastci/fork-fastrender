@@ -80,6 +80,7 @@ mod optimize_test;
 mod optimizer_pixel_equivalence_test;
 mod form_control_appearance_none_affordances;
 mod form_control_overflow_clip_regression;
+mod file_selector_button_pseudo_element;
 mod transform_origin;
 mod transform_stacking_context_paint_order;
 mod transform_overflow_clip;

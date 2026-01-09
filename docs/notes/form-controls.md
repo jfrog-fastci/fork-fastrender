@@ -11,7 +11,13 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 
 ## How it works
 
-- `<input>`, `<select>`, `<textarea>`, and `<button>` generate `ReplacedType::FormControl` boxes (except `<input type="hidden">` and the usual suppression rules like `display: none`).
+- `<input>`, `<select>`, `<textarea>`, and `<button>` generate `ReplacedType::FormControl` boxes (except `<input type="hidden">` and the usual suppression rules like `display: none`) **unless** the computed `appearance` is `none`.
+- When computed `appearance` is `none` (including vendor aliases like `-webkit-appearance:none` / `-moz-appearance:none`), the element is **not** replaced. Instead it generates a normal element box that respects `display`, DOM children, and `::before`/`::after`.
+- For controls that normally have no DOM children, FastRender synthesizes a small internal structure in `appearance:none` mode so authors can still style content:
+  - Text-like `<input>` and `<textarea>`: value/placeholder is emitted as an inline text box. When placeholder text is shown, it uses a generated `::placeholder` box style.
+  - `<input type=range>`: emits track/thumb pseudo-element boxes (`::-webkit-slider-runnable-track` / `::-webkit-slider-thumb`, normalized from vendor spellings) so custom sliders can be authored with normal layout/paint.
+  - `<input type=file>`: emits a `::file-selector-button` box plus the selected file label text.
+  - `<select>`: emits a text node with the selected option label (or `"Select"` when empty).
 - Intrinsic sizing for form controls is handled in the replaced-element intrinsic sizing code and respects HTML defaults (e.g. ~`20ch` text inputs / `cols`+`rows` for `<textarea>`). It scales with the current font metrics so controls line up with surrounding text by default.
 - Control kinds:
   - Text-like inputs cover `text/search/url/tel/email` (plus empty/missing `type`), password masking, `number` inputs (spinner affordance), and date-like inputs (`date`/`datetime-local`/`month`/`week`/`time`) with simple glyphs and default format placeholders.
@@ -19,9 +25,12 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Checkboxes/radios draw marks when checked/indeterminate; selects render either a collapsed dropdown (label + caret) or a listbox when `multiple`/`size` > 1; ranges draw a track + thumb; color inputs render a swatch plus a hex label.
 - Disabled, inert, focus, focus-visible, required, and invalid states are derived from element attributes + `data-fastr-*` hints during box generation and influence native painting (tinted overlays, accent changes, and caret painting for focused text controls). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured; `inert`/`data-fastr-inert=true` suppresses focus markers.
 - `:user-valid` / `:user-invalid` are gated by HTML “user validity”, which only flips after user interaction. Since FastRender is static, you can opt in deterministically with `data-fastr-user-validity="true"` on the control itself or its form owner (to simulate a submission attempt).
-- Some form-control pseudo-element styles are captured during the cascade (placeholder + range slider thumb/track) and passed into the painters via `FormControl::{placeholder_style, slider_thumb_style, slider_track_style}`. Vendor spellings and legacy single-colon forms (e.g. `::-webkit-input-placeholder`/`:-webkit-input-placeholder`, `::-moz-range-thumb`/`:-moz-range-thumb`, `::-ms-track`/`:-ms-track`) are accepted and normalized internally.
+- Some form-control pseudo-element styles are captured during the cascade (placeholder + range slider thumb/track + `::file-selector-button`). Vendor spellings and legacy single-colon forms (e.g. `::-webkit-input-placeholder`/`:-webkit-input-placeholder`, `::-moz-range-thumb`/`:-moz-range-thumb`, `::-ms-track`/`:-ms-track`, `::-webkit-file-upload-button`) are accepted and normalized internally.
+- These pseudo styles are used in two places:
+  - Native painters (default appearance) consume them via `FormControl::{placeholder_style, slider_thumb_style, slider_track_style, file_selector_button_style}`.
+  - In `appearance:none` fallback mode they are applied to generated pseudo-element boxes in the box tree.
 - The `:placeholder-shown` state pseudo-class is supported for `<input>`/`<textarea>` (including Firefox’s legacy `:-moz-placeholder-shown` alias). Real-world CSS sometimes uses legacy vendor placeholder selectors inside `:not()` (e.g. `:not(:-moz-placeholder)`, `:not(:-ms-input-placeholder)`) as fallbacks for `:placeholder-shown`; FastRender accepts these forms so selector lists don’t get invalidated.
-- `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing. (Non-`none` keywords are preserved as `Appearance::Keyword(...)`, but painters currently only special-case `Appearance::None`.)
+- `appearance: none` switches the element to the CSS UI 4 “fallback rendering model”: it disables native control replacement and makes the element behave like a normal CSS box with children/pseudo-elements.
 - Vendor-prefixed `-webkit-appearance` and other vendor-prefixed spellings (`-moz-appearance`, `-ms-appearance`, `-o-appearance`) are treated as aliases of `appearance` (for site compatibility), so those spellings can drive `Appearance::None` / keyword values through box generation and painting. (Task 94 tracks vendor-alias conformance; note: `@supports` intentionally only reports support for a small allowlist like `-webkit-appearance` to avoid inverting feature queries.)
 
 ## Key code paths
@@ -29,8 +38,8 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 - Form control model: `src/tree/box_tree.rs::FormControl` (+ `FormControlKind`, `TextControlKind`)
 - Box generation: `src/tree/box_generation.rs::create_form_control_replaced`
 - Intrinsic sizing: `src/api.rs::resolve_intrinsic_for_replaced_for_media`
-- Form-control pseudo-element styles (`::placeholder` and range slider thumb/track pseudo-elements): `src/style/cascade.rs::compute_form_control_pseudo_styles`
-  - Pseudo-element parsing/matching: `src/css/selectors.rs::PseudoElement::{Placeholder, SliderThumb, SliderTrack}`
+- Form-control pseudo-element styles (`::placeholder`, range slider thumb/track, `::file-selector-button`): `src/style/cascade.rs::compute_form_control_pseudo_styles`
+  - Pseudo-element parsing/matching: `src/css/selectors.rs::PseudoElement::{Placeholder, SliderThumb, SliderTrack, FileSelectorButton}`
 - Vendor aliasing:
   - `-webkit-appearance` → `appearance` during style application: `src/style/properties.rs`
   - `-moz-appearance` (and other vendor prefixes) canonicalized during CSS parsing when possible:
@@ -45,64 +54,28 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Baseline UA stylesheet: `src/user_agent.css` (loaded in `src/style/cascade.rs`)
   - Additional dynamic UA defaults (e.g. link state overrides): `src/style/cascade.rs::ua_default_rules`
 
-## What `appearance:none` enables today
+## `appearance:none` fallback rendering model
 
-- Author `background`/`border`/`padding` styling applies normally (the element is still a normal CSS box; only the *inside* is painted by the form-control code). This applies whether you set `appearance:none` or common vendor spellings like `-webkit-appearance:none` / `-moz-appearance:none` / `-ms-appearance:none`.
-- Native chrome suppression is currently selective and implemented directly in the painters:
-  - Select caret (“▾”) is skipped when `control.appearance == Appearance::None`:
-    - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Select`)
-    - `src/paint/painter.rs::paint_form_control` (`FormControlKind::Select`)
-  - Checkbox/radio marks are skipped when `control.appearance == Appearance::None`:
-    - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Checkbox`)
-    - `src/paint/painter.rs::paint_form_control` (`FormControlKind::Checkbox`)
-  - Text-control affordances are skipped when `control.appearance == Appearance::None`:
-    - Number spinners (▲/▼) are only painted when `appearance != none` (`TextControlKind::Number`)
-    - Date-like dropdown caret (▾) is only painted when `appearance != none` (`TextControlKind::Date`)
-    - See `src/paint/display_list_builder.rs::emit_form_control` and `src/paint/painter.rs::paint_form_control`
-      (`FormControlKind::Text`)
-- Range controls treat `appearance:none` as “custom range” mode:
-  - UA accent fill painting is skipped when `control.appearance == Appearance::None`, but author
-    track pseudo-element styling can still paint a custom track (over the element background).
-  - The thumb is still painted; in `Appearance::None` mode it can be styled via
-    `slider_thumb_style` (captured from `::-webkit-slider-thumb` and vendor/legacy aliases like
-    `::-moz-range-thumb`/`:-moz-range-thumb`/`::-ms-thumb`).
-  - `slider_track_style` is captured (e.g. `::-webkit-slider-runnable-track`, `::-moz-range-track`,
-    `:-ms-track`) and is used by the painters to draw the track when present (including under
-    `appearance:none`), but the accent fill segment is only painted when `appearance != none`.
-  - See `src/paint/display_list_builder.rs::emit_form_control` and
-    `src/paint/painter.rs::paint_form_control` (`FormControlKind::Range`).
-- Task 80 tracks further broadening of the suppressed affordance set for `appearance:none` (beyond the current select/checkbox/range/number/date hooks).
-- Current limitations:
-  - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
-  - `appearance:none` does **not** yet disable all affordances (e.g. `<input type=color>` still paints a swatch + hex label; `FormControlKind::Color` does not currently special-case `Appearance::None`).
-- Range pseudo-element selectors are normalized internally (WebKit/Mozilla/MS spellings are accepted), but painters still only consume a subset of the style hooks:
-  - `slider_thumb_style` is used by both painters to style the thumb (including in `appearance:none` mode for custom sliders).
-  - `slider_track_style` is used by both painters to style the track; in `appearance:none` mode the
-    track paints but the UA accent fill segment is suppressed.
+When `appearance:none` is computed, the control stops using the native form-control painters entirely (because it is no longer a replaced element). This enables:
 
-## Intended direction (fallback rendering model)
-
-The CSS UI “fallback rendering model” for form controls is that `appearance:none` should allow author styling to fully take over, including the ability to build controls out of normal box-tree/pseudo-element mechanics.
-
-FastRender does **not** implement that model yet (see limitations above). Implementing it would likely involve:
-
-- Changing box generation so `appearance:none` (and vendor aliases like `-webkit-appearance:none`) no longer forces `ReplacedType::FormControl`, allowing children/pseudo-elements to lay out normally.
-- Exposing vendor pseudo-elements used for custom controls as real pseudo-element boxes and/or broadening the existing style-capture/paint hooks (today we capture placeholder + range slider thumb/track styles, but painters still only consume a subset of those hooks).
-
-This work is tracked in the capability map under `alg.forms.appearance-none`.
+- DOM children + `::before`/`::after` to participate normally (e.g. custom `<button>` content).
+- Custom range/file controls authored through pseudo-element boxes (`::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::file-selector-button`).
+- Placeholder/value text to be styled and laid out using normal CSS text/layout rules.
 
 ## Regression coverage
 
 - Box-generation unit tests:
-  - `src/tree/box_generation.rs::appearance_none_form_controls_still_generate_replaced_boxes`
-  - `src/tree/box_generation.rs::appearance_none_does_not_disable_form_control_replacement`
-  - `src/tree/box_generation.rs::webkit_appearance_none_propagates_to_form_control`
-  - `src/tree/box_generation.rs::moz_appearance_none_propagates_to_form_control`
+  - `src/tree/box_generation.rs::appearance_none_form_controls_generate_fallback_children`
+  - `src/tree/box_generation.rs::appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
+  - `src/tree/box_generation.rs::webkit_appearance_none_disables_form_control_replacement`
+  - `src/tree/box_generation.rs::moz_appearance_none_disables_form_control_replacement`
+  - `tests/tree/form_controls_appearance_none_fallback.rs`
 - Paint integration tests:
   - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
   - `tests/form_control_placeholder_opacity.rs` asserts `::placeholder` opacity is applied (both paint backends).
   - `tests/paint/range_track_pseudo_element.rs` asserts the range track pseudo-element paints under `appearance:none` (both paint backends).
   - `tests/paint/range_pseudo_opacity.rs` asserts range track/thumb pseudo-element `opacity` is applied (both paint backends).
+  - `tests/paint/file_selector_button_pseudo_element.rs` asserts `::file-selector-button` paints under `appearance:none` (both paint backends).
 - Offline page fixtures:
   - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including vendor slider pseudos like `::-webkit-slider-thumb` / `::-moz-range-thumb`).
 
