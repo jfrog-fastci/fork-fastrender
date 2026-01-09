@@ -15066,10 +15066,13 @@ fn image_data_to_scaled_pixmap_inner(
       let bot_b = lerp(b01, b11, fx);
       let bot_a = lerp(a01, a11, fx);
 
-      let mut r = lerp(top_r, bot_r, fy).round().clamp(0.0, 255.0) as u8;
-      let mut g = lerp(top_g, bot_g, fy).round().clamp(0.0, 255.0) as u8;
-      let mut b = lerp(top_b, bot_b, fy).round().clamp(0.0, 255.0) as u8;
-      let a = lerp(top_a, bot_a, fy).round().clamp(0.0, 255.0) as u8;
+      // Chrome/Skia's bilinear sampling rounds down when converting to 8-bit channels.
+      // Using `floor()` instead of `round()` materially reduces fixture-vs-Chrome diffs for scaled
+      // raster images (notably large news-site thumbnails).
+      let mut r = lerp(top_r, bot_r, fy).floor().clamp(0.0, 255.0) as u8;
+      let mut g = lerp(top_g, bot_g, fy).floor().clamp(0.0, 255.0) as u8;
+      let mut b = lerp(top_b, bot_b, fy).floor().clamp(0.0, 255.0) as u8;
+      let a = lerp(top_a, bot_a, fy).floor().clamp(0.0, 255.0) as u8;
 
       // Keep premultiplied invariants stable even after rounding.
       r = r.min(a);

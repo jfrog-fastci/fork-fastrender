@@ -143,7 +143,8 @@ use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::SvgDocumentCssInjection;
 use crate::tree::box_tree::{
-  CrossOriginAttribute, FormControl, FormControlKind, SelectItem, TextControlKind,
+  CrossOriginAttribute, FormControl, FormControlKind, ImageDecodingAttribute, SelectItem,
+  TextControlKind,
 };
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
@@ -187,6 +188,9 @@ use tiny_skia::Transform;
 use url::Url;
 
 type RenderResult<T> = std::result::Result<T, RenderError>;
+
+/// See `ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS` in `paint/display_list_builder.rs` for motivation.
+const ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS: u64 = 120_000;
 
 #[inline]
 fn is_ascii_whitespace_html_css(ch: char) -> bool {
@@ -6890,6 +6894,41 @@ impl Painter {
     Ok(())
   }
 
+  fn should_defer_async_image_decode(
+    &self,
+    dest_width: f32,
+    dest_height: f32,
+    src: &str,
+    crossorigin: CrossOriginAttribute,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
+  ) -> bool {
+    if !dest_width.is_finite() || !dest_height.is_finite() || dest_width <= 0.0 || dest_height <= 0.0 {
+      return false;
+    }
+    let dpr = if self.scale.is_finite() && self.scale > 0.0 {
+      self.scale
+    } else {
+      1.0
+    };
+    let device_w = (dest_width * dpr).ceil().max(0.0) as u64;
+    let device_h = (dest_height * dpr).ceil().max(0.0) as u64;
+    let dest_pixels = device_w.saturating_mul(device_h);
+    if dest_pixels <= ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS {
+      return false;
+    }
+    let meta = match self
+      .image_cache
+      .probe_with_crossorigin_and_referrer_policy(src, crossorigin, referrer_policy)
+    {
+      Ok(meta) => meta,
+      Err(_) => return false,
+    };
+    if meta.is_vector {
+      return false;
+    }
+    true
+  }
+
   /// Paints a replaced element (image, etc.)
   fn paint_replaced(
     &mut self,
@@ -7026,6 +7065,7 @@ impl Painter {
       }
       ReplacedType::Image {
         alt,
+        decoding,
         crossorigin,
         referrer_policy,
         ..
@@ -7044,6 +7084,21 @@ impl Painter {
             root_font_size: style.map(|s| s.root_font_size),
             base_url: cache_base.as_deref(),
           });
+        if *decoding == ImageDecodingAttribute::Async {
+          if let Some(primary) = sources.first() {
+            if self.should_defer_async_image_decode(
+              content_rect.width(),
+              content_rect.height(),
+              primary.url,
+              *crossorigin,
+              *referrer_policy,
+            ) {
+              // `decoding="async"` is a hint that decoding may happen asynchronously, so the image
+              // should remain transparent until decoding completes.
+              return;
+            }
+          }
+        }
         for candidate in sources {
           if self.paint_image_from_src(
             &candidate,
@@ -16982,6 +17037,7 @@ mod tests {
   use crate::style::ComputedStyle;
   use crate::text::font_loader::FontContext;
   use crate::tree::box_tree::CrossOriginAttribute;
+  use crate::tree::box_tree::ImageDecodingAttribute;
   use crate::tree::box_tree::ForeignObjectInfo;
   use crate::tree::box_tree::SrcsetCandidate;
   use crate::tree::box_tree::SrcsetDescriptor;
@@ -19107,6 +19163,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: Some("alt".to_string()),
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -19237,6 +19294,7 @@ mod tests {
     let replaced = ReplacedType::Image {
       src: red.clone(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       sizes: None,
@@ -19281,6 +19339,7 @@ mod tests {
     let replaced = ReplacedType::Image {
       src: red.clone(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       sizes: None,

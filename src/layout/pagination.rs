@@ -34,7 +34,9 @@ use crate::style::types::WritingMode;
 use crate::style::values::Length;
 use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal, ComputedStyle};
 use crate::text::font_loader::FontContext;
-use crate::tree::box_tree::{BoxNode, BoxTree, CrossOriginAttribute, ReplacedType};
+use crate::tree::box_tree::{
+  BoxNode, BoxTree, CrossOriginAttribute, ImageDecodingAttribute, ReplacedType,
+};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, TextSourceRange};
 
 /// Controls how paginated pages are positioned in the fragment tree.
@@ -2577,6 +2579,7 @@ fn build_margin_box_children(
               ReplacedType::Image {
                 src: url.clone(),
                 alt: None,
+                decoding: ImageDecodingAttribute::Auto,
                 crossorigin: CrossOriginAttribute::None,
                 referrer_policy: None,
                 srcset: Vec::new(),

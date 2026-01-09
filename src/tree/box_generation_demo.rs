@@ -15,7 +15,9 @@ use crate::style::types::TextTransform;
 use crate::style::ComputedStyle;
 use crate::tree::anonymous::AnonymousBoxCreator;
 use crate::tree::box_generation::marker_content_from_style;
-use crate::tree::box_tree::{BoxNode, BoxTree, CrossOriginAttribute, ReplacedType, SvgContent};
+use crate::tree::box_tree::{
+  BoxNode, BoxTree, CrossOriginAttribute, ImageDecodingAttribute, ReplacedType, SvgContent,
+};
 use crate::tree::debug::DebugInfo;
 use std::sync::Arc;
 
@@ -246,6 +248,7 @@ impl DOMNode {
       "img" => Some(ReplacedType::Image {
         src,
         alt,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         srcset,
@@ -1467,6 +1470,7 @@ mod tests {
       ReplacedType::Image {
         src: "test.png".to_string(),
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,

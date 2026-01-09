@@ -656,12 +656,11 @@ impl BlockFormattingContext {
       &self.font_context,
       self.viewport_size,
     );
-    let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
-      || (style.scrollbar_gutter.stable
-        && matches!(
-          style.overflow_x,
-          Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-        ));
+    let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+      && matches!(
+        style.overflow_x,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      );
     let mut reserved_horizontal_gutter = 0.0;
     if reserve_horizontal_gutter {
       let gutter = resolve_scrollbar_width(style);
@@ -6450,13 +6449,12 @@ impl FormattingContext for BlockFormattingContext {
       &self.font_context,
       self.viewport_size,
     );
-    // Reserve space for a horizontal scrollbar when requested by overflow or scrollbar-gutter stability.
-    let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
-      || (style.scrollbar_gutter.stable
-        && matches!(
-          style.overflow_x,
-          Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-        ));
+    // Reserve space for a horizontal scrollbar when requested by `scrollbar-gutter: stable`.
+    let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+      && matches!(
+        style.overflow_x,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      );
     let mut reserved_horizontal_gutter = 0.0;
     if reserve_horizontal_gutter {
       let gutter = resolve_scrollbar_width(style);
@@ -7631,6 +7629,7 @@ impl FormattingContext for BlockFormattingContext {
     let base_style = style_override.unwrap_or_else(|| box_node.style.clone());
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
     if gutter <= 0.0
+      || !base_style.scrollbar_gutter.stable
       || (!matches!(base_style.overflow_x, Overflow::Auto)
         && !matches!(base_style.overflow_y, Overflow::Auto))
     {
@@ -8566,12 +8565,11 @@ fn horizontal_padding_and_borders(
     viewport,
   );
 
-  let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_y,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-      ));
+  let reserve_vertical_gutter = style.scrollbar_gutter.stable
+    && matches!(
+      style.overflow_y,
+      Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+    );
   if reserve_vertical_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {
@@ -8617,12 +8615,11 @@ fn vertical_padding_and_borders(
     viewport,
   );
 
-  let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_x,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-      ));
+  let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+    && matches!(
+      style.overflow_x,
+      Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+    );
   if reserve_horizontal_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {

@@ -14136,6 +14136,7 @@ impl FastRender {
       ReplacedType::Image {
         src,
         alt: stored_alt,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         srcset,
         picture_sources,
         crossorigin,
@@ -24251,6 +24252,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: Some(alt_text.to_string()),
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -24350,6 +24352,7 @@ mod tests {
       ReplacedType::Image {
         src: "   ".to_string(),
         alt: Some(alt_text.to_string()),
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -24478,6 +24481,7 @@ mod tests {
       ReplacedType::Image {
         src: format!("img.png{nbsp}"),
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -24639,6 +24643,7 @@ mod tests {
       ReplacedType::Image {
         src: svg.to_string(),
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -24682,6 +24687,7 @@ mod tests {
       ReplacedType::Image {
         src: "#".to_string(),
         alt: Some(alt_text.to_string()),
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -24720,6 +24726,7 @@ mod tests {
       ReplacedType::Image {
         src: "#".to_string(),
         alt: Some("ALT".to_string()),
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -24860,6 +24867,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: vec![SrcsetCandidate {
           url: "https://example.com/a.png".to_string(),
@@ -24918,6 +24926,7 @@ mod tests {
           ReplacedType::Image {
             src: wide_url,
             alt: None,
+            decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
@@ -24932,6 +24941,7 @@ mod tests {
           ReplacedType::Image {
             src: tall_url,
             alt: None,
+            decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
@@ -24979,6 +24989,7 @@ mod tests {
       ReplacedType::Image {
         src: wide_url,
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -25016,6 +25027,7 @@ mod tests {
       ReplacedType::Image {
         src: wide_url,
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -25057,6 +25069,7 @@ mod tests {
       ReplacedType::Image {
         src: "https://example.com/wide.png".to_string(),
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -25169,6 +25182,7 @@ mod tests {
           ReplacedType::Image {
             src: "https://example.com/a.png".to_string(),
             alt: None,
+            decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
@@ -25183,6 +25197,7 @@ mod tests {
           ReplacedType::Image {
             src: "https://example.com/b.png".to_string(),
             alt: None,
+            decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
@@ -25549,6 +25564,7 @@ mod tests {
         src: r"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 50 100' preserveAspectRatio='none'></svg>"
           .to_string(),
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -25585,6 +25601,7 @@ mod tests {
         src: r"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 50 100' preserveAspectRatio='none'></svg>"
           .to_string(),
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -25694,6 +25711,7 @@ mod tests {
       ReplacedType::Image {
         src: data_url,
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -25740,6 +25758,7 @@ mod tests {
       ReplacedType::Image {
         src: data_url.clone(),
         alt: None,
+        decoding: crate::tree::box_tree::ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: vec![SrcsetCandidate {
           url: data_url.clone(),

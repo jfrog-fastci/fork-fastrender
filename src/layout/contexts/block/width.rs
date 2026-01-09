@@ -143,13 +143,13 @@ pub fn compute_block_width(
   let mut padding_right = resolve_padding_for_side(style, end_side, containing_width, viewport);
   let mut reserved_scrollbar_gutter = 0.0;
 
-  // Reserve space for a vertical scrollbar when requested by overflow or scrollbar-gutter stability
-  let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_y,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-      ));
+  // Scrollbars are treated as overlay by default; `scrollbar-gutter: stable` opts into reserving
+  // layout space.
+  let reserve_vertical_gutter = style.scrollbar_gutter.stable
+    && matches!(
+      style.overflow_y,
+      Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+    );
   if reserve_vertical_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {
@@ -337,7 +337,12 @@ fn resolve_padding_for_side(
     PhysicalSide::Bottom => style.padding_bottom,
     PhysicalSide::Left => style.padding_left,
   };
-  resolve_length(length, containing_width, style, viewport)
+  let resolved = resolve_length(length, containing_width, style, viewport);
+  if resolved.is_finite() {
+    resolved.max(0.0)
+  } else {
+    0.0
+  }
 }
 
 fn resolve_border_for_side(
@@ -352,7 +357,12 @@ fn resolve_border_for_side(
     PhysicalSide::Bottom => style.used_border_bottom_width(),
     PhysicalSide::Left => style.used_border_left_width(),
   };
-  resolve_length(length, containing_width, style, viewport)
+  let resolved = resolve_length(length, containing_width, style, viewport);
+  if resolved.is_finite() {
+    resolved.max(0.0)
+  } else {
+    0.0
+  }
 }
 
 /// Resolves the constraint equation for block width
@@ -586,6 +596,12 @@ mod tests {
     style.overflow_y = Overflow::Scroll;
     style.scrollbar_width = ScrollbarWidth::Thin;
 
+    let result = compute(&style, 200.0);
+    // Overlay scrollbars do not reserve layout space unless `scrollbar-gutter: stable` is set.
+    assert!((result.padding_right - 0.0).abs() < f32::EPSILON);
+    assert!((result.content_width - 200.0).abs() < f32::EPSILON);
+
+    style.scrollbar_gutter.stable = true;
     let result = compute(&style, 200.0);
     // Thin scrollbar (8px) should be reserved on the inline end (LTR → right).
     assert!((result.padding_right - 8.0).abs() < f32::EPSILON);

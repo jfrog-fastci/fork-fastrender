@@ -1,5 +1,5 @@
 use fastrender::style::display::Display;
-use fastrender::tree::box_tree::{CrossOriginAttribute, ReplacedType};
+use fastrender::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{BoxNode, BoxTree, ComputedStyle, FormattingContextType, LayoutConfig, LayoutEngine, Size};
 use std::sync::Arc;
@@ -33,6 +33,7 @@ fn inline_replaced_children_form_single_line_in_block_context() {
     ReplacedType::Image {
       src: "a.png".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: Vec::new(),
@@ -48,6 +49,7 @@ fn inline_replaced_children_form_single_line_in_block_context() {
     ReplacedType::Image {
       src: "b.png".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: Vec::new(),
@@ -92,4 +94,3 @@ fn inline_replaced_children_form_single_line_in_block_context() {
     second.x()
   );
 }
-

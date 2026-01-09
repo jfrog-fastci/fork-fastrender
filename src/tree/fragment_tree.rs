@@ -2039,6 +2039,7 @@ mod tests {
   use crate::style::ComputedStyle;
   use crate::text::pipeline::ShapedRun;
   use crate::tree::box_tree::CrossOriginAttribute;
+  use crate::tree::box_tree::ImageDecodingAttribute;
   use std::sync::Arc;
 
   // Constructor tests
@@ -2662,6 +2663,7 @@ mod tests {
       ReplacedType::Image {
         src: "test.png".to_string(),
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

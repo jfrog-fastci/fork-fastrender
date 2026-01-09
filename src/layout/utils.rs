@@ -366,12 +366,17 @@ pub fn scrollbar_reservation_for_style(style: &ComputedStyle) -> ScrollbarReserv
     return reservation;
   }
 
-  let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_y,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-      ));
+  // Model overlay scrollbars by default: scrollbars do not affect layout unless the author opts in
+  // via `scrollbar-gutter: stable` (or `stable both-edges`).
+  //
+  // This matches Chromium's headless rendering behavior used for fixture baselines, and avoids
+  // shifting centered layouts when the root element uses `overflow: scroll` to keep the gutter
+  // stable.
+  let reserve_vertical_gutter = style.scrollbar_gutter.stable
+    && matches!(
+      style.overflow_y,
+      Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+    );
   if reserve_vertical_gutter {
     if style.scrollbar_gutter.both_edges {
       reservation.left += gutter;
@@ -379,12 +384,11 @@ pub fn scrollbar_reservation_for_style(style: &ComputedStyle) -> ScrollbarReserv
     reservation.right += gutter;
   }
 
-  let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_x,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-      ));
+  let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+    && matches!(
+      style.overflow_x,
+      Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+    );
   if reserve_horizontal_gutter {
     if style.scrollbar_gutter.both_edges {
       reservation.top += gutter;
@@ -847,12 +851,11 @@ pub fn compute_replaced_size(
   let border_top = resolve_for_width(style.used_border_top_width());
   let border_bottom = resolve_for_width(style.used_border_bottom_width());
 
-  let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_y,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-      ));
+  let reserve_vertical_gutter = style.scrollbar_gutter.stable
+    && matches!(
+      style.overflow_y,
+      Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+    );
   if reserve_vertical_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {
@@ -863,12 +866,11 @@ pub fn compute_replaced_size(
     }
   }
 
-  let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable
-      && matches!(
-        style.overflow_x,
-        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-      ));
+  let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+    && matches!(
+      style.overflow_x,
+      Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+    );
   if reserve_horizontal_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {
@@ -1397,6 +1399,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1422,6 +1425,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1455,6 +1459,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1486,6 +1491,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1511,6 +1517,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1541,6 +1548,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1578,6 +1586,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1607,6 +1616,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1632,6 +1642,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1661,6 +1672,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1690,6 +1702,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1717,6 +1730,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1740,6 +1754,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1763,6 +1778,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1789,6 +1805,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1808,6 +1825,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1835,6 +1853,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1857,6 +1876,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1898,6 +1918,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1924,6 +1945,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1954,6 +1976,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1981,6 +2004,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2014,6 +2038,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2041,6 +2066,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2075,6 +2101,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2104,6 +2131,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2143,6 +2171,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2180,6 +2209,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2215,6 +2245,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2249,6 +2280,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2283,6 +2315,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2317,6 +2350,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2349,6 +2383,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2362,8 +2397,8 @@ mod tests {
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
     assert!(
-      (size.width - 184.0).abs() < 0.01,
-      "expected 184px content width, got {:.2}px",
+      (size.width - 200.0).abs() < 0.01,
+      "expected 200px content width without stable scrollbar gutters, got {:.2}px",
       size.width
     );
     assert!(
@@ -2372,8 +2407,16 @@ mod tests {
       size.height
     );
 
+    style.scrollbar_gutter.stable = true;
+    let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
+    assert!(
+      (size.width - 184.0).abs() < 0.01,
+      "expected 184px content width with stable scrollbar gutter, got {:.2}px",
+      size.width
+    );
+
     style.scrollbar_gutter = ScrollbarGutter {
-      stable: false,
+      stable: true,
       both_edges: true,
     };
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));

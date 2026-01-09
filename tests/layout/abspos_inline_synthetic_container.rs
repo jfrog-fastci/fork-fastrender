@@ -8,6 +8,7 @@ use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::CrossOriginAttribute;
+use fastrender::tree::box_tree::ImageDecodingAttribute;
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::box_tree::SrcsetCandidate;
 use fastrender::tree::fragment_tree::FragmentContent;
@@ -72,6 +73,7 @@ fn abspos_descendant_inside_inline_wrapper_uses_positioned_ancestor_containing_b
     ReplacedType::Image {
       src: String::new(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: Vec::<SrcsetCandidate>::new(),

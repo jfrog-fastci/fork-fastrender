@@ -56,6 +56,7 @@ mod flex_fragmentation;
 mod flex_intrinsic_gap;
 mod flex_intrinsic_sizing_keywords;
 mod flex_intrinsic_gap_wrap;
+mod flex_item_blockification;
 mod flex_item_used_border_box_override;
 mod flex_item_blockification_inline_replaced;
 mod flex_item_flex_container_intrinsic_main_size;

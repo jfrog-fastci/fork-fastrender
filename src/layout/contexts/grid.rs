@@ -1619,18 +1619,16 @@ impl GridFormattingContext {
       length.calc.is_none() && length.value == 0.0
     }
 
-    let reserve_vertical_gutter = matches!(style.overflow_y, CssOverflow::Scroll)
-      || (style.scrollbar_gutter.stable
-        && matches!(
-          style.overflow_y,
-          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-        ));
-    let reserve_horizontal_gutter = matches!(style.overflow_x, CssOverflow::Scroll)
-      || (style.scrollbar_gutter.stable
-        && matches!(
-          style.overflow_x,
-          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-        ));
+    let reserve_vertical_gutter = style.scrollbar_gutter.stable
+      && matches!(
+        style.overflow_y,
+        CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+      );
+    let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+      && matches!(
+        style.overflow_x,
+        CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+      );
     let gutter_width = if reserve_vertical_gutter || reserve_horizontal_gutter {
       resolve_scrollbar_width(style)
     } else {
@@ -2599,8 +2597,8 @@ impl GridFormattingContext {
     let map_overflow = |value: CssOverflow, reserve: bool| match value {
       // Taffy lacks a distinct `Auto` variant. CSS `overflow: auto` is still a scroll container
       // (automatic min size = 0), but it should only reserve scrollbar space when
-      // `scrollbar-gutter: stable` (or `overflow: scroll`) requests it. The same applies to
-      // `overflow: hidden` when stable gutters are requested.
+      // `scrollbar-gutter: stable` requests it. (Overlay scrollbars are modeled by default.)
+      // The same applies to `overflow: hidden` when stable gutters are requested.
       CssOverflow::Visible => TaffyOverflow::Visible,
       CssOverflow::Clip => TaffyOverflow::Clip,
       CssOverflow::Scroll => TaffyOverflow::Scroll,
@@ -2741,7 +2739,13 @@ impl GridFormattingContext {
       x: map_overflow(style.overflow_x, reserve_scroll_x),
       y: map_overflow(style.overflow_y, reserve_scroll_y),
     };
-    taffy_style.scrollbar_width = resolve_scrollbar_width(style);
+    // Model overlay scrollbars by default: only reserve layout space when the author opts in via
+    // `scrollbar-gutter: stable`.
+    taffy_style.scrollbar_width = if reserve_scroll_x || reserve_scroll_y {
+      resolve_scrollbar_width(style)
+    } else {
+      0.0
+    };
 
     // Grid container properties
     if is_grid {
@@ -10385,6 +10389,7 @@ impl FormattingContext for GridFormattingContext {
     let base_style = style_override.unwrap_or_else(|| box_node.style.clone());
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
     if gutter <= 0.0
+      || !base_style.scrollbar_gutter.stable
       || (!matches!(base_style.overflow_x, CssOverflow::Auto)
         && !matches!(base_style.overflow_y, CssOverflow::Auto))
     {

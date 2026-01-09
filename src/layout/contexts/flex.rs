@@ -2255,18 +2255,16 @@ impl FormattingContext for FlexFormattingContext {
 
                     if fit_width_limit.is_some() || fit_height_limit.is_some() {
                       let percentage_base = this.viewport_size.width.max(0.0);
-                      let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
-                        || (measure_style.scrollbar_gutter.stable
-                          && matches!(
-                            measure_style.overflow_x,
-                            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-                          ));
-                      let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
-                        || (measure_style.scrollbar_gutter.stable
-                          && matches!(
-                            measure_style.overflow_y,
-                            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-                          ));
+                      let reserve_scroll_x = measure_style.scrollbar_gutter.stable
+                        && matches!(
+                          measure_style.overflow_x,
+                          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                        );
+                      let reserve_scroll_y = measure_style.scrollbar_gutter.stable
+                        && matches!(
+                          measure_style.overflow_y,
+                          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                        );
                       let scrollbar_width = resolve_scrollbar_width(measure_style);
 
                       let padding_left = this.resolve_length_for_width(
@@ -2588,19 +2586,17 @@ impl FormattingContext for FlexFormattingContext {
                           // `compute_intrinsic_inline_size` returns a border-box size. Convert to a
                           // content-box size because Taffy adds padding/border/scrollbars from the
                           // style when computing the used border-box size for the flex item.
-                           let percentage_base = this.viewport_size.width.max(0.0);
-                           let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
-                             || (measure_style.scrollbar_gutter.stable
-                               && matches!(
-                                 measure_style.overflow_x,
-                                 CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-                               ));
-                           let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
-                             || (measure_style.scrollbar_gutter.stable
-                               && matches!(
-                                 measure_style.overflow_y,
-                                 CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-                               ));
+                          let percentage_base = this.viewport_size.width.max(0.0);
+                          let reserve_scroll_x = measure_style.scrollbar_gutter.stable
+                            && matches!(
+                              measure_style.overflow_x,
+                              CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                            );
+                          let reserve_scroll_y = measure_style.scrollbar_gutter.stable
+                            && matches!(
+                              measure_style.overflow_y,
+                              CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                            );
                           let scrollbar_width = resolve_scrollbar_width(measure_style);
 
                           // `compute_intrinsic_inline_size` and `compute_intrinsic_block_size`
@@ -2994,18 +2990,16 @@ impl FormattingContext for FlexFormattingContext {
                     let measured_size =
                       Size::new(content_size.width.max(0.0), content_size.height.max(0.0));
                     let border_size = {
-                      let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
-                        || (measure_style.scrollbar_gutter.stable
-                          && matches!(
-                            measure_style.overflow_x,
-                            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-                          ));
-                      let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
-                        || (measure_style.scrollbar_gutter.stable
-                          && matches!(
-                            measure_style.overflow_y,
-                            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-                          ));
+                      let reserve_scroll_x = measure_style.scrollbar_gutter.stable
+                        && matches!(
+                          measure_style.overflow_x,
+                          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                        );
+                      let reserve_scroll_y = measure_style.scrollbar_gutter.stable
+                        && matches!(
+                          measure_style.overflow_y,
+                          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                        );
                       let scrollbar_width = resolve_scrollbar_width(measure_style);
                       let padding_left = this.resolve_length_for_width(measure_style.padding_left, percentage_base, measure_style);
                       let padding_right = this.resolve_length_for_width(measure_style.padding_right, percentage_base, measure_style);
@@ -4447,6 +4441,7 @@ impl FormattingContext for FlexFormattingContext {
     let base_style = style_override.unwrap_or_else(|| box_node.style.clone());
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
     if gutter <= 0.0
+      || !base_style.scrollbar_gutter.stable
       || (!matches!(base_style.overflow_x, CssOverflow::Auto)
         && !matches!(base_style.overflow_y, CssOverflow::Auto))
     {
@@ -5704,8 +5699,8 @@ impl FlexFormattingContext {
     let map_overflow = |value: CssOverflow, reserve: bool| match value {
       // Taffy lacks a distinct `Auto` variant. CSS `overflow: auto` is still a scroll container
       // (automatic min size = 0), but it should only reserve scrollbar space when
-      // `scrollbar-gutter: stable` (or `overflow: scroll`) requests it. The same applies to
-      // `overflow: hidden` when stable gutters are requested.
+      // `scrollbar-gutter: stable` requests it. (Overlay scrollbars are modeled by default.)
+      // The same applies to `overflow: hidden` when stable gutters are requested.
       CssOverflow::Visible => TaffyOverflow::Visible,
       CssOverflow::Clip => TaffyOverflow::Clip,
       CssOverflow::Scroll => TaffyOverflow::Scroll,
@@ -5810,7 +5805,13 @@ impl FlexFormattingContext {
         x: map_overflow(style.overflow_x, reserve_scroll_x),
         y: map_overflow(style.overflow_y, reserve_scroll_y),
       },
-      scrollbar_width: resolve_scrollbar_width(style),
+      // Model overlay scrollbars by default: only reserve layout space when the author opts in via
+      // `scrollbar-gutter: stable`.
+      scrollbar_width: if reserve_scroll_x || reserve_scroll_y {
+        resolve_scrollbar_width(style)
+      } else {
+        0.0
+      },
 
       ..Default::default()
     };
@@ -6499,18 +6500,16 @@ impl FlexFormattingContext {
         container_style,
       );
 
-      let reserve_scroll_x = matches!(container_style.overflow_x, CssOverflow::Scroll)
-        || (container_style.scrollbar_gutter.stable
-          && matches!(
-            container_style.overflow_x,
-            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-          ));
-      let reserve_scroll_y = matches!(container_style.overflow_y, CssOverflow::Scroll)
-        || (container_style.scrollbar_gutter.stable
-          && matches!(
-            container_style.overflow_y,
-            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
-          ));
+      let reserve_scroll_x = container_style.scrollbar_gutter.stable
+        && matches!(
+          container_style.overflow_x,
+          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+        );
+      let reserve_scroll_y = container_style.scrollbar_gutter.stable
+        && matches!(
+          container_style.overflow_y,
+          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+        );
       let scrollbar_width = resolve_scrollbar_width(container_style);
 
       let inset = match axis {
@@ -6656,35 +6655,49 @@ impl FlexFormattingContext {
       .or(border_box_width)
       .unwrap_or(self.viewport_size.width)
       .max(0.0);
+    let inline_base = if inline_base.is_finite() { inline_base } else { 0.0 };
+    let clamp_non_negative = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
 
-    let border_left = self.resolve_length_for_width(
+    let border_left = clamp_non_negative(self.resolve_length_for_width(
       container_style.used_border_left_width(),
       inline_base,
       container_style,
-    );
-    let border_right = self.resolve_length_for_width(
+    ));
+    let border_right = clamp_non_negative(self.resolve_length_for_width(
       container_style.used_border_right_width(),
       inline_base,
       container_style,
-    );
-    let border_top = self.resolve_length_for_width(
+    ));
+    let border_top = clamp_non_negative(self.resolve_length_for_width(
       container_style.used_border_top_width(),
       inline_base,
       container_style,
-    );
-    let border_bottom = self.resolve_length_for_width(
+    ));
+    let border_bottom = clamp_non_negative(self.resolve_length_for_width(
       container_style.used_border_bottom_width(),
       inline_base,
       container_style,
-    );
-    let padding_left =
-      self.resolve_length_for_width(container_style.padding_left, inline_base, container_style);
-    let padding_right =
-      self.resolve_length_for_width(container_style.padding_right, inline_base, container_style);
-    let padding_top =
-      self.resolve_length_for_width(container_style.padding_top, inline_base, container_style);
-    let padding_bottom =
-      self.resolve_length_for_width(container_style.padding_bottom, inline_base, container_style);
+    ));
+    let padding_left = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_left,
+      inline_base,
+      container_style,
+    ));
+    let padding_right = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_right,
+      inline_base,
+      container_style,
+    ));
+    let padding_top = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_top,
+      inline_base,
+      container_style,
+    ));
+    let padding_bottom = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_bottom,
+      inline_base,
+      container_style,
+    ));
 
     let content_width = border_box_width
       .map(|w| (w - border_left - border_right - padding_left - padding_right).max(0.0));
@@ -6855,6 +6868,10 @@ impl FlexFormattingContext {
 
     // Padding/border percentages resolve against the containing block's physical width.
     let inline_edges_base = base_width;
+    let inline_edges_base_px = inline_edges_base
+      .filter(|b| b.is_finite())
+      .unwrap_or(0.0)
+      .max(0.0);
 
     let resolve_len = |len: Length, base: Option<f32>| -> Option<f32> {
       resolve_length_with_percentage_metrics(
@@ -6869,20 +6886,70 @@ impl FlexFormattingContext {
     };
 
     let axis_edges = |axis: Axis| -> Option<f32> {
-      let padding_left = resolve_len(style.padding_left, inline_edges_base)?;
-      let padding_right = resolve_len(style.padding_right, inline_edges_base)?;
-      let padding_top = resolve_len(style.padding_top, inline_edges_base)?;
-      let padding_bottom = resolve_len(style.padding_bottom, inline_edges_base)?;
-      let border_left = resolve_len(style.used_border_left_width(), inline_edges_base)?;
-      let border_right = resolve_len(style.used_border_right_width(), inline_edges_base)?;
-      let border_top = resolve_len(style.used_border_top_width(), inline_edges_base)?;
-      let border_bottom = resolve_len(style.used_border_bottom_width(), inline_edges_base)?;
+      // For edge properties, treat percentage terms as 0 when the containing block width is
+      // unknown (matching intrinsic sizing behavior).
+      let resolve_edge = |len: Length| {
+        resolve_len(len, Some(inline_edges_base_px))
+          .filter(|v| v.is_finite())
+          .unwrap_or(0.0)
+      };
+
+      let padding_left = resolve_edge(style.padding_left).max(0.0);
+      let padding_right = resolve_edge(style.padding_right).max(0.0);
+      let padding_top = resolve_edge(style.padding_top).max(0.0);
+      let padding_bottom = resolve_edge(style.padding_bottom).max(0.0);
+      let border_left = resolve_edge(style.used_border_left_width()).max(0.0);
+      let border_right = resolve_edge(style.used_border_right_width()).max(0.0);
+      let border_top = resolve_edge(style.used_border_top_width()).max(0.0);
+      let border_bottom = resolve_edge(style.used_border_bottom_width()).max(0.0);
 
       Some(match axis {
         Axis::Horizontal => padding_left + padding_right + border_left + border_right,
         Axis::Vertical => padding_top + padding_bottom + border_top + border_bottom,
       })
     };
+
+    // Taffy does not support `calc()` in padding/margin/border values. Convert any calc values with
+    // percentages into absolute lengths now that we have a containing block width.
+    let resolve_edge_len = |len: Length| -> Option<f32> {
+      resolve_len(len, Some(inline_edges_base_px)).filter(|v| v.is_finite())
+    };
+    let maybe_apply_padding = |len: Length, slot: &mut LengthPercentage| {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        if let Some(px) = resolve_edge_len(len) {
+          *slot = LengthPercentage::length(px.max(0.0));
+        }
+      }
+    };
+    maybe_apply_padding(style.padding_left, &mut taffy_style.padding.left);
+    maybe_apply_padding(style.padding_right, &mut taffy_style.padding.right);
+    maybe_apply_padding(style.padding_top, &mut taffy_style.padding.top);
+    maybe_apply_padding(style.padding_bottom, &mut taffy_style.padding.bottom);
+
+    let maybe_apply_border = |len: Length, slot: &mut LengthPercentage| {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        if let Some(px) = resolve_edge_len(len) {
+          *slot = LengthPercentage::length(px.max(0.0));
+        }
+      }
+    };
+    maybe_apply_border(style.used_border_left_width(), &mut taffy_style.border.left);
+    maybe_apply_border(style.used_border_right_width(), &mut taffy_style.border.right);
+    maybe_apply_border(style.used_border_top_width(), &mut taffy_style.border.top);
+    maybe_apply_border(style.used_border_bottom_width(), &mut taffy_style.border.bottom);
+
+    let maybe_apply_margin = |len: Option<Length>, slot: &mut LengthPercentageAuto| {
+      let Some(len) = len else { return };
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        if let Some(px) = resolve_edge_len(len) {
+          *slot = LengthPercentageAuto::length(px);
+        }
+      }
+    };
+    maybe_apply_margin(style.margin_left, &mut taffy_style.margin.left);
+    maybe_apply_margin(style.margin_right, &mut taffy_style.margin.right);
+    maybe_apply_margin(style.margin_top, &mut taffy_style.margin.top);
+    maybe_apply_margin(style.margin_bottom, &mut taffy_style.margin.bottom);
 
     let to_taffy_box = |specified: f32, axis: Axis| -> f32 {
       match taffy_style.box_sizing {
@@ -10868,19 +10935,50 @@ impl FlexFormattingContext {
   }
 
   fn axis_padding_border_px(&self, style: &ComputedStyle, axis: Axis, percentage_base: f32) -> f32 {
-    let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
-    let padding_right = self.resolve_length_for_width(style.padding_right, percentage_base, style);
-    let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
-    let padding_bottom =
-      self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
-    let border_left =
-      self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
-    let border_right =
-      self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
-    let border_top =
-      self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
-    let border_bottom =
-      self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
+    // Padding and border widths are non-negative by definition. Clamp here so calc() expressions
+    // like `calc(50% - 599px)` do not produce negative padding that would incorrectly inflate the
+    // content box when converting between border-box and content-box sizes.
+    let percentage_base = if percentage_base.is_finite() {
+      percentage_base.max(0.0)
+    } else {
+      0.0
+    };
+    let clamp_non_negative = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+
+    let padding_left =
+      clamp_non_negative(self.resolve_length_for_width(style.padding_left, percentage_base, style));
+    let padding_right = clamp_non_negative(self.resolve_length_for_width(
+      style.padding_right,
+      percentage_base,
+      style,
+    ));
+    let padding_top =
+      clamp_non_negative(self.resolve_length_for_width(style.padding_top, percentage_base, style));
+    let padding_bottom = clamp_non_negative(self.resolve_length_for_width(
+      style.padding_bottom,
+      percentage_base,
+      style,
+    ));
+    let border_left = clamp_non_negative(self.resolve_length_for_width(
+      style.used_border_left_width(),
+      percentage_base,
+      style,
+    ));
+    let border_right = clamp_non_negative(self.resolve_length_for_width(
+      style.used_border_right_width(),
+      percentage_base,
+      style,
+    ));
+    let border_top = clamp_non_negative(self.resolve_length_for_width(
+      style.used_border_top_width(),
+      percentage_base,
+      style,
+    ));
+    let border_bottom = clamp_non_negative(self.resolve_length_for_width(
+      style.used_border_bottom_width(),
+      percentage_base,
+      style,
+    ));
     match axis {
       Axis::Horizontal => padding_left + padding_right + border_left + border_right,
       Axis::Vertical => padding_top + padding_bottom + border_top + border_bottom,
@@ -10896,7 +10994,12 @@ impl FlexFormattingContext {
   ) -> f32 {
     let border_box = border_box.max(0.0);
     if style.box_sizing == BoxSizing::ContentBox {
-      let edges = self.axis_padding_border_px(style, axis, percentage_base.max(0.0));
+      let percentage_base = if percentage_base.is_finite() {
+        percentage_base.max(0.0)
+      } else {
+        0.0
+      };
+      let edges = self.axis_padding_border_px(style, axis, percentage_base);
       (border_box - edges).max(0.0)
     } else {
       border_box

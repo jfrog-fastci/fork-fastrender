@@ -416,6 +416,41 @@ impl Display {
     }
   }
 
+  /// Returns the blockified form of this display value.
+  ///
+  /// Some layout modes (notably flex and grid) require their direct children (items) to have a
+  /// block-level *outer* display type, even if the element's specified `display` is inline-level.
+  /// This transformation is known as *blockification* in CSS Display.
+  ///
+  /// We model the CSS two-value display keywords with a single enum; as such, the mapping here
+  /// preserves the "inner" layout mode when possible.
+  ///
+  /// References:
+  /// - CSS Display Module Level 3: *Blockification*.
+  pub fn blockify(self) -> Self {
+    match self {
+      // Common inline-level values with block-level equivalents.
+      Display::Inline => Display::Block,
+      Display::InlineBlock => Display::FlowRoot,
+      Display::InlineFlex => Display::Flex,
+      Display::InlineGrid => Display::Grid,
+      Display::InlineTable => Display::Table,
+
+      // Ruby has blockified variants in the two-value display syntax ("block ruby"), but our
+      // single-enum model cannot represent that directly. Fallback to `block` so the element can
+      // participate as a block-level item (e.g. as a flex/grid item) rather than being treated as
+      // an inline that needs anonymous block fixup.
+      Display::Ruby
+      | Display::RubyBase
+      | Display::RubyText
+      | Display::RubyBaseContainer
+      | Display::RubyTextContainer => Display::Block,
+
+      // Already block-level or otherwise not blockifiable.
+      other => other,
+    }
+  }
+
   /// Parse a display value from a CSS string
   ///
   /// # Examples

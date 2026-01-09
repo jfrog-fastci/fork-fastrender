@@ -28,15 +28,15 @@ fn find_text_fragment_bounds(fragment: &FragmentNode, offset: Point, needle: &st
 }
 
 #[test]
-fn container_query_accounts_for_reserved_scrollbar_gutter() {
+fn container_query_does_not_reserve_space_for_overflow_scroll_by_default() {
   let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
   let mut renderer = FastRender::with_config(config).expect("renderer");
 
   let options = RenderOptions::default().with_viewport(200, 200);
 
-  // `overflow-y: scroll` reserves space for a vertical scrollbar in the inline axis. With the
-  // default `scrollbar-width: auto` (16px), the 200px border-box container ends up with a 184px
-  // content box. The min-width query should therefore NOT match.
+  // Scrollbars are modeled as overlay by default, so `overflow-y: scroll` should not reserve
+  // layout space (unless `scrollbar-gutter: stable` is set). The 200px border-box container keeps
+  // its full inline size, and the min-width query should therefore match.
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -88,8 +88,8 @@ fn container_query_accounts_for_reserved_scrollbar_gutter() {
     .expect("expected text fragment containing BBB");
 
   assert!(
-    bbb.y() <= aaa.y() + 1.0,
-    "expected container query to NOT match (BBB should be on the same row as AAA); aaa={:?} bbb={:?}",
+    bbb.y() > aaa.y() + 1.0,
+    "expected container query to match (BBB should be under AAA); aaa={:?} bbb={:?}",
     aaa,
     bbb
   );
@@ -166,7 +166,7 @@ fn container_query_accounts_for_scrollbar_gutter_stable_with_overflow_hidden() {
 }
 
 #[test]
-fn container_query_accounts_for_dynamic_auto_scrollbar_gutter() {
+fn container_query_does_not_reserve_space_for_overflow_auto_scrollbars_by_default() {
   let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
   let mut renderer = FastRender::with_config(config).expect("renderer");
 
@@ -235,17 +235,18 @@ fn container_query_accounts_for_dynamic_auto_scrollbar_gutter() {
   let ddd = find_text_fragment_bounds(&fragment_tree.root, Point::ZERO, "DDD")
     .expect("expected text fragment containing DDD");
 
-  // The first container overflows vertically, so `overflow-y:auto` should reserve space for the
-  // scrollbar and the min-width query should NOT match (flex layout keeps BBB on the same row).
+  // The first container overflows vertically, but `overflow-y:auto` should not reserve space for
+  // overlay scrollbars by default, so the min-width query should match (block layout stacks BBB
+  // under AAA).
   assert!(
-    bbb.y() <= aaa.y() + 1.0,
-    "expected container query to NOT match for overflowing container; aaa={:?} bbb={:?}",
+    bbb.y() > aaa.y() + 1.0,
+    "expected container query to match for overflowing container; aaa={:?} bbb={:?}",
     aaa,
     bbb
   );
 
-  // The second container does not overflow, so no scrollbar should be reserved and the query SHOULD
-  // match (block layout stacks DDD under CCC).
+  // The second container does not overflow. The query should also match (block layout stacks DDD
+  // under CCC).
   assert!(
     ddd.y() > ccc.y() + 1.0,
     "expected container query to match for non-overflowing container; ccc={:?} ddd={:?}",

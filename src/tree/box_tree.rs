@@ -52,6 +52,33 @@ pub enum CrossOriginAttribute {
   UseCredentials,
 }
 
+/// Parsed `decoding` attribute hint for `<img>` elements.
+///
+/// https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-decoding
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ImageDecodingAttribute {
+  /// `decoding` missing/invalid/`auto`.
+  #[default]
+  Auto,
+  /// `decoding="sync"`.
+  Sync,
+  /// `decoding="async"`.
+  Async,
+}
+
+impl ImageDecodingAttribute {
+  pub fn from_attribute(value: &str) -> Self {
+    let value = trim_ascii_whitespace(value);
+    if value.eq_ignore_ascii_case("sync") {
+      return Self::Sync;
+    }
+    if value.eq_ignore_ascii_case("async") {
+      return Self::Async;
+    }
+    Self::Auto
+  }
+}
+
 /// A block-level box
 ///
 /// Block boxes stack vertically and establish block formatting contexts.
@@ -630,6 +657,8 @@ pub enum ReplacedType {
     src: String,
     /// Alternative text for fallback rendering
     alt: Option<String>,
+    /// `decoding` attribute hint.
+    decoding: ImageDecodingAttribute,
     /// Parsed `crossorigin` attribute, used to drive CORS-mode image requests.
     crossorigin: CrossOriginAttribute,
     /// Optional parsed `referrerpolicy` attribute.
@@ -1849,6 +1878,7 @@ mod tests {
       ReplacedType::Image {
         src: "image.png".to_string(),
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -1870,6 +1900,7 @@ mod tests {
       ReplacedType::Image {
         src: "image.png".to_string(),
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -2032,6 +2063,7 @@ mod tests {
       ReplacedType::Image {
         src: "img.png".to_string(),
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -2169,6 +2201,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "100w".to_string(),
@@ -2216,6 +2249,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "200w".to_string(),
@@ -2262,6 +2296,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "200w".to_string(),
@@ -2314,6 +2349,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "100w".to_string(),
@@ -2369,6 +2405,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "100w".to_string(),
@@ -2424,6 +2461,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "200w".to_string(),
@@ -2473,6 +2511,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "200w".to_string(),
@@ -2523,6 +2562,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "100w".to_string(),
@@ -2571,6 +2611,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "100w".to_string(),
@@ -2625,6 +2666,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "100w".to_string(),
@@ -2668,6 +2710,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "150w".to_string(),
@@ -2717,6 +2760,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "150w".to_string(),
@@ -2766,6 +2810,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "80w".to_string(),
@@ -2809,6 +2854,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "400w".to_string(),
@@ -2850,6 +2896,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "100w".to_string(),
@@ -2891,6 +2938,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "base".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "2x".to_string(),
@@ -2939,6 +2987,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "  base  ".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: Vec::new(),
       sizes: None,
       picture_sources: Vec::new(),
@@ -3004,6 +3053,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![],
       sizes: None,
       picture_sources: vec![
@@ -3076,6 +3126,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: vec![],
@@ -3123,6 +3174,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![],
       sizes: None,
       picture_sources: vec![PictureSource {
@@ -3170,6 +3222,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "400w".to_string(),
@@ -3225,6 +3278,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![
         SrcsetCandidate {
           url: "200w".to_string(),
@@ -3290,6 +3344,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       srcset: vec![],
       sizes: None,
       picture_sources: vec![

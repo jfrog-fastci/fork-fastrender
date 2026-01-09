@@ -4952,6 +4952,7 @@ mod tests {
   use crate::text::line_break::find_break_opportunities;
   use crate::text::pipeline::ShapingPipeline;
   use crate::tree::box_tree::CrossOriginAttribute;
+  use crate::tree::box_tree::ImageDecodingAttribute;
   use std::path::PathBuf;
   use std::sync::Arc;
   use std::time::Duration;
@@ -6260,6 +6261,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,

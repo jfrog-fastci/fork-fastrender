@@ -12,6 +12,7 @@ use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::CrossOriginAttribute;
+use fastrender::tree::box_tree::ImageDecodingAttribute;
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::box_tree::SrcsetCandidate;
 use fastrender::tree::fragment_tree::FragmentContent;
@@ -143,6 +144,7 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_block_layout() {
     ReplacedType::Image {
       src: String::new(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: Vec::<SrcsetCandidate>::new(),
@@ -200,6 +202,7 @@ fn replaced_absolute_with_padding_and_border_includes_edges_in_block_layout() {
     ReplacedType::Image {
       src: String::new(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: Vec::<SrcsetCandidate>::new(),
@@ -257,6 +260,7 @@ fn replaced_border_box_min_width_does_not_double_count_edges_in_block_layout() {
     ReplacedType::Image {
       src: String::new(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: Vec::<SrcsetCandidate>::new(),
@@ -307,6 +311,7 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_flex_layout() {
     ReplacedType::Image {
       src: String::new(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: Vec::<SrcsetCandidate>::new(),

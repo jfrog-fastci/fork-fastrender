@@ -283,3 +283,52 @@ fn flex_item_height_calc_percent_resolves_against_container_inner_height() {
     child_fragment.bounds.height()
   );
 }
+
+#[test]
+fn flex_container_padding_calc_percent_resolves_against_containing_block_and_clamps() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  // Negative calc results are invalid for padding and should clamp to 0.
+  // Use a calc expression that would be negative when resolved correctly, but which previously
+  // fell back to `Length::to_px()` (treating `50%` as `50px`) and produced the wrong border-box
+  // size inside Taffy.
+  let padding = calc_percent_plus_px(50.0, -150.0); // calc(50% - 150px)
+  container_style.padding_left = padding;
+  container_style.padding_right = padding;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.flex_grow = 0.0;
+  child_style.flex_shrink = 0.0;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![BoxNode::new_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![],
+    )],
+  );
+
+  // Simulate block layout passing the resolved used border-box width.
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite)
+    .with_used_border_box_size(Some(200.0), None);
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+  assert!(
+    (fragment.bounds.width() - 200.0).abs() < 0.5,
+    "expected container border-box width ≈ 200px, got {}",
+    fragment.bounds.width()
+  );
+
+  let child_fragment = fragment.children.get(0).expect("child fragment");
+  assert!(
+    child_fragment.bounds.x() >= -0.1,
+    "expected child x >= 0 after padding clamp, got {}",
+    child_fragment.bounds.x()
+  );
+}

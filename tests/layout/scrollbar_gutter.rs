@@ -89,7 +89,7 @@ fn scrollbar_gutter_auto_does_not_reserve_for_overflow_hidden() {
 }
 
 #[test]
-fn scrollbar_auto_reserves_space_when_overflowing() {
+fn scrollbar_auto_does_not_reserve_space_when_overflowing_by_default() {
   fn layout_overflowing_container(style: ComputedStyle) -> (f32, f32) {
     let gutter = resolve_scrollbar_width(&style);
     let container_style = Arc::new(style);
@@ -119,24 +119,25 @@ fn scrollbar_auto_reserves_space_when_overflowing() {
   style.overflow_y = Overflow::Auto;
   style.height = Some(Length::px(50.0));
 
-  let (child_width, gutter) = layout_overflowing_container(style.clone());
-  assert!((child_width - (100.0 - gutter)).abs() < 1e-3);
+  let (child_width, _gutter) = layout_overflowing_container(style.clone());
+  // Scrollbars are modeled as overlay by default, so overflowing `overflow-y:auto` should not
+  // reserve layout space unless `scrollbar-gutter: stable` is set.
+  assert!((child_width - 100.0).abs() < 1e-3);
 
   style.scrollbar_gutter = ScrollbarGutter {
-    stable: false,
-    both_edges: true,
+    stable: true,
+    both_edges: false,
   };
   let (child_width, gutter) = layout_overflowing_container(style);
-  assert!((child_width - (100.0 - gutter * 2.0)).abs() < 1e-3);
+  assert!((child_width - (100.0 - gutter)).abs() < 1e-3);
 }
 
 #[test]
-fn scrollbar_auto_cross_axis_feedback_adds_both_scrollbars() {
+fn scrollbar_auto_cross_axis_overflow_does_not_reserve_space_by_default() {
   let mut style = ComputedStyle::default();
   style.overflow_x = Overflow::Auto;
   style.overflow_y = Overflow::Auto;
   style.height = Some(Length::px(50.0));
-  let gutter = resolve_scrollbar_width(&style);
 
   let mut wide_tall_style = ComputedStyle::default();
   wide_tall_style.width = Some(Length::px(100.0));
@@ -159,9 +160,9 @@ fn scrollbar_auto_cross_axis_feedback_adds_both_scrollbars() {
     .layout(&container, &constraints)
     .expect("layout should succeed");
 
-  assert!((fragment.scrollbar_reservation.right - gutter).abs() < 1e-3);
-  assert!((fragment.scrollbar_reservation.bottom - gutter).abs() < 1e-3);
-  assert!((fragment.children[1].bounds.width() - (100.0 - gutter)).abs() < 1e-3);
+  assert!((fragment.scrollbar_reservation.right - 0.0).abs() < 1e-3);
+  assert!((fragment.scrollbar_reservation.bottom - 0.0).abs() < 1e-3);
+  assert!((fragment.children[1].bounds.width() - 100.0).abs() < 1e-3);
 }
 
 #[test]

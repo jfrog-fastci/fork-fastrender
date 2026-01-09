@@ -168,6 +168,7 @@ use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapedRun;
 use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::CrossOriginAttribute;
+use crate::tree::box_tree::ImageDecodingAttribute;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
 use crate::tree::box_tree::ReplacedType;
@@ -190,6 +191,13 @@ use std::time::{Duration, Instant};
 use unicode_general_category::{get_general_category, GeneralCategory};
 
 const DECODED_IMAGE_CACHE_MAX_ENTRIES: usize = 256;
+/// Maximum image size (in destination device pixels) that we attempt to decode synchronously when
+/// `decoding="async"` is set.
+///
+/// Chrome's headless `--screenshot` capture often happens before large `decoding="async"` images
+/// finish decoding, leaving them transparent in the baseline. We approximate this by deferring
+/// decoding when the rendered image would occupy a large number of device pixels.
+const ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS: u64 = 120_000;
 const DECODED_IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DEADLINE_STRIDE: usize = 256;
 
@@ -6045,6 +6053,10 @@ impl DisplayListBuilder {
             ReplacedType::Image { crossorigin, .. } => *crossorigin,
             _ => CrossOriginAttribute::None,
           };
+          let decoding = match replaced_type {
+            ReplacedType::Image { decoding, .. } => *decoding,
+            _ => ImageDecodingAttribute::Auto,
+          };
           let referrer_policy = match replaced_type {
             ReplacedType::Image {
               referrer_policy, ..
@@ -6075,9 +6087,22 @@ impl DisplayListBuilder {
           // `srcset` points at markup). Instead they render the "broken image" placeholder (+alt).
           //
           // Only attempt to decode the selected candidate (the first entry in `sources`).
-          let decoded = sources.first().and_then(|s| {
+          let mut deferred_async = false;
+          let decoded = sources.first().and_then(|source| {
+            if decoding == ImageDecodingAttribute::Async
+              && self.should_defer_async_image_decode(
+                slot_rect.width(),
+                slot_rect.height(),
+                source.url,
+                crossorigin,
+                referrer_policy,
+              )
+            {
+              deferred_async = true;
+              return None;
+            }
             self.decode_image(
-              s.url,
+              source.url,
               style_for_image,
               false,
               crossorigin,
@@ -6140,6 +6165,13 @@ impl DisplayListBuilder {
             if clip_contents.is_some() {
               self.list.push(DisplayItem::PopClip);
             }
+            break 'paint;
+          }
+
+          if deferred_async {
+            // `decoding="async"` is a hint that the UA is allowed to postpone expensive image
+            // decodes. When we choose to defer decoding, we keep the image transparent (no UA
+            // placeholder) to match browser behavior while decoding is still pending.
             break 'paint;
           }
 
@@ -11882,6 +11914,45 @@ impl DisplayListBuilder {
     true
   }
 
+  fn should_defer_async_image_decode(
+    &self,
+    dest_width: f32,
+    dest_height: f32,
+    src: &str,
+    crossorigin: CrossOriginAttribute,
+    referrer_policy: Option<crate::resource::ReferrerPolicy>,
+  ) -> bool {
+    let Some(image_cache) = self.image_cache.as_ref() else {
+      return false;
+    };
+    if !dest_width.is_finite() || !dest_height.is_finite() || dest_width <= 0.0 || dest_height <= 0.0 {
+      return false;
+    }
+    let dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+      self.device_pixel_ratio
+    } else {
+      1.0
+    };
+    let device_w = (dest_width * dpr).ceil().max(0.0) as u64;
+    let device_h = (dest_height * dpr).ceil().max(0.0) as u64;
+    let dest_pixels = device_w.saturating_mul(device_h);
+    if dest_pixels <= ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS {
+      return false;
+    }
+    let meta = match image_cache.probe_with_crossorigin_and_referrer_policy(
+      src,
+      crossorigin,
+      referrer_policy,
+    ) {
+      Ok(meta) => meta,
+      Err(_) => return false,
+    };
+    if meta.is_vector {
+      return false;
+    }
+    true
+  }
+
   fn decode_image(
     &self,
     src: &str,
@@ -12834,6 +12905,7 @@ mod tests {
       ReplacedType::Image {
         src: src.to_string(),
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -14811,6 +14883,7 @@ mod tests {
       ReplacedType::Image {
         src: chosen,
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -14867,6 +14940,7 @@ mod tests {
       ReplacedType::Image {
         src: chosen,
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
@@ -15378,6 +15452,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15431,6 +15506,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15517,6 +15593,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15574,6 +15651,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%222%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15646,6 +15724,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%222%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15861,6 +15940,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15899,6 +15979,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15933,6 +16014,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -16127,6 +16209,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: Some("alt text".to_string()),
+          decoding: ImageDecodingAttribute::Auto,
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -16155,6 +16238,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: ImageDecodingAttribute::Auto,
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,

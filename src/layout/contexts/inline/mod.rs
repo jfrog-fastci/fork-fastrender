@@ -4932,14 +4932,13 @@ impl InlineFormattingContext {
       self.viewport_size,
     );
 
-    let reserve_vertical_gutter = matches!(style.overflow_y, crate::style::types::Overflow::Scroll)
-      || (style.scrollbar_gutter.stable
-        && matches!(
-          style.overflow_y,
-          crate::style::types::Overflow::Hidden
-            | crate::style::types::Overflow::Auto
-            | crate::style::types::Overflow::Scroll
-        ));
+    let reserve_vertical_gutter = style.scrollbar_gutter.stable
+      && matches!(
+        style.overflow_y,
+        crate::style::types::Overflow::Hidden
+          | crate::style::types::Overflow::Auto
+          | crate::style::types::Overflow::Scroll
+      );
     if reserve_vertical_gutter {
       let gutter = crate::layout::utils::resolve_scrollbar_width(style);
       if gutter > 0.0 {
@@ -4950,14 +4949,13 @@ impl InlineFormattingContext {
       }
     }
 
-    let reserve_horizontal_gutter = matches!(style.overflow_x, crate::style::types::Overflow::Scroll)
-      || (style.scrollbar_gutter.stable
-        && matches!(
-          style.overflow_x,
-          crate::style::types::Overflow::Hidden
-            | crate::style::types::Overflow::Auto
-            | crate::style::types::Overflow::Scroll
-        ));
+    let reserve_horizontal_gutter = style.scrollbar_gutter.stable
+      && matches!(
+        style.overflow_x,
+        crate::style::types::Overflow::Hidden
+          | crate::style::types::Overflow::Auto
+          | crate::style::types::Overflow::Scroll
+      );
     if reserve_horizontal_gutter {
       let gutter = crate::layout::utils::resolve_scrollbar_width(style);
       if gutter > 0.0 {
@@ -9095,6 +9093,7 @@ impl FormattingContext for InlineFormattingContext {
     let base_style = style_override.unwrap_or_else(|| box_node.style.clone());
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
     if gutter <= 0.0
+      || !base_style.scrollbar_gutter.stable
       || (!matches!(base_style.overflow_x, crate::style::types::Overflow::Auto)
         && !matches!(base_style.overflow_y, crate::style::types::Overflow::Auto))
     {
@@ -15386,6 +15385,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15615,6 +15615,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -15896,6 +15897,7 @@ mod tests {
         replaced_type: box_tree::ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -16397,6 +16399,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -16447,6 +16450,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -16520,6 +16524,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -16622,6 +16627,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -16671,6 +16677,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -16846,6 +16853,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          decoding: Default::default(),
           crossorigin: CrossOriginAttribute::None,
           referrer_policy: None,
           sizes: None,
@@ -17117,6 +17125,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        decoding: Default::default(),
         crossorigin: CrossOriginAttribute::None,
         referrer_policy: None,
         sizes: None,
