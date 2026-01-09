@@ -1,0 +1,221 @@
+use egui::{Pos2, Rect, Vec2};
+
+/// Convert `winit`/`egui` "line" scroll deltas into CSS pixel deltas.
+///
+/// `winit` reports some wheel devices (classic mouse wheels) in "lines" rather than pixels.
+/// Different platforms use different values for what a "line" means; for browsers it's typically
+/// in the ~30-60px range. We pick a single constant so behaviour is predictable and easy to tune.
+pub const CSS_PX_PER_WHEEL_LINE: f32 = 40.0;
+
+/// Wheel delta as reported by OS/UI frameworks.
+///
+/// - `Lines` corresponds to `winit::event::MouseScrollDelta::LineDelta` and
+///   `egui::MouseWheelUnit::Line`.
+/// - `Points` corresponds to pixel/trackpad deltas expressed in **egui points** (logical pixels).
+/// - `Pages` corresponds to `egui::MouseWheelUnit::Page` (rare; usually from keyboard scroll
+///   shortcuts); it is interpreted as a multiple of the viewport size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WheelDelta {
+  Lines(Vec2),
+  Points(Vec2),
+  Pages(Vec2),
+}
+
+impl WheelDelta {
+  /// Construct from an egui mouse wheel event.
+  pub fn from_egui(unit: egui::MouseWheelUnit, delta: Vec2) -> Self {
+    match unit {
+      egui::MouseWheelUnit::Line => Self::Lines(delta),
+      egui::MouseWheelUnit::Point => Self::Points(delta),
+      egui::MouseWheelUnit::Page => Self::Pages(delta),
+    }
+  }
+
+  /// Construct from a winit mouse wheel event.
+  ///
+  /// `pixels_per_point` should match the egui `Context::pixels_per_point()` used for the frame.
+  /// It is used to convert `PixelDelta` (physical pixels) into egui points.
+  pub fn from_winit(delta: winit::event::MouseScrollDelta, pixels_per_point: f32) -> Self {
+    match delta {
+      winit::event::MouseScrollDelta::LineDelta(x, y) => Self::Lines(Vec2::new(x, y)),
+      winit::event::MouseScrollDelta::PixelDelta(pos) => {
+        // `winit` uses physical pixels for `PixelDelta`; egui works in logical "points".
+        // Protect against a bogus/zero ppp to avoid NaNs.
+        let ppp = pixels_per_point.max(1e-6);
+        Self::Points(Vec2::new(pos.x as f32 / ppp, pos.y as f32 / ppp))
+      }
+    }
+  }
+}
+
+/// Maps egui input coordinates (points) into page-space CSS pixels.
+///
+/// The UI draws a page pixmap (physical px) into an `egui::Rect` (points). The render worker,
+/// however, speaks in **viewport CSS pixels** (`viewport_css`). If the image is drawn scaled (fit
+/// to panel, DPI mismatch, zoom, etc.), we must scale pointer positions and pixel-based wheel
+/// deltas accordingly.
+#[derive(Debug, Clone, Copy)]
+pub struct InputMapping {
+  /// Where the page image is drawn, in egui points.
+  pub image_rect_points: Rect,
+  /// Viewport size in CSS pixels.
+  pub viewport_css: (u32, u32),
+}
+
+impl InputMapping {
+  pub fn new(image_rect_points: Rect, viewport_css: (u32, u32)) -> Self {
+    Self {
+      image_rect_points,
+      viewport_css,
+    }
+  }
+
+  fn viewport_css_f32(&self) -> Vec2 {
+    Vec2::new(self.viewport_css.0 as f32, self.viewport_css.1 as f32)
+  }
+
+  fn css_per_point(&self) -> Option<Vec2> {
+    let drawn_points = self.image_rect_points.size();
+    if drawn_points.x <= 0.0 || drawn_points.y <= 0.0 {
+      return None;
+    }
+
+    let viewport_css = self.viewport_css_f32();
+    Some(Vec2::new(
+      viewport_css.x / drawn_points.x,
+      viewport_css.y / drawn_points.y,
+    ))
+  }
+
+  /// Convert a pointer position (egui points) to a position in viewport CSS pixels.
+  ///
+  /// This applies a scale factor based on how large the page image was drawn:
+  ///
+  /// `pos_css = (pos_points - image_rect.min) * (viewport_css / image_drawn_points)`
+  ///
+  /// The returned coordinate is clamped to the viewport bounds for hit-testing.
+  pub fn pos_points_to_pos_css_clamped(&self, pos_points: Pos2) -> Option<(f32, f32)> {
+    let css_per_point = self.css_per_point()?;
+
+    let local_points = pos_points - self.image_rect_points.min;
+    let mut pos_css = Vec2::new(local_points.x * css_per_point.x, local_points.y * css_per_point.y);
+
+    let viewport_css = self.viewport_css_f32();
+    pos_css.x = pos_css.x.clamp(0.0, viewport_css.x);
+    pos_css.y = pos_css.y.clamp(0.0, viewport_css.y);
+
+    Some((pos_css.x, pos_css.y))
+  }
+
+  /// Convert a wheel delta (from egui/winit) to a delta in viewport CSS pixels.
+  ///
+  /// Sign convention:
+  /// - The output uses "document scroll" semantics: scrolling down increases `scroll_y`.
+  /// - `winit`/`egui` wheel deltas use the opposite convention (positive is typically up/left),
+  ///   so we negate the delta to match the CSS/DOM convention.
+  pub fn wheel_delta_to_delta_css(&self, delta: WheelDelta) -> Option<(f32, f32)> {
+    match delta {
+      WheelDelta::Lines(lines) => {
+        let delta_css = Vec2::new(
+          lines.x * CSS_PX_PER_WHEEL_LINE,
+          lines.y * CSS_PX_PER_WHEEL_LINE,
+        );
+        Some((-delta_css.x, -delta_css.y))
+      }
+      WheelDelta::Points(points) => {
+        let css_per_point = self.css_per_point()?;
+        let delta_css = Vec2::new(points.x * css_per_point.x, points.y * css_per_point.y);
+        Some((-delta_css.x, -delta_css.y))
+      }
+      WheelDelta::Pages(pages) => {
+        let viewport_css = self.viewport_css_f32();
+        let delta_css = Vec2::new(pages.x * viewport_css.x, pages.y * viewport_css.y);
+        Some((-delta_css.x, -delta_css.y))
+      }
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn assert_approx2(actual: (f32, f32), expected: (f32, f32)) {
+    let eps = 1e-4;
+    assert!(
+      (actual.0 - expected.0).abs() <= eps,
+      "x mismatch: actual={} expected={}",
+      actual.0,
+      expected.0
+    );
+    assert!(
+      (actual.1 - expected.1).abs() <= eps,
+      "y mismatch: actual={} expected={}",
+      actual.1,
+      expected.1
+    );
+  }
+
+  #[test]
+  fn identity_mapping_at_1_to_1_draw() {
+    let image_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    let pos = mapping
+      .pos_points_to_pos_css_clamped(Pos2::new(110.0, 70.0))
+      .unwrap();
+    assert_approx2(pos, (100.0, 50.0));
+  }
+
+  #[test]
+  fn scaled_draw_maps_points_into_css_space() {
+    // Viewport is 800x600 CSS px, but the image is drawn at half size (400x300 points).
+    let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, 300.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    let pos = mapping
+      .pos_points_to_pos_css_clamped(Pos2::new(200.0, 150.0))
+      .unwrap();
+    assert_approx2(pos, (400.0, 300.0));
+  }
+
+  #[test]
+  fn clamping_keeps_pos_within_viewport_bounds() {
+    let image_rect = Rect::from_min_size(Pos2::new(50.0, 50.0), Vec2::new(400.0, 300.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    let pos_before = mapping
+      .pos_points_to_pos_css_clamped(Pos2::new(0.0, 0.0))
+      .unwrap();
+    assert_approx2(pos_before, (0.0, 0.0));
+
+    let pos_after = mapping
+      .pos_points_to_pos_css_clamped(Pos2::new(9999.0, 9999.0))
+      .unwrap();
+    assert_approx2(pos_after, (800.0, 600.0));
+  }
+
+  #[test]
+  fn wheel_line_delta_converts_to_css_pixels() {
+    let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    // In winit/egui convention, negative y is a "scroll down" gesture.
+    let delta_css = mapping
+      .wheel_delta_to_delta_css(WheelDelta::Lines(Vec2::new(0.0, -2.0)))
+      .unwrap();
+    assert_approx2(delta_css, (0.0, 2.0 * CSS_PX_PER_WHEEL_LINE));
+  }
+
+  #[test]
+  fn wheel_pixel_delta_converts_to_css_pixels_with_scale() {
+    let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, 300.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    // Negative y is scroll down; drawn at 0.5 scale means 1 point = 2 CSS px.
+    let delta_css = mapping
+      .wheel_delta_to_delta_css(WheelDelta::Points(Vec2::new(0.0, -10.0)))
+      .unwrap();
+    assert_approx2(delta_css, (0.0, 20.0));
+  }
+}

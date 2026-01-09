@@ -10,6 +10,14 @@ pub use messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 
+// `input_mapping` depends on the optional egui/winit stack, so keep it behind the
+// `browser_ui` feature gate.
+#[cfg(feature = "browser_ui")]
+pub mod input_mapping;
+
+#[cfg(feature = "browser_ui")]
+pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
+
 // `pixmap_texture` depends on the optional egui stack, so keep it behind the
 // `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
