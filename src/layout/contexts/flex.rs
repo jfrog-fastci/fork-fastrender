@@ -7204,18 +7204,18 @@ impl FlexFormattingContext {
 
   /// Computes the size for a node
   ///
-  /// For the root flex container without explicit size, we use 100% to fill
-  /// available space (simulating block-level behavior).
-  fn compute_size(&self, style: &ComputedStyle, is_root: bool) -> taffy::geometry::Size<Dimension> {
-    let is_block_level_root = is_root && matches!(style.display, Display::Flex);
+  /// For block-level flex containers, `width:auto` is resolved later in `layout()` once the
+  /// definite available inline size is known. Avoid encoding that as `100%` here because
+  /// percentage sizes cannot resolve during intrinsic sizing probes (min-/max-content), which
+  /// would collapse the flex container to ~0px and poison upstream flex item measurements.
+  fn compute_size(
+    &self,
+    style: &ComputedStyle,
+    _is_root: bool,
+  ) -> taffy::geometry::Size<Dimension> {
     let width = match (style.width.as_ref(), style.width_keyword) {
       (Some(len), _) => self.length_to_dimension(len, style),
       (None, Some(_)) => Dimension::auto(),
-      (None, None) if is_block_level_root => {
-        // Root flex container without explicit width: expand to fill
-        // available space (100% of containing block).
-        Dimension::percent(1.0)
-      }
       (None, None) => Dimension::auto(),
     };
 

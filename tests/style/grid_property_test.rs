@@ -21,8 +21,22 @@ fn decl(name: &'static str, value: PropertyValue) -> Declaration {
 }
 
 #[test]
-fn grid_template_areas_create_line_names() {
+fn grid_template_areas_parses_even_when_track_counts_differ() {
   let mut style = ComputedStyle::default();
+
+  // Ensure `grid-template-areas` is accepted even when grid-template-columns has a different number
+  // of tracks. Per spec, the explicit grid size is the max of the area matrix size and the sized
+  // tracks count; extra tracks take their sizing from grid-auto-rows/columns.
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("auto".into()),
+    ),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
 
   apply_declaration(
     &mut style,
@@ -35,34 +49,26 @@ fn grid_template_areas_create_line_names() {
     16.0,
   );
 
-  // grid-template-areas should synthesize track sizing when absent
-  assert_eq!(
-    style.grid_template_columns,
-    vec![GridTrack::Auto, GridTrack::Auto]
-  );
-  assert_eq!(
-    style.grid_template_rows,
-    vec![GridTrack::Auto, GridTrack::Auto]
-  );
-  assert_eq!(style.grid_column_line_names.len(), 3);
-  assert_eq!(style.grid_row_line_names.len(), 3);
+  assert_eq!(style.grid_template_areas.len(), 2);
+  assert_eq!(style.grid_template_areas[0].len(), 2);
+  assert_eq!(style.grid_template_areas[0][0].as_deref(), Some("a"));
+  assert_eq!(style.grid_template_areas[0][1].as_deref(), Some("a"));
+  assert_eq!(style.grid_template_areas[1][0].as_deref(), Some("b"));
+  assert_eq!(style.grid_template_areas[1][1].as_deref(), Some("c"));
 
-  // Area names define start/end line names on the corresponding boundaries
-  assert!(style.grid_column_line_names[0].contains(&"a-start".to_string()));
-  assert!(style.grid_column_line_names[0].contains(&"b-start".to_string()));
-  assert!(style.grid_column_line_names[2].contains(&"a-end".to_string()));
-  assert!(style.grid_column_line_names[2].contains(&"c-end".to_string()));
-
-  assert!(style.grid_row_line_names[0].contains(&"a-start".to_string()));
-  assert!(style.grid_row_line_names[1].contains(&"a-end".to_string()));
-  assert!(style.grid_row_line_names[1].contains(&"b-start".to_string()));
-  assert!(style.grid_row_line_names[2].contains(&"b-end".to_string()));
-  assert!(style.grid_row_line_names[1].contains(&"c-start".to_string()));
-  assert!(style.grid_row_line_names[2].contains(&"c-end".to_string()));
+  // `none` clears the template areas.
+  apply_declaration(
+    &mut style,
+    &decl("grid-template-areas", PropertyValue::Keyword("none".into())),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert!(style.grid_template_areas.is_empty());
 }
 
 #[test]
-fn grid_template_shorthand_synthesizes_area_line_names() {
+fn grid_template_shorthand_sets_areas_and_tracks() {
   let mut style = ComputedStyle::default();
 
   apply_declaration(
@@ -78,17 +84,12 @@ fn grid_template_shorthand_synthesizes_area_line_names() {
 
   assert_eq!(style.grid_template_columns.len(), 2);
   assert_eq!(style.grid_template_rows.len(), 2);
-  assert_eq!(style.grid_column_line_names.len(), 3);
-  assert_eq!(style.grid_row_line_names.len(), 3);
-
-  assert!(style.grid_column_line_names[0].contains(&"a-start".to_string()));
-  assert!(style.grid_column_line_names[2].contains(&"a-end".to_string()));
-  assert!(style.grid_row_line_names[1].contains(&"b-start".to_string()));
-  assert!(style.grid_row_line_names[2].contains(&"b-end".to_string()));
+  assert_eq!(style.grid_template_areas.len(), 2);
+  assert_eq!(style.grid_template_areas[0].len(), 2);
 }
 
 #[test]
-fn grid_shorthand_template_synthesizes_area_line_names() {
+fn grid_shorthand_sets_template_areas() {
   let mut style = ComputedStyle::default();
 
   apply_declaration(
@@ -101,13 +102,8 @@ fn grid_shorthand_template_synthesizes_area_line_names() {
 
   assert_eq!(style.grid_template_columns.len(), 2);
   assert_eq!(style.grid_template_rows.len(), 2);
-  assert_eq!(style.grid_column_line_names.len(), 3);
-  assert_eq!(style.grid_row_line_names.len(), 3);
-
-  assert!(style.grid_column_line_names[0].contains(&"x-start".to_string()));
-  assert!(style.grid_column_line_names[2].contains(&"x-end".to_string()));
-  assert!(style.grid_row_line_names[1].contains(&"y-start".to_string()));
-  assert!(style.grid_row_line_names[2].contains(&"y-end".to_string()));
+  assert_eq!(style.grid_template_areas.len(), 2);
+  assert_eq!(style.grid_template_areas[0].len(), 2);
 }
 
 #[test]

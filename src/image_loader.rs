@@ -4203,6 +4203,13 @@ impl ImageCache {
         return Err(err);
       }
     };
+    // Offline fixtures (and some tracking pixel endpoints) substitute missing/empty image bodies
+    // with a deterministic 1×1 transparent PNG so layout/paint can proceed. Treat that specific
+    // payload as the same placeholder image used for non-fetchable `about:` URLs so callers can
+    // detect it (e.g. for replaced-content fallbacks).
+    if resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes() {
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
     if let Some(ctx) = &self.resource_context {
       let policy_url = resource.final_url.as_deref().unwrap_or(resolved_url);
       if let Err(err) = ctx.check_allowed(ResourceKind::Image, policy_url) {

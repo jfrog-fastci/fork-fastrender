@@ -10724,26 +10724,25 @@ fn apply_declaration_with_base_internal_with_order(
           styles.grid_column_names.clear();
           styles.grid_column_subgrid = false;
           styles.subgrid_column_line_names.clear();
-          return;
-        }
-        if let Some(line_names) = parse_subgrid_line_names(kw) {
+        } else if let Some(line_names) = parse_subgrid_line_names(kw) {
           styles.grid_column_subgrid = true;
           styles.subgrid_column_line_names = line_names.clone();
           styles.grid_template_columns.clear();
           styles.grid_column_line_names = line_names;
           styles.grid_column_names.clear();
-          return;
+        } else {
+          let (tracks, named_lines, line_names) = parse_grid_tracks_with_names(kw);
+          if tracks.is_empty() {
+            // Invalid track list; ignore the declaration.
+            return;
+          }
+          styles.grid_template_columns = tracks;
+          styles.grid_column_names = named_lines;
+          styles.grid_column_line_names = line_names;
+          styles.grid_column_subgrid = false;
+          styles.subgrid_column_line_names.clear();
         }
-        let (tracks, named_lines, line_names) = parse_grid_tracks_with_names(kw);
-        if tracks.is_empty() {
-          // Invalid track list; ignore the declaration.
-          return;
-        }
-        styles.grid_template_columns = tracks;
-        styles.grid_column_names = named_lines;
-        styles.grid_column_line_names = line_names;
-        styles.grid_column_subgrid = false;
-        styles.subgrid_column_line_names.clear();
+        synthesize_area_line_names(styles);
       }
     }
     "grid-template-rows" => {
@@ -10754,56 +10753,35 @@ fn apply_declaration_with_base_internal_with_order(
           styles.grid_row_names.clear();
           styles.grid_row_subgrid = false;
           styles.subgrid_row_line_names.clear();
-          return;
-        }
-        if let Some(line_names) = parse_subgrid_line_names(kw) {
+        } else if let Some(line_names) = parse_subgrid_line_names(kw) {
           styles.grid_row_subgrid = true;
           styles.subgrid_row_line_names = line_names.clone();
           styles.grid_template_rows.clear();
           styles.grid_row_line_names = line_names;
           styles.grid_row_names.clear();
-          return;
+        } else {
+          let (tracks, named_lines, line_names) = parse_grid_tracks_with_names(kw);
+          if tracks.is_empty() {
+            // Invalid track list; ignore the declaration.
+            return;
+          }
+          styles.grid_template_rows = tracks;
+          styles.grid_row_names = named_lines;
+          styles.grid_row_line_names = line_names;
+          styles.grid_row_subgrid = false;
+          styles.subgrid_row_line_names.clear();
         }
-        let (tracks, named_lines, line_names) = parse_grid_tracks_with_names(kw);
-        if tracks.is_empty() {
-          // Invalid track list; ignore the declaration.
-          return;
-        }
-        styles.grid_template_rows = tracks;
-        styles.grid_row_names = named_lines;
-        styles.grid_row_line_names = line_names;
-        styles.grid_row_subgrid = false;
-        styles.subgrid_row_line_names.clear();
+        synthesize_area_line_names(styles);
       }
     }
     "grid-template-areas" => match resolved_value {
       PropertyValue::Keyword(kw) | PropertyValue::String(kw) => {
         if let Some(areas) = parse_grid_template_areas(kw) {
-          let row_count = areas.len();
-          let col_count = areas.first().map(|r| r.len()).unwrap_or(0);
-          if col_count == 0 {
-            return;
-          }
-
-          // CSS requires area matrices to align with explicit track counts if specified.
-          if (!styles.grid_template_columns.is_empty()
-            && styles.grid_template_columns.len() != col_count)
-            || (!styles.grid_template_rows.is_empty()
-              && styles.grid_template_rows.len() != row_count)
-          {
-            return;
-          }
-
+          // `grid-template-areas` contributes to the explicit grid size, but does not require
+          // `grid-template-rows`/`grid-template-columns` to specify the same number of tracks.
+          //
+          // https://www.w3.org/TR/css-grid-2/#explicit-grids
           styles.grid_template_areas = areas;
-
-          if styles.grid_template_columns.is_empty() && !styles.grid_column_subgrid {
-            styles.grid_template_columns = vec![GridTrack::Auto; col_count];
-            styles.grid_column_line_names = vec![Vec::new(); col_count + 1];
-          }
-          if styles.grid_template_rows.is_empty() && !styles.grid_row_subgrid {
-            styles.grid_template_rows = vec![GridTrack::Auto; row_count];
-            styles.grid_row_line_names = vec![Vec::new(); row_count + 1];
-          }
           synthesize_area_line_names(styles);
         }
       }
@@ -10898,6 +10876,7 @@ fn apply_declaration_with_base_internal_with_order(
               styles.grid_column_subgrid = false;
               styles.subgrid_column_line_names.clear();
             }
+            synthesize_area_line_names(styles);
           }
           if let Some(rows) = parsed.auto_rows {
             styles.grid_auto_rows = rows.into();
@@ -10909,7 +10888,6 @@ fn apply_declaration_with_base_internal_with_order(
             styles.grid_auto_flow = flow;
           }
 
-          synthesize_area_line_names(styles);
         }
       }
     }

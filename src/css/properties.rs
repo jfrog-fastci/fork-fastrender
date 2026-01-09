@@ -1595,6 +1595,25 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
   // Remove trailing !important if present
   let value_str = trim_css_whitespace(value_str.trim_end_matches("!important"));
 
+  // `grid-template-areas` is a list of quoted strings where the quotes are semantically significant
+  // (`"a b" "c d"`). The engine parses the full token stream later (in `style::grid`), so preserve
+  // the authored syntax verbatim here instead of parsing a single-row template as `<string>` and
+  // losing its quotes.
+  //
+  // Similarly, the various grid track list properties are parsed later in `style::grid`; preserve
+  // the authored syntax verbatim so single-token track lists like `100%` are not eagerly parsed as
+  // `<length>` and then ignored by the downstream parser (which expects the raw string).
+  if matches!(
+    property,
+    "grid-template-areas"
+      | "grid-template-columns"
+      | "grid-template-rows"
+      | "grid-auto-columns"
+      | "grid-auto-rows"
+  ) {
+    return Some(PropertyValue::Keyword(value_str.to_string()));
+  }
+
   let is_background_longhand = property.starts_with("background-") || property == "background";
   let is_mask_longhand = property.starts_with("mask-") || property == "mask";
   let allow_commas = is_background_longhand || is_mask_longhand || property == "cursor";
