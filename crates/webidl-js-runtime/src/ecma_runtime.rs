@@ -446,6 +446,27 @@ impl JsRuntime for VmJsRuntime {
   type PropertyKey = PropertyKey;
   type Error = VmError;
 
+  fn property_key_from_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
+    self.prop_key_str(s)
+  }
+
+  fn property_key_is_symbol(&self, key: PropertyKey) -> bool {
+    matches!(key, PropertyKey::Symbol(_))
+  }
+
+  fn property_key_is_string(&self, key: PropertyKey) -> bool {
+    matches!(key, PropertyKey::String(_))
+  }
+
+  fn property_key_to_js_string(&mut self, key: PropertyKey) -> Result<Value, VmError> {
+    match key {
+      PropertyKey::String(s) => Ok(Value::String(s)),
+      PropertyKey::Symbol(_) => Err(self.throw_type_error(
+        "Cannot convert a Symbol property key to a string",
+      )),
+    }
+  }
+
   fn is_object(&self, value: Value) -> bool {
     matches!(value, Value::Object(_))
   }
@@ -866,4 +887,3 @@ mod tests {
     assert_eq!(calls.get(), 1);
   }
 }
-

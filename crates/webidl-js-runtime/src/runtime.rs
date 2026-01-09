@@ -43,6 +43,26 @@ pub trait JsRuntime {
   /// Error type used by the runtime (usually the engine's exception/termination type).
   type Error;
 
+  /// Constructs a property key from a Rust string.
+  ///
+  /// This is primarily used by generated bindings and conversion algorithms that need to access
+  /// object properties by name in a runtime-agnostic way.
+  fn property_key_from_str(&mut self, s: &str) -> Result<Self::PropertyKey, Self::Error>;
+
+  /// Returns true if `key` is a Symbol.
+  fn property_key_is_symbol(&self, key: Self::PropertyKey) -> bool;
+
+  /// Returns true if `key` is a String.
+  fn property_key_is_string(&self, key: Self::PropertyKey) -> bool;
+
+  /// Converts a property key to a JS String value.
+  ///
+  /// Per ECMAScript `ToString`, this must throw a TypeError if `key` is a Symbol.
+  fn property_key_to_js_string(
+    &mut self,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error>;
+
   fn is_object(&self, value: Self::JsValue) -> bool;
   fn is_callable(&self, value: Self::JsValue) -> bool;
   fn is_boolean(&self, value: Self::JsValue) -> bool;
@@ -114,4 +134,3 @@ pub trait WebIdlJsRuntime: JsRuntime {
   fn throw_type_error(&mut self, message: &str) -> Self::Error;
   fn throw_range_error(&mut self, message: &str) -> Self::Error;
 }
-
