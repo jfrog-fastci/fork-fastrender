@@ -26,12 +26,12 @@ use crate::css::types::CssImportLoader;
 use crate::css::types::CssString;
 use crate::css::types::Declaration;
 use crate::css::types::PropertyValue;
+use crate::css::types::ScopeContext;
 use crate::css::types::StyleQueryExpr;
 use crate::css::types::StyleQueryFeature;
 use crate::css::types::StyleRange;
 use crate::css::types::StyleRangeOp;
 use crate::css::types::StyleRangeValue;
-use crate::css::types::ScopeContext;
 use crate::css::types::StyleRule;
 use crate::css::types::StyleSheet;
 use crate::debug::runtime;
@@ -424,7 +424,9 @@ fn container_query_matches(
         }
       }
     }
-    ContainerQuery::Style(style_query) => eval_style_query(style_query, container, container_parent, ctx),
+    ContainerQuery::Style(style_query) => {
+      eval_style_query(style_query, container, container_parent, ctx)
+    }
     ContainerQuery::Unknown(_) => QueryResult::Unknown,
     ContainerQuery::Not(inner) => container_query_matches(
       container_id,
@@ -576,10 +578,22 @@ fn resolve_container_query_length(
   let _block = block_base.is_finite().then_some(block_base);
 
   if let Some(calc) = length.calc {
-    let percentage_base = if calc.has_percentage() { inline } else { Some(0.0) };
+    let percentage_base = if calc.has_percentage() {
+      inline
+    } else {
+      Some(0.0)
+    };
     let needs_viewport = calc.has_viewport_relative();
-    let vw = if needs_viewport { vw? } else { vw.unwrap_or(0.0) };
-    let vh = if needs_viewport { vh? } else { vh.unwrap_or(0.0) };
+    let vw = if needs_viewport {
+      vw?
+    } else {
+      vw.unwrap_or(0.0)
+    };
+    let vh = if needs_viewport {
+      vh?
+    } else {
+      vh.unwrap_or(0.0)
+    };
     let percentage_base = percentage_base.filter(|v| v.is_finite());
     let mut total = 0.0;
     for term in calc.terms() {
@@ -1336,7 +1350,9 @@ fn eval_style_query(
 ) -> QueryResult {
   match query {
     StyleQueryExpr::Unknown => QueryResult::Unknown,
-    StyleQueryExpr::Feature(feature) => eval_style_feature(feature, container, container_parent, ctx),
+    StyleQueryExpr::Feature(feature) => {
+      eval_style_feature(feature, container, container_parent, ctx)
+    }
     StyleQueryExpr::Not(inner) => eval_style_query(inner, container, container_parent, ctx).not(),
     StyleQueryExpr::And(list) => {
       let mut result = QueryResult::True;
@@ -1400,8 +1416,7 @@ fn contains_cascade_dependent_keyword(value: &str) -> bool {
     while let Ok(token) = parser.next_including_whitespace_and_comments() {
       match token {
         cssparser::Token::Ident(ident)
-          if ident.eq_ignore_ascii_case("revert")
-            || ident.eq_ignore_ascii_case("revert-layer") =>
+          if ident.eq_ignore_ascii_case("revert") || ident.eq_ignore_ascii_case("revert-layer") =>
         {
           return true;
         }
@@ -1480,9 +1495,9 @@ fn cq_required_bases_from_property_value(value: &PropertyValue) -> u8 {
   use crate::css::types::PropertyValue as PV;
   match value {
     PV::Length(length) => cq_required_bases_from_length(length),
-    PV::Multiple(values) => values
-      .iter()
-      .fold(0u8, |mask, value| mask | cq_required_bases_from_property_value(value)),
+    PV::Multiple(values) => values.iter().fold(0u8, |mask, value| {
+      mask | cq_required_bases_from_property_value(value)
+    }),
     PV::BoxShadow(shadows) => shadows.iter().fold(0u8, |mask, shadow| {
       mask
         | cq_required_bases_from_length(&shadow.offset_x)
@@ -1499,7 +1514,9 @@ fn cq_required_bases_from_property_value(value: &PropertyValue) -> u8 {
     PV::Translate(value) => match value {
       crate::css::types::TranslateValue::None => 0,
       crate::css::types::TranslateValue::Values { x, y, z } => {
-        cq_required_bases_from_length(x) | cq_required_bases_from_length(y) | cq_required_bases_from_length(z)
+        cq_required_bases_from_length(x)
+          | cq_required_bases_from_length(y)
+          | cq_required_bases_from_length(z)
       }
     },
     PV::Transform(transforms) => transforms.iter().fold(0u8, |mask, transform| {
@@ -1511,14 +1528,17 @@ fn cq_required_bases_from_property_value(value: &PropertyValue) -> u8 {
           T::TranslateY(y) => cq_required_bases_from_length(y),
           T::TranslateZ(z) => cq_required_bases_from_length(z),
           T::Translate3d(x, y, z) => {
-            cq_required_bases_from_length(x) | cq_required_bases_from_length(y) | cq_required_bases_from_length(z)
+            cq_required_bases_from_length(x)
+              | cq_required_bases_from_length(y)
+              | cq_required_bases_from_length(z)
           }
           T::Perspective(p) => cq_required_bases_from_length(p),
           // Remaining transform components do not contain lengths.
           _ => 0,
         }
     }),
-    PV::RadialGradient { size, position, .. } | PV::RepeatingRadialGradient { size, position, .. } => {
+    PV::RadialGradient { size, position, .. }
+    | PV::RepeatingRadialGradient { size, position, .. } => {
       use crate::css::types::RadialGradientSize;
       let mut mask = 0u8;
       mask |= cq_required_bases_from_length(&position.x.offset);
@@ -1532,7 +1552,8 @@ fn cq_required_bases_from_property_value(value: &PropertyValue) -> u8 {
       mask
     }
     PV::ConicGradient { position, .. } | PV::RepeatingConicGradient { position, .. } => {
-      cq_required_bases_from_length(&position.x.offset) | cq_required_bases_from_length(&position.y.offset)
+      cq_required_bases_from_length(&position.x.offset)
+        | cq_required_bases_from_length(&position.y.offset)
     }
     // Keyword strings may represent token streams for properties that defer parsing. Scan these so
     // `style()` queries don't treat unresolved cq* bases as a definitive mismatch.
@@ -1619,14 +1640,22 @@ fn eval_plain_style_feature(
       &styles.custom_properties,
       "",
     ) {
-      crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value: resolved } => {
+      crate::style::var_resolution::VarResolutionResult::Resolved {
+        css_text,
+        value: resolved,
+      } => {
         // `css_text` is empty on the fast path when no `var()` calls were present. Avoid treating an
         // actual empty resolution (`var(--x,)`) as "no substitution" by also checking whether the
         // resolver had to materialize a new value.
-        let no_substitution =
-          matches!(resolved, crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_))
-            && css_text.is_empty();
-        if no_substitution { Cow::Borrowed(value) } else { css_text }
+        let no_substitution = matches!(
+          resolved,
+          crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_)
+        ) && css_text.is_empty();
+        if no_substitution {
+          Cow::Borrowed(value)
+        } else {
+          css_text
+        }
       }
       _ => return QueryResult::False,
     }
@@ -1659,10 +1688,12 @@ fn eval_plain_style_feature(
 
     // Prefer typed comparisons for registered properties when possible.
     if let Some(rule) = registry_entry {
-      if let Some(expected_typed) =
-        rule.syntax.parse_value(trim_ascii_whitespace_html_css(&expected_resolved))
+      if let Some(expected_typed) = rule
+        .syntax
+        .parse_value(trim_ascii_whitespace_html_css(&expected_resolved))
       {
-        if let crate::style::values::CustomPropertyTypedValue::Length(expected_len) = &expected_typed
+        if let crate::style::values::CustomPropertyTypedValue::Length(expected_len) =
+          &expected_typed
         {
           let mut required = cq_required_bases_from_length(expected_len);
           if let Some(crate::style::values::CustomPropertyTypedValue::Length(actual_len)) =
@@ -1711,7 +1742,10 @@ fn eval_plain_style_feature(
     }
   }
 
-  let viewport = Size::new(ctx.base_media.viewport_width, ctx.base_media.viewport_height);
+  let viewport = Size::new(
+    ctx.base_media.viewport_width,
+    ctx.base_media.viewport_height,
+  );
   let color_scheme_pref = ctx
     .base_media
     .prefers_color_scheme
@@ -1807,7 +1841,10 @@ fn eval_boolean_style_feature(
     _ => return false,
   };
 
-  let viewport = Size::new(ctx.base_media.viewport_width, ctx.base_media.viewport_height);
+  let viewport = Size::new(
+    ctx.base_media.viewport_width,
+    ctx.base_media.viewport_height,
+  );
   let color_scheme_pref = ctx
     .base_media
     .prefers_color_scheme
@@ -1876,7 +1913,10 @@ struct NumericValue {
   value: f32,
 }
 
-fn coerce_unitless_zero_number(lhs: NumericValue, rhs: NumericValue) -> (NumericValue, NumericValue) {
+fn coerce_unitless_zero_number(
+  lhs: NumericValue,
+  rhs: NumericValue,
+) -> (NumericValue, NumericValue) {
   match (lhs.ty, rhs.ty) {
     (NumericType::Number, ty)
       if lhs.value == 0.0
@@ -1885,10 +1925,7 @@ fn coerce_unitless_zero_number(lhs: NumericValue, rhs: NumericValue) -> (Numeric
           NumericType::LengthPx | NumericType::AngleDeg | NumericType::TimeMs
         ) =>
     {
-      (
-        NumericValue { ty, value: 0.0 },
-        rhs,
-      )
+      (NumericValue { ty, value: 0.0 }, rhs)
     }
     (ty, NumericType::Number)
       if rhs.value == 0.0
@@ -1897,10 +1934,7 @@ fn coerce_unitless_zero_number(lhs: NumericValue, rhs: NumericValue) -> (Numeric
           NumericType::LengthPx | NumericType::AngleDeg | NumericType::TimeMs
         ) =>
     {
-      (
-        lhs,
-        NumericValue { ty, value: 0.0 },
-      )
+      (lhs, NumericValue { ty, value: 0.0 })
     }
     _ => (lhs, rhs),
   }
@@ -1994,31 +2028,54 @@ fn eval_style_range_value(
 
   let inline_sides = if inline_horizontal {
     if inline_positive {
-      (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+      (
+        crate::style::PhysicalSide::Left,
+        crate::style::PhysicalSide::Right,
+      )
     } else {
-      (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+      (
+        crate::style::PhysicalSide::Right,
+        crate::style::PhysicalSide::Left,
+      )
     }
   } else if inline_positive {
-    (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+    (
+      crate::style::PhysicalSide::Top,
+      crate::style::PhysicalSide::Bottom,
+    )
   } else {
-    (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+    (
+      crate::style::PhysicalSide::Bottom,
+      crate::style::PhysicalSide::Top,
+    )
   };
 
   let block_sides = if block_horizontal {
     if block_positive {
-      (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+      (
+        crate::style::PhysicalSide::Left,
+        crate::style::PhysicalSide::Right,
+      )
     } else {
-      (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+      (
+        crate::style::PhysicalSide::Right,
+        crate::style::PhysicalSide::Left,
+      )
     }
   } else if block_positive {
-    (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+    (
+      crate::style::PhysicalSide::Top,
+      crate::style::PhysicalSide::Bottom,
+    )
   } else {
-    (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+    (
+      crate::style::PhysicalSide::Bottom,
+      crate::style::PhysicalSide::Top,
+    )
   };
 
-  let numeric_equal = |a: NumericValue, b: NumericValue| -> bool {
-    a.ty == b.ty && (a.value - b.value).abs() < 1e-6
-  };
+  let numeric_equal =
+    |a: NumericValue, b: NumericValue| -> bool { a.ty == b.ty && (a.value - b.value).abs() < 1e-6 };
 
   let margin_for_side = |side: crate::style::PhysicalSide| -> Option<NumericValue> {
     let len = match side {
@@ -2120,22 +2177,25 @@ fn eval_style_range_value(
         value: styles.font_size,
       }),
       "font-size-adjust" => match styles.font_size_adjust {
-        crate::style::types::FontSizeAdjust::Number { ratio, .. } => ratio
-          .is_finite()
-          .then_some(NumericValue {
+        crate::style::types::FontSizeAdjust::Number { ratio, .. } => {
+          ratio.is_finite().then_some(NumericValue {
             ty: NumericType::Number,
             value: ratio,
-          }),
-        crate::style::types::FontSizeAdjust::None | crate::style::types::FontSizeAdjust::FromFont { .. } => None,
+          })
+        }
+        crate::style::types::FontSizeAdjust::None
+        | crate::style::types::FontSizeAdjust::FromFont { .. } => None,
       },
       "text-size-adjust" => match styles.text_size_adjust {
-        crate::style::types::TextSizeAdjust::Percentage(pct) => pct
-          .is_finite()
-          .then_some(NumericValue {
+        crate::style::types::TextSizeAdjust::Percentage(pct) => {
+          pct.is_finite().then_some(NumericValue {
             ty: NumericType::Percentage,
             value: pct,
-          }),
-        crate::style::types::TextSizeAdjust::Auto | crate::style::types::TextSizeAdjust::None => None,
+          })
+        }
+        crate::style::types::TextSizeAdjust::Auto | crate::style::types::TextSizeAdjust::None => {
+          None
+        }
       },
       "line-clamp" | "-webkit-line-clamp" => styles.line_clamp.map(|lines| NumericValue {
         ty: NumericType::Number,
@@ -2155,18 +2215,20 @@ fn eval_style_range_value(
         }),
         _ => None,
       },
-      "animation-duration" | "-webkit-animation-duration" => match styles.animation_durations.as_ref() {
-        [ms]
-          if ms.is_finite()
-            && *ms != crate::style::properties::ANIMATION_DURATION_AUTO_SENTINEL_MS =>
-        {
-          Some(NumericValue {
-            ty: NumericType::TimeMs,
-            value: *ms,
-          })
+      "animation-duration" | "-webkit-animation-duration" => {
+        match styles.animation_durations.as_ref() {
+          [ms]
+            if ms.is_finite()
+              && *ms != crate::style::properties::ANIMATION_DURATION_AUTO_SENTINEL_MS =>
+          {
+            Some(NumericValue {
+              ty: NumericType::TimeMs,
+              value: *ms,
+            })
+          }
+          _ => None,
         }
-        _ => None,
-      },
+      }
       "animation-delay" | "-webkit-animation-delay" => match styles.animation_delays.as_ref() {
         [ms] if ms.is_finite() => Some(NumericValue {
           ty: NumericType::TimeMs,
@@ -2185,7 +2247,7 @@ fn eval_style_range_value(
           }
           _ => None,
         }
-      },
+      }
       "font-weight" => Some(NumericValue {
         ty: NumericType::Number,
         value: styles.font_weight.to_u16() as f32,
@@ -2323,10 +2385,7 @@ fn eval_style_range_value(
         let right = inset_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = inset_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = inset_for_side(crate::style::PhysicalSide::Left)?;
-        if numeric_equal(top, right)
-          && numeric_equal(top, bottom)
-          && numeric_equal(top, left)
-        {
+        if numeric_equal(top, right) && numeric_equal(top, bottom) && numeric_equal(top, left) {
           Some(top)
         } else {
           None
@@ -2418,33 +2477,54 @@ fn eval_style_range_value(
         .max_height
         .as_ref()
         .and_then(|len| length_to_numeric(len, container, ctx)),
-      "inline-size" => (if inline_horizontal { &styles.width } else { &styles.height })
-        .as_ref()
-        .and_then(|len| length_to_numeric(len, container, ctx)),
-      "block-size" => (if inline_horizontal { &styles.height } else { &styles.width })
-        .as_ref()
-        .and_then(|len| length_to_numeric(len, container, ctx)),
-      "min-inline-size" => (if inline_horizontal { &styles.min_width } else { &styles.min_height })
-        .as_ref()
-        .and_then(|len| length_to_numeric(len, container, ctx)),
-      "min-block-size" => (if inline_horizontal { &styles.min_height } else { &styles.min_width })
-        .as_ref()
-        .and_then(|len| length_to_numeric(len, container, ctx)),
-      "max-inline-size" => (if inline_horizontal { &styles.max_width } else { &styles.max_height })
-        .as_ref()
-        .and_then(|len| length_to_numeric(len, container, ctx)),
-      "max-block-size" => (if inline_horizontal { &styles.max_height } else { &styles.max_width })
-        .as_ref()
-        .and_then(|len| length_to_numeric(len, container, ctx)),
+      "inline-size" => (if inline_horizontal {
+        &styles.width
+      } else {
+        &styles.height
+      })
+      .as_ref()
+      .and_then(|len| length_to_numeric(len, container, ctx)),
+      "block-size" => (if inline_horizontal {
+        &styles.height
+      } else {
+        &styles.width
+      })
+      .as_ref()
+      .and_then(|len| length_to_numeric(len, container, ctx)),
+      "min-inline-size" => (if inline_horizontal {
+        &styles.min_width
+      } else {
+        &styles.min_height
+      })
+      .as_ref()
+      .and_then(|len| length_to_numeric(len, container, ctx)),
+      "min-block-size" => (if inline_horizontal {
+        &styles.min_height
+      } else {
+        &styles.min_width
+      })
+      .as_ref()
+      .and_then(|len| length_to_numeric(len, container, ctx)),
+      "max-inline-size" => (if inline_horizontal {
+        &styles.max_width
+      } else {
+        &styles.max_height
+      })
+      .as_ref()
+      .and_then(|len| length_to_numeric(len, container, ctx)),
+      "max-block-size" => (if inline_horizontal {
+        &styles.max_height
+      } else {
+        &styles.max_width
+      })
+      .as_ref()
+      .and_then(|len| length_to_numeric(len, container, ctx)),
       "margin" => {
         let top = margin_for_side(crate::style::PhysicalSide::Top)?;
         let right = margin_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = margin_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = margin_for_side(crate::style::PhysicalSide::Left)?;
-        if numeric_equal(top, right)
-          && numeric_equal(top, bottom)
-          && numeric_equal(top, left)
-        {
+        if numeric_equal(top, right) && numeric_equal(top, bottom) && numeric_equal(top, left) {
           Some(top)
         } else {
           None
@@ -2493,10 +2573,7 @@ fn eval_style_range_value(
         let right = padding_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = padding_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = padding_for_side(crate::style::PhysicalSide::Left)?;
-        if numeric_equal(top, right)
-          && numeric_equal(top, bottom)
-          && numeric_equal(top, left)
-        {
+        if numeric_equal(top, right) && numeric_equal(top, bottom) && numeric_equal(top, left) {
           Some(top)
         } else {
           None
@@ -2533,10 +2610,7 @@ fn eval_style_range_value(
         let right = scroll_padding_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = scroll_padding_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = scroll_padding_for_side(crate::style::PhysicalSide::Left)?;
-        if numeric_equal(top, right)
-          && numeric_equal(top, bottom)
-          && numeric_equal(top, left)
-        {
+        if numeric_equal(top, right) && numeric_equal(top, bottom) && numeric_equal(top, left) {
           Some(top)
         } else {
           None
@@ -2573,10 +2647,7 @@ fn eval_style_range_value(
         let right = scroll_margin_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = scroll_margin_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = scroll_margin_for_side(crate::style::PhysicalSide::Left)?;
-        if numeric_equal(top, right)
-          && numeric_equal(top, bottom)
-          && numeric_equal(top, left)
-        {
+        if numeric_equal(top, right) && numeric_equal(top, bottom) && numeric_equal(top, left) {
           Some(top)
         } else {
           None
@@ -2613,10 +2684,7 @@ fn eval_style_range_value(
         let right = border_width_for_side(crate::style::PhysicalSide::Right)?;
         let bottom = border_width_for_side(crate::style::PhysicalSide::Bottom)?;
         let left = border_width_for_side(crate::style::PhysicalSide::Left)?;
-        if numeric_equal(top, right)
-          && numeric_equal(top, bottom)
-          && numeric_equal(top, left)
-        {
+        if numeric_equal(top, right) && numeric_equal(top, bottom) && numeric_equal(top, left) {
           Some(top)
         } else {
           None
@@ -2863,8 +2931,16 @@ fn resolve_length_for_query(
     }
 
     let needs_viewport = calc.has_viewport_relative();
-    let vw = if needs_viewport { vw? } else { vw.unwrap_or(0.0) };
-    let vh = if needs_viewport { vh? } else { vh.unwrap_or(0.0) };
+    let vw = if needs_viewport {
+      vw?
+    } else {
+      vw.unwrap_or(0.0)
+    };
+    let vh = if needs_viewport {
+      vh?
+    } else {
+      vh.unwrap_or(0.0)
+    };
 
     let mut total = 0.0;
     for term in calc.terms() {
@@ -2950,8 +3026,16 @@ fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32
     }
   };
 
-  let cqi = if supports_inline { clamp(container.inline_size) } else { 0.0 };
-  let cqb = if supports_block { clamp(container.block_size) } else { 0.0 };
+  let cqi = if supports_inline {
+    clamp(container.inline_size)
+  } else {
+    0.0
+  };
+  let cqb = if supports_block {
+    clamp(container.block_size)
+  } else {
+    0.0
+  };
 
   let cqw = match container.container_type {
     ContainerType::Size => {
@@ -3009,14 +3093,7 @@ fn resolve_style_query_container_query_lengths(
   // Resolve `cqw`/`cqh`/`cqi`/`cqb` units relative to the query container itself. This mirrors the
   // main cascade path where container query units are resolved after layout, but style() queries
   // require resolving against the query container snapshot immediately.
-  resolve_container_query_lengths(
-    styles,
-    0,
-    &[],
-    Some(&dummy_ctx),
-    Size::new(0.0, 0.0),
-    true,
-  );
+  resolve_container_query_lengths(styles, 0, &[], Some(&dummy_ctx), Size::new(0.0, 0.0), true);
 }
 
 fn parse_numeric_value(
@@ -3040,11 +3117,19 @@ fn parse_numeric_value(
       &container.styles.custom_properties,
       "",
     ) {
-      crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value: resolved } => {
-        let no_substitution =
-          matches!(resolved, crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_))
-            && css_text.is_empty();
-        if no_substitution { Cow::Borrowed(trimmed) } else { css_text }
+      crate::style::var_resolution::VarResolutionResult::Resolved {
+        css_text,
+        value: resolved,
+      } => {
+        let no_substitution = matches!(
+          resolved,
+          crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_)
+        ) && css_text.is_empty();
+        if no_substitution {
+          Cow::Borrowed(trimmed)
+        } else {
+          css_text
+        }
       }
       _ => return None,
     }
@@ -3207,9 +3292,15 @@ fn cq_type_bit(container: &ContainerQueryInfo) -> u8 {
 
 fn cq_media_feature_inline_only(feature: &MediaFeature, inline_axis_is_horizontal: bool) -> bool {
   match feature {
-    MediaFeature::InlineSize(_) | MediaFeature::MinInlineSize(_) | MediaFeature::MaxInlineSize(_) => true,
-    MediaFeature::Width(_) | MediaFeature::MinWidth(_) | MediaFeature::MaxWidth(_) => inline_axis_is_horizontal,
-    MediaFeature::Height(_) | MediaFeature::MinHeight(_) | MediaFeature::MaxHeight(_) => !inline_axis_is_horizontal,
+    MediaFeature::InlineSize(_)
+    | MediaFeature::MinInlineSize(_)
+    | MediaFeature::MaxInlineSize(_) => true,
+    MediaFeature::Width(_) | MediaFeature::MinWidth(_) | MediaFeature::MaxWidth(_) => {
+      inline_axis_is_horizontal
+    }
+    MediaFeature::Height(_) | MediaFeature::MinHeight(_) | MediaFeature::MaxHeight(_) => {
+      !inline_axis_is_horizontal
+    }
     MediaFeature::Range { feature, .. } => match feature {
       RangeFeature::InlineSize => true,
       RangeFeature::Width => inline_axis_is_horizontal,
@@ -3695,6 +3786,44 @@ fn ensure_cascade_profile_initialized() {
 pub fn set_cascade_profile_enabled(enabled: bool) {
   ensure_cascade_profile_initialized();
   CASCADE_PROFILE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+// Style sharing statistics are tracked per-thread so integration tests can assert on
+// deterministic hit/miss counts even when the test runner executes other cascade tests in
+// parallel. Counting is disabled by default to avoid any overhead in production code paths.
+thread_local! {
+  static STYLE_SHARING_STATS_ENABLED: Cell<bool> = const { Cell::new(false) };
+  static STYLE_SHARING_HITS: Cell<u64> = const { Cell::new(0) };
+  static STYLE_SHARING_MISSES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Snapshot of style sharing cache statistics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StyleSharingStats {
+  pub hits: u64,
+  pub misses: u64,
+}
+
+/// Enable or disable style sharing stats collection for the current thread.
+///
+/// When disabled, the style sharing cache continues to operate normally; only counters are
+/// suppressed.
+pub fn set_style_sharing_stats_enabled(enabled: bool) {
+  STYLE_SHARING_STATS_ENABLED.with(|flag| flag.set(enabled));
+}
+
+/// Reset style sharing hit/miss counters for the current thread.
+pub fn reset_style_sharing_stats() {
+  STYLE_SHARING_HITS.with(|hits| hits.set(0));
+  STYLE_SHARING_MISSES.with(|misses| misses.set(0));
+}
+
+/// Capture style sharing hit/miss counters for the current thread.
+pub fn capture_style_sharing_stats() -> StyleSharingStats {
+  StyleSharingStats {
+    hits: STYLE_SHARING_HITS.with(|hits| hits.get()),
+    misses: STYLE_SHARING_MISSES.with(|misses| misses.get()),
+  }
 }
 
 /// Snapshot of cascade profiling counters.
@@ -4563,6 +4692,12 @@ struct DomSelectorKeyEntry {
   attr_len: u32,
   attr_value_start: u32,
   attr_value_len: u32,
+  // Precomputed element signature used by the per-pass style sharing cache.
+  style_sharing_signature: u64,
+  // Conservative eligibility flag for style sharing. Set to true when the element has attribute
+  // values that are not fully represented in the selector key cache (e.g. long non-class/id
+  // values), or when other local constraints make sharing unsafe.
+  style_sharing_ineligible: bool,
 }
 
 #[derive(Debug, Default)]
@@ -4635,6 +4770,14 @@ impl DomSelectorKeyCache {
         .unwrap_or(&[]),
     }
   }
+
+  fn style_sharing_info(&self, node_id: usize) -> (u64, bool) {
+    let entry = self.nodes.get(node_id).copied().unwrap_or_default();
+    (
+      entry.style_sharing_signature,
+      entry.style_sharing_ineligible,
+    )
+  }
 }
 
 impl DomMaps {
@@ -4696,6 +4839,7 @@ impl DomMaps {
     shadow_root_by_host.resize(map_len, 0);
     let mut exportparts_map: HashMap<usize, Vec<(String, String)>> = HashMap::new();
     let mut selector_keys = DomSelectorKeyCache::new(node_count)?;
+    let mut style_sharing_attr_value_keys: Vec<SelectorBucketKey> = Vec::new();
 
     // (node, parent_id, containing_shadow_root_id)
     let mut stack: Vec<(&DomNode, Option<usize>, usize)> = Vec::new();
@@ -4756,6 +4900,7 @@ impl DomMaps {
       }
 
       if node.is_element() {
+        let namespace_key = node.namespace().map(selector_hash_str).unwrap_or_default();
         let tag_key = node.tag_name().map(selector_bucket_tag).unwrap_or_default();
         let (id_key, has_id) = node
           .get_attribute_ref("id")
@@ -4785,10 +4930,22 @@ impl DomMaps {
         let attr_value_start = selector_keys.attr_value_keys.len();
         let mut attr_count = 0usize;
         let mut attr_value_count = 0usize;
-        for (_name, value) in node.attributes_iter() {
+        let mut style_sharing_ineligible = false;
+        for (name, value) in node.attributes_iter() {
           attr_count += 1;
           if value.len() <= ATTR_VALUE_INDEX_MAX_LEN {
             attr_value_count += 1;
+          }
+          // Style sharing keys rely on the selector key cache for a normalized view of element
+          // attributes. When an attribute value is too long to be indexed we conservatively disable
+          // sharing for the element (except for `id` and `class`, which are represented separately).
+          if !style_sharing_ineligible {
+            if name.eq_ignore_ascii_case("id") || name.eq_ignore_ascii_case("class") {
+              continue;
+            }
+            if name.eq_ignore_ascii_case("style") || value.len() > ATTR_VALUE_INDEX_MAX_LEN {
+              style_sharing_ineligible = true;
+            }
           }
         }
         selector_keys
@@ -4803,12 +4960,28 @@ impl DomMaps {
           .map_err(|_| RenderError::PaintFailed {
             operation: "selector key cache allocation failed".to_string(),
           })?;
+        style_sharing_attr_value_keys.clear();
+        if !style_sharing_ineligible {
+          style_sharing_attr_value_keys
+            .try_reserve(attr_count)
+            .map_err(|_| RenderError::PaintFailed {
+              operation: "selector key cache allocation failed".to_string(),
+            })?;
+        }
         for (name, value) in node.attributes_iter() {
           selector_keys.attr_keys.push(selector_bucket_attr(name));
           if value.len() <= ATTR_VALUE_INDEX_MAX_LEN {
             selector_keys
               .attr_value_keys
               .push(selector_bucket_attr_value(name, value));
+          }
+          if !style_sharing_ineligible
+            && !name.eq_ignore_ascii_case("class")
+            && !name.eq_ignore_ascii_case("style")
+          {
+            if name.eq_ignore_ascii_case("id") || value.len() <= ATTR_VALUE_INDEX_MAX_LEN {
+              style_sharing_attr_value_keys.push(style_sharing_bucket_attr_value(name, value));
+            }
           }
         }
         let attr_end = selector_keys.attr_keys.len();
@@ -4817,6 +4990,23 @@ impl DomMaps {
         selector_keys.attr_value_keys[attr_value_start..attr_value_end].sort_unstable();
         let attr_len = attr_end - attr_start;
         let attr_value_len = attr_value_end - attr_value_start;
+
+        if !style_sharing_ineligible {
+          style_sharing_attr_value_keys.sort_unstable();
+        }
+        let style_sharing_signature = if style_sharing_ineligible {
+          0
+        } else {
+          let mut hasher = FxHasher::default();
+          namespace_key.hash(&mut hasher);
+          tag_key.hash(&mut hasher);
+          has_id.hash(&mut hasher);
+          id_key.hash(&mut hasher);
+          selector_keys.class_keys[class_start..class_end].hash(&mut hasher);
+          selector_keys.attr_keys[attr_start..attr_end].hash(&mut hasher);
+          style_sharing_attr_value_keys.hash(&mut hasher);
+          hasher.finish()
+        };
 
         let to_u32 = |value: usize| {
           u32::try_from(value).map_err(|_| RenderError::PaintFailed {
@@ -4835,6 +5025,8 @@ impl DomMaps {
             attr_len: to_u32(attr_len)?,
             attr_value_start: to_u32(attr_value_start)?,
             attr_value_len: to_u32(attr_value_len)?,
+            style_sharing_signature,
+            style_sharing_ineligible,
           },
         );
       }
@@ -4945,6 +5137,10 @@ impl DomMaps {
   fn selector_keys(&self, node_id: usize) -> NodeSelectorKeys<'_> {
     self.selector_keys.node_keys(node_id)
   }
+
+  fn style_sharing_info(&self, node_id: usize) -> (u64, bool) {
+    self.selector_keys.style_sharing_info(node_id)
+  }
 }
 
 fn build_slot_maps<'a>(
@@ -5047,7 +5243,9 @@ fn build_form_validity_index(root: &DomNode, dom_maps: &DomMaps) -> FormValidity
     };
     let tree_scope_id = dom_maps.containing_shadow_root(node_id).unwrap_or(0);
     let scope_map = forms_by_tree_scope.entry(tree_scope_id).or_default();
-    scope_map.entry(id.to_string()).or_insert(node as *const DomNode);
+    scope_map
+      .entry(id.to_string())
+      .or_insert(node as *const DomNode);
   }
 
   let mut index = FormValidityIndex::default();
@@ -5060,7 +5258,11 @@ fn build_form_validity_index(root: &DomNode, dom_maps: &DomMaps) -> FormValidity
     nearest_form: Option<*const DomNode>,
   }
 
-  let root_id = dom_maps.id_map.get(&(root as *const DomNode)).copied().unwrap_or(0);
+  let root_id = dom_maps
+    .id_map
+    .get(&(root as *const DomNode))
+    .copied()
+    .unwrap_or(0);
   let mut ancestors: Vec<&DomNode> = Vec::new();
   let mut stack: Vec<Frame<'_>> = vec![Frame {
     node: root,
@@ -5260,7 +5462,12 @@ fn document_unlayered_layer_order() -> Arc<[u32]> {
   DOCUMENT_UNLAYERED_LAYER_ORDER
     .get_or_init(|| {
       Arc::from(
-        [DOCUMENT_TREE_SCOPE_PREFIX, LAYER_ORDER_KIND_NORMAL, u32::MAX].as_slice(),
+        [
+          DOCUMENT_TREE_SCOPE_PREFIX,
+          LAYER_ORDER_KIND_NORMAL,
+          u32::MAX,
+        ]
+        .as_slice(),
       )
     })
     .clone()
@@ -5562,6 +5769,32 @@ fn selector_bucket_attr_value(name: &str, value: &str) -> SelectorBucketKey {
   hash
 }
 
+/// Attribute value key used for style sharing signatures.
+///
+/// This is intentionally more conservative than `selector_bucket_attr_value`: attribute selector
+/// matching is often case-sensitive on the value, so folding value bytes would allow false cache
+/// hits (e.g. `data-x="Foo"` vs `data-x="foo"`).
+#[inline]
+fn style_sharing_bucket_attr_value(name: &str, value: &str) -> SelectorBucketKey {
+  let mut hash = FNV_OFFSET_BASIS;
+  for byte in name.bytes() {
+    let folded = if byte.is_ascii_uppercase() {
+      byte + 32
+    } else {
+      byte
+    };
+    hash ^= folded as u64;
+    hash = hash.wrapping_mul(FNV_PRIME);
+  }
+  hash ^= 0u64;
+  hash = hash.wrapping_mul(FNV_PRIME);
+  for byte in value.bytes() {
+    hash ^= byte as u64;
+    hash = hash.wrapping_mul(FNV_PRIME);
+  }
+  hash
+}
+
 #[inline]
 fn selector_bucket_part(value: &str) -> SelectorBucketKey {
   selector_hash_str(value)
@@ -5651,6 +5884,7 @@ struct RuleIndex<'a> {
   rule_sets_content: Vec<bool>,
   has_has_requirements: bool,
   selectors: Vec<IndexedSelector<'a>>,
+  selector_non_shareable: Vec<bool>,
   metadatas: Vec<SelectorMetadata>,
   fast_rejects: Vec<RightmostFastReject>,
   by_id: SelectorBucketMap<SelectorIndexList>,
@@ -5661,6 +5895,7 @@ struct RuleIndex<'a> {
   root: Vec<SelectorIndex>,
   universal: Vec<SelectorIndex>,
   pseudo_selectors: Vec<IndexedSelector<'a>>,
+  pseudo_selector_non_shareable: Vec<bool>,
   pseudo_buckets: HashMap<PseudoElement, PseudoBuckets>,
   pseudo_content: HashSet<PseudoElement>,
   slotted_selectors: Vec<IndexedSlottedSelector<'a>>,
@@ -7681,6 +7916,7 @@ impl<'a> RuleIndex<'a> {
       rule_sets_content: Vec::new(),
       has_has_requirements: false,
       selectors: Vec::new(),
+      selector_non_shareable: Vec::new(),
       metadatas: Vec::new(),
       fast_rejects: Vec::new(),
       by_id: SelectorBucketMap::default(),
@@ -7691,6 +7927,7 @@ impl<'a> RuleIndex<'a> {
       root: Vec::new(),
       universal: Vec::new(),
       pseudo_selectors: Vec::new(),
+      pseudo_selector_non_shareable: Vec::new(),
       pseudo_buckets: HashMap::new(),
       pseudo_content: HashSet::new(),
       slotted_selectors: Vec::new(),
@@ -7741,7 +7978,9 @@ impl<'a> RuleIndex<'a> {
         .then(|| (!use_linear_dedup).then(FxHashSet::default))
         .flatten();
       if let Some(set) = seen_set.as_mut() {
-        set.try_reserve(selectors.len()).map_err(|_| alloc_failed())?;
+        set
+          .try_reserve(selectors.len())
+          .map_err(|_| alloc_failed())?;
       }
 
       for selector in selectors.iter() {
@@ -7771,9 +8010,7 @@ impl<'a> RuleIndex<'a> {
               .as_ref()
               .and_then(|sel| selector_rightmost_compound_fast_reject(sel, quirks_mode))
             {
-              Some(desc) => {
-                push_cache_entry(&mut index.fast_rejects, desc)?
-              }
+              Some(desc) => push_cache_entry(&mut index.fast_rejects, desc)?,
               None => 0,
             };
             let args_ancestor_hashes = match pe {
@@ -7786,12 +8023,12 @@ impl<'a> RuleIndex<'a> {
             let args_fast_reject = match pe {
               PseudoElement::Slotted(args) => {
                 let mut out: Vec<u32> = Vec::new();
-                out.try_reserve_exact(args.len()).map_err(|_| alloc_failed())?;
+                out
+                  .try_reserve_exact(args.len())
+                  .map_err(|_| alloc_failed())?;
                 for sel in args.iter() {
                   let id = match selector_rightmost_compound_fast_reject(sel, quirks_mode) {
-                    Some(desc) => {
-                      push_cache_entry(&mut index.fast_rejects, desc)?
-                    }
+                    Some(desc) => push_cache_entry(&mut index.fast_rejects, desc)?,
                     None => 0,
                   };
                   out.push(id);
@@ -7864,9 +8101,7 @@ impl<'a> RuleIndex<'a> {
           };
           let ancestor_hashes = cascade_ancestor_hashes(selector, quirks_mode);
           let fast_reject = match pseudo_selector_subject_fast_reject(selector, quirks_mode) {
-            Some(desc) => {
-              push_cache_entry(&mut index.fast_rejects, desc)?
-            }
+            Some(desc) => push_cache_entry(&mut index.fast_rejects, desc)?,
             None => 0,
           };
           index.pseudo_selectors.push(IndexedSelector {
@@ -7877,6 +8112,9 @@ impl<'a> RuleIndex<'a> {
             metadata_id,
             fast_reject,
           });
+          index
+            .pseudo_selector_non_shareable
+            .push(selector_is_non_shareable(selector));
 
           let analysis = pseudo_selector_subject_key_analysis(selector, quirks_mode);
           let freq = pseudo_key_frequencies.entry(pseudo.clone()).or_default();
@@ -7908,9 +8146,7 @@ impl<'a> RuleIndex<'a> {
         };
         let ancestor_hashes = cascade_ancestor_hashes(selector, quirks_mode);
         let fast_reject = match selector_rightmost_compound_fast_reject(selector, quirks_mode) {
-          Some(desc) => {
-            push_cache_entry(&mut index.fast_rejects, desc)?
-          }
+          Some(desc) => push_cache_entry(&mut index.fast_rejects, desc)?,
           None => 0,
         };
         index.selectors.push(IndexedSelector {
@@ -7921,6 +8157,9 @@ impl<'a> RuleIndex<'a> {
           metadata_id,
           fast_reject,
         });
+        index
+          .selector_non_shareable
+          .push(selector_is_non_shareable(selector));
 
         let analysis =
           selector_keys_with_polarity(selector, quirks_mode, SelectorKeyPolarity::Matches);
@@ -10935,10 +11174,14 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
 
   let fallback_document_rules_in_shadow_scopes = true;
 
-  let (custom_property_registry_ua, custom_property_registry_document, custom_property_registry_shadows) =
-    {
-      let register_collected = |registry: &mut CustomPropertyRegistry,
-                                    mut collected: Vec<crate::css::types::CollectedPropertyRule<'_>>| {
+  let (
+    custom_property_registry_ua,
+    custom_property_registry_document,
+    custom_property_registry_shadows,
+  ) = {
+    let register_collected =
+      |registry: &mut CustomPropertyRegistry,
+       mut collected: Vec<crate::css::types::CollectedPropertyRule<'_>>| {
         collected.sort_by(|a, b| {
           a.layer_order
             .as_ref()
@@ -10956,42 +11199,42 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         }
       };
 
-      let mut ua_registry = CustomPropertyRegistry::default();
-      let ua_properties = if let Some(cache) = media_cache.as_deref_mut() {
-        ua_stylesheet.collect_property_rules_with_cache(media_ctx, Some(cache))
-      } else {
-        ua_stylesheet.collect_property_rules(media_ctx)
-      };
-      register_collected(&mut ua_registry, ua_properties);
-      let ua_registry = Arc::new(ua_registry);
-
-      let mut document_registry = ua_registry.as_ref().clone();
-      let document_properties = if let Some(cache) = media_cache.as_deref_mut() {
-        author_sheet.collect_property_rules_with_cache(media_ctx, Some(cache))
-      } else {
-        author_sheet.collect_property_rules(media_ctx)
-      };
-      register_collected(&mut document_registry, document_properties);
-      let document_registry = Arc::new(document_registry);
-
-      let mut shadow_registries: HashMap<usize, Arc<CustomPropertyRegistry>> = HashMap::new();
-      for (host, _shadow_root_id, sheet) in &shadow_sheets {
-        let mut registry = if fallback_document_rules_in_shadow_scopes {
-          document_registry.as_ref().clone()
-        } else {
-          ua_registry.as_ref().clone()
-        };
-        let shadow_properties = if let Some(cache) = media_cache.as_deref_mut() {
-          sheet.collect_property_rules_with_cache(media_ctx, Some(cache))
-        } else {
-          sheet.collect_property_rules(media_ctx)
-        };
-        register_collected(&mut registry, shadow_properties);
-        shadow_registries.insert(*host, Arc::new(registry));
-      }
-
-      (ua_registry, document_registry, shadow_registries)
+    let mut ua_registry = CustomPropertyRegistry::default();
+    let ua_properties = if let Some(cache) = media_cache.as_deref_mut() {
+      ua_stylesheet.collect_property_rules_with_cache(media_ctx, Some(cache))
+    } else {
+      ua_stylesheet.collect_property_rules(media_ctx)
     };
+    register_collected(&mut ua_registry, ua_properties);
+    let ua_registry = Arc::new(ua_registry);
+
+    let mut document_registry = ua_registry.as_ref().clone();
+    let document_properties = if let Some(cache) = media_cache.as_deref_mut() {
+      author_sheet.collect_property_rules_with_cache(media_ctx, Some(cache))
+    } else {
+      author_sheet.collect_property_rules(media_ctx)
+    };
+    register_collected(&mut document_registry, document_properties);
+    let document_registry = Arc::new(document_registry);
+
+    let mut shadow_registries: HashMap<usize, Arc<CustomPropertyRegistry>> = HashMap::new();
+    for (host, _shadow_root_id, sheet) in &shadow_sheets {
+      let mut registry = if fallback_document_rules_in_shadow_scopes {
+        document_registry.as_ref().clone()
+      } else {
+        ua_registry.as_ref().clone()
+      };
+      let shadow_properties = if let Some(cache) = media_cache.as_deref_mut() {
+        sheet.collect_property_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        sheet.collect_property_rules(media_ctx)
+      };
+      register_collected(&mut registry, shadow_properties);
+      shadow_registries.insert(*host, Arc::new(registry));
+    }
+
+    (ua_registry, document_registry, shadow_registries)
+  };
 
   let rule_scopes = RuleScopes {
     ua: ua_index,
@@ -11175,6 +11418,8 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
       let color_scheme_pref = media_ctx
         .prefers_color_scheme
         .unwrap_or(ColorScheme::NoPreference);
+      let mut style_sharing_cache =
+        StyleSharingCache::new(rule_scopes.quirks_mode, target_fragment, true);
       apply_styles_internal(
         dom,
         &rule_scopes,
@@ -11182,6 +11427,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         &mut selector_caches,
         &mut scratch,
         &mut inline_style_decls,
+        &mut style_sharing_cache,
         &mut flat_tree_inheritance_cache,
         &base_styles,
         None,
@@ -11427,67 +11673,69 @@ impl<'a> PreparedCascade<'a> {
     }
 
     let fallback_document_rules_in_shadow_scopes = false;
-
-    let (custom_property_registry_ua, custom_property_registry_document, custom_property_registry_shadows) =
-      {
-        let register_collected =
-          |registry: &mut CustomPropertyRegistry,
-           mut collected: Vec<crate::css::types::CollectedPropertyRule<'_>>| {
-            collected.sort_by(|a, b| {
-              a.layer_order
-                .as_ref()
-                .cmp(b.layer_order.as_ref())
-                .then(a.order.cmp(&b.order))
-            });
-            for rule in collected {
-              let converted = crate::style::custom_properties::PropertyRule {
-                name: rule.rule.name.clone(),
-                syntax: rule.rule.syntax.clone(),
-                inherits: rule.rule.inherits,
-                initial_value: rule.rule.initial_value.clone(),
-              };
-              registry.register(converted);
-            }
-          };
-
-        let mut ua_registry = CustomPropertyRegistry::default();
-        let ua_properties = if let Some(cache) = media_cache.as_deref_mut() {
-          ua_stylesheet.collect_property_rules_with_cache(media_ctx, Some(cache))
-        } else {
-          ua_stylesheet.collect_property_rules(media_ctx)
+    let (
+      custom_property_registry_ua,
+      custom_property_registry_document,
+      custom_property_registry_shadows,
+    ) = {
+      let register_collected =
+        |registry: &mut CustomPropertyRegistry,
+         mut collected: Vec<crate::css::types::CollectedPropertyRule<'_>>| {
+          collected.sort_by(|a, b| {
+            a.layer_order
+              .as_ref()
+              .cmp(b.layer_order.as_ref())
+              .then(a.order.cmp(&b.order))
+          });
+          for rule in collected {
+            let converted = crate::style::custom_properties::PropertyRule {
+              name: rule.rule.name.clone(),
+              syntax: rule.rule.syntax.clone(),
+              inherits: rule.rule.inherits,
+              initial_value: rule.rule.initial_value.clone(),
+            };
+            registry.register(converted);
+          }
         };
-        register_collected(&mut ua_registry, ua_properties);
-        let ua_registry = Arc::new(ua_registry);
 
-        let mut document_registry = ua_registry.as_ref().clone();
-        let document_properties = if let Some(cache) = media_cache.as_deref_mut() {
-          document_ref.collect_property_rules_with_cache(media_ctx, Some(cache))
-        } else {
-          document_ref.collect_property_rules(media_ctx)
-        };
-        register_collected(&mut document_registry, document_properties);
-        let document_registry = Arc::new(document_registry);
-
-        let mut shadow_registries: HashMap<usize, Arc<CustomPropertyRegistry>> = HashMap::new();
-        for (host, sheet) in &shadow_sheets {
-          // Safety: shadow sheets are boxed and kept alive by this struct.
-          let sheet_ref: &'a StyleSheet = unsafe { &*(&**sheet as *const StyleSheet) };
-          let mut registry = if fallback_document_rules_in_shadow_scopes {
-            document_registry.as_ref().clone()
-          } else {
-            ua_registry.as_ref().clone()
-          };
-          let shadow_properties = if let Some(cache) = media_cache.as_deref_mut() {
-            sheet_ref.collect_property_rules_with_cache(media_ctx, Some(cache))
-          } else {
-            sheet_ref.collect_property_rules(media_ctx)
-          };
-          register_collected(&mut registry, shadow_properties);
-          shadow_registries.insert(*host, Arc::new(registry));
-        }
-
-        (ua_registry, document_registry, shadow_registries)
+      let mut ua_registry = CustomPropertyRegistry::default();
+      let ua_properties = if let Some(cache) = media_cache.as_deref_mut() {
+        ua_stylesheet.collect_property_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        ua_stylesheet.collect_property_rules(media_ctx)
       };
+      register_collected(&mut ua_registry, ua_properties);
+      let ua_registry = Arc::new(ua_registry);
+
+      let mut document_registry = ua_registry.as_ref().clone();
+      let document_properties = if let Some(cache) = media_cache.as_deref_mut() {
+        document_ref.collect_property_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        document_ref.collect_property_rules(media_ctx)
+      };
+      register_collected(&mut document_registry, document_properties);
+      let document_registry = Arc::new(document_registry);
+
+      let mut shadow_registries: HashMap<usize, Arc<CustomPropertyRegistry>> = HashMap::new();
+      for (host, sheet) in &shadow_sheets {
+        // Safety: shadow sheets are boxed and kept alive by this struct.
+        let sheet_ref: &'a StyleSheet = unsafe { &*(&**sheet as *const StyleSheet) };
+        let mut registry = if fallback_document_rules_in_shadow_scopes {
+          document_registry.as_ref().clone()
+        } else {
+          ua_registry.as_ref().clone()
+        };
+        let shadow_properties = if let Some(cache) = media_cache.as_deref_mut() {
+          sheet_ref.collect_property_rules_with_cache(media_ctx, Some(cache))
+        } else {
+          sheet_ref.collect_property_rules(media_ctx)
+        };
+        register_collected(&mut registry, shadow_properties);
+        shadow_registries.insert(*host, Arc::new(registry));
+      }
+
+      (ua_registry, document_registry, shadow_registries)
+    };
 
     let rule_scopes = RuleScopes {
       ua: ua_index,
@@ -11874,6 +12122,8 @@ impl<'a> PreparedCascade<'a> {
         } else {
           None
         };
+        let mut style_sharing_cache =
+          StyleSharingCache::new(self.rule_scopes.quirks_mode, target_fragment, true);
         apply_styles_internal(
           self.dom,
           &self.rule_scopes,
@@ -11881,6 +12131,7 @@ impl<'a> PreparedCascade<'a> {
           &mut self.selector_caches,
           &mut self.scratch,
           &mut self.inline_style_decls,
+          &mut style_sharing_cache,
           &mut self.flat_tree_inheritance_cache,
           &self.base_styles,
           None,
@@ -12259,6 +12510,524 @@ struct NodeBaseStyles {
   current_ua_root_font_size: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct StyleSharingKey {
+  parent_id: usize,
+  element_signature: u64,
+  context_bits: u8,
+}
+
+#[derive(Debug, Clone)]
+struct StyleSharingCachedStyles {
+  styles: Arc<ComputedStyle>,
+  ua_styles: Arc<ComputedStyle>,
+  before_styles: Option<Arc<ComputedStyle>>,
+  after_styles: Option<Arc<ComputedStyle>>,
+  marker_styles: Option<Arc<ComputedStyle>>,
+  placeholder_styles: Option<Arc<ComputedStyle>>,
+  file_selector_button_styles: Option<Arc<ComputedStyle>>,
+  footnote_call_styles: Option<Arc<ComputedStyle>>,
+  footnote_marker_styles: Option<Arc<ComputedStyle>>,
+  first_line_styles: Option<Arc<ComputedStyle>>,
+  first_letter_styles: Option<Arc<ComputedStyle>>,
+  slider_thumb_styles: Option<Arc<ComputedStyle>>,
+  slider_track_styles: Option<Arc<ComputedStyle>>,
+}
+
+enum StyleSharingCacheEntry {
+  NonShareable,
+  Cached(Arc<StyleSharingCachedStyles>),
+}
+
+#[derive(Default)]
+struct StyleSharingCache {
+  context_bits: u8,
+  entries: FxHashMap<StyleSharingKey, StyleSharingCacheEntry>,
+}
+
+impl StyleSharingCache {
+  fn new(
+    quirks_mode: QuirksMode,
+    target_fragment: Option<&str>,
+    treat_custom_elements_as_defined: bool,
+  ) -> Self {
+    let quirks_bits: u8 = match quirks_mode {
+      QuirksMode::NoQuirks => 0,
+      QuirksMode::LimitedQuirks => 1,
+      QuirksMode::Quirks => 2,
+    };
+    let mut context_bits = quirks_bits & 0b11;
+    if target_fragment.is_some() {
+      context_bits |= 1 << 2;
+    }
+    if treat_custom_elements_as_defined {
+      context_bits |= 1 << 3;
+    }
+    Self {
+      context_bits,
+      entries: FxHashMap::default(),
+    }
+  }
+
+  #[inline]
+  fn record_hit(&self) {
+    STYLE_SHARING_STATS_ENABLED.with(|enabled| {
+      if !enabled.get() {
+        return;
+      }
+      STYLE_SHARING_HITS.with(|hits| hits.set(hits.get().saturating_add(1)));
+    });
+  }
+
+  #[inline]
+  fn record_miss(&self) {
+    STYLE_SHARING_STATS_ENABLED.with(|enabled| {
+      if !enabled.get() {
+        return;
+      }
+      STYLE_SHARING_MISSES.with(|misses| misses.set(misses.get().saturating_add(1)));
+    });
+  }
+
+  fn eligible_key(
+    &self,
+    node: &DomNode,
+    node_id: usize,
+    parent_id: usize,
+    scope_host: Option<usize>,
+    has_starting_styles: bool,
+    dom_maps: &DomMaps,
+    slot_assignment: &SlotAssignment,
+  ) -> Option<StyleSharingKey> {
+    if has_starting_styles {
+      return None;
+    }
+    if parent_id == 0 {
+      return None;
+    }
+    if !node.is_element() {
+      return None;
+    }
+    // Keep style sharing focused on HTML elements for now. Attribute / tag name casing rules can
+    // differ in foreign namespaces (e.g. SVG/XML), and the cache key is intentionally conservative.
+    if !matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE) {
+      return None;
+    }
+    // Keep the first implementation conservative: avoid shadow DOM / slotting interactions.
+    if scope_host.is_some() {
+      return None;
+    }
+    if dom_maps.shadow_root_for_host(node_id).is_some() {
+      return None;
+    }
+    if slot_assignment.node_to_slot.contains_key(&node_id) {
+      return None;
+    }
+
+    let (element_signature, ineligible) = dom_maps.style_sharing_info(node_id);
+    if element_signature == 0 || ineligible {
+      return None;
+    }
+
+    Some(StyleSharingKey {
+      parent_id,
+      element_signature,
+      context_bits: self.context_bits,
+    })
+  }
+
+  fn lookup<'a>(
+    &mut self,
+    key: StyleSharingKey,
+    node: &DomNode,
+    node_id: usize,
+    ancestors: &[&DomNode],
+    dom_maps: &DomMaps,
+    rule_scopes: &RuleScopes<'_>,
+    scratch: &mut CascadeScratch,
+  ) -> Option<StyleSharingCacheLookup> {
+    match self.entries.get(&key) {
+      Some(StyleSharingCacheEntry::Cached(cached)) => {
+        self.record_hit();
+        return Some(StyleSharingCacheLookup::Hit(Arc::clone(cached)));
+      }
+      Some(StyleSharingCacheEntry::NonShareable) => return None,
+      None => {}
+    }
+
+    if !self.key_shareable(node, node_id, ancestors, dom_maps, rule_scopes, scratch) {
+      self
+        .entries
+        .insert(key, StyleSharingCacheEntry::NonShareable);
+      return None;
+    }
+
+    self.record_miss();
+    Some(StyleSharingCacheLookup::Miss(key))
+  }
+
+  fn insert_cached(&mut self, key: StyleSharingKey, styles: Arc<StyleSharingCachedStyles>) {
+    self
+      .entries
+      .insert(key, StyleSharingCacheEntry::Cached(styles));
+  }
+
+  fn key_shareable(
+    &self,
+    node: &DomNode,
+    node_id: usize,
+    ancestors: &[&DomNode],
+    dom_maps: &DomMaps,
+    rule_scopes: &RuleScopes<'_>,
+    scratch: &mut CascadeScratch,
+  ) -> bool {
+    let node_keys = dom_maps.selector_keys(node_id);
+    let is_root = is_root_element(ancestors);
+
+    let index_has_non_shareable_candidates = |index: &RuleIndex<'_>,
+                                              scratch: &mut CascadeScratch|
+     -> bool {
+      let node_summary = if index.has_has_requirements {
+        dom_maps
+          .selector_blooms()
+          .and_then(|store| store.summary_for_id(node_id))
+      } else {
+        None
+      };
+      let candidates = &mut scratch.candidates;
+      let mut stats = CandidateStats::default();
+      index.selector_candidates(
+        node,
+        node_keys,
+        node_summary,
+        rule_scopes.quirks_mode,
+        is_root,
+        candidates,
+        &mut scratch.candidate_seen,
+        &mut stats,
+        &mut scratch.candidate_merge,
+      );
+      for &idx in candidates.iter() {
+        let idx = idx as usize;
+        if !index
+          .selector_non_shareable
+          .get(idx)
+          .copied()
+          .unwrap_or(true)
+        {
+          continue;
+        }
+        let Some(selector) = index.selectors.get(idx).map(|stored| stored.selector) else {
+          return true;
+        };
+        if selector_is_non_shareable_for_node(selector, node_keys, rule_scopes.quirks_mode, is_root)
+        {
+          return true;
+        }
+      }
+      false
+    };
+
+    if index_has_non_shareable_candidates(&rule_scopes.ua, scratch) {
+      return false;
+    }
+    if index_has_non_shareable_candidates(&rule_scopes.document, scratch) {
+      return false;
+    }
+
+    const PSEUDOS: &[PseudoElement] = &[
+      PseudoElement::Before,
+      PseudoElement::After,
+      PseudoElement::Marker,
+      PseudoElement::Placeholder,
+      PseudoElement::FileSelectorButton,
+      PseudoElement::FootnoteCall,
+      PseudoElement::FootnoteMarker,
+      PseudoElement::FirstLine,
+      PseudoElement::FirstLetter,
+      PseudoElement::SliderThumb,
+      PseudoElement::SliderTrack,
+      PseudoElement::Backdrop,
+    ];
+
+    let index_pseudo_has_non_shareable_candidates = |index: &RuleIndex<'_>,
+                                                     pseudo: &PseudoElement,
+                                                     scratch: &mut CascadeScratch|
+     -> bool {
+      if !index.has_pseudo_rules(pseudo) {
+        return false;
+      }
+      let node_summary = if index.has_has_requirements {
+        dom_maps
+          .selector_blooms()
+          .and_then(|store| store.summary_for_id(node_id))
+      } else {
+        None
+      };
+      let candidates = &mut scratch.candidates;
+      let mut stats = CandidateStats::default();
+      index.pseudo_candidates(
+        node,
+        pseudo,
+        node_keys,
+        node_summary,
+        rule_scopes.quirks_mode,
+        is_root,
+        candidates,
+        &mut scratch.candidate_seen,
+        &mut stats,
+      );
+      for &idx in candidates.iter() {
+        let idx = idx as usize;
+        if !index
+          .pseudo_selector_non_shareable
+          .get(idx)
+          .copied()
+          .unwrap_or(true)
+        {
+          continue;
+        }
+        let Some(selector) = index
+          .pseudo_selectors
+          .get(idx)
+          .map(|stored| stored.selector)
+        else {
+          return true;
+        };
+        if selector_is_non_shareable_for_node(selector, node_keys, rule_scopes.quirks_mode, is_root)
+        {
+          return true;
+        }
+      }
+      false
+    };
+
+    for pseudo in PSEUDOS {
+      if index_pseudo_has_non_shareable_candidates(&rule_scopes.ua, pseudo, scratch) {
+        return false;
+      }
+      if index_pseudo_has_non_shareable_candidates(&rule_scopes.document, pseudo, scratch) {
+        return false;
+      }
+    }
+
+    true
+  }
+}
+
+enum StyleSharingCacheLookup {
+  Hit(Arc<StyleSharingCachedStyles>),
+  Miss(StyleSharingKey),
+}
+
+fn selector_is_non_shareable(selector: &Selector<FastRenderSelectorImpl>) -> bool {
+  use selectors::parser::Combinator;
+  use selectors::parser::Component;
+
+  // First reject any selector that uses non-ancestry combinators, since those depend on sibling /
+  // column positioning and can differ even when element signatures match.
+  for component in selector.iter_raw_match_order() {
+    let Component::Combinator(combinator) = component else {
+      continue;
+    };
+    match combinator {
+      Combinator::Descendant | Combinator::Child | Combinator::PseudoElement => {}
+      _ => return true,
+    }
+  }
+
+  // Determine which compound selector corresponds to the element subject. For pseudo-element
+  // selectors, the rightmost compound matches the pseudo itself; we instead care about the
+  // originating element compound (immediately to the left of the pseudo-element combinator).
+  let mut has_pseudo_element = false;
+  for component in selector.iter_raw_match_order() {
+    if matches!(component, Component::Combinator(Combinator::PseudoElement)) {
+      has_pseudo_element = true;
+      break;
+    }
+  }
+  let mut after_pseudo_element = !has_pseudo_element;
+  let mut in_subject_compound = after_pseudo_element;
+
+  for component in selector.iter_raw_match_order() {
+    match component {
+      Component::Combinator(Combinator::PseudoElement) => {
+        after_pseudo_element = true;
+        in_subject_compound = true;
+      }
+      Component::Combinator(_) => {
+        if after_pseudo_element {
+          // Leave the subject compound once we hit the first combinator connecting it to its
+          // ancestors.
+          in_subject_compound = false;
+        }
+      }
+      _ => {
+        if !in_subject_compound {
+          continue;
+        }
+        if selector_component_potentially_non_shareable(component) {
+          return true;
+        }
+      }
+    }
+  }
+
+  false
+}
+
+fn selector_component_potentially_non_shareable(
+  component: &selectors::parser::Component<FastRenderSelectorImpl>,
+) -> bool {
+  use selectors::parser::Component;
+  match component {
+    // Pseudo-classes can depend on element position, user interaction, URL fragment state, etc.
+    // Keep the first implementation conservative and treat all as potentially non-shareable.
+    Component::NonTSPseudoClass(_) => true,
+    // Structural pseudo-classes depend on element position or subtree content.
+    Component::Root
+    | Component::Empty
+    | Component::Scope
+    | Component::ImplicitScope
+    | Component::ParentSelector => true,
+    Component::Nth(_) | Component::NthOf(_) => true,
+    Component::Has(_) => true,
+    // Shadow-DOM specific pseudo-classes / pseudos. These are not currently eligible for sharing
+    // (see `eligible_key`), but keep the classification conservative.
+    Component::Host(_) | Component::Slotted(_) | Component::Part(_) => true,
+    // Nested selector lists can contain non-shareable features.
+    Component::Is(list) | Component::Where(list) | Component::Negation(list) => {
+      list.slice().iter().any(selector_is_non_shareable)
+    }
+    // Attribute selectors that inspect the `class` attribute depend on the raw class string rather
+    // than the normalized class-token set we use for element signatures.
+    Component::AttributeInNoNamespaceExists {
+      local_name_lower, ..
+    } => local_name_lower.as_str() == "class",
+    Component::AttributeInNoNamespace { local_name, .. } => {
+      local_name.as_str().eq_ignore_ascii_case("class")
+    }
+    Component::AttributeOther(other) => {
+      other.namespace.is_none() && other.local_name_lower.as_str() == "class"
+    }
+    _ => false,
+  }
+}
+
+fn selector_mandatory_keys_satisfied_for_node(
+  selector: &Selector<FastRenderSelectorImpl>,
+  node_keys: NodeSelectorKeys<'_>,
+  quirks_mode: QuirksMode,
+  is_root: bool,
+) -> bool {
+  let analysis = selector_keys_with_polarity(selector, quirks_mode, SelectorKeyPolarity::Matches);
+  for key in analysis.mandatory_keys {
+    match key {
+      SelectorKey::Id(id) => {
+        if node_keys.id_key != Some(id) {
+          return false;
+        }
+      }
+      SelectorKey::Class(cls) => {
+        if node_keys.class_keys.binary_search(&cls).is_err() {
+          return false;
+        }
+      }
+      SelectorKey::AttrValue(attr) => {
+        if node_keys.attr_value_keys.binary_search(&attr).is_err() {
+          return false;
+        }
+      }
+      SelectorKey::Tag(tag) => {
+        if node_keys.tag_key != tag {
+          return false;
+        }
+      }
+      SelectorKey::Attribute(attr) => {
+        if node_keys.attr_keys.binary_search(&attr).is_err() {
+          return false;
+        }
+      }
+      SelectorKey::Root => {
+        if !is_root {
+          return false;
+        }
+      }
+      SelectorKey::Universal => {}
+    }
+  }
+  true
+}
+
+fn selector_is_non_shareable_for_node(
+  selector: &Selector<FastRenderSelectorImpl>,
+  node_keys: NodeSelectorKeys<'_>,
+  quirks_mode: QuirksMode,
+  is_root: bool,
+) -> bool {
+  use selectors::parser::Combinator;
+  use selectors::parser::Component;
+
+  // Preserve the cheap early exit for non-ancestry combinators, since those can differentiate
+  // siblings even when element signatures match.
+  for component in selector.iter_raw_match_order() {
+    let Component::Combinator(combinator) = component else {
+      continue;
+    };
+    match combinator {
+      Combinator::Descendant | Combinator::Child | Combinator::PseudoElement => {}
+      _ => return true,
+    }
+  }
+
+  let mut has_pseudo_element = false;
+  for component in selector.iter_raw_match_order() {
+    if matches!(component, Component::Combinator(Combinator::PseudoElement)) {
+      has_pseudo_element = true;
+      break;
+    }
+  }
+  let mut after_pseudo_element = !has_pseudo_element;
+  let mut in_subject_compound = after_pseudo_element;
+
+  for component in selector.iter_raw_match_order() {
+    match component {
+      Component::Combinator(Combinator::PseudoElement) => {
+        after_pseudo_element = true;
+        in_subject_compound = true;
+      }
+      Component::Combinator(_) => {
+        if after_pseudo_element {
+          in_subject_compound = false;
+        }
+      }
+      Component::Is(list) | Component::Where(list) | Component::Negation(list) => {
+        if !in_subject_compound {
+          continue;
+        }
+        for inner in list.slice().iter() {
+          if !selector_mandatory_keys_satisfied_for_node(inner, node_keys, quirks_mode, is_root) {
+            continue;
+          }
+          if selector_is_non_shareable_for_node(inner, node_keys, quirks_mode, is_root) {
+            return true;
+          }
+        }
+      }
+      _ => {
+        if !in_subject_compound {
+          continue;
+        }
+        if selector_component_potentially_non_shareable(component) {
+          return true;
+        }
+      }
+    }
+  }
+
+  false
+}
+
 fn scope_rule_index<'a>(
   scopes: &'a RuleScopes<'a>,
   scope_host: Option<usize>,
@@ -12273,7 +13042,10 @@ fn scope_rule_index<'a>(
   }
 }
 
-fn scope_custom_property_registry(scopes: &RuleScopes<'_>, scope_host: Option<usize>) -> Arc<CustomPropertyRegistry> {
+fn scope_custom_property_registry(
+  scopes: &RuleScopes<'_>,
+  scope_host: Option<usize>,
+) -> Arc<CustomPropertyRegistry> {
   match scope_host {
     Some(host) => scopes
       .custom_property_registry_shadows
@@ -12533,10 +13305,7 @@ fn match_part_rules<'a>(
             PseudoElement::Part(names) => names.as_ref(),
             _ => continue,
           };
-          if !required
-            .iter()
-            .all(|name| name_set.contains(name.as_str()))
-          {
+          if !required.iter().all(|name| name_set.contains(name.as_str())) {
             continue;
           }
           // allow_shadow_host prevents document-scope ::part selectors from exposing :host context.
@@ -12941,7 +13710,8 @@ fn compute_base_styles<'a>(
   } else {
     Cow::Borrowed(ancestor_ids)
   };
-  let tree_scoped_custom_property_registry = scope_custom_property_registry(rule_scopes, scope_host);
+  let tree_scoped_custom_property_registry =
+    scope_custom_property_registry(rule_scopes, scope_host);
   if !node.is_element() {
     let mut ua_styles = get_default_styles_for_element(node);
     inherit_styles(&mut ua_styles, parent_ua_styles);
@@ -13307,6 +14077,7 @@ fn apply_styles_internal(
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   inline_style_decls: &mut Vec<Option<Arc<[Declaration]>>>,
+  style_sharing_cache: &mut StyleSharingCache,
   flat_tree_inheritance_cache: &mut FlatTreeInheritanceCache,
   parent_styles: &ComputedStyle,
   parent_starting_styles: Option<&ComputedStyle>,
@@ -13341,6 +14112,7 @@ fn apply_styles_internal(
     selector_caches,
     scratch,
     inline_style_decls,
+    style_sharing_cache,
     parent_styles,
     parent_starting_styles,
     parent_ua_styles,
@@ -13998,6 +14770,7 @@ fn apply_styles_internal_with_ancestors<'a>(
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   inline_style_decls: &mut Vec<Option<Arc<[Declaration]>>>,
+  style_sharing_cache: &mut StyleSharingCache,
   parent_styles: &ComputedStyle,
   parent_starting_styles: Option<&ComputedStyle>,
   parent_ua_styles: &ComputedStyle,
@@ -14024,11 +14797,55 @@ fn apply_styles_internal_with_ancestors<'a>(
   deadline: Option<&RenderDeadline>,
   has_starting_styles: bool,
 ) -> Result<StyledNode, RenderError> {
+  enum FrameBase {
+    Computed {
+      base: NodeBaseStyles,
+      share_key: Option<StyleSharingKey>,
+    },
+    Shared {
+      cached: Arc<StyleSharingCachedStyles>,
+    },
+  }
+
+  impl FrameBase {
+    #[inline]
+    fn styles(&self) -> &ComputedStyle {
+      match self {
+        Self::Computed { base, .. } => &base.styles,
+        Self::Shared { cached } => cached.styles.as_ref(),
+      }
+    }
+
+    #[inline]
+    fn ua_styles(&self) -> &ComputedStyle {
+      match self {
+        Self::Computed { base, .. } => &base.ua_styles,
+        Self::Shared { cached } => cached.ua_styles.as_ref(),
+      }
+    }
+
+    #[inline]
+    fn current_root_font_size(&self) -> f32 {
+      match self {
+        Self::Computed { base, .. } => base.current_root_font_size,
+        Self::Shared { cached } => cached.styles.root_font_size,
+      }
+    }
+
+    #[inline]
+    fn current_ua_root_font_size(&self) -> f32 {
+      match self {
+        Self::Computed { base, .. } => base.current_ua_root_font_size,
+        Self::Shared { cached } => cached.ua_styles.root_font_size,
+      }
+    }
+  }
+
   struct Frame<'a> {
     node: &'a DomNode,
     scope_host: Option<usize>,
     node_id: usize,
-    base: NodeBaseStyles,
+    base: FrameBase,
     starting_base: Option<NodeBaseStyles>,
     children: Vec<StyledNode>,
     next_child: usize,
@@ -14135,7 +14952,10 @@ fn apply_styles_internal_with_ancestors<'a>(
     node,
     scope_host,
     node_id: root_id,
-    base: root_base,
+    base: FrameBase::Computed {
+      base: root_base,
+      share_key: None,
+    },
     starting_base: root_starting_base,
     children: Vec::with_capacity(node.children.len()),
     next_child: 0,
@@ -14204,10 +15024,10 @@ fn apply_styles_internal_with_ancestors<'a>(
           .last()
           .expect("parent frame should still be on the stack");
 
-        let mut inheritance_parent_styles: &ComputedStyle = &parent.base.styles;
-        let mut inheritance_parent_ua_styles: &ComputedStyle = &parent.base.ua_styles;
-        let mut inheritance_root_font_size: f32 = parent.base.current_root_font_size;
-        let mut inheritance_ua_root_font_size: f32 = parent.base.current_ua_root_font_size;
+        let mut inheritance_parent_styles: &ComputedStyle = parent.base.styles();
+        let mut inheritance_parent_ua_styles: &ComputedStyle = parent.base.ua_styles();
+        let mut inheritance_root_font_size: f32 = parent.base.current_root_font_size();
+        let mut inheritance_ua_root_font_size: f32 = parent.base.current_ua_root_font_size();
 
         // In Shadow DOM, light-DOM nodes assigned to a <slot> inherit along the flattened tree.
         // Selector matching remains based on DOM ancestry; only the inheritance parent changes.
@@ -14220,61 +15040,50 @@ fn apply_styles_internal_with_ancestors<'a>(
           }
         }
 
-        let base = compute_base_styles(
+        let mut shared: Option<Arc<StyleSharingCachedStyles>> = None;
+        let mut share_key: Option<StyleSharingKey> = None;
+        if let Some(key) = style_sharing_cache.eligible_key(
           child,
-          rule_scopes,
-          child_scope,
-          selector_caches,
-          scratch,
-          inline_style_decls,
-          inheritance_parent_styles,
-          inheritance_parent_ua_styles,
-          inheritance_root_font_size,
-          inheritance_ua_root_font_size,
-          viewport,
-          color_scheme_pref,
-          ancestors.as_slice(),
-          ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
-          ancestor_ids.as_slice(),
           child_id,
-          container_ctx,
+          parent.node_id,
+          child_scope,
+          has_starting_styles,
           dom_maps,
           slot_assignment,
-          sibling_cache,
-          element_attr_cache,
-          false,
-        )?;
-
-        let starting_base = if has_starting_styles {
-          let mut start_parent_styles: &ComputedStyle = parent
-            .starting_base
-            .as_ref()
-            .map(|b| &b.styles)
-            .unwrap_or(&parent.base.styles);
-          let mut start_parent_root_font_size: f32 = start_parent_styles.root_font_size;
-
-          // When computing starting styles for slotted nodes, inherit from the slot's starting
-          // base styles when available (else fall back to the slot's normal base styles).
-          if let Some(assigned_slot) = slot_assignment.node_to_slot.get(&child_id) {
-            if let Some(slot_styles) = flat_tree_inheritance_cache.get(&assigned_slot.slot_node_id)
-            {
-              start_parent_styles = slot_styles
-                .starting_styles
-                .as_deref()
-                .unwrap_or_else(|| slot_styles.styles.as_ref());
-              start_parent_root_font_size = start_parent_styles.root_font_size;
+        ) {
+          if let Some(lookup) = style_sharing_cache.lookup(
+            key,
+            child,
+            child_id,
+            ancestors.as_slice(),
+            dom_maps,
+            rule_scopes,
+            scratch,
+          ) {
+            match lookup {
+              StyleSharingCacheLookup::Hit(cached) => {
+                shared = Some(cached);
+              }
+              StyleSharingCacheLookup::Miss(key) => {
+                share_key = Some(key);
+              }
             }
           }
-          Some(compute_base_styles(
+        }
+
+        if let Some(cached) = shared {
+          (FrameBase::Shared { cached }, None)
+        } else {
+          let base = compute_base_styles(
             child,
             rule_scopes,
             child_scope,
             selector_caches,
             scratch,
             inline_style_decls,
-            start_parent_styles,
+            inheritance_parent_styles,
             inheritance_parent_ua_styles,
-            start_parent_root_font_size,
+            inheritance_root_font_size,
             inheritance_ua_root_font_size,
             viewport,
             color_scheme_pref,
@@ -14287,13 +15096,60 @@ fn apply_styles_internal_with_ancestors<'a>(
             slot_assignment,
             sibling_cache,
             element_attr_cache,
-            true,
-          )?)
-        } else {
-          None
-        };
+            false,
+          )?;
 
-        (base, starting_base)
+          let starting_base = if has_starting_styles {
+            let mut start_parent_styles: &ComputedStyle = parent
+              .starting_base
+              .as_ref()
+              .map(|b| &b.styles)
+              .unwrap_or_else(|| parent.base.styles());
+            let mut start_parent_root_font_size: f32 = start_parent_styles.root_font_size;
+
+            // When computing starting styles for slotted nodes, inherit from the slot's starting
+            // base styles when available (else fall back to the slot's normal base styles).
+            if let Some(assigned_slot) = slot_assignment.node_to_slot.get(&child_id) {
+              if let Some(slot_styles) =
+                flat_tree_inheritance_cache.get(&assigned_slot.slot_node_id)
+              {
+                start_parent_styles = slot_styles
+                  .starting_styles
+                  .as_deref()
+                  .unwrap_or_else(|| slot_styles.styles.as_ref());
+                start_parent_root_font_size = start_parent_styles.root_font_size;
+              }
+            }
+            Some(compute_base_styles(
+              child,
+              rule_scopes,
+              child_scope,
+              selector_caches,
+              scratch,
+              inline_style_decls,
+              start_parent_styles,
+              inheritance_parent_ua_styles,
+              start_parent_root_font_size,
+              inheritance_ua_root_font_size,
+              viewport,
+              color_scheme_pref,
+              ancestors.as_slice(),
+              ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
+              ancestor_ids.as_slice(),
+              child_id,
+              container_ctx,
+              dom_maps,
+              slot_assignment,
+              sibling_cache,
+              element_attr_cache,
+              true,
+            )?)
+          } else {
+            None
+          };
+
+          (FrameBase::Computed { base, share_key }, starting_base)
+        }
       };
 
       let child_is_shadow_root = matches!(child.node_type, DomNodeType::ShadowRoot { .. });
@@ -14354,66 +15210,166 @@ fn apply_styles_internal_with_ancestors<'a>(
       *ancestor_bloom_filter = restored;
     }
 
-    let mut base = frame.base;
-    let node_id = frame.node_id;
+    let Frame {
+      node,
+      scope_host,
+      node_id,
+      base,
+      starting_base,
+      children,
+      ..
+    } = frame;
+
+    let cache_flat_inheritance_parent = slot_assignment.slot_to_nodes.contains_key(&node_id);
+
     let (
+      styles,
+      ua_styles,
       before_styles,
       after_styles,
       marker_styles,
-      _placeholder_styles,
-      first_line_styles,
-      first_letter_styles,
+      placeholder_styles,
+      file_selector_button_styles,
       footnote_call_styles,
       footnote_marker_styles,
-    ) = compute_pseudo_styles(
-        frame.node,
-        rule_scopes,
-        frame.scope_host,
-        selector_caches,
-        scratch,
-        ancestors.as_slice(),
-        ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
-        ancestor_ids.as_slice(),
-        frame.node_id,
-        container_ctx,
-        dom_maps,
-        slot_assignment,
-        sibling_cache,
-        element_attr_cache,
-        &mut base.styles,
-        &base.ua_styles,
-        base.current_root_font_size,
-        base.current_ua_root_font_size,
-        viewport,
-        color_scheme_pref,
-        false,
-      );
-    let (placeholder_styles, slider_thumb_styles, slider_track_styles, file_selector_button_styles) =
-      compute_form_control_pseudo_styles(
-        frame.node,
-        rule_scopes,
-        frame.scope_host,
-        selector_caches,
-        scratch,
-        ancestors.as_slice(),
-        ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
-        ancestor_ids.as_slice(),
-        frame.node_id,
-        container_ctx,
-        dom_maps,
-        slot_assignment,
-        sibling_cache,
-        element_attr_cache,
-        &base.styles,
-        &base.ua_styles,
-        base.current_root_font_size,
-        base.current_ua_root_font_size,
-        viewport,
-        color_scheme_pref,
-      );
+      first_line_styles,
+      first_letter_styles,
+      slider_thumb_styles,
+      slider_track_styles,
+    ) = match base {
+      FrameBase::Shared { cached } => (
+        Arc::clone(&cached.styles),
+        Some(Arc::clone(&cached.ua_styles)),
+        cached.before_styles.clone(),
+        cached.after_styles.clone(),
+        cached.marker_styles.clone(),
+        cached.placeholder_styles.clone(),
+        cached.file_selector_button_styles.clone(),
+        cached.footnote_call_styles.clone(),
+        cached.footnote_marker_styles.clone(),
+        cached.first_line_styles.clone(),
+        cached.first_letter_styles.clone(),
+        cached.slider_thumb_styles.clone(),
+        cached.slider_track_styles.clone(),
+      ),
+      FrameBase::Computed {
+        mut base,
+        share_key,
+      } => {
+        let (
+          before_styles,
+          after_styles,
+          marker_styles,
+          _placeholder_styles,
+          first_line_styles,
+          first_letter_styles,
+          footnote_call_styles,
+          footnote_marker_styles,
+        ) = compute_pseudo_styles(
+          node,
+          rule_scopes,
+          scope_host,
+          selector_caches,
+          scratch,
+          ancestors.as_slice(),
+          ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
+          ancestor_ids.as_slice(),
+          node_id,
+          container_ctx,
+          dom_maps,
+          slot_assignment,
+          sibling_cache,
+          element_attr_cache,
+          &mut base.styles,
+          &base.ua_styles,
+          base.current_root_font_size,
+          base.current_ua_root_font_size,
+          viewport,
+          color_scheme_pref,
+          false,
+        );
+        let (
+          placeholder_styles,
+          slider_thumb_styles,
+          slider_track_styles,
+          file_selector_button_styles,
+        ) = compute_form_control_pseudo_styles(
+          node,
+          rule_scopes,
+          scope_host,
+          selector_caches,
+          scratch,
+          ancestors.as_slice(),
+          ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
+          ancestor_ids.as_slice(),
+          node_id,
+          container_ctx,
+          dom_maps,
+          slot_assignment,
+          sibling_cache,
+          element_attr_cache,
+          &base.styles,
+          &base.ua_styles,
+          base.current_root_font_size,
+          base.current_ua_root_font_size,
+          viewport,
+          color_scheme_pref,
+        );
+
+        let NodeBaseStyles {
+          styles,
+          ua_styles,
+          current_root_font_size: _,
+          current_ua_root_font_size: _,
+        } = base;
+        let styles = Arc::new(styles);
+        let needs_ua_styles = cache_flat_inheritance_parent || share_key.is_some();
+        let ua_styles = needs_ua_styles.then(|| Arc::new(ua_styles));
+
+        if let Some(key) = share_key {
+          let ua_styles = ua_styles
+            .as_ref()
+            .expect("shareable keys require a UA computed style snapshot");
+          style_sharing_cache.insert_cached(
+            key,
+            Arc::new(StyleSharingCachedStyles {
+              styles: Arc::clone(&styles),
+              ua_styles: Arc::clone(ua_styles),
+              before_styles: before_styles.clone(),
+              after_styles: after_styles.clone(),
+              marker_styles: marker_styles.clone(),
+              placeholder_styles: placeholder_styles.clone(),
+              file_selector_button_styles: file_selector_button_styles.clone(),
+              footnote_call_styles: footnote_call_styles.clone(),
+              footnote_marker_styles: footnote_marker_styles.clone(),
+              first_line_styles: first_line_styles.clone(),
+              first_letter_styles: first_letter_styles.clone(),
+              slider_thumb_styles: slider_thumb_styles.clone(),
+              slider_track_styles: slider_track_styles.clone(),
+            }),
+          );
+        }
+
+        (
+          styles,
+          ua_styles,
+          before_styles,
+          after_styles,
+          marker_styles,
+          placeholder_styles,
+          file_selector_button_styles,
+          footnote_call_styles,
+          footnote_marker_styles,
+          first_line_styles,
+          first_letter_styles,
+          slider_thumb_styles,
+          slider_track_styles,
+        )
+      }
+    };
 
     let mut starting_styles = StartingStyleSet::default();
-    if let Some(mut start) = frame.starting_base {
+    if let Some(mut start) = starting_base {
       let (
         before,
         after,
@@ -14424,15 +15380,15 @@ fn apply_styles_internal_with_ancestors<'a>(
         footnote_call,
         footnote_marker,
       ) = compute_pseudo_styles(
-        frame.node,
+        node,
         rule_scopes,
-        frame.scope_host,
+        scope_host,
         selector_caches,
         scratch,
         ancestors.as_slice(),
         ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
         ancestor_ids.as_slice(),
-        frame.node_id,
+        node_id,
         container_ctx,
         dom_maps,
         slot_assignment,
@@ -14470,25 +15426,19 @@ fn apply_styles_internal_with_ancestors<'a>(
       }
     }
 
-    let cache_flat_inheritance_parent = slot_assignment.slot_to_nodes.contains_key(&node_id);
     let cached_starting_styles = cache_flat_inheritance_parent
       .then(|| starting_styles.base.clone())
       .flatten();
 
-    let NodeBaseStyles {
-      styles,
-      ua_styles,
-      current_root_font_size: _,
-      current_ua_root_font_size: _,
-    } = base;
-
-    let styles = Arc::new(styles);
     if cache_flat_inheritance_parent {
+      let ua_styles = ua_styles
+        .as_ref()
+        .expect("slot inheritance cache requires UA computed style snapshot");
       flat_tree_inheritance_cache.insert(
         node_id,
         FlatTreeInheritanceParent {
-          styles: styles.clone(),
-          ua_styles: Arc::new(ua_styles),
+          styles: Arc::clone(&styles),
+          ua_styles: Arc::clone(ua_styles),
           starting_styles: cached_starting_styles,
         },
       );
@@ -14496,7 +15446,7 @@ fn apply_styles_internal_with_ancestors<'a>(
 
     let styled = StyledNode {
       node_id,
-      node: frame.node.clone_without_children(),
+      node: node.clone_without_children(),
       styles,
       starting_styles,
       before_styles,
@@ -14516,7 +15466,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         .get(&node_id)
         .cloned()
         .unwrap_or_default(),
-      children: frame.children,
+      children,
     };
 
     if let Some(parent) = stack.last_mut() {
@@ -14858,7 +15808,10 @@ mod tests {
   #[test]
   fn non_ascii_whitespace_normalize_query_value_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
-    assert_eq!(normalize_query_value(&format!("{nbsp}10px;")), format!("{nbsp}10px"));
+    assert_eq!(
+      normalize_query_value(&format!("{nbsp}10px;")),
+      format!("{nbsp}10px")
+    );
   }
 
   #[test]
@@ -14938,7 +15891,10 @@ mod tests {
     assert_eq!(styled_input.styles.border_right_style, BorderStyle::Solid);
     assert_eq!(styled_input.styles.border_bottom_style, BorderStyle::Solid);
     assert_eq!(styled_input.styles.border_left_style, BorderStyle::Solid);
-    assert_eq!(styled_input.styles.border_top_color, Rgba::rgb(0x76, 0x76, 0x76));
+    assert_eq!(
+      styled_input.styles.border_top_color,
+      Rgba::rgb(0x76, 0x76, 0x76)
+    );
     assert_eq!(
       styled_input.styles.padding_top,
       Length::px(4.0),
@@ -16194,7 +17150,10 @@ mod tests {
     }
     if let Some((name, value)) = attrs.first() {
       candidates.push(HarnessOfSelector::AttrExists((*name).to_string()));
-      candidates.push(HarnessOfSelector::AttrEquals((*name).to_string(), (*value).to_string()));
+      candidates.push(HarnessOfSelector::AttrEquals(
+        (*name).to_string(),
+        (*value).to_string(),
+      ));
     }
 
     let of_selector = rng.choose(candidates.as_slice()).clone();
@@ -16210,7 +17169,11 @@ mod tests {
         continue;
       }
       total += 1;
-      let child_id = dom_maps.id_map.get(&(child as *const DomNode)).copied().unwrap_or(0);
+      let child_id = dom_maps
+        .id_map
+        .get(&(child as *const DomNode))
+        .copied()
+        .unwrap_or(0);
       if child_id == node_id {
         position = total;
       }
@@ -16229,7 +17192,11 @@ mod tests {
 
     Some(format!(
       ":{}({nth} of {of_css})",
-      if use_last { "nth-last-child" } else { "nth-child" }
+      if use_last {
+        "nth-last-child"
+      } else {
+        "nth-child"
+      }
     ))
   }
 
@@ -16283,10 +17250,7 @@ mod tests {
     let pattern = patterns.get(rng.gen_usize(patterns.len()))?.clone();
 
     // If the descendant is a direct child, sometimes generate a `> pattern` relative selector.
-    let descendant_is_direct_child = node
-      .children
-      .iter()
-      .any(|child| std::ptr::eq(child, desc));
+    let descendant_is_direct_child = node.children.iter().any(|child| std::ptr::eq(child, desc));
     let relative = if descendant_is_direct_child && rng.gen_bool_ratio(1, 2) {
       format!("> {pattern}")
     } else {
@@ -16484,7 +17448,11 @@ mod tests {
       if !child.is_element() {
         continue;
       }
-      let child_id = dom_maps.id_map.get(&(child as *const DomNode)).copied().unwrap_or(0);
+      let child_id = dom_maps
+        .id_map
+        .get(&(child as *const DomNode))
+        .copied()
+        .unwrap_or(0);
       if child_id == node_id {
         return prev;
       }
@@ -16525,8 +17493,7 @@ mod tests {
     if !element_ancestor_ids.is_empty() {
       options.push("descendant");
     }
-    if parent_is_element
-      && harness_prev_sibling_element_id(dom_maps, parent_id, node_id).is_some()
+    if parent_is_element && harness_prev_sibling_element_id(dom_maps, parent_id, node_id).is_some()
     {
       options.push("adjacent");
       options.push("sibling");
@@ -16661,7 +17628,10 @@ mod tests {
           origin: StyleOrigin::Author,
           order,
           rule: rule.rule,
-          layer_order: layer_order_with_tree_scope(rule.layer_order.as_ref(), DOCUMENT_TREE_SCOPE_PREFIX),
+          layer_order: layer_order_with_tree_scope(
+            rule.layer_order.as_ref(),
+            DOCUMENT_TREE_SCOPE_PREFIX,
+          ),
           container_conditions: rule.container_conditions.clone(),
           scopes: rule.scopes.clone(),
           scope_signature: ScopeSignature::compute(&rule.scopes),
@@ -16733,10 +17703,11 @@ mod tests {
           QuirksMode::NoQuirks,
         )
         .unwrap_or_else(|err| {
-          panic!("seed={seed} find_matching_rules error for node_id={node_id}: {err:?}\ncss:\n{css}");
+          panic!(
+            "seed={seed} find_matching_rules error for node_id={node_id}: {err:?}\ncss:\n{css}"
+          );
         });
-        let indexed: std::collections::BTreeSet<usize> =
-          indexed.iter().map(|m| m.order).collect();
+        let indexed: std::collections::BTreeSet<usize> = indexed.iter().map(|m| m.order).collect();
 
         if !indexed.is_superset(&naive) {
           use std::fmt::Write as _;
@@ -18190,10 +19161,11 @@ mod tests {
     let style_set = StyleSet::from_document(stylesheet);
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
-    let starting_tree = apply_starting_style_set_with_media_target_and_imports_cached_with_deadline(
-      &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,
-    )
-    .expect("starting style cascade");
+    let starting_tree =
+      apply_starting_style_set_with_media_target_and_imports_cached_with_deadline(
+        &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,
+      )
+      .expect("starting style cascade");
 
     let mut prepared =
       PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
@@ -23294,7 +24266,9 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         declarations: Cow::Owned(parse_declarations("color: rgb(1, 2, 3) !important;")),
         starting_style: false,
       }],
-      Some(Cow::Owned(parse_declarations("color: rgb(4, 5, 6) !important;"))),
+      Some(Cow::Owned(parse_declarations(
+        "color: rgb(4, 5, 6) !important;",
+      ))),
       Some(layer_order),
       &parent,
       parent.font_size,
@@ -29876,37 +30850,37 @@ fn find_matching_rules<'a>(
           }
         }
 
-         let selector = indexed.selector;
-         let mut selector_matches = match scope_match {
-           ScopeMatchResult::Scoped(scope_root) => {
-             let (root, root_ancestors) = scope_root.root_and_ancestors(node, ancestors);
-             let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
-             match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-               ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
-                 ctx.with_featureless(featureless_subject, |ctx| {
-                   matches_selector_cascade_counted(
-                     selector,
-                     Some(&indexed.ancestor_hashes),
-                     &element_ref,
-                     ctx,
-                   )
-                 })
-               })
-             })
-           }
-           ScopeMatchResult::Unscoped => {
-             match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
-               ctx.with_featureless(featureless_subject, |ctx| {
-                 matches_selector_cascade_counted(
-                   selector,
-                   Some(&indexed.ancestor_hashes),
-                   &element_ref,
-                   ctx,
-                 )
-               })
-             })
-           }
-         };
+        let selector = indexed.selector;
+        let mut selector_matches = match scope_match {
+          ScopeMatchResult::Scoped(scope_root) => {
+            let (root, root_ancestors) = scope_root.root_and_ancestors(node, ancestors);
+            let scope_ref = ElementRef::with_ancestors(root, root_ancestors);
+            match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
+              ctx.nest_for_scope(Some(scope_ref.opaque()), |ctx| {
+                ctx.with_featureless(featureless_subject, |ctx| {
+                  matches_selector_cascade_counted(
+                    selector,
+                    Some(&indexed.ancestor_hashes),
+                    &element_ref,
+                    ctx,
+                  )
+                })
+              })
+            })
+          }
+          ScopeMatchResult::Unscoped => {
+            match_with_shadow_host(allow_shadow_host, &mut context, shadow_host, |ctx| {
+              ctx.with_featureless(featureless_subject, |ctx| {
+                matches_selector_cascade_counted(
+                  selector,
+                  Some(&indexed.ancestor_hashes),
+                  &element_ref,
+                  ctx,
+                )
+              })
+            })
+          }
+        };
         take_matching_error(&mut context)?;
 
         if allow_shadow_host && !selector_matches && selector_contains_host_context(selector) {
@@ -31070,7 +32044,9 @@ fn apply_cascaded_declarations<'a, F>(
       };
       let revert_layer_base_custom_properties = track_custom_revert_layer.then(|| {
         let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
-        custom_layer_snapshots.get(&layer_key).expect("custom layer base missing")
+        custom_layer_snapshots
+          .get(&layer_key)
+          .expect("custom layer base missing")
       });
       let (start, end) = important_custom_ranges[rule_idx];
       let decls = rule.declarations.as_ref();

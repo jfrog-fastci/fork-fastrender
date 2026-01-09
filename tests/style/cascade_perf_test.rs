@@ -2,7 +2,11 @@ use std::time::{Duration, Instant};
 
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom::parse_html;
-use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
+use fastrender::style::cascade::{
+  apply_styles_with_media, capture_style_sharing_stats, reset_style_sharing_stats,
+  set_style_sharing_stats_enabled, StyledNode,
+};
+use fastrender::style::color::Rgba;
 use fastrender::style::media::MediaContext;
 
 const MAX_CASCADE_PERF_RUNS: usize = 5;
@@ -266,4 +270,99 @@ fn cascade_handles_many_keyword_declarations_under_budget() {
     display(find_by_id(&styled, "node0").expect("node0 styled")),
     "block"
   );
+}
+
+#[test]
+fn style_sharing_hits_for_repeated_simple_elements() {
+  set_style_sharing_stats_enabled(true);
+  reset_style_sharing_stats();
+
+  let css = ".item { display: block; padding-left: 4px; padding-right: 8px; }\n";
+  let stylesheet = parse_stylesheet(css).expect("stylesheet parses");
+
+  let count = 2000usize;
+  let mut html = String::from("<div id=\"root\">");
+  for _ in 0..count {
+    html.push_str("<div class=\"item\"></div>");
+  }
+  html.push_str("</div>");
+  let dom = parse_html(&html).expect("html parses");
+
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+
+  let stats = capture_style_sharing_stats();
+  set_style_sharing_stats_enabled(false);
+
+  let root = find_by_id(&styled, "root").expect("root styled");
+  let first = root
+    .children
+    .first()
+    .expect("root should contain repeated children");
+  assert_eq!(first.styles.padding_left.value, 4.0);
+  assert_eq!(first.styles.padding_left.unit, fastrender::LengthUnit::Px);
+
+  assert!(
+    stats.hits >= (count.saturating_sub(1) as u64),
+    "expected style sharing hits for repeated nodes, got {stats:?}"
+  );
+}
+
+#[test]
+fn style_sharing_disabled_for_nth_child_selectors() {
+  set_style_sharing_stats_enabled(true);
+  reset_style_sharing_stats();
+
+  let css = ".item { color: rgb(0, 0, 255); }\n.item:nth-child(odd) { color: rgb(255, 0, 0); }\n";
+  let stylesheet = parse_stylesheet(css).expect("stylesheet parses");
+
+  let count = 64usize;
+  let mut html = String::from("<div id=\"root\">");
+  for _ in 0..count {
+    html.push_str("<div class=\"item\"></div>");
+  }
+  html.push_str("</div>");
+  let dom = parse_html(&html).expect("html parses");
+
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+
+  let stats = capture_style_sharing_stats();
+  set_style_sharing_stats_enabled(false);
+
+  assert_eq!(
+    stats.hits, 0,
+    "expected no style sharing hits, got {stats:?}"
+  );
+
+  let root = find_by_id(&styled, "root").expect("root styled");
+  let first = root.children.get(0).expect("first item styled");
+  let second = root.children.get(1).expect("second item styled");
+  assert_eq!(first.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(second.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn style_sharing_does_not_mix_case_sensitive_attribute_values() {
+  set_style_sharing_stats_enabled(true);
+  reset_style_sharing_stats();
+
+  let css =
+    ".item { color: rgb(0, 0, 255); }\n[data-x=\"Foo\"] { color: rgb(255, 0, 0); }\n";
+  let stylesheet = parse_stylesheet(css).expect("stylesheet parses");
+
+  let html = "<div id=\"root\"><div class=\"item\" data-x=\"Foo\"></div><div class=\"item\" data-x=\"foo\"></div></div>";
+  let dom = parse_html(html).expect("html parses");
+
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+
+  let _stats = capture_style_sharing_stats();
+  set_style_sharing_stats_enabled(false);
+
+  let root = find_by_id(&styled, "root").expect("root styled");
+  let first = root.children.get(0).expect("first item styled");
+  let second = root.children.get(1).expect("second item styled");
+  assert_eq!(first.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(second.styles.color, Rgba::rgb(0, 0, 255));
 }
