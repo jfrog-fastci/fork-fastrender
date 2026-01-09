@@ -8781,14 +8781,17 @@ impl FastRender {
   /// # }
   /// ```
   pub fn parse_html(&self, html: &str) -> Result<DomNode> {
-    dom::parse_html_with_options(
-      html,
-      DomParseOptions {
-        scripting_enabled: self.dom_scripting_enabled(),
-        compatibility_mode: self.dom_compat_mode,
-        ..Default::default()
-      },
-    )
+    let runtime_toggles = Arc::clone(&self.runtime_toggles);
+    runtime::with_runtime_toggles(runtime_toggles, || {
+      dom::parse_html_with_options(
+        html,
+        DomParseOptions {
+          scripting_enabled: self.dom_scripting_enabled(),
+          compatibility_mode: self.dom_compat_mode,
+          ..Default::default()
+        },
+      )
+    })
   }
 
   /// Parses HTML into a mutable `dom2::Document`.
@@ -8802,14 +8805,17 @@ impl FastRender {
   ///   and runtime overrides (e.g. `FASTR_SCRIPTING`). For direct control, use
   ///   [`crate::dom2::parse_html_with_options`].
   pub fn parse_html_dom2(&self, html: &str) -> Result<crate::dom2::Document> {
-    crate::dom2::parse_html_with_options(
-      html,
-      DomParseOptions {
-        scripting_enabled: self.dom_scripting_enabled(),
-        compatibility_mode: self.dom_compat_mode,
-        ..Default::default()
-      },
-    )
+    let runtime_toggles = Arc::clone(&self.runtime_toggles);
+    runtime::with_runtime_toggles(runtime_toggles, || {
+      crate::dom2::parse_html_with_options(
+        html,
+        DomParseOptions {
+          scripting_enabled: self.dom_scripting_enabled(),
+          compatibility_mode: self.dom_compat_mode,
+          ..Default::default()
+        },
+      )
+    })
   }
 
   fn update_base_url_from_dom(&mut self, dom: &DomNode) {
@@ -10036,6 +10042,21 @@ impl FastRender {
       let meta_color_scheme = meta_color_scheme.map(Arc::new);
       let viewport_size = resolved_viewport.layout_viewport;
       let device_size = resolved_viewport.visual_viewport;
+      let dom_scripting_enabled = match &dom_for_style.node_type {
+        DomNodeType::Document {
+          scripting_enabled, ..
+        } => *scripting_enabled,
+        _ => self.dom_scripting_enabled(),
+      };
+      let media_scripting = runtime::runtime_toggles()
+        .config()
+        .media
+        .scripting
+        .unwrap_or(if dom_scripting_enabled {
+          Scripting::Enabled
+        } else {
+          Scripting::None
+        });
       let media_ctx = match options.media_type {
         MediaType::Print => MediaContext::print(viewport_size.width, viewport_size.height),
         MediaType::Screen => MediaContext::screen(viewport_size.width, viewport_size.height),
@@ -10045,7 +10066,7 @@ impl FastRender {
       }
       .with_device_size(device_size.width, device_size.height)
       .with_device_pixel_ratio(resolved_viewport.device_pixel_ratio)
-      .with_scripting(self.effective_scripting())
+      .with_scripting(media_scripting)
       .with_env_overrides();
       let mut media_query_cache = MediaQueryCache::default();
       record_stage(StageHeartbeat::CssInline);
@@ -10756,6 +10777,8 @@ impl FastRender {
       DomNodeType::Document {
         scripting_enabled, ..
       } => *scripting_enabled,
+      // If callers provide a non-document root (e.g. a fragment), fall back to the renderer's
+      // configured scripting default.
       _ => self.dom_scripting_enabled(),
     };
     let scripting = if dom_scripting_enabled {
@@ -10868,6 +10891,9 @@ impl FastRender {
         self.base_url.as_deref(),
         Some(&used_codepoints),
       );
+      let _ = self
+        .font_context
+        .wait_for_pending_web_fonts(crate::text::font_loader::DEFAULT_WEB_FONT_TIMEOUT);
     }
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(

@@ -396,6 +396,7 @@ pub fn compute_line_height_with_metrics_viewport(
   use crate::style::values::LengthUnit;
 
   let font_size = style.font_size;
+  let normal_line_height = metrics.map(|m| m.line_height).unwrap_or(font_size * 1.2);
   let (vw, vh) = viewport
     .and_then(|s| {
       if s.width.is_finite() && s.height.is_finite() {
@@ -407,13 +408,7 @@ pub fn compute_line_height_with_metrics_viewport(
     .unwrap_or((1200.0, 800.0));
 
   match &style.line_height {
-    LineHeight::Normal => {
-      if let Some(m) = metrics {
-        m.line_height
-      } else {
-        font_size * 1.2
-      }
-    }
+    LineHeight::Normal => normal_line_height,
     LineHeight::Number(n) => font_size * n,
     LineHeight::Length(len) => match len.unit {
       u if u.is_absolute() => len.to_px(),
@@ -426,15 +421,10 @@ pub fn compute_line_height_with_metrics_viewport(
       LengthUnit::Ch => len.value * font_size * 0.5,
       // `lh` inside the `line-height` property is cyclic; approximate it using the UA's
       // `normal` line height.
-      LengthUnit::Lh => {
-        let normal_line_height = metrics.map(|m| m.line_height).unwrap_or(font_size * 1.2);
-        len.value * normal_line_height
-      }
+      LengthUnit::Lh => len.value * normal_line_height,
       LengthUnit::Calc => len
         .calc
         .map(|calc| {
-          let normal_line_height = metrics.map(|m| m.line_height).unwrap_or(font_size * 1.2);
-
           let mut resolved = 0.0;
           for term in calc.terms() {
             resolved += match term.unit {

@@ -121,6 +121,7 @@ mod grid_span_token_order;
 mod grid_track_sizing_intrinsics;
 mod grid_writing_mode_in_block;
 mod inline_float_min_width;
+mod inline_float_in_inline_box;
 mod inline_intrinsic_max_content_text_items;
 mod inline_intrinsic_max_content;
 mod inline_replaced_in_block;

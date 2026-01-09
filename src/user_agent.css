@@ -618,6 +618,17 @@ base, basefont, datalist, noembed, noframes, param, area, map, source, track {
   display: none;
 }
 
+/* `<noscript>` is only rendered when scripting is disabled (HTML LS). */
+noscript {
+  display: none;
+}
+
+@media (scripting: none) {
+  noscript {
+    display: inline;
+  }
+}
+
 [hidden] {
   display: none;
 }

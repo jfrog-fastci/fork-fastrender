@@ -55,6 +55,7 @@ mod synthetic_small_caps_mapping_test;
 mod variable_font_metrics_mvar;
 mod web_font_cors;
 mod web_font_display;
+mod web_font_swap_render_pipeline;
 
 // Consolidated from tests/text_*.rs
 mod diagnostics_outlier_test;
