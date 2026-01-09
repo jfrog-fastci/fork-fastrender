@@ -13,8 +13,10 @@ implementers from having to “rediscover” scattered HTML Standard details whe
 module scripts/import maps later.
 
 ## Status in this repository (reality check)
-FastRender now has a **streaming parse-time pipeline** for classic `<script>` discovery + scheduling,
-backed by `dom2`. The important pieces are:
+FastRender has the **core building blocks** for a streaming, parse-time classic `<script>` pipeline
+(pause/resume parsing at `</script>`, schedule parser-blocking/`async`/`defer` scripts, and keep
+observable document state like `Document.currentScript` correct). Some of the plumbing is still
+being wired together, so treat this section as a “where is the real code?” map.
 
 - **HTML parsing (pause/resume at `</script>`):**
   - `src/html/pausable_html5ever.rs`: wraps html5ever so the host can observe
@@ -23,6 +25,9 @@ backed by `dom2`. The important pieces are:
   - `src/html/streaming_parser.rs`: streaming parser driver built on `PausableHtml5everParser`,
     responsible for incremental feeding, pausing at script boundaries, and resuming from the exact
     input offset.
+  - (Legacy/bridge) `src/dom/scripting_parser.rs`: an incremental html5ever parser that yields at
+    `<script>` boundaries and snapshots the partial DOM to `crate::dom::DomNode` (useful for tests
+    and incremental adoption; not `dom2`-backed).
 - **DOM construction:**
   - `src/dom2/`: mutable DOM (`dom2::Document`) used by JS bindings and script-visible mutations.
   - **dom2 TreeSink:** the html5ever `TreeSink` implementation for `dom2::Document` lives under
@@ -33,8 +38,12 @@ backed by `dom2`. The important pieces are:
   - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
     script block”.
   - `src/js/event_loop.rs`: task + microtask queues with explicit microtask checkpoint draining.
+  - `src/js/streaming.rs`: helpers for building `ScriptElementSpec` at parse time (including base
+    URL timing).
   - `src/js/html_scripting.rs`: integration harness used by the end-to-end pipeline tests (Task
     129).
+  - (Higher-level host runtime) `src/api/browser_document_js.rs`: couples `dom2`, a JS runtime, an
+    HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
 - **Legacy tooling (deprecated for execution):**
   - `src/js/dom_scripts.rs` / `extract_script_elements()`: post-parse DOM scanning for tooling only
     (not spec-correct for execution).
