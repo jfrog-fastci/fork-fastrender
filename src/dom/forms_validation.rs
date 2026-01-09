@@ -458,9 +458,9 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
   }
 
   if input_type.eq_ignore_ascii_case("number") {
-    // Number input values are sanitized to either a finite number string or the empty string. Invalid
-    // value attributes should behave like missing values rather than surfacing `badInput` (which is
-    // intended for user-driven input errors).
+    // Number input values are sanitized to either a parseable number string or the empty string.
+    // Invalid value attributes should behave like missing values rather than surfacing `badInput`
+    // (which is intended for user-driven input errors).
     let sanitized = super::input_number_value_string(element.node).unwrap_or_default();
     if numeric_value_missing(&sanitized) {
       if required {
@@ -470,10 +470,11 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
       return state;
     }
 
+    // `input_number_value_string` accepts IEEE754 spellings like `NaN`/`Infinity`, but those values
+    // cannot participate in constraint validation (min/max/step) and should be treated as
+    // `badInput`.
     let Some(value) = super::parse_finite_number(&sanitized) else {
-      if required {
-        state.value_missing = true;
-      }
+      state.bad_input = true;
       state.compute_validity();
       return state;
     };

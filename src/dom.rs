@@ -4733,8 +4733,13 @@ pub(crate) fn input_number_value_string(node: &DomNode) -> Option<String> {
     return Some(String::new());
   }
 
-  // HTML number inputs sanitize invalid values to the empty string.
-  if parse_finite_number(raw).is_some() {
+  // HTML number inputs trim ASCII whitespace. If the remaining value cannot be parsed as an IEEE
+  // 754 number, it sanitizes to the empty string.
+  //
+  // Note: `f64::from_str` accepts non-finite values like `NaN`/`Infinity`. We preserve those strings
+  // here and let the constraint validation layer surface them as `badInput` so that callers can
+  // distinguish non-finite input from a truly missing/invalid value attribute.
+  if trimmed.parse::<f64>().ok().is_some() {
     Some(trimmed.to_string())
   } else {
     Some(String::new())
