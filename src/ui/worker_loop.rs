@@ -381,19 +381,6 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         };
         navigate_tab(tab_id, tab, &ui_tx, url, NavigationReason::Reload);
       }
-      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } => {
-        // This legacy worker loop does not implement navigation history; the newer `UiWorker`
-        // (src/ui/ui_worker.rs) is responsible for history semantics in tests.
-      }
-      UiToWorker::Reload { tab_id } => {
-        let Some(tab) = tabs.get_mut(&tab_id) else {
-          continue;
-        };
-        let Some(url) = tab.url.clone() else {
-          continue;
-        };
-        navigate_tab(tab_id, tab, &ui_tx, url);
-      }
       UiToWorker::Scroll {
         tab_id,
         delta_css,
