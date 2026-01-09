@@ -11,6 +11,7 @@
 //! It is intentionally **self-contained** and **test-driven** so we can validate the architecture
 //! before wiring in the real network stack and JS engine.
 
+use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::Result;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
@@ -181,6 +182,51 @@ impl<Host: ClassicScriptPipelineHost> ClassicScriptPipeline<Host> {
     script_node_id: NodeId,
     base_url: Option<String>,
   ) -> ScriptElementSpec {
+    let NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } = &dom.node(script_node_id).kind
+    else {
+      return ScriptElementSpec {
+        base_url,
+        src: None,
+        inline_text: String::new(),
+        async_attr: false,
+        defer_attr: false,
+        parser_inserted: true,
+        script_type: ScriptType::Unknown,
+      };
+    };
+
+    // Only scripts in the HTML namespace participate in the HTML script processing model.
+    if !tag_name.eq_ignore_ascii_case("script")
+      || !(namespace.is_empty() || namespace == HTML_NAMESPACE)
+    {
+      return ScriptElementSpec {
+        base_url,
+        src: None,
+        inline_text: String::new(),
+        async_attr: false,
+        defer_attr: false,
+        parser_inserted: true,
+        script_type: ScriptType::Unknown,
+      };
+    }
+
+    // HTML: "prepare a script" early-outs when the script element is not connected.
+    if !dom.is_connected_for_scripting(script_node_id) {
+      return ScriptElementSpec {
+        base_url,
+        src: None,
+        inline_text: String::new(),
+        async_attr: false,
+        defer_attr: false,
+        parser_inserted: true,
+        script_type: ScriptType::Unknown,
+      };
+    }
+
     let async_attr = dom.has_attribute(script_node_id, "async").unwrap_or(false);
     let defer_attr = dom.has_attribute(script_node_id, "defer").unwrap_or(false);
     let raw_src = dom
@@ -348,7 +394,9 @@ impl<Host: ClassicScriptPipelineHost> ScriptBlockExecutor<Host> for HostExecutor
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::dom::SVG_NAMESPACE;
   use crate::js::{CurrentScriptStateHandle, EventLoop, RunLimits};
+  use selectors::context::QuirksMode;
 
   #[derive(Default)]
   struct Host {
@@ -384,6 +432,40 @@ mod tests {
       })?;
       Ok(())
     }
+  }
+
+  #[test]
+  fn build_script_element_spec_ignores_inert_or_foreign_scripts() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+
+    let template = doc.create_element("template", "");
+    doc.node_mut(template).inert_subtree = true;
+    let inert_script = doc.create_element("script", "");
+    doc
+      .set_attribute(inert_script, "src", "inert.js")
+      .expect("set_attribute");
+    doc.append_child(template, inert_script).expect("append_child");
+    doc.append_child(doc.root(), template).expect("append_child");
+
+    let foreign_script = doc.create_element("script", SVG_NAMESPACE);
+    doc
+      .set_attribute(foreign_script, "src", "foreign.js")
+      .expect("set_attribute");
+    doc.append_child(doc.root(), foreign_script).expect("append_child");
+
+    let pipeline = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    let base_url = Some("https://ex/doc.html".to_string());
+
+    let inert_spec =
+      pipeline.build_script_element_spec(&doc, inert_script, base_url.clone());
+    assert_eq!(inert_spec.script_type, ScriptType::Unknown);
+    assert!(inert_spec.src.is_none());
+    assert_eq!(inert_spec.inline_text, "");
+
+    let foreign_spec = pipeline.build_script_element_spec(&doc, foreign_script, base_url);
+    assert_eq!(foreign_spec.script_type, ScriptType::Unknown);
+    assert!(foreign_spec.src.is_none());
+    assert_eq!(foreign_spec.inline_text, "");
   }
 
   #[test]

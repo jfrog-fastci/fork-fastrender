@@ -1,5 +1,4 @@
-use crate::dom::{DomNode, DomNodeType};
-use crate::dom2::{Document, Dom2TreeSink, NodeId, NodeKind};
+use crate::dom2::{Document, Dom2TreeSink, NodeId};
 use crate::error::Result;
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 use crate::js::{EventLoop, ScriptElementSpec, ScriptScheduler, ScriptSchedulerAction, TaskSource};
@@ -207,56 +206,8 @@ where
   fn build_script_spec(&self, script_node: NodeId) -> ScriptElementSpec {
     let sink = self.parser.sink();
     let doc = sink.document();
-    let node = doc.node(script_node);
-
-    let (tag_name, namespace, attributes) = match &node.kind {
-      NodeKind::Element {
-        tag_name,
-        namespace,
-        attributes,
-      } => (tag_name.as_str(), namespace.as_str(), attributes.as_slice()),
-      NodeKind::Slot {
-        namespace,
-        attributes,
-        ..
-      } => ("slot", namespace.as_str(), attributes.as_slice()),
-      _ => ("", "", &[][..]),
-    };
-
-    let async_attr = attributes.iter().any(|(k, _)| k.eq_ignore_ascii_case("async"));
-    let defer_attr = attributes.iter().any(|(k, _)| k.eq_ignore_ascii_case("defer"));
-
-    let base_url = sink.current_base_url();
-    let src = attributes
-      .iter()
-      .find_map(|(k, v)| k.eq_ignore_ascii_case("src").then_some(v.as_str()))
-      .and_then(|raw| sink.base_url_tracker().resolve_script_src(raw));
-
-    let mut inline_text = String::new();
-    for &child in &node.children {
-      if let NodeKind::Text { content } = &doc.node(child).kind {
-        inline_text.push_str(content);
-      }
-    }
-
-    let script_dom = DomNode {
-      node_type: DomNodeType::Element {
-        tag_name: tag_name.to_string(),
-        namespace: namespace.to_string(),
-        attributes: attributes.to_vec(),
-      },
-      children: Vec::new(),
-    };
-
-    ScriptElementSpec {
-      base_url,
-      src,
-      inline_text,
-      async_attr,
-      defer_attr,
-      parser_inserted: true,
-      script_type: crate::js::determine_script_type(&script_dom),
-    }
+    let base = sink.base_url_tracker();
+    crate::js::streaming::build_parser_inserted_script_element_spec_dom2(&doc, script_node, &base)
   }
 
   fn apply_actions(

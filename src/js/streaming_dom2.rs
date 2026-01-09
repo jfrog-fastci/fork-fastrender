@@ -56,6 +56,23 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     };
   }
 
+  // HTML: "prepare a script" early-outs when the script element is not connected.
+  //
+  // `dom2` represents `<template>` contents by keeping the children in-tree while marking the
+  // `<template>` element as `inert_subtree`. Scripts inside such subtrees must be ignored: they
+  // must not be fetched or executed by the HTML script processing model.
+  if !doc.is_connected_for_scripting(script) {
+    return ScriptElementSpec {
+      base_url,
+      src: None,
+      inline_text: String::new(),
+      async_attr: false,
+      defer_attr: false,
+      parser_inserted: true,
+      script_type: ScriptType::Unknown,
+    };
+  }
+
   let async_attr = doc.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = doc.has_attribute(script, "defer").unwrap_or(false);
 
@@ -154,6 +171,36 @@ mod tests {
     let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base);
     assert_eq!(spec.script_type, ScriptType::Unknown);
     assert!(spec.src.is_none());
+    assert_eq!(spec.inline_text, "");
+  }
+
+  #[test]
+  fn dom2_builder_ignores_scripts_inside_inert_template_subtrees() {
+    let mut doc = Dom2Document::new(QuirksMode::NoQuirks);
+    let template = doc.create_element("template", "");
+    doc.node_mut(template).inert_subtree = true;
+
+    let script = doc.create_element("script", "");
+    doc
+      .set_attribute(script, "src", "inert.js")
+      .expect("set_attribute");
+    let text = doc.create_text("console.log('inert');");
+    doc.append_child(script, text).expect("append_child");
+    doc.append_child(template, script).expect("append_child");
+    doc.append_child(doc.root(), template).expect("append_child");
+
+    let base = BaseUrlTracker::new(Some("https://example.com/dir/page.html"));
+    let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base);
+
+    assert_eq!(
+      spec.base_url.as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
+    assert_eq!(spec.script_type, ScriptType::Unknown);
+    assert!(
+      spec.src.is_none(),
+      "template scripts must not fetch external resources"
+    );
     assert_eq!(spec.inline_text, "");
   }
 
