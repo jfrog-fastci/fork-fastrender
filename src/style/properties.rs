@@ -9425,31 +9425,37 @@ fn apply_declaration_with_base_internal_with_order(
         return;
       }
 
-      let mut fallbacks = Vec::new();
-      for part in raw.split(',') {
-        let name = trim_ascii_whitespace(part);
-        if split_ascii_whitespace(name).count() != 1 {
-          return;
-        }
+      let mut input = ParserInput::new(raw);
+      let mut parser = Parser::new(&mut input);
+      parser.skip_whitespace();
+
+      let parsed = match parser.parse_comma_separated(|p| {
+        p.skip_whitespace();
+        let ident = p.expect_ident()?;
+        let name = ident.as_ref();
 
         if name.eq_ignore_ascii_case("flip-inline") {
-          fallbacks.push("flip-inline".to_string());
-          continue;
+          return Ok("flip-inline".to_string());
         }
         if name.eq_ignore_ascii_case("flip-block") {
-          fallbacks.push("flip-block".to_string());
-          continue;
+          return Ok("flip-block".to_string());
         }
         if name.starts_with("--") && name.len() > 2 {
-          fallbacks.push(name.to_string());
-          continue;
+          return Ok(name.to_string());
         }
+
+        Err(p.new_custom_error::<(), ()>(() ))
+      }) {
+        Ok(values) => values,
+        Err(_) => return,
+      };
+
+      parser.skip_whitespace();
+      if !parser.is_exhausted() || parsed.is_empty() {
         return;
       }
 
-      if !fallbacks.is_empty() {
-        styles.position_try_fallbacks = fallbacks;
-      }
+      styles.position_try_fallbacks = parsed;
     }
     "anchor-scope" => {
       let token = match resolved_value {

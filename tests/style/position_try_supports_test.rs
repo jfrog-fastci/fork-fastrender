@@ -66,6 +66,20 @@ fn supports_position_try_fallbacks_builtin_keywords() {
 }
 
 #[test]
+fn position_try_fallbacks_parses_and_skips_comments() {
+  let target = styled_target(
+    r#"
+      #t { position-try-fallbacks: flip-inline/*comment*/, --foo; }
+    "#,
+  );
+
+  assert_eq!(
+    target.styles.position_try_fallbacks,
+    vec!["flip-inline".to_string(), "--foo".to_string()]
+  );
+}
+
+#[test]
 fn supports_position_try_at_rule() {
   let target = styled_target(
     r#"
