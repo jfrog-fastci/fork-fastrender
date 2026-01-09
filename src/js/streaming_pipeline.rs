@@ -20,7 +20,7 @@ use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use super::DomHost;
 use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestrator};
 use super::script_scheduler::{ScriptId, ScriptScheduler, ScriptSchedulerAction};
-use super::{determine_script_type, ScriptElementSpec, ScriptType};
+use super::{determine_script_type_dom2, ScriptElementSpec, ScriptType};
 use super::{EventLoop, TaskSource};
 
 use std::cell::RefCell;
@@ -248,24 +248,9 @@ impl<Host: ClassicScriptPipelineHost> ClassicScriptPipeline<Host> {
       out
     };
 
-    // Reuse the existing `determine_script_type` logic by building a tiny `DomNode` view.
-    // (This keeps the type-string edge cases tested in `js/mod.rs` working here too.)
-    let script_type = {
-      let attrs: Vec<(String, String)> = match &dom.node(script_node_id).kind {
-        NodeKind::Element { attributes, .. } => attributes.clone(),
-        NodeKind::Slot { attributes, .. } => attributes.clone(),
-        _ => Vec::new(),
-      };
-      let node = crate::dom::DomNode {
-        node_type: crate::dom::DomNodeType::Element {
-          tag_name: "script".to_string(),
-          namespace: String::new(),
-          attributes: attrs,
-        },
-        children: Vec::new(),
-      };
-      determine_script_type(&node)
-    };
+    // Determine script type from the real dom2 node attributes (avoid allocating a legacy DomNode
+    // wrapper).
+    let script_type = determine_script_type_dom2(dom, script_node_id);
 
     ScriptElementSpec {
       base_url,
