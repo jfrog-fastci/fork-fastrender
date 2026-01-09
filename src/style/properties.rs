@@ -6614,8 +6614,8 @@ pub(crate) fn apply_property_from_source(
       styles.webkit_text_fill_color = source.webkit_text_fill_color.clone()
     }
     "background-color" => styles.background_color = source.background_color,
-    "fill" => styles.svg_fill = source.svg_fill,
-    "stroke" => styles.svg_stroke = source.svg_stroke,
+    "fill" => styles.svg_fill = source.svg_fill.clone(),
+    "stroke" => styles.svg_stroke = source.svg_stroke.clone(),
     "stroke-width" => styles.svg_stroke_width = source.svg_stroke_width,
     "fill-rule" => styles.svg_fill_rule = source.svg_fill_rule,
     "clip-rule" => styles.svg_clip_rule = source.svg_clip_rule,
@@ -8639,13 +8639,51 @@ fn apply_declaration_with_base_internal_with_order(
   };
 
   let resolve_svg_color_or_none = |value: &PropertyValue| -> Option<ColorOrNone> {
+    let normalize_url = |raw: &str| -> Option<Arc<str>> {
+      let mut trimmed = trim_ascii_whitespace(raw);
+      if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
+          trimmed = trim_ascii_whitespace(&trimmed[1..trimmed.len() - 1]);
+        }
+      }
+      (!trimmed.is_empty()).then(|| Arc::<str>::from(trimmed))
+    };
+
+    let parse_url_function = |raw: &str| -> Option<Arc<str>> {
+      let trimmed = trim_ascii_whitespace(raw);
+      if trimmed.len() < 3 || !starts_with_ignore_ascii_case(trimmed, "url") {
+        return None;
+      }
+      let mut rest = &trimmed[3..];
+      rest = rest.trim_start_matches(is_ascii_whitespace_html_css);
+      if !rest.starts_with('(') {
+        return None;
+      }
+      rest = &rest[1..];
+      let close_idx = rest.rfind(')')?;
+      let (inner, tail) = rest.split_at(close_idx);
+      if !trim_ascii_whitespace(tail.get(1..).unwrap_or("")).is_empty() {
+        return None;
+      }
+      normalize_url(inner)
+    };
+
     match value {
       PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(ColorOrNone::None),
       PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
         Some(ColorOrNone::CurrentColor)
       }
       PropertyValue::Color(color) if color.is_current_color() => Some(ColorOrNone::CurrentColor),
+      PropertyValue::Url(url) => normalize_url(url).map(ColorOrNone::Url),
       _ => {
+        if let PropertyValue::Keyword(kw) = value {
+          if let Some(url) = parse_url_function(kw) {
+            return Some(ColorOrNone::Url(url));
+          }
+        }
         if let Some(rgba) = resolve_color_value(value) {
           return Some(ColorOrNone::Color(rgba));
         }

@@ -251,6 +251,41 @@ fn inline_svg_marker_end_from_css_works_when_document_css_injection_disabled() {
 }
 
 #[test]
+fn inline_svg_fill_url_gradient_from_css_works_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        .shape { fill: url(#grad); }
+      </style>
+      <svg width="20" height="10" viewBox="0 0 20 10">
+        <defs>
+          <linearGradient id="grad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="rgb(255,0,0)"/>
+            <stop offset="0.5" stop-color="rgb(255,0,0)"/>
+            <stop offset="0.5" stop-color="rgb(0,0,255)"/>
+            <stop offset="1" stop-color="rgb(0,0,255)"/>
+          </linearGradient>
+        </defs>
+        <rect class="shape" x="0" y="0" width="20" height="10" />
+      </svg>
+      "#;
+
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 20);
+      assert_eq!(pixel(&pixmap, 5, 5), [255, 0, 0, 255]);
+      assert_eq!(pixel(&pixmap, 15, 5), [0, 0, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_root_opacity_is_not_double_applied() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

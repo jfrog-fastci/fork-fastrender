@@ -965,10 +965,10 @@ impl Default for AccentColor {
   }
 }
 
-/// SVG paint property value that can be a color or `none`.
+/// SVG paint property value that can be a color, `none`, or a paint server reference (`url(...)`).
 ///
 /// Used for core SVG presentation properties like `fill` and `stroke`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ColorOrNone {
   Color(Rgba),
   /// The `currentColor` keyword.
@@ -978,6 +978,8 @@ pub enum ColorOrNone {
   /// same rule/style attribute.
   CurrentColor,
   None,
+  /// Raw `url(...)` value contents (without the `url()` wrapper), e.g. `"#grad"`.
+  Url(Arc<str>),
 }
 
 /// SVG property value that can be a URL reference (`url(...)`) or `none`.

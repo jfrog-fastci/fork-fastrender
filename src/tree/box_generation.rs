@@ -1370,7 +1370,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   };
 
-  let mut push_color_or_none = |out: &mut String, value: ColorOrNone, current_color: Rgba| {
+  let mut push_color_or_none = |out: &mut String, value: &ColorOrNone, current_color: Rgba| {
     match value {
       ColorOrNone::None => out.push_str("none"),
       ColorOrNone::Color(color) => {
@@ -1393,12 +1393,21 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
           current_color.a.clamp(0.0, 1.0)
         );
       }
+      ColorOrNone::Url(url) => {
+        out.push_str("url(");
+        out.push_str(url.as_ref());
+        out.push(')');
+      }
     }
   };
 
-  let effective_color_or_none = |value: ColorOrNone, current_color: Rgba| match value {
-    ColorOrNone::CurrentColor => ColorOrNone::Color(current_color),
-    other => other,
+  let effective_color_or_none = |value: &ColorOrNone, current_color: Rgba| -> ColorOrNone {
+    match value {
+      ColorOrNone::CurrentColor => ColorOrNone::Color(current_color),
+      ColorOrNone::Color(color) => ColorOrNone::Color(*color),
+      ColorOrNone::None => ColorOrNone::None,
+      ColorOrNone::Url(url) => ColorOrNone::Url(url.clone()),
+    }
   };
 
   let mut push_length_or_number = |out: &mut String, value: LengthOrNumber| match value {
@@ -1419,25 +1428,28 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   };
 
-  if let Some(fill) = style.svg_fill {
+  if let Some(fill) = style.svg_fill.as_ref() {
     let effective = effective_color_or_none(fill, style.color);
     let parent_effective =
-      parent.and_then(|p| p.svg_fill.map(|value| effective_color_or_none(value, p.color)));
-    if parent_effective != Some(effective) {
+      parent.and_then(|p| p.svg_fill.as_ref().map(|value| effective_color_or_none(value, p.color)));
+    if parent_effective.as_ref() != Some(&effective) {
       start_decl(&mut out, &mut any);
       out.push_str("fill: ");
-      push_color_or_none(&mut out, effective, style.color);
+      push_color_or_none(&mut out, fill, style.color);
     }
   }
 
-  if let Some(stroke) = style.svg_stroke {
+  if let Some(stroke) = style.svg_stroke.as_ref() {
     let effective = effective_color_or_none(stroke, style.color);
-    let parent_effective =
-      parent.and_then(|p| p.svg_stroke.map(|value| effective_color_or_none(value, p.color)));
-    if parent_effective != Some(effective) {
+    let parent_effective = parent.and_then(|p| {
+      p.svg_stroke
+        .as_ref()
+        .map(|value| effective_color_or_none(value, p.color))
+    });
+    if parent_effective.as_ref() != Some(&effective) {
       start_decl(&mut out, &mut any);
       out.push_str("stroke: ");
-      push_color_or_none(&mut out, effective, style.color);
+      push_color_or_none(&mut out, stroke, style.color);
     }
   }
 
