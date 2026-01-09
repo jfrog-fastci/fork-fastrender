@@ -5,8 +5,8 @@ use fastrender::render_control::StageHeartbeat;
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{
-  spawn_ui_worker, spawn_ui_worker_for_test, NavigationReason, PointerButton, RenderedFrame, TabId,
-  UiToWorker, WorkerToUi,
+  spawn_browser_worker, spawn_browser_worker_for_test, NavigationReason, PointerButton, RenderedFrame,
+  TabId, UiToWorker, WorkerToUi,
 };
 
 use super::support::{
@@ -25,9 +25,8 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
 fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
   let _lock = super::stage_listener_test_lock();
 
-  let (tx, rx, handle) = spawn_ui_worker("fastr-ui-render-thread-about-newtab")
-    .expect("spawn ui worker")
-    .split();
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
+    spawn_browser_worker().expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -72,9 +71,8 @@ fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
 fn scroll_produces_scroll_update_and_frame() {
   let _lock = super::stage_listener_test_lock();
 
-  let (tx, rx, handle) = spawn_ui_worker("fastr-ui-render-thread-scroll")
-    .expect("spawn ui worker")
-    .split();
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
+    spawn_browser_worker().expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -140,9 +138,8 @@ fn navigation_cancellation_drops_stale_frame() {
 
   // Slow down render stages on this worker thread to make cancellation deterministic without
   // mutating the process-global `FASTR_TEST_RENDER_DELAY_MS` env var.
-  let (tx, rx, handle) = spawn_ui_worker_for_test("fastr-ui-render-thread-cancel", Some(1))
-    .expect("spawn ui worker")
-    .split();
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
+    spawn_browser_worker_for_test(Some(1)).expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -215,9 +212,8 @@ fn navigation_cancellation_drops_stale_frame() {
 fn enter_submits_focused_text_input_form() {
   let _lock = super::stage_listener_test_lock();
 
-  let (tx, rx, handle) = spawn_ui_worker("fastr-ui-render-thread-form-submit")
-    .expect("spawn ui worker")
-    .split();
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
+    spawn_browser_worker().expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -297,9 +293,8 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
 "#,
   );
 
-  let (tx, rx, handle) = spawn_ui_worker("fastr-ui-render-thread-select-dropdown-choose")
-    .expect("spawn ui worker")
-    .split();
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join: handle } =
+    spawn_browser_worker().expect("spawn browser worker");
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
