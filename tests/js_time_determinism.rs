@@ -57,18 +57,15 @@ fn date_now_and_performance_now_follow_event_loop_clock() {
   let date = get_global_property(&mut heap, &realm, "Date");
   let performance = get_global_property(&mut heap, &realm, "performance");
 
-  let date_obj = match date {
-    Value::Object(o) => o,
-    _ => panic!("Date should be an object"),
+  let Value::Object(date_obj) = date else {
+    panic!("Date should be an object");
   };
-  let performance_obj = match performance {
-    Value::Object(o) => o,
-    _ => panic!("performance should be an object"),
+  let Value::Object(performance_obj) = performance else {
+    panic!("performance should be an object");
   };
 
   let date_now = get_object_property(&mut heap, date_obj, "now");
   let perf_now = get_object_property(&mut heap, performance_obj, "now");
-
   let v = call0(&mut vm, &mut heap, date_now, Value::Object(date_obj));
   assert_eq!(
     v,

@@ -38,303 +38,273 @@ enum Action {
   None,
   StopPropagation,
   StopImmediatePropagation,
-  PreventDefault,
   RemoveListener {
     target: EventTargetId,
     type_: &'static str,
-    capture: bool,
     listener_id: ListenerId,
+    capture: bool,
+    expect_removed: Option<bool>,
   },
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct Expectations {
-  target: Option<EventTargetId>,
-  current_target: Option<EventTargetId>,
-  event_phase: Option<EventPhase>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Behavior {
   label: &'static str,
-  expectations: Expectations,
+  expected_phase: EventPhase,
+  expected_current_target: EventTargetId,
   action: Action,
 }
 
-struct RecordingInvoker {
+struct RecordingInvoker<'a> {
+  registry: &'a EventListenerRegistry,
+  dispatch_target: EventTargetId,
   calls: Vec<&'static str>,
   behaviors: HashMap<ListenerId, Behavior>,
 }
 
-impl RecordingInvoker {
-  fn new(behaviors: impl IntoIterator<Item = (ListenerId, Behavior)>) -> Self {
+impl<'a> RecordingInvoker<'a> {
+  fn new(
+    registry: &'a EventListenerRegistry,
+    dispatch_target: EventTargetId,
+    behaviors: impl IntoIterator<Item = (ListenerId, Behavior)>,
+  ) -> Self {
     Self {
+      registry,
+      dispatch_target,
       calls: Vec::new(),
       behaviors: behaviors.into_iter().collect(),
     }
   }
 }
 
-impl EventListenerInvoker for RecordingInvoker {
-  fn invoke(
-    &mut self,
-    listener_id: ListenerId,
-    event: &mut Event,
-    ctx: &mut dyn EventListenerContext,
-  ) -> crate::Result<()> {
+impl EventListenerInvoker for RecordingInvoker<'_> {
+  fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> Result<(), DomError> {
     let behavior = *self
       .behaviors
       .get(&listener_id)
       .unwrap_or_else(|| panic!("unknown listener_id: {listener_id:?}"));
+    assert_eq!(event.target, Some(self.dispatch_target));
+    assert_eq!(event.current_target, Some(behavior.expected_current_target));
+    assert_eq!(event.event_phase, behavior.expected_phase);
 
     self.calls.push(behavior.label);
-
-    if let Some(expected) = behavior.expectations.target {
-      assert_eq!(event.target, Some(expected));
-    }
-    if let Some(expected) = behavior.expectations.current_target {
-      assert_eq!(event.current_target, Some(expected));
-    }
-    if let Some(expected) = behavior.expectations.event_phase {
-      assert_eq!(event.event_phase, expected);
-    }
 
     match behavior.action {
       Action::None => {}
       Action::StopPropagation => event.stop_propagation(),
       Action::StopImmediatePropagation => event.stop_immediate_propagation(),
-      Action::PreventDefault => event.prevent_default(),
       Action::RemoveListener {
         target,
         type_,
-        capture,
         listener_id,
+        capture,
+        expect_removed,
       } => {
-        ctx.remove_event_listener(target, type_, listener_id, capture);
+        let removed = self
+          .registry
+          .remove_event_listener(target, type_, listener_id, capture);
+        if let Some(expect_removed) = expect_removed {
+          assert_eq!(removed, expect_removed);
+        }
       }
     }
+
     Ok(())
   }
 }
 
 #[test]
 fn capture_and_bubble_ordering_across_tree() {
-  let (mut doc, a, b, c) = make_dom_abc();
+  let (doc, a, b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
 
   let type_ = "x";
 
-  let id_window_capture = ListenerId(1);
-  let id_document_capture = ListenerId(2);
-  let id_a_capture = ListenerId(3);
-  let id_b_capture = ListenerId(4);
-  let id_c_capture = ListenerId(5);
+  let id_window_capture = ListenerId::new(1);
+  let id_document_capture = ListenerId::new(2);
+  let id_a_capture = ListenerId::new(3);
+  let id_b_capture = ListenerId::new(4);
+  let id_c_capture = ListenerId::new(5);
 
-  let id_c_bubble = ListenerId(6);
-  let id_b_bubble = ListenerId(7);
-  let id_a_bubble = ListenerId(8);
-  let id_document_bubble = ListenerId(9);
-  let id_window_bubble = ListenerId(10);
+  let id_c_bubble = ListenerId::new(6);
+  let id_b_bubble = ListenerId::new(7);
+  let id_a_bubble = ListenerId::new(8);
+  let id_document_bubble = ListenerId::new(9);
+  let id_window_bubble = ListenerId::new(10);
 
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Window,
     type_,
     id_window_capture,
-    EventListenerOptions {
+    AddEventListenerOptions {
       capture: true,
       ..Default::default()
     }
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Document,
     type_,
     id_document_capture,
-    EventListenerOptions {
+    AddEventListenerOptions {
       capture: true,
       ..Default::default()
     }
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(a),
     type_,
     id_a_capture,
-    EventListenerOptions {
+    AddEventListenerOptions {
       capture: true,
       ..Default::default()
     }
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(b),
     type_,
     id_b_capture,
-    EventListenerOptions {
+    AddEventListenerOptions {
       capture: true,
       ..Default::default()
     }
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(c),
     type_,
     id_c_capture,
-    EventListenerOptions {
+    AddEventListenerOptions {
       capture: true,
       ..Default::default()
     }
   ));
 
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(c),
     type_,
     id_c_bubble,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(b),
     type_,
     id_b_bubble,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(a),
     type_,
     id_a_bubble,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Document,
     type_,
     id_document_bubble,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Window,
     type_,
     id_window_bubble,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
 
-  let dispatch_target = EventTargetId::Node(c);
-  let mut invoker = RecordingInvoker::new([
-    (
-      id_window_capture,
-      Behavior {
-        label: "window_capture",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Window),
-          event_phase: Some(EventPhase::CapturingPhase),
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [
+      (
+        id_window_capture,
+        Behavior {
+          label: "window_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_document_capture,
-      Behavior {
-        label: "document_capture",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Document),
-          event_phase: Some(EventPhase::CapturingPhase),
+      ),
+      (
+        id_document_capture,
+        Behavior {
+          label: "document_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_a_capture,
-      Behavior {
-        label: "a_capture",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Node(a)),
-          event_phase: Some(EventPhase::CapturingPhase),
+      ),
+      (
+        id_a_capture,
+        Behavior {
+          label: "a_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Node(a),
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_b_capture,
-      Behavior {
-        label: "b_capture",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Node(b)),
-          event_phase: Some(EventPhase::CapturingPhase),
+      ),
+      (
+        id_b_capture,
+        Behavior {
+          label: "b_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Node(b),
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_c_capture,
-      Behavior {
-        label: "c_capture",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(dispatch_target),
-          event_phase: Some(EventPhase::AtTarget),
+      ),
+      (
+        id_c_capture,
+        Behavior {
+          label: "c_capture",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_c_bubble,
-      Behavior {
-        label: "c_bubble",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(dispatch_target),
-          event_phase: Some(EventPhase::AtTarget),
+      ),
+      (
+        id_c_bubble,
+        Behavior {
+          label: "c_bubble",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_b_bubble,
-      Behavior {
-        label: "b_bubble",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Node(b)),
-          event_phase: Some(EventPhase::BubblingPhase),
+      ),
+      (
+        id_b_bubble,
+        Behavior {
+          label: "b_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Node(b),
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_a_bubble,
-      Behavior {
-        label: "a_bubble",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Node(a)),
-          event_phase: Some(EventPhase::BubblingPhase),
+      ),
+      (
+        id_a_bubble,
+        Behavior {
+          label: "a_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Node(a),
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_document_bubble,
-      Behavior {
-        label: "document_bubble",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Document),
-          event_phase: Some(EventPhase::BubblingPhase),
+      ),
+      (
+        id_document_bubble,
+        Behavior {
+          label: "document_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-    (
-      id_window_bubble,
-      Behavior {
-        label: "window_bubble",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Window),
-          event_phase: Some(EventPhase::BubblingPhase),
+      ),
+      (
+        id_window_bubble,
+        Behavior {
+          label: "window_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
         },
-        action: Action::None,
-      },
-    ),
-  ]);
+      ),
+    ],
+  );
 
   let mut event = Event::new(
     type_,
@@ -343,14 +313,20 @@ fn capture_and_bubble_ordering_across_tree() {
       ..Default::default()
     },
   );
-  let not_canceled = doc
-    .dispatch_event(dispatch_target, &mut event, &mut invoker)
-    .unwrap();
-  assert!(not_canceled);
+  assert!(
+    dispatch_event(
+      EventTargetId::Node(c),
+      &mut event,
+      &doc,
+      &registry,
+      &mut invoker
+    )
+    .unwrap()
+  );
 
   assert_eq!(
-    invoker.calls,
-    vec![
+    invoker.calls.as_slice(),
+    &[
       "window_capture",
       "document_capture",
       "a_capture",
@@ -367,78 +343,83 @@ fn capture_and_bubble_ordering_across_tree() {
 
 #[test]
 fn stop_propagation_prevents_subsequent_targets() {
-  let (mut doc, a, b, c) = make_dom_abc();
+  let (doc, a, b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
 
   let type_ = "x";
-  let id_b_stop = ListenerId(1);
-  let id_a = ListenerId(2);
-  let id_document = ListenerId(3);
-  let id_window = ListenerId(4);
 
-  assert!(doc.add_event_listener(
+  let id_stop = ListenerId::new(1);
+  let id_a = ListenerId::new(2);
+  let id_document = ListenerId::new(3);
+  let id_window = ListenerId::new(4);
+
+  assert!(registry.add_event_listener(
     EventTargetId::Node(b),
     type_,
-    id_b_stop,
-    EventListenerOptions::default()
+    id_stop,
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(a),
     type_,
     id_a,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Document,
     type_,
     id_document,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Window,
     type_,
     id_window,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
 
-  let dispatch_target = EventTargetId::Node(c);
-  let mut invoker = RecordingInvoker::new([
-    (
-      id_b_stop,
-      Behavior {
-        label: "b_bubble_stop",
-        expectations: Expectations {
-          target: Some(dispatch_target),
-          current_target: Some(EventTargetId::Node(b)),
-          event_phase: Some(EventPhase::BubblingPhase),
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [
+      (
+        id_stop,
+        Behavior {
+          label: "b_bubble_stop",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Node(b),
+          action: Action::StopPropagation,
         },
-        action: Action::StopPropagation,
-      },
-    ),
-    (
-      id_a,
-      Behavior {
-        label: "a_bubble",
-        expectations: Expectations::default(),
-        action: Action::None,
-      },
-    ),
-    (
-      id_document,
-      Behavior {
-        label: "document_bubble",
-        expectations: Expectations::default(),
-        action: Action::None,
-      },
-    ),
-    (
-      id_window,
-      Behavior {
-        label: "window_bubble",
-        expectations: Expectations::default(),
-        action: Action::None,
-      },
-    ),
-  ]);
+      ),
+      (
+        id_a,
+        Behavior {
+          label: "a_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Node(a),
+          action: Action::None,
+        },
+      ),
+      (
+        id_document,
+        Behavior {
+          label: "document_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_window,
+        Behavior {
+          label: "window_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+    ],
+  );
 
   let mut event = Event::new(
     type_,
@@ -447,68 +428,81 @@ fn stop_propagation_prevents_subsequent_targets() {
       ..Default::default()
     },
   );
-  doc
-    .dispatch_event(dispatch_target, &mut event, &mut invoker)
-    .unwrap();
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
 
-  assert_eq!(invoker.calls, vec!["b_bubble_stop"]);
+  assert_eq!(invoker.calls.as_slice(), &["b_bubble_stop"]);
 }
 
 #[test]
 fn stop_immediate_propagation_stops_other_listeners_on_same_target() {
-  let (mut doc, _a, b, c) = make_dom_abc();
+  let (doc, _a, b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
 
   let type_ = "x";
-  let id_first = ListenerId(1);
-  let id_second = ListenerId(2);
-  let id_parent = ListenerId(3);
 
-  assert!(doc.add_event_listener(
+  let id_first = ListenerId::new(1);
+  let id_second = ListenerId::new(2);
+  let id_parent = ListenerId::new(3);
+
+  assert!(registry.add_event_listener(
     EventTargetId::Node(c),
     type_,
     id_first,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(c),
     type_,
     id_second,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
-  assert!(doc.add_event_listener(
+  assert!(registry.add_event_listener(
     EventTargetId::Node(b),
     type_,
     id_parent,
-    EventListenerOptions::default()
+    AddEventListenerOptions::default()
   ));
 
-  let dispatch_target = EventTargetId::Node(c);
-  let mut invoker = RecordingInvoker::new([
-    (
-      id_first,
-      Behavior {
-        label: "first",
-        expectations: Expectations::default(),
-        action: Action::StopImmediatePropagation,
-      },
-    ),
-    (
-      id_second,
-      Behavior {
-        label: "second",
-        expectations: Expectations::default(),
-        action: Action::None,
-      },
-    ),
-    (
-      id_parent,
-      Behavior {
-        label: "parent_bubble",
-        expectations: Expectations::default(),
-        action: Action::None,
-      },
-    ),
-  ]);
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [
+      (
+        id_first,
+        Behavior {
+          label: "first",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::StopImmediatePropagation,
+        },
+      ),
+      (
+        id_second,
+        Behavior {
+          label: "second",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::None,
+        },
+      ),
+      (
+        id_parent,
+        Behavior {
+          label: "parent_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Node(b),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
 
   let mut event = Event::new(
     type_,
@@ -517,150 +511,296 @@ fn stop_immediate_propagation_stops_other_listeners_on_same_target() {
       ..Default::default()
     },
   );
-  doc
-    .dispatch_event(dispatch_target, &mut event, &mut invoker)
-    .unwrap();
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
 
-  assert_eq!(invoker.calls, vec!["first"]);
+  assert_eq!(invoker.calls.as_slice(), &["first"]);
 }
 
 #[test]
 fn once_listeners_only_fire_once() {
-  let (mut doc, _a, _b, c) = make_dom_abc();
-
+  let (doc, _a, _b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
   let type_ = "x";
-  let id_once = ListenerId(1);
 
-  assert!(doc.add_event_listener(
+  let id_once = ListenerId::new(1);
+  assert!(registry.add_event_listener(
     EventTargetId::Node(c),
     type_,
     id_once,
-    EventListenerOptions {
+    AddEventListenerOptions {
       once: true,
       ..Default::default()
-    }
+    },
   ));
 
-  let mut invoker = RecordingInvoker::new([(
-    id_once,
-    Behavior {
-      label: "once",
-      expectations: Expectations::default(),
-      action: Action::None,
-    },
-  )]);
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [(
+      id_once,
+      Behavior {
+        label: "once",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(c),
+        action: Action::RemoveListener {
+          target: EventTargetId::Node(c),
+          type_,
+          listener_id: id_once,
+          capture: false,
+          expect_removed: Some(false),
+        },
+      },
+    )],
+  );
 
   for _ in 0..2 {
     let mut event = Event::new(type_, EventInit::default());
-    doc
-      .dispatch_event(EventTargetId::Node(c), &mut event, &mut invoker)
-      .unwrap();
+    dispatch_event(
+      EventTargetId::Node(c),
+      &mut event,
+      &doc,
+      &registry,
+      &mut invoker,
+    )
+    .unwrap();
   }
 
-  assert_eq!(invoker.calls, vec!["once"]);
+  assert_eq!(invoker.calls.as_slice(), &["once"]);
 }
 
 #[test]
-fn remove_event_listener_during_dispatch_skips_removed_listener() {
-  let (mut doc, _a, _b, c) = make_dom_abc();
+fn remove_event_listener_during_dispatch_prevents_later_listener_in_current_dispatch() {
+  let (doc, _a, _b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
 
   let type_ = "x";
-  let id_l1 = ListenerId(1);
-  let id_l2 = ListenerId(2);
-  let dispatch_target = EventTargetId::Node(c);
+  let id1 = ListenerId::new(1);
+  let id2 = ListenerId::new(2);
 
-  assert!(doc.add_event_listener(
-    dispatch_target,
-    type_,
-    id_l1,
-    EventListenerOptions::default()
-  ));
-  assert!(doc.add_event_listener(
-    dispatch_target,
-    type_,
-    id_l2,
-    EventListenerOptions::default()
-  ));
-
-  let mut invoker = RecordingInvoker::new([
-    (
-      id_l1,
-      Behavior {
-        label: "l1",
-        expectations: Expectations::default(),
-        action: Action::RemoveListener {
-          target: dispatch_target,
-          type_,
-          capture: false,
-          listener_id: id_l2,
-        },
-      },
-    ),
-    (
-      id_l2,
-      Behavior {
-        label: "l2",
-        expectations: Expectations::default(),
-        action: Action::None,
-      },
-    ),
-  ]);
-
-  let mut event = Event::new(type_, EventInit::default());
-  doc
-    .dispatch_event(dispatch_target, &mut event, &mut invoker)
-    .unwrap();
-
-  let mut event2 = Event::new(type_, EventInit::default());
-  doc
-    .dispatch_event(dispatch_target, &mut event2, &mut invoker)
-    .unwrap();
-
-  assert_eq!(invoker.calls, vec!["l1", "l1"]);
-}
-
-#[test]
-fn passive_listeners_cannot_set_default_prevented() {
-  let (mut doc, _a, _b, c) = make_dom_abc();
-
-  let type_ = "x";
-  let id_passive = ListenerId(1);
-
-  assert!(doc.add_event_listener(
+  // Listener that removes `l2` while dispatch is in progress.
+  assert!(registry.add_event_listener(
     EventTargetId::Node(c),
     type_,
-    id_passive,
-    EventListenerOptions {
-      passive: true,
+    id1,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(c),
+    type_,
+    id2,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [
+      (
+        id1,
+        Behavior {
+          label: "l1",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::RemoveListener {
+            target: EventTargetId::Node(c),
+            type_,
+            listener_id: id2,
+            capture: false,
+            expect_removed: None,
+          },
+        },
+      ),
+      (
+        id2,
+        Behavior {
+          label: "l2",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(type_, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  let mut event = Event::new(type_, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["l1", "l1"]);
+}
+
+#[test]
+fn stop_propagation_in_target_capture_skips_target_bubble_listeners() {
+  let (doc, _a, _b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id_capture_1 = ListenerId::new(1);
+  let id_capture_2 = ListenerId::new(2);
+  let id_bubble = ListenerId::new(3);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(c),
+    type_,
+    id_capture_1,
+    AddEventListenerOptions {
+      capture: true,
       ..Default::default()
     }
   ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(c),
+    type_,
+    id_capture_2,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(c),
+    type_,
+    id_bubble,
+    AddEventListenerOptions::default()
+  ));
 
-  let mut invoker = RecordingInvoker::new([(
-    id_passive,
-    Behavior {
-      label: "passive",
-      expectations: Expectations::default(),
-      action: Action::PreventDefault,
-    },
-  )]);
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [
+      (
+        id_capture_1,
+        Behavior {
+          label: "capture_stop",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::StopPropagation,
+        },
+      ),
+      (
+        id_capture_2,
+        Behavior {
+          label: "capture_2",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::None,
+        },
+      ),
+      (
+        id_bubble,
+        Behavior {
+          label: "bubble",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
 
   let mut event = Event::new(
     type_,
     EventInit {
       bubbles: true,
-      cancelable: true,
       ..Default::default()
     },
   );
-  let not_canceled = doc
-    .dispatch_event(EventTargetId::Node(c), &mut event, &mut invoker)
-    .unwrap();
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
 
-  assert!(not_canceled, "dispatchEvent should return true if not canceled");
-  assert!(
-    !event.default_prevented,
-    "passive listeners must not set defaultPrevented"
-  );
+  assert_eq!(invoker.calls.as_slice(), &["capture_stop", "capture_2"]);
 }
 
+#[test]
+fn detached_node_event_path_does_not_include_window() {
+  let (mut doc, _a, b, detached) = make_dom_abc();
+  doc.node_mut(b).children.retain(|&child| child != detached);
+  doc.node_mut(detached).parent = None;
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+  let id_window = ListenerId::new(1);
+  let id_node = ListenerId::new(2);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(detached),
+    type_,
+    id_node,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(detached),
+    [
+      (
+        id_window,
+        Behavior {
+          label: "window_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+      (
+        id_node,
+        Behavior {
+          label: "node",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(detached),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(type_, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(detached),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["node"]);
+}

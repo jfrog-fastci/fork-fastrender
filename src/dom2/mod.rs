@@ -15,7 +15,6 @@ mod mutation;
 mod js_shims;
 mod style_attr;
 pub mod import;
-pub mod events;
 mod html5ever_tree_sink;
 mod traversal;
 mod shadow_dom;
@@ -100,7 +99,6 @@ pub struct Node {
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
-  events: events::EventListenerRegistry,
 }
 
 #[derive(Debug, Clone)]
@@ -217,7 +215,6 @@ impl Document {
     let mut doc = Self {
       nodes: Vec::new(),
       root: NodeId(0),
-      events: events::EventListenerRegistry::default(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },

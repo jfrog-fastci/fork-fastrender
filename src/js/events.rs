@@ -6,12 +6,12 @@ use std::rc::Rc;
 use vm_js::{PropertyKey, RootId, Value, VmError};
 
 use crate::dom2;
-use crate::dom2::events::{
-  Event, EventListenerContext, EventListenerInvoker, EventListenerOptions, EventPhase, EventTargetId,
-  ListenerId,
-};
 use crate::error::{Error, Result};
 use crate::js::webidl::{JsRuntime as WebIdlJsRuntime, VmJsRuntime, WebIdlJsRuntime as WebIdlHooks};
+use crate::web::events::{
+  dispatch_event, AddEventListenerOptions, DomError as EventsDomError, Event, EventListenerInvoker,
+  EventListenerRegistry, EventPhase, EventTargetId, ListenerId,
+};
 
 /// A JS function value that can be registered as a DOM event listener.
 ///
@@ -23,7 +23,6 @@ pub type JsFunctionHandle = Value;
 struct ListenerEntry {
   callback: Value,
   callback_root: RootId,
-  options: EventListenerOptions,
 }
 
 type ActiveEventMap = Rc<RefCell<HashMap<u64, NonNull<Event>>>>;
@@ -178,9 +177,9 @@ fn js_value_for_phase(phase: EventPhase) -> Value {
   // https://dom.spec.whatwg.org/#dom-event-eventphase
   Value::Number(match phase {
     EventPhase::None => 0.0,
-    EventPhase::CapturingPhase => 1.0,
+    EventPhase::Capturing => 1.0,
     EventPhase::AtTarget => 2.0,
-    EventPhase::BubblingPhase => 3.0,
+    EventPhase::Bubbling => 3.0,
   })
 }
 
@@ -250,13 +249,14 @@ impl Drop for ActiveEventGuard {
   }
 }
 
-/// JS-facing DOM Events registry + invoker for `dom2::events`.
+/// JS-facing DOM Events registry + invoker.
 ///
 /// This is a thin adapter:
-/// - `dom2::Document` stores the DOM-shaped listener list keyed by [`ListenerId`].
+/// - `web::events::EventListenerRegistry` stores the spec-shaped listener list keyed by [`ListenerId`].
 /// - `JsDomEvents` stores the associated JS callback functions and can invoke them.
 pub struct JsDomEvents {
   runtime: VmJsRuntime,
+  registry: Rc<EventListenerRegistry>,
   next_listener_id: u64,
   listeners: HashMap<ListenerId, ListenerEntry>,
   event_wrapper: EventWrapper,
@@ -268,6 +268,7 @@ impl JsDomEvents {
     let event_wrapper = EventWrapper::new(&mut runtime).map_err(|e| Error::Other(e.to_string()))?;
     Ok(Self {
       runtime,
+      registry: Rc::new(EventListenerRegistry::new()),
       next_listener_id: 1,
       listeners: HashMap::new(),
       event_wrapper,
@@ -278,31 +279,18 @@ impl JsDomEvents {
     &mut self.runtime
   }
 
-  /// Register a JS listener callback with a `dom2` document.
+  /// Register a JS listener callback.
   pub fn add_js_event_listener(
     &mut self,
-    doc: &mut dom2::Document,
     target: EventTargetId,
     type_: &str,
     callback: JsFunctionHandle,
-    options: EventListenerOptions,
+    options: AddEventListenerOptions,
   ) -> ListenerId {
-    let id = ListenerId(self.next_listener_id);
-    self.next_listener_id = self.next_listener_id.wrapping_add(1);
+    let id = self.listener_id_for_callback(callback);
 
-    let callback_root = self.runtime.heap_mut().add_root(callback);
-    self.listeners.insert(
-      id,
-      ListenerEntry {
-        callback,
-        callback_root,
-        options,
-      },
-    );
-
-    if !doc.add_event_listener(target, type_, id, options) {
-      // Should only occur if a caller reuses ListenerIds manually.
-      self.remove_listener_id(id);
+    if self.registry.add_event_listener(target, type_, id, options) {
+      self.ensure_listener_entry(id, callback);
     }
 
     id
@@ -310,26 +298,60 @@ impl JsDomEvents {
 
   pub fn remove_js_event_listener(
     &mut self,
-    doc: &mut dom2::Document,
     target: EventTargetId,
     type_: &str,
     listener_id: ListenerId,
     capture: bool,
   ) -> bool {
-    let removed = doc.remove_event_listener(target, type_, listener_id, capture);
+    let removed = self
+      .registry
+      .remove_event_listener(target, type_, listener_id, capture);
     if removed {
-      self.remove_listener_id(listener_id);
+      self.remove_listener_if_unused(listener_id);
     }
     removed
   }
 
   pub fn dispatch_dom_event(
     &mut self,
-    doc: &mut dom2::Document,
+    dom: &dom2::Document,
     target: EventTargetId,
     event: &mut Event,
   ) -> Result<bool> {
-    doc.dispatch_event(target, event, self)
+    let registry = Rc::clone(&self.registry);
+    dispatch_event(target, event, dom, registry.as_ref(), self)
+      .map_err(|e| Error::Other(e.to_string()))
+  }
+
+  fn listener_id_for_callback(&mut self, callback: Value) -> ListenerId {
+    if let Value::Object(obj) = callback {
+      let id = obj.id();
+      return ListenerId::new((id.index() as u64) | ((id.generation() as u64) << 32));
+    }
+
+    let id = ListenerId::new(self.next_listener_id);
+    self.next_listener_id = self.next_listener_id.wrapping_add(1);
+    id
+  }
+
+  fn ensure_listener_entry(&mut self, listener_id: ListenerId, callback: Value) {
+    if self.listeners.contains_key(&listener_id) {
+      return;
+    }
+    let callback_root = self.runtime.heap_mut().add_root(callback);
+    self.listeners.insert(
+      listener_id,
+      ListenerEntry {
+        callback,
+        callback_root,
+      },
+    );
+  }
+
+  fn remove_listener_if_unused(&mut self, listener_id: ListenerId) {
+    if !self.registry.contains_listener_id(listener_id) {
+      self.remove_listener_id(listener_id);
+    }
   }
 
   fn remove_listener_id(&mut self, listener_id: ListenerId) {
@@ -363,15 +385,12 @@ impl EventListenerInvoker for JsDomEvents {
     &mut self,
     listener_id: ListenerId,
     event: &mut Event,
-    _ctx: &mut dyn EventListenerContext,
-  ) -> Result<()> {
+  ) -> std::result::Result<(), EventsDomError> {
     let entry = self.listeners.get(&listener_id).copied().ok_or_else(|| {
-      Error::Other(format!(
+      EventsDomError::new(format!(
         "unknown event listener id during dispatch: {listener_id:?}"
       ))
     })?;
-
-    let once = entry.options.once;
 
     let event_id = self.event_wrapper.alloc_event_id();
     self
@@ -387,21 +406,18 @@ impl EventListenerInvoker for JsDomEvents {
     let js_event = self
       .event_wrapper
       .wrap_event(&mut self.runtime, event_id, event)
-      .map_err(|e| self.vm_error_to_error(e))?;
+      .map_err(|e| EventsDomError::new(self.vm_error_to_error(e).to_string()))?;
 
     let call = self
       .runtime
       .call_function(entry.callback, Value::Undefined, &[js_event]);
 
-    // `once` listener bookkeeping must happen even if the callback throws.
-    if once {
-      // `dom2::Document` owns the listener registry and removes `once` listeners before invoking
-      // callbacks. We still need to remove the JS callback so roots are released.
-      self.remove_listener_id(listener_id);
-    }
+    // Drop JS roots for listeners that are no longer registered (including `once` listeners, which
+    // the registry removes before invoking). This must run even if the callback throws.
+    self.remove_listener_if_unused(listener_id);
 
-    call
-      .map(|_| ())
-      .map_err(|e| self.vm_error_to_error(e))
+    call.map(|_| ()).map_err(|e| {
+      EventsDomError::new(self.vm_error_to_error(e).to_string())
+    })
   }
 }
