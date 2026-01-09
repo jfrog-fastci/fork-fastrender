@@ -6,7 +6,6 @@ use crate::text::font_db::GenericFamily;
 use crate::text::font_db::LoadedFont;
 use crate::text::font_fallback::EmojiPreference;
 use crate::text::font_fallback::FamilyEntry;
-use fontdb::Family;
 use fontdb::ID;
 
 pub(crate) fn emoji_preference_for_char(ch: char, variant: FontVariantEmoji) -> EmojiPreference {
@@ -295,13 +294,12 @@ pub(crate) fn resolve_font_for_char<C: FontResolverContext>(
         for stretch_choice in &stretch_preferences {
           for slope in slope_preferences {
             for weight_choice in &weight_preferences {
-              let query = fontdb::Query {
-                families: &[Family::Name(family.as_str())],
-                weight: fontdb::Weight(*weight_choice),
-                stretch: (*stretch_choice).into(),
-                style: (*slope).into(),
-              };
-              if let Some(id) = db.inner().query(&query) {
+              if let Some(id) = db.query_named_family_with_aliases(
+                family.as_str(),
+                *weight_choice,
+                *slope,
+                *stretch_choice,
+              ) {
                 if let Some(font) = db.load_font(id) {
                   let resolved = ResolvedFont { font, id: Some(id) };
                   let is_emoji_font = font_is_emoji_font(db, resolved.id, &resolved.font);
@@ -334,22 +332,25 @@ pub(crate) fn resolve_font_for_char<C: FontResolverContext>(
     for stretch_choice in &stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in &weight_preferences {
-          let query = match entry {
-            FamilyEntry::Named(name) => fontdb::Query {
-              families: &[Family::Name(name)],
-              weight: fontdb::Weight(*weight_choice),
-              stretch: (*stretch_choice).into(),
-              style: (*slope).into(),
-            },
-            FamilyEntry::Generic(generic) => fontdb::Query {
-              families: &[generic.to_fontdb()],
-              weight: fontdb::Weight(*weight_choice),
-              stretch: (*stretch_choice).into(),
-              style: (*slope).into(),
-            },
+          let id = match entry {
+            FamilyEntry::Named(name) => db.query_named_family_with_aliases(
+              name,
+              *weight_choice,
+              *slope,
+              *stretch_choice,
+            ),
+            FamilyEntry::Generic(generic) => {
+              let query = fontdb::Query {
+                families: &[generic.to_fontdb()],
+                weight: fontdb::Weight(*weight_choice),
+                stretch: (*stretch_choice).into(),
+                style: (*slope).into(),
+              };
+              db.inner().query(&query)
+            }
           };
 
-          if let Some(id) = db.inner().query(&query) {
+          if let Some(id) = id {
             if let Some(font) = db.load_font(id) {
               let resolved = ResolvedFont { font, id: Some(id) };
               let is_emoji_font = font_is_emoji_font(db, resolved.id, &resolved.font);
@@ -371,13 +372,12 @@ pub(crate) fn resolve_font_for_char<C: FontResolverContext>(
         for weight_choice in &weight_preferences {
           for slope in slope_preferences {
             for stretch_choice in &stretch_preferences {
-              let query = fontdb::Query {
-                families: &[Family::Name(name)],
-                weight: fontdb::Weight(*weight_choice),
-                stretch: (*stretch_choice).into(),
-                style: (*slope).into(),
-              };
-              if let Some(id) = db.inner().query(&query) {
+              if let Some(id) = db.query_named_family_with_aliases(
+                name,
+                *weight_choice,
+                *slope,
+                *stretch_choice,
+              ) {
                 if let Some(font) = db.load_font(id) {
                   let resolved = ResolvedFont { font, id: Some(id) };
                   let is_emoji_font = font_is_emoji_font(db, resolved.id, &resolved.font);
@@ -485,13 +485,12 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
         for stretch_choice in &stretch_preferences {
           for slope in slope_preferences {
             for weight_choice in &weight_preferences {
-              let query = fontdb::Query {
-                families: &[Family::Name(family.as_str())],
-                weight: fontdb::Weight(*weight_choice),
-                stretch: (*stretch_choice).into(),
-                style: (*slope).into(),
-              };
-              if let Some(id) = db.inner().query(&query) {
+              if let Some(id) = db.query_named_family_with_aliases(
+                family.as_str(),
+                *weight_choice,
+                *slope,
+                *stretch_choice,
+              ) {
                 if let Some(font) = db.load_font(id) {
                   if !base_supported(id) {
                     continue;
@@ -537,22 +536,25 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
     for stretch_choice in &stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in &weight_preferences {
-          let query = match entry {
-            FamilyEntry::Named(name) => fontdb::Query {
-              families: &[Family::Name(name)],
-              weight: fontdb::Weight(*weight_choice),
-              stretch: (*stretch_choice).into(),
-              style: (*slope).into(),
-            },
-            FamilyEntry::Generic(generic) => fontdb::Query {
-              families: &[generic.to_fontdb()],
-              weight: fontdb::Weight(*weight_choice),
-              stretch: (*stretch_choice).into(),
-              style: (*slope).into(),
-            },
+          let id = match entry {
+            FamilyEntry::Named(name) => db.query_named_family_with_aliases(
+              name,
+              *weight_choice,
+              *slope,
+              *stretch_choice,
+            ),
+            FamilyEntry::Generic(generic) => {
+              let query = fontdb::Query {
+                families: &[generic.to_fontdb()],
+                weight: fontdb::Weight(*weight_choice),
+                stretch: (*stretch_choice).into(),
+                style: (*slope).into(),
+              };
+              db.inner().query(&query)
+            }
           };
 
-          if let Some(id) = db.inner().query(&query) {
+          if let Some(id) = id {
             if let Some(font) = db.load_font(id) {
               if !base_supported(id) {
                 continue;
@@ -577,13 +579,12 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
         for weight_choice in &weight_preferences {
           for slope in slope_preferences {
             for stretch_choice in &stretch_preferences {
-              let query = fontdb::Query {
-                families: &[Family::Name(name)],
-                weight: fontdb::Weight(*weight_choice),
-                stretch: (*stretch_choice).into(),
-                style: (*slope).into(),
-              };
-              if let Some(id) = db.inner().query(&query) {
+              if let Some(id) = db.query_named_family_with_aliases(
+                name,
+                *weight_choice,
+                *slope,
+                *stretch_choice,
+              ) {
                 if let Some(font) = db.load_font(id) {
                   if !base_supported(id) {
                     continue;
@@ -645,4 +646,41 @@ pub(crate) fn resolve_font_for_cluster<C: FontResolverContext>(
   }
 
   picker.finish()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::text::font_db::FontConfig;
+
+  struct TestContext {
+    db: FontDatabase,
+  }
+
+  impl FontResolverContext for TestContext {
+    fn database(&self) -> &FontDatabase {
+      &self.db
+    }
+  }
+
+  #[test]
+  fn resolves_bundled_alias_family_names_in_font_resolver() {
+    let ctx = TestContext {
+      db: FontDatabase::with_config(&FontConfig::bundled_only()),
+    };
+    let families = [FamilyEntry::Named("Helvetica".to_string())];
+    let mut picker = FontPreferencePicker::new(EmojiPreference::AvoidEmoji);
+    let resolved = resolve_font_for_char(
+      'A',
+      &families,
+      400,
+      FontStyle::Normal,
+      None,
+      DbFontStretch::Normal,
+      &ctx,
+      &mut picker,
+    )
+    .expect("expected Helvetica alias family to resolve");
+    assert_eq!(resolved.font.family, "Noto Sans");
+  }
 }

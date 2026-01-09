@@ -807,14 +807,9 @@ impl FallbackChain {
 
   /// Resolves a named font family for a character.
   fn resolve_named(&self, name: &str, c: char, db: &FontDatabase) -> Option<FontId> {
-    let query = Query {
-      families: &[Family::Name(name)],
-      weight: fontdb::Weight(self.weight.value()),
-      stretch: self.stretch.into(),
-      style: self.style.into(),
-    };
-
-    if let Some(id) = db.inner().query(&query) {
+    if let Some(id) =
+      db.query_named_family_with_aliases(name, self.weight.value(), self.style, self.stretch)
+    {
       if db.has_glyph(id, c) {
         return Some(FontId::new(id));
       }
@@ -892,14 +887,21 @@ impl FallbackChain {
     };
 
     for family in &families {
-      let query = Query {
-        families: std::slice::from_ref(family),
-        weight: fontdb::Weight(self.weight.value()),
-        stretch: self.stretch.into(),
-        style: self.style.into(),
+      let id = match family {
+        Family::Name(name) => {
+          db.query_named_family_with_aliases(name, self.weight.value(), self.style, self.stretch)
+        }
+        other => {
+          let query = Query {
+            families: std::slice::from_ref(other),
+            weight: fontdb::Weight(self.weight.value()),
+            stretch: self.stretch.into(),
+            style: self.style.into(),
+          };
+          db.inner().query(&query)
+        }
       };
-
-      if let Some(id) = db.inner().query(&query) {
+      if let Some(id) = id {
         return Some(FontId::new(id));
       }
     }

@@ -1590,7 +1590,71 @@ impl FontDatabase {
   /// let id = db.query("sans-serif", FontWeight::NORMAL, FontStyle::Normal);
   /// ```
   pub fn query(&self, family: &str, weight: FontWeight, style: FontStyle) -> Option<ID> {
-    // Check if this is a generic family
+    self.query_internal(family, weight, style, FontStretch::Normal, true)
+  }
+
+  /// Queries with weight, style, and stretch
+  ///
+  /// Full query with all font properties.
+  pub fn query_full(
+    &self,
+    family: &str,
+    weight: FontWeight,
+    style: FontStyle,
+    stretch: FontStretch,
+  ) -> Option<ID> {
+    self.query_internal(family, weight, style, stretch, true)
+  }
+
+  pub(crate) fn query_named_family_with_aliases(
+    &self,
+    family: &str,
+    weight: u16,
+    style: FontStyle,
+    stretch: FontStretch,
+  ) -> Option<ID> {
+    let family = family.trim();
+    let families = [FontDbFamily::Name(family)];
+    let query = FontDbQuery {
+      families: &families,
+      weight: fontdb::Weight(weight),
+      style: style.into(),
+      stretch: stretch.into(),
+    };
+    if let Some(found) = self.db.query(&query) {
+      return Some(found);
+    }
+
+    if !self.is_shared_bundled_db() {
+      return None;
+    }
+
+    let aliases = Self::bundled_family_aliases(family)?;
+    for alias in aliases {
+      let families = [FontDbFamily::Name(*alias)];
+      let query = FontDbQuery {
+        families: &families,
+        weight: fontdb::Weight(weight),
+        style: style.into(),
+        stretch: stretch.into(),
+      };
+      if let Some(found) = self.db.query(&query) {
+        return Some(found);
+      }
+    }
+
+    None
+  }
+
+  fn query_internal(
+    &self,
+    family: &str,
+    weight: FontWeight,
+    style: FontStyle,
+    stretch: FontStretch,
+    allow_aliases: bool,
+  ) -> Option<ID> {
+    // Check if this is a generic family.
     let families = if let Some(generic) = GenericFamily::parse(family) {
       // `fontdb` does not have a dedicated "math" generic, so `GenericFamily::Math` maps to
       // sans-serif by default. Prefer known math fonts first so `font-family: math` resolves to a
@@ -1614,46 +1678,65 @@ impl FontDatabase {
       families: &families,
       weight: fontdb::Weight(weight.0),
       style: style.into(),
-      stretch: fontdb::Stretch::Normal,
-    };
-
-    self.db.query(&query)
-  }
-
-  /// Queries with weight, style, and stretch
-  ///
-  /// Full query with all font properties.
-  pub fn query_full(
-    &self,
-    family: &str,
-    weight: FontWeight,
-    style: FontStyle,
-    stretch: FontStretch,
-  ) -> Option<ID> {
-    let families = if let Some(generic) = GenericFamily::parse(family) {
-      if matches!(generic, GenericFamily::Math) {
-        let mut families: Vec<FontDbFamily> = generic
-          .fallback_families()
-          .iter()
-          .map(|name| FontDbFamily::Name(*name))
-          .collect();
-        families.push(generic.to_fontdb());
-        families
-      } else {
-        vec![generic.to_fontdb()]
-      }
-    } else {
-      vec![FontDbFamily::Name(family)]
-    };
-
-    let query = FontDbQuery {
-      families: &families,
-      weight: fontdb::Weight(weight.0),
-      style: style.into(),
       stretch: stretch.into(),
     };
 
-    self.db.query(&query)
+    if let Some(found) = self.db.query(&query) {
+      return Some(found);
+    }
+
+    if !allow_aliases {
+      return None;
+    }
+
+    if self.is_shared_bundled_db() {
+      if let Some(aliases) = Self::bundled_family_aliases(family) {
+        for alias in aliases {
+          if let Some(found) = self.query_internal(alias, weight, style, stretch, false) {
+            return Some(found);
+          }
+        }
+      }
+    }
+
+    None
+  }
+
+  fn is_shared_bundled_db(&self) -> bool {
+    Arc::ptr_eq(&self.db, &shared_bundled_fontdb())
+  }
+
+  fn bundled_family_aliases(family: &str) -> Option<&'static [&'static str]> {
+    let family = family.trim();
+
+    const SANS: &[&str] = &["Noto Sans", "Roboto Flex"];
+    const SERIF: &[&str] = &["Noto Serif"];
+    const MONO: &[&str] = &["Noto Sans Mono"];
+
+    if family.eq_ignore_ascii_case("helvetica")
+      || family.eq_ignore_ascii_case("helveticaneue")
+      || family.eq_ignore_ascii_case("helvetica neue")
+      || family.eq_ignore_ascii_case("arial")
+      || family.eq_ignore_ascii_case("arial narrow")
+    {
+      return Some(SANS);
+    }
+
+    if family.eq_ignore_ascii_case("times")
+      || family.eq_ignore_ascii_case("times new roman")
+      || family.eq_ignore_ascii_case("timesnewroman")
+    {
+      return Some(SERIF);
+    }
+
+    if family.eq_ignore_ascii_case("courier")
+      || family.eq_ignore_ascii_case("courier new")
+      || family.eq_ignore_ascii_case("couriernew")
+    {
+      return Some(MONO);
+    }
+
+    None
   }
 
   /// Loads font data for a given font ID
@@ -2438,6 +2521,35 @@ mod tests {
       let font = font.unwrap();
       assert!(!font.data.is_empty());
     }
+  }
+
+  #[test]
+  fn bundled_font_aliases_resolve_common_web_families() {
+    let db = FontDatabase::with_config(&FontConfig::bundled_only());
+
+    let id = db
+      .query("Helvetica", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("expected Helvetica to alias to a bundled sans-serif");
+    let font = db.load_font(id).expect("expected aliased font to load");
+    assert_eq!(font.family, "Noto Sans");
+
+    let id = db
+      .query("Arial", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("expected Arial to alias to a bundled sans-serif");
+    let font = db.load_font(id).expect("expected aliased font to load");
+    assert_eq!(font.family, "Noto Sans");
+
+    let id = db
+      .query("Times New Roman", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("expected Times New Roman to alias to a bundled serif");
+    let font = db.load_font(id).expect("expected aliased font to load");
+    assert_eq!(font.family, "Noto Serif");
+
+    let id = db
+      .query("Courier New", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("expected Courier New to alias to a bundled monospace");
+    let font = db.load_font(id).expect("expected aliased font to load");
+    assert_eq!(font.family, "Noto Sans Mono");
   }
 
   #[test]
