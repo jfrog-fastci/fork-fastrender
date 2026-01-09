@@ -1519,17 +1519,49 @@ mod tests {
     //
     // Note: This is a FastRender-side test so we can enforce the behavior without pinning a
     // specific `vm-js` submodule commit (submodule bumps are frequent during JS bring-up).
-    let max_bytes = 2048;
-    let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes / 2));
-    let mut scope = heap.scope();
+    // `vm-js`'s environment record APIs are not public; exercise env binding growth via
+    // `JsRuntime`, which declares lexical bindings on the global environment record.
+    let bootstrap_limits = HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024);
+    let bootstrap_rt = vm_js::JsRuntime::new(Vm::new(VmOptions::default()), Heap::new(bootstrap_limits))
+      .expect("JsRuntime bootstrap should succeed");
+    let baseline_used = bootstrap_rt.heap.used_bytes();
+    drop(bootstrap_rt);
 
-    let env = scope.env_create(None).expect("env_create should succeed");
-    scope.push_env_root(env).expect("push_env_root should succeed");
+    let mut rt = None;
+    let mut max_bytes = 0usize;
+    // Heap metadata overhead is not reflected in `used_bytes`, so probe for a small limit that can
+    // still initialize the runtime. Keeping the headroom small ensures we hit OOM quickly while
+    // growing the env record.
+    for slack in [
+      16 * 1024,
+      32 * 1024,
+      64 * 1024,
+      128 * 1024,
+      256 * 1024,
+      512 * 1024,
+      1024 * 1024,
+    ] {
+      let candidate = baseline_used.saturating_add(slack);
+      match vm_js::JsRuntime::new(
+        Vm::new(VmOptions::default()),
+        Heap::new(HeapLimits::new(candidate, candidate)),
+      ) {
+        Ok(r) => {
+          rt = Some(r);
+          max_bytes = candidate;
+          break;
+        }
+        Err(VmError::OutOfMemory) => continue,
+        Err(other) => panic!("unexpected vm-js error while bootstrapping runtime: {other:?}"),
+      }
+    }
+    let mut rt = rt.expect("expected to find a heap limit that can initialize JsRuntime");
 
     let mut saw_oom = false;
     for i in 0..10_000usize {
-      match scope.env_create_mutable_binding(env, &format!("k{i}")) {
-        Ok(()) => {}
+      let source = format!("let k{i} = 0;");
+      match rt.exec_script(&source) {
+        Ok(_) => {}
         Err(VmError::OutOfMemory) => {
           saw_oom = true;
           break;
@@ -1540,7 +1572,7 @@ mod tests {
 
     assert!(saw_oom, "expected heap growth to eventually hit VmError::OutOfMemory");
     assert!(
-      scope.heap().used_bytes() <= max_bytes,
+      rt.heap.used_bytes() <= max_bytes,
       "heap.used_bytes should never exceed the configured max_bytes"
     );
   }
