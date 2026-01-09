@@ -9797,6 +9797,18 @@ pub struct StyledNode {
   pub slider_thumb_styles: Option<Arc<ComputedStyle>>,
   /// Styles for range slider track pseudo-element (form controls only)
   pub slider_track_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for progress track pseudo-element (form controls only)
+  pub progress_bar_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for progress value pseudo-element (form controls only)
+  pub progress_value_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for meter track pseudo-element (form controls only)
+  pub meter_bar_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for meter value pseudo-element for the optimum zone (form controls only)
+  pub meter_optimum_value_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for meter value pseudo-element for the suboptimum zone (form controls only)
+  pub meter_suboptimum_value_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for meter value pseudo-element for the even-less-good zone (form controls only)
+  pub meter_even_less_good_value_styles: Option<Arc<ComputedStyle>>,
   /// Slot this light DOM node is assigned to, if any.
   pub assigned_slot: Option<crate::dom::AssignedSlot>,
   /// Slotted light DOM node ids assigned to this <slot> element.
@@ -9823,6 +9835,12 @@ impl Clone for StyledNode {
         first_letter_styles: node.first_letter_styles.clone(),
         slider_thumb_styles: node.slider_thumb_styles.clone(),
         slider_track_styles: node.slider_track_styles.clone(),
+        progress_bar_styles: node.progress_bar_styles.clone(),
+        progress_value_styles: node.progress_value_styles.clone(),
+        meter_bar_styles: node.meter_bar_styles.clone(),
+        meter_optimum_value_styles: node.meter_optimum_value_styles.clone(),
+        meter_suboptimum_value_styles: node.meter_suboptimum_value_styles.clone(),
+        meter_even_less_good_value_styles: node.meter_even_less_good_value_styles.clone(),
         assigned_slot: node.assigned_slot.clone(),
         slotted_node_ids: node.slotted_node_ids.clone(),
         children: Vec::with_capacity(node.children.len()),
@@ -10926,6 +10944,12 @@ fn fallback_styled_tree(dom: &DomNode) -> StyledNode {
     first_letter_styles: None,
     slider_thumb_styles: None,
     slider_track_styles: None,
+    progress_bar_styles: None,
+    progress_value_styles: None,
+    meter_bar_styles: None,
+    meter_optimum_value_styles: None,
+    meter_suboptimum_value_styles: None,
+    meter_even_less_good_value_styles: None,
     assigned_slot: None,
     slotted_node_ids: Vec::new(),
     children: Vec::new(),
@@ -12710,6 +12734,12 @@ struct StyleSharingCachedStyles {
   first_letter_styles: Option<Arc<ComputedStyle>>,
   slider_thumb_styles: Option<Arc<ComputedStyle>>,
   slider_track_styles: Option<Arc<ComputedStyle>>,
+  progress_bar_styles: Option<Arc<ComputedStyle>>,
+  progress_value_styles: Option<Arc<ComputedStyle>>,
+  meter_bar_styles: Option<Arc<ComputedStyle>>,
+  meter_optimum_value_styles: Option<Arc<ComputedStyle>>,
+  meter_suboptimum_value_styles: Option<Arc<ComputedStyle>>,
+  meter_even_less_good_value_styles: Option<Arc<ComputedStyle>>,
 }
 
 enum StyleSharingCacheEntry {
@@ -16003,9 +16033,15 @@ fn compute_form_control_pseudo_styles(
   Option<Arc<ComputedStyle>>,
   Option<Arc<ComputedStyle>>,
   Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
 ) {
   if !node.is_element() {
-    return (None, None, None, None);
+    return (None, None, None, None, None, None, None, None, None, None);
   }
   let container_query_ancestor_ids =
     container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
@@ -16126,11 +16162,201 @@ fn compute_form_control_pseudo_styles(
     None
   };
 
+  let tag = node.tag_name();
+  let is_progress = matches!(tag, Some(tag) if tag.eq_ignore_ascii_case("progress"));
+  let is_meter = matches!(tag, Some(tag) if tag.eq_ignore_ascii_case("meter"));
+
+  let progress_bar_styles = if is_progress {
+    compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      container_query_ancestor_ids.as_ref(),
+      node_id,
+      container_ctx,
+      dom_maps,
+      slot_assignment,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::ProgressBar,
+      false,
+    )
+    .map(Arc::new)
+  } else {
+    None
+  };
+
+  let progress_value_styles = if is_progress {
+    compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      container_query_ancestor_ids.as_ref(),
+      node_id,
+      container_ctx,
+      dom_maps,
+      slot_assignment,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::ProgressValue,
+      false,
+    )
+    .map(Arc::new)
+  } else {
+    None
+  };
+
+  let meter_bar_styles = if is_meter {
+    compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      container_query_ancestor_ids.as_ref(),
+      node_id,
+      container_ctx,
+      dom_maps,
+      slot_assignment,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::MeterBar,
+      false,
+    )
+    .map(Arc::new)
+  } else {
+    None
+  };
+
+  let meter_optimum_value_styles = if is_meter {
+    compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      container_query_ancestor_ids.as_ref(),
+      node_id,
+      container_ctx,
+      dom_maps,
+      slot_assignment,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::MeterOptimumValue,
+      false,
+    )
+    .map(Arc::new)
+  } else {
+    None
+  };
+
+  let meter_suboptimum_value_styles = if is_meter {
+    compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      container_query_ancestor_ids.as_ref(),
+      node_id,
+      container_ctx,
+      dom_maps,
+      slot_assignment,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::MeterSuboptimumValue,
+      false,
+    )
+    .map(Arc::new)
+  } else {
+    None
+  };
+
+  let meter_even_less_good_value_styles = if is_meter {
+    compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      container_query_ancestor_ids.as_ref(),
+      node_id,
+      container_ctx,
+      dom_maps,
+      slot_assignment,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::MeterEvenLessGoodValue,
+      false,
+    )
+    .map(Arc::new)
+  } else {
+    None
+  };
+
   (
     placeholder_styles,
     slider_thumb_styles,
     slider_track_styles,
     file_selector_button_styles,
+    progress_bar_styles,
+    progress_value_styles,
+    meter_bar_styles,
+    meter_optimum_value_styles,
+    meter_suboptimum_value_styles,
+    meter_even_less_good_value_styles,
   )
 }
 
@@ -16638,6 +16864,12 @@ fn apply_styles_internal_with_ancestors<'a>(
       first_letter_styles,
       slider_thumb_styles,
       slider_track_styles,
+      progress_bar_styles,
+      progress_value_styles,
+      meter_bar_styles,
+      meter_optimum_value_styles,
+      meter_suboptimum_value_styles,
+      meter_even_less_good_value_styles,
     ) = match base {
       FrameBase::Shared { cached } => (
         Arc::clone(&cached.styles),
@@ -16653,6 +16885,12 @@ fn apply_styles_internal_with_ancestors<'a>(
         cached.first_letter_styles.clone(),
         cached.slider_thumb_styles.clone(),
         cached.slider_track_styles.clone(),
+        cached.progress_bar_styles.clone(),
+        cached.progress_value_styles.clone(),
+        cached.meter_bar_styles.clone(),
+        cached.meter_optimum_value_styles.clone(),
+        cached.meter_suboptimum_value_styles.clone(),
+        cached.meter_even_less_good_value_styles.clone(),
       ),
       FrameBase::Computed {
         mut base,
@@ -16695,6 +16933,12 @@ fn apply_styles_internal_with_ancestors<'a>(
           slider_thumb_styles,
           slider_track_styles,
           file_selector_button_styles,
+          progress_bar_styles,
+          progress_value_styles,
+          meter_bar_styles,
+          meter_optimum_value_styles,
+          meter_suboptimum_value_styles,
+          meter_even_less_good_value_styles,
         ) = compute_form_control_pseudo_styles(
           node,
           rule_scopes,
@@ -16740,17 +16984,23 @@ fn apply_styles_internal_with_ancestors<'a>(
               before_styles: before_styles.clone(),
               after_styles: after_styles.clone(),
               marker_styles: marker_styles.clone(),
-              placeholder_styles: placeholder_styles.clone(),
-              file_selector_button_styles: file_selector_button_styles.clone(),
-              footnote_call_styles: footnote_call_styles.clone(),
-              footnote_marker_styles: footnote_marker_styles.clone(),
-              first_line_styles: first_line_styles.clone(),
-              first_letter_styles: first_letter_styles.clone(),
-              slider_thumb_styles: slider_thumb_styles.clone(),
-              slider_track_styles: slider_track_styles.clone(),
-            }),
-          );
-        }
+                placeholder_styles: placeholder_styles.clone(),
+                file_selector_button_styles: file_selector_button_styles.clone(),
+                footnote_call_styles: footnote_call_styles.clone(),
+                footnote_marker_styles: footnote_marker_styles.clone(),
+                first_line_styles: first_line_styles.clone(),
+                first_letter_styles: first_letter_styles.clone(),
+                slider_thumb_styles: slider_thumb_styles.clone(),
+                slider_track_styles: slider_track_styles.clone(),
+                progress_bar_styles: progress_bar_styles.clone(),
+                progress_value_styles: progress_value_styles.clone(),
+                meter_bar_styles: meter_bar_styles.clone(),
+                meter_optimum_value_styles: meter_optimum_value_styles.clone(),
+                meter_suboptimum_value_styles: meter_suboptimum_value_styles.clone(),
+                meter_even_less_good_value_styles: meter_even_less_good_value_styles.clone(),
+              }),
+            );
+          }
 
         (
           styles,
@@ -16766,6 +17016,12 @@ fn apply_styles_internal_with_ancestors<'a>(
           first_letter_styles,
           slider_thumb_styles,
           slider_track_styles,
+          progress_bar_styles,
+          progress_value_styles,
+          meter_bar_styles,
+          meter_optimum_value_styles,
+          meter_suboptimum_value_styles,
+          meter_even_less_good_value_styles,
         )
       }
     };
@@ -16862,6 +17118,12 @@ fn apply_styles_internal_with_ancestors<'a>(
       first_letter_styles,
       slider_thumb_styles,
       slider_track_styles,
+      progress_bar_styles,
+      progress_value_styles,
+      meter_bar_styles,
+      meter_optimum_value_styles,
+      meter_suboptimum_value_styles,
+      meter_even_less_good_value_styles,
       assigned_slot: slot_assignment.node_to_slot.get(&node_id).cloned(),
       slotted_node_ids: slot_assignment
         .slot_to_nodes
@@ -19298,6 +19560,12 @@ mod tests {
       first_letter_styles: None,
       slider_thumb_styles: None,
       slider_track_styles: None,
+      progress_bar_styles: None,
+      progress_value_styles: None,
+      meter_bar_styles: None,
+      meter_optimum_value_styles: None,
+      meter_suboptimum_value_styles: None,
+      meter_even_less_good_value_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: Vec::new(),
@@ -19320,6 +19588,12 @@ mod tests {
         first_letter_styles: None,
         slider_thumb_styles: None,
         slider_track_styles: None,
+        progress_bar_styles: None,
+        progress_value_styles: None,
+        meter_bar_styles: None,
+        meter_optimum_value_styles: None,
+        meter_suboptimum_value_styles: None,
+        meter_even_less_good_value_styles: None,
         assigned_slot: None,
         slotted_node_ids: Vec::new(),
         children: vec![target],
@@ -19391,6 +19665,12 @@ mod tests {
       first_letter_styles: None,
       slider_thumb_styles: None,
       slider_track_styles: None,
+      progress_bar_styles: None,
+      progress_value_styles: None,
+      meter_bar_styles: None,
+      meter_optimum_value_styles: None,
+      meter_suboptimum_value_styles: None,
+      meter_even_less_good_value_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: Vec::new(),
@@ -19415,6 +19695,12 @@ mod tests {
       first_letter_styles: None,
       slider_thumb_styles: None,
       slider_track_styles: None,
+      progress_bar_styles: None,
+      progress_value_styles: None,
+      meter_bar_styles: None,
+      meter_optimum_value_styles: None,
+      meter_suboptimum_value_styles: None,
+      meter_even_less_good_value_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: Vec::new(),
@@ -35792,6 +36078,14 @@ fn compute_pseudo_element_styles(
         styles.left = crate::style::types::InsetValue::Length(Length::px(0.0));
       }
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
+        styles.display = Display::Block;
+      }
+      PseudoElement::ProgressBar
+      | PseudoElement::ProgressValue
+      | PseudoElement::MeterBar
+      | PseudoElement::MeterOptimumValue
+      | PseudoElement::MeterSuboptimumValue
+      | PseudoElement::MeterEvenLessGoodValue => {
         styles.display = Display::Block;
       }
       PseudoElement::FileSelectorButton => {

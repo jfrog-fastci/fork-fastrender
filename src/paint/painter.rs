@@ -8907,12 +8907,18 @@ impl Painter {
           return true;
         }
 
+        let track_style = control.progress_bar_style.as_deref();
+        let value_style = control.progress_value_style.as_deref();
+
         let track_rect = content_rect;
         if track_rect.width() <= 0.0 || track_rect.height() <= 0.0 {
           return true;
         }
 
-        let mut track_color = style.background_color;
+        let mut track_color = track_style
+          .map(|s| s.background_color)
+          .filter(|c| !c.is_transparent())
+          .unwrap_or(style.background_color);
         if track_color.is_transparent() {
           track_color = Rgba::rgb(230, 230, 230);
         }
@@ -8920,7 +8926,8 @@ impl Painter {
           track_color = track_color.with_alpha((track_color.a * 0.85).clamp(0.0, 1.0));
         }
 
-        let track_radii = resolve_border_radii(Some(style), track_rect).clamped(track_rect.width(), track_rect.height());
+        let track_radii = resolve_border_radii(track_style.or(Some(style)), track_rect)
+          .clamped(track_rect.width(), track_rect.height());
         let device_track_rect = self.device_rect(track_rect);
         let device_track_radii = self.device_radii(track_radii);
         fill_rounded_rect_masked(
@@ -8959,6 +8966,11 @@ impl Painter {
           return true;
         }
 
+        let fill_color = value_style
+          .map(|s| s.background_color)
+          .filter(|c| !c.is_transparent())
+          .unwrap_or(muted_accent);
+
         let mut fill_radii = track_radii.clamped(fill_rect.width(), fill_rect.height());
         if !is_indeterminate && fill_rect.width() + 0.01 < track_rect.width() {
           if style.direction == crate::style::types::Direction::Rtl {
@@ -8976,7 +8988,7 @@ impl Painter {
           &mut self.pixmap,
           device_fill_rect,
           device_fill_radii,
-          muted_accent,
+          fill_color,
           clip_mask,
         );
         true
@@ -8993,12 +9005,17 @@ impl Painter {
           return true;
         }
 
+        let track_style = control.meter_bar_style.as_deref();
+
         let track_rect = content_rect;
         if track_rect.width() <= 0.0 || track_rect.height() <= 0.0 {
           return true;
         }
 
-        let mut track_color = style.background_color;
+        let mut track_color = track_style
+          .map(|s| s.background_color)
+          .filter(|c| !c.is_transparent())
+          .unwrap_or(style.background_color);
         if track_color.is_transparent() {
           track_color = Rgba::rgb(230, 230, 230);
         }
@@ -9006,7 +9023,8 @@ impl Painter {
           track_color = track_color.with_alpha((track_color.a * 0.85).clamp(0.0, 1.0));
         }
 
-        let track_radii = resolve_border_radii(Some(style), track_rect).clamped(track_rect.width(), track_rect.height());
+        let track_radii = resolve_border_radii(track_style.or(Some(style)), track_rect)
+          .clamped(track_rect.width(), track_rect.height());
         let device_track_rect = self.device_rect(track_rect);
         let device_track_radii = self.device_radii(track_radii);
         fill_rounded_rect_masked(
@@ -9046,6 +9064,8 @@ impl Painter {
         let bad_color = Rgba::rgb(212, 43, 43);
 
         let mut fill_color = muted_accent;
+        let mut fill_kind_is_optimum = true;
+        let mut fill_kind_is_suboptimum = false;
         if let Some(optimum) = (*optimum).filter(|v| v.is_finite()) {
           let mut low_val = (*low).unwrap_or(*min).clamp(*min, *max);
           let mut high_val = (*high).unwrap_or(*max).clamp(*min, *max);
@@ -9079,9 +9099,29 @@ impl Painter {
           } else {
             bad_color
           };
+          fill_kind_is_optimum = value_zone == optimum_zone;
+          fill_kind_is_suboptimum = !fill_kind_is_optimum
+            && (optimum_zone == MeterZone::Mid || value_zone == MeterZone::Mid);
 
           if control.disabled {
             fill_color = fill_color.with_alpha((fill_color.a * 0.7).clamp(0.0, 1.0));
+          }
+        }
+
+        let value_style = if fill_kind_is_optimum {
+          control.meter_optimum_value_style.as_deref()
+        } else if fill_kind_is_suboptimum {
+          control.meter_suboptimum_value_style.as_deref()
+        } else {
+          control.meter_even_less_good_value_style.as_deref()
+        };
+        if let Some(style) = value_style {
+          let bg = style.background_color;
+          if !bg.is_transparent() {
+            fill_color = bg;
+            if control.disabled {
+              fill_color = fill_color.with_alpha((fill_color.a * 0.7).clamp(0.0, 1.0));
+            }
           }
         }
 
@@ -18385,6 +18425,12 @@ mod tests {
       placeholder_style: None,
       slider_thumb_style: Some(Arc::new(thumb_style)),
       slider_track_style: Some(Arc::new(track_style)),
+      progress_bar_style: None,
+      progress_value_style: None,
+      meter_bar_style: None,
+      meter_optimum_value_style: None,
+      meter_suboptimum_value_style: None,
+      meter_even_less_good_value_style: None,
       file_selector_button_style: None,
     };
 

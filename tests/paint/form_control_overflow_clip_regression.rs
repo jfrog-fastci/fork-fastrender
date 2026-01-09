@@ -52,6 +52,12 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
     placeholder_style: None,
     slider_thumb_style: None,
     slider_track_style: None,
+    progress_bar_style: None,
+    progress_value_style: None,
+    meter_bar_style: None,
+    meter_optimum_value_style: None,
+    meter_suboptimum_value_style: None,
+    meter_even_less_good_value_style: None,
     file_selector_button_style: None,
   };
 
@@ -148,6 +154,12 @@ fn form_control_overflow_clip_uses_padding_box_radii() {
     placeholder_style: None,
     slider_thumb_style: None,
     slider_track_style: None,
+    progress_bar_style: None,
+    progress_value_style: None,
+    meter_bar_style: None,
+    meter_optimum_value_style: None,
+    meter_suboptimum_value_style: None,
+    meter_even_less_good_value_style: None,
     file_selector_button_style: None,
   };
 

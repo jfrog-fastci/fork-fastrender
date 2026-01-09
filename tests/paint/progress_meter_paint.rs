@@ -41,6 +41,14 @@ fn assert_is_blue(rgba: (u8, u8, u8, u8), msg: &str) {
   );
 }
 
+fn assert_is_yellow(rgba: (u8, u8, u8, u8), msg: &str) {
+  let (r, g, b, a) = rgba;
+  assert!(
+    a > 240 && r > 220 && g > 220 && b < 80,
+    "{msg}: expected yellow fill, got rgba=({r},{g},{b},{a})"
+  );
+}
+
 fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
   let mut dl = create_stacking_context_bounds_renderer();
   let dl_pixmap = dl.render_html(html, width, height).expect("render display_list");
@@ -218,5 +226,59 @@ fn progress_and_meter_paint_respects_direction_rtl() {
       blue_bbox.0 >= 98,
       "{backend}: expected rtl meter fill to start near 100px, got bbox={blue_bbox:?}"
     );
+  }
+}
+
+#[test]
+fn progress_and_meter_paint_respects_vendor_pseudo_element_backgrounds() {
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: white; }
+      progress, meter {
+        position: absolute;
+        left: 0px;
+        width: 200px;
+        height: 20px;
+        border: 0;
+        padding: 0;
+        border-radius: 0;
+        background: rgb(200, 200, 200);
+      }
+
+      /* Progress pseudo elements. */
+      progress::-webkit-progress-bar { background: rgb(0, 0, 255); }
+      progress::-webkit-progress-value { background: rgb(0, 255, 0); }
+
+      /* Meter pseudo elements. */
+      meter::-webkit-meter-bar { background: rgb(0, 0, 255); }
+      meter::-webkit-meter-optimum-value { background: rgb(0, 255, 0); }
+      meter::-webkit-meter-suboptimum-value { background: rgb(255, 255, 0); }
+      meter::-webkit-meter-even-less-good-value { background: rgb(255, 0, 0); }
+
+      #p { top: 0px; accent-color: rgb(255, 0, 0); }
+      #m_good { top: 30px; }
+      #m_warn { top: 60px; }
+      #m_bad { top: 90px; }
+    </style>
+    <progress id="p" value="50" max="100"></progress>
+    <meter id="m_good" value="0.5" min="0" max="1" low="0.25" high="0.75" optimum="0.5"></meter>
+    <meter id="m_warn" value="0.1" min="0" max="1" low="0.25" high="0.75" optimum="0.5"></meter>
+    <meter id="m_bad" value="0.9" min="0" max="1" low="0.25" high="0.75" optimum="0.0"></meter>
+  "#;
+
+  let (dl, legacy) = render_both(html, 220, 120);
+  for (backend, pixmap) in [("display_list", &dl), ("legacy", &legacy)] {
+    assert_is_green(rgba_at(pixmap, 10, 10), &format!("{backend}: progress fill"));
+    assert_is_blue(rgba_at(pixmap, 190, 10), &format!("{backend}: progress track"));
+
+    assert_is_green(rgba_at(pixmap, 10, 40), &format!("{backend}: meter optimum fill"));
+    assert_is_blue(rgba_at(pixmap, 190, 40), &format!("{backend}: meter optimum track"));
+
+    assert_is_yellow(rgba_at(pixmap, 10, 70), &format!("{backend}: meter suboptimum fill"));
+    assert_is_blue(rgba_at(pixmap, 190, 70), &format!("{backend}: meter suboptimum track"));
+
+    assert_is_red(rgba_at(pixmap, 170, 100), &format!("{backend}: meter even-less-good fill"));
+    assert_is_blue(rgba_at(pixmap, 190, 100), &format!("{backend}: meter even-less-good track"));
   }
 }

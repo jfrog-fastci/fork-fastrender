@@ -654,6 +654,18 @@ pub enum PseudoElement {
   SliderThumb,
   /// Range slider track pseudo-element (vendor aliases mapped here).
   SliderTrack,
+  /// Progress bar track pseudo-element (vendor aliases mapped here).
+  ProgressBar,
+  /// Progress bar value/fill pseudo-element (vendor aliases mapped here).
+  ProgressValue,
+  /// Meter track pseudo-element (vendor aliases mapped here).
+  MeterBar,
+  /// Meter fill pseudo-element for the "optimum" range (vendor aliases mapped here).
+  MeterOptimumValue,
+  /// Meter fill pseudo-element for the "suboptimum" range (vendor aliases mapped here).
+  MeterSuboptimumValue,
+  /// Meter fill pseudo-element for the "even less good" range (vendor aliases mapped here).
+  MeterEvenLessGoodValue,
   /// Any vendor-specific pseudo-element we don't model, kept to avoid selector-list invalidation.
   Vendor(CssString),
 }
@@ -721,6 +733,16 @@ impl ToCss for PseudoElement {
       // vendor spelling so debugging and tests remain stable.
       PseudoElement::SliderThumb => dest.write_str("::-webkit-slider-thumb"),
       PseudoElement::SliderTrack => dest.write_str("::-webkit-slider-runnable-track"),
+      // There is no standards-track name for these pseudo-elements today; serialize to a canonical
+      // vendor spelling so debugging and tests remain stable.
+      PseudoElement::ProgressBar => dest.write_str("::-webkit-progress-bar"),
+      PseudoElement::ProgressValue => dest.write_str("::-webkit-progress-value"),
+      PseudoElement::MeterBar => dest.write_str("::-webkit-meter-bar"),
+      PseudoElement::MeterOptimumValue => dest.write_str("::-webkit-meter-optimum-value"),
+      PseudoElement::MeterSuboptimumValue => dest.write_str("::-webkit-meter-suboptimum-value"),
+      PseudoElement::MeterEvenLessGoodValue => {
+        dest.write_str("::-webkit-meter-even-less-good-value")
+      }
       PseudoElement::Vendor(name) => {
         dest.write_str("::")?;
         name.to_css(dest)
@@ -879,6 +901,12 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "slider-thumb" | "slider-track" => true,
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => true,
+      // Progress and meter pseudo-elements (vendor-only today).
+      "-webkit-progress-bar" | "-webkit-progress-value" | "-moz-progress-bar" | "-khtml-progress-bar" => true,
+      "-webkit-meter-bar"
+      | "-webkit-meter-optimum-value"
+      | "-webkit-meter-suboptimum-value"
+      | "-webkit-meter-even-less-good-value" => true,
       _ => false,
     }
   }
@@ -1147,6 +1175,19 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "slider-track" | "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => {
         Ok(PseudoElement::SliderTrack)
       }
+      // Progress pseudo-elements (no standards-track spelling today). Treat vendor variants as
+      // aliases so commonly-authored selectors can affect native progress rendering.
+      "-webkit-progress-bar" => Ok(PseudoElement::ProgressBar),
+      "-webkit-progress-value" | "-moz-progress-bar" | "-khtml-progress-bar" => {
+        Ok(PseudoElement::ProgressValue)
+      }
+      // Meter pseudo-elements (no standards-track spelling today). Chromium exposes distinct value
+      // pseudo-elements for the different meter zones; model them explicitly so author CSS can
+      // override each classification independently.
+      "-webkit-meter-bar" => Ok(PseudoElement::MeterBar),
+      "-webkit-meter-optimum-value" => Ok(PseudoElement::MeterOptimumValue),
+      "-webkit-meter-suboptimum-value" => Ok(PseudoElement::MeterSuboptimumValue),
+      "-webkit-meter-even-less-good-value" => Ok(PseudoElement::MeterEvenLessGoodValue),
       s if s.starts_with("-webkit-")
         || s.starts_with("-moz-")
         || s.starts_with("-ms-")

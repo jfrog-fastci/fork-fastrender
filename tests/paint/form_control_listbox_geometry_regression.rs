@@ -80,6 +80,12 @@ fn listbox_select_uses_border_box_geometry_once() {
     placeholder_style: None,
     slider_thumb_style: None,
     slider_track_style: None,
+    progress_bar_style: None,
+    progress_value_style: None,
+    meter_bar_style: None,
+    meter_optimum_value_style: None,
+    meter_suboptimum_value_style: None,
+    meter_even_less_good_value_style: None,
     file_selector_button_style: None,
   };
 

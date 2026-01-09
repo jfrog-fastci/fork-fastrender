@@ -6868,6 +6868,21 @@ impl<'a> Element for ElementRef<'a> {
           _ => false,
         }
       }
+      PseudoElement::ProgressBar | PseudoElement::ProgressValue => {
+        if !self.is_html_element() {
+          return false;
+        }
+        matches!(self.node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("progress"))
+      }
+      PseudoElement::MeterBar
+      | PseudoElement::MeterOptimumValue
+      | PseudoElement::MeterSuboptimumValue
+      | PseudoElement::MeterEvenLessGoodValue => {
+        if !self.is_html_element() {
+          return false;
+        }
+        matches!(self.node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("meter"))
+      }
       // These pseudo-elements are supported for all elements; filtering
       // based on box generation happens later in the pipeline.
       PseudoElement::Before

@@ -130,6 +130,18 @@ pub struct FormControl {
   pub slider_thumb_style: Option<Arc<ComputedStyle>>,
   /// Computed style for the range track pseudo-element, when relevant.
   pub slider_track_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the progress track pseudo-element, when relevant.
+  pub progress_bar_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the progress fill pseudo-element, when relevant.
+  pub progress_value_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the meter track pseudo-element, when relevant.
+  pub meter_bar_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the meter fill pseudo-element in the "optimum" range, when relevant.
+  pub meter_optimum_value_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the meter fill pseudo-element in the "suboptimum" range, when relevant.
+  pub meter_suboptimum_value_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the meter fill pseudo-element in the "even less good" range, when relevant.
+  pub meter_even_less_good_value_style: Option<Arc<ComputedStyle>>,
   /// Computed style for the `::file-selector-button` pseudo-element, when relevant.
   pub file_selector_button_style: Option<Arc<ComputedStyle>>,
   /// Whether the control is disabled
