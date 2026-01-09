@@ -431,9 +431,8 @@ fn drive_backend_until_report(
       return Ok((RunOutcome::Timeout, None));
     }
 
-    // No tasks fired and no timers are pending; nothing else can happen.
     if !did_work {
-      return Ok((RunOutcome::Timeout, None));
+      backend.idle_wait();
     }
   }
 }
