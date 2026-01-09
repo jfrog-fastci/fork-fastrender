@@ -149,6 +149,45 @@ fn make_test_page_scroller_far_down() -> (tempfile::TempDir, String) {
 }
 
 #[test]
+fn scroll_during_initial_navigation_is_applied_to_first_frame() {
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_test_page();
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-scroll-initial-navigation").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+
+  // Start the navigation immediately via `CreateTab` so we can send scroll input before the worker
+  // has produced the first frame.
+  ui_tx
+    .send(create_tab_msg(tab_id, Some(url)))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(scroll_msg(tab_id, (0.0, 120.0), None))
+    .expect("Scroll before first frame");
+
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let scroll = wait_for_scroll_update(&ui_rx, tab_id);
+
+  assert!(
+    (scroll.viewport.y - 120.0).abs() < 1e-3,
+    "expected initial frame to reflect scroll input before first paint (got {:?})",
+    scroll.viewport
+  );
+  assert_eq!(
+    frame.scroll_state, scroll,
+    "FrameReady.scroll_state should match ScrollStateUpdated"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
 fn scroll_without_pointer_updates_viewport_scroll() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();

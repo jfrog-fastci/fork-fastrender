@@ -765,9 +765,9 @@ impl BrowserRuntime {
             next.viewport.y = (next.viewport.y + delta_y).max(0.0);
             if next != tab.scroll_state {
               tab.scroll_state = next;
-              tab.cancel.bump_paint();
-              tab.needs_repaint = true;
-              tab.scroll_coalesce = true;
+              if tab.loading {
+                tab.history.update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+              }
             }
             return;
           };
