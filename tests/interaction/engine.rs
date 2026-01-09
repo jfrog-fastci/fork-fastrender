@@ -1677,3 +1677,220 @@ fn enter_on_text_input_submits_get_form() {
     }
   );
 }
+
+#[test]
+fn range_input_drag_updates_value_and_clamps_to_max() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![("id", "r"), ("type", "range"), ("min", "0"), ("max", "10"), ("value", "0")],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let range_dom_id = node_id(&dom, "r");
+  let mut range_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  range_box.styled_node_id = Some(range_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![range_box],
+  ));
+  let range_box_id = find_box_id_for_styled_node(&box_tree, range_dom_id);
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      range_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 10.0));
+
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(25.0, 10.0));
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("2.5"));
+  assert!(
+    has_attr(&dom, "r", "data-fastr-user-validity"),
+    "changing a range value should mark user validity"
+  );
+
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(75.0, 10.0));
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("7.5"));
+
+  // Drag beyond the right edge: clamp at max.
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(150.0, 10.0));
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("10"));
+}
+
+#[test]
+fn disabled_and_readonly_range_inputs_do_not_update_value() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el(
+          "input",
+          vec![
+            ("id", "disabled"),
+            ("type", "range"),
+            ("min", "0"),
+            ("max", "10"),
+            ("value", "0"),
+            ("disabled", ""),
+          ],
+          vec![],
+        ),
+        el(
+          "input",
+          vec![
+            ("id", "readonly"),
+            ("type", "range"),
+            ("min", "0"),
+            ("max", "10"),
+            ("value", "0"),
+            ("readonly", ""),
+          ],
+          vec![],
+        ),
+      ],
+    )],
+  )]);
+
+  let disabled_dom_id = node_id(&dom, "disabled");
+  let readonly_dom_id = node_id(&dom, "readonly");
+
+  let mut disabled_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  disabled_box.styled_node_id = Some(disabled_dom_id);
+  let mut readonly_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  readonly_box.styled_node_id = Some(readonly_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![disabled_box, readonly_box],
+  ));
+
+  let disabled_box_id = find_box_id_for_styled_node(&box_tree, disabled_dom_id);
+  let readonly_box_id = find_box_id_for_styled_node(&box_tree, readonly_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+        disabled_box_id,
+        vec![],
+      ),
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 40.0, 100.0, 20.0),
+        readonly_box_id,
+        vec![],
+      ),
+    ],
+  ));
+
+  let mut engine = InteractionEngine::new();
+
+  // Disabled range.
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 10.0));
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(100.0, 10.0));
+  engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(100.0, 10.0),
+    "https://x/",
+  );
+  assert_eq!(attr_value(&dom, "disabled", "value").as_deref(), Some("0"));
+  assert!(
+    !has_attr(&dom, "disabled", "data-fastr-user-validity"),
+    "disabled range must not flip user validity"
+  );
+
+  // Readonly range.
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 50.0));
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(100.0, 50.0));
+  engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(100.0, 50.0),
+    "https://x/",
+  );
+  assert_eq!(attr_value(&dom, "readonly", "value").as_deref(), Some("0"));
+  assert!(
+    !has_attr(&dom, "readonly", "data-fastr-user-validity"),
+    "readonly range must not flip user validity"
+  );
+}
+
+#[test]
+fn range_click_focuses_input() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![("id", "r"), ("type", "range"), ("min", "0"), ("max", "100"), ("value", "10")],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let range_dom_id = node_id(&dom, "r");
+  let mut range_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  range_box.styled_node_id = Some(range_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![range_box],
+  ));
+  let range_box_id = find_box_id_for_styled_node(&box_tree, range_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      range_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(10.0, 10.0),
+    "https://x/",
+  );
+  assert!(
+    matches!(
+      action,
+      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+    ),
+    "pointer_up may emit FocusChanged"
+  );
+  assert_eq!(
+    attr_value(&dom, "r", "data-fastr-focus").as_deref(),
+    Some("true"),
+    "clicking a range input should focus it"
+  );
+  assert!(
+    !has_attr(&dom, "r", "data-fastr-focus-visible"),
+    "pointer focus should not set focus-visible"
+  );
+}

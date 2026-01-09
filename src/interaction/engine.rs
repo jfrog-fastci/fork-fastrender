@@ -47,8 +47,15 @@ pub struct InteractionEngine {
   hover_chain: Vec<usize>,
   active_chain: Vec<usize>,
   pointer_down_target: Option<usize>,
+  range_drag: Option<RangeDragState>,
   focused: Option<usize>,
   modality: InputModality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RangeDragState {
+  node_id: usize,
+  box_id: usize,
 }
 
 struct DomIndexMut {
@@ -264,6 +271,10 @@ fn is_checkbox_input(node: &DomNode) -> bool {
 
 fn is_radio_input(node: &DomNode) -> bool {
   is_input(node) && input_type(node).eq_ignore_ascii_case("radio")
+}
+
+fn is_range_input(node: &DomNode) -> bool {
+  is_input(node) && input_type(node).eq_ignore_ascii_case("range")
 }
 
 fn is_submit_input(node: &DomNode) -> bool {
@@ -654,6 +665,132 @@ fn fragment_rect_for_box_id_at_point(
   None
 }
 
+fn fragment_rect_for_box_id(fragment_tree: &FragmentTree, target_box_id: usize) -> Option<Rect> {
+  struct Frame<'a> {
+    node: &'a crate::tree::fragment_tree::FragmentNode,
+    abs_origin: Point,
+  }
+
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+  stack.push(Frame {
+    node: &fragment_tree.root,
+    abs_origin: fragment_tree.root.bounds.origin,
+  });
+  for root in &fragment_tree.additional_fragments {
+    stack.push(Frame {
+      node: root,
+      abs_origin: root.bounds.origin,
+    });
+  }
+
+  while let Some(Frame { node, abs_origin }) = stack.pop() {
+    if node.box_id() == Some(target_box_id) {
+      return Some(Rect::from_xywh(
+        abs_origin.x,
+        abs_origin.y,
+        node.bounds.width(),
+        node.bounds.height(),
+      ));
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push(Frame {
+        node: child,
+        abs_origin: abs_origin.translate(child.bounds.origin),
+      });
+    }
+  }
+
+  None
+}
+
+fn parse_range_number_attr(node: &DomNode, name: &str, default: f32) -> f32 {
+  node
+    .get_attribute_ref(name)
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+    .and_then(|v| v.parse::<f32>().ok())
+    .filter(|v| v.is_finite())
+    .unwrap_or(default)
+}
+
+fn parse_range_min_max(node: &DomNode) -> (f32, f32) {
+  let min = parse_range_number_attr(node, "min", 0.0);
+  let mut max = parse_range_number_attr(node, "max", 100.0);
+  if max < min {
+    max = min;
+  }
+  (min, max)
+}
+
+fn format_range_value(value: f64) -> String {
+  // Round to 6 decimal places (ignoring `step` for MVP) and format with a stable, compact
+  // representation to avoid writing noisy float strings into the DOM.
+  const SCALE: f64 = 1_000_000.0;
+  let mut v = (value * SCALE).round() / SCALE;
+  if v == 0.0 {
+    // Canonicalize negative zero.
+    v = 0.0;
+  }
+  v.to_string()
+}
+
+fn update_range_value_from_pointer(
+  index: &mut DomIndexMut,
+  fragment_tree: &FragmentTree,
+  node_id: usize,
+  box_id: usize,
+  page_point: Point,
+) -> bool {
+  if node_or_ancestor_is_inert(index, node_id)
+    || node_is_disabled(index, node_id)
+    || node_is_readonly(index, node_id)
+  {
+    return false;
+  }
+
+  let Some(node) = index.node(node_id) else {
+    return false;
+  };
+  if !is_range_input(node) {
+    return false;
+  }
+
+  let Some(rect) = fragment_rect_for_box_id(fragment_tree, box_id) else {
+    return false;
+  };
+
+  let width = rect.width();
+  if width <= 0.0 || !width.is_finite() {
+    return false;
+  }
+
+  let mut fraction = (page_point.x - rect.x()) / width;
+  if !fraction.is_finite() {
+    return false;
+  }
+  fraction = fraction.clamp(0.0, 1.0);
+
+  let (min, max) = parse_range_min_max(node);
+  let min = min as f64;
+  let max = max as f64;
+  let value = min + (max - min) * fraction as f64;
+  if !value.is_finite() {
+    return false;
+  }
+
+  let value_attr = format_range_value(value);
+  let Some(node_mut) = index.node_mut(node_id) else {
+    return false;
+  };
+  let changed_value = set_node_attr(node_mut, "value", &value_attr);
+  let mut changed = changed_value;
+  if changed_value {
+    changed |= dom_mutation::mark_user_validity(node_mut);
+  }
+  changed
+}
+
 fn apply_select_listbox_click(
   index: &mut DomIndexMut,
   fragment_tree: &FragmentTree,
@@ -872,6 +1009,7 @@ impl InteractionEngine {
       hover_chain: Vec::new(),
       active_chain: Vec::new(),
       pointer_down_target: None,
+      range_drag: None,
       focused: None,
       modality: InputModality::Pointer,
     }
@@ -945,8 +1083,14 @@ impl InteractionEngine {
     fragment_tree: &FragmentTree,
     page_point: Point,
   ) -> bool {
-    let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let mut index = DomIndexMut::new(dom);
+    let mut dom_changed = false;
+    if let Some(state) = self.range_drag {
+      dom_changed |=
+        update_range_value_from_pointer(&mut index, fragment_tree, state.node_id, state.box_id, page_point);
+    }
+
+    let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let new_chain = hit
       .and_then(|hit| nearest_element_ancestor(&index, hit.styled_node_id))
       .map(|target| collect_element_chain(&index, target))
@@ -959,7 +1103,7 @@ impl InteractionEngine {
       &new_chain,
     );
     self.hover_chain = new_chain;
-    changed
+    dom_changed | changed
   }
 
   /// Begin active state (data-fastr-active on target + ancestors) and set modality=Pointer.
@@ -976,7 +1120,10 @@ impl InteractionEngine {
   ) -> bool {
     self.modality = InputModality::Pointer;
 
-    let down_target = hit_test_dom(dom, box_tree, fragment_tree, page_point).map(|hit| hit.dom_node_id);
+    self.range_drag = None;
+
+    let down_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
+    let down_target = down_hit.as_ref().map(|hit| hit.dom_node_id);
     let mut index = DomIndexMut::new(dom);
     let new_chain = down_target
       .map(|target| collect_element_chain(&index, target))
@@ -990,7 +1137,25 @@ impl InteractionEngine {
     );
     self.active_chain = new_chain;
     self.pointer_down_target = down_target;
-    changed
+
+    let mut dom_changed = changed;
+    if let Some(hit) = down_hit.as_ref() {
+      if index.node(hit.dom_node_id).is_some_and(is_range_input) {
+        self.range_drag = Some(RangeDragState {
+          node_id: hit.dom_node_id,
+          box_id: hit.box_id,
+        });
+        dom_changed |= update_range_value_from_pointer(
+          &mut index,
+          fragment_tree,
+          hit.dom_node_id,
+          hit.box_id,
+          page_point,
+        );
+      }
+    }
+
+    dom_changed
   }
 
   fn remap_engine_ids_after_dom_change(
@@ -1035,6 +1200,18 @@ impl InteractionEngine {
     remap_vec(&mut self.hover_chain, old_index, new_ids);
     remap_vec(&mut self.active_chain, old_index, new_ids);
     remap_opt(&mut self.pointer_down_target, old_index, new_ids);
+    if let Some(state) = &mut self.range_drag {
+      let new_node_id = old_index
+        .id_to_node
+        .get(state.node_id)
+        .copied()
+        .filter(|ptr| !ptr.is_null())
+        .and_then(|ptr| new_ids.get(&(ptr as *const DomNode)).copied());
+      match new_node_id {
+        Some(id) => state.node_id = id,
+        None => self.range_drag = None,
+      }
+    }
     remap_opt(&mut self.focused, old_index, new_ids);
   }
 
@@ -1055,6 +1232,7 @@ impl InteractionEngine {
     page_point: Point,
     base_url: &str,
   ) -> (bool, InteractionAction) {
+    let range_drag = self.range_drag.take();
     let prev_focus = self.focused;
 
     let up_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
@@ -1065,6 +1243,15 @@ impl InteractionEngine {
 
     // Clear active chain unconditionally.
     let mut dom_changed = false;
+    if let Some(state) = range_drag {
+      dom_changed |= update_range_value_from_pointer(
+        &mut index,
+        fragment_tree,
+        state.node_id,
+        state.box_id,
+        page_point,
+      );
+    }
     for id in self.active_chain.iter().copied() {
       dom_changed |= set_data_flag(&mut index, id, "data-fastr-active", false);
     }
