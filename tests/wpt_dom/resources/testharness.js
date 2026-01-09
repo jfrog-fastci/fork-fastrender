@@ -76,9 +76,6 @@ function __fastrender_wpt_schedule_script_done() {
 }
 
 function __fastrender_wpt_error_message(e) {
-  // The vm-js backend intentionally implements a tiny JS subset. In particular it does not support
-  // `typeof` or boxing primitives for property access, so avoid probing `e.name`/`e.message` and
-  // just forward the thrown value.
   return e;
 }
 
@@ -90,7 +87,8 @@ function test(fn, _name) {
   try {
     fn();
   } catch (e) {
-    __fastrender_wpt_fail(__fastrender_wpt_error_message(e));
+    // Encode the test name in the thrown value without depending on full stack trace support.
+    __fastrender_wpt_fail({ name: _name, message: __fastrender_wpt_error_message(e) });
   }
 }
 
