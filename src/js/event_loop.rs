@@ -340,6 +340,12 @@ impl<Host: 'static> EventLoop<Host> {
   ///
   /// - If a checkpoint is already in progress, this is a no-op (reentrancy guard).
   /// - Otherwise, drains the microtask queue until it becomes empty.
+  ///
+  /// ## Error behavior
+  ///
+  /// If a microtask returns an error, the checkpoint continues running remaining microtasks (HTML
+  /// reports exceptions but does not abort the checkpoint). After draining, the first error (if
+  /// any) is returned to the caller.
   pub fn perform_microtask_checkpoint(&mut self, host: &mut Host) -> Result<()> {
     if self.performing_microtask_checkpoint {
       return Ok(());
@@ -358,6 +364,7 @@ impl<Host: 'static> EventLoop<Host> {
     trace_span.arg_u64("queued_at_start", self.microtask_queue.len() as u64);
     let mut drained: u64 = 0;
     let result = (|| {
+      let mut first_err: Option<Error> = None;
       while !self.microtask_queue.is_empty() {
         let Some(task) = self.microtask_queue.pop_front() else {
           // The emptiness check above and the `VecDeque` API guarantee this can't happen, but avoid
@@ -368,10 +375,14 @@ impl<Host: 'static> EventLoop<Host> {
           source: task.source,
           is_microtask: true,
         });
-        task.run(host, self)?;
+        if let Err(err) = task.run(host, self) {
+          if first_err.is_none() {
+            first_err = Some(err);
+          }
+        }
         drained = drained.saturating_add(1);
       }
-      Ok(())
+      first_err.map_or(Ok(()), Err)
     })();
 
     trace_span.arg_u64("drained", drained);
@@ -1229,6 +1240,33 @@ mod tests {
     event_loop.perform_microtask_checkpoint(&mut host)?;
     assert_eq!(host.count, 1);
     Ok(())
+  }
+
+  #[test]
+  fn microtask_checkpoint_runs_remaining_microtasks_after_error() {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
+
+    event_loop
+      .queue_microtask(|host, _| {
+        host.log.push("microtask1");
+        Err(Error::Other("boom".to_string()))
+      })
+      .unwrap();
+    event_loop
+      .queue_microtask(|host, _| {
+        host.log.push("microtask2");
+        Ok(())
+      })
+      .unwrap();
+
+    let err = event_loop
+      .perform_microtask_checkpoint(&mut host)
+      .expect_err("expected microtask error to be surfaced");
+    assert!(matches!(err, Error::Other(msg) if msg == "boom"));
+    assert_eq!(host.log, vec!["microtask1", "microtask2"]);
+    assert_eq!(event_loop.pending_microtask_count(), 0);
   }
 
   fn self_requeue_microtask(
