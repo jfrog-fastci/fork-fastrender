@@ -97,6 +97,7 @@ mod preserve_3d_depth_sort;
 mod preserve_3d_nested_affine;
 mod preserve_3d_nested_context;
 mod preserve_3d_opacity_scope;
+mod preserve_3d_root_manual_blend_mode;
 mod preserve_3d_root_mix_blend_mode;
 mod preserve_3d_root_opacity;
 mod preserve_3d_parallel_determinism;
