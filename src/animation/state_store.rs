@@ -90,3 +90,79 @@ impl AnimationStateStore {
       .unwrap_or(0.0) as f32
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn time_based_animation_pauses_and_resumes_without_time_jumps() {
+    let mut store = AnimationStateStore::new();
+
+    // First sample initializes the animation such that `currentTime` is 0 at the provided timeline
+    // time.
+    store.begin_frame();
+    let t0 = store.sample_time_based_animation(
+      1,
+      0,
+      "fade",
+      0.0,
+      AnimationPlayState::Running,
+    );
+    assert_eq!(t0, 0.0);
+
+    // While running, `currentTime` tracks the timeline.
+    store.begin_frame();
+    let t50 = store.sample_time_based_animation(
+      1,
+      0,
+      "fade",
+      50.0,
+      AnimationPlayState::Running,
+    );
+    assert_eq!(t50, 50.0);
+
+    // Pausing captures the current time once and freezes it.
+    store.begin_frame();
+    let t60_pause = store.sample_time_based_animation(
+      1,
+      0,
+      "fade",
+      60.0,
+      AnimationPlayState::Paused,
+    );
+    assert_eq!(t60_pause, 60.0);
+
+    store.begin_frame();
+    let t100_paused = store.sample_time_based_animation(
+      1,
+      0,
+      "fade",
+      100.0,
+      AnimationPlayState::Paused,
+    );
+    assert_eq!(t100_paused, 60.0);
+
+    // Resuming preserves `currentTime` at the moment of resumption and continues advancing from
+    // that point.
+    store.begin_frame();
+    let t120_resume = store.sample_time_based_animation(
+      1,
+      0,
+      "fade",
+      120.0,
+      AnimationPlayState::Running,
+    );
+    assert_eq!(t120_resume, 60.0);
+
+    store.begin_frame();
+    let t150 = store.sample_time_based_animation(
+      1,
+      0,
+      "fade",
+      150.0,
+      AnimationPlayState::Running,
+    );
+    assert_eq!(t150, 90.0);
+  }
+}
