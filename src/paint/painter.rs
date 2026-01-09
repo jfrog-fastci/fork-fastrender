@@ -5373,14 +5373,43 @@ impl Painter {
     let bottom_center = y + height - bottom * 0.5;
     let left_center = x + left * 0.5;
     let right_center = x + width - right * 0.5;
-    let top_start = left_center;
-    let top_end = right_center;
-    let bottom_start = left_center;
-    let bottom_end = right_center;
-    let left_start = top_center;
-    let left_end = bottom_center;
-    let right_start = top_center;
-    let right_end = bottom_center;
+
+    // Use outer border-box corners as endpoints so each edge meets cleanly at corners (avoids
+    // leaving visible gaps when stroking each edge independently).
+    //
+    // Dotted borders use round caps which can extend outside the border box. The display-list
+    // backend clips dotted borders to the border box; the legacy painter doesn't, so keep the
+    // legacy center endpoints in that case to avoid drawing outside the border box.
+    let wants_center_endpoints = matches!(
+      (
+        style.border_top_style,
+        style.border_right_style,
+        style.border_bottom_style,
+        style.border_left_style
+      ),
+      (CssBorderStyle::Dotted, _, _, _)
+        | (_, CssBorderStyle::Dotted, _, _)
+        | (_, _, CssBorderStyle::Dotted, _)
+        | (_, _, _, CssBorderStyle::Dotted)
+    );
+    let (h_start, h_end) = if wants_center_endpoints {
+      (left_center, right_center)
+    } else {
+      (x, x + width)
+    };
+    let (v_start, v_end) = if wants_center_endpoints {
+      (top_center, bottom_center)
+    } else {
+      (y, y + height)
+    };
+    let top_start = h_start;
+    let top_end = h_end;
+    let bottom_start = h_start;
+    let bottom_end = h_end;
+    let left_start = v_start;
+    let left_end = v_end;
+    let right_start = v_start;
+    let right_end = v_end;
 
     // Top border
     if top > 0.0 {
