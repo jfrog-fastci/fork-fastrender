@@ -3334,7 +3334,12 @@ impl JsWptRuntime {
     result
   }
 
-  fn call_user_function(&mut self, this: Value, args: &[Value], func: &UserFunction) -> Result<Value, JsError> {
+  fn call_user_function(
+    &mut self,
+    this: Value,
+    args: &[Value],
+    func: &UserFunction,
+  ) -> Result<Value, JsError> {
     self.env.push_frame();
     let previous_this = self.this_binding;
     self.this_binding = this;
@@ -3362,7 +3367,17 @@ impl JsWptRuntime {
 
     let result = if func.is_async {
       match result {
-        Ok(v) => Ok(Value::Object(self.alloc_promise_with_state(PromiseStatus::Fulfilled, v)?)),
+        Ok(v) => {
+          if let Value::Object(obj) = v {
+            if self.promises.contains_key(&obj) {
+              Ok(Value::Object(obj))
+            } else {
+              Ok(Value::Object(self.alloc_promise_with_state(PromiseStatus::Fulfilled, v)?))
+            }
+          } else {
+            Ok(Value::Object(self.alloc_promise_with_state(PromiseStatus::Fulfilled, v)?))
+          }
+        }
         Err(JsError::Vm(VmError::Throw(v))) => {
           Ok(Value::Object(self.alloc_promise_with_state(PromiseStatus::Rejected, v)?))
         }
@@ -3385,21 +3400,50 @@ impl JsWptRuntime {
         Ok(Value::Bool(!to_boolean(&mut self.heap, arg)?))
       }
       OperatorName::Await => {
-        let arg = self.eval_expr(&expr.argument)?;
-        let Value::Object(promise) = arg else {
-          // `await` wraps non-Promise values with `Promise.resolve(...)` in real ECMAScript. Our
-          // mini-runtime only needs the "identity" behavior for values already available.
-          return Ok(arg);
-        };
-        let Some(state) = self.promises.get(&promise) else {
-          return Ok(arg);
-        };
-        match state.status {
-          PromiseStatus::Fulfilled => Ok(state.value),
-          PromiseStatus::Rejected => Err(JsError::Vm(VmError::Throw(state.value))),
-          PromiseStatus::Pending => Err(JsError::Vm(VmError::Unimplemented("await pending promise"))),
-        }
+        let value = self.eval_expr(&expr.argument)?;
+        self.await_value(value)
       }
+      OperatorName::Void => {
+        // Evaluate operand for side effects.
+        let _ = self.eval_expr(&expr.argument)?;
+        Ok(Value::Undefined)
+      }
+      OperatorName::UnaryPlus => {
+        let arg = self.eval_expr(&expr.argument)?;
+        Ok(Value::Number(self.heap.to_number(arg)?))
+      }
+      OperatorName::UnaryNegation => {
+        let arg = self.eval_expr(&expr.argument)?;
+        Ok(Value::Number(-self.heap.to_number(arg)?))
+      }
+      OperatorName::BitwiseNot => {
+        let arg = self.eval_expr(&expr.argument)?;
+        let n = self.heap.to_number(arg)?;
+        Ok(Value::Number((!to_int32(n)) as f64))
+      }
+      OperatorName::PrefixIncrement => {
+        let old = self.eval_expr(&expr.argument)?;
+        let Value::Number(n) = old else {
+          return Err(JsError::Vm(VmError::Unimplemented(
+            "prefix ++ only supports numbers",
+          )));
+        };
+        let new = Value::Number(n + 1.0);
+        self.assign_to(&expr.argument, new)?;
+        Ok(new)
+      }
+      OperatorName::PrefixDecrement => {
+        let old = self.eval_expr(&expr.argument)?;
+        let Value::Number(n) = old else {
+          return Err(JsError::Vm(VmError::Unimplemented(
+            "prefix -- only supports numbers",
+          )));
+        };
+        let new = Value::Number(n - 1.0);
+        self.assign_to(&expr.argument, new)?;
+        Ok(new)
+      }
+      OperatorName::Delete => self.eval_delete(&expr.argument),
       OperatorName::Typeof => {
         // `typeof` is special: it does not throw for unbound identifiers.
         let value = match &*expr.argument.stx {
@@ -3448,6 +3492,94 @@ impl JsWptRuntime {
     };
 
     self.construct(ctor, &args)
+  }
+
+  fn await_value(&mut self, value: Value) -> Result<Value, JsError> {
+    let Value::Object(obj) = value else {
+      return Ok(value);
+    };
+    if !self.promises.contains_key(&obj) {
+      return Ok(Value::Object(obj));
+    }
+    self.await_promise(obj)
+  }
+
+  fn await_promise(&mut self, promise: GcObject) -> Result<Value, JsError> {
+    loop {
+      self.vm.tick()?;
+
+      let Some((status, value)) = self.promises.get(&promise).map(|s| (s.status, s.value)) else {
+        return Err(JsError::Vm(VmError::Throw(self.alloc_string_value(
+          "TypeError: awaited value is not a Promise",
+        )?)));
+      };
+
+      match status {
+        PromiseStatus::Fulfilled => return Ok(value),
+        PromiseStatus::Rejected => return Err(JsError::Vm(VmError::Throw(value))),
+        PromiseStatus::Pending => {}
+      }
+
+      let mut progressed = false;
+
+      // A minimal (blocking) await implementation: keep pumping microtasks/tasks until the promise
+      // settles. This is not a full async function suspension model, but it's sufficient for the
+      // curated offline WPT DOM smoke tests.
+      while let Some((cb, this, args)) = self.event_loop.drain_microtasks() {
+        progressed = true;
+        self.call(cb, this, &args)?;
+      }
+
+      self.event_loop.enqueue_due_timers();
+      if let Some((cb, this, args)) = self.event_loop.pop_next_task() {
+        progressed = true;
+        self.call(cb, this, &args)?;
+      }
+
+      if !progressed {
+        if let Some(next_due) = self.event_loop.next_timer_due_time() {
+          if next_due > self.event_loop.now {
+            self.event_loop.now = next_due;
+            progressed = true;
+          }
+        }
+      }
+
+      if !progressed {
+        return Err(JsError::Vm(VmError::Unimplemented("await pending promise")));
+      }
+    }
+  }
+
+  fn eval_delete(&mut self, operand: &Node<Expr>) -> Result<Value, JsError> {
+    match &*operand.stx {
+      Expr::Member(member) => {
+        let obj_value = self.eval_expr(&member.stx.left)?;
+        let Value::Object(obj) = obj_value else {
+          return Ok(Value::Bool(true));
+        };
+        let key = {
+          let mut scope = self.heap.scope();
+          PropertyKey::from_string(scope.alloc_string(&member.stx.right)?)
+        };
+        Ok(Value::Bool(self.heap.ordinary_delete(obj, key)?))
+      }
+      Expr::ComputedMember(member) => {
+        let obj_value = self.eval_expr(&member.stx.object)?;
+        let Value::Object(obj) = obj_value else {
+          return Ok(Value::Bool(true));
+        };
+        let member_value = self.eval_expr(&member.stx.member)?;
+        let key = self.value_to_property_key(member_value)?;
+        Ok(Value::Bool(self.heap.ordinary_delete(obj, key)?))
+      }
+      Expr::Id(_) | Expr::IdPat(_) => Ok(Value::Bool(false)),
+      _ => {
+        // `delete` on non-reference expressions returns true after evaluating the operand.
+        let _ = self.eval_expr(operand)?;
+        Ok(Value::Bool(true))
+      }
+    }
   }
 
   fn construct(&mut self, ctor: Value, args: &[Value]) -> Result<Value, JsError> {
@@ -3757,6 +3889,22 @@ fn to_boolean(heap: &mut Heap, value: Value) -> Result<bool, JsError> {
     Value::String(s) => !heap.get_string(s)?.as_code_units().is_empty(),
     Value::Symbol(_) | Value::Object(_) => true,
   })
+}
+
+fn to_int32(n: f64) -> i32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  let int = n.trunc();
+  let two32 = 4_294_967_296.0_f64;
+  let mut int32 = int % two32;
+  if int32 < 0.0 {
+    int32 += two32;
+  }
+  if int32 >= 2_147_483_648.0 {
+    int32 -= two32;
+  }
+  int32 as i32
 }
 
 fn strict_equal(heap: &mut Heap, a: Value, b: Value) -> Result<bool, JsError> {
