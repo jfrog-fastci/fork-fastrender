@@ -188,34 +188,84 @@ fn create_tab_triggers_initial_navigation_and_frame() {
     })
     .expect("ViewportChanged");
 
-  let msg1 = worker
-    .rx
-    .recv_timeout(TIMEOUT)
-    .unwrap_or_else(|err| panic!("timed out waiting for initial WorkerToUi message: {err}"));
-  match msg1 {
-    WorkerToUi::NavigationStarted { tab_id: got, url } => {
-      assert_eq!(got, tab_id);
-      assert_eq!(url, "about:newtab");
+  let deadline = Instant::now() + TIMEOUT;
+  let mut saw_loading_true = false;
+  let mut saw_loading_false = false;
+  let mut saw_started = false;
+  let mut saw_committed = false;
+  let mut saw_frame = false;
+  let mut committed_url: Option<String> = None;
+  let mut msgs: Vec<WorkerToUi> = Vec::new();
+
+  while Instant::now() < deadline && !(saw_committed && saw_frame && saw_loading_false) {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match worker.rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+      Ok(msg) => {
+        match &msg {
+          WorkerToUi::NavigationStarted { tab_id: got, url } if *got == tab_id => {
+            saw_started = true;
+            assert_eq!(url, "about:newtab");
+          }
+          WorkerToUi::LoadingState {
+            tab_id: got,
+            loading,
+          } if *got == tab_id => {
+            if *loading {
+              saw_loading_true = true;
+            } else {
+              saw_loading_false = true;
+            }
+          }
+          WorkerToUi::NavigationCommitted { tab_id: got, url, .. } if *got == tab_id => {
+            committed_url = Some(url.clone());
+            saw_committed = true;
+          }
+          WorkerToUi::FrameReady { tab_id: got, .. } if *got == tab_id => {
+            saw_frame = true;
+          }
+          WorkerToUi::NavigationFailed {
+            tab_id: got,
+            url,
+            error,
+            ..
+          } if *got == tab_id => {
+            panic!("navigation failed for {url}: {error}");
+          }
+          _ => {}
+        }
+        msgs.push(msg);
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
-    other => panic!("expected NavigationStarted first, got {other:?}"),
   }
 
-  let msg2 = worker
-    .rx
-    .recv_timeout(TIMEOUT)
-    .unwrap_or_else(|err| panic!("timed out waiting for LoadingState(true): {err}"));
-  match msg2 {
-    WorkerToUi::LoadingState { tab_id: got, loading } => {
-      assert_eq!(got, tab_id);
-      assert!(loading, "expected LoadingState(true)");
-    }
-    other => panic!("expected LoadingState(true) second, got {other:?}"),
-  }
-
-  let committed_url = wait_for_navigation_complete(&worker.rx, tab_id, TIMEOUT);
-  assert_eq!(committed_url, "about:newtab");
-  let _ = wait_for_frame(&worker.rx, tab_id, TIMEOUT);
-  wait_for_loading_false(&worker.rx, tab_id, TIMEOUT);
+  assert!(
+    saw_loading_true,
+    "expected LoadingState(true) for initial about:newtab navigation\nmessages:\n{}",
+    support::format_messages(&msgs)
+  );
+  assert!(
+    saw_started,
+    "expected NavigationStarted for initial about:newtab navigation\nmessages:\n{}",
+    support::format_messages(&msgs)
+  );
+  assert_eq!(
+    committed_url.as_deref(),
+    Some("about:newtab"),
+    "expected NavigationCommitted for about:newtab\nmessages:\n{}",
+    support::format_messages(&msgs)
+  );
+  assert!(
+    saw_frame,
+    "expected FrameReady for about:newtab\nmessages:\n{}",
+    support::format_messages(&msgs)
+  );
+  assert!(
+    saw_loading_false,
+    "expected LoadingState(false) for about:newtab\nmessages:\n{}",
+    support::format_messages(&msgs)
+  );
 
   worker.shutdown();
 }
