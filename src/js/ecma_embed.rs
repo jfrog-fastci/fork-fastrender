@@ -12,12 +12,11 @@ use parse_js::ast::node::{literal_string_code_units, Node};
 use parse_js::ast::stmt::{BlockStmt, Stmt, ThrowStmt, WhileStmt};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vm_js::{
-  format_stack_trace, Budget, GcObject, Heap, HeapLimits, RootId, Scope, SourceText, StackFrame,
-  TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
+  format_stack_trace, Budget, GcObject, Heap, HeapLimits, InterruptHandle, RootId, Scope, SourceText,
+  StackFrame, TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
 };
 
 /// Per-realm configuration for the embedded JS engine.
@@ -166,19 +165,19 @@ pub struct VmJsScriptRealm {
   heap: Heap,
   env: Env,
   host_functions: HashMap<GcObject, HostFunctionEntry>,
-  interrupt_flag: Arc<AtomicBool>,
+  interrupt_handle: InterruptHandle,
 }
 
 impl VmJsScriptRealm {
   pub fn new(options: ScriptRealmOptions) -> Result<Self, ScriptError> {
-    let interrupt_flag = Arc::new(AtomicBool::new(false));
     let vm = Vm::new(VmOptions {
       max_stack_depth: options.max_stack_depth,
       default_fuel: options.default_fuel,
       default_deadline: options.default_deadline,
       check_time_every: options.check_time_every,
-      interrupt_flag: Some(interrupt_flag.clone()),
+      interrupt_flag: None,
     });
+    let interrupt_handle = vm.interrupt_handle();
     let heap = Heap::new(options.heap_limits);
     Ok(Self {
       options,
@@ -186,7 +185,7 @@ impl VmJsScriptRealm {
       heap,
       env: Env::default(),
       host_functions: HashMap::new(),
-      interrupt_flag,
+      interrupt_handle,
     })
   }
 
@@ -241,7 +240,7 @@ impl ScriptRealm for VmJsScriptRealm {
   ) -> Result<ScriptValue, ScriptError> {
     // If a previous evaluation was interrupted, the VM interrupt token stays set until the host
     // resets it. Without this, all subsequent evaluations would immediately terminate.
-    self.interrupt_flag.store(false, Ordering::Relaxed);
+    self.interrupt_handle.reset();
 
     let render_deadline =
       crate::render_control::active_deadline().or_else(crate::render_control::root_deadline);
@@ -286,14 +285,14 @@ impl ScriptRealm for VmJsScriptRealm {
     let heap = &mut self.heap;
     let env = &mut self.env;
     let host_functions = &mut self.host_functions;
-    let interrupt_flag = self.interrupt_flag.clone();
+    let interrupt_handle = self.interrupt_handle.clone();
 
     let mut scope = heap.scope();
     let mut evaluator = Evaluator {
       vm,
       env,
       host_functions,
-      interrupt_flag,
+      interrupt_handle,
       render_deadline,
       source: &source_text,
     };
@@ -334,7 +333,7 @@ struct Evaluator<'a> {
   vm: &'a mut Vm,
   env: &'a mut Env,
   host_functions: &'a mut HashMap<GcObject, HostFunctionEntry>,
-  interrupt_flag: Arc<AtomicBool>,
+  interrupt_handle: InterruptHandle,
   render_deadline: Option<RenderDeadline>,
   source: &'a SourceText,
 }
@@ -344,7 +343,7 @@ impl Evaluator<'_> {
     if let Some(deadline) = &self.render_deadline {
       if let Some(cancel) = deadline.cancel_callback() {
         if cancel() {
-          self.interrupt_flag.store(true, Ordering::Relaxed);
+          self.interrupt_handle.interrupt();
         }
       }
     }
@@ -699,6 +698,7 @@ mod tests {
   ) -> Result<Value, ScriptError> {
     // Mirror `VmJsScriptRealm::eval_script_with_budget`, but return the raw vm-js `Value` so tests
     // can inspect heap-backed strings without lossy UTF-8 conversion.
+    realm.interrupt_handle.reset();
     let budget = realm.derive_budget(None, &ScriptBudgetOverride::default());
     realm.vm.set_budget(budget);
 
@@ -737,14 +737,14 @@ mod tests {
     let heap = &mut realm.heap;
     let env = &mut realm.env;
     let host_functions = &mut realm.host_functions;
-    let interrupt_flag = realm.interrupt_flag.clone();
+    let interrupt_handle = realm.interrupt_handle.clone();
 
     let mut scope = heap.scope();
     let mut evaluator = Evaluator {
       vm,
       env,
       host_functions,
-      interrupt_flag,
+      interrupt_handle,
       render_deadline: None,
       source: &source_text,
     };
