@@ -1614,6 +1614,15 @@ impl JsWptRuntime {
       }
     };
 
+    let prev_sibling_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("previousSibling")?)
+    };
+    let next_sibling_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nextSibling")?)
+    };
+
     // Mutate the cached list in-place so stored references behave like a live NodeList.
     let length_key = {
       let mut scope = self.heap.scope();
@@ -1634,6 +1643,29 @@ impl JsWptRuntime {
         let mut scope = self.heap.scope();
         PropertyKey::from_string(scope.alloc_string(&idx.to_string())?)
       };
+      // Clear sibling pointers for nodes that are no longer in the NodeList (or will be re-added
+      // with updated neighbors).
+      if let Some(desc) = self.heap.get_property(list, &key)? {
+        if let PropertyKind::Data { value, .. } = desc.kind {
+          if let Value::Object(child) = value {
+            if self.dom_nodes.contains_key(&child) {
+              // If the node has already been reparented elsewhere, do not touch its sibling
+              // pointers. This matters for DocumentFragment insertion where we:
+              // 1) move children into the new parent,
+              // 2) update the new parent's `childNodes`/siblings,
+              // 3) then clear the fragment's `childNodes`.
+              //
+              // In that sequence the moved children would appear in the fragment's old NodeList,
+              // but their siblings should reflect the new parent.
+              let current_parent = self.dom_nodes.get(&child).and_then(|s| s.parent);
+              if current_parent.is_none() || current_parent == Some(node) {
+                self.define_data_prop(child, prev_sibling_key, Value::Null)?;
+                self.define_data_prop(child, next_sibling_key, Value::Null)?;
+              }
+            }
+          }
+        }
+      }
       self.define_data_prop(list, key, Value::Undefined)?;
     }
     for (idx, &child) in visible_children.iter().enumerate() {
@@ -1650,6 +1682,43 @@ impl JsWptRuntime {
       PropertyKey::from_string(scope.alloc_string("childNodes")?)
     };
     self.define_data_prop(node, child_nodes_key, Value::Object(list))?;
+
+    let first_child_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("firstChild")?)
+    };
+    let last_child_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("lastChild")?)
+    };
+    let first = visible_children.first().copied();
+    let last = visible_children.last().copied();
+    self.define_data_prop(
+      node,
+      first_child_key,
+      first.map(Value::Object).unwrap_or(Value::Null),
+    )?;
+    self.define_data_prop(
+      node,
+      last_child_key,
+      last.map(Value::Object).unwrap_or(Value::Null),
+    )?;
+
+    // Keep sibling pointers in sync for DOM mutation tests.
+    for (idx, &child) in visible_children.iter().enumerate() {
+      let prev = idx.checked_sub(1).and_then(|i| visible_children.get(i)).copied();
+      let next = visible_children.get(idx + 1).copied();
+      self.define_data_prop(
+        child,
+        prev_sibling_key,
+        prev.map(Value::Object).unwrap_or(Value::Null),
+      )?;
+      self.define_data_prop(
+        child,
+        next_sibling_key,
+        next.map(Value::Object).unwrap_or(Value::Null),
+      )?;
+    }
     Ok(())
   }
 
