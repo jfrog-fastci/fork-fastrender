@@ -389,8 +389,8 @@ fn backdrop_filter_crosses_backface_visibility_stacking_context() {
   let html = r#"<!doctype html>
     <style>
       body { margin: 0; background: rgb(255 0 0); }
-      #parent { transform-style: preserve-3d; }
-      #sc { backface-visibility: hidden; width: 60px; height: 60px; }
+      #parent { transform-style: preserve-3d; transform: translateZ(0px); }
+      #sc { position: relative; transform-style: preserve-3d; backface-visibility: hidden; width: 60px; height: 60px; }
       #overlay { position: absolute; left: 0; top: 0; width: 40px; height: 40px; backdrop-filter: invert(1); }
     </style>
     <div id="parent"><div id="sc"><div id="overlay"></div></div></div>
