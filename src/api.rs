@@ -10746,6 +10746,17 @@ impl FastRender {
 
     let viewport_size = Size::new(width as f32, height as f32);
     let device_size = self.pending_device_size.take().unwrap_or(viewport_size);
+    let dom_scripting_enabled = match &dom_with_state.node_type {
+      DomNodeType::Document {
+        scripting_enabled, ..
+      } => *scripting_enabled,
+      _ => self.dom_scripting_enabled(),
+    };
+    let scripting = if dom_scripting_enabled {
+      Scripting::Enabled
+    } else {
+      Scripting::None
+    };
     let media_ctx = match media_type {
       MediaType::Print => MediaContext::print(viewport_size.width, viewport_size.height),
       MediaType::Screen => MediaContext::screen(viewport_size.width, viewport_size.height),
@@ -10755,7 +10766,7 @@ impl FastRender {
     }
     .with_device_size(device_size.width, device_size.height)
     .with_device_pixel_ratio(self.device_pixel_ratio)
-    .with_scripting(self.effective_scripting())
+    .with_scripting(scripting)
     .with_env_overrides();
 
     let _image_probe_prefetch =
@@ -11087,6 +11098,7 @@ impl FastRender {
     let box_tree_timer = stats.as_deref().and_then(|rec| rec.timer());
     let box_gen_options = self
       .box_generation_options()
+      .with_dom_scripting_enabled(dom_scripting_enabled)
       .with_footnote_floats(!page_rules.is_empty());
     let box_gen_start = timings_enabled.then(Instant::now);
     record_stage(StageHeartbeat::BoxTree);
