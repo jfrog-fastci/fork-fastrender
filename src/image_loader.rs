@@ -120,8 +120,9 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 fn trim_ascii_whitespace_start(value: &str) -> &str {
-  value
-    .trim_start_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  value.trim_start_matches(|c: char| {
+    matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+  })
 }
 
 fn svg_xml_base_chain_for_node<'a, 'input>(node: roxmltree::Node<'a, 'input>) -> Vec<&'a str> {
@@ -1719,11 +1720,45 @@ fn try_render_simple_svg_pixmap(
   render_width: u32,
   render_height: u32,
 ) -> std::result::Result<Option<Pixmap>, RenderError> {
-  use tiny_skia::FillRule;
-  use tiny_skia::Paint;
+  use tiny_skia::{FillRule, LineCap, LineJoin, Paint, Stroke, StrokeDash};
 
   if render_width == 0 || render_height == 0 {
     return Ok(None);
+  }
+
+  fn inherited_attr<'a>(node: roxmltree::Node<'a, 'a>, name: &str) -> Option<&'a str> {
+    for ancestor in node.ancestors().filter(|n| n.is_element()) {
+      if let Some(value) = ancestor.attribute(name) {
+        let trimmed = trim_ascii_whitespace(value);
+        if trimmed.eq_ignore_ascii_case("inherit") {
+          continue;
+        }
+        return Some(trimmed);
+      }
+    }
+    None
+  }
+
+  fn parse_svg_dash_array(value: &str) -> Option<Vec<f32>> {
+    let trimmed = trim_ascii_whitespace(value);
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+      return Some(Vec::new());
+    }
+
+    let mut values = Vec::new();
+    for part in trimmed
+      .split(|c: char| {
+        c == ',' || matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+      })
+      .filter(|s| !s.is_empty())
+    {
+      let v = parse_svg_length_px(part)?;
+      if !v.is_finite() || v < 0.0 {
+        return None;
+      }
+      values.push(v);
+    }
+    Some(values)
   }
 
   let mut deadline_counter = 0usize;
@@ -1768,21 +1803,10 @@ fn try_render_simple_svg_pixmap(
       if node.attribute("d").is_none() {
         return Ok(None);
       }
-      if node
-        .attribute("stroke")
-        .is_some_and(|v| !trim_ascii_whitespace(v).eq_ignore_ascii_case("none"))
-      {
-        return Ok(None);
-      }
-      if node.attribute("stroke-width").is_some()
-        || node.attribute("stroke-linecap").is_some()
-        || node.attribute("stroke-linejoin").is_some()
-        || node.attribute("stroke-miterlimit").is_some()
-        || node.attribute("stroke-dasharray").is_some()
-        || node.attribute("stroke-dashoffset").is_some()
-      {
-        return Ok(None);
-      }
+    } else if node.attribute("opacity").is_some() {
+      // `opacity` on groups/root requires separate compositing that this fast-path does not
+      // implement (and is uncommon for icon SVGs). Only allow `opacity` on leaf paths.
+      return Ok(None);
     }
   }
 
@@ -1851,26 +1875,10 @@ fn try_render_simple_svg_pixmap(
       None => return Ok(None),
     };
 
-    let fill = node.attribute("fill");
-    let mut color = match fill {
-      Some(v) => match svg_parse_fill_color(v) {
-        Some(color) => color,
-        None => return Ok(None),
-      },
-      None => Rgba::new(0, 0, 0, 1.0),
-    };
-    if color.a <= 0.0 {
-      continue;
-    }
-
+    let mut opacity = 1.0f32;
     if let Some(opacity_raw) = node.attribute("opacity") {
       if let Ok(alpha) = trim_ascii_whitespace(opacity_raw).parse::<f32>() {
-        color = multiply_alpha(color, alpha);
-      }
-    }
-    if let Some(opacity_raw) = node.attribute("fill-opacity") {
-      if let Ok(alpha) = trim_ascii_whitespace(opacity_raw).parse::<f32>() {
-        color = multiply_alpha(color, alpha);
+        opacity = alpha;
       }
     }
 
@@ -1881,10 +1889,117 @@ fn try_render_simple_svg_pixmap(
       Some(_) => return Ok(None),
     };
 
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
-    paint.anti_alias = true;
-    pixmap.fill_path(&path, &paint, fill_rule, transform, None);
+    let fill = inherited_attr(node, "fill");
+    let mut fill_color = match fill {
+      Some(v) => match svg_parse_fill_color(v) {
+        Some(color) => color,
+        None => return Ok(None),
+      },
+      None => Rgba::new(0, 0, 0, 1.0),
+    };
+    fill_color = multiply_alpha(fill_color, opacity);
+    if let Some(opacity_raw) = inherited_attr(node, "fill-opacity") {
+      if let Ok(alpha) = opacity_raw.parse::<f32>() {
+        fill_color = multiply_alpha(fill_color, alpha);
+      }
+    }
+    if fill_color.a > 0.0 {
+      let mut paint = Paint::default();
+      paint.set_color_rgba8(
+        fill_color.r,
+        fill_color.g,
+        fill_color.b,
+        fill_color.alpha_u8(),
+      );
+      paint.anti_alias = true;
+      pixmap.fill_path(&path, &paint, fill_rule, transform, None);
+    }
+
+    let stroke = inherited_attr(node, "stroke");
+    let mut stroke_color = match stroke {
+      Some(v) => match svg_parse_fill_color(v) {
+        Some(color) => color,
+        None => return Ok(None),
+      },
+      None => Rgba::new(0, 0, 0, 0.0),
+    };
+    stroke_color = multiply_alpha(stroke_color, opacity);
+    if let Some(opacity_raw) = inherited_attr(node, "stroke-opacity") {
+      if let Ok(alpha) = opacity_raw.parse::<f32>() {
+        stroke_color = multiply_alpha(stroke_color, alpha);
+      }
+    }
+    if stroke_color.a > 0.0 {
+      let stroke_width = inherited_attr(node, "stroke-width")
+        .and_then(parse_svg_length_px)
+        .unwrap_or(1.0);
+      if stroke_width > 0.0 && stroke_width.is_finite() {
+        let line_cap = match inherited_attr(node, "stroke-linecap") {
+          None => LineCap::Butt,
+          Some(v) if v.eq_ignore_ascii_case("butt") => LineCap::Butt,
+          Some(v) if v.eq_ignore_ascii_case("round") => LineCap::Round,
+          Some(v) if v.eq_ignore_ascii_case("square") => LineCap::Square,
+          Some(_) => return Ok(None),
+        };
+        let line_join = match inherited_attr(node, "stroke-linejoin") {
+          None => LineJoin::Miter,
+          Some(v) if v.eq_ignore_ascii_case("miter") => LineJoin::Miter,
+          Some(v) if v.eq_ignore_ascii_case("round") => LineJoin::Round,
+          Some(v) if v.eq_ignore_ascii_case("bevel") => LineJoin::Bevel,
+          Some(_) => return Ok(None),
+        };
+        let miter_limit = match inherited_attr(node, "stroke-miterlimit") {
+          None => 4.0,
+          Some(v) => match v.parse::<f32>() {
+            Ok(val) if val.is_finite() && val > 0.0 => val,
+            _ => return Ok(None),
+          },
+        };
+
+        let mut dash = None;
+        if let Some(raw) = inherited_attr(node, "stroke-dasharray") {
+          let mut values = match parse_svg_dash_array(raw) {
+            Some(values) => values,
+            None => return Ok(None),
+          };
+          if !values.is_empty() {
+            if values.iter().all(|v| *v == 0.0) {
+              values.clear();
+            }
+          }
+          if !values.is_empty() {
+            if values.len() % 2 == 1 {
+              let extra = values.clone();
+              values.extend(extra);
+            }
+            let mut offset = 0.0;
+            if let Some(raw) = inherited_attr(node, "stroke-dashoffset") {
+              if let Some(v) = parse_svg_length_px(raw) {
+                offset = v;
+              }
+            }
+            dash = StrokeDash::new(values, offset);
+          }
+        }
+
+        let mut stroke = Stroke::default();
+        stroke.width = stroke_width;
+        stroke.line_cap = line_cap;
+        stroke.line_join = line_join;
+        stroke.miter_limit = miter_limit;
+        stroke.dash = dash;
+
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(
+          stroke_color.r,
+          stroke_color.g,
+          stroke_color.b,
+          stroke_color.alpha_u8(),
+        );
+        paint.anti_alias = true;
+        pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+      }
+    }
   }
 
   Ok(Some(pixmap))
@@ -4069,7 +4184,8 @@ impl ImageCache {
                     | Ok(Token::CurlyBracketBlock) => {
                       // Ignore nested blocks when parsing the url() argument; only first token
                       // matters for our best-effort scan.
-                      let _ = nested.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'i, ()>>(()));
+                      let _ =
+                        nested.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'i, ()>>(()));
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -4087,7 +4203,9 @@ impl ImageCache {
                 record(url.as_ref(), ResourceKind::Image)?;
               }
             }
-            Token::AtKeyword(ref name) if include_imports && name.eq_ignore_ascii_case("import") => {
+            Token::AtKeyword(ref name)
+              if include_imports && name.eq_ignore_ascii_case("import") =>
+            {
               // `@import` accepts either a quoted string or a `url(...)` token.
               loop {
                 let token = match parser.next_including_whitespace_and_comments() {
@@ -5371,13 +5489,10 @@ impl ImageCache {
   }
 
   fn format_from_content_type(content_type: Option<&str>) -> Option<ImageFormat> {
-    let mime = content_type?
-      .split(';')
-      .next()
-      .map(|ct| {
-        ct.trim_matches(|c: char| matches!(c, ' ' | '\t'))
-          .to_ascii_lowercase()
-      })?;
+    let mime = content_type?.split(';').next().map(|ct| {
+      ct.trim_matches(|c: char| matches!(c, ' ' | '\t'))
+        .to_ascii_lowercase()
+    })?;
     ImageFormat::from_mime_type(mime)
   }
 
@@ -6798,9 +6913,7 @@ mod tests {
     }
 
     fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
-      self
-        .calls
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+      self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
       let key = (req.referrer_url.map(|v| v.to_string()), req.referrer_policy);
       let bytes = self
         .variants
@@ -6869,14 +6982,18 @@ mod tests {
   #[test]
   fn svg_policy_blocks_external_href() {
     let cache = svg_policy_cache_same_origin_only("https://doc.test/");
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><image href="https://cross.test/a.png"/></svg>"#;
+    let svg =
+      r#"<svg xmlns="http://www.w3.org/2000/svg"><image href="https://cross.test/a.png"/></svg>"#;
     let err = cache
       .probe_svg_content(svg, "https://doc.test/icon.svg")
       .expect_err("expected SVG subresource policy failure");
     match err {
       Error::Image(ImageError::LoadFailed { url, reason }) => {
         assert_eq!(url, "https://cross.test/a.png");
-        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "{reason}"
+        );
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
@@ -6892,7 +7009,10 @@ mod tests {
     match err {
       Error::Image(ImageError::LoadFailed { url, reason }) => {
         assert_eq!(url, "https://cross.test/a.png");
-        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "{reason}"
+        );
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }
@@ -9205,6 +9325,72 @@ mod tests {
   }
 
   #[test]
+  fn simple_svg_fast_path_stroke_renders() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0 L10 10" stroke="red" stroke-width="2" fill="none"/></svg>"#;
+    let pixmap = try_render_simple_svg_pixmap(svg, 20, 20)
+      .expect("render should not error")
+      .expect("expected simple SVG to use fast-path");
+
+    let pixel = pixmap.pixel(10, 10).expect("diagonal pixel");
+    assert!(
+      pixel.alpha() > 0,
+      "expected diagonal stroke pixel to be non-transparent"
+    );
+    assert_eq!(pixel.green(), 0);
+    assert_eq!(pixel.blue(), 0);
+    assert!(
+      pixel.red().abs_diff(pixel.alpha()) <= 1,
+      "expected premultiplied red to match alpha (got rgba=({}, {}, {}, {}))",
+      pixel.red(),
+      pixel.green(),
+      pixel.blue(),
+      pixel.alpha()
+    );
+  }
+
+  #[test]
+  fn simple_svg_fast_path_dasharray_renders() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 5 L10 5" stroke="red" stroke-width="2" stroke-dasharray="2 2" fill="none"/></svg>"#;
+    let pixmap = try_render_simple_svg_pixmap(svg, 20, 20)
+      .expect("render should not error")
+      .expect("expected simple SVG to use fast-path");
+
+    let dash = pixmap.pixel(2, 10).expect("dash pixel");
+    assert!(
+      dash.alpha() > 0,
+      "expected dash pixel to be non-transparent"
+    );
+    assert_eq!(dash.green(), 0);
+    assert_eq!(dash.blue(), 0);
+    assert!(
+      dash.red().abs_diff(dash.alpha()) <= 1,
+      "expected premultiplied red to match alpha (got rgba=({}, {}, {}, {}))",
+      dash.red(),
+      dash.green(),
+      dash.blue(),
+      dash.alpha()
+    );
+
+    let gap = pixmap.pixel(6, 10).expect("gap pixel");
+    assert_eq!(
+      (gap.red(), gap.green(), gap.blue(), gap.alpha()),
+      (0, 0, 0, 0),
+      "expected dash gap pixel to be transparent"
+    );
+  }
+
+  #[test]
+  fn simple_svg_fast_path_rejects_filter_attribute() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0 L10 10" stroke="red" stroke-width="2" fill="none" filter="url(#f)"/></svg>"#;
+    assert!(
+      try_render_simple_svg_pixmap(svg, 20, 20)
+        .expect("render should not error")
+        .is_none(),
+      "expected SVG filter attribute to force slow-path fallback"
+    );
+  }
+
+  #[test]
   fn svg_width_height_set_intrinsic_size_and_ratio() {
     let cache = ImageCache::new();
     let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'></svg>";
@@ -9845,8 +10031,7 @@ mod tests {
     let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
 
     let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svg#icon"/></svg>"#;
-    let expanded =
-      inline_svg_use_references(main_svg, main_url, &fetcher, None).expect("expand");
+    let expanded = inline_svg_use_references(main_svg, main_url, &fetcher, None).expect("expand");
     assert_eq!(
       expanded.as_ref(),
       main_svg,
@@ -10409,7 +10594,10 @@ mod tests {
   fn image_format_from_content_type_does_not_trim_non_ascii_whitespace() {
     let nbsp = "\u{00A0}";
     let content_type = format!("{nbsp}image/png");
-    assert_eq!(ImageCache::format_from_content_type(Some(&content_type)), None);
+    assert_eq!(
+      ImageCache::format_from_content_type(Some(&content_type)),
+      None
+    );
     assert_eq!(
       ImageCache::format_from_content_type(Some("image/png")),
       Some(ImageFormat::Png)
