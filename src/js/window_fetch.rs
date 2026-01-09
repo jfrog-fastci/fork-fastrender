@@ -596,6 +596,24 @@ fn request_info_from_value(scope: &mut Scope<'_>, value: Value) -> Option<(u64, 
   Some((env_id, request_id))
 }
 
+fn request_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u64), VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Request: illegal invocation"));
+  };
+
+  let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
+  let request_val = get_data_prop(scope, obj, REQUEST_ID_KEY)?;
+  if !matches!(env_val, Value::Number(_)) || !matches!(request_val, Value::Number(_)) {
+    return Err(VmError::TypeError("Request: illegal invocation"));
+  }
+
+  let env_id =
+    number_to_u64(env_val).map_err(|_| VmError::TypeError("Request: illegal invocation"))?;
+  let request_id =
+    number_to_u64(request_val).map_err(|_| VmError::TypeError("Request: illegal invocation"))?;
+  Ok((env_id, request_id))
+}
+
 struct JsPromiseCapability {
   promise: Value,
   resolve: Value,
@@ -1253,8 +1271,7 @@ fn request_clone_native(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("Request: illegal invocation"));
   };
-  let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
-  let request_id = number_to_u64(get_data_prop(scope, obj, REQUEST_ID_KEY)?)?;
+  let (env_id, request_id) = request_info_from_this(scope, Value::Object(obj))?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
 
   let cloned = with_env_state(env_id, |state| {
@@ -2457,6 +2474,43 @@ mod tests {
     .expect_err("expected illegal invocation TypeError");
     assert!(
       matches!(err, VmError::TypeError("Headers: illegal invocation")),
+      "err={err}"
+    );
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn request_clone_rejects_non_request_object() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let mut scope = heap.scope();
+
+    let this_obj = scope.alloc_object()?;
+    let callee = scope.alloc_object()?;
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = request_clone_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      callee,
+      Value::Object(this_obj),
+      &[],
+    )
+    .expect_err("expected illegal invocation TypeError");
+    assert!(
+      matches!(err, VmError::TypeError("Request: illegal invocation")),
       "err={err}"
     );
 
