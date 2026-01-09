@@ -16448,6 +16448,53 @@ mod tests {
   }
 
   #[test]
+  fn distribute_justify_does_not_explode_fragments_on_long_cjk_text() {
+    let mut root_style = ComputedStyle::default();
+    root_style.text_align = TextAlign::Justify;
+    root_style.text_justify = TextJustify::Distribute;
+    root_style.white_space = WhiteSpace::PreWrap;
+    root_style.text_align_last = TextAlignLast::Justify;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.white_space = WhiteSpace::PreWrap;
+    // Keep the run short enough to fit on one line so the assertion covers a single line fragment.
+    text_style.font_size = 0.5;
+
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        Arc::new(text_style),
+        "漢".repeat(1000),
+      )],
+    );
+    let constraints = LayoutConstraints::definite_width(800.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    let first_line = fragment.children.first().expect("first line");
+
+    let count = first_line.children.len();
+    assert!(
+      count <= 4,
+      "distribute justify should not split long CJK into per-cluster fragments; count={count}"
+    );
+
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    for child in &first_line.children {
+      min_x = min_x.min(child.bounds.min_x());
+      max_x = max_x.max(child.bounds.max_x());
+    }
+    let span = max_x - min_x;
+    assert!(
+      (span - first_line.bounds.width()).abs() < 1.0,
+      "justified line should fill its line box (span={span:.2} box={:.2})",
+      first_line.bounds.width()
+    );
+  }
+
+  #[test]
   fn text_justify_auto_uses_distribute_for_mixed_scripts() {
     let mut root_style = ComputedStyle::default();
     root_style.text_align = TextAlign::Justify;
