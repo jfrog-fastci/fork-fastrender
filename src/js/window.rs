@@ -4,7 +4,8 @@ use crate::js::host_document::DocumentHostState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmHost};
 use crate::js::{
-  install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
+  install_window_animation_frame_bindings, install_window_timers_bindings, DomHost, EventLoop,
+  RunLimits, RunUntilIdleOutcome, TaskSource,
 };
 
 /// Host-owned "window" state for executing scripts against a single DOM document.
@@ -91,6 +92,8 @@ impl WindowHostState {
     {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       install_window_timers_bindings::<WindowHostState>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+      install_window_animation_frame_bindings::<WindowHostState>(vm, realm, heap)
         .map_err(|e| Error::Other(e.to_string()))?;
     }
 

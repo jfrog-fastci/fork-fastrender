@@ -303,3 +303,289 @@ pub fn install_window_animation_frame_bindings<Host: WindowRealmHost + 'static>(
 
   Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::error::{Error, Result as RenderResult};
+  use crate::js::clock::VirtualClock;
+  use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
+  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use std::sync::Arc;
+  use std::time::Duration;
+  use vm_js::{PropertyDescriptor, PropertyKey, PropertyKind};
+
+  const CALLBACK_GLOBAL_KEY: &str = "__test_global";
+
+  struct Host {
+    window: WindowRealm,
+  }
+
+  impl Host {
+    fn new() -> Self {
+      let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
+      Self { window }
+    }
+  }
+
+  impl WindowRealmHost for Host {
+    fn window_realm(&mut self) -> &mut WindowRealm {
+      &mut self.window
+    }
+  }
+
+  fn data_desc(value: Value) -> PropertyDescriptor {
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    }
+  }
+
+  fn get_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str) -> Value {
+    let key_s = scope.alloc_string(name).unwrap();
+    let key = PropertyKey::from_string(key_s);
+    scope
+      .heap()
+      .object_get_own_data_property_value(obj, &key)
+      .unwrap()
+      .unwrap_or(Value::Undefined)
+  }
+
+  fn set_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str, value: Value) {
+    let key_s = scope.alloc_string(name).unwrap();
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push root key string");
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(obj, key, data_desc(value)).unwrap();
+  }
+
+  fn init_log(scope: &mut Scope<'_>, global: vm_js::GcObject) {
+    let log_obj = scope.alloc_object().unwrap();
+    scope
+      .push_root(Value::Object(log_obj))
+      .expect("push root log object");
+    set_prop(scope, global, "__log_obj", Value::Object(log_obj));
+    set_prop(scope, global, "__log_len", Value::Number(0.0));
+  }
+
+  fn push_log(scope: &mut Scope<'_>, global: vm_js::GcObject, label: &str) {
+    let log_obj = match get_prop(scope, global, "__log_obj") {
+      Value::Object(o) => o,
+      _ => panic!("missing __log_obj"),
+    };
+    let len = match get_prop(scope, global, "__log_len") {
+      Value::Number(n) => n as u32,
+      _ => panic!("missing __log_len"),
+    };
+    let key_s = scope.alloc_string(&len.to_string()).unwrap();
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push root log key");
+    let key = PropertyKey::from_string(key_s);
+    let label_s = scope.alloc_string(label).unwrap();
+    scope
+      .push_root(Value::String(label_s))
+      .expect("push root log label");
+    scope
+      .define_property(log_obj, key, data_desc(Value::String(label_s)))
+      .unwrap();
+    set_prop(scope, global, "__log_len", Value::Number((len + 1) as f64));
+  }
+
+  fn read_log(heap: &mut Heap, realm: &vm_js::Realm) -> Vec<String> {
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope
+      .push_root(Value::Object(global))
+      .expect("push root global");
+    let log_obj = match get_prop(&mut scope, global, "__log_obj") {
+      Value::Object(o) => o,
+      _ => panic!("missing __log_obj"),
+    };
+    let len = match get_prop(&mut scope, global, "__log_len") {
+      Value::Number(n) => n as u32,
+      _ => panic!("missing __log_len"),
+    };
+    let mut out = Vec::new();
+    for i in 0..len {
+      let key_s = scope.alloc_string(&i.to_string()).unwrap();
+      let key = PropertyKey::from_string(key_s);
+      let v = scope
+        .heap()
+        .object_get_own_data_property_value(log_obj, &key)
+        .unwrap()
+        .unwrap_or(Value::Undefined);
+      let Value::String(s) = v else {
+        panic!("expected string log entry");
+      };
+      out.push(scope.heap().get_string(s).unwrap().to_utf8_lossy());
+    }
+    out
+  }
+
+  fn make_callback(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    realm: &vm_js::Realm,
+    global: vm_js::GcObject,
+    name: &str,
+    cb: vm_js::NativeCall,
+  ) -> vm_js::GcObject {
+    let call_id = vm.register_native_call(cb).unwrap();
+    let name_s = scope.alloc_string(name).unwrap();
+    scope.push_root(Value::String(name_s)).unwrap();
+    let func = scope.alloc_native_function(call_id, None, name_s, 1).unwrap();
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
+      .unwrap();
+    scope.push_root(Value::Object(func)).unwrap();
+
+    set_prop(scope, func, CALLBACK_GLOBAL_KEY, Value::Object(global));
+    func
+  }
+
+  fn cb_raf(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHostHooks,
+    callee: vm_js::GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> VmResult<Value> {
+    let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+      return Ok(Value::Undefined);
+    };
+    set_prop(
+      scope,
+      global,
+      "__raf_this_is_global",
+      Value::Bool(this == Value::Object(global)),
+    );
+    let ts = args.get(0).copied().unwrap_or(Value::Undefined);
+    set_prop(scope, global, "__raf_ts", ts);
+    push_log(scope, global, "raf");
+    Ok(Value::Undefined)
+  }
+
+  #[test]
+  fn request_animation_frame_runs_after_task_and_receives_timestamp() -> RenderResult<()> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(10));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      init_log(&mut scope, global);
+      set_prop(&mut scope, global, "__raf_ts", Value::Undefined);
+      set_prop(&mut scope, global, "__raf_this_is_global", Value::Bool(false));
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      with_event_loop(event_loop, || -> RenderResult<()> {
+        let mut scope = heap.scope();
+        let raf = get_prop(&mut scope, global, "requestAnimationFrame");
+        let cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf);
+        vm.call(&mut scope, raf, Value::Object(global), &[Value::Object(cb)])
+          .map_err(|e| Error::Other(e.to_string()))?;
+        push_log(&mut scope, global, "sync");
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert_eq!(log, vec!["sync"]);
+
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      crate::js::RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+
+    let (raf_ts, raf_this_is_global) = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let ts = get_prop(&mut scope, global, "__raf_ts");
+      let this_ok = get_prop(&mut scope, global, "__raf_this_is_global");
+      (ts, this_ok)
+    };
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+
+    assert_eq!(log, vec!["sync", "raf"]);
+    assert_eq!(raf_ts, Value::Number(10.0));
+    assert_eq!(raf_this_is_global, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn cancel_animation_frame_prevents_callback() -> RenderResult<()> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(1));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      init_log(&mut scope, global);
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      with_event_loop(event_loop, || -> RenderResult<()> {
+        let mut scope = heap.scope();
+        let raf = get_prop(&mut scope, global, "requestAnimationFrame");
+        let cancel = get_prop(&mut scope, global, "cancelAnimationFrame");
+        let cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf);
+        let id = vm
+          .call(&mut scope, raf, Value::Object(global), &[Value::Object(cb)])
+          .map_err(|e| Error::Other(e.to_string()))?;
+        vm.call(&mut scope, cancel, Value::Object(global), &[id])
+          .map_err(|e| Error::Other(e.to_string()))?;
+        push_log(&mut scope, global, "sync");
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(event_loop.run_animation_frame(&mut host)?, crate::js::RunAnimationFrameOutcome::Idle);
+
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert_eq!(log, vec!["sync"]);
+    Ok(())
+  }
+}
