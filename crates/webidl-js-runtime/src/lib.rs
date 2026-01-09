@@ -4,8 +4,9 @@
 //! operations. This crate defines a small runtime trait boundary ([`JsRuntime`]/[`WebIdlJsRuntime`])
 //! and provides a concrete implementation backed by `ecma-rs`'s `vm-js` value types.
 //!
-//! Note: core WebIDL types like [`InterfaceId`], [`WebIdlHooks`], and [`WebIdlLimits`] are re-exported
-//! from `engines/ecma-rs/webidl` so FastRender does not maintain duplicated definitions across crates.
+//! Note: core WebIDL types like [`InterfaceId`], [`WebIdlHooks`], [`WebIdlLimits`], and
+//! [`JsOwnPropertyDescriptor`] are re-exported from `engines/ecma-rs/webidl` so FastRender does not
+//! maintain duplicated definitions across crates.
 
 pub mod conversions;
 pub mod ecma_runtime;
@@ -24,3 +25,7 @@ pub use runtime::{
   JsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits, NativeHostFunction, WebIdlBindingsRuntime,
 };
 pub use to_js::{to_js, to_js_with_limits, ToJsLimits};
+
+// Re-export the canonical runtime traits from `engines/ecma-rs/webidl` under explicit names so
+// callers can migrate without conflicting with this crate's legacy runtime traits.
+pub use webidl::{JsRuntime as EcmaJsRuntime, WebIdlJsRuntime as EcmaWebIdlJsRuntime};
