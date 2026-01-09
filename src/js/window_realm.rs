@@ -7,6 +7,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use url::Url;
 use vm_js::{
   GcObject, Heap, HeapLimits, JsRuntime as VmJsRuntime, PropertyDescriptor, PropertyKey,
   PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -767,6 +768,13 @@ fn init_window_globals(
   scope.push_root(Value::String(url_s))?;
   let url_v = Value::String(url_s);
 
+  let origin_str = Url::parse(&config.document_url)
+    .map(|url| url.origin().ascii_serialization())
+    .unwrap_or_else(|_| "null".to_string());
+  let origin_s = scope.alloc_string(&origin_str)?;
+  scope.push_root(Value::String(origin_s))?;
+  let origin_v = Value::String(origin_s);
+
   let location_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(location_obj))?;
   // Keep the document URL on the location object so the href getter can access it.
@@ -800,6 +808,20 @@ fn init_window_globals(
       kind: PropertyKind::Accessor {
         get: Value::Object(href_get_func),
         set: Value::Object(href_set_func),
+      },
+    },
+  )?;
+
+  let origin_key = alloc_key(&mut scope, "origin")?;
+  scope.define_property(
+    location_obj,
+    origin_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: origin_v,
+        writable: false,
       },
     },
   )?;
@@ -1075,6 +1097,12 @@ mod tests {
     let href_key = PropertyKey::from_string(href_key_s);
     let href = vm.get(&mut scope, location_obj, href_key)?;
     assert_eq!(get_string(scope.heap(), href), url);
+
+    let origin_key_s = scope.alloc_string("origin")?;
+    scope.push_root(Value::String(origin_key_s))?;
+    let origin_key = PropertyKey::from_string(origin_key_s);
+    let origin = vm.get(&mut scope, location_obj, origin_key)?;
+    assert_eq!(get_string(scope.heap(), origin), "https://example.com");
 
     let document = get_prop(&mut scope, global, "document");
     let Value::Object(document_obj) = document else {
