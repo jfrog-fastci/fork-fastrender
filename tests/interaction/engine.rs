@@ -1096,6 +1096,75 @@ fn label_click_activates_associated_checkbox() {
 }
 
 #[test]
+fn label_for_does_not_cross_shadow_root_boundary() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("input", vec![("id", "cb"), ("type", "checkbox")], vec![]),
+        el(
+          "div",
+          vec![("id", "host")],
+          vec![DomNode {
+            node_type: DomNodeType::ShadowRoot {
+              mode: ShadowRootMode::Open,
+              delegates_focus: false,
+            },
+            children: vec![el("label", vec![("id", "lbl"), ("for", "cb")], vec![])],
+          }],
+        ),
+      ],
+    )],
+  )]);
+
+  let label_dom_id = node_id(&dom, "lbl");
+
+  let mut label_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  label_box.styled_node_id = Some(label_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![label_box],
+  ));
+
+  let label_box_id = find_box_id_for_styled_node(&box_tree, label_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 40.0, 20.0),
+      label_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+  let (_changed, _action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://x/",
+    "https://x/",
+  );
+
+  assert!(
+    !has_attr(&dom, "cb", "checked"),
+    "label `for` must not match an element outside the label's tree root (shadow root boundary)"
+  );
+}
+
+#[test]
 fn radio_click_checks_and_focuses() {
   let mut dom = doc(vec![el(
     "html",
@@ -3695,7 +3764,6 @@ fn listbox_select_click_in_blank_area_is_noop() {
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o1_dom_id,
       },
       SelectItem::Option {
         node_id: o2_dom_id,
@@ -3704,7 +3772,6 @@ fn listbox_select_click_in_blank_area_is_noop() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o2_dom_id,
       },
     ]),
     selected: vec![0],

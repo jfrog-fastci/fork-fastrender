@@ -599,22 +599,6 @@ fn resolve_url(base_url: &str, href: &str) -> Option<String> {
   (!absolute.scheme().eq_ignore_ascii_case("javascript")).then(|| absolute.to_string())
 }
 
-fn find_element_by_id_attr(index: &DomIndexMut, html_id: &str) -> Option<usize> {
-  for (node_id, ptr) in index.id_to_node.iter().copied().enumerate().skip(1) {
-    if ptr.is_null() {
-      continue;
-    }
-    let node = unsafe { &*ptr };
-    if !node.is_element() {
-      continue;
-    }
-    if node.get_attribute_ref("id") == Some(html_id) {
-      return Some(node_id);
-    }
-  }
-  None
-}
-
 fn find_label_associated_control(index: &DomIndexMut, label_id: usize) -> Option<usize> {
   let label = index.node(label_id)?;
   if !is_label(label) {
@@ -626,8 +610,10 @@ fn find_label_associated_control(index: &DomIndexMut, label_id: usize) -> Option
     .map(trim_ascii_whitespace)
     .filter(|v| !v.is_empty())
   {
-    // Spec-ish: `for` matches element IDs in the same tree.
-    return find_element_by_id_attr(index, for_attr);
+    // Spec-ish: `for` matches element IDs in the same tree (tree-root boundary, i.e. the document
+    // or current shadow root).
+    let tree_root = tree_root_boundary_id(index, label_id)?;
+    return find_element_by_id_attr_in_tree(index, tree_root, for_attr);
   }
 
   // Fallback: first descendant control.
