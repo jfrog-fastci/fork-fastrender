@@ -1549,6 +1549,7 @@ impl App {
 
     if !actions.is_empty() {
       self.cancel_select_dropdown();
+      self.cancel_pointer_capture();
     }
 
     for action in actions {
