@@ -145,7 +145,7 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     });
 
     if let Err(err) = result {
-      if let Some(mut job) = job_cell.borrow_mut().take() {
+      if let Some(job) = job_cell.borrow_mut().take() {
         self.pending_discard.push((job, realm));
       }
       self.enqueue_error = Some(err);
@@ -177,7 +177,7 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::event_loop::{RunUntilIdleOutcome, TaskSource};
+  use crate::js::event_loop::{QueueLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::RunLimits;
   use std::sync::{Arc, Mutex};
   use vm_js::VmHostHooks as _;
@@ -247,6 +247,68 @@ mod tests {
       &*log.lock().unwrap(),
       &["task1", "job1", "job2", "task2"]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_discard_persistent_roots_when_enqueue_fails() -> crate::Result<()> {
+    struct Host {
+      vm: vm_js::Vm,
+      heap: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
+      }
+    }
+
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+    let mut host = Host {
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap: vm_js::Heap::new(limits),
+    };
+
+    // Force microtask queueing to fail.
+    let mut event_loop = EventLoop::<Host>::new();
+    let mut queue_limits = QueueLimits::unbounded();
+    queue_limits.max_pending_microtasks = 0;
+    event_loop.set_queue_limits(queue_limits);
+
+    let mut hooks = VmJsHostHooks::new(&mut event_loop);
+
+    let (root1, job1) = {
+      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Ok(()));
+      let mut ctx = VmJsJobContext { host: &mut host, realm: None };
+      let root = job.add_root(&mut ctx, vm_js::Value::Null);
+      (root, job)
+    };
+    hooks.host_enqueue_promise_job(job1, None);
+    assert_eq!(host.heap.get_root(root1), Some(vm_js::Value::Null));
+
+    // After a queueing error, additional jobs should be accepted but discarded during `finish`.
+    let (root2, job2) = {
+      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Ok(()));
+      let mut ctx = VmJsJobContext { host: &mut host, realm: None };
+      let root = job.add_root(&mut ctx, vm_js::Value::Undefined);
+      (root, job)
+    };
+    hooks.host_enqueue_promise_job(job2, None);
+    assert_eq!(host.heap.get_root(root2), Some(vm_js::Value::Undefined));
+
+    let err = hooks.finish(&mut host).expect("expected enqueue error");
+    let msg = match err {
+      Error::Other(msg) => msg,
+      other => {
+        return Err(Error::Other(format!(
+          "expected Error::Other, got {other:?}"
+        )));
+      }
+    };
+    assert!(msg.contains("max pending microtasks"), "msg={msg}");
+
+    assert_eq!(host.heap.get_root(root1), None);
+    assert_eq!(host.heap.get_root(root2), None);
     Ok(())
   }
 }
