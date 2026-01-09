@@ -7,11 +7,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, GcString, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
+  Realm, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
 enum DomKind {
   Node = 0,
   Element = 1,
@@ -19,22 +20,17 @@ enum DomKind {
 }
 
 impl DomKind {
-  fn from_number(n: f64) -> Option<Self> {
-    if !n.is_finite() || n.fract() != 0.0 {
-      return None;
-    }
-    match n as i32 {
+  fn from_u64(n: u64) -> Option<Self> {
+    match n {
       0 => Some(Self::Node),
       1 => Some(Self::Element),
       2 => Some(Self::Document),
       _ => None,
     }
   }
-
-  fn as_number(self) -> f64 {
-    self as u8 as f64
-  }
 }
+
+const DOM_TOKEN_LIST_HOST_KIND: u64 = 3;
 
 fn dom_kind_for_node_kind(kind: &NodeKind) -> DomKind {
   match kind {
@@ -50,12 +46,6 @@ fn data_desc(value: Value, writable: bool, enumerable: bool, configurable: bool)
     configurable,
     kind: PropertyKind::Data { value, writable },
   }
-}
-
-fn hidden_desc(value: Value) -> PropertyDescriptor {
-  // Hidden metadata properties should not be observable via enumeration and should not be
-  // user-mutable.
-  data_desc(value, /* writable */ false, /* enumerable */ false, /* configurable */ false)
 }
 
 fn method_desc(value: Value) -> PropertyDescriptor {
@@ -242,10 +232,8 @@ pub struct DomHost {
   class_list_wrappers: HashMap<NodeId, WeakGcObject>,
   live_collections: Vec<LiveCollection>,
 
-  // Hidden metadata keys stored on each wrapper.
-  sym_dom_kind: GcSymbol,
-  sym_node_id: GcSymbol,
-  sym_token_list_element_id: GcSymbol,
+  // Persistent roots for cached prototype objects. `DomHost` isn't traced by the GC.
+  prototype_roots: Vec<RootId>,
 
   // Cached prototypes.
   proto_node: GcObject,
@@ -359,44 +347,20 @@ fn wrapper_meta<'a>(
     _ => return throw_type_error(scope, host, "receiver is not an object"),
   };
 
-  let kind_val = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &PropertyKey::from_symbol(host.sym_dom_kind))?;
-  let Some(kind_val) = kind_val else {
+  let slots = scope.heap().object_host_slots(obj)?;
+  let Some(slots) = slots else {
     return throw_type_error(scope, host, "receiver is not a DOM wrapper object");
   };
 
-  let node_id_val = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &PropertyKey::from_symbol(host.sym_node_id))?;
-  let Some(node_id_val) = node_id_val else {
+  let Some(kind) = DomKind::from_u64(slots.b) else {
     return throw_type_error(scope, host, "receiver is not a DOM wrapper object");
   };
 
-  let kind = match kind_val {
-    Value::Number(n) => {
-      let Some(kind) = DomKind::from_number(n) else {
-        return throw_type_error(scope, host, "receiver is not a DOM wrapper object");
-      };
-      kind
-    }
-    _ => return throw_type_error(scope, host, "receiver is not a DOM wrapper object"),
-  };
-
-  let node_idx = match node_id_val {
-    Value::Number(n) => {
-      if !n.is_finite() || n.fract() != 0.0 || n < 0.0 {
-        return throw_type_error(scope, host, "invalid node id on wrapper");
-      }
-      // NodeId indices are usize; DOM trees are far smaller than 2^53 in practice, but reject
-      // values that cannot be represented exactly.
-      if n > (usize::MAX as f64) {
-        return throw_type_error(scope, host, "invalid node id on wrapper");
-      }
-      n as usize
-    }
-    _ => return throw_type_error(scope, host, "receiver is not a DOM wrapper object"),
-  };
+  let node_idx_u64 = slots.a;
+  if node_idx_u64 > (usize::MAX as u64) {
+    return throw_type_error(scope, host, "invalid node id on wrapper");
+  }
+  let node_idx = node_idx_u64 as usize;
 
   let node_id = NodeId::from_index(node_idx);
   if node_id.index() >= host.dom.borrow().nodes_len() {
@@ -472,27 +436,21 @@ fn require_this_dom_token_list<'a>(
     _ => return throw_type_error(scope, host, "receiver is not an object"),
   };
 
-  let element_id_val = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &PropertyKey::from_symbol(host.sym_token_list_element_id))?;
-  let Some(element_id_val) = element_id_val else {
+  let slots = scope.heap().object_host_slots(obj)?;
+  let Some(slots) = slots else {
     return throw_type_error(scope, host, "DOMTokenList method called on incompatible receiver");
   };
 
-  let node_idx = match element_id_val {
-    Value::Number(n) => {
-      if !n.is_finite() || n.fract() != 0.0 || n < 0.0 {
-        return throw_type_error(scope, host, "invalid node id on DOMTokenList");
-      }
-      if n > (usize::MAX as f64) {
-        return throw_type_error(scope, host, "invalid node id on DOMTokenList");
-      }
-      n as usize
-    }
-    _ => return throw_type_error(scope, host, "invalid node id on DOMTokenList"),
-  };
+  if slots.b != DOM_TOKEN_LIST_HOST_KIND {
+    return throw_type_error(scope, host, "DOMTokenList method called on incompatible receiver");
+  }
 
-  let node_id = NodeId::from_index(node_idx);
+  let node_idx_u64 = slots.a;
+  if node_idx_u64 > (usize::MAX as u64) {
+    return throw_type_error(scope, host, "invalid node id on DOMTokenList");
+  }
+
+  let node_id = NodeId::from_index(node_idx_u64 as usize);
   if node_id.index() >= host.dom.borrow().nodes_len() {
     return throw_type_error(scope, host, "DOMTokenList refers to an unknown DOM node");
   }
@@ -598,15 +556,12 @@ fn wrap_node<'a>(
   };
   scope.heap_mut().object_set_prototype(wrapper, Some(proto))?;
 
-  scope.define_property(
+  scope.heap_mut().object_set_host_slots(
     wrapper,
-    PropertyKey::from_symbol(host.sym_dom_kind),
-    hidden_desc(Value::Number(kind.as_number())),
-  )?;
-  scope.define_property(
-    wrapper,
-    PropertyKey::from_symbol(host.sym_node_id),
-    hidden_desc(Value::Number(node_id.index() as f64)),
+    HostSlots {
+      a: node_id.index() as u64,
+      b: kind as u64,
+    },
   )?;
 
   host.node_wrappers.insert(node_id, WeakGcObject::from(wrapper));
@@ -2064,10 +2019,12 @@ fn dom_element_class_list_getter(
     .heap_mut()
     .object_set_prototype(wrapper, Some(host.proto_dom_token_list))?;
 
-  scope.define_property(
+  scope.heap_mut().object_set_host_slots(
     wrapper,
-    PropertyKey::from_symbol(host.sym_token_list_element_id),
-    hidden_desc(Value::Number(element_id.index() as f64)),
+    HostSlots {
+      a: element_id.index() as u64,
+      b: DOM_TOKEN_LIST_HOST_KIND,
+    },
   )?;
 
   host
@@ -2234,14 +2191,6 @@ pub fn install_dom_bindings_with_limits(
 ) -> Result<(), VmError> {
   let mut scope = heap.scope();
 
-  // Allocate hidden symbol keys first and root them until the document wrapper exists.
-  let sym_dom_kind = scope.alloc_symbol(Some("fastrender.dom.kind"))?;
-  let sym_node_id = scope.alloc_symbol(Some("fastrender.dom.nodeId"))?;
-  let sym_token_list_element_id = scope.alloc_symbol(Some("fastrender.dom.tokenList.elementId"))?;
-  scope.push_root(Value::Symbol(sym_dom_kind))?;
-  scope.push_root(Value::Symbol(sym_node_id))?;
-  scope.push_root(Value::Symbol(sym_token_list_element_id))?;
-
   // Prototype objects.
   let proto_node = scope.alloc_object()?;
   scope.push_root(Value::Object(proto_node))?;
@@ -2273,46 +2222,6 @@ pub fn install_dom_bindings_with_limits(
   scope.heap_mut().object_set_prototype(
     proto_html_collection,
     Some(realm.intrinsics().array_prototype()),
-  )?;
-
-  // Ensure `proto_element` stays alive even before any Element wrappers exist. Without this, a GC
-  // cycle between `install_dom_bindings` and the first `createElement` could collect `proto_element`
-  // because `DomHost` is not traced by the GC.
-  let sym_proto_element_root = scope.alloc_symbol(Some("fastrender.dom.proto_element_root"))?;
-  scope.push_root(Value::Symbol(sym_proto_element_root))?;
-  scope.define_property(
-    proto_node,
-    PropertyKey::from_symbol(sym_proto_element_root),
-     hidden_desc(Value::Object(proto_element)),
-    )?;
-
-  // Ensure `proto_dom_token_list` and `sym_token_list_element_id` survive even if no script has
-  // accessed `Element.classList` yet.
-  let sym_proto_dom_token_list_root =
-    scope.alloc_symbol(Some("fastrender.dom.proto_dom_token_list_root"))?;
-  scope.push_root(Value::Symbol(sym_proto_dom_token_list_root))?;
-  scope.define_property(
-    proto_element,
-    PropertyKey::from_symbol(sym_proto_dom_token_list_root),
-    hidden_desc(Value::Object(proto_dom_token_list)),
-  )?;
-  // Root the element-id symbol by using it as a property key on a rooted object. (We only look for
-  // the internal slot on the wrapper object itself, so this does not affect semantics.)
-  scope.define_property(
-    proto_dom_token_list,
-    PropertyKey::from_symbol(sym_token_list_element_id),
-    hidden_desc(Value::Null),
-  )?;
-
-  // Ensure the HTMLCollection-ish prototype survives even if no script has called a `getElementsBy*`
-  // method yet.
-  let sym_proto_html_collection_root =
-    scope.alloc_symbol(Some("fastrender.dom.proto_html_collection_root"))?;
-  scope.push_root(Value::Symbol(sym_proto_html_collection_root))?;
-  scope.define_property(
-    proto_node,
-    PropertyKey::from_symbol(sym_proto_html_collection_root),
-    hidden_desc(Value::Object(proto_html_collection)),
   )?;
 
   // Register native call handlers.
@@ -2502,9 +2411,7 @@ pub fn install_dom_bindings_with_limits(
     node_wrappers: HashMap::new(),
     class_list_wrappers: HashMap::new(),
     live_collections: Vec::new(),
-    sym_dom_kind,
-    sym_node_id,
-    sym_token_list_element_id,
+    prototype_roots: Vec::new(),
     proto_node,
     proto_element,
     proto_document,
@@ -2531,6 +2438,15 @@ pub fn install_dom_bindings_with_limits(
       /* configurable */ false,
     ),
   )?;
+
+  // Root prototype objects so `DomHost` can safely store handles without being GC-traced.
+  host.prototype_roots = vec![
+    scope.heap_mut().add_root(Value::Object(proto_node))?,
+    scope.heap_mut().add_root(Value::Object(proto_element))?,
+    scope.heap_mut().add_root(Value::Object(proto_document))?,
+    scope.heap_mut().add_root(Value::Object(proto_dom_token_list))?,
+    scope.heap_mut().add_root(Value::Object(proto_html_collection))?,
+  ];
 
   vm.set_user_data(host);
 
