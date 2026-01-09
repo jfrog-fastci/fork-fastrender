@@ -1017,7 +1017,13 @@ fn collect_row_flex_lines(
   let mut lines: Vec<FlexLineRange> = Vec::new();
   let mut line_for_child: Vec<Option<usize>> = vec![None; node.children.len()];
 
-  let mut prev_main_start: Option<f32> = None;
+  // Infer line breaks from the main-axis positions produced by flex layout.
+  //
+  // Flex items in a line are laid out in (visual) order with non-decreasing main-axis starts. When
+  // wrapping, the first item of the next line resets toward the start edge of the container. Track
+  // the *end* of the previous item rather than just its start so we detect wraps even when both
+  // lines begin at the same main start (e.g. when each line contains a single full-width item).
+  let mut prev_main_end: Option<f32> = None;
   let mut current_line_index = 0usize;
   let mut current_start: f32 = f32::INFINITY;
   let mut current_end: f32 = f32::NEG_INFINITY;
@@ -1034,9 +1040,13 @@ fn collect_row_flex_lines(
     if !main_start.is_finite() {
       main_start = 0.0;
     }
+    let mut main_end = main_start + child_inline_size;
+    if !main_end.is_finite() {
+      main_end = main_start;
+    }
 
-    if let Some(prev) = prev_main_start {
-      if main_start + FLEX_LINE_WRAP_EPSILON < prev {
+    if let Some(prev_end) = prev_main_end {
+      if main_start + FLEX_LINE_WRAP_EPSILON < prev_end {
         if current_end > current_start + BREAK_EPSILON {
           lines.push(FlexLineRange {
             start: current_start,
@@ -1048,7 +1058,7 @@ fn collect_row_flex_lines(
         current_end = f32::NEG_INFINITY;
       }
     }
-    prev_main_start = Some(main_start);
+    prev_main_end = Some(main_end);
 
     let (child_abs_start, child_abs_end) =
       axis.flow_range(abs_start, node_block_size, &child.bounds);

@@ -458,3 +458,82 @@ fn flex_pagination_forced_break_inside_item_does_not_force_siblings() {
     );
   }
 }
+
+#[test]
+fn flex_pagination_does_not_split_row_gap_across_pages() {
+  const EPSILON: f32 = 0.1;
+
+  let mut flex_style = ComputedStyle::default();
+  flex_style.display = Display::Flex;
+  flex_style.flex_direction = FlexDirection::Row;
+  flex_style.flex_wrap = FlexWrap::Wrap;
+  flex_style.align_items = AlignItems::Start;
+  flex_style.width = Some(Length::px(100.0));
+  flex_style.width_keyword = None;
+  flex_style.grid_row_gap = Length::px(10.0);
+  flex_style.grid_row_gap_is_normal = false;
+  flex_style.grid_column_gap = Length::px(0.0);
+  flex_style.grid_column_gap_is_normal = false;
+  let flex_style = Arc::new(flex_style);
+
+  let item_a = BoxNode::new_block(
+    flex_item_style(100.0, 30.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+  let item_b = BoxNode::new_block(
+    flex_item_style(100.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let flex = BoxNode::new_block(flex_style, FormattingContextType::Flex, vec![item_a, item_b]);
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![flex],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let item_b_id = box_tree.root.children[0].children[1].id;
+
+  // Page height ends 5px into the row-gap (30px line + 5px into the 10px gutter). The break should
+  // snap to the end edge of the first line so the full 10px gap is preserved on the next page.
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 35.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+
+  assert!(
+    tree.additional_fragments.len() >= 1,
+    "flex container should span at least two pages"
+  );
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+
+  assert!(
+    fragments_with_id(first_page, item_b_id).is_empty(),
+    "expected the second line to appear only on the second page"
+  );
+  assert_eq!(
+    fragments_with_id(second_page, item_b_id).len(),
+    1,
+    "expected the second line to appear exactly once on the second page"
+  );
+
+  let offset = first_fragment_offset_in_page(second_page, item_b_id)
+    .expect("expected to find second line fragment on page 2");
+  assert!(
+    (offset.y - 10.0).abs() < EPSILON,
+    "expected the full 10px row-gap to be preserved on page 2, got y={}",
+    offset.y
+  );
+
+  let pages = paginated_pages(&tree);
+  let count: usize = pages
+    .iter()
+    .map(|page| fragments_with_id(page, item_b_id).len())
+    .sum();
+  assert_eq!(
+    count, 1,
+    "expected box id {item_b_id} to appear exactly once total across all pages"
+  );
+}
