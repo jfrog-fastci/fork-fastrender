@@ -141,3 +141,33 @@ fn suite_events_tests_pass() {
   // We intentionally skip the DOM-dependent `events/eventtarget.window.js` test.
   assert_eq!(report.summary.skipped, 1, "expected one skipped test");
 }
+
+#[test]
+fn suite_dom_tests_pass() {
+  let corpus_root = corpus_root();
+
+  let report = run_suite(&SuiteConfig {
+    wpt_root: corpus_root.clone(),
+    manifest_path: corpus_root.join("expectations.toml"),
+    shard: None,
+    filter: Some("dom/**".to_string()),
+    timeout: Duration::from_millis(500),
+    long_timeout: Duration::from_secs(2),
+    fail_on: FailOn::New,
+    backend: BackendSelection::VmJs,
+  })
+  .expect("run suite");
+
+  assert_eq!(report.summary.failed, 0, "dom suite should not fail");
+  assert_eq!(report.summary.timed_out, 0, "dom suite should not time out");
+  assert_eq!(report.summary.errored, 0, "dom suite should not error");
+  assert_eq!(report.summary.skipped, 0, "dom suite should not skip");
+  assert_eq!(
+    report.summary.total, report.summary.passed,
+    "all dom tests should pass: {report:#?}"
+  );
+  assert!(
+    report.summary.mismatches.is_none(),
+    "dom suite should have no mismatches: {report:#?}"
+  );
+}
