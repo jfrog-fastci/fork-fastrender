@@ -9542,20 +9542,58 @@ impl DisplayListRenderer {
 
     // Preserve-3d scenes still respect stacking-context compositing/sampling boundaries:
     //
-    // - `is_isolated` (Compositing & Blending): render the full scene into a transparent group
-    //   surface before compositing it into the parent.
-    // - `establishes_backdrop_root` (Filter Effects Level 2): scope descendant `backdrop-filter`
-    //   sampling by forcing a canvas layer boundary when the preserve-3d subtree actually contains
-    //   backdrop-sampling effects (so common triggers like `will-change` don't allocate extra
-    //   layers unnecessarily).
-    let root_backdrop_root_layer = !node.context.is_root
-      && node.context.establishes_backdrop_root
-      && node.context.has_backdrop_sensitive_descendants;
-    let needs_root_layer = node.context.is_isolated
-      || root_backdrop_root_layer
-      || root_opacity < 1.0 - f32::EPSILON
-      || !matches!(root_mix_blend_mode, BlendMode::Normal);
+    // - `filter`/`backdrop-filter`/`mask`: preserve-3d roots bypass the normal stacking-context
+    //   Push/Pop pipeline, so we must explicitly allocate the same group surface and apply the
+    //   corresponding effects to the fully composited preserve-3d scene output.
+    // - Backdrop Root scoping (Filter Effects Level 2): roots that establish a Backdrop Root (e.g.
+    //   via `filter`, `backdrop-filter`, `mask`, `clip-path`, `opacity`, `mix-blend-mode`, or
+    //   `will-change`) must scope descendant `backdrop-filter` sampling. For triggers that do not
+    //   otherwise require a group surface (notably `clip-path` and `will-change`), we only force a
+    //   canvas layer boundary when the subtree actually contains backdrop-sensitive effects.
+    let root_filters = self.ds_filters(&node.context.filters);
+    let root_backdrop_filters = self.ds_filters(&node.context.backdrop_filters);
+    let root_has_backdrop = !root_backdrop_filters.is_empty();
+    let root_mask_style = node.context.mask.clone();
+    let root_radii = self.ds_radii(node.context.radii);
+    let root_filter_bounds = {
+      let candidate = node.context.plane_rect;
+      if candidate.width() > 0.0
+        && candidate.height() > 0.0
+        && candidate.x().is_finite()
+        && candidate.y().is_finite()
+        && candidate.width().is_finite()
+        && candidate.height().is_finite()
+      {
+        candidate
+      } else {
+        node.context.bounds
+      }
+    };
+
+    // Match `PushStackingContext` Backdrop Root trigger detection.
     let root_is_backdrop_root = node.context.establishes_backdrop_root
+      || !root_filters.is_empty()
+      || root_has_backdrop
+      || root_opacity < 1.0 - f32::EPSILON
+      || root_mask_style.is_some()
+      || node.context.has_clip_path
+      || !matches!(root_mix_blend_mode, BlendMode::Normal);
+
+    // `backdrop-filter` needs an isolated group surface so sampling excludes the element's own
+    // contents.
+    let root_isolated = node.context.is_isolated || root_has_backdrop;
+    let root_needs_layer_for_effects =
+      root_isolated || !root_filters.is_empty() || root_has_backdrop || root_mask_style.is_some();
+
+    // Like `PushStackingContext`, only force a layer boundary for Backdrop Root triggers that don't
+    // otherwise need a surface when a descendant would observe it (and never for the document
+    // root, which is represented by the base canvas surface).
+    let root_backdrop_root_layer = !node.context.is_root
+      && root_is_backdrop_root
+      && node.context.has_backdrop_sensitive_descendants;
+
+    let needs_root_layer = root_needs_layer_for_effects
+      || root_backdrop_root_layer
       || root_opacity < 1.0 - f32::EPSILON
       || !matches!(root_mix_blend_mode, BlendMode::Normal);
 
@@ -9565,7 +9603,7 @@ impl DisplayListRenderer {
     // backdrop-sensitive effects, and only when the root is not acting as a backdrop-root
     // boundary for blending (mirrors `maybe_init_non_isolated_group_backdrop`).
     let init_from_backdrop = needs_root_layer
-      && !node.context.is_isolated
+      && !root_isolated
       && node.context.has_backdrop_sensitive_descendants
       && !(root_is_backdrop_root && matches!(root_mix_blend_mode, BlendMode::Normal));
     let root_composite_blend =
@@ -9681,6 +9719,100 @@ impl DisplayListRenderer {
     // The preserve-3d scene compositor draws into the current pixmap directly (warps/composites
     // planes), so treat the destination surface as mutated for backdrop-cache invalidation.
     self.mark_current_pixmap_mutated();
+
+    // Apply root-level backdrop filters (Filter Effects Level 2) before drawing planes so the
+    // filtered backdrop becomes part of the preserve-3d scene output.
+    if needs_root_layer && root_has_backdrop {
+      let backdrop_result = (|| -> Result<()> {
+        let Some(bounds_in_src) = self.preserve_3d_rect_device_bounds(
+          root_filter_bounds,
+          &combined_root,
+          self.canvas.transform(),
+        ) else {
+          return Ok(());
+        };
+
+        let layer_origin = self
+          .canvas
+          .layer_stack()
+          .last()
+          .map(|record| record.origin)
+          .unwrap_or((0, 0));
+        let shape_bounds = Rect::from_xywh(
+          bounds_in_src.x() - layer_origin.0 as f32,
+          bounds_in_src.y() - layer_origin.1 as f32,
+          bounds_in_src.width(),
+          bounds_in_src.height(),
+        );
+
+        let clip_bounds = self.canvas.clip_bounds();
+        let clip_mask_rc = self.canvas.clip_mask_rc();
+        let clip_mask = clip_mask_rc.as_deref();
+
+        let (layer_stack, dest_pixmap) = self.canvas.split_layer_stack_and_pixmap_mut();
+        let Some(parent_surface) = layer_stack.last().map(|record| &record.pixmap) else {
+          // Without an active layer, there's nowhere to write the filtered backdrop.
+          return Ok(());
+        };
+        if self.trace_backdrop_stack {
+          let (root_depth, parent_depth) = backdrop_root_range(layer_stack);
+          eprintln!(
+            "backdrop_stack apply_backdrop_filter preserve3d_root range={}..{} composite_allocated={} cache_hit={} composite_steps={}",
+            root_depth,
+            parent_depth,
+            false,
+            false,
+            parent_depth.saturating_sub(root_depth)
+          );
+        }
+        let scale = self.scale;
+        let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut() {
+          Some(shared) => shared,
+          None => &mut self.blur_cache,
+        };
+        let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
+          match self.shared_backdrop_filter_cache.as_mut() {
+            Some(shared) => shared,
+            None => &mut self.backdrop_filter_cache,
+          };
+
+        apply_backdrop_filters_with_region_filler(
+          dest_pixmap,
+          (parent_surface.width(), parent_surface.height()),
+          layer_origin,
+          bounds_in_src,
+          shape_bounds,
+          &root_backdrop_filters,
+          root_radii,
+          scale,
+          clip_mask,
+          clip_bounds,
+          (0, 0),
+          root_filter_bounds,
+          Transform::identity(),
+          Some(blur_cache),
+          Some(backdrop_cache),
+          |region, clamped_x, clamped_y| {
+            Canvas::fill_backdrop_root_region(
+              layer_stack,
+              region,
+              (clamped_x as i32, clamped_y as i32),
+            )
+          },
+          None,
+          None,
+        )?;
+        self.mark_current_pixmap_mutated();
+        Ok(())
+      })();
+
+      // If backdrop-filter initialization fails, still pop the root layer to restore the canvas
+      // state before returning.
+      if backdrop_result.is_err() {
+        let _ = self.pop_layer_raw_tracked();
+      }
+      backdrop_result?;
+    }
 
     let paint_result = (|| -> Result<()> {
       let mut deadline_counter = 0usize;
@@ -10149,7 +10281,105 @@ impl DisplayListRenderer {
         let (layer, origin, opacity, _blend) = self.pop_layer_raw_tracked()?;
         self.composite_manual_layer(&layer, opacity, mode, origin, None)?;
       } else {
-        self.pop_layer_tracked()?;
+        let (mut layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
+
+        // Root `mask` is applied to the composed preserve-3d scene output, matching the
+        // stacking-context pop pipeline.
+        if let Some(mask_style) = root_mask_style.as_ref() {
+          if let Some(mask) = self.render_mask(mask_style)? {
+            let OffsetMask {
+              mask,
+              origin: mask_origin,
+            } = mask;
+            let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
+            if mask.width() > 1 || mask.height() > 1 {
+              MASK_RENDER_SCRATCH.with(|cell| {
+                *cell.borrow_mut() = Some(mask);
+              });
+            }
+            if !applied {
+              paint_result?;
+              return Ok(end_idx);
+            }
+          }
+        }
+
+        // Root `filter` applies to the entire preserve-3d scene output (post-warp composition).
+        if !root_filters.is_empty() {
+          let bounds = self.preserve_3d_rect_device_bounds(
+            node.context.bounds,
+            &combined_root,
+            self.canvas.transform(),
+          );
+          let (out_l, out_t, out_r, out_b) =
+            filter_outset_with_bounds(&root_filters, self.scale, Some(node.context.bounds))
+              .as_tuple();
+          let effect_bounds = bounds.map(|bounds| {
+            Rect::from_xywh(
+              bounds.x() - out_l,
+              bounds.y() - out_t,
+              bounds.width() + out_l + out_r,
+              bounds.height() + out_t + out_b,
+            )
+          });
+          let layer_region =
+            effect_bounds.and_then(|rect| self.layer_space_bounds(rect, origin, &layer));
+          let bbox = bounds
+            .map(|bounds| {
+              Rect::from_xywh(
+                bounds.x() - origin.0 as f32,
+                bounds.y() - origin.1 as f32,
+                bounds.width(),
+                bounds.height(),
+              )
+            })
+            .unwrap_or_else(|| {
+              Rect::from_xywh(0.0, 0.0, layer.width() as f32, layer.height() as f32)
+            });
+
+          let scale = self.scale;
+          let needs_svg_background = root_filters.iter().any(|filter| match filter {
+            ResolvedFilter::SvgFilter(filter) => filter.uses_background_inputs(),
+            _ => false,
+          });
+          let backdrop = needs_svg_background.then(|| self.canvas.pixmap());
+          let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut()
+          {
+            Some(shared) => shared,
+            None => &mut self.blur_cache,
+          };
+          apply_filters_scoped(
+            &mut layer,
+            &root_filters,
+            scale,
+            bbox,
+            layer_region.as_ref(),
+            Some(blur_cache),
+            backdrop,
+            origin,
+          )?;
+
+          // Clamp the filtered output to the filter region (expanded by `filter_outset_with_bounds`)
+          // to match the normal stacking-context behavior.
+          if let Some(bounds) = bounds {
+            let clip_rect = Rect::from_xywh(
+              bounds.x() - out_l,
+              bounds.y() - out_t,
+              bounds.width() + out_l + out_r,
+              bounds.height() + out_t + out_b,
+            );
+            if let Some(local_clip) = self.layer_space_bounds(clip_rect, origin, &layer) {
+              apply_clip_mask_rect(
+                &mut layer,
+                local_clip,
+                root_radii,
+                self.clip_mask_diagnostics.as_ref(),
+              )?;
+            }
+          }
+        }
+
+        self.composite_layer_tracked(&layer, opacity, composite_blend, origin);
       }
     }
 
