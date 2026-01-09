@@ -42,8 +42,9 @@ scripts/cargo_agent.sh test --test browser_integration_tests --features browser_
 
 Notes:
 
-- The `browser` binary (`src/bin/browser.rs`) is itself `required-features = ["browser_ui"]`, so any
-  tests that need to compile/spawn it must be `#[cfg(feature = "browser_ui")]` as well.
+- Some tests are feature-gated behind `--features browser_ui` (the `browser` binary and the
+  UI↔worker protocol types are `browser_ui`-only). If a test needs to spawn `browser` or drive the
+  headless worker loop via `UiToWorker`/`WorkerToUi`, run with `--features browser_ui`.
 
 ## Headless constraints (no winit/wgpu/egui)
 
@@ -55,7 +56,8 @@ Rules:
 - **Do not** initialise `wgpu` (e.g. `request_adapter`) or `egui` renderer state.
 - Prefer testing headless components:
   - `BrowserDocument` behaviour (DOM mutation → re-render, scroll state, referrer propagation, …)
-  - `ui::worker::RenderWorker` and message routing (`WorkerToUi`, tab scoping, stage forwarding, …)
+  - The headless UI worker loop and message routing (`UiToWorker`/`WorkerToUi`, tab scoping, stage
+    forwarding, …). See the `spawn_ui_worker(...)` helper used throughout the `ui_worker_*` tests.
 - Prefer `file://` fixtures and `tempdir()`-backed assets over network fetches to keep tests
   deterministic and fast.
 
@@ -67,14 +69,46 @@ do so without opening a window.
 Supported test hooks:
 
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` — exits before creating a window or initialising wgpu.
-- `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` — reserved for a future headless smoke path (use only if/when
-  implemented).
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` — runs a minimal end-to-end headless smoke test (UI↔worker
+  wiring) without creating a window or initialising winit/wgpu. On success it prints a
+  `HEADLESS_SMOKE_OK` marker to stdout and exits.
 
 Example:
 
 ```bash
 FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1 \
   scripts/cargo_agent.sh run --features browser_ui --bin browser
+```
+
+Headless-smoke example:
+
+```bash
+FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 \
+  scripts/cargo_agent.sh run --features browser_ui --bin browser
+```
+
+## Shared test helpers
+
+New tests should prefer the shared helpers in `tests/browser_integration/support.rs` rather than
+re-implementing common patterns.
+
+It provides (among other things):
+
+- Consistent timeout helpers for channel receives (`recv_until`, `drain_for`, `DEFAULT_TIMEOUT`).
+- `TempSite` for creating temporary `file://` fixtures and getting correct `file://` URLs.
+- Pixmap sampling helpers (`rgba_at`) for rendering assertions.
+- `WorkerToUi` debug formatting (`format_messages`) for clearer assertion failures.
+
+## Global stage listener locking
+
+Stage heartbeats (`WorkerToUi::Stage`) are delivered via a process-global stage listener, so tests
+that rely on them must not run concurrently within the same integration test binary.
+
+If your test expects stage heartbeats (or registers a stage listener), acquire the global lock for
+the duration of the test:
+
+```rust
+let _lock = browser_integration::stage_listener_test_lock();
 ```
 
 ## Timeouts and cleanup (avoid hangs)
@@ -93,13 +127,18 @@ Best practices:
 Existing modules:
 
 - `document.rs`: `BrowserDocument` behavioural tests (mutation, scroll state, referrers).
-- `ui_render_worker_thread_builder_test.rs` (`browser_ui`): asserts UI worker threads are spawned via
-  `std::thread::Builder`.
+- `document2.rs`: `BrowserDocument2` behavioural tests (DOM mutation → rerender).
+- `browser_mem_limit_env.rs` (`browser_ui`, linux): exercises `FASTR_BROWSER_MEM_LIMIT_MB` parsing in
+  `src/bin/browser.rs` via the `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` hook.
+- `browser_binary_headless_smoke.rs` (`browser_ui`, linux): spawns `browser` in
+  `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` mode and asserts the `HEADLESS_SMOKE_OK` marker is printed.
+- `ui_render_worker_thread_builder_test.rs` (`browser_ui`): asserts the UI render worker thread is
+  spawned via `std::thread::Builder` (name + large stack size).
+- `ui_worker_*` (`browser_ui`): headless UI↔worker protocol tests using `spawn_ui_worker(...)`.
 - `ui_stage_heartbeat_forwarding.rs` (`browser_ui`): validates stage heartbeat forwarding and cleanup
-  is tab-scoped.
+  is tab-scoped (requires the global stage listener lock).
 
 Expected future additions (keep headless):
 
 - Browser startup smoke tests (feature-gated) using `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1`.
-- Worker protocol smoke tests for tabs/history/navigation state.
-- Scroll/input translation tests that exercise the UI worker loop without needing `winit`.
+- Expand worker protocol coverage for tabs/history/navigation state.
