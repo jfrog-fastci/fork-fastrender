@@ -491,7 +491,9 @@ mod tests {
 
     match parser.pump() {
       StreamingParserYield::Script { .. } => {
-        let doc = parser.document();
+        let doc = parser
+          .document()
+          .expect("document should be available while parsing");
         let host = doc.get_element_by_id("host").expect("expected host element");
         let first_child = *doc
           .node(host)
@@ -523,7 +525,9 @@ mod tests {
     };
 
     {
-      let doc = parser.document();
+      let doc = parser
+        .document()
+        .expect("document should be available while parsing");
       assert!(
         !doc.is_connected_for_scripting(script),
         "script inside <template> should not be connected for scripting"

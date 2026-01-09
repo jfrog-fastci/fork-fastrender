@@ -1131,7 +1131,10 @@ mod tests {
 
     let after_present_while_blocked = {
       let s = p.state.borrow();
-      let dom = s.parser.document();
+      let dom = s
+        .parser
+        .document()
+        .expect("expected parser document to be available while blocked");
       dom.get_element_by_id("after").is_some()
     };
     assert!(

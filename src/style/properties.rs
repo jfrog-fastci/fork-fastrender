@@ -34351,7 +34351,7 @@ mod tests {
   }
 
   #[test]
-  fn font_variant_alternates_duplicate_historical_forms_invalidates_declaration() {
+  fn font_variant_alternates_duplicate_historical_forms_preserves_other_fields() {
     let mut style = ComputedStyle::default();
     style.font_variant_alternates.swash = Some(FontVariantAlternateValue::Name("Keep".to_string()));
     let decl = Declaration {
@@ -34366,6 +34366,7 @@ mod tests {
       style.font_variant_alternates.swash,
       Some(FontVariantAlternateValue::Name("Keep".to_string()))
     );
+    assert!(!style.font_variant_alternates.historical_forms);
   }
 
   #[test]

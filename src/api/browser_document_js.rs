@@ -428,19 +428,21 @@ mod tests {
     let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let log_for_task = Rc::clone(&log);
 
-    runtime.event_loop_mut().queue_task(TaskSource::Script, move |host, event_loop| {
-      log_for_task.borrow_mut().push("task");
-      set_first_text(host.document.dom_mut(), "task");
+    runtime
+      .event_loop_mut()?
+      .queue_task(TaskSource::Script, move |host, event_loop| {
+        log_for_task.borrow_mut().push("task");
+        set_first_text(host.document.dom_mut(), "task");
 
-      let log_for_microtask = Rc::clone(&log_for_task);
-      event_loop.queue_microtask(move |host, _event_loop| {
-        log_for_microtask.borrow_mut().push("microtask");
-        set_first_text(host.document.dom_mut(), "microtask");
+        let log_for_microtask = Rc::clone(&log_for_task);
+        event_loop.queue_microtask(move |host, _event_loop| {
+          log_for_microtask.borrow_mut().push("microtask");
+          set_first_text(host.document.dom_mut(), "microtask");
+          Ok(())
+        })?;
+
         Ok(())
       })?;
-
-      Ok(())
-    })?;
 
     let outcome = runtime.run_until_stable(10)?;
     assert_eq!(outcome, RunUntilStableOutcome::Stable { frames_rendered: 1 });
@@ -465,14 +467,18 @@ mod tests {
 
     runtime.document_mut().render_frame()?;
 
-    runtime.event_loop_mut().queue_task(TaskSource::Script, |host, _event_loop| {
-      set_first_text(host.document.dom_mut(), "a");
-      Ok(())
-    })?;
-    runtime.event_loop_mut().queue_task(TaskSource::Script, |host, _event_loop| {
-      set_first_text(host.document.dom_mut(), "b");
-      Ok(())
-    })?;
+    runtime
+      .event_loop_mut()?
+      .queue_task(TaskSource::Script, |host, _event_loop| {
+        set_first_text(host.document.dom_mut(), "a");
+        Ok(())
+      })?;
+    runtime
+      .event_loop_mut()?
+      .queue_task(TaskSource::Script, |host, _event_loop| {
+        set_first_text(host.document.dom_mut(), "b");
+        Ok(())
+      })?;
 
     assert!(runtime.tick_frame()?.is_some(), "expected render after task 1");
     let id = first_text_node_id(runtime.document().dom()).expect("text node");
@@ -512,7 +518,7 @@ mod tests {
     );
 
     let counter: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-    queue_self_requeue_microtask(runtime.event_loop_mut(), Rc::clone(&counter))?;
+    queue_self_requeue_microtask(runtime.event_loop_mut()?, Rc::clone(&counter))?;
 
     let err = runtime
       .tick_frame()
@@ -559,7 +565,7 @@ mod tests {
     let mut runtime =
       BrowserDocumentJs::with_event_loop_and_js_execution_options(document, event_loop, js_options);
     runtime
-      .event_loop_mut()
+      .event_loop_mut()?
       .set_interval(Duration::from_millis(0), |_host, _event_loop| Ok(()))?;
 
     let outcome = runtime.run_until_stable(10)?;

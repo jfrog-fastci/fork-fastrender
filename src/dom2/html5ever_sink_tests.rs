@@ -199,7 +199,10 @@ fn pausable_parser_pauses_at_script_and_dom_is_partial() {
   };
 
   {
-    let doc = parser.sink().document();
+    let doc = parser
+      .sink()
+      .expect("expected parser sink to be available while parsing")
+      .document();
     assert_eq!(script_text(&doc, script_id), "1");
     assert!(
       doc.get_element_by_id("after").is_none(),
@@ -237,7 +240,10 @@ fn pausable_parser_yields_multiple_scripts_in_order() {
     _ => panic!("expected first Script boundary"),
   };
   {
-    let doc = parser.sink().document();
+    let doc = parser
+      .sink()
+      .expect("expected parser sink to be available while parsing")
+      .document();
     assert_eq!(script_text(&doc, s1), "a");
   }
 
@@ -246,7 +252,10 @@ fn pausable_parser_yields_multiple_scripts_in_order() {
     _ => panic!("expected second Script boundary"),
   };
   {
-    let doc = parser.sink().document();
+    let doc = parser
+      .sink()
+      .expect("expected parser sink to be available while parsing")
+      .document();
     assert_eq!(script_text(&doc, s2), "b");
   }
 
@@ -278,7 +287,10 @@ fn pausable_parser_template_script_boundaries_are_inert() {
   loop {
     match parser.pump() {
       Html5everPump::Script(id) => {
-        let doc = parser.sink().document();
+        let doc = parser
+          .sink()
+          .expect("expected parser sink to be available while parsing")
+          .document();
         let text = script_text(&doc, id);
         if doc.is_connected_for_scripting(id) {
           saw_connected_script = true;
@@ -544,7 +556,11 @@ fn pausable_parser_attaches_shadowrootmode_during_parse_before_script_pause() {
     _ => panic!("expected Script boundary"),
   };
 
-  let dom = parser.sink().document().clone();
+  let dom = parser
+    .sink()
+    .expect("expected parser sink to be available while parsing")
+    .document()
+    .clone();
   assert_eq!(script_text(&dom, script_id), "1");
   assert!(
     dom.is_connected_for_scripting(script_id),
