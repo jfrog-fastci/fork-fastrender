@@ -1,8 +1,6 @@
-use fastrender::js::{
-  install_url_bindings,
-  webidl::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _},
-};
+use fastrender::js::{install_url_bindings, webidl::VmJsRuntime};
 use vm_js::{HeapLimits, PropertyKey, Value};
+use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use webidl_js_runtime::runtime::JsPropertyKind;
 
 fn key(rt: &mut VmJsRuntime, name: &str) -> PropertyKey {
