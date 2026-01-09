@@ -83,6 +83,28 @@ function run() {
     null,
     "getElementById must not search inside inert <template> contents"
   );
+
+  if (failed) return;
+
+  // Detached DocumentFragments should be searchable via `fragment.getElementById`, but their
+  // contents should not be visible to `document.getElementById` until inserted.
+  var frag = document.createDocumentFragment();
+  var f1 = document.createElement("div");
+  f1.id = "f1";
+  frag.appendChild(f1);
+
+  var f2 = document.createElement("div");
+  f2.id = "f2";
+  frag.appendChild(f2);
+
+  assert_equals(frag.getElementById("missing"), null, "fragment.getElementById should return null for missing ids");
+  assert_equals(frag.getElementById("f1"), f1, "fragment.getElementById should find descendants");
+  assert_equals(frag.getElementById("f2"), f2, "fragment.getElementById should find descendants");
+  assert_equals(
+    document.getElementById("f1"),
+    null,
+    "document.getElementById must not search detached fragment contents"
+  );
 }
 
 run();
@@ -90,4 +112,3 @@ run();
 if (!failed) {
   report_pass();
 }
-

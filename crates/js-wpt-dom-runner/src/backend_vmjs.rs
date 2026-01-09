@@ -1162,11 +1162,21 @@ impl JsWptRuntime {
 
     self.dom_element_proto = Some(element_proto);
 
-    // DocumentFragment prototype (inherits Node, no extra APIs for now).
+    // DocumentFragment prototype (inherits Node, adds NonElementParentNode APIs like getElementById).
     let document_fragment_proto = self.alloc_object()?;
     self
       .heap
       .object_set_prototype(document_fragment_proto, Some(node_proto))?;
+    let fragment_get_element_by_id = self.alloc_native_function(native_document_fragment_get_element_by_id)?;
+    let fragment_get_element_by_id_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("getElementById")?)
+    };
+    self.define_data_prop(
+      document_fragment_proto,
+      fragment_get_element_by_id_key,
+      Value::Object(fragment_get_element_by_id),
+    )?;
     self.document_fragment_proto = Some(document_fragment_proto);
 
     // Text prototype (inherits Node, exposes `data`).
@@ -3863,6 +3873,49 @@ fn native_document_get_element_by_id(
     let Some(state) = rt.dom_nodes.get(&node) else {
       continue;
     };
+    let Some(&id) = state.attributes.get("id") else {
+      continue;
+    };
+    let actual = rt.heap.get_string(id)?.to_utf8_lossy();
+    if actual == needle {
+      return Ok(Value::Object(node));
+    }
+  }
+
+  Ok(Value::Null)
+}
+
+fn native_document_fragment_get_element_by_id(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(fragment) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: getElementById called on non-object",
+    )?)));
+  };
+  let Some(state) = rt.dom_nodes.get(&fragment) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: getElementById called on non-DocumentFragment",
+    )?)));
+  };
+  if state.kind != DomNodeKind::DocumentFragment {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: getElementById called on non-DocumentFragment",
+    )?)));
+  }
+
+  let needle_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let needle = string_from_value(rt, needle_value)?;
+
+  for node in dom_subtree_preorder(rt, fragment) {
+    let Some(state) = rt.dom_nodes.get(&node) else {
+      continue;
+    };
+    if state.kind != DomNodeKind::Element {
+      continue;
+    }
     let Some(&id) = state.attributes.get("id") else {
       continue;
     };
