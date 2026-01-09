@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use super::*;
-use crate::dom::{DomNode, DomNodeType};
-use crate::dom2::{Document, NodeId};
+use crate::dom::{parse_html, DomNode, DomNodeType};
+use crate::dom2::{Document, NodeId, NodeKind};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
 
@@ -885,24 +885,48 @@ fn stop_propagation_in_target_capture_skips_target_bubble_listeners() {
 }
 
 #[test]
-fn detached_node_event_path_does_not_include_window() {
+fn detached_node_event_path_does_not_include_document_or_window() {
   let (mut doc, _a, b, detached) = make_dom_abc();
   doc.node_mut(b).children.retain(|&child| child != detached);
   doc.node_mut(detached).parent = None;
 
   let registry = EventListenerRegistry::new();
   let type_ = "x";
-  let id_window = ListenerId::new(1);
-  let id_node = ListenerId::new(2);
+  let id_window_capture = ListenerId::new(1);
+  let id_document_capture = ListenerId::new(2);
+  let id_window_bubble = ListenerId::new(3);
+  let id_document_bubble = ListenerId::new(4);
+  let id_node = ListenerId::new(5);
 
   assert!(registry.add_event_listener(
     EventTargetId::Window,
     type_,
-    id_window,
+    id_window_capture,
     AddEventListenerOptions {
       capture: true,
       ..Default::default()
     }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_bubble,
+    AddEventListenerOptions::default()
   ));
   assert!(registry.add_event_listener(
     EventTargetId::Node(detached),
@@ -916,11 +940,20 @@ fn detached_node_event_path_does_not_include_window() {
     EventTargetId::Node(detached),
     [
       (
-        id_window,
+        id_window_capture,
         Behavior {
           label: "window_capture",
           expected_phase: EventPhase::Capturing,
           expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+      (
+        id_document_capture,
+        Behavior {
+          label: "document_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Document,
           action: Action::None,
         },
       ),
@@ -933,10 +966,34 @@ fn detached_node_event_path_does_not_include_window() {
           action: Action::None,
         },
       ),
+      (
+        id_document_bubble,
+        Behavior {
+          label: "document_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_window_bubble,
+        Behavior {
+          label: "window_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
     ],
   );
 
-  let mut event = Event::new(type_, EventInit::default());
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   dispatch_event(
     EventTargetId::Node(detached),
     &mut event,
@@ -947,6 +1004,209 @@ fn detached_node_event_path_does_not_include_window() {
   .unwrap();
 
   assert_eq!(invoker.calls.as_slice(), &["node"]);
+}
+
+#[test]
+fn template_contents_event_path_does_not_include_template_document_or_window() {
+  let root = parse_html("<!doctype html><template><div id=in></div></template><div id=out></div>")
+    .unwrap();
+  let doc = Document::from_renderer_dom(&root);
+
+  let mut template_id: Option<NodeId> = None;
+  let mut in_id: Option<NodeId> = None;
+  let mut out_id: Option<NodeId> = None;
+
+  for id in doc.subtree_preorder(doc.root()) {
+    let NodeKind::Element {
+      tag_name, attributes, ..
+    } = &doc.node(id).kind
+    else {
+      continue;
+    };
+
+    if tag_name.eq_ignore_ascii_case("template") {
+      template_id = Some(id);
+    }
+
+    if tag_name.eq_ignore_ascii_case("div") {
+      let id_attr = attributes
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("id"))
+        .map(|(_, value)| value.as_str());
+      match id_attr {
+        Some("in") => in_id = Some(id),
+        Some("out") => out_id = Some(id),
+        _ => {}
+      }
+    }
+  }
+
+  let template_id = template_id.expect("template element not found");
+  let in_id = in_id.expect("template content node not found");
+  let out_id = out_id.expect("outside node not found");
+
+  assert!(
+    doc.node(template_id).inert_subtree,
+    "<template> should mark inert_subtree"
+  );
+  assert_eq!(
+    doc.node(in_id).parent,
+    Some(template_id),
+    "expected template content node to be a child of the <template> element"
+  );
+  assert!(doc.is_descendant_of_inert_template(in_id));
+  assert!(!doc.is_descendant_of_inert_template(out_id));
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+
+  let id_window_capture = ListenerId::new(1);
+  let id_document_capture = ListenerId::new(2);
+  let id_template_capture = ListenerId::new(3);
+  let id_in = ListenerId::new(4);
+  let id_template_bubble = ListenerId::new(5);
+  let id_document_bubble = ListenerId::new(6);
+  let id_window_bubble = ListenerId::new(7);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(template_id),
+    type_,
+    id_template_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(in_id),
+    type_,
+    id_in,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(template_id),
+    type_,
+    id_template_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_bubble,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(in_id),
+    [
+      (
+        id_window_capture,
+        Behavior {
+          label: "window_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+      (
+        id_document_capture,
+        Behavior {
+          label: "document_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_template_capture,
+        Behavior {
+          label: "template_capture",
+          expected_phase: EventPhase::Capturing,
+          expected_current_target: EventTargetId::Node(template_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_in,
+        Behavior {
+          label: "in",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(in_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_template_bubble,
+        Behavior {
+          label: "template_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Node(template_id),
+          action: Action::None,
+        },
+      ),
+      (
+        id_document_bubble,
+        Behavior {
+          label: "document_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Document,
+          action: Action::None,
+        },
+      ),
+      (
+        id_window_bubble,
+        Behavior {
+          label: "window_bubble",
+          expected_phase: EventPhase::Bubbling,
+          expected_current_target: EventTargetId::Window,
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(in_id),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["in"]);
 }
 
 #[test]

@@ -16,6 +16,25 @@ impl Document {
     self.contains_node(parent).then_some(parent)
   }
 
+  /// Returns the DOM parent when building an event dispatch path.
+  ///
+  /// This differs from [`Document::parent_node`] by treating certain subtrees as not
+  /// document-connected for event dispatch:
+  /// - detached nodes (no parent) have no parent in the event path
+  /// - descendants of inert subtrees (currently: `<template>` contents) do not propagate events to
+  ///   the inert subtree root or beyond
+  pub fn dom_parent_for_event_path(&self, node: NodeId) -> Option<NodeId> {
+    let parent = self.parent_node(node)?;
+    // In `dom2`, template contents are represented as children of the `<template>` element, with
+    // `inert_subtree=true` on that `<template>`. Nodes inside that inert subtree behave like they
+    // are disconnected from the document for common web-platform algorithms (e.g., events,
+    // scripting).
+    if self.node(parent).inert_subtree {
+      return None;
+    }
+    Some(parent)
+  }
+
   pub fn first_child(&self, node: NodeId) -> Option<NodeId> {
     let node = self.get_node(node)?;
     node

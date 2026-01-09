@@ -351,7 +351,7 @@ fn build_event_path(target: EventTargetId, dom: &dom2::Document) -> Vec<EventPat
       let mut current = node_id;
       let mut reached_document = false;
       loop {
-        let Some(parent) = dom.node(current).parent else {
+        let Some(parent) = dom.dom_parent_for_event_path(current) else {
           break;
         };
         if parent.index() == 0 {
