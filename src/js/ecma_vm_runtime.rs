@@ -1077,7 +1077,6 @@ fn native_clear_interval<State: 'static>(
   });
   Ok(Value::Undefined)
 }
-
 // --- Minimal lexical environment ---
 
 #[derive(Debug, Default)]

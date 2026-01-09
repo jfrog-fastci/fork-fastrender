@@ -75,7 +75,14 @@ pub fn resolve_length_with_percentage_metrics(
     if !viewport.width.is_finite() || !viewport.height.is_finite() {
       return None;
     }
-    length.resolve_with_viewport(viewport.width, viewport.height)
+    match style {
+      Some(style) => length.resolve_with_viewport_for_writing_mode(
+        viewport.width,
+        viewport.height,
+        style.writing_mode,
+      ),
+      None => length.resolve_with_viewport(viewport.width, viewport.height),
+    }
   } else if length.unit == LengthUnit::Lh {
     resolve_lh(
       length.value,
@@ -162,7 +169,14 @@ fn resolve_calc_length_with_percentage_metrics(
       LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
       unit if unit.is_absolute() => Some(Length::new(term.value, unit).to_px()),
       unit if unit.is_viewport_relative() => {
-        Length::new(term.value, unit).resolve_with_viewport(viewport.width, viewport.height)
+        match style {
+          Some(style) => Length::new(term.value, unit).resolve_with_viewport_for_writing_mode(
+            viewport.width,
+            viewport.height,
+            style.writing_mode,
+          ),
+          None => Length::new(term.value, unit).resolve_with_viewport(viewport.width, viewport.height),
+        }
       }
       LengthUnit::Lh => {
         let lh = *line_height_px.get_or_insert_with(|| {
@@ -595,12 +609,13 @@ pub fn resolve_offset_for_positioned(
     LengthOrAuto::Auto => None,
     LengthOrAuto::Length(length) => {
       if length.unit == LengthUnit::Calc {
-        return length.resolve_with_context(
+        return length.resolve_with_context_for_writing_mode(
           percentage_base,
           viewport.width,
           viewport.height,
           style.font_size,
           style.root_font_size,
+          style.writing_mode,
         );
       }
       if length.unit.is_percentage() {
@@ -608,7 +623,7 @@ pub fn resolve_offset_for_positioned(
       } else if length.unit.is_absolute() {
         Some(length.to_px())
       } else if length.unit.is_viewport_relative() {
-        length.resolve_with_viewport(viewport.width, viewport.height)
+        length.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
       } else {
         Some(resolve_font_relative_length_for_positioned(
           *length,

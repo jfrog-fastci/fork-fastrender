@@ -103,12 +103,13 @@ fn resolve_length_for_positioned_size(
   font_context: &FontContext,
 ) -> Option<f32> {
   if len.unit == LengthUnit::Calc {
-    return len.resolve_with_context(
+    return len.resolve_with_context_for_writing_mode(
       percentage_base,
       viewport.width,
       viewport.height,
       style.font_size,
       style.root_font_size,
+      style.writing_mode,
     );
   }
   if len.unit.is_percentage() {
@@ -116,7 +117,7 @@ fn resolve_length_for_positioned_size(
   } else if len.unit.is_absolute() {
     Some(len.to_px())
   } else if len.unit.is_viewport_relative() {
-    len.resolve_with_viewport(viewport.width, viewport.height)
+    len.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
   } else {
     Some(resolve_font_relative_length_for_positioned(
       *len,
@@ -2551,12 +2552,13 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   let block_base = containing_block.block_percentage_base();
   let resolve_len = |len: &crate::style::values::Length, base: Option<f32>| -> Option<f32> {
     if len.unit == LengthUnit::Calc {
-      return len.resolve_with_context(
+      return len.resolve_with_context_for_writing_mode(
         base,
         viewport.width,
         viewport.height,
         style.font_size,
         style.root_font_size,
+        style.writing_mode,
       );
     }
     if len.unit.is_percentage() {
@@ -2564,7 +2566,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
     } else if len.unit.is_absolute() {
       Some(len.to_px())
     } else if len.unit.is_viewport_relative() {
-      len.resolve_with_viewport(viewport.width, viewport.height)
+      len.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
     } else {
       Some(crate::layout::utils::resolve_font_relative_length(
         *len,

@@ -131,6 +131,12 @@ pub struct Event {
   pub bubbles: bool,
   pub cancelable: bool,
   pub composed: bool,
+  /// The time this event instance was created, in milliseconds.
+  ///
+  /// This roughly corresponds to the DOM `Event.timeStamp` attribute (a `DOMHighResTimeStamp`).
+  /// FastRender does not yet have a full "relevant global object" time origin model for events, so
+  /// newly constructed events default to `0.0` and embeddings may choose to override the value.
+  pub time_stamp: f64,
   pub default_prevented: bool,
   pub propagation_stopped: bool,
   pub immediate_propagation_stopped: bool,
@@ -152,6 +158,7 @@ impl Event {
       bubbles: init.bubbles,
       cancelable: init.cancelable,
       composed: init.composed,
+      time_stamp: 0.0,
       default_prevented: false,
       propagation_stopped: false,
       immediate_propagation_stopped: false,

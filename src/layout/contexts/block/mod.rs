@@ -61,7 +61,6 @@ use crate::layout::profile::LayoutKind;
 use crate::layout::utils::border_size_from_box_sizing;
 use crate::layout::utils::compute_replaced_size;
 use crate::layout::utils::content_size_from_box_sizing;
-use crate::layout::utils::resolve_length_with_percentage;
 use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
@@ -1355,12 +1354,14 @@ impl BlockFormattingContext {
                 axis
                   .length
                   .and_then(|l| {
-                    resolve_length_with_percentage(
+                    resolve_length_with_percentage_metrics(
                       l,
                       containing_height,
                       self.viewport_size,
                       style.font_size,
                       style.root_font_size,
+                      Some(style),
+                      Some(&self.font_context),
                     )
                   })
                   .map(|v| v.max(0.0))

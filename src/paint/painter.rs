@@ -10779,7 +10779,7 @@ impl Painter {
         let resolved = if l.unit == LengthUnit::Percent {
           l.resolve_against(style.font_size).unwrap_or(0.0)
         } else if l.unit.is_viewport_relative() {
-          l.resolve_with_viewport(self.css_width, self.css_height)
+          l.resolve_with_viewport_for_writing_mode(self.css_width, self.css_height, style.writing_mode)
             .unwrap_or_else(|| l.to_px())
         } else {
           resolve_font_relative_length(l, style, &self.font_ctx)
@@ -10914,7 +10914,7 @@ impl Painter {
         if l.unit == LengthUnit::Percent {
           Some(l.resolve_against(style.font_size).unwrap_or(0.0) * self.scale)
         } else if l.unit.is_viewport_relative() {
-          l.resolve_with_viewport(self.css_width, self.css_height)
+          l.resolve_with_viewport_for_writing_mode(self.css_width, self.css_height, style.writing_mode)
             .map(|v| v * self.scale)
         } else {
           Some(resolve_font_relative_length(l, style, &self.font_ctx) * self.scale)

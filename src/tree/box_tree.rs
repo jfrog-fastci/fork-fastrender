@@ -842,19 +842,23 @@ fn resolve_sizes_length_value(
   root_font_size: f32,
 ) -> Option<f32> {
   use crate::style::values::LengthUnit;
-  match length.unit {
-    LengthUnit::Percent => length.resolve_against(viewport.width),
-    LengthUnit::Vw
-    | LengthUnit::Vh
-    | LengthUnit::Vmin
-    | LengthUnit::Vmax
-    | LengthUnit::Dvw
-    | LengthUnit::Dvh
-    | LengthUnit::Dvmin
-    | LengthUnit::Dvmax => length.resolve_with_viewport(viewport.width, viewport.height),
-    LengthUnit::Em => Some(font_size * length.value),
-    LengthUnit::Rem => Some(root_font_size * length.value),
-    LengthUnit::Ex | LengthUnit::Ch => Some(font_size * length.value * 0.5),
+    match length.unit {
+      LengthUnit::Percent => length.resolve_against(viewport.width),
+      LengthUnit::Vw
+      | LengthUnit::Vh
+      | LengthUnit::Vi
+      | LengthUnit::Vb
+      | LengthUnit::Vmin
+      | LengthUnit::Vmax
+      | LengthUnit::Dvw
+      | LengthUnit::Dvh
+      | LengthUnit::Dvi
+      | LengthUnit::Dvb
+      | LengthUnit::Dvmin
+      | LengthUnit::Dvmax => length.resolve_with_viewport(viewport.width, viewport.height),
+      LengthUnit::Em => Some(font_size * length.value),
+      LengthUnit::Rem => Some(root_font_size * length.value),
+      LengthUnit::Ex | LengthUnit::Ch => Some(font_size * length.value * 0.5),
     LengthUnit::Calc => length.resolve_with_context(
       Some(viewport.width),
       viewport.width,

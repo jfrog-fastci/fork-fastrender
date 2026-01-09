@@ -3129,6 +3129,10 @@ impl MediaContext {
       LengthUnit::Percent => Some(length.value / 100.0 * inline?),
       LengthUnit::Vw => Some(length.value / 100.0 * vw?),
       LengthUnit::Vh => Some(length.value / 100.0 * vh?),
+      // When evaluating media queries, `vi`/`vb` use the initial `writing-mode` value
+      // (horizontal-tb), so they map to `vw`/`vh`.
+      LengthUnit::Vi => Some(length.value / 100.0 * vw?),
+      LengthUnit::Vb => Some(length.value / 100.0 * vh?),
       LengthUnit::Vmin => {
         let min_dimension = match (vw, vh) {
           (Some(w), Some(h)) => w.min(h),
@@ -3145,6 +3149,8 @@ impl MediaContext {
       }
       LengthUnit::Dvw => Some(length.value / 100.0 * vw?),
       LengthUnit::Dvh => Some(length.value / 100.0 * vh?),
+      LengthUnit::Dvi => Some(length.value / 100.0 * vw?),
+      LengthUnit::Dvb => Some(length.value / 100.0 * vh?),
       LengthUnit::Dvmin => {
         let min_dimension = match (vw, vh) {
           (Some(w), Some(h)) => w.min(h),

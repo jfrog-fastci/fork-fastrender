@@ -1133,3 +1133,36 @@ fn js_composed_path_and_src_element_reflect_dispatch_path() -> Result<()> {
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
   Ok(())
 }
+
+#[test]
+fn js_time_stamp_is_number() -> Result<()> {
+  let (doc, _parent, target) = build_doc();
+  let mut js = JsDomEvents::new()?;
+
+  let key_time_stamp = key(js.runtime_mut(), "timeStamp");
+
+  let listener = js
+    .runtime_mut()
+    .alloc_function_value(move |rt, _this, args| {
+      let event = args.get(0).copied().unwrap_or(Value::Undefined);
+      let ts = rt.get(event, key_time_stamp)?;
+      let Value::Number(n) = ts else {
+        panic!("expected timeStamp to be a number");
+      };
+      assert!(n.is_finite());
+      assert!(n >= 0.0);
+      Ok(Value::Undefined)
+    })
+    .expect("alloc function");
+
+  let _ = js.add_js_event_listener(
+    EventTargetId::Node(target),
+    "test",
+    listener,
+    AddEventListenerOptions::default(),
+  )?;
+
+  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
+  Ok(())
+}

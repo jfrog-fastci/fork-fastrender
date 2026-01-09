@@ -8874,7 +8874,7 @@ impl DisplayListBuilder {
         } else if l.unit.is_viewport_relative() {
           self
             .viewport
-            .and_then(|(vw, vh)| l.resolve_with_viewport(vw, vh))
+            .and_then(|(vw, vh)| l.resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode))
         } else {
           Some(resolve_font_relative_length(l, style, &self.font_ctx))
         }
@@ -8904,7 +8904,7 @@ impl DisplayListBuilder {
       } else if l.unit.is_viewport_relative() {
         self
           .viewport
-          .and_then(|(vw, vh)| l.resolve_with_viewport(vw, vh))
+          .and_then(|(vw, vh)| l.resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode))
           .unwrap_or_else(|| l.to_px())
       } else if l.unit.is_absolute() {
         l.to_px()

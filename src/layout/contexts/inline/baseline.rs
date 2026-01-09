@@ -449,7 +449,7 @@ pub fn compute_line_height_with_metrics_viewport(
               LengthUnit::Ch => term.value * font_size * 0.5,
               LengthUnit::Lh => term.value * normal_line_height,
               u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
-                .resolve_with_viewport(vw, vh)
+                .resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode)
                 .unwrap_or(term.value),
               _ => term.value,
             };
@@ -458,7 +458,9 @@ pub fn compute_line_height_with_metrics_viewport(
           resolved
         })
         .unwrap_or(len.value),
-      u if u.is_viewport_relative() => len.resolve_with_viewport(vw, vh).unwrap_or(len.value),
+      u if u.is_viewport_relative() => len
+        .resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode)
+        .unwrap_or(len.value),
       _ => len.value,
     },
     LineHeight::Percentage(pct) => font_size * (pct / 100.0),

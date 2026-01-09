@@ -1541,6 +1541,44 @@ mod tests {
     assert!(rt.to_number(s).unwrap().is_nan());
     let s = rt.alloc_string_value("+0x10").unwrap();
     assert!(rt.to_number(s).unwrap().is_nan());
+
+    let err = rt
+      .to_number(Value::BigInt(JsBigInt::from_u128(1)))
+      .unwrap_err();
+    let thrown = match err {
+      VmError::Throw(v) => v,
+      other => panic!("expected thrown TypeError, got {other:?}"),
+    };
+    let message_key = rt.prop_key_str("message").unwrap();
+    let message_value = rt.get(thrown, message_key).unwrap();
+    assert_eq!(
+      as_utf8_lossy(&rt, message_value),
+      "Cannot convert a BigInt value to a number"
+    );
+  }
+
+  #[test]
+  fn to_object_bigint_allocates_wrapper() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let obj = rt
+      .to_object(Value::BigInt(JsBigInt::from_u128(7)))
+      .unwrap();
+    assert!(matches!(obj, Value::Object(_)));
+
+    let s = rt.to_string(obj).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "7");
+
+    let err = rt.to_number(obj).unwrap_err();
+    let thrown = match err {
+      VmError::Throw(v) => v,
+      other => panic!("expected thrown TypeError, got {other:?}"),
+    };
+    let message_key = rt.prop_key_str("message").unwrap();
+    let message_value = rt.get(thrown, message_key).unwrap();
+    assert_eq!(
+      as_utf8_lossy(&rt, message_value),
+      "Cannot convert a BigInt value to a number"
+    );
   }
 
   fn thrown_error_name(rt: &mut VmJsRuntime, err: VmError) -> String {

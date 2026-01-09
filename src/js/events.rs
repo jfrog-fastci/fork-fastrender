@@ -34,6 +34,7 @@ struct EventKeys {
   bubbles: PropertyKey,
   cancelable: PropertyKey,
   composed: PropertyKey,
+  time_stamp: PropertyKey,
   target: PropertyKey,
   src_element: PropertyKey,
   current_target: PropertyKey,
@@ -73,6 +74,7 @@ impl EventWrapper {
       bubbles: Self::intern_key(rt, "bubbles")?,
       cancelable: Self::intern_key(rt, "cancelable")?,
       composed: Self::intern_key(rt, "composed")?,
+      time_stamp: Self::intern_key(rt, "timeStamp")?,
       target: Self::intern_key(rt, "target")?,
       src_element: Self::intern_key(rt, "srcElement")?,
       current_target: Self::intern_key(rt, "currentTarget")?,
@@ -98,6 +100,7 @@ impl EventWrapper {
       keys.bubbles,
       keys.cancelable,
       keys.composed,
+      keys.time_stamp,
       keys.target,
       keys.src_element,
       keys.current_target,
@@ -320,6 +323,7 @@ impl EventWrapper {
       true,
     )?;
     rt.define_data_property(obj, self.keys.composed, Value::Bool(event.composed), true)?;
+    rt.define_data_property(obj, self.keys.time_stamp, Value::Number(event.time_stamp), true)?;
 
     let target = self.js_value_for_target(event.target);
     rt.define_data_property(obj, self.keys.target, target, true)?;

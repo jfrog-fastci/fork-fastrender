@@ -624,6 +624,10 @@ fn resolve_container_query_length(
     LengthUnit::Percent => Some(length.value / 100.0 * inline?),
     LengthUnit::Vw => Some(length.value / 100.0 * vw?),
     LengthUnit::Vh => Some(length.value / 100.0 * vh?),
+    // When resolving container/media query values without an element context, `vi`/`vb` use the
+    // initial `writing-mode` value (horizontal-tb), so they map to `vw`/`vh`.
+    LengthUnit::Vi => Some(length.value / 100.0 * vw?),
+    LengthUnit::Vb => Some(length.value / 100.0 * vh?),
     LengthUnit::Vmin => {
       let min_dimension = match (vw, vh) {
         (Some(w), Some(h)) => w.min(h),
@@ -640,6 +644,8 @@ fn resolve_container_query_length(
     }
     LengthUnit::Dvw => Some(length.value / 100.0 * vw?),
     LengthUnit::Dvh => Some(length.value / 100.0 * vh?),
+    LengthUnit::Dvi => Some(length.value / 100.0 * vw?),
+    LengthUnit::Dvb => Some(length.value / 100.0 * vh?),
     LengthUnit::Dvmin => {
       let min_dimension = match (vw, vh) {
         (Some(w), Some(h)) => w.min(h),
@@ -2984,6 +2990,8 @@ fn resolve_length_for_query(
     LengthUnit::Rem => Some(length.value * root_font_size),
     LengthUnit::Vw => Some(length.value / 100.0 * vw?),
     LengthUnit::Vh => Some(length.value / 100.0 * vh?),
+    LengthUnit::Vi => Some(length.value / 100.0 * vw?),
+    LengthUnit::Vb => Some(length.value / 100.0 * vh?),
     LengthUnit::Vmin => {
       let min_dimension = match (vw, vh) {
         (Some(w), Some(h)) => w.min(h),
@@ -3000,6 +3008,8 @@ fn resolve_length_for_query(
     }
     LengthUnit::Dvw => Some(length.value / 100.0 * vw?),
     LengthUnit::Dvh => Some(length.value / 100.0 * vh?),
+    LengthUnit::Dvi => Some(length.value / 100.0 * vw?),
+    LengthUnit::Dvb => Some(length.value / 100.0 * vh?),
     LengthUnit::Dvmin => {
       let min_dimension = match (vw, vh) {
         (Some(w), Some(h)) => w.min(h),
@@ -34401,7 +34411,7 @@ pub(crate) fn resolve_absolute_lengths(
       LengthUnit::Ch => Length::px(len.value * styles.font_size * 0.5),
       LengthUnit::Rem => Length::px(len.value * root_font_size),
       u if u.is_viewport_relative() => len
-        .resolve_with_viewport(viewport.width, viewport.height)
+        .resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, styles.writing_mode)
         .map(Length::px)
         .unwrap_or(len),
       _ => len,

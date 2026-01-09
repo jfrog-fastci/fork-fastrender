@@ -22,7 +22,7 @@ use crate::layout::fragmentation::{
 };
 use crate::layout::running_elements::{running_elements_for_page, running_elements_for_page_fragment};
 use crate::layout::running_strings::{StringSetEvent, StringSetEventCollector};
-use crate::layout::utils::{border_size_from_box_sizing, resolve_length_with_percentage};
+use crate::layout::utils::{border_size_from_box_sizing, resolve_length_with_percentage_metrics};
 use crate::style::content::{
   ContentContext, ContentItem, ContentValue, CounterStyle, RunningElementValues,
   RunningStringValues,
@@ -2682,12 +2682,14 @@ fn resolve_len(
   percent_base: Option<f32>,
   viewport: Size,
 ) -> f32 {
-  resolve_length_with_percentage(
+  resolve_length_with_percentage_metrics(
     len,
     percent_base,
     viewport,
     style.font_size,
     style.root_font_size,
+    Some(style),
+    None,
   )
   .unwrap_or(0.0)
 }

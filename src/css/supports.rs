@@ -158,8 +158,13 @@ mod tests {
     // Non-zero unitless numbers are invalid for sizing properties.
     assert!(!supports_declaration("height", "10"));
 
+    // Viewport-relative units from CSS Values and Units Level 4 should be recognized.
+    assert!(supports_declaration("height", "100vi"));
+    assert!(supports_declaration("height", "100vb"));
+    assert!(supports_declaration("height", "100dvi"));
+    assert!(supports_declaration("height", "100dvb"));
+
     // Unsupported/unknown units should make the query false.
-    assert!(!supports_declaration("height", "100dvb"));
     assert!(!supports_declaration("height", "100bogusunit"));
 
     // `none` is only valid for max-* properties.

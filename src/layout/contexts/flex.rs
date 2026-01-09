@@ -10537,7 +10537,11 @@ impl FlexFormattingContext {
       LengthUnit::Percent => None,
       _ if len.unit.is_absolute() => Some(len.to_px()),
       u if u.is_viewport_relative() => {
-        len.resolve_with_viewport(self.viewport_size.width, self.viewport_size.height)
+        len.resolve_with_viewport_for_writing_mode(
+          self.viewport_size.width,
+          self.viewport_size.height,
+          style.writing_mode,
+        )
       }
       LengthUnit::Rem => Some(len.value * style.root_font_size),
       LengthUnit::Em => Some(len.value * style.font_size),

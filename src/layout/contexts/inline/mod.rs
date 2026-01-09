@@ -378,6 +378,7 @@ impl InlineFormattingContext {
     font_size: f32,
     root_font_size: f32,
     line_height: f32,
+    writing_mode: crate::style::types::WritingMode,
   ) -> crate::layout::contexts::inline::baseline::VerticalAlign {
     use crate::layout::contexts::inline::baseline::VerticalAlign as Align;
     use crate::style::values::LengthUnit;
@@ -412,7 +413,11 @@ impl InlineFormattingContext {
               LengthUnit::Percent => Some((term.value / 100.0) * line_height),
               u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
               u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
-                .resolve_with_viewport(self.viewport_size.width, self.viewport_size.height),
+                .resolve_with_viewport_for_writing_mode(
+                  self.viewport_size.width,
+                  self.viewport_size.height,
+                  writing_mode,
+                ),
               LengthUnit::Em => Some(term.value * font_size),
               LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size * 0.5),
               LengthUnit::Rem => Some(term.value * root_font_size),
@@ -441,12 +446,13 @@ impl InlineFormattingContext {
                 .flatten()
             })
             .or_else(|| {
-              len.resolve_with_context(
+              len.resolve_with_context_for_writing_mode(
                 Some(line_height),
                 self.viewport_size.width,
                 self.viewport_size.height,
                 font_size,
                 root_font_size,
+                writing_mode,
               )
             })
             .unwrap_or(len.value)
@@ -471,7 +477,11 @@ impl InlineFormattingContext {
           len.to_px()
         } else if len.unit.is_viewport_relative() {
           len
-            .resolve_with_viewport(self.viewport_size.width, self.viewport_size.height)
+            .resolve_with_viewport_for_writing_mode(
+              self.viewport_size.width,
+              self.viewport_size.height,
+              writing_mode,
+            )
             .unwrap_or(len.value)
         } else {
           len.value
@@ -923,6 +933,7 @@ impl InlineFormattingContext {
               child.style.font_size,
               child.style.root_font_size,
               metrics.line_height,
+              child.style.writing_mode,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
               box_node: child.clone(),
@@ -1155,6 +1166,7 @@ impl InlineFormattingContext {
             child.style.font_size,
             child.style.root_font_size,
             metrics.line_height,
+            child.style.writing_mode,
           );
           for item in child_items {
             inline_box.add_child(item);
@@ -1181,6 +1193,7 @@ impl InlineFormattingContext {
               child.style.font_size,
               child.style.root_font_size,
               metrics.line_height,
+              child.style.writing_mode,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
               box_node: child.clone(),
@@ -1421,6 +1434,7 @@ impl InlineFormattingContext {
             child.style.font_size,
             child.style.root_font_size,
             metrics.line_height,
+            child.style.writing_mode,
           );
           for item in child_items {
             inline_box.add_child(item);
@@ -1444,6 +1458,7 @@ impl InlineFormattingContext {
               child.style.font_size,
               child.style.root_font_size,
               metrics.line_height,
+              child.style.writing_mode,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
               box_node: child.clone(),
@@ -1831,6 +1846,7 @@ impl InlineFormattingContext {
               child.style.font_size,
               child.style.root_font_size,
               metrics.line_height,
+              child.style.writing_mode,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
               box_node: child.clone(),
@@ -2073,6 +2089,7 @@ impl InlineFormattingContext {
             child.style.font_size,
             child.style.root_font_size,
             metrics.line_height,
+            child.style.writing_mode,
           );
           for item in child_items {
             inline_box.add_child(item);
@@ -2098,6 +2115,7 @@ impl InlineFormattingContext {
               child.style.font_size,
               child.style.root_font_size,
               metrics.line_height,
+              child.style.writing_mode,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
               box_node: child.clone(),
@@ -2342,6 +2360,7 @@ impl InlineFormattingContext {
             child.style.font_size,
             child.style.root_font_size,
             metrics.line_height,
+            child.style.writing_mode,
           );
           for item in child_items {
             inline_box.add_child(item);
@@ -2364,6 +2383,7 @@ impl InlineFormattingContext {
               child.style.font_size,
               child.style.root_font_size,
               metrics.line_height,
+              child.style.writing_mode,
             );
             let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
               box_node: child.clone(),
@@ -2756,6 +2776,7 @@ impl InlineFormattingContext {
       style.font_size,
       style.root_font_size,
       line_height,
+      style.writing_mode,
     );
 
     if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) | crate::style::types::AspectRatio::AutoRatio(r) if r > 0.0)
@@ -3259,6 +3280,7 @@ impl InlineFormattingContext {
           style.font_size,
           style.root_font_size,
           empty_metrics.line_height,
+          style.writing_mode,
         ),
         direction: style.direction,
         unicode_bidi: style.unicode_bidi,
@@ -3305,6 +3327,7 @@ impl InlineFormattingContext {
         style.font_size,
         style.root_font_size,
         metrics.line_height,
+        style.writing_mode,
       ),
       direction: style.direction,
       unicode_bidi: style.unicode_bidi,
@@ -3882,6 +3905,7 @@ impl InlineFormattingContext {
       style.font_size,
       style.root_font_size,
       line_height,
+      style.writing_mode,
     );
 
     let mut item = TextItem::new(
@@ -4481,6 +4505,7 @@ impl InlineFormattingContext {
       style.font_size,
       style.root_font_size,
       metrics.line_height,
+      style.writing_mode,
     );
     Ok(InlineItem::Tab(
       TabItem::new(style.clone(), metrics, tab_interval, allow_wrap).with_vertical_align(va),
@@ -4676,6 +4701,7 @@ impl InlineFormattingContext {
       style.font_size,
       style.root_font_size,
       line_height,
+      style.writing_mode,
     );
 
     let mut item = ReplacedItem::new(
@@ -7133,7 +7159,7 @@ fn resolve_length_with_percentage_inline(
   } else if length.unit.is_absolute() {
     Some(length.to_px())
   } else if length.unit.is_viewport_relative() {
-    length.resolve_with_viewport(viewport.width, viewport.height)
+    length.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
   } else {
     Some(resolve_font_relative_length(length, style, font_context))
   }
@@ -14678,6 +14704,7 @@ mod tests {
       10.0,
       10.0,
       12.0,
+      crate::style::types::WritingMode::HorizontalTb,
     );
     assert!(matches!(
         align,
@@ -14696,6 +14723,7 @@ mod tests {
       10.0,
       20.0,
       12.0,
+      crate::style::types::WritingMode::HorizontalTb,
     );
     assert!(matches!(
       align,
@@ -14717,6 +14745,7 @@ mod tests {
       10.0,
       20.0,
       12.0,
+      crate::style::types::WritingMode::HorizontalTb,
     );
     assert!(matches!(
       align,
@@ -14736,6 +14765,7 @@ mod tests {
       10.0,
       20.0,
       30.0,
+      crate::style::types::WritingMode::HorizontalTb,
     );
     assert!(matches!(
       align,

@@ -77,6 +77,19 @@ pub enum LengthUnit {
   /// Viewport height percentage (vh) - 1% of viewport height
   Vh,
 
+  /// Viewport inline size percentage (vi) - 1% of viewport size in the box's inline axis
+  ///
+  /// CSS Values & Units 4 defines `vi` to resolve against the *inline axis* of the box's writing
+  /// mode. In a horizontal writing mode this matches `vw`; in vertical writing modes it matches
+  /// `vh`.
+  Vi,
+
+  /// Viewport block size percentage (vb) - 1% of viewport size in the box's block axis
+  ///
+  /// Resolves against the *block axis* of the box's writing mode. In a horizontal writing mode
+  /// this matches `vh`; in vertical writing modes it matches `vw`.
+  Vb,
+
   /// Viewport minimum (vmin) - 1% of smaller viewport dimension
   Vmin,
 
@@ -88,6 +101,12 @@ pub enum LengthUnit {
 
   /// Dynamic viewport height (dvh)
   Dvh,
+
+  /// Dynamic viewport inline size (dvi)
+  Dvi,
+
+  /// Dynamic viewport block size (dvb)
+  Dvb,
 
   /// Dynamic viewport minimum (dvmin)
   Dvmin,
@@ -177,10 +196,14 @@ impl LengthUnit {
       self,
       Self::Vw
         | Self::Vh
+        | Self::Vi
+        | Self::Vb
         | Self::Vmin
         | Self::Vmax
         | Self::Dvw
         | Self::Dvh
+        | Self::Dvi
+        | Self::Dvb
         | Self::Dvmin
         | Self::Dvmax
     )
@@ -225,10 +248,14 @@ impl LengthUnit {
       Self::Lh => "lh",
       Self::Vw => "vw",
       Self::Vh => "vh",
+      Self::Vi => "vi",
+      Self::Vb => "vb",
       Self::Vmin => "vmin",
       Self::Vmax => "vmax",
       Self::Dvw => "dvw",
       Self::Dvh => "dvh",
+      Self::Dvi => "dvi",
+      Self::Dvb => "dvb",
       Self::Dvmin => "dvmin",
       Self::Dvmax => "dvmax",
       Self::Cqw => "cqw",
@@ -852,6 +879,143 @@ impl CalcLength {
     }
   }
 
+  pub(crate) fn resolve_for_inline_axis(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    inline_axis_is_horizontal: bool,
+  ) -> Option<f32> {
+    if !viewport_width.is_finite()
+      || !viewport_height.is_finite()
+      || !font_size_px.is_finite()
+      || !root_font_size_px.is_finite()
+    {
+      return None;
+    }
+
+    let percentage_base = percentage_base.filter(|b| b.is_finite());
+
+    let resolve_viewport = |unit: LengthUnit, value: f32| -> Option<f32> {
+      let factor = value / 100.0;
+      match unit {
+        LengthUnit::Vw | LengthUnit::Dvw => Some(factor * viewport_width),
+        LengthUnit::Vh | LengthUnit::Dvh => Some(factor * viewport_height),
+        LengthUnit::Vi | LengthUnit::Dvi => Some(
+          factor
+            * if inline_axis_is_horizontal {
+              viewport_width
+            } else {
+              viewport_height
+            },
+        ),
+        LengthUnit::Vb | LengthUnit::Dvb => Some(
+          factor
+            * if inline_axis_is_horizontal {
+              viewport_height
+            } else {
+              viewport_width
+            },
+        ),
+        LengthUnit::Vmin | LengthUnit::Dvmin => Some(factor * viewport_width.min(viewport_height)),
+        LengthUnit::Vmax | LengthUnit::Dvmax => Some(factor * viewport_width.max(viewport_height)),
+        _ => None,
+      }
+    };
+
+    let resolve_term = |term: &CalcTerm| -> Option<f32> {
+      match term.unit {
+        LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
+        u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+        u if u.is_viewport_relative() => resolve_viewport(u, term.value),
+        LengthUnit::Em => Some(term.value * font_size_px),
+        LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size_px * 0.5),
+        LengthUnit::Rem => Some(term.value * root_font_size_px),
+        // Without access to computed `line-height`, fall back to the `normal` approximation.
+        // Layout code that has access to `ComputedStyle` should resolve `lh` more accurately.
+        LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
+        LengthUnit::Calc => None,
+        _ => None,
+      }
+    };
+
+    match self.kind {
+      CalcLengthKind::Linear => {
+        let mut total = 0.0;
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            return None;
+          }
+          total += resolve_term(term)?;
+        }
+        Some(total)
+      }
+      CalcLengthKind::Min | CalcLengthKind::Max => {
+        let mut extremum = match self.kind {
+          CalcLengthKind::Min => f32::INFINITY,
+          CalcLengthKind::Max => f32::NEG_INFINITY,
+          _ => unreachable!(),
+        };
+        let mut current = 0.0;
+        let mut saw_any = false;
+
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            extremum = match self.kind {
+              CalcLengthKind::Min => extremum.min(current),
+              CalcLengthKind::Max => extremum.max(current),
+              _ => extremum,
+            };
+            current = 0.0;
+            saw_any = true;
+            continue;
+          }
+          current += resolve_term(term)?;
+        }
+
+        extremum = match self.kind {
+          CalcLengthKind::Min => extremum.min(current),
+          CalcLengthKind::Max => extremum.max(current),
+          _ => extremum,
+        };
+        if !saw_any && !extremum.is_finite() {
+          return None;
+        }
+        Some(extremum)
+      }
+      CalcLengthKind::Clamp => {
+        let mut values = [0.0f32; 3];
+        let mut arg_index = 0usize;
+        let mut current = 0.0;
+
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            if arg_index >= 3 {
+              return None;
+            }
+            values[arg_index] = current;
+            arg_index += 1;
+            current = 0.0;
+            continue;
+          }
+          current += resolve_term(term)?;
+        }
+
+        if arg_index != 2 {
+          return None;
+        }
+        values[2] = current;
+
+        let min = values[0];
+        let preferred = values[1];
+        let max = values[2];
+        Some(min.max(preferred.min(max)))
+      }
+    }
+  }
+
   pub fn single_term(&self) -> Option<CalcTerm> {
     if self.kind == CalcLengthKind::Linear && self.term_count == 1 {
       Some(self.terms[0])
@@ -1051,6 +1215,8 @@ mod tests {
 
     assert!(LengthUnit::Vw.is_viewport_relative());
     assert!(LengthUnit::Vh.is_viewport_relative());
+    assert!(LengthUnit::Vi.is_viewport_relative());
+    assert!(LengthUnit::Vb.is_viewport_relative());
 
     assert!(LengthUnit::Percent.is_percentage());
   }
@@ -1144,11 +1310,44 @@ mod tests {
     let vmax = Length::new(10.0, LengthUnit::Vmax);
     assert_eq!(vmax.resolve_with_viewport(800.0, 600.0), Some(80.0)); // 10% of 800
 
+    // `vi`/`vb` use the initial writing-mode (horizontal-tb) when resolving without element
+    // context, so they map to `vw`/`vh`.
+    let vi = Length::new(50.0, LengthUnit::Vi);
+    assert_eq!(vi.resolve_with_viewport(800.0, 600.0), Some(400.0));
+    let vb = Length::new(50.0, LengthUnit::Vb);
+    assert_eq!(vb.resolve_with_viewport(800.0, 600.0), Some(300.0));
+
     assert_eq!(
       Length::percent(50.0).resolve_with_viewport(800.0, 600.0),
       None
     );
     assert_eq!(Length::em(2.0).resolve_with_viewport(800.0, 600.0), None);
+  }
+
+  #[test]
+  fn test_vi_vb_viewport_resolution_respects_writing_mode() {
+    let vi = Length::new(50.0, LengthUnit::Vi);
+    let vb = Length::new(50.0, LengthUnit::Vb);
+
+    assert_eq!(
+      vi.resolve_with_viewport_for_writing_mode(800.0, 600.0, crate::style::types::WritingMode::HorizontalTb),
+      Some(400.0)
+    );
+    assert_eq!(
+      vb.resolve_with_viewport_for_writing_mode(800.0, 600.0, crate::style::types::WritingMode::HorizontalTb),
+      Some(300.0)
+    );
+
+    // In vertical writing modes, the inline axis runs vertically (height) and the block axis runs
+    // horizontally (width).
+    assert_eq!(
+      vi.resolve_with_viewport_for_writing_mode(800.0, 600.0, crate::style::types::WritingMode::VerticalRl),
+      Some(300.0)
+    );
+    assert_eq!(
+      vb.resolve_with_viewport_for_writing_mode(800.0, 600.0, crate::style::types::WritingMode::VerticalRl),
+      Some(400.0)
+    );
   }
 
   #[test]
@@ -1736,14 +1935,120 @@ impl Length {
     match self.unit {
       LengthUnit::Vw => Some((self.value / 100.0) * viewport_width),
       LengthUnit::Vh => Some((self.value / 100.0) * viewport_height),
+      // In style-less contexts (e.g. media queries), the spec resolves `vi`/`vb` using the initial
+      // `writing-mode` value, which is horizontal-tb (inline axis = viewport width).
+      LengthUnit::Vi => Some((self.value / 100.0) * viewport_width),
+      LengthUnit::Vb => Some((self.value / 100.0) * viewport_height),
       LengthUnit::Vmin => Some((self.value / 100.0) * viewport_width.min(viewport_height)),
       LengthUnit::Vmax => Some((self.value / 100.0) * viewport_width.max(viewport_height)),
       LengthUnit::Dvw => Some((self.value / 100.0) * viewport_width),
       LengthUnit::Dvh => Some((self.value / 100.0) * viewport_height),
+      LengthUnit::Dvi => Some((self.value / 100.0) * viewport_width),
+      LengthUnit::Dvb => Some((self.value / 100.0) * viewport_height),
       LengthUnit::Dvmin => Some((self.value / 100.0) * viewport_width.min(viewport_height)),
       LengthUnit::Dvmax => Some((self.value / 100.0) * viewport_width.max(viewport_height)),
       _ if self.unit.is_absolute() => Some(self.to_px()),
       _ => None,
+    }
+  }
+
+  /// Resolves this length using viewport dimensions and the box's computed `writing-mode`.
+  ///
+  /// This differs from [`Length::resolve_with_viewport`] only for `vi`/`vb` (and their dynamic
+  /// variants), which are relative to the box's inline/block axes.
+  pub fn resolve_with_viewport_for_writing_mode(
+    self,
+    viewport_width: f32,
+    viewport_height: f32,
+    writing_mode: crate::style::types::WritingMode,
+  ) -> Option<f32> {
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(writing_mode);
+    if !self.value.is_finite() || !viewport_width.is_finite() || !viewport_height.is_finite() {
+      return None;
+    }
+    if let Some(calc) = self.calc {
+      if calc.has_percentage() || calc.has_font_relative() {
+        return None;
+      }
+
+      return calc.resolve_for_inline_axis(
+        None,
+        viewport_width,
+        viewport_height,
+        0.0,
+        0.0,
+        inline_is_horizontal,
+      );
+    }
+
+    match self.unit {
+      LengthUnit::Vi => Some((self.value / 100.0) * if inline_is_horizontal { viewport_width } else { viewport_height }),
+      LengthUnit::Vb => Some((self.value / 100.0) * if inline_is_horizontal { viewport_height } else { viewport_width }),
+      LengthUnit::Dvi => Some((self.value / 100.0) * if inline_is_horizontal { viewport_width } else { viewport_height }),
+      LengthUnit::Dvb => Some((self.value / 100.0) * if inline_is_horizontal { viewport_height } else { viewport_width }),
+      // Delegate all other viewport units to the axis-agnostic resolver.
+      _ if self.unit.is_viewport_relative() => self.resolve_with_viewport(viewport_width, viewport_height),
+      _ if self.unit.is_absolute() => Some(self.to_px()),
+      _ => None,
+    }
+  }
+
+  /// Writing-mode-aware counterpart to [`Length::resolve_with_context`].
+  pub fn resolve_with_context_for_writing_mode(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    writing_mode: crate::style::types::WritingMode,
+  ) -> Option<f32> {
+    if !self.value.is_finite() {
+      return None;
+    }
+
+    let percentage_base = percentage_base.filter(|b| b.is_finite());
+    let vw = if viewport_width.is_finite() {
+      viewport_width
+    } else {
+      return None;
+    };
+    let vh = if viewport_height.is_finite() {
+      viewport_height
+    } else {
+      return None;
+    };
+    let font_px = if font_size_px.is_finite() {
+      font_size_px
+    } else {
+      return None;
+    };
+    let root_px = if root_font_size_px.is_finite() {
+      root_font_size_px
+    } else {
+      return None;
+    };
+
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(writing_mode);
+
+    if let Some(calc) = self.calc {
+      return calc.resolve_for_inline_axis(percentage_base, vw, vh, font_px, root_px, inline_is_horizontal);
+    }
+
+    if self.unit.is_percentage() {
+      percentage_base.map(|base| (self.value / 100.0) * base)
+    } else if self.unit.is_viewport_relative() {
+      self.resolve_with_viewport_for_writing_mode(vw, vh, writing_mode)
+    } else if self.unit.is_font_relative() {
+      self.resolve_with_font_size(if self.unit == LengthUnit::Rem {
+        root_px
+      } else {
+        font_px
+      })
+    } else if self.unit.is_absolute() {
+      Some(self.to_px())
+    } else {
+      Some(self.value)
     }
   }
 
