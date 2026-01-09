@@ -98,19 +98,13 @@ pub fn drain_for<T>(rx: &Receiver<T>, duration: Duration) -> Vec<T> {
 /// Temporary filesystem-backed `file://` site for fixture-based integration tests.
 pub struct TempSite {
   pub dir: tempfile::TempDir,
-  /// Common base URL pointing at an `index.html` path inside `dir`.
-  ///
-  /// The file does not need to exist; this is typically used as the base URL for resolving relative
-  /// resources like `style.css`.
-  pub base_url: String,
 }
 
 impl TempSite {
-  /// Create a new temporary directory with `base_url` pointing at `index.html` inside it.
+  /// Create a new temporary directory for fixture-based integration tests.
   pub fn new() -> Self {
     let dir = tempfile::tempdir().expect("temp dir");
-    let base_url = Self::file_url(dir.path().join("index.html"));
-    Self { dir, base_url }
+    Self { dir }
   }
 
   /// Write a file inside the temporary directory and return its `file://` URL.
@@ -185,9 +179,6 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
     return Some(*tab_id);
   }
   if let WorkerToUi::DebugLog { tab_id, .. } = msg {
-    return Some(*tab_id);
-  }
-  if let WorkerToUi::SelectDropdownOpened { tab_id, .. } = msg {
     return Some(*tab_id);
   }
   if let WorkerToUi::SelectDropdownClosed { tab_id, .. } = msg {
