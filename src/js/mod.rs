@@ -17,6 +17,8 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod dom_scripts;
+pub mod dom_host;
+pub mod dom2_bindings;
 pub mod clock;
 pub mod events;
 pub mod ecma_embed;
@@ -40,6 +42,7 @@ pub mod window_realm;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
+pub use dom_host::DomHost;
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use events::{JsDomEvents, JsFunctionHandle};
 pub use event_loop::{

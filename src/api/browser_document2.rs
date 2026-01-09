@@ -386,6 +386,28 @@ impl BrowserDocument2 {
   }
 }
 
+impl crate::js::DomHost for BrowserDocument2 {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&Document) -> R,
+  {
+    f(self.dom())
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut Document) -> (R, bool),
+  {
+    let mut out: Option<R> = None;
+    let _changed = BrowserDocument2::mutate_dom(self, |dom| {
+      let (result, changed) = f(dom);
+      out = Some(result);
+      changed
+    });
+    out.expect("DomHost::mutate_dom closure did not set a result")
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

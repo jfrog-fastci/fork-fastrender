@@ -1,5 +1,8 @@
-use fastrender::dom2::NodeKind;
-use fastrender::{BrowserDocument2, FastRender, RenderOptions, Result};
+use fastrender::{
+  BrowserDocument2, BrowserDocumentDom2, FastRender, FontConfig, RenderOptions, Result,
+};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[test]
 fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
@@ -48,32 +51,10 @@ fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
   );
 
   let changed = doc.mutate_dom(|dom| {
-    let node_id = dom
-      .subtree_preorder(dom.root())
-      .find(|&id| match &dom.node(id).kind {
-        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
-          .iter()
-          .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == "box"),
-        _ => false,
-      })
-      .expect("expected #box element");
-
-    let attrs = match &mut dom.node_mut(node_id).kind {
-      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
-      _ => panic!("expected #box to be an element"),
-    };
-    if let Some((_, class)) = attrs.iter_mut().find(|(name, _)| name.eq_ignore_ascii_case("class")) {
-      if class == "b" {
-        false
-      } else {
-        class.clear();
-        class.push_str("b");
-        true
-      }
-    } else {
-      attrs.push(("class".to_string(), "b".to_string()));
-      true
-    }
+    let node_id = dom.get_element_by_id("box").expect("expected #box element");
+    dom
+      .set_attribute(node_id, "class", "b")
+      .expect("set_attribute should succeed")
   });
   assert!(changed, "expected class mutation to report a change");
 
@@ -91,6 +72,72 @@ fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
     doc.render_if_needed()?.is_none(),
     "expected render_if_needed() to return None when nothing changed"
   );
+
+  Ok(())
+}
+
+#[test]
+fn browser_document_dom2_rerenders_after_js_dom_mutation() -> Result<()> {
+  let options = RenderOptions::new().with_viewport(64, 64);
+
+  let renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()?;
+
+  let doc = BrowserDocumentDom2::new(
+    renderer,
+    "<!doctype html><html><body><div>Hello</div></body></html>",
+    options,
+  )?;
+  let doc = Rc::new(RefCell::new(doc));
+
+  // First render clears dirty flags.
+  assert!(doc.borrow_mut().render_if_needed()?.is_some());
+  assert!(doc.borrow_mut().render_if_needed()?.is_none());
+
+  // Install a minimal JS shim for `document.documentElement.classList.add(token)` that mutates the
+  // live `dom2::Document` via the `DomHost` interface.
+  let rt = rquickjs::Runtime::new().expect("js runtime");
+  let ctx = rquickjs::Context::full(&rt).expect("js context");
+
+  let element_id = fastrender::js::dom2_bindings::document_element(&*doc.borrow())
+    .expect("documentElement should exist");
+
+  ctx
+    .with(|ctx| -> rquickjs::Result<()> {
+      let globals = ctx.globals();
+
+      let document = rquickjs::Object::new(ctx.clone())?;
+      let document_element = rquickjs::Object::new(ctx.clone())?;
+      let class_list = rquickjs::Object::new(ctx.clone())?;
+
+      let host = Rc::clone(&doc);
+      let add = rquickjs::Function::new(ctx.clone(), move |token: String| {
+        let mut host = host.borrow_mut();
+        fastrender::js::dom2_bindings::class_list_add(&mut *host, element_id, &token)
+          .expect("classList.add should succeed");
+      })?;
+
+      class_list.set("add", add)?;
+      document_element.set("classList", class_list)?;
+      document.set("documentElement", document_element)?;
+      globals.set("document", document)?;
+      Ok(())
+    })
+    .expect("install bindings");
+
+  // Mutation should mark the document dirty and trigger a rerender.
+  ctx
+    .with(|ctx| ctx.eval::<(), _>("document.documentElement.classList.add('x')"))
+    .expect("js eval");
+  assert!(doc.borrow_mut().render_if_needed()?.is_some());
+  assert!(doc.borrow_mut().render_if_needed()?.is_none());
+
+  // No-op mutation should not dirty the document.
+  ctx
+    .with(|ctx| ctx.eval::<(), _>("document.documentElement.classList.add('x')"))
+    .expect("js eval");
+  assert!(doc.borrow_mut().render_if_needed()?.is_none());
 
   Ok(())
 }
