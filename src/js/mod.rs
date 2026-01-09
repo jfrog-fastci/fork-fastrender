@@ -31,6 +31,7 @@ pub mod time;
 pub mod url;
 pub mod window_timers;
 pub mod streaming;
+pub mod streaming_dom2;
 pub mod webidl;
 pub mod window_realm;
 
@@ -108,14 +109,11 @@ pub struct ScriptElementSpec {
   pub script_type: ScriptType,
 }
 
-/// Determine the script type for a `<script>` element based on `type`/`language` attributes.
-///
-/// This follows the HTML Standard script preparation rules for computing the script block type
-/// string and then mapping it to `classic`/`module`/`importmap`/unknown.
-pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
-  let Some(tag_name) = script.tag_name() else {
-    return ScriptType::Unknown;
-  };
+fn determine_script_type_from_attrs(
+  tag_name: &str,
+  type_value_raw: Option<&str>,
+  language_value_raw: Option<&str>,
+) -> ScriptType {
   if !tag_name.eq_ignore_ascii_case("script") {
     return ScriptType::Unknown;
   }
@@ -129,9 +127,6 @@ pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
   //   - `language=<value>` => `text/<value>` (no trimming)
   //
   // Notably, whitespace-only values do *not* count as empty-string defaults.
-  let type_value_raw = script.get_attribute_ref("type");
-  let language_value_raw = script.get_attribute_ref("language");
-
   let type_string = if let Some(value) = type_value_raw {
     if value.is_empty() {
       "text/javascript".to_string()
@@ -189,6 +184,21 @@ pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
   }
 
   ScriptType::Unknown
+}
+
+/// Determine the script type for a `<script>` element based on `type`/`language` attributes.
+///
+/// This follows the HTML Standard script preparation rules for computing the script block type
+/// string and then mapping it to `classic`/`module`/`importmap`/unknown.
+pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
+  let Some(tag_name) = script.tag_name() else {
+    return ScriptType::Unknown;
+  };
+  determine_script_type_from_attrs(
+    tag_name,
+    script.get_attribute_ref("type"),
+    script.get_attribute_ref("language"),
+  )
 }
 
 #[cfg(test)]

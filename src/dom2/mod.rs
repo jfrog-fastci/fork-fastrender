@@ -8,7 +8,7 @@ use selectors::OpaqueElement;
 mod attrs;
 mod class_list;
 mod error;
-pub use error::DomError;
+pub use error::{DomError, Result as DomResult};
 
 mod mutation;
 mod js_shims;

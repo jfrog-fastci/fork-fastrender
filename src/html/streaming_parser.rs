@@ -124,6 +124,8 @@ impl StreamingHtmlParser {
 mod tests {
   use super::{StreamingHtmlParser, StreamingParserYield};
   use crate::dom2::{Document, NodeId, NodeKind};
+  use crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
+  use crate::js::ScriptElementSpec;
 
   fn find_first_element(doc: &Document, tag: &str) -> Option<NodeId> {
     let mut stack = vec![doc.root()];
@@ -283,5 +285,72 @@ mod tests {
     }
 
     assert_eq!(parser.current_base_url().as_deref(), Some("https://ex/base/"));
+  }
+
+  fn parse_and_collect_script_specs(
+    html: &str,
+    document_url: Option<&str>,
+  ) -> Vec<ScriptElementSpec> {
+    let mut parser = StreamingHtmlParser::new(document_url);
+    parser.push_str(html);
+    parser.set_eof();
+
+    let mut specs = Vec::new();
+    loop {
+      match parser.pump() {
+        StreamingParserYield::Script {
+          script,
+          base_url_at_this_point,
+        } => {
+          let doc = parser.document();
+          let spec =
+            build_parser_inserted_script_element_spec_dom2(&doc, script, base_url_at_this_point);
+          specs.push(spec);
+        }
+        StreamingParserYield::NeedMoreInput => panic!("unexpected NeedMoreInput after EOF"),
+        StreamingParserYield::Finished { .. } => break,
+      }
+    }
+    specs
+  }
+
+  #[test]
+  fn script_before_base_href_uses_document_url() {
+    let html = r#"<!doctype html><head><script src="a.js"></script><base href="https://ex/base/"></head>"#;
+    let specs = parse_and_collect_script_specs(html, Some("https://ex/doc.html"));
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].base_url.as_deref(), Some("https://ex/doc.html"));
+    assert_eq!(specs[0].src.as_deref(), Some("https://ex/a.js"));
+  }
+
+  #[test]
+  fn script_before_base_href_without_document_url_keeps_relative_src() {
+    let html = r#"<!doctype html><head><script src="a.js"></script><base href="https://ex/base/"></head>"#;
+    let specs = parse_and_collect_script_specs(html, None);
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].base_url, None);
+    assert_eq!(specs[0].src.as_deref(), Some("a.js"));
+  }
+
+  #[test]
+  fn script_after_base_href_uses_base_url() {
+    let html = r#"<!doctype html><head><base href="https://ex/base/"><script src="a.js"></script></head>"#;
+    let specs = parse_and_collect_script_specs(html, Some("https://ex/doc.html"));
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].base_url.as_deref(), Some("https://ex/base/"));
+    assert_eq!(specs[0].src.as_deref(), Some("https://ex/base/a.js"));
+  }
+
+  #[test]
+  fn base_in_template_does_not_freeze_base_url() {
+    let html = r#"<!doctype html><head>
+      <template><base href="https://worse.example/"></template>
+      <base href="https://good.example/">
+      <script src="a.js"></script>
+    </head>"#;
+    let specs = parse_and_collect_script_specs(html, Some("https://ex/doc.html"));
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].base_url.as_deref(), Some("https://good.example/"));
+    assert_eq!(specs[0].src.as_deref(), Some("https://good.example/a.js"));
   }
 }
