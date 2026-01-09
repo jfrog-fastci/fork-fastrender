@@ -7334,7 +7334,8 @@ impl Painter {
           }
         };
 
-        let color = style_ref.color;
+        let base_color = style_ref.color;
+        let used_dark_color_scheme = style_ref.used_dark_color_scheme;
         let layout_w = layout.width.max(0.01);
         let layout_h = layout.height.max(0.01);
         let scale_x = if layout_w > 0.0 {
@@ -7370,7 +7371,11 @@ impl Painter {
 
         for frag in &layout.fragments {
           match frag {
-            MathFragment::Glyph { origin, run } => {
+            MathFragment::Glyph { origin, run, color } => {
+              let current = color.unwrap_or(base_color);
+              let paint_color = style_ref
+                .webkit_text_fill_color
+                .to_rgba_with_scheme(current, used_dark_color_scheme);
               let scaled_run = scale_run(run);
               let baseline_y = content_rect.y() + origin.y * scale_y;
               let start_x = content_rect.x() + origin.x * scale_x;
@@ -7379,12 +7384,16 @@ impl Painter {
                 &runs,
                 start_x,
                 baseline_y,
-                color,
+                paint_color,
                 Some(style_ref),
                 clip_mask,
               );
             }
-            MathFragment::Rule(r) => {
+            MathFragment::Rule { rect: r, color } => {
+              let current = color.unwrap_or(base_color);
+              let paint_color = style_ref
+                .webkit_text_fill_color
+                .to_rgba_with_scheme(current, used_dark_color_scheme);
               let scaled_rect = Rect::from_xywh(
                 content_rect.x() + r.x() * scale_x,
                 content_rect.y() + r.y() * scale_y,
@@ -7401,13 +7410,27 @@ impl Painter {
                 continue;
               };
               let mut paint = Paint::default();
-              paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+              paint.set_color_rgba8(
+                paint_color.r,
+                paint_color.g,
+                paint_color.b,
+                paint_color.alpha_u8(),
+              );
               paint.anti_alias = true;
               self
                 .pixmap
                 .fill_rect(rect, &paint, Transform::identity(), clip_mask);
             }
-            MathFragment::Line { from, to, width } => {
+            MathFragment::Line {
+              from,
+              to,
+              width,
+              color,
+            } => {
+              let current = color.unwrap_or(base_color);
+              let paint_color = style_ref
+                .webkit_text_fill_color
+                .to_rgba_with_scheme(current, used_dark_color_scheme);
               let start = Point::new(
                 content_rect.x() + from.x * scale_x,
                 content_rect.y() + from.y * scale_y,
@@ -7438,7 +7461,12 @@ impl Painter {
               let transform = Transform::from_row(cos, sin, -sin, cos, start_x, start_y);
 
               let mut paint = Paint::default();
-              paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+              paint.set_color_rgba8(
+                paint_color.r,
+                paint_color.g,
+                paint_color.b,
+                paint_color.alpha_u8(),
+              );
               paint.anti_alias = true;
               self.pixmap.fill_rect(rect, &paint, transform, clip_mask);
             }
@@ -7446,7 +7474,12 @@ impl Painter {
               rect: stroke_rect,
               radius,
               width,
+              color,
             } => {
+              let current = color.unwrap_or(base_color);
+              let paint_color = style_ref
+                .webkit_text_fill_color
+                .to_rgba_with_scheme(current, used_dark_color_scheme);
               let scaled_rect = Rect::from_xywh(
                 content_rect.x() + stroke_rect.x() * scale_x,
                 content_rect.y() + stroke_rect.y() * scale_y,
@@ -7468,7 +7501,12 @@ impl Painter {
               };
 
               let mut paint = Paint::default();
-              paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+              paint.set_color_rgba8(
+                paint_color.r,
+                paint_color.g,
+                paint_color.b,
+                paint_color.alpha_u8(),
+              );
               paint.anti_alias = true;
 
               let stroke = tiny_skia::Stroke {
@@ -7501,7 +7539,12 @@ impl Painter {
               rect: stroke_rect,
               radii: (radius_x, radius_y),
               width,
+              color,
             } => {
+              let current = color.unwrap_or(base_color);
+              let paint_color = style_ref
+                .webkit_text_fill_color
+                .to_rgba_with_scheme(current, used_dark_color_scheme);
               let scaled_rect = Rect::from_xywh(
                 content_rect.x() + stroke_rect.x() * scale_x,
                 content_rect.y() + stroke_rect.y() * scale_y,
@@ -7524,7 +7567,12 @@ impl Painter {
               };
 
               let mut paint = Paint::default();
-              paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+              paint.set_color_rgba8(
+                paint_color.r,
+                paint_color.g,
+                paint_color.b,
+                paint_color.alpha_u8(),
+              );
               paint.anti_alias = true;
 
               let stroke = tiny_skia::Stroke {

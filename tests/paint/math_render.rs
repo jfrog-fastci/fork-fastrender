@@ -224,7 +224,7 @@ fn fraction_linethickness_zero_emits_no_rule_fragments() {
     let rules = layout
       .fragments
       .iter()
-      .filter(|f| matches!(f, MathFragment::Rule(_)))
+      .filter(|f| matches!(f, MathFragment::Rule { .. }))
       .count();
     assert_eq!(
       rules, 0,
@@ -604,7 +604,7 @@ fn scripts_on_italic_identifiers_offset_and_raise() {
     .fragments
     .get(base_fragments)
     .and_then(|f| match f {
-      fastrender::math::MathFragment::Glyph { origin, run } => Some((*origin, run.advance)),
+      fastrender::math::MathFragment::Glyph { origin, run, .. } => Some((*origin, run.advance)),
       _ => None,
     })
     .expect("superscript fragment");

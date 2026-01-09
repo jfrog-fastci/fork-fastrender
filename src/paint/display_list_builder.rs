@@ -5681,10 +5681,8 @@ impl DisplayListBuilder {
               .as_ref()
               .map(|l| l.as_ref().clone())
               .unwrap_or_else(|| layout_mathml(&math.root, style_ref, &self.font_ctx));
-            let current = style_ref.color;
-            let color = style_ref
-              .webkit_text_fill_color
-              .to_rgba_with_scheme(current, style_ref.used_dark_color_scheme);
+            let base_color = style_ref.color;
+            let used_dark_color_scheme = style_ref.used_dark_color_scheme;
             let shadows = Self::text_shadows_from_style(Some(style_ref), self.viewport);
             let layout_w = layout_owned.width.max(0.01);
             let layout_h = layout_owned.height.max(0.01);
@@ -5700,13 +5698,17 @@ impl DisplayListBuilder {
             };
             for frag in layout_owned.fragments {
               match frag {
-                MathFragment::Glyph { origin, run } => {
+                MathFragment::Glyph { origin, run, color } => {
+                  let current = color.unwrap_or(base_color);
+                  let paint_color = style_ref
+                    .webkit_text_fill_color
+                    .to_rgba_with_scheme(current, used_dark_color_scheme);
                   let scaled_run = Self::scale_run(&run, scale_x, scale_y);
                   let baseline_y = content_rect.y() + origin.y * scale_y;
                   let start_x = content_rect.x() + origin.x * scale_x;
                   self.emit_shaped_runs(
                     &[scaled_run],
-                    color,
+                    paint_color,
                     baseline_y,
                     start_x,
                     &shadows,
@@ -5715,7 +5717,11 @@ impl DisplayListBuilder {
                     TextEmphasisOffset::default(),
                   );
                 }
-                MathFragment::Rule(r) => {
+                MathFragment::Rule { rect: r, color } => {
+                  let current = color.unwrap_or(base_color);
+                  let paint_color = style_ref
+                    .webkit_text_fill_color
+                    .to_rgba_with_scheme(current, used_dark_color_scheme);
                   let scaled_rect = Rect::from_xywh(
                     content_rect.x() + r.x() * scale_x,
                     content_rect.y() + r.y() * scale_y,
@@ -5724,10 +5730,19 @@ impl DisplayListBuilder {
                   );
                   self.list.push(DisplayItem::FillRect(FillRectItem {
                     rect: scaled_rect,
-                    color,
+                    color: paint_color,
                   }));
                 }
-                MathFragment::Line { from, to, width } => {
+                MathFragment::Line {
+                  from,
+                  to,
+                  width,
+                  color,
+                } => {
+                  let current = color.unwrap_or(base_color);
+                  let paint_color = style_ref
+                    .webkit_text_fill_color
+                    .to_rgba_with_scheme(current, used_dark_color_scheme);
                   let start = Point::new(
                     content_rect.x() + from.x * scale_x,
                     content_rect.y() + from.y * scale_y,
@@ -5748,7 +5763,7 @@ impl DisplayListBuilder {
                     self.list.push(DisplayItem::PushTransform(TransformItem { transform }));
                     self.list.push(DisplayItem::FillRect(FillRectItem {
                       rect: Rect::from_xywh(0.0, -thickness * 0.5, len, thickness),
-                      color,
+                      color: paint_color,
                     }));
                     self.list.push(DisplayItem::PopTransform);
                   }
@@ -5757,7 +5772,12 @@ impl DisplayListBuilder {
                   rect: stroke_rect,
                   radius,
                   width,
+                  color,
                 } => {
+                  let current = color.unwrap_or(base_color);
+                  let paint_color = style_ref
+                    .webkit_text_fill_color
+                    .to_rgba_with_scheme(current, used_dark_color_scheme);
                   let scaled_rect = Rect::from_xywh(
                     content_rect.x() + stroke_rect.x() * scale_x,
                     content_rect.y() + stroke_rect.y() * scale_y,
@@ -5772,14 +5792,14 @@ impl DisplayListBuilder {
                       .list
                       .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
                         rect: scaled_rect,
-                        color,
+                        color: paint_color,
                         width: stroke_width,
                         radii: BorderRadii::uniform(scaled_radius),
                       }));
                   } else {
                     self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
                       rect: scaled_rect,
-                      color,
+                      color: paint_color,
                       width: stroke_width,
                       blend_mode: BlendMode::Normal,
                     }));
@@ -5789,7 +5809,12 @@ impl DisplayListBuilder {
                   rect: stroke_rect,
                   radii: (radius_x, radius_y),
                   width,
+                  color,
                 } => {
+                  let current = color.unwrap_or(base_color);
+                  let paint_color = style_ref
+                    .webkit_text_fill_color
+                    .to_rgba_with_scheme(current, used_dark_color_scheme);
                   let scaled_rect = Rect::from_xywh(
                     content_rect.x() + stroke_rect.x() * scale_x,
                     content_rect.y() + stroke_rect.y() * scale_y,
@@ -5809,7 +5834,7 @@ impl DisplayListBuilder {
                       .list
                       .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
                         rect: scaled_rect,
-                        color,
+                        color: paint_color,
                         width: stroke_width,
                         radii: BorderRadii {
                           top_left: border_radius,
@@ -5821,7 +5846,7 @@ impl DisplayListBuilder {
                   } else {
                     self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
                       rect: scaled_rect,
-                      color,
+                      color: paint_color,
                       width: stroke_width,
                       blend_mode: BlendMode::Normal,
                     }));

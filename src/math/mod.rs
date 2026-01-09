@@ -8,6 +8,7 @@ mod operator_dict;
 
 use crate::dom::{DomNode, DomNodeType, MATHML_NAMESPACE};
 use crate::geometry::{Point, Rect, Size};
+use crate::style::color::{Color, Rgba};
 use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::FontFeatureSetting;
 use crate::style::types::FontWeight as CssFontWeight;
@@ -413,6 +414,8 @@ pub struct MathStyleOverrides {
   pub script_min_size: Option<MathLength>,
   pub math_size: Option<MathSize>,
   pub math_variant: Option<MathVariant>,
+  pub math_color: Option<Rgba>,
+  pub math_background: Option<Rgba>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -571,14 +574,39 @@ pub enum MathNode {
 /// Renderable fragment produced by math layout.
 #[derive(Debug, Clone)]
 pub enum MathFragment {
-  Glyph { origin: Point, run: ShapedRun },
-  Rule(Rect),
-  Line { from: Point, to: Point, width: f32 },
-  StrokeRect { rect: Rect, radius: f32, width: f32 },
+  Glyph {
+    origin: Point,
+    run: ShapedRun,
+    /// Optional MathML `mathcolor` override. When omitted, paint uses the computed style color.
+    color: Option<Rgba>,
+  },
+  /// A filled rectangle fragment (used for fraction/table rules and MathML backgrounds).
+  Rule {
+    rect: Rect,
+    /// Optional MathML `mathcolor`/`mathbackground` override. When omitted, paint uses the computed
+    /// style color.
+    color: Option<Rgba>,
+  },
+  Line {
+    from: Point,
+    to: Point,
+    width: f32,
+    /// Optional MathML `mathcolor` override.
+    color: Option<Rgba>,
+  },
+  StrokeRect {
+    rect: Rect,
+    radius: f32,
+    width: f32,
+    /// Optional MathML `mathcolor` override.
+    color: Option<Rgba>,
+  },
   StrokeRoundedRect {
     rect: Rect,
     radii: (f32, f32),
     width: f32,
+    /// Optional MathML `mathcolor` override.
+    color: Option<Rgba>,
   },
 }
 
@@ -619,29 +647,47 @@ pub struct MathLayout {
 impl MathFragment {
   fn translate(self, offset: Point) -> Self {
     match self {
-      MathFragment::Glyph { origin, run } => MathFragment::Glyph {
+      MathFragment::Glyph { origin, run, color } => MathFragment::Glyph {
         origin: Point::new(origin.x + offset.x, origin.y + offset.y),
         run,
+        color,
       },
-      MathFragment::Rule(rect) => MathFragment::Rule(rect.translate(offset)),
-      MathFragment::Line { from, to, width } => MathFragment::Line {
+      MathFragment::Rule { rect, color } => MathFragment::Rule {
+        rect: rect.translate(offset),
+        color,
+      },
+      MathFragment::Line {
+        from,
+        to,
+        width,
+        color,
+      } => MathFragment::Line {
         from: from.translate(offset),
         to: to.translate(offset),
         width,
+        color,
       },
       MathFragment::StrokeRect {
         rect,
         radius,
         width,
+        color,
       } => MathFragment::StrokeRect {
         rect: rect.translate(offset),
         radius,
         width,
+        color,
       },
-      MathFragment::StrokeRoundedRect { rect, radii, width } => MathFragment::StrokeRoundedRect {
+      MathFragment::StrokeRoundedRect {
+        rect,
+        radii,
+        width,
+        color,
+      } => MathFragment::StrokeRoundedRect {
         rect: rect.translate(offset),
         radii,
         width,
+        color,
       },
     }
   }
@@ -662,6 +708,8 @@ struct MathStyle {
   script_size_multiplier: Option<f32>,
   script_min_size_px: f32,
   script_level: u8,
+  /// Optional MathML `mathcolor` override inherited through the MathML subtree.
+  color: Option<Rgba>,
 }
 
 impl MathStyle {
@@ -673,6 +721,7 @@ impl MathStyle {
       script_size_multiplier: None,
       script_min_size_px: MIN_SCRIPT_FONT_SIZE_PX,
       script_level: 0,
+      color: None,
     }
   }
 
@@ -1117,7 +1166,24 @@ fn parse_style_overrides(node: &DomNode) -> MathStyleOverrides {
       .get_attribute_ref("mathsize")
       .and_then(|v| parse_math_size(v)),
     math_variant: parse_mathvariant(node),
+    math_color: parse_mathml_color(node.get_attribute_ref("mathcolor")),
+    math_background: parse_mathml_color(node.get_attribute_ref("mathbackground"))
+      .filter(|c| !c.is_transparent()),
   }
+}
+
+fn parse_mathml_color(raw: Option<&str>) -> Option<Rgba> {
+  let value = trim_ascii_whitespace(raw?);
+  if value.is_empty() {
+    return None;
+  }
+  let parsed = Color::parse(value).ok()?;
+  // Treat `currentColor` as "no override" so the subtree continues to track the computed CSS
+  // `color` value when it changes (e.g. due to animation/inheritance recomputation).
+  if matches!(parsed, Color::CurrentColor) {
+    return None;
+  }
+  Some(parsed.to_rgba(Rgba::BLACK))
 }
 
 fn has_style_overrides(overrides: &MathStyleOverrides) -> bool {
@@ -1127,6 +1193,8 @@ fn has_style_overrides(overrides: &MathStyleOverrides) -> bool {
     || overrides.script_min_size.is_some()
     || overrides.math_size.is_some()
     || overrides.math_variant.is_some()
+    || overrides.math_color.is_some()
+    || overrides.math_background.is_some()
 }
 
 fn apply_presentation_attributes(node: &DomNode, tag: &str, parsed: MathNode) -> MathNode {
@@ -2026,6 +2094,7 @@ impl MathLayoutContext {
     font: Arc<LoadedFont>,
     glyph_id: u16,
     font_size: f32,
+    color: Option<Rgba>,
   ) -> Option<MathLayout> {
     let face = crate::text::face_cache::get_ttf_face(&font)?;
     let face = face.face();
@@ -2097,6 +2166,7 @@ impl MathLayoutContext {
       fragments: vec![MathFragment::Glyph {
         origin: Point::new(0.0, ascent),
         run,
+        color,
       }],
       annotations,
     })
@@ -2133,6 +2203,7 @@ impl MathLayoutContext {
     min_overlap: f32,
     orientation: StretchOrientation,
     font_size: f32,
+    color: Option<Rgba>,
   ) -> Option<MathLayout> {
     let scale = font.metrics().ok()?.scale(font_size).scale;
     let target_main = orientation.target();
@@ -2141,7 +2212,7 @@ impl MathLayoutContext {
       let Some(var) = construction.variants.get(idx as u16) else {
         continue;
       };
-      let layout = self.layout_glyph_by_id(font.clone(), var.variant_glyph.0, font_size)?;
+      let layout = self.layout_glyph_by_id(font.clone(), var.variant_glyph.0, font_size, color)?;
       let layout_main = orientation.main_dimension(&layout);
       if layout_main >= target_main
         && best_variant.as_ref().map(|(_, h)| *h).unwrap_or(f32::MAX) > layout_main
@@ -2203,7 +2274,7 @@ impl MathLayoutContext {
       StretchOrientation::Vertical { .. } => {
         let mut laid_out_parts = Vec::new();
         for part in &assembly_parts {
-          let layout = self.layout_glyph_by_id(font.clone(), part.glyph_id.0, font_size)?;
+          let layout = self.layout_glyph_by_id(font.clone(), part.glyph_id.0, font_size, color)?;
           max_width = max_width.max(layout.width);
           laid_out_parts.push((layout, *part));
         }
@@ -2233,7 +2304,7 @@ impl MathLayoutContext {
         let mut baseline: f32 = 0.0;
         let mut max_height: f32 = 0.0;
         for part in &assembly_parts {
-          let layout = self.layout_glyph_by_id(font.clone(), part.glyph_id.0, font_size)?;
+          let layout = self.layout_glyph_by_id(font.clone(), part.glyph_id.0, font_size, color)?;
           max_height = max_height.max(layout.height);
           baseline = baseline.max(layout.baseline);
           laid_out_parts.push((layout, *part));
@@ -2322,6 +2393,7 @@ impl MathLayoutContext {
           target: target_height,
         },
         style.font_size,
+        style.color,
       ) {
         return Some(self.align_stretch(layout, target_ascent, target_descent, baseline_shift));
       }
@@ -2373,6 +2445,7 @@ impl MathLayoutContext {
           target: target_width,
         },
         style.font_size,
+        style.color,
       ) {
         if layout.width >= target_width * 0.99 {
           return Some(layout);
@@ -2442,6 +2515,9 @@ impl MathLayoutContext {
     }
     if let Some(variant) = overrides.math_variant {
       next.default_variant = Some(variant);
+    }
+    if let Some(color) = overrides.math_color {
+      next.color = Some(color);
     }
     if let Some(size) = overrides.math_size {
       next.font_size = match size {
@@ -2664,7 +2740,11 @@ impl MathLayoutContext {
     for run in runs {
       let origin = Point::new(pen_x, ascent);
       pen_x += run.advance;
-      fragments.push(MathFragment::Glyph { origin, run });
+      fragments.push(MathFragment::Glyph {
+        origin,
+        run,
+        color: math_style.color,
+      });
     }
     MathLayout {
       width,
@@ -3182,12 +3262,10 @@ impl MathLayoutContext {
       fragments.push(frag.translate(Point::new(den_x, den_y)));
     }
     if has_rule {
-      fragments.push(MathFragment::Rule(Rect::from_xywh(
-        0.0,
-        axis_y - rule * 0.5,
-        width,
-        rule,
-      )));
+      fragments.push(MathFragment::Rule {
+        rect: Rect::from_xywh(0.0, axis_y - rule * 0.5, width, rule),
+        color: style.color,
+      });
     }
 
     let annotations = numerator
@@ -3709,12 +3787,10 @@ impl MathLayoutContext {
       fragments.push(frag.translate(Point::new(offset_x, content_y)));
     }
 
-    fragments.push(MathFragment::Rule(Rect::from_xywh(
-      offset_x,
-      content_y - rule,
-      content.width,
-      rule,
-    )));
+    fragments.push(MathFragment::Rule {
+      rect: Rect::from_xywh(offset_x, content_y - rule, content.width, rule),
+      color: style.color,
+    });
 
     let height = (content_y + content.height).max(radical.height + (baseline - radical.baseline));
     MathLayout {
@@ -3815,11 +3891,13 @@ impl MathLayoutContext {
           rect: outer_rect,
           radius: 0.0,
           width: stroke,
+          color: style.color,
         }),
         MencloseNotation::RoundedBox => fragments.push(MathFragment::StrokeRect {
           rect: outer_rect,
           radius: padding,
           width: stroke,
+          color: style.color,
         }),
         MencloseNotation::Circle => {
           let rx = (outer_rect.width() / 2.0).max(0.0);
@@ -3828,53 +3906,56 @@ impl MathLayoutContext {
             rect: outer_rect,
             radii: (rx, ry),
             width: stroke,
+            color: style.color,
           });
         }
         MencloseNotation::Top => {
-          fragments.push(MathFragment::Rule(Rect::from_xywh(0.0, 0.0, width, stroke)))
+          fragments.push(MathFragment::Rule {
+            rect: Rect::from_xywh(0.0, 0.0, width, stroke),
+            color: style.color,
+          })
         }
-        MencloseNotation::Bottom => fragments.push(MathFragment::Rule(Rect::from_xywh(
-          0.0,
-          height - stroke,
-          width,
-          stroke,
-        ))),
-        MencloseNotation::Left => fragments.push(MathFragment::Rule(Rect::from_xywh(
-          0.0, 0.0, stroke, height,
-        ))),
-        MencloseNotation::Right => fragments.push(MathFragment::Rule(Rect::from_xywh(
-          width - stroke,
-          0.0,
-          stroke,
-          height,
-        ))),
-        MencloseNotation::HorizontalStrike => fragments.push(MathFragment::Rule(Rect::from_xywh(
-          0.0,
-          height / 2.0 - stroke * 0.5,
-          width,
-          stroke,
-        ))),
-        MencloseNotation::VerticalStrike => fragments.push(MathFragment::Rule(Rect::from_xywh(
-          width / 2.0 - stroke * 0.5,
-          0.0,
-          stroke,
-          height,
-        ))),
+        MencloseNotation::Bottom => fragments.push(MathFragment::Rule {
+          rect: Rect::from_xywh(0.0, height - stroke, width, stroke),
+          color: style.color,
+        }),
+        MencloseNotation::Left => fragments.push(MathFragment::Rule {
+          rect: Rect::from_xywh(0.0, 0.0, stroke, height),
+          color: style.color,
+        }),
+        MencloseNotation::Right => fragments.push(MathFragment::Rule {
+          rect: Rect::from_xywh(width - stroke, 0.0, stroke, height),
+          color: style.color,
+        }),
+        MencloseNotation::HorizontalStrike => fragments.push(MathFragment::Rule {
+          rect: Rect::from_xywh(0.0, height / 2.0 - stroke * 0.5, width, stroke),
+          color: style.color,
+        }),
+        MencloseNotation::VerticalStrike => fragments.push(MathFragment::Rule {
+          rect: Rect::from_xywh(width / 2.0 - stroke * 0.5, 0.0, stroke, height),
+          color: style.color,
+        }),
         MencloseNotation::UpDiagonalStrike => fragments.push(MathFragment::Line {
           from: Point::new(0.0, height),
           to: Point::new(width, 0.0),
           width: stroke,
+          color: style.color,
         }),
         MencloseNotation::DownDiagonalStrike => fragments.push(MathFragment::Line {
           from: Point::new(0.0, 0.0),
           to: Point::new(width, height),
           width: stroke,
+          color: style.color,
         }),
         MencloseNotation::LongDiv => {
-          fragments.push(MathFragment::Rule(Rect::from_xywh(0.0, 0.0, width, stroke)));
-          fragments.push(MathFragment::Rule(Rect::from_xywh(
-            0.0, 0.0, stroke, height,
-          )));
+          fragments.push(MathFragment::Rule {
+            rect: Rect::from_xywh(0.0, 0.0, width, stroke),
+            color: style.color,
+          });
+          fragments.push(MathFragment::Rule {
+            rect: Rect::from_xywh(0.0, 0.0, stroke, height),
+            color: style.color,
+          });
         }
       }
     }
@@ -4024,7 +4105,12 @@ impl MathLayoutContext {
     let mut line_fragments: Vec<MathFragment> = Vec::new();
     let stroke = Self::rule_thickness(style);
 
-    fn emit_table_rule(fragments: &mut Vec<MathFragment>, rect: Rect, style: TableLineStyle) {
+    fn emit_table_rule(
+      fragments: &mut Vec<MathFragment>,
+      rect: Rect,
+      style: TableLineStyle,
+      color: Option<Rgba>,
+    ) {
       if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
       }
@@ -4038,7 +4124,7 @@ impl MathLayoutContext {
 
       match style {
         TableLineStyle::None => {}
-        TableLineStyle::Solid => fragments.push(MathFragment::Rule(rect)),
+        TableLineStyle::Solid => fragments.push(MathFragment::Rule { rect, color }),
         TableLineStyle::Dashed | TableLineStyle::Dotted => {
           let thickness = rect.width().min(rect.height());
           if thickness <= 0.0 || !thickness.is_finite() {
@@ -4057,12 +4143,10 @@ impl MathLayoutContext {
             let end = rect.x() + rect.width();
             while x < end {
               let seg_w = (end - x).min(dash);
-              fragments.push(MathFragment::Rule(Rect::from_xywh(
-                x,
-                rect.y(),
-                seg_w,
-                rect.height(),
-              )));
+              fragments.push(MathFragment::Rule {
+                rect: Rect::from_xywh(x, rect.y(), seg_w, rect.height()),
+                color,
+              });
               x += dash + gap;
             }
           } else {
@@ -4071,12 +4155,10 @@ impl MathLayoutContext {
             let end = rect.y() + rect.height();
             while y < end {
               let seg_h = (end - y).min(dash);
-              fragments.push(MathFragment::Rule(Rect::from_xywh(
-                rect.x(),
-                y,
-                rect.width(),
-                seg_h,
-              )));
+              fragments.push(MathFragment::Rule {
+                rect: Rect::from_xywh(rect.x(), y, rect.width(), seg_h),
+                color,
+              });
               y += dash + gap;
             }
           }
@@ -4097,6 +4179,7 @@ impl MathLayoutContext {
               &mut line_fragments,
               Rect::from_xywh(x, 0.0, stroke, height),
               line_style,
+              style.color,
             );
           }
           x_cursor += col_gaps[gap_idx];
@@ -4117,6 +4200,7 @@ impl MathLayoutContext {
               &mut line_fragments,
               Rect::from_xywh(0.0, y, width, stroke),
               line_style,
+              style.color,
             );
           }
           y_cursor += row_gaps[gap_idx];
@@ -4155,6 +4239,7 @@ impl MathLayoutContext {
               rect: outer_rect,
               radius: 0.0,
               width: stroke,
+              color: style.color,
             });
           }
           TableLineStyle::Dashed | TableLineStyle::Dotted => {
@@ -4163,21 +4248,25 @@ impl MathLayoutContext {
               &mut fragments,
               Rect::from_xywh(0.0, -half, outer_rect.width(), stroke),
               frame,
+              style.color,
             );
             emit_table_rule(
               &mut fragments,
               Rect::from_xywh(0.0, outer_rect.height() - half, outer_rect.width(), stroke),
               frame,
+              style.color,
             );
             emit_table_rule(
               &mut fragments,
               Rect::from_xywh(-half, 0.0, stroke, outer_rect.height()),
               frame,
+              style.color,
             );
             emit_table_rule(
               &mut fragments,
               Rect::from_xywh(outer_rect.width() - half, 0.0, stroke, outer_rect.height()),
               frame,
+              style.color,
             );
           }
           TableLineStyle::None => {}
@@ -4637,7 +4726,19 @@ impl MathLayoutContext {
         children,
       } => {
         let next_style = self.apply_style_overrides(style, overrides, base_style);
-        self.layout_row(children, &next_style, base_style)
+        let mut layout = self.layout_row(children, &next_style, base_style);
+        if let Some(bg) = overrides.math_background {
+          if layout.width > 0.0 && layout.height > 0.0 {
+            layout.fragments.insert(
+              0,
+              MathFragment::Rule {
+                rect: Rect::from_xywh(0.0, 0.0, layout.width, layout.height),
+                color: Some(bg),
+              },
+            );
+          }
+        }
+        layout
       }
       MathNode::Enclose { notation, child } => {
         self.layout_enclose(notation, child, style, base_style)
@@ -5378,7 +5479,7 @@ mod tests {
       .fragments
       .iter()
       .filter_map(|f| match f {
-        MathFragment::Rule(r) => Some(r),
+        MathFragment::Rule { rect, .. } => Some(rect),
         _ => None,
       })
       .collect();
@@ -5405,7 +5506,7 @@ mod tests {
       .fragments
       .iter()
       .filter_map(|f| match f {
-        MathFragment::Rule(r) => Some(r),
+        MathFragment::Rule { rect, .. } => Some(rect),
         _ => None,
       })
       .collect();
@@ -5481,12 +5582,12 @@ mod tests {
     let solid_rules = solid_layout
       .fragments
       .iter()
-      .filter(|f| matches!(f, MathFragment::Rule(_)))
+      .filter(|f| matches!(f, MathFragment::Rule { .. }))
       .count();
     let dashed_rules = dashed_layout
       .fragments
       .iter()
-      .filter(|f| matches!(f, MathFragment::Rule(_)))
+      .filter(|f| matches!(f, MathFragment::Rule { .. }))
       .count();
 
     assert_eq!(solid_rules, 1, "solid table columnlines should emit one rule");
@@ -5553,7 +5654,7 @@ mod tests {
       layout_with
         .fragments
         .iter()
-        .any(|f| matches!(f, MathFragment::Rule(_))),
+        .any(|f| matches!(f, MathFragment::Rule { .. })),
       "expected dashed frame to emit Rule fragments"
     );
     assert!(
@@ -5612,7 +5713,7 @@ mod tests {
       .iter()
       .filter_map(|frag| match frag {
         MathFragment::Glyph { origin, .. } => (origin.y >= 0.0).then_some(origin.x),
-        MathFragment::Rule(rect) => (rect.y() >= 0.0).then_some(rect.x()),
+        MathFragment::Rule { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
         MathFragment::StrokeRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
         MathFragment::StrokeRoundedRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
         MathFragment::Line { from, to, .. } => {
@@ -5632,6 +5733,63 @@ mod tests {
       index_layout.width,
       kern_before,
       kern_after
+    );
+  }
+
+  #[test]
+  fn mathcolor_is_inherited_and_overridden_by_subtree() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let node = parse_math_from_html(
+      "<math mathcolor=\"blue\"><mrow><mi>a</mi><mi mathcolor=\"red\">b</mi></mrow></math>",
+    );
+    let layout = layout_mathml(&node, &style, &ctx);
+
+    let a_color = layout
+      .fragments
+      .iter()
+      .find_map(|frag| match frag {
+        MathFragment::Glyph { run, color, .. } if run.text == "a" => Some(*color),
+        _ => None,
+      })
+      .expect("expected glyph fragment for a");
+    let b_color = layout
+      .fragments
+      .iter()
+      .find_map(|frag| match frag {
+        MathFragment::Glyph { run, color, .. } if run.text == "b" => Some(*color),
+        _ => None,
+      })
+      .expect("expected glyph fragment for b");
+
+    assert_eq!(a_color, Some(Rgba::BLUE));
+    assert_eq!(b_color, Some(Rgba::RED));
+  }
+
+  #[test]
+  fn mathbackground_emits_colored_rule_fragment() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let node = parse_math_from_html("<math><mrow mathbackground=\"yellow\"><mi>a</mi></mrow></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+
+    let has_background = layout.fragments.iter().any(|frag| match frag {
+      MathFragment::Rule { color: Some(c), .. } => *c == Rgba::rgb(255, 255, 0),
+      _ => false,
+    });
+    assert!(has_background, "expected mathbackground to emit a colored Rule fragment");
+
+    let a_color = layout
+      .fragments
+      .iter()
+      .find_map(|frag| match frag {
+        MathFragment::Glyph { run, color, .. } if run.text == "a" => Some(*color),
+        _ => None,
+      })
+      .expect("expected glyph fragment for a");
+    assert_eq!(
+      a_color, None,
+      "mathbackground should not affect the inherited mathcolor"
     );
   }
 
