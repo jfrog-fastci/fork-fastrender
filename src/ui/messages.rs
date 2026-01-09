@@ -100,6 +100,15 @@ pub enum UiToWorker {
     url: String,
     reason: NavigationReason,
   },
+  GoBack {
+    tab_id: TabId,
+  },
+  GoForward {
+    tab_id: TabId,
+  },
+  Reload {
+    tab_id: TabId,
+  },
   ViewportChanged {
     tab_id: TabId,
     viewport_css: (u32, u32),

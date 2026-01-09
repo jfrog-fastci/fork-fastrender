@@ -5,6 +5,7 @@ pub mod cancel;
 pub mod chrome;
 pub mod history;
 pub mod messages;
+pub mod tab_engine;
 pub mod ui_worker;
 pub mod worker;
 pub mod worker_loop;
@@ -43,6 +44,6 @@ pub mod url;
 pub use url::normalize_user_url;
 
 pub use history::{HistoryEntry, TabHistory};
-
 pub use browser_app::{BrowserAppState, BrowserTabState, ChromeState, LatestFrameMeta};
 pub use chrome::{chrome_ui, ChromeAction};
+pub use tab_engine::TabEngine;
