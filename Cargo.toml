@@ -125,6 +125,7 @@ egui-winit = { version = "0.23", default-features = false, optional = true }
 criterion = "0.5"
 filetime = "0.2"
 usvg = "0.43"
+rquickjs = "0.9"
 
 [[bench]]
 name = "perf_regressions"

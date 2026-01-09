@@ -264,24 +264,29 @@ impl ScriptId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredScript {
+pub struct DiscoveredScript<NodeId> {
   pub id: ScriptId,
-  pub actions: Vec<ScriptSchedulerAction>,
+  pub actions: Vec<ScriptSchedulerAction<NodeId>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScriptSchedulerAction {
+pub enum ScriptSchedulerAction<NodeId> {
   /// Begin fetching an external script.
-  StartFetch { script_id: ScriptId, url: String },
+  StartFetch {
+    script_id: ScriptId,
+    node_id: NodeId,
+    url: String,
+  },
   /// Block the HTML parser until the referenced script has executed.
   ///
   /// This is emitted for parsing-blocking external scripts (no `async`/`defer`).
-  BlockParserUntilExecuted { script_id: ScriptId },
+  BlockParserUntilExecuted { script_id: ScriptId, node_id: NodeId },
   /// Execute a script immediately (synchronously in the caller's stack).
   ///
   /// The orchestrator must perform a microtask checkpoint immediately after executing the script.
   ExecuteNow {
     script_id: ScriptId,
+    node_id: NodeId,
     source_text: String,
   },
   /// Queue script execution as an event-loop task.
@@ -290,6 +295,7 @@ pub enum ScriptSchedulerAction {
   /// microtask checkpoint requirement after script execution.
   QueueTask {
     script_id: ScriptId,
+    node_id: NodeId,
     source_text: String,
   },
 }
@@ -352,7 +358,7 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
     element: ScriptElementSpec,
     node_id: NodeId,
     base_url_at_discovery: Option<String>,
-  ) -> Result<DiscoveredScript> {
+  ) -> Result<DiscoveredScript<NodeId>> {
     let id = self.alloc_script_id();
 
     if element.script_type != ScriptType::Classic {
@@ -363,7 +369,7 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
       });
     }
 
-    let mut actions: Vec<ScriptSchedulerAction> = Vec::new();
+    let mut actions: Vec<ScriptSchedulerAction<NodeId>> = Vec::new();
 
     let src = element.src.filter(|s| !s.is_empty());
     if let Some(url) = src {
@@ -392,15 +398,20 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
         },
       );
 
-      actions.push(ScriptSchedulerAction::StartFetch { script_id: id, url });
+      actions.push(ScriptSchedulerAction::StartFetch {
+        script_id: id,
+        node_id,
+        url,
+      });
 
       if mode == ExternalMode::Blocking {
-        actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id });
+        actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id, node_id });
       }
     } else {
       // Inline classic scripts execute immediately and block parsing.
       actions.push(ScriptSchedulerAction::ExecuteNow {
         script_id: id,
+        node_id,
         source_text: element.inline_text,
       });
     }
@@ -409,7 +420,11 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
   }
 
   /// Notify the scheduler that a previously requested external script fetch completed.
-  pub fn fetch_completed(&mut self, script_id: ScriptId, source_text: String) -> Result<Vec<ScriptSchedulerAction>> {
+  pub fn fetch_completed(
+    &mut self,
+    script_id: ScriptId,
+    source_text: String,
+  ) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
     let Some(entry) = self.scripts.get_mut(&script_id) else {
       return Err(Error::Other(format!(
         "fetch_completed called for unknown script_id={}",
@@ -432,12 +447,14 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
           return Ok(Vec::new());
         }
         entry.queued_for_execution = true;
+        let node_id = entry.node_id;
         let source_text = entry
           .source_text
           .take()
           .expect("source text must be present after fetch_completed");
         Ok(vec![ScriptSchedulerAction::ExecuteNow {
           script_id,
+          node_id,
           source_text,
         }])
       }
@@ -446,12 +463,14 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
           return Ok(Vec::new());
         }
         entry.queued_for_execution = true;
+        let node_id = entry.node_id;
         let source_text = entry
           .source_text
           .take()
           .expect("source text must be present after fetch_completed");
         Ok(vec![ScriptSchedulerAction::QueueTask {
           script_id,
+          node_id,
           source_text,
         }])
       }
@@ -460,17 +479,17 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
   }
 
   /// Notify the scheduler that HTML parsing has completed.
-  pub fn parsing_completed(&mut self) -> Result<Vec<ScriptSchedulerAction>> {
+  pub fn parsing_completed(&mut self) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
     self.parsing_completed = true;
     self.queue_defer_scripts_if_ready()
   }
 
-  fn queue_defer_scripts_if_ready(&mut self) -> Result<Vec<ScriptSchedulerAction>> {
+  fn queue_defer_scripts_if_ready(&mut self) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
     if !self.parsing_completed {
       return Ok(Vec::new());
     }
 
-    let mut actions: Vec<ScriptSchedulerAction> = Vec::new();
+    let mut actions: Vec<ScriptSchedulerAction<NodeId>> = Vec::new();
     while self.next_defer_to_queue < self.defer_queue.len() {
       let script_id = self.defer_queue[self.next_defer_to_queue];
       let Some(entry) = self.scripts.get_mut(&script_id) else {
@@ -490,12 +509,14 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
       }
 
       entry.queued_for_execution = true;
+      let node_id = entry.node_id;
       let source_text = entry
         .source_text
         .take()
         .expect("source text must be present when queueing defer scripts");
       actions.push(ScriptSchedulerAction::QueueTask {
         script_id,
+        node_id,
         source_text,
       });
       self.next_defer_to_queue += 1;
@@ -779,7 +800,7 @@ mod state_machine_tests {
     scheduler: ScriptScheduler<u32>,
     event_loop: EventLoop<Host>,
     host: Host,
-    started_fetches: Vec<(ScriptId, String)>,
+    started_fetches: Vec<(ScriptId, u32, String)>,
     blocked_parser_on: Option<ScriptId>,
   }
 
@@ -794,17 +815,22 @@ mod state_machine_tests {
       }
     }
 
-    fn apply_actions(&mut self, actions: Vec<ScriptSchedulerAction>) -> Result<()> {
+    fn apply_actions(&mut self, actions: Vec<ScriptSchedulerAction<u32>>) -> Result<()> {
       for action in actions {
         match action {
-          ScriptSchedulerAction::StartFetch { script_id, url } => {
-            self.started_fetches.push((script_id, url));
+          ScriptSchedulerAction::StartFetch {
+            script_id,
+            node_id,
+            url,
+          } => {
+            self.started_fetches.push((script_id, node_id, url));
           }
-          ScriptSchedulerAction::BlockParserUntilExecuted { script_id } => {
+          ScriptSchedulerAction::BlockParserUntilExecuted { script_id, node_id: _ } => {
             self.blocked_parser_on = Some(script_id);
           }
           ScriptSchedulerAction::ExecuteNow {
             script_id,
+            node_id: _,
             source_text,
           } => {
             execute_fake_script(&mut self.host, &mut self.event_loop, &source_text)?;
@@ -815,6 +841,7 @@ mod state_machine_tests {
           }
           ScriptSchedulerAction::QueueTask {
             script_id: _,
+            node_id: _,
             source_text,
           } => {
             self.event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
@@ -884,7 +911,7 @@ mod state_machine_tests {
     assert_eq!(h.blocked_parser_on, Some(blocking_id));
     assert_eq!(
       h.started_fetches,
-      vec![(blocking_id, "https://example.com/a.js".to_string())]
+      vec![(blocking_id, 1u32, "https://example.com/a.js".to_string())]
     );
 
     // Parser cannot progress to the next `<script>` until the blocking script fetch completes and

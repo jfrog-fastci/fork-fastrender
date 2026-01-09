@@ -1113,6 +1113,7 @@ dependencies = [
  "reqwest",
  "resvg",
  "roxmltree",
+ "rquickjs",
  "rustc-hash 2.1.1",
  "rustybuzz 0.20.1",
  "selectors",
