@@ -810,6 +810,10 @@ impl BrowserWorkerRuntime {
       return None;
     };
 
+    // Forward render stage heartbeats for this paint job only. The stage listener is thread-local
+    // and scoped via `StageListenerGuard`, so it won't leak into subsequent work.
+    let _stage_guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+
     // Ensure we have a prepared layout. Keep the previous `PreparedDocument` around for hit
     // testing even when dirty; only replace it after we successfully re-prepare.
     if tab.prepared.is_none() || tab.dirty {
