@@ -6,6 +6,7 @@ mod browser_mem_limit_env;
 mod document;
 mod document2;
 mod select_listbox_wheel_scroll;
+mod js_rendering;
 mod support;
 mod ui_input_routing;
 mod ui_render_thread;

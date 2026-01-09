@@ -1,0 +1,2 @@
+setClass("box", "on");
+
