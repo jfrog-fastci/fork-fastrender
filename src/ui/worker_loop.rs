@@ -331,9 +331,6 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         };
         navigate_tab(tab_id, tab, &ui_tx, url, NavigationReason::Reload);
       }
-      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
-        // Legacy headless worker loop does not model tab history beyond simple navigations.
-      }
       UiToWorker::Scroll {
         tab_id,
         delta_css,

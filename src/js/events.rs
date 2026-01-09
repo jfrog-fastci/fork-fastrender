@@ -399,6 +399,8 @@ impl EventListenerInvoker for JsDomEvents {
 
     // `once` listener bookkeeping must happen even if the callback throws.
     if once {
+      // `dom2::Document` owns the listener registry and removes `once` listeners before invoking
+      // callbacks. We still need to remove the JS callback so roots are released.
       self.remove_listener_id(listener_id);
     }
 
