@@ -4,6 +4,7 @@ use fastrender::interaction::scroll_wheel::{
   apply_wheel_scroll, apply_wheel_scroll_at_point, ScrollWheelInput,
 };
 use fastrender::scroll::ScrollState;
+use fastrender::style::position::Position;
 use fastrender::style::types::{Overflow, OverscrollBehavior};
 use fastrender::style::ComputedStyle;
 use fastrender::{FragmentContent, FragmentNode, FragmentTree, Point, Rect, Size};
@@ -386,4 +387,103 @@ fn wheel_scroll_respects_overscroll_contain() {
   assert_eq!(next.element_offset(2), Point::new(0.0, 200.0));
   assert_eq!(next.element_offset(1), Point::ZERO);
   assert_eq!(next.viewport, Point::ZERO);
+}
+
+#[test]
+fn wheel_scroll_bounds_ignore_viewport_fixed_descendants() {
+  let mut container_style = ComputedStyle::default();
+  container_style.overflow_y = Overflow::Scroll;
+  container_style.overscroll_behavior_y = OverscrollBehavior::Auto;
+  let container_style = Arc::new(container_style);
+
+  let content_child = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 200.0), vec![]);
+
+  let mut fixed_style = ComputedStyle::default();
+  fixed_style.position = Position::Fixed;
+  let fixed_style = Arc::new(fixed_style);
+  let fixed_child = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 0.0, 100.0, 10000.0),
+    FragmentContent::Block { box_id: None },
+    vec![],
+    fixed_style,
+  );
+
+  let scroll_container = block_with_id(
+    1,
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![content_child, fixed_child],
+    container_style,
+  );
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![scroll_container],
+  );
+  let mut fragment_tree = FragmentTree::new(root);
+  fragment_tree.ensure_scroll_metadata();
+
+  let overflow = fragment_tree.root.children_ref()[0].scroll_overflow;
+  assert_eq!(
+    overflow,
+    Rect::from_xywh(0.0, 0.0, 100.0, 200.0),
+    "viewport-fixed descendants should not contribute to scrollable overflow"
+  );
+
+  let next = apply_wheel_scroll_at_point(
+    &fragment_tree,
+    &ScrollState::default(),
+    Size::new(100.0, 100.0),
+    Point::new(50.0, 50.0),
+    ScrollWheelInput {
+      delta_x: 0.0,
+      delta_y: 10000.0,
+    },
+  );
+
+  assert_eq!(
+    next.element_offset(1),
+    Point::new(0.0, 100.0),
+    "max scroll should ignore viewport-fixed descendants"
+  );
+}
+
+#[test]
+fn wheel_scroll_clamps_to_negative_scroll_bounds() {
+  let scroll_container = block_with_id(
+    1,
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![FragmentNode::new_block(
+      Rect::from_xywh(0.0, -50.0, 100.0, 50.0),
+      vec![],
+    )],
+    scroll_y_style(OverscrollBehavior::Auto),
+  );
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![scroll_container],
+  );
+  let mut fragment_tree = FragmentTree::new(root);
+  fragment_tree.ensure_scroll_metadata();
+
+  let overflow = fragment_tree.root.children_ref()[0].scroll_overflow;
+  assert!(
+    overflow.min_y() < 0.0,
+    "test requires negative scrollable overflow origin"
+  );
+
+  let next = apply_wheel_scroll_at_point(
+    &fragment_tree,
+    &ScrollState::default(),
+    Size::new(100.0, 100.0),
+    Point::new(50.0, 50.0),
+    ScrollWheelInput {
+      delta_x: 0.0,
+      delta_y: -100.0,
+    },
+  );
+
+  assert_eq!(
+    next.element_offset(1),
+    Point::new(0.0, -50.0),
+    "wheel scroll should clamp to the true min scroll bound"
+  );
 }

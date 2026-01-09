@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::geometry::{Point, Rect, Size};
+use crate::style::position::Position;
 use crate::style::types::{
   Direction, Overflow, OverscrollBehavior, ScrollBehavior, ScrollSnapAlign, ScrollSnapAxis,
   ScrollSnapStop, ScrollSnapStrictness, WritingMode,
@@ -331,11 +332,24 @@ fn overflow_axis_clips(overflow: Overflow) -> bool {
   )
 }
 
-fn annotate_overflow(node: &mut FragmentNode) -> Rect {
+fn annotate_overflow(node: &mut FragmentNode, has_fixed_cb_ancestor: bool) -> Rect {
   let mut overflow = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
+  let has_fixed_cb_ancestor = has_fixed_cb_ancestor
+    || node
+      .style
+      .as_deref()
+      .is_some_and(|style| style.establishes_fixed_containing_block());
   for child in node.children_mut() {
-    let child_overflow = annotate_overflow(child);
+    let child_overflow = annotate_overflow(child, has_fixed_cb_ancestor);
     let translated = child_overflow.translate(Point::new(child.bounds.x(), child.bounds.y()));
+    let child_is_viewport_fixed = child
+      .style
+      .as_deref()
+      .is_some_and(|style| matches!(style.position, Position::Fixed))
+      && !has_fixed_cb_ancestor;
+    if child_is_viewport_fixed {
+      continue;
+    }
 
     let child_style = child.style.as_ref();
     let clips_x = child_style
@@ -640,8 +654,23 @@ fn collect_scroll_metadata(
   metadata: &mut ScrollMetadata,
   root_viewport: Size,
   viewport_container: Option<Option<usize>>,
+  has_fixed_cb_ancestor: bool,
+  active_container_start: usize,
 ) {
   let style = node.style.clone();
+  let establishes_fixed_cb = style
+    .as_deref()
+    .is_some_and(|style| style.establishes_fixed_containing_block());
+  let is_viewport_fixed = style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed))
+    && !has_fixed_cb_ancestor;
+  let has_fixed_cb_ancestor = has_fixed_cb_ancestor || establishes_fixed_cb;
+  let active_container_start = if is_viewport_fixed {
+    stack.len()
+  } else {
+    active_container_start
+  };
 
   let mut pushed = false;
   if let Some(style) = style.as_ref() {
@@ -661,13 +690,13 @@ fn collect_scroll_metadata(
   }
 
   let overflow_abs = node.scroll_overflow.translate(origin);
-  for container in stack.iter_mut() {
+  for container in stack.iter_mut().skip(active_container_start) {
     let relative = overflow_abs.translate(Point::new(-container.origin.x, -container.origin.y));
     container.content_bounds = container.content_bounds.union(relative);
   }
 
   if let Some(style) = style.as_ref() {
-    for container in stack.iter_mut() {
+    for container in stack.iter_mut().skip(active_container_start) {
       container.collect_targets(style, node, origin);
     }
   }
@@ -681,6 +710,8 @@ fn collect_scroll_metadata(
       metadata,
       root_viewport,
       viewport_container,
+      has_fixed_cb_ancestor,
+      active_container_start,
     );
   }
 
@@ -789,9 +820,9 @@ pub(crate) fn build_scroll_metadata(tree: &mut FragmentTree) -> ScrollMetadata {
     found
   };
 
-  annotate_overflow(&mut tree.root);
+  annotate_overflow(&mut tree.root, false);
   for fragment in &mut tree.additional_fragments {
-    annotate_overflow(fragment);
+    annotate_overflow(fragment, false);
   }
 
   let mut metadata = ScrollMetadata::default();
@@ -804,6 +835,8 @@ pub(crate) fn build_scroll_metadata(tree: &mut FragmentTree) -> ScrollMetadata {
     &mut metadata,
     root_viewport,
     viewport_container,
+    false,
+    0,
   );
 
   for fragment in &mut tree.additional_fragments {
@@ -814,6 +847,8 @@ pub(crate) fn build_scroll_metadata(tree: &mut FragmentTree) -> ScrollMetadata {
       &mut metadata,
       root_viewport,
       viewport_container,
+      false,
+      0,
     );
   }
 
@@ -1105,13 +1140,13 @@ impl ClipRect {
     Some(out)
   }
 }
-
 fn collect_bounds(
   node: &FragmentNode,
   origin: Point,
   bounds: &mut Bounds,
   clip: ClipRect,
   root: bool,
+  has_fixed_cb_ancestor: bool,
 ) {
   let rect = Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height());
   let Some(visible_rect) = clip.intersect_rect(rect) else {
@@ -1133,9 +1168,30 @@ fn collect_bounds(
     }
   }
 
+  let has_fixed_cb_ancestor = has_fixed_cb_ancestor
+    || node
+      .style
+      .as_deref()
+      .is_some_and(|style| style.establishes_fixed_containing_block());
+
   for child in node.children.iter() {
+    let child_is_viewport_fixed = child
+      .style
+      .as_deref()
+      .is_some_and(|style| matches!(style.position, Position::Fixed))
+      && !has_fixed_cb_ancestor;
+    if child_is_viewport_fixed {
+      continue;
+    }
     let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
-    collect_bounds(child, child_origin, bounds, child_clip, false);
+    collect_bounds(
+      child,
+      child_origin,
+      bounds,
+      child_clip,
+      false,
+      has_fixed_cb_ancestor,
+    );
   }
 }
 
@@ -1143,6 +1199,7 @@ pub(crate) fn scroll_bounds_for_fragment(
   container: &FragmentNode,
   _origin: Point,
   viewport: Size,
+  has_fixed_cb_ancestor: bool,
 ) -> ScrollBounds {
   let mut bounds = Bounds::new(Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height));
   collect_bounds(
@@ -1151,6 +1208,7 @@ pub(crate) fn scroll_bounds_for_fragment(
     &mut bounds,
     ClipRect::unbounded(),
     true,
+    has_fixed_cb_ancestor,
   );
 
   let min_x = bounds.min_x.min(0.0);
@@ -1211,6 +1269,7 @@ impl<'a> ScrollChainState<'a> {
     origin: Point,
     viewport: Size,
     treat_as_root: bool,
+    has_fixed_cb_ancestor: bool,
   ) -> Option<Self> {
     let style = node.style.as_ref();
     let overscroll_behavior_x = style
@@ -1242,7 +1301,7 @@ impl<'a> ScrollChainState<'a> {
       return None;
     }
 
-    let bounds = scroll_bounds_for_fragment(node, origin, viewport);
+    let bounds = scroll_bounds_for_fragment(node, origin, viewport, has_fixed_cb_ancestor);
     Some(Self {
       container: node,
       origin,
@@ -1271,17 +1330,29 @@ pub fn build_scroll_chain_with_root_mode<'a>(
   path: &[usize],
   treat_root_as_scroll_container: bool,
 ) -> Vec<ScrollChainState<'a>> {
-  let mut stack: Vec<(&FragmentNode, Point, Size, bool)> = Vec::new();
+  let mut stack: Vec<(&FragmentNode, Point, Size, bool, bool)> = Vec::new();
   let mut current = root;
   let mut origin = Point::new(root.bounds.x(), root.bounds.y());
   let mut current_viewport = viewport;
-  stack.push((current, origin, current_viewport, treat_root_as_scroll_container));
+  let mut has_fixed_cb_ancestor = false;
+  stack.push((
+    current,
+    origin,
+    current_viewport,
+    treat_root_as_scroll_container,
+    has_fixed_cb_ancestor,
+  ));
 
   for &idx in path {
     if let Some(child) = current.children.get(idx) {
+      has_fixed_cb_ancestor = has_fixed_cb_ancestor
+        || current
+          .style
+          .as_deref()
+          .is_some_and(|style| style.establishes_fixed_containing_block());
       origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
       current_viewport = child.bounds.size;
-      stack.push((child, origin, current_viewport, false));
+      stack.push((child, origin, current_viewport, false, has_fixed_cb_ancestor));
       current = child;
     } else {
       break;
@@ -1289,8 +1360,14 @@ pub fn build_scroll_chain_with_root_mode<'a>(
   }
 
   let mut out = Vec::new();
-  for (node, origin, viewport, treat_as_root) in stack.into_iter().rev() {
-    if let Some(state) = ScrollChainState::from_fragment(node, origin, viewport, treat_as_root) {
+  for (node, origin, viewport, treat_as_root, has_fixed_cb_ancestor) in stack.into_iter().rev() {
+    if let Some(state) = ScrollChainState::from_fragment(
+      node,
+      origin,
+      viewport,
+      treat_as_root,
+      has_fixed_cb_ancestor,
+    ) {
       out.push(state);
     }
   }
@@ -1386,6 +1463,7 @@ pub fn apply_scroll_chain(
           state.viewport,
           state.scroll,
           snap.origin,
+          state.bounds,
         );
       }
     }
@@ -1406,8 +1484,8 @@ fn apply_scroll_snap_for_container(
   viewport: Size,
   scroll: Point,
   container_origin: Point,
+  scroll_bounds: ScrollBounds,
 ) -> Point {
-  let scroll_bounds = scroll_bounds_for_fragment(container, container_origin, viewport);
   if style.scroll_snap_type.axis == ScrollSnapAxis::None {
     return scroll_bounds.clamp(scroll);
   }
