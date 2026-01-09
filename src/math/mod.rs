@@ -244,15 +244,19 @@ pub enum MathNode {
   Over {
     base: Box<MathNode>,
     over: Box<MathNode>,
+    accent: bool,
   },
   Under {
     base: Box<MathNode>,
     under: Box<MathNode>,
+    accentunder: bool,
   },
   UnderOver {
     base: Box<MathNode>,
     under: Box<MathNode>,
     over: Box<MathNode>,
+    accent: bool,
+    accentunder: bool,
   },
   Multiscripts {
     base: Box<MathNode>,
@@ -961,18 +965,23 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           let mut children = parse_children(node).into_iter();
           let base = children.next().unwrap_or_else(empty_text_node);
           let over = children.next().unwrap_or_else(empty_text_node);
+          let accent = parse_display_style(node.get_attribute_ref("accent")).unwrap_or(false);
           Some(MathNode::Over {
             base: Box::new(base),
             over: Box::new(over),
+            accent,
           })
         }
         "munder" => {
           let mut children = parse_children(node).into_iter();
           let base = children.next().unwrap_or_else(empty_text_node);
           let under = children.next().unwrap_or_else(empty_text_node);
+          let accentunder =
+            parse_display_style(node.get_attribute_ref("accentunder")).unwrap_or(false);
           Some(MathNode::Under {
             base: Box::new(base),
             under: Box::new(under),
+            accentunder,
           })
         }
         "munderover" => {
@@ -980,10 +989,15 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           let base = children.next().unwrap_or_else(empty_text_node);
           let under = children.next().unwrap_or_else(empty_text_node);
           let over = children.next().unwrap_or_else(empty_text_node);
+          let accent = parse_display_style(node.get_attribute_ref("accent")).unwrap_or(false);
+          let accentunder =
+            parse_display_style(node.get_attribute_ref("accentunder")).unwrap_or(false);
           Some(MathNode::UnderOver {
             base: Box::new(base),
             under: Box::new(under),
             over: Box::new(over),
+            accent,
+            accentunder,
           })
         }
         "mmultiscripts" => {
@@ -2756,12 +2770,19 @@ impl MathLayoutContext {
   fn layout_under_over(
     &mut self,
     base: &MathNode,
-    under: Option<&MathNode>,
-    over: Option<&MathNode>,
+    under: Option<(&MathNode, bool)>,
+    over: Option<(&MathNode, bool)>,
     style: &MathStyle,
     base_style: &ComputedStyle,
   ) -> MathLayout {
-    if !style.display_style {
+    let (under, under_is_accent) = under
+      .map(|(node, is_accent)| (Some(node), is_accent))
+      .unwrap_or((None, false));
+    let (over, over_is_accent) = over
+      .map(|(node, is_accent)| (Some(node), is_accent))
+      .unwrap_or((None, false));
+
+    if !style.display_style && !(under_is_accent || over_is_accent) {
       if let Some(op) = Self::operator_like(base) {
         // MathML Core operator dictionary: large operators such as ∑ have movable limits in
         // display style, but become scripts in inline style.
@@ -2776,59 +2797,73 @@ impl MathLayoutContext {
     let constants =
       self.math_constants_for_layout(&base_layout, style, base_style, MathVariant::Normal);
     let script_style = style.script_with_constants(constants.as_ref());
-    let stretch_target = base_layout.width + Self::rule_thickness(style);
-    let under_layout = under.map(|n| match n {
-      MathNode::Operator {
-        text,
-        form,
-        stretchy,
-        variant,
-        ..
-      } => {
-        let resolved = self.resolve_variant(*variant, &script_style, MathVariant::Normal);
-        let default =
-          Self::operator_default_properties(text, (*form).unwrap_or(OperatorForm::Infix));
-        if (*stretchy).unwrap_or(default.stretchy) {
-          self
-            .stretch_operator_horizontal(text, resolved, stretch_target, &script_style, base_style)
-            .unwrap_or_else(|| self.layout_node(n, &script_style, base_style))
-        } else {
-          self.layout_node(n, &script_style, base_style)
+
+    let italic_correction = base_layout
+      .annotations
+      .trailing_glyph
+      .as_ref()
+      .map(|g| g.italic_correction)
+      .unwrap_or(0.0);
+    let align_base_width = if under_is_accent || over_is_accent {
+      base_layout.width + italic_correction
+    } else {
+      base_layout.width
+    };
+    let stretch_target = align_base_width + Self::rule_thickness(style);
+
+    let base_metrics = base_layout
+      .annotations
+      .trailing_glyph
+      .as_ref()
+      .and_then(|g| self.font_ctx.get_scaled_metrics(&g.font, g.font_size))
+      .unwrap_or_else(|| self.base_font_metrics(base_style, style.font_size));
+    let x_height = base_metrics.x_height.unwrap_or(style.font_size * 0.5);
+
+    let mut layout_script = |n: &MathNode, script_style: &MathStyle| -> MathLayout {
+      match n {
+        MathNode::Operator {
+          text,
+          form,
+          stretchy,
+          variant,
+          ..
+        } => {
+          let resolved = self.resolve_variant(*variant, script_style, MathVariant::Normal);
+          let default =
+            Self::operator_default_properties(text, (*form).unwrap_or(OperatorForm::Infix));
+          if (*stretchy).unwrap_or(default.stretchy) {
+            self
+              .stretch_operator_horizontal(text, resolved, stretch_target, script_style, base_style)
+              .unwrap_or_else(|| self.layout_node(n, script_style, base_style))
+          } else {
+            self.layout_node(n, script_style, base_style)
+          }
         }
+        _ => self.layout_node(n, script_style, base_style),
       }
-      _ => self.layout_node(n, &script_style, base_style),
-    });
-    let over_layout = over.map(|n| match n {
-      MathNode::Operator {
-        text,
-        form,
-        stretchy,
-        variant,
-        ..
-      } => {
-        let resolved = self.resolve_variant(*variant, &script_style, MathVariant::Normal);
-        let default =
-          Self::operator_default_properties(text, (*form).unwrap_or(OperatorForm::Infix));
-        if (*stretchy).unwrap_or(default.stretchy) {
-          self
-            .stretch_operator_horizontal(text, resolved, stretch_target, &script_style, base_style)
-            .unwrap_or_else(|| self.layout_node(n, &script_style, base_style))
-        } else {
-          self.layout_node(n, &script_style, base_style)
-        }
-      }
-      _ => self.layout_node(n, &script_style, base_style),
-    });
+    };
+
+    let under_layout = under.map(|n| layout_script(n, if under_is_accent { style } else { &script_style }));
+    let over_layout = over.map(|n| layout_script(n, if over_is_accent { style } else { &script_style }));
+
     let over_gap = constants
       .as_ref()
-      .and_then(|c| c.overbar_vertical_gap)
+      .and_then(|c| c.stretch_stack_gap_above_min)
       .unwrap_or_else(|| Self::frac_gap(style));
     let under_gap = constants
       .as_ref()
-      .and_then(|c| c.underbar_vertical_gap)
+      .and_then(|c| c.stretch_stack_gap_below_min)
       .unwrap_or_else(|| Self::frac_gap(style));
 
-    let mut width = base_layout.width;
+    let base_ascent = base_layout.baseline;
+    let base_descent = base_layout.height - base_layout.baseline;
+    // Use the math baseline as origin (y=0) to simplify baseline-correct stacking.
+    let base_top = -base_ascent;
+    let base_bottom = base_descent;
+
+    let accent_min_gap = Self::rule_thickness(style);
+
+    let mut width = align_base_width;
     if let Some(layout) = &under_layout {
       width = width.max(layout.width);
     }
@@ -2836,38 +2871,135 @@ impl MathLayoutContext {
       width = width.max(layout.width);
     }
 
-    let mut fragments = Vec::new();
-    let mut annotations = base_layout.annotations.clone();
-    // Base
-    for frag in base_layout.fragments {
-      fragments.push(frag);
+    let base_x = (width - align_base_width) * 0.5;
+    let base_y = base_top;
+
+    let over_pos = over_layout.as_ref().map(|layout| {
+      let x = (width - layout.width) * 0.5;
+      let mut y = if over_is_accent {
+        let use_flattened = constants
+          .as_ref()
+          .and_then(|c| c.flattened_accent_base_height)
+          .is_some()
+          && layout.width >= align_base_width * 1.1;
+        let base_height = if use_flattened {
+          constants
+            .as_ref()
+            .and_then(|c| c.flattened_accent_base_height)
+            .or_else(|| constants.as_ref().and_then(|c| c.accent_base_height))
+            .unwrap_or(x_height)
+        } else {
+          constants
+            .as_ref()
+            .and_then(|c| c.accent_base_height)
+            .unwrap_or(x_height)
+        };
+        let delta = (base_ascent - base_height).max(0.0);
+        // Raise the accent baseline when the base is taller than the accent base height.
+        let baseline_y = -delta;
+        baseline_y - layout.baseline
+      } else {
+        base_top - over_gap - layout.height
+      };
+
+      if over_is_accent {
+        // Ensure the accent sits outside the base box with a small clearance.
+        let desired_bottom = base_top - accent_min_gap;
+        let current_bottom = y + layout.height;
+        if current_bottom > desired_bottom {
+          y -= current_bottom - desired_bottom;
+        }
+      }
+
+      (x, y)
+    });
+
+    let under_pos = under_layout.as_ref().map(|layout| {
+      let x = (width - layout.width) * 0.5;
+      let mut y = if under_is_accent {
+        let use_flattened = constants
+          .as_ref()
+          .and_then(|c| c.flattened_accent_base_height)
+          .is_some()
+          && layout.width >= align_base_width * 1.1;
+        let base_height = if use_flattened {
+          constants
+            .as_ref()
+            .and_then(|c| c.flattened_accent_base_height)
+            .or_else(|| constants.as_ref().and_then(|c| c.accent_base_height))
+            .unwrap_or(x_height)
+        } else {
+          constants
+            .as_ref()
+            .and_then(|c| c.accent_base_height)
+            .unwrap_or(x_height)
+        };
+        let delta = (base_descent - base_height).max(0.0);
+        // Lower the accent baseline when the base has deep descenders.
+        let baseline_y = delta;
+        baseline_y - layout.baseline
+      } else {
+        base_bottom + under_gap
+      };
+
+      if under_is_accent {
+        // Ensure the accent sits outside the base box with a small clearance.
+        let desired_top = base_bottom + accent_min_gap;
+        if y < desired_top {
+          y += desired_top - y;
+        }
+      }
+
+      (x, y)
+    });
+
+    let mut min_y = base_y;
+    let mut max_y = base_y + base_layout.height;
+    if let Some((_, y)) = over_pos {
+      if let Some(layout) = &over_layout {
+        min_y = min_y.min(y);
+        max_y = max_y.max(y + layout.height);
+      }
+    }
+    if let Some((_, y)) = under_pos {
+      if let Some(layout) = &under_layout {
+        min_y = min_y.min(y);
+        max_y = max_y.max(y + layout.height);
+      }
     }
 
-    let mut ascent = base_layout.baseline;
-    let mut descent = base_layout.height - base_layout.baseline;
-    if let Some(layout) = over_layout {
-      let x = (width - layout.width) / 2.0;
-      let y = -(layout.height + over_gap);
+    let baseline = -min_y;
+    let height = max_y - min_y;
+
+    let mut fragments = Vec::new();
+    let mut annotations = base_layout.annotations.clone();
+
+    // Base fragments.
+    let base_offset = Point::new(base_x, base_y - min_y);
+    for frag in base_layout.fragments {
+      fragments.push(frag.translate(base_offset));
+    }
+
+    if let (Some(layout), Some((x, y))) = (over_layout, over_pos) {
+      let offset = Point::new(x, y - min_y);
       for frag in layout.fragments {
-        fragments.push(frag.translate(Point::new(x, y)));
+        fragments.push(frag.translate(offset));
       }
-      ascent = ascent.max(base_layout.baseline - y);
       annotations = annotations.merge_trailing(&layout.annotations);
     }
-    if let Some(layout) = under_layout {
-      let x = (width - layout.width) / 2.0;
-      let y = base_layout.baseline + under_gap;
+
+    if let (Some(layout), Some((x, y))) = (under_layout, under_pos) {
+      let offset = Point::new(x, y - min_y);
       for frag in layout.fragments {
-        fragments.push(frag.translate(Point::new(x, y)));
+        fragments.push(frag.translate(offset));
       }
-      descent = descent.max(layout.height + under_gap);
       annotations = annotations.merge_trailing(&layout.annotations);
     }
 
     MathLayout {
       width,
-      height: ascent + descent,
-      baseline: ascent,
+      height,
+      baseline,
       fragments,
       annotations,
     }
@@ -3547,16 +3679,30 @@ impl MathLayoutContext {
         style,
         base_style,
       ),
-      MathNode::Over { base, over } => {
-        self.layout_under_over(base, None, Some(over.as_ref()), style, base_style)
-      }
-      MathNode::Under { base, under } => {
-        self.layout_under_over(base, Some(under.as_ref()), None, style, base_style)
-      }
-      MathNode::UnderOver { base, under, over } => self.layout_under_over(
+      MathNode::Over {
         base,
-        Some(under.as_ref()),
-        Some(over.as_ref()),
+        over,
+        accent,
+      } => {
+        self.layout_under_over(base, None, Some((over.as_ref(), *accent)), style, base_style)
+      }
+      MathNode::Under {
+        base,
+        under,
+        accentunder,
+      } => {
+        self.layout_under_over(base, Some((under.as_ref(), *accentunder)), None, style, base_style)
+      }
+      MathNode::UnderOver {
+        base,
+        under,
+        over,
+        accent,
+        accentunder,
+      } => self.layout_under_over(
+        base,
+        Some((under.as_ref(), *accentunder)),
+        Some((over.as_ref(), *accent)),
         style,
         base_style,
       ),
@@ -3596,6 +3742,7 @@ pub fn layout_mathml(node: &MathNode, style: &ComputedStyle, font_ctx: &FontCont
 mod tests {
   use super::*;
   use crate::text::font_db::FontConfig;
+  use std::path::PathBuf;
 
   fn find_math_element<'a>(node: &'a crate::dom::DomNode) -> Option<&'a crate::dom::DomNode> {
     if node
@@ -3671,6 +3818,26 @@ mod tests {
       with_layout.baseline,
       without_layout.baseline
     );
+  }
+
+  fn math_font_context() -> FontContext {
+    let mut cfg = FontConfig::bundled_only();
+    cfg.font_dirs.push(
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts"),
+    );
+    FontContext::with_config(cfg)
+  }
+
+  fn find_run<'a>(layout: &'a MathLayout, needle: &str) -> &'a ShapedRun {
+    layout
+      .fragments
+      .iter()
+      .filter_map(|frag| match frag {
+        MathFragment::Glyph { run, .. } => Some(run),
+        _ => None,
+      })
+      .find(|run| run.text.contains(needle))
+      .unwrap_or_else(|| panic!("missing run containing {}", needle))
   }
 
   #[test]
@@ -4114,6 +4281,26 @@ mod tests {
   }
 
   #[test]
+  fn accent_mover_does_not_shrink() {
+    let ctx = math_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let node =
+      parse_math_from_html("<math><mover accent=\"true\"><mi>x</mi><mo>¯</mo></mover></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+    let base_run = find_run(&layout, "x");
+    let accent_run = find_run(&layout, "¯");
+    assert!(
+      (accent_run.font_size - base_run.font_size).abs() < 0.01,
+      "accent should not be shrunk (accent={}, base={})",
+      accent_run.font_size,
+      base_run.font_size
+    );
+  }
+
+  #[test]
   fn identifier_default_variant_is_italic_for_single_character() {
     let ctx = bundled_font_context();
     let mut style = ComputedStyle::default();
@@ -4134,6 +4321,25 @@ mod tests {
       obliques.iter().any(|v| *v != 0.0),
       "expected synthetic oblique for single-character identifier: {:?}",
       obliques
+    );
+  }
+
+  #[test]
+  fn non_accent_mover_shrinks() {
+    let ctx = math_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let node = parse_math_from_html("<math><mover><mi>x</mi><mi>n</mi></mover></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+    let base_run = find_run(&layout, "x");
+    let over_run = find_run(&layout, "n");
+    assert!(
+      over_run.font_size < base_run.font_size,
+      "non-accent overscript should be shrunk (over={}, base={})",
+      over_run.font_size,
+      base_run.font_size
     );
   }
 }

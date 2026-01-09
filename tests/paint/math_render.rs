@@ -42,6 +42,14 @@ fn deterministic_renderer() -> FastRender {
     .expect("renderer")
 }
 
+fn deterministic_renderer_with_fixture_fonts() -> FastRender {
+  let font_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts");
+  FastRender::builder()
+    .font_sources(FontConfig::bundled_only().add_font_dir(font_dir))
+    .build()
+    .expect("renderer")
+}
+
 fn stix_math_font_context() -> FontContext {
   static CTX: OnceLock<FontContext> = OnceLock::new();
   CTX
@@ -154,6 +162,8 @@ fn movable_limits_integral_moves_limits_to_scripts_in_inline() {
         base: Box::new(base.clone()),
         under: Box::new(under.clone()),
         over: Box::new(over.clone()),
+        accent: false,
+        accentunder: false,
       }],
     };
     let display = MathNode::Math {
@@ -162,6 +172,8 @@ fn movable_limits_integral_moves_limits_to_scripts_in_inline() {
         base: Box::new(base),
         under: Box::new(under),
         over: Box::new(over),
+        accent: false,
+        accentunder: false,
       }],
     };
 
@@ -272,6 +284,18 @@ fn math_ms_quotes_match_golden() {
       .render_to_png(&html, 240, 120)
       .expect("render math ms quotes");
     compare_golden("math_ms_quotes", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
+fn math_accents_match_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer_with_fixture_fonts();
+    let html = std::fs::read_to_string(fixture_path("math_accents")).expect("load math_accents");
+    let png = renderer
+      .render_to_png(&html, 560, 260)
+      .expect("render math accents");
+    compare_golden("math_accents", &png, &CompareConfig::lenient());
   });
 }
 
