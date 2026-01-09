@@ -53,12 +53,13 @@ fn missing_file_navigation_emits_navigation_failed_and_stops_loading() {
     Started,
     LoadingTrue,
     Failed,
+    ErrorFrame,
     LoadingFalse,
     Done,
   }
 
   let mut expect = Expect::Started;
-  let mut saw_frame = false;
+  let mut saw_scroll_update = false;
   let deadline = Instant::now() + DEFAULT_TIMEOUT;
 
   while !matches!(expect, Expect::Done) {
@@ -104,11 +105,24 @@ fn missing_file_navigation_emits_navigation_failed_and_stops_loading() {
         );
         assert_eq!(url, missing_url);
         assert!(!error.is_empty(), "expected non-empty error string");
-        expect = Expect::LoadingFalse;
+        expect = Expect::ErrorFrame;
       }
-      WorkerToUi::FrameReady { tab_id: msg_tab, .. } => {
+      WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+        if matches!(expect, Expect::ErrorFrame | Expect::LoadingFalse) {
+          saw_scroll_update = true;
+        }
+      }
+      WorkerToUi::FrameReady { tab_id: msg_tab, frame } if msg_tab == tab_id => {
         assert_eq!(msg_tab, tab_id, "FrameReady should be scoped to the navigating tab");
-        saw_frame = true;
+        assert!(
+          matches!(expect, Expect::ErrorFrame),
+          "FrameReady should be emitted after NavigationFailed (current state: {expect:?})"
+        );
+        assert!(
+          frame.pixmap.width() > 0 && frame.pixmap.height() > 0,
+          "expected a non-empty pixmap for about:error fallback"
+        );
+        expect = Expect::LoadingFalse;
       }
       WorkerToUi::NavigationCommitted { tab_id: msg_tab, .. } if msg_tab == tab_id => {
         panic!("missing-file navigation should not commit");
@@ -117,11 +131,10 @@ fn missing_file_navigation_emits_navigation_failed_and_stops_loading() {
     }
   }
 
-  // Implementation may render an `about:error` page after failure. If a frame is produced, it must
-  // be scoped to the correct tab id.
-  if saw_frame {
-    // Already asserted above.
-  }
+  assert!(
+    saw_scroll_update,
+    "expected ScrollStateUpdated for the about:error fallback frame"
+  );
 
   drop(ui_tx);
   join.join().expect("join worker loop");
