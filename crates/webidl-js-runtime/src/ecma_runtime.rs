@@ -136,7 +136,7 @@ impl VmJsRuntime {
     let mut root_ids = Vec::new();
     for v in roots {
       if !self.value_is_valid_or_primitive(v) {
-        for id in root_ids {
+        for id in root_ids.drain(..) {
           self.heap.remove_root(id);
         }
         return Err(VmError::InvalidHandle);
