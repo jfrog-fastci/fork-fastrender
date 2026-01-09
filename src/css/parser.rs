@@ -51,6 +51,7 @@ use super::types::PageRule;
 use super::types::PageSelector;
 use super::types::PropertyName;
 use super::types::PropertyRule;
+use super::types::PositionTryRule;
 use super::types::PropertyValue;
 use super::types::ScopeRule;
 use super::types::StartingStyleRule;
@@ -826,6 +827,9 @@ fn parse_rule<'i, 't>(
     }
     if kw.eq_ignore_ascii_case("property") {
       return parse_property_rule(parser);
+    }
+    if kw.eq_ignore_ascii_case("position-try") {
+      return parse_position_try_rule(parser);
     }
 
     skip_at_rule(parser);
@@ -2298,6 +2302,10 @@ fn parse_supports_condition_in_parens<'i, 't>(
     return Ok(selector);
   }
 
+  if let Ok(at_rule) = parser.try_parse(|p| parse_supports_at_rule_function(p)) {
+    return Ok(at_rule);
+  }
+
   if let Ok(cond) = parser.try_parse(|p| parse_supports_font_tech_function(p)) {
     return Ok(cond);
   }
@@ -2470,6 +2478,45 @@ fn parse_supports_selector_arguments<'i, 't>(
   Ok(SupportsCondition::Selector(selector_list))
 }
 
+fn parse_supports_at_rule_function<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<SupportsCondition, ParseError<'i, ()>> {
+  if let Ok(rule) = parser.try_parse(|p| {
+    p.expect_function_matching("at-rule")?;
+    parse_supports_at_rule_arguments(p)
+  }) {
+    return Ok(rule);
+  }
+
+  parser.try_parse(|p| {
+    let ident = p.expect_ident()?;
+    if !ident.as_ref().eq_ignore_ascii_case("at-rule") {
+      return Err(p.new_custom_error(()));
+    }
+    p.skip_whitespace();
+    match p.next_including_whitespace()? {
+      Token::ParenthesisBlock => parse_supports_at_rule_arguments(p),
+      _ => Err(p.new_custom_error(())),
+    }
+  })
+}
+
+fn parse_supports_at_rule_arguments<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<SupportsCondition, ParseError<'i, ()>> {
+  let at_rule = parser.parse_nested_block(|nested| {
+    let start = nested.position();
+    consume_nested_tokens(nested)?;
+    Ok::<_, ParseError<'i, ()>>(trim_ascii_whitespace(nested.slice_from(start)).to_string())
+  })?;
+
+  if at_rule.is_empty() {
+    return Err(parser.new_custom_error(()));
+  }
+
+  Ok(SupportsCondition::AtRule(at_rule))
+}
+
 fn consume_nested_tokens<'i, 't, E>(
   parser: &mut Parser<'i, 't>,
 ) -> std::result::Result<(), ParseError<'i, E>> {
@@ -2622,6 +2669,10 @@ fn parse_supports_bare_term<'i, 't>(
 
   if let Ok(selector) = parser.try_parse(|p| parse_supports_selector_function(p)) {
     return Ok(selector);
+  }
+
+  if let Ok(at_rule) = parser.try_parse(|p| parse_supports_at_rule_function(p)) {
+    return Ok(at_rule);
   }
 
   if let Ok(cond) = parser.try_parse(|p| parse_supports_font_tech_function(p)) {
@@ -4005,6 +4056,40 @@ fn parse_property_rule<'i, 't>(
 
   let rule = parser.parse_nested_block(|parser| parse_property_descriptors(parser, &name))?;
   Ok(rule.map(CssRule::Property))
+}
+
+fn parse_position_try_rule<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
+  parser.skip_whitespace();
+
+  let name = match parser.next_including_whitespace() {
+    Ok(Token::Ident(id)) => id.to_string(),
+    _ => {
+      skip_at_rule(parser);
+      return Ok(None);
+    }
+  };
+
+  // CSS Anchor Positioning: the at-rule name is a <dashed-ident> (e.g. `--flip-inline`).
+  // We currently only support the dashed-ident form, which also avoids confusion with the
+  // `none` keyword used by the `position-try-fallbacks` property.
+  if !name.starts_with("--") || name.len() <= 2 {
+    skip_at_rule(parser);
+    return Ok(None);
+  }
+
+  parser.expect_curly_bracket_block().map_err(|_| {
+    parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent("expected {".into()))
+  })?;
+
+  let declarations = parser.parse_nested_block(|nested| {
+    parse_declaration_list(nested, DeclarationContext::Style).map_err(|_| {
+      nested.new_custom_error(SelectorParseErrorKind::UnexpectedIdent("declaration".into()))
+    })
+  })?;
+
+  Ok(Some(CssRule::PositionTry(PositionTryRule { name, declarations })))
 }
 
 fn parse_property_descriptors<'i, 't>(

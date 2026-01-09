@@ -675,6 +675,7 @@ impl Document {
         },
         NodeKind::DocumentFragment => DomNodeType::Document {
           quirks_mode: QuirksMode::NoQuirks,
+          scripting_enabled: true,
         },
         NodeKind::ShadowRoot {
           mode,

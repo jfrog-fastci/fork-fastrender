@@ -11515,18 +11515,22 @@ impl InlineFormattingContext {
 
         let mut input =
           AbsoluteLayoutInput::new(positioned_style, intrinsic_size, child_static_position);
-        input.style.width_keyword = original_style.width_keyword;
-        input.style.min_width_keyword = original_style.min_width_keyword;
-        input.style.max_width_keyword = original_style.max_width_keyword;
-        input.style.height_keyword = original_style.height_keyword;
-        input.style.min_height_keyword = original_style.min_height_keyword;
-        input.style.max_height_keyword = original_style.max_height_keyword;
         input.is_replaced = is_replaced;
         input.preferred_min_inline_size = preferred_min_inline;
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let result = abs.layout_absolute(&input, &child_cb)?;
+        let (_positioned_style, result) =
+          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+            &abs,
+            &input,
+            &original_style,
+            &child_cb,
+            viewport_size,
+            &font_context,
+            anchors_for_cb,
+            parent_box_id,
+          )?;
         let border_size = Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,

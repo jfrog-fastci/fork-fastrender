@@ -4822,6 +4822,7 @@ pub(crate) fn apply_property_from_source(
     "anchor-name" => styles.anchor_names = source.anchor_names.clone(),
     "anchor-scope" => styles.anchor_scope = source.anchor_scope.clone(),
     "position-anchor" => styles.position_anchor = source.position_anchor.clone(),
+    "position-try-fallbacks" => styles.position_try_fallbacks = source.position_try_fallbacks.clone(),
     "z-index" => styles.z_index = source.z_index,
     "outline-color" => styles.outline_color = source.outline_color,
     "outline-style" => styles.outline_style = source.outline_style,
@@ -9384,6 +9385,33 @@ fn apply_declaration_with_base_internal_with_order(
         } else if token.starts_with("--") && token.len() > 2 {
           styles.position_anchor = PositionAnchor::Name(token.to_string());
         }
+      }
+    }
+    "position-try-fallbacks" => {
+      let Some(raw) = (match resolved_value {
+        PropertyValue::Keyword(kw) => Some(trim_ascii_whitespace(kw)),
+        _ => None,
+      }) else {
+        return;
+      };
+
+      if raw.eq_ignore_ascii_case("none") {
+        styles.position_try_fallbacks.clear();
+        return;
+      }
+
+      let mut fallbacks = Vec::new();
+      for part in raw.split(',') {
+        let name = trim_ascii_whitespace(part);
+        if name.starts_with("--") && name.len() > 2 && split_ascii_whitespace(name).count() == 1 {
+          fallbacks.push(name.to_string());
+        } else {
+          return;
+        }
+      }
+
+      if !fallbacks.is_empty() {
+        styles.position_try_fallbacks = fallbacks;
       }
     }
     "anchor-scope" => {

@@ -80,6 +80,7 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
       | "transition-timing-function"
       | "transition-behavior"
       | "transition"
+      | "position-try-fallbacks"
   )
 }
 
@@ -447,6 +448,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "place-self",
   "position",
   "position-anchor",
+  "position-try-fallbacks",
   "quotes",
   "ruby-align",
   "ruby-merge",
@@ -2235,6 +2237,45 @@ fn supports_timeline_scope_value(raw_value: &str) -> bool {
   !scopes.is_empty()
 }
 
+fn supports_position_try_fallbacks_value(raw_value: &str) -> bool {
+  let raw_value = trim_css_whitespace(raw_value);
+  if raw_value.is_empty() {
+    return false;
+  }
+
+  if raw_value.eq_ignore_ascii_case("none") {
+    return true;
+  }
+
+  let mut input = ParserInput::new(raw_value);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let fallbacks = match parser.parse_comma_separated(|p| {
+    p.skip_whitespace();
+    let token = p.next()?;
+    match token {
+      Token::Ident(ident) => {
+        let name = ident.as_ref();
+        if name.starts_with("--") && name.len() > 2 {
+          Ok(())
+        } else {
+          Err(p.new_custom_error::<(), ()>(() ))
+        }
+      }
+      _ => Err(p.new_custom_error::<(), ()>(() )),
+    }
+  }) {
+    Ok(items) => items,
+    Err(_) => return false,
+  };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return false;
+  }
+
+  !fallbacks.is_empty()
+}
+
 fn supports_scroll_timeline_function<'i, 't>(
   input: &mut Parser<'i, 't>,
 ) -> Result<(), cssparser::ParseError<'i, ()>> {
@@ -2703,6 +2744,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     }
     "animation-timeline" => return supports_animation_timeline_value(raw_value),
     "timeline-scope" => return supports_timeline_scope_value(raw_value),
+    "position-try-fallbacks" => return supports_position_try_fallbacks_value(raw_value),
     "transition-behavior" => return supports_transition_behavior_value(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),

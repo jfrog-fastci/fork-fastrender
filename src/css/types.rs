@@ -347,6 +347,15 @@ pub struct CollectedPropertyRule<'a> {
   pub order: usize,
 }
 
+/// Flattened @position-try rule with cascade-layer ordering preserved.
+#[derive(Debug, Clone)]
+pub struct CollectedPositionTryRule<'a> {
+  pub rule: &'a PositionTryRule,
+  /// Cascade layer order (lexicographic; unlayered rules use a sentinel of u32::MAX).
+  pub layer_order: Arc<[u32]>,
+  pub order: usize,
+}
+
 static UNLAYERED_LAYER_ORDER: OnceLock<Arc<[u32]>> = OnceLock::new();
 static EMPTY_LAYER_PATH: OnceLock<Arc<[u32]>> = OnceLock::new();
 
@@ -465,6 +474,13 @@ pub struct PropertyRule {
   pub initial_value: Option<CustomPropertyValue>,
 }
 
+/// A @position-try rule defining a named set of positioning declarations.
+#[derive(Debug, Clone)]
+pub struct PositionTryRule {
+  pub name: String,
+  pub declarations: Vec<Declaration>,
+}
+
 /// A minimal interface for loading imported stylesheets.
 ///
 /// Implementations can fetch from network, filesystem, or an in-memory map.
@@ -579,6 +595,7 @@ impl StyleSheet {
           | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
           | CssRule::Property(_)
+          | CssRule::PositionTry(_)
           | CssRule::FontFace(_)
           | CssRule::Keyframes(_) => {}
         }
@@ -816,6 +833,34 @@ impl StyleSheet {
     result
   }
 
+  /// Collects @position-try rules.
+  pub fn collect_position_try_rules(
+    &self,
+    media_ctx: &MediaContext,
+  ) -> Vec<CollectedPositionTryRule<'_>> {
+    self.collect_position_try_rules_with_cache(media_ctx, None)
+  }
+
+  /// Collects @position-try rules using an optional media-query cache for reuse.
+  pub fn collect_position_try_rules_with_cache(
+    &self,
+    media_ctx: &MediaContext,
+    cache: Option<&mut MediaQueryCache>,
+  ) -> Vec<CollectedPositionTryRule<'_>> {
+    let mut result = Vec::new();
+    let mut registry = LayerRegistry::new();
+    let empty_layer = empty_layer_path();
+    collect_position_try_rules_recursive(
+      &self.rules,
+      media_ctx,
+      cache,
+      &mut registry,
+      &empty_layer,
+      &mut result,
+    );
+    result
+  }
+
   /// Resolve @import rules by fetching external stylesheets and inlining their rules.
   ///
   /// Imports are processed in order; only imports whose media lists match the provided
@@ -941,7 +986,8 @@ impl StyleSheet {
           | CssRule::Keyframes(_)
           | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
-          | CssRule::Property(_) => {}
+          | CssRule::Property(_)
+          | CssRule::PositionTry(_) => {}
         }
       }
       false
@@ -993,7 +1039,8 @@ impl StyleSheet {
           | CssRule::Keyframes(_)
           | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
-          | CssRule::Property(_) => {}
+          | CssRule::Property(_)
+          | CssRule::PositionTry(_) => {}
         }
       }
       false
@@ -1096,6 +1143,7 @@ fn collect_rules_recursive<'a>(
       CssRule::Page(_) => {}
       CssRule::CounterStyle(_) => {}
       CssRule::Property(_) => {}
+      CssRule::PositionTry(_) => {}
       CssRule::Import(_) => {
         // Imports are resolved before collection; nothing to add here.
       }
@@ -1276,6 +1324,7 @@ fn collect_page_rules_recursive<'a>(
       CssRule::FontPaletteValues(_) => {}
       CssRule::FontFeatureValues(_) => {}
       CssRule::Property(_) => {}
+      CssRule::PositionTry(_) => {}
       CssRule::Scope(scope_rule) => {
         collect_page_rules_recursive(
           &scope_rule.rules,
@@ -1328,6 +1377,7 @@ fn collect_font_faces_recursive(
       CssRule::FontPaletteValues(_) => {}
       CssRule::FontFeatureValues(_) => {}
       CssRule::Property(_) => {}
+      CssRule::PositionTry(_) => {}
       CssRule::Layer(layer_rule) => {
         if layer_rule.rules.is_empty() {
           continue;
@@ -1375,6 +1425,7 @@ fn set_font_face_source_stylesheet_url_in_rules(rules: &mut [CssRule], styleshee
         | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
         | CssRule::Property(_)
+        | CssRule::PositionTry(_)
         | CssRule::Import(_)
         | CssRule::Keyframes(_) => {}
       }
@@ -1405,6 +1456,7 @@ fn set_font_face_source_referrer_policy_in_rules(rules: &mut [CssRule], policy: 
         | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
         | CssRule::Property(_)
+        | CssRule::PositionTry(_)
         | CssRule::Import(_)
         | CssRule::Keyframes(_) => {}
       }
@@ -1679,7 +1731,8 @@ fn collect_css_metadata_recursive(
       | CssRule::Import(_)
       | CssRule::FontFeatureValues(_)
       | CssRule::FontPaletteValues(_)
-      | CssRule::Property(_) => {}
+      | CssRule::Property(_)
+      | CssRule::PositionTry(_) => {}
     }
   }
 }
@@ -1811,6 +1864,7 @@ fn collect_keyframes_recursive(
       CssRule::FontPaletteValues(_) => {}
       CssRule::FontFeatureValues(_) => {}
       CssRule::Property(_) => {}
+      CssRule::PositionTry(_) => {}
       CssRule::Scope(scope_rule) => {
         collect_keyframes_recursive(&scope_rule.rules, media_ctx, cache.as_deref_mut(), out);
       }
@@ -1945,6 +1999,7 @@ fn collect_counter_styles_recursive<'a>(
       CssRule::FontPaletteValues(_) => {}
       CssRule::FontFeatureValues(_) => {}
       CssRule::Property(_) => {}
+      CssRule::PositionTry(_) => {}
       CssRule::StartingStyle(starting_rule) => {
         collect_counter_styles_recursive(
           &starting_rule.rules,
@@ -2090,6 +2145,7 @@ fn collect_font_palette_rules_recursive<'a>(
       }
       CssRule::Property(_) => {}
       CssRule::FontFeatureValues(_) => {}
+      CssRule::PositionTry(_) => {}
     }
   }
 }
@@ -2227,7 +2283,8 @@ fn collect_font_feature_values_rules_recursive<'a>(
       | CssRule::CounterStyle(_)
       | CssRule::FontPaletteValues(_)
       | CssRule::Property(_)
-      | CssRule::Keyframes(_) => {}
+      | CssRule::Keyframes(_)
+      | CssRule::PositionTry(_) => {}
     }
   }
 }
@@ -2366,6 +2423,146 @@ fn collect_property_rules_recursive<'a>(
       CssRule::FontPaletteValues(_) => {}
       CssRule::FontFeatureValues(_) => {}
       CssRule::CounterStyle(_) => {}
+      CssRule::PositionTry(_) => {}
+    }
+  }
+}
+
+fn collect_position_try_rules_recursive<'a>(
+  rules: &'a [CssRule],
+  media_ctx: &MediaContext,
+  cache: Option<&mut MediaQueryCache>,
+  registry: &mut LayerRegistry,
+  current_layer: &Arc<[u32]>,
+  out: &mut Vec<CollectedPositionTryRule<'a>>,
+) {
+  let mut cache = cache;
+  for rule in rules {
+    match rule {
+      CssRule::PositionTry(position_try) => {
+        let layer_order = if current_layer.is_empty() {
+          unlayered_layer_order()
+        } else {
+          Arc::clone(current_layer)
+        };
+        let order = out.len();
+        out.push(CollectedPositionTryRule {
+          rule: position_try,
+          layer_order,
+          order,
+        });
+      }
+      CssRule::Media(media_rule) => {
+        if media_ctx.evaluate_list_with_cache(&media_rule.queries, cache.as_deref_mut()) {
+          collect_position_try_rules_recursive(
+            &media_rule.rules,
+            media_ctx,
+            cache.as_deref_mut(),
+            registry,
+            current_layer,
+            out,
+          );
+        }
+      }
+      CssRule::Supports(supports_rule) => {
+        if supports_rule.condition.matches() {
+          collect_position_try_rules_recursive(
+            &supports_rule.rules,
+            media_ctx,
+            cache.as_deref_mut(),
+            registry,
+            current_layer,
+            out,
+          );
+        }
+      }
+      CssRule::Layer(layer_rule) => {
+        if layer_rule.rules.is_empty() {
+          for name in &layer_rule.names {
+            registry.register_path(current_layer.as_ref(), name);
+          }
+          if layer_rule.anonymous {
+            registry.register_anonymous(current_layer.as_ref());
+          }
+          continue;
+        }
+
+        if layer_rule.anonymous {
+          let path = registry.ensure_anonymous(current_layer.as_ref());
+          collect_position_try_rules_recursive(
+            &layer_rule.rules,
+            media_ctx,
+            cache.as_deref_mut(),
+            registry,
+            &path,
+            out,
+          );
+          continue;
+        }
+
+        if layer_rule.names.len() != 1 {
+          continue;
+        }
+        let path = registry.ensure_path(current_layer.as_ref(), &layer_rule.names[0]);
+        collect_position_try_rules_recursive(
+          &layer_rule.rules,
+          media_ctx,
+          cache.as_deref_mut(),
+          registry,
+          &path,
+          out,
+        );
+      }
+      CssRule::Style(style_rule) => {
+        if !style_rule.nested_rules.is_empty() {
+          collect_position_try_rules_recursive(
+            &style_rule.nested_rules,
+            media_ctx,
+            cache.as_deref_mut(),
+            registry,
+            current_layer,
+            out,
+          );
+        }
+      }
+      CssRule::Scope(scope_rule) => {
+        collect_position_try_rules_recursive(
+          &scope_rule.rules,
+          media_ctx,
+          cache.as_deref_mut(),
+          registry,
+          current_layer,
+          out,
+        );
+      }
+      CssRule::Container(container_rule) => {
+        collect_position_try_rules_recursive(
+          &container_rule.rules,
+          media_ctx,
+          cache.as_deref_mut(),
+          registry,
+          current_layer,
+          out,
+        );
+      }
+      CssRule::StartingStyle(starting_rule) => {
+        collect_position_try_rules_recursive(
+          &starting_rule.rules,
+          media_ctx,
+          cache.as_deref_mut(),
+          registry,
+          current_layer,
+          out,
+        );
+      }
+      CssRule::Import(_)
+      | CssRule::Page(_)
+      | CssRule::FontFace(_)
+      | CssRule::Keyframes(_)
+      | CssRule::FontPaletteValues(_)
+      | CssRule::FontFeatureValues(_)
+      | CssRule::CounterStyle(_)
+      | CssRule::Property(_) => {}
     }
   }
 }
@@ -2380,6 +2577,7 @@ impl SupportsCondition {
         supports::supports_declaration(property, value)
       }
       SupportsCondition::Selector(selector_list) => supports_selector_is_valid(selector_list),
+      SupportsCondition::AtRule(rule) => supports::supports_at_rule(rule),
       SupportsCondition::FontTech(techs) => {
         !techs.is_empty() && techs.iter().all(supports_font_tech_keyword)
       }
@@ -2672,6 +2870,7 @@ mod tests {
         | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
         | CssRule::Property(_)
+        | CssRule::PositionTry(_)
         | CssRule::FontFace(_)
         | CssRule::Keyframes(_) => {}
       }
@@ -2723,6 +2922,7 @@ mod tests {
         | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
         | CssRule::Property(_)
+        | CssRule::PositionTry(_)
         | CssRule::FontFace(_)
         | CssRule::Keyframes(_) => {}
       }
@@ -3406,6 +3606,8 @@ pub enum CssRule {
   FontPaletteValues(FontPaletteValuesRule),
   /// A @property rule registering a custom property.
   Property(PropertyRule),
+  /// A @position-try rule defining a named set of positioning declarations.
+  PositionTry(PositionTryRule),
   /// An @import rule (href + optional media list)
   Import(ImportRule),
   /// A @layer rule establishing cascade layers
@@ -3611,6 +3813,10 @@ pub enum SupportsCondition {
   Declaration { property: String, value: String },
   /// `selector(<selector-list>)` feature query
   Selector(String),
+  /// `at-rule(<at-rule>)` feature query (CSS Conditional Rules Level 5)
+  ///
+  /// Stores the raw at-rule text inside the function, e.g. `"@position-try"`.
+  AtRule(String),
   /// `font-tech(<font-tech>#)` feature query (CSS Conditional 5 / CSS Fonts 4).
   ///
   /// When a comma-separated list is provided, all listed technologies must be supported.
@@ -4120,7 +4326,7 @@ impl From<&'static str> for PropertyName {
 }
 
 /// A CSS property declaration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Declaration {
   pub property: PropertyName,
   pub value: PropertyValue,
@@ -4257,6 +4463,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
       | CssRule::FontFeatureValues(_)
       | CssRule::FontPaletteValues(_)
       | CssRule::Property(_)
+      | CssRule::PositionTry(_)
       | CssRule::Page(_) => out.push(rule),
       CssRule::Container(container_rule) => {
         let ContainerRule { conditions, rules } = container_rule;

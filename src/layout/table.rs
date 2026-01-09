@@ -6456,7 +6456,17 @@ impl FormattingContext for TableFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let result = abs.layout_absolute(&input, &cb)?;
+        let (_positioned_style, result) =
+          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+            &abs,
+            &input,
+            &original_style,
+            &cb,
+            self.viewport_size,
+            self.factory.font_context(),
+            Some(&anchor_index),
+            Some(root_box_id),
+          )?;
         let border_size = crate::geometry::Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,

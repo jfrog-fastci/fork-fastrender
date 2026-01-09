@@ -2692,6 +2692,125 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   resolved
 }
 
+pub(crate) fn layout_absolute_with_position_try_fallbacks(
+  abs: &AbsoluteLayout,
+  base_input: &AbsoluteLayoutInput,
+  base_style: &ComputedStyle,
+  containing_block: &ContainingBlock,
+  viewport: Size,
+  font_context: &FontContext,
+  anchors: Option<&AnchorIndex>,
+  query_parent_box_id: Option<usize>,
+) -> Result<(PositionedStyle, AbsoluteLayoutResult), LayoutError> {
+  const OVERFLOW_EPSILON: f32 = 0.01;
+
+  fn border_box_rect(result: &AbsoluteLayoutResult, style: &PositionedStyle) -> Rect {
+    let horizontal = style.padding.left
+      + style.padding.right
+      + style.border_width.left
+      + style.border_width.right;
+    let vertical = style.padding.top
+      + style.padding.bottom
+      + style.border_width.top
+      + style.border_width.bottom;
+    let border_size = Size::new(result.size.width + horizontal, result.size.height + vertical);
+    let content_offset = Point::new(
+      style.border_width.left + style.padding.left,
+      style.border_width.top + style.padding.top,
+    );
+    Rect::new(
+      Point::new(result.position.x - content_offset.x, result.position.y - content_offset.y),
+      border_size,
+    )
+  }
+
+  fn overflow_area(border_box: Rect, container: Rect) -> f32 {
+    if !border_box.origin.x.is_finite()
+      || !border_box.origin.y.is_finite()
+      || !border_box.size.width.is_finite()
+      || !border_box.size.height.is_finite()
+    {
+      return f32::INFINITY;
+    }
+
+    let width = border_box.size.width.max(0.0);
+    let height = border_box.size.height.max(0.0);
+    let area = width * height;
+    if !area.is_finite() {
+      return f32::INFINITY;
+    }
+
+    let visible_area = border_box
+      .intersection(container)
+      .map(|rect| rect.size.width.max(0.0) * rect.size.height.max(0.0))
+      .unwrap_or(0.0);
+
+    (area - visible_area).max(0.0)
+  }
+
+  let base_result = abs.layout_absolute(base_input, containing_block)?;
+  let base_overflow = overflow_area(
+    border_box_rect(&base_result, &base_input.style),
+    containing_block.rect,
+  );
+
+  if base_overflow <= OVERFLOW_EPSILON || base_style.position_try_fallbacks.is_empty() {
+    return Ok((base_input.style.clone(), base_result));
+  }
+
+  let mut best_style = base_input.style.clone();
+  let mut best_result = base_result;
+  let mut best_overflow = base_overflow;
+
+  for name in base_style.position_try_fallbacks.iter() {
+    let Some(decls) = base_style.position_try_registry.get(name.as_str()) else {
+      continue;
+    };
+
+    let mut trial_style = base_style.clone();
+    for decl in decls {
+      crate::style::properties::apply_declaration_with_base(
+        &mut trial_style,
+        decl,
+        base_style,
+        base_style,
+        None,
+        base_style.font_size,
+        base_style.root_font_size,
+        viewport,
+        base_style.used_dark_color_scheme,
+      );
+    }
+    crate::style::properties::resolve_pending_logical_properties(&mut trial_style);
+
+    let trial_positioned = resolve_positioned_style_with_anchors(
+      &trial_style,
+      containing_block,
+      viewport,
+      font_context,
+      anchors,
+      query_parent_box_id,
+    );
+    let mut trial_input = base_input.clone();
+    trial_input.style = trial_positioned.clone();
+    let trial_result = abs.layout_absolute(&trial_input, containing_block)?;
+    let trial_overflow =
+      overflow_area(border_box_rect(&trial_result, &trial_positioned), containing_block.rect);
+
+    if trial_overflow <= OVERFLOW_EPSILON {
+      return Ok((trial_positioned, trial_result));
+    }
+
+    if trial_overflow < best_overflow {
+      best_overflow = trial_overflow;
+      best_style = trial_positioned;
+      best_result = trial_result;
+    }
+  }
+
+  Ok((best_style, best_result))
+}
+
 /// Returns the padding + border edge sizes that participate in intrinsic sizing.
 ///
 /// Our formatting context intrinsic size APIs report border-box contributions. When feeding those

@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use fastrender::css::types::Transform;
+use fastrender::css::types::{Declaration, PropertyValue, Transform};
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
+use fastrender::style::position_try::PositionTryRegistry;
 use fastrender::style::types::{
   AnchorFunction, AnchorScope, AnchorSide, AnchorSizeAxis, AnchorSizeFunction, Direction, InsetValue,
   PositionAnchor, WritingMode,
@@ -50,6 +51,16 @@ fn find_abs_bounds_by_box_id(fragment: &FragmentNode, box_id: usize) -> Option<R
   }
 
   recurse(fragment, box_id, Point::ZERO)
+}
+
+fn decl(property: &'static str, value: PropertyValue) -> Declaration {
+  Declaration {
+    property: property.into(),
+    value,
+    raw_value: String::new(),
+    important: false,
+    contains_var: false,
+  }
 }
 
 #[test]
@@ -326,6 +337,186 @@ fn anchor_positioning_uses_transformed_anchor_box() {
   assert!(
     (overlay_fragment.bounds.y() - anchor_fragment.bounds.max_y()).abs() < 0.1,
     "transform should not affect the block axis in this test"
+  );
+}
+
+#[test]
+fn anchor_positioning_applies_position_try_fallbacks_to_avoid_overflow() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(50.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(10.0));
+  anchor_style.height = Some(Length::px(10.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.margin_left = Some(Length::px(80.0));
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut position_try_registry = PositionTryRegistry::default();
+  position_try_registry.register(
+    "--flip".to_string(),
+    vec![
+      decl("left", PropertyValue::Keyword("auto".to_string())),
+      decl("right", PropertyValue::Keyword("anchor(left)".to_string())),
+    ],
+  );
+  let position_try_registry = Arc::new(position_try_registry);
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Right,
+    fallback: None,
+  });
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Top,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(30.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  overlay_style.position_try_registry = position_try_registry;
+  overlay_style.position_try_fallbacks = vec!["--flip".to_string()];
+  let mut overlay =
+    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
+  container.id = 100;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 50.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+
+  assert!(
+    (anchor_fragment.bounds.x() - 80.0).abs() < 0.1,
+    "anchor should be offset by its margin-left"
+  );
+  assert!(
+    (overlay_fragment.bounds.max_x() - anchor_fragment.bounds.x()).abs() < 0.1,
+    "fallback should place overlay to the left of the anchor (got overlay max_x={}, anchor x={})",
+    overlay_fragment.bounds.max_x(),
+    anchor_fragment.bounds.x()
+  );
+  assert!(
+    overlay_fragment.bounds.max_x() <= 100.0 + 0.1,
+    "overlay should not overflow the containing block after applying the fallback"
+  );
+}
+
+#[test]
+fn anchor_positioning_uses_first_position_try_fallback_that_fits() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(50.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(10.0));
+  anchor_style.height = Some(Length::px(10.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.margin_left = Some(Length::px(80.0));
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut position_try_registry = PositionTryRegistry::default();
+  // First try set keeps the original overflowing placement.
+  position_try_registry.register(
+    "--overflow".to_string(),
+    vec![decl("left", PropertyValue::Keyword("anchor(right)".to_string()))],
+  );
+  // Second try set flips the overlay to fit inside the containing block.
+  position_try_registry.register(
+    "--flip".to_string(),
+    vec![
+      decl("left", PropertyValue::Keyword("auto".to_string())),
+      decl("right", PropertyValue::Keyword("anchor(left)".to_string())),
+    ],
+  );
+  let position_try_registry = Arc::new(position_try_registry);
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Right,
+    fallback: None,
+  });
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Top,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(30.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  overlay_style.position_try_registry = position_try_registry;
+  overlay_style.position_try_fallbacks = vec!["--overflow".to_string(), "--flip".to_string()];
+  let mut overlay =
+    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
+  container.id = 101;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 50.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+
+  assert!(
+    (overlay_fragment.bounds.max_x() - anchor_fragment.bounds.x()).abs() < 0.1,
+    "should fall back to the second try set that fits (overlay max_x={}, anchor x={})",
+    overlay_fragment.bounds.max_x(),
+    anchor_fragment.bounds.x()
+  );
+  assert!(
+    overlay_fragment.bounds.x() < anchor_fragment.bounds.x(),
+    "overlay should be placed to the left of the anchor after falling back"
   );
 }
 

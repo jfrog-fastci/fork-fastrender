@@ -80,6 +80,7 @@ use crate::style::media::RangeFeature;
 use crate::style::media::RangeValue;
 use crate::style::normalize_language_tag;
 use crate::style::position::Position;
+use crate::style::position_try::PositionTryRegistry;
 use crate::style::properties::apply_content_visibility_implied_containment;
 use crate::style::properties::apply_declaration_with_base;
 use crate::style::properties::apply_declaration_with_base_and_custom_properties;
@@ -6245,6 +6246,9 @@ struct RuleScopes<'a> {
   custom_property_registry_ua: Arc<CustomPropertyRegistry>,
   custom_property_registry_document: Arc<CustomPropertyRegistry>,
   custom_property_registry_shadows: HashMap<usize, Arc<CustomPropertyRegistry>>,
+  position_try_registry_ua: Arc<PositionTryRegistry>,
+  position_try_registry_document: Arc<PositionTryRegistry>,
+  position_try_registry_shadows: HashMap<usize, Arc<PositionTryRegistry>>,
 }
 
 struct MatchIndex {
@@ -11339,6 +11343,58 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
     (ua_registry, document_registry, shadow_registries)
   };
 
+  let (position_try_registry_ua, position_try_registry_document, position_try_registry_shadows) = {
+    let register_collected =
+      |registry: &mut PositionTryRegistry,
+       mut collected: Vec<crate::css::types::CollectedPositionTryRule<'_>>| {
+        collected.sort_by(|a, b| {
+          a.layer_order
+            .as_ref()
+            .cmp(b.layer_order.as_ref())
+            .then(a.order.cmp(&b.order))
+        });
+        for rule in collected {
+          registry.register(rule.rule.name.clone(), rule.rule.declarations.clone());
+        }
+      };
+
+    let mut ua_registry = PositionTryRegistry::default();
+    let ua_rules = if let Some(cache) = media_cache.as_deref_mut() {
+      ua_stylesheet.collect_position_try_rules_with_cache(media_ctx, Some(cache))
+    } else {
+      ua_stylesheet.collect_position_try_rules(media_ctx)
+    };
+    register_collected(&mut ua_registry, ua_rules);
+    let ua_registry = Arc::new(ua_registry);
+
+    let mut document_registry = ua_registry.as_ref().clone();
+    let document_rules = if let Some(cache) = media_cache.as_deref_mut() {
+      author_sheet.collect_position_try_rules_with_cache(media_ctx, Some(cache))
+    } else {
+      author_sheet.collect_position_try_rules(media_ctx)
+    };
+    register_collected(&mut document_registry, document_rules);
+    let document_registry = Arc::new(document_registry);
+
+    let mut shadow_registries: HashMap<usize, Arc<PositionTryRegistry>> = HashMap::new();
+    for (host, _shadow_root_id, sheet) in &shadow_sheets {
+      let mut registry = if fallback_document_rules_in_shadow_scopes {
+        document_registry.as_ref().clone()
+      } else {
+        ua_registry.as_ref().clone()
+      };
+      let shadow_rules = if let Some(cache) = media_cache.as_deref_mut() {
+        sheet.collect_position_try_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        sheet.collect_position_try_rules(media_ctx)
+      };
+      register_collected(&mut registry, shadow_rules);
+      shadow_registries.insert(*host, Arc::new(registry));
+    }
+
+    (ua_registry, document_registry, shadow_registries)
+  };
+
   let rule_scopes = RuleScopes {
     ua: ua_index,
     document: document_author_index,
@@ -11350,6 +11406,9 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
     custom_property_registry_ua,
     custom_property_registry_document: custom_property_registry_document.clone(),
     custom_property_registry_shadows,
+    position_try_registry_ua,
+    position_try_registry_document: position_try_registry_document.clone(),
+    position_try_registry_shadows,
   };
 
   let needs_selector_blooms = rule_scopes_needs_selector_bloom_summaries(&rule_scopes);
@@ -11495,12 +11554,14 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   base_styles.counter_styles = counter_styles.clone();
   base_styles.font_palettes = font_palettes.clone();
   base_styles.font_feature_values = font_feature_values.clone();
+  base_styles.position_try_registry = position_try_registry_document.clone();
   base_styles.custom_property_registry = custom_property_registry_document.clone();
   base_styles.custom_properties = initial_custom_properties.clone();
   let mut base_ua_styles = ComputedStyle::default();
   base_ua_styles.counter_styles = counter_styles;
   base_ua_styles.font_palettes = font_palettes;
   base_ua_styles.font_feature_values = font_feature_values;
+  base_ua_styles.position_try_registry = position_try_registry_document.clone();
   base_ua_styles.custom_property_registry = custom_property_registry_document.clone();
   base_ua_styles.custom_properties = initial_custom_properties;
   let has_starting_styles = include_starting_style
@@ -11892,6 +11953,60 @@ impl<'a> PreparedCascade<'a> {
       (ua_registry, document_registry, shadow_registries)
     };
 
+    let (position_try_registry_ua, position_try_registry_document, position_try_registry_shadows) = {
+      let register_collected =
+        |registry: &mut PositionTryRegistry,
+         mut collected: Vec<crate::css::types::CollectedPositionTryRule<'_>>| {
+          collected.sort_by(|a, b| {
+            a.layer_order
+              .as_ref()
+              .cmp(b.layer_order.as_ref())
+              .then(a.order.cmp(&b.order))
+          });
+          for rule in collected {
+            registry.register(rule.rule.name.clone(), rule.rule.declarations.clone());
+          }
+        };
+
+      let mut ua_registry = PositionTryRegistry::default();
+      let ua_rules = if let Some(cache) = media_cache.as_deref_mut() {
+        ua_stylesheet.collect_position_try_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        ua_stylesheet.collect_position_try_rules(media_ctx)
+      };
+      register_collected(&mut ua_registry, ua_rules);
+      let ua_registry = Arc::new(ua_registry);
+
+      let mut document_registry = ua_registry.as_ref().clone();
+      let document_rules = if let Some(cache) = media_cache.as_deref_mut() {
+        document_ref.collect_position_try_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        document_ref.collect_position_try_rules(media_ctx)
+      };
+      register_collected(&mut document_registry, document_rules);
+      let document_registry = Arc::new(document_registry);
+
+      let mut shadow_registries: HashMap<usize, Arc<PositionTryRegistry>> = HashMap::new();
+      for (host, sheet) in &shadow_sheets {
+        // Safety: shadow sheets are boxed and kept alive by this struct.
+        let sheet_ref: &'a StyleSheet = unsafe { &*(&**sheet as *const StyleSheet) };
+        let mut registry = if fallback_document_rules_in_shadow_scopes {
+          document_registry.as_ref().clone()
+        } else {
+          ua_registry.as_ref().clone()
+        };
+        let shadow_rules = if let Some(cache) = media_cache.as_deref_mut() {
+          sheet_ref.collect_position_try_rules_with_cache(media_ctx, Some(cache))
+        } else {
+          sheet_ref.collect_position_try_rules(media_ctx)
+        };
+        register_collected(&mut registry, shadow_rules);
+        shadow_registries.insert(*host, Arc::new(registry));
+      }
+
+      (ua_registry, document_registry, shadow_registries)
+    };
+
     let rule_scopes = RuleScopes {
       ua: ua_index,
       document: document_author_index,
@@ -11903,6 +12018,9 @@ impl<'a> PreparedCascade<'a> {
       custom_property_registry_ua,
       custom_property_registry_document: custom_property_registry_document.clone(),
       custom_property_registry_shadows,
+      position_try_registry_ua,
+      position_try_registry_document: position_try_registry_document.clone(),
+      position_try_registry_shadows,
     };
 
     let needs_selector_bloom_summaries = rule_scopes_needs_selector_bloom_summaries(&rule_scopes)
@@ -12048,12 +12166,14 @@ impl<'a> PreparedCascade<'a> {
     base_styles.counter_styles = counter_styles.clone();
     base_styles.font_palettes = font_palettes.clone();
     base_styles.font_feature_values = font_feature_values.clone();
+    base_styles.position_try_registry = position_try_registry_document.clone();
     base_styles.custom_property_registry = custom_property_registry_document.clone();
     base_styles.custom_properties = initial_custom_properties.clone();
     let mut base_ua_styles = ComputedStyle::default();
     base_ua_styles.counter_styles = counter_styles;
     base_ua_styles.font_palettes = font_palettes;
     base_ua_styles.font_feature_values = font_feature_values;
+    base_ua_styles.position_try_registry = position_try_registry_document.clone();
     base_ua_styles.custom_property_registry = custom_property_registry_document.clone();
     base_ua_styles.custom_properties = initial_custom_properties;
 
@@ -13282,6 +13402,26 @@ fn scope_custom_property_registry(
         }
       }),
     None => scopes.custom_property_registry_document.clone(),
+  }
+}
+
+fn scope_position_try_registry(
+  scopes: &RuleScopes<'_>,
+  scope_host: Option<usize>,
+) -> Arc<PositionTryRegistry> {
+  match scope_host {
+    Some(host) => scopes
+      .position_try_registry_shadows
+      .get(&host)
+      .cloned()
+      .unwrap_or_else(|| {
+        if scopes.fallback_document_rules_in_shadow_scopes {
+          scopes.position_try_registry_document.clone()
+        } else {
+          scopes.position_try_registry_ua.clone()
+        }
+      }),
+    None => scopes.position_try_registry_document.clone(),
   }
 }
 
@@ -15116,6 +15256,7 @@ fn compute_base_styles<'a>(
   };
   let tree_scoped_custom_property_registry =
     scope_custom_property_registry(rule_scopes, scope_host);
+  let tree_scoped_position_try_registry = scope_position_try_registry(rule_scopes, scope_host);
   if !node.is_element() {
     let mut ua_styles = get_default_styles_for_element(node);
     inherit_styles(&mut ua_styles, parent_ua_styles);
@@ -15125,6 +15266,12 @@ fn compute_base_styles<'a>(
     ) {
       ua_styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
       ua_styles.recompute_inherited_custom_properties(parent_ua_styles);
+    }
+    if !Arc::ptr_eq(
+      &ua_styles.position_try_registry,
+      &tree_scoped_position_try_registry,
+    ) {
+      ua_styles.position_try_registry = tree_scoped_position_try_registry.clone();
     }
     propagate_text_decorations(node, &mut ua_styles, parent_ua_styles);
 
@@ -15136,6 +15283,9 @@ fn compute_base_styles<'a>(
     ) {
       styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
       styles.recompute_inherited_custom_properties(parent_styles);
+    }
+    if !Arc::ptr_eq(&styles.position_try_registry, &tree_scoped_position_try_registry) {
+      styles.position_try_registry = tree_scoped_position_try_registry.clone();
     }
     propagate_text_decorations(node, &mut styles, parent_styles);
 
@@ -15229,6 +15379,12 @@ fn compute_base_styles<'a>(
   ) {
     ua_styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
     ua_styles.recompute_inherited_custom_properties(parent_ua_styles);
+  }
+  if !Arc::ptr_eq(
+    &ua_styles.position_try_registry,
+    &tree_scoped_position_try_registry,
+  ) {
+    ua_styles.position_try_registry = tree_scoped_position_try_registry.clone();
   }
   let mut matching_rules = collect_matching_rules(
     node,
@@ -15351,6 +15507,9 @@ fn compute_base_styles<'a>(
   ) {
     styles.custom_property_registry = tree_scoped_custom_property_registry;
     styles.recompute_inherited_custom_properties(parent_styles);
+  }
+  if !Arc::ptr_eq(&styles.position_try_registry, &tree_scoped_position_try_registry) {
+    styles.position_try_registry = tree_scoped_position_try_registry;
   }
 
   // Apply matching CSS rules and inline styles with full cascade ordering
@@ -17269,6 +17428,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.counter_styles = parent.counter_styles.clone();
   styles.font_palettes = parent.font_palettes.clone();
   styles.font_feature_values = parent.font_feature_values.clone();
+  styles.position_try_registry = parent.position_try_registry.clone();
   styles.image_orientation = parent.image_orientation;
   styles.quotes = parent.quotes.clone();
   styles.cursor = parent.cursor;

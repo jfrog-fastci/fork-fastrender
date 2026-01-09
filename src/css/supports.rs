@@ -80,6 +80,22 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
   supports_parsed_declaration_is_valid(canonical_property, value_without_important, &parsed)
 }
 
+/// Validates an at-rule for use in `@supports at-rule(...)` queries.
+///
+/// This supports only a minimal subset needed for real-world stylesheets.
+pub fn supports_at_rule(rule: &str) -> bool {
+  let trimmed = trim_ascii_whitespace(rule);
+  if trimmed.is_empty() {
+    return false;
+  }
+
+  let name = trimmed.strip_prefix('@').unwrap_or(trimmed);
+  match name.to_ascii_lowercase().as_str() {
+    "position-try" => true,
+    _ => false,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

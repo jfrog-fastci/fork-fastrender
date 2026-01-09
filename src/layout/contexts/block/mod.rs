@@ -2052,14 +2052,17 @@ impl BlockFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        input.style.width_keyword = original_style.width_keyword;
-        input.style.min_width_keyword = original_style.min_width_keyword;
-        input.style.max_width_keyword = original_style.max_width_keyword;
-        input.style.height_keyword = original_style.height_keyword;
-        input.style.min_height_keyword = original_style.min_height_keyword;
-        input.style.max_height_keyword = original_style.max_height_keyword;
-
-        let result = abs.layout_absolute(&input, &positioning_cb)?;
+        let (_positioned_style, result) =
+          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+            &abs,
+            &input,
+            &original_style,
+            &positioning_cb,
+            self.viewport_size,
+            &self.font_context,
+            anchors_for_cb,
+            Some(query_parent_id),
+          )?;
         let border_size_physical = Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,
@@ -2070,7 +2073,7 @@ impl BlockFormattingContext {
         );
         let (border_origin, border_size) = if needs_physical_conversion {
           let border_rect = Rect::new(border_origin_physical, border_size_physical);
-         let logical_rect = physical_rect_to_logical(
+          let logical_rect = physical_rect_to_logical(
             border_rect,
             box_width,
             box_height,
@@ -7277,14 +7280,17 @@ impl FormattingContext for BlockFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        input.style.width_keyword = original_style.width_keyword;
-        input.style.min_width_keyword = original_style.min_width_keyword;
-        input.style.max_width_keyword = original_style.max_width_keyword;
-        input.style.height_keyword = original_style.height_keyword;
-        input.style.min_height_keyword = original_style.min_height_keyword;
-        input.style.max_height_keyword = original_style.max_height_keyword;
-
-        let result = abs.layout_absolute(&input, &positioning_cb)?;
+        let (_positioned_style, result) =
+          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+            &abs,
+            &input,
+            &original_style,
+            &positioning_cb,
+            self.viewport_size,
+            &self.font_context,
+            anchors_for_cb,
+            Some(query_parent_id),
+          )?;
         let border_size_physical = Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,

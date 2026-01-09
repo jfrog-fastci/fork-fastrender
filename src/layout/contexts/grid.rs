@@ -5343,7 +5343,17 @@ impl GridFormattingContext {
       input.preferred_inline_size = preferred_inline;
       input.preferred_min_block_size = preferred_min_block;
       input.preferred_block_size = preferred_block;
-      let result = abs.layout_absolute(&input, &cb)?;
+      let (_positioned_style, result) =
+        crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+          &abs,
+          &input,
+          &child.style,
+          &cb,
+          self.viewport_size,
+          &self.font_context,
+          None,
+          None,
+        )?;
       let border_size = Size::new(
         result.size.width + actual_horizontal,
         result.size.height + actual_vertical,
@@ -9996,7 +10006,17 @@ impl FormattingContext for GridFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let result = abs.layout_absolute(&input, &cb)?;
+        let (_positioned_style, result) =
+          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+            &abs,
+            &input,
+            &child.style,
+            &cb,
+            ctx.viewport_size,
+            &ctx.font_context,
+            anchors_for_cb,
+            Some(root_box_id),
+          )?;
         let border_size = Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,

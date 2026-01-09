@@ -20,6 +20,7 @@ pub mod grid;
 pub mod media;
 pub mod page;
 pub mod position;
+pub mod position_try;
 pub mod properties;
 pub mod string_set;
 pub mod style_set;
@@ -46,6 +47,7 @@ use counters::CounterProperties;
 use display::Display;
 use font_feature_values::FontFeatureValuesRegistry;
 use font_palette::FontPaletteRegistry;
+use position_try::PositionTryRegistry;
 use position::Position;
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -890,6 +892,8 @@ pub struct ComputedStyle {
   pub anchor_scope: AnchorScope,
   /// Default anchor element for this positioned box (CSS `position-anchor`).
   pub position_anchor: PositionAnchor,
+  /// Fallback `@position-try` sets to consult when anchor-based positioning would overflow.
+  pub position_try_fallbacks: Vec<String>,
   pub top: InsetValue,
   pub right: InsetValue,
   pub bottom: InsetValue,
@@ -1138,6 +1142,8 @@ pub struct ComputedStyle {
   pub font_palettes: Arc<FontPaletteRegistry>,
   /// Registry of `@font-feature-values` rules used for resolving named alternates.
   pub font_feature_values: Arc<FontFeatureValuesRegistry>,
+  /// Registry of `@position-try` rules for resolving `position-try-fallbacks`.
+  pub position_try_registry: Arc<PositionTryRegistry>,
 
   // Color and background
   pub forced_color_adjust: ForcedColorAdjust,
@@ -1356,6 +1362,7 @@ impl Default for ComputedStyle {
       anchor_names: Vec::new(),
       anchor_scope: AnchorScope::None,
       position_anchor: PositionAnchor::None,
+      position_try_fallbacks: Vec::new(),
       top: InsetValue::Auto,
       right: InsetValue::Auto,
       bottom: InsetValue::Auto,
@@ -1556,6 +1563,7 @@ impl Default for ComputedStyle {
       counter_styles: Arc::new(CounterStyleRegistry::with_builtins()),
       font_palettes: Arc::new(FontPaletteRegistry::default()),
       font_feature_values: Arc::new(FontFeatureValuesRegistry::default()),
+      position_try_registry: Arc::new(PositionTryRegistry::default()),
       forced_color_adjust: ForcedColorAdjust::Auto,
       color_scheme: ColorSchemePreference::Normal,
       used_dark_color_scheme: false,

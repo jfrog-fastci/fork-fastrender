@@ -4016,6 +4016,8 @@ impl FormattingContext for FlexFormattingContext {
         &positioned_candidates,
         auto_unskipped,
         padding_origin,
+        &anchor_index,
+        root_box_id,
       ) {
         Ok(positions) => positions,
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -4078,7 +4080,17 @@ impl FormattingContext for FlexFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let result = abs.layout_absolute(&input, &candidate.cb)?;
+        let (_positioned_style, result) =
+          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+            &abs,
+            &input,
+            &candidate.original_style,
+            &candidate.cb,
+            self.viewport_size,
+            &self.font_context,
+            Some(&anchor_index),
+            Some(root_box_id),
+          )?;
         let mut child_fragment = candidate.fragment;
         let border_size = Size::new(
           result.size.width + actual_horizontal,
@@ -9957,6 +9969,8 @@ impl FlexFormattingContext {
     positioned: &[PositionedCandidate],
     auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     padding_origin: Point,
+    anchor_index: &crate::layout::anchor_positioning::AnchorIndex,
+    query_parent_box_id: usize,
   ) -> Result<FxHashMap<usize, Point>, LayoutError> {
     let mut deadline_counter = 0usize;
     if positioned.is_empty() {
@@ -10175,7 +10189,17 @@ impl FlexFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let result = abs.layout_absolute(&input, &candidate.cb)?;
+        let (_positioned_style, result) =
+          crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+            &abs,
+            &input,
+            &candidate.original_style,
+            &candidate.cb,
+            self.viewport_size,
+            &self.font_context,
+            Some(anchor_index),
+            Some(query_parent_box_id),
+          )?;
         Size::new(
           (result.size.width + actual_horizontal).max(0.0),
           (result.size.height + actual_vertical).max(0.0),
