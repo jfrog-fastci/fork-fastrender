@@ -1298,6 +1298,11 @@ impl App {
 
     for action in actions {
       match action {
+        ChromeAction::FocusAddressBar => {
+          self.focus_address_bar_select_all();
+          // Request another redraw so egui can apply the focus/select-all request.
+          self.window.request_redraw();
+        }
         ChromeAction::AddressBarFocusChanged(has_focus) => {
           if has_focus {
             self.page_has_focus = false;

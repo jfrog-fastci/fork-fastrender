@@ -6,6 +6,13 @@ use crate::ui::messages::TabId;
 
 #[derive(Debug, Clone)]
 pub enum ChromeAction {
+  /// Focus the address bar and select all contents.
+  ///
+  /// This is emitted by chrome-level keyboard shortcuts (e.g. Ctrl/Cmd+L).
+  ///
+  /// Front-ends are expected to translate this into UI state changes (e.g. setting
+  /// `ChromeState::request_focus_address_bar` / `request_select_all_address_bar`).
+  FocusAddressBar,
   NewTab,
   CloseTab(TabId),
   ActivateTab(TabId),
@@ -27,9 +34,30 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
   // need to do platform-specific modifier bookkeeping and can respect egui's "text editing"
   // state. Avoid firing shortcuts while the address bar is focused (or whenever egui is actively
   // consuming keyboard input).
+  // Ctrl/Cmd+L is widely used to focus the address bar. We want it to work even when the address
+  // bar currently has focus (select all), so handle it outside the "no text editing" gate used by
+  // the other shortcuts.
+  let focus_address_bar = ctx.input(|i| {
+    // Use the key event's modifier snapshot rather than `i.modifiers`: the winit integration feeds
+    // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
+    i.events.iter().any(|event| match event {
+      egui::Event::Key {
+        key: egui::Key::L,
+        pressed: true,
+        repeat: false,
+        modifiers,
+      } => (modifiers.command || modifiers.ctrl) && !modifiers.alt,
+      _ => false,
+    })
+  });
+  if focus_address_bar {
+    actions.push(ChromeAction::FocusAddressBar);
+  }
+
   if !app.chrome.address_bar_has_focus && !ctx.wants_keyboard_input() {
     let (new_tab, close_tab, reload, back, forward, tab_delta) = ctx.input(|i| {
-      let cmd_or_ctrl = i.modifiers.command || i.modifiers.ctrl;
+      // Guard against AltGr (often encoded as Ctrl+Alt).
+      let cmd_or_ctrl = (i.modifiers.command || i.modifiers.ctrl) && !i.modifiers.alt;
       let new_tab = cmd_or_ctrl && i.key_pressed(egui::Key::T);
       let close_tab = cmd_or_ctrl && i.key_pressed(egui::Key::W);
       let reload = cmd_or_ctrl && i.key_pressed(egui::Key::R);
@@ -182,4 +210,48 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
   });
 
   actions
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{chrome_ui, ChromeAction};
+  use crate::ui::browser_app::BrowserAppState;
+
+  #[test]
+  fn ctrl_l_emits_focus_address_bar_action() {
+    let mut app = BrowserAppState::new();
+
+    let ctx = egui::Context::default();
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Egui's `Event::Key` carries a modifier snapshot.
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    raw.events.push(egui::Event::Key {
+      key: egui::Key::L,
+      pressed: true,
+      repeat: false,
+      modifiers,
+    });
+
+    ctx.begin_frame(raw);
+    assert!(
+      ctx.input(|i| i.key_pressed(egui::Key::L)),
+      "test setup failure: egui input did not register Key::L as pressed"
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
+      "expected ChromeAction::FocusAddressBar, got {actions:?}"
+    );
+  }
 }
