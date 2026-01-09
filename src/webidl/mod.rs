@@ -178,6 +178,40 @@ mod tests {
       WORLD.typedef_("BodyInit").is_some(),
       "expected WebIDL world to include Fetch typedef BodyInit"
     );
+    assert!(
+      WORLD.typedef_("RequestInfo").is_some(),
+      "expected WebIDL world to include Fetch typedef RequestInfo"
+    );
+
+    let request_init = WORLD
+      .dictionary("RequestInit")
+      .expect("generated world should include RequestInit dictionary (WHATWG Fetch)");
+    let request_init_member_names = request_init
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
+    for member in ["method", "headers", "body", "signal"] {
+      assert!(
+        request_init_member_names.contains(&member),
+        "expected RequestInit to contain {member}: {request_init_member_names:?}"
+      );
+    }
+
+    let response_init = WORLD
+      .dictionary("ResponseInit")
+      .expect("generated world should include ResponseInit dictionary (WHATWG Fetch)");
+    let response_init_member_names = response_init
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
+    for member in ["status", "headers"] {
+      assert!(
+        response_init_member_names.contains(&member),
+        "expected ResponseInit to contain {member}: {response_init_member_names:?}"
+      );
+    }
 
     let headers = WORLD
       .interface("Headers")
