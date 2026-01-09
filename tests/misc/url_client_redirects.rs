@@ -149,3 +149,130 @@ fn render_url_client_redirect_hop_limit_stops_loop() -> Result<()> {
   );
   Ok(())
 }
+
+#[test]
+fn render_url_follows_js_location_redirect_when_enabled() -> Result<()> {
+  let tmp = tempdir()?;
+  let start_dir = tmp.path().join("start");
+  let target_dir = tmp.path().join("target");
+  fs::create_dir_all(&start_dir)?;
+  fs::create_dir_all(&target_dir)?;
+
+  let target_path = target_dir.join("page.html");
+  fs::write(
+    &target_path,
+    "<!doctype html><html><body>TARGET_PAGE</body></html>",
+  )?;
+
+  let base_href = Url::from_directory_path(&target_dir).expect("base href url");
+  let start_path = start_dir.join("index.html");
+  fs::write(
+    &start_path,
+    format!(
+      "<!doctype html><html><head><base href=\"{base}\"><script>location.replace('page.html')</script></head><body>START_PAGE</body></html>",
+      base = base_href.as_str()
+    ),
+  )?;
+
+  let start_url = Url::from_file_path(&start_path)
+    .expect("start url")
+    .to_string();
+  let target_url = Url::from_file_path(&target_path)
+    .expect("target url")
+    .to_string();
+
+  let mut renderer = FastRender::new()?;
+  let options = RenderOptions::new()
+    .with_viewport(64, 64)
+    .with_follow_client_redirects(true)
+    .with_follow_js_location_redirects(true)
+    .with_max_client_redirect_hops(3);
+  let report = renderer.render_url_with_options_report(
+    &start_url,
+    options,
+    RenderArtifactRequest {
+      dom: true,
+      ..RenderArtifactRequest::none()
+    },
+  )?;
+
+  let dom = report.artifacts.dom.expect("expected DOM artifact");
+  assert!(
+    dom_contains_text(&dom, "TARGET_PAGE"),
+    "expected final DOM to come from redirect target"
+  );
+
+  assert_eq!(
+    report.diagnostics.client_redirects.len(),
+    1,
+    "expected exactly one redirect hop"
+  );
+  let hop = &report.diagnostics.client_redirects[0];
+  assert_eq!(hop.kind, ClientRedirectKind::JsLocation);
+  assert_eq!(hop.from_url, start_url);
+  assert_eq!(hop.to_url, target_url);
+  assert!(
+    !report.diagnostics.client_redirect_hop_limit_exhausted,
+    "hop budget should not be exhausted"
+  );
+  Ok(())
+}
+
+#[test]
+fn render_url_does_not_follow_js_location_redirect_without_flag() -> Result<()> {
+  let tmp = tempdir()?;
+  let start_dir = tmp.path().join("start");
+  let target_dir = tmp.path().join("target");
+  fs::create_dir_all(&start_dir)?;
+  fs::create_dir_all(&target_dir)?;
+
+  let target_path = target_dir.join("page.html");
+  fs::write(
+    &target_path,
+    "<!doctype html><html><body>TARGET_PAGE</body></html>",
+  )?;
+
+  let base_href = Url::from_directory_path(&target_dir).expect("base href url");
+  let start_path = start_dir.join("index.html");
+  fs::write(
+    &start_path,
+    format!(
+      "<!doctype html><html><head><base href=\"{base}\"><script>location.replace('page.html')</script></head><body>START_PAGE</body></html>",
+      base = base_href.as_str()
+    ),
+  )?;
+
+  let start_url = Url::from_file_path(&start_path)
+    .expect("start url")
+    .to_string();
+
+  let mut renderer = FastRender::new()?;
+  let options = RenderOptions::new()
+    .with_viewport(64, 64)
+    .with_follow_client_redirects(true)
+    .with_max_client_redirect_hops(3);
+  let report = renderer.render_url_with_options_report(
+    &start_url,
+    options,
+    RenderArtifactRequest {
+      dom: true,
+      ..RenderArtifactRequest::none()
+    },
+  )?;
+
+  let dom = report.artifacts.dom.expect("expected DOM artifact");
+  assert!(
+    dom_contains_text(&dom, "START_PAGE"),
+    "expected DOM to remain on the initial document when JS redirects are disabled"
+  );
+  assert_eq!(
+    report.diagnostics.client_redirects.len(),
+    0,
+    "expected no followed redirect hops"
+  );
+  assert!(
+    !report.diagnostics.client_redirect_hop_limit_exhausted,
+    "hop budget should not be exhausted"
+  );
+  Ok(())
+}
