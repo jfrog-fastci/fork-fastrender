@@ -195,6 +195,13 @@ mod tests {
   }
 
   #[test]
+  fn body_as_bytes_does_not_mark_body_used() {
+    let body = Body::new(b"hello".to_vec());
+    assert_eq!(body.as_bytes(), b"hello");
+    assert!(!body.body_used());
+  }
+
+  #[test]
   fn request_referrer_policy_uses_resource_referrer_policy_type() {
     let mut req = Request::new("GET", "https://example.com/");
     req.referrer_policy = ReferrerPolicy::StrictOriginWhenCrossOrigin;

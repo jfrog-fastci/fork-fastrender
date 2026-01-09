@@ -22,6 +22,15 @@ impl Body {
     Self::new(Vec::new())
   }
 
+  /// Return the underlying bytes without consuming the body.
+  ///
+  /// In this in-memory model, `execute_web_fetch()` can send the request body without marking it
+  /// as used; consumption only happens when the JavaScript-visible body is read (`text()`, `json()`,
+  /// etc).
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.bytes
+  }
+
   pub fn body_used(&self) -> bool {
     self.body_used
   }
@@ -60,4 +69,3 @@ impl Clone for Body {
     }
   }
 }
-

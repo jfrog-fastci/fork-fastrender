@@ -1,37 +1,19 @@
 use crate::debug::runtime;
-use crate::error::{Error, ResourceError, Result};
+use crate::error::{Error, Result};
 use crate::resource::{
-  validate_cors_allow_origin, CorsMode, DocumentOrigin, FetchCredentialsMode, FetchDestination,
-  FetchRequest, FetchedResource, ResourceFetcher,
+  ensure_cors_allows_origin, CorsMode, DocumentOrigin, FetchCredentialsMode, FetchDestination,
+  FetchRequest, HttpRequest, ResourceFetcher,
 };
 
 use super::{
   Body, Headers, HeadersGuard, Request, RequestCredentials, RequestMode, Response, ResponseType,
 };
 
-fn cors_error(resource: &FetchedResource, requested_url: &str, message: String) -> Error {
-  let mut err = ResourceError::new(requested_url.to_string(), message)
-    .with_final_url(
-      resource
-        .final_url
-        .clone()
-        .unwrap_or_else(|| requested_url.to_string()),
-    )
-    .with_validators(resource.etag.clone(), resource.last_modified.clone())
-    .with_content_type(resource.content_type.clone());
-  if let Some(status) = resource.status {
-    err = err.with_status(status);
-  }
-  Error::Resource(err)
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct WebFetchExecutionContext<'a> {
   pub destination: FetchDestination,
   pub referrer_url: Option<&'a str>,
   pub client_origin: Option<&'a DocumentOrigin>,
-  pub referrer_policy: crate::resource::ReferrerPolicy,
-  pub credentials_mode: FetchCredentialsMode,
 }
 
 impl<'a> Default for WebFetchExecutionContext<'a> {
@@ -40,8 +22,6 @@ impl<'a> Default for WebFetchExecutionContext<'a> {
       destination: FetchDestination::Fetch,
       referrer_url: None,
       client_origin: None,
-      referrer_policy: crate::resource::ReferrerPolicy::default(),
-      credentials_mode: FetchCredentialsMode::SameOrigin,
     }
   }
 }
@@ -52,42 +32,46 @@ pub fn execute_web_fetch(
   ctx: WebFetchExecutionContext<'_>,
 ) -> Result<Response> {
   let method = request.method.as_str();
-  if !method.eq_ignore_ascii_case("GET") && !method.eq_ignore_ascii_case("HEAD") {
+  let is_get_or_head = method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD");
+  if is_get_or_head && request.body.is_some() {
     return Err(Error::Other(format!(
-      "web fetch currently supports only GET/HEAD (got method {method:?})"
+      "web fetch request body is not allowed for {method}"
     )));
   }
 
-  if request.body.is_some() {
-    return Err(Error::Other(
-      "web fetch request body is not yet supported for GET/HEAD".to_string(),
-    ));
-  }
-
   let requested_url = request.url.as_str();
+  let credentials_mode = FetchCredentialsMode::from(request.credentials);
+  let referrer_policy = request.referrer_policy;
+  let user_headers = request.headers.raw_pairs();
+  let body_bytes = request.body.as_ref().map(|body| body.as_bytes());
   let fetch_request = FetchRequest {
     url: requested_url,
     destination: ctx.destination,
     referrer_url: ctx.referrer_url,
     client_origin: ctx.client_origin,
-    referrer_policy: ctx.referrer_policy,
-    credentials_mode: ctx.credentials_mode,
+    referrer_policy,
+    credentials_mode,
   };
 
-  let mut resource = fetcher.fetch_with_request(fetch_request)?;
+  let mut resource = fetcher.fetch_http_request(HttpRequest {
+    fetch: fetch_request,
+    method,
+    headers: user_headers.as_slice(),
+    body: body_bytes,
+  })?;
 
   if request.mode == RequestMode::Cors {
-    if let Some(client_origin) = ctx.client_origin {
-      // Unlike subresource CORS enforcement (gated by `FASTR_FETCH_ENFORCE_CORS`), Fetch API
-      // `mode: "cors"` requests always run CORS validation.
-      let cors_mode = match request.credentials {
-        RequestCredentials::Include => CorsMode::UseCredentials,
-        RequestCredentials::Omit | RequestCredentials::SameOrigin => CorsMode::Anonymous,
-      };
+    // Unlike subresource CORS enforcement (gated by `FASTR_FETCH_ENFORCE_CORS`), Fetch API
+    // `mode: "cors"` requests always run CORS validation.
+    let cors_mode = match request.credentials {
+      RequestCredentials::Include => CorsMode::UseCredentials,
+      RequestCredentials::Omit | RequestCredentials::SameOrigin => CorsMode::Anonymous,
+    };
+    ensure_cors_allows_origin(ctx.client_origin, &resource, requested_url, cors_mode)?;
+  }
 
-      validate_cors_allow_origin(client_origin, &resource, requested_url, cors_mode)
-        .map_err(|message| cors_error(&resource, requested_url, message))?;
-    }
+  if method.eq_ignore_ascii_case("HEAD") {
+    resource.bytes.clear();
   }
 
   let status = resource.status.unwrap_or(200);
@@ -127,7 +111,7 @@ pub fn execute_web_fetch(
 mod tests {
   use super::*;
   use crate::resource::web_fetch::WebFetchError;
-  use crate::resource::{origin_from_url, FetchedResource};
+  use crate::resource::{origin_from_url, FetchedResource, ReferrerPolicy};
 
   struct StaticFetcher {
     resource: FetchedResource,
@@ -148,6 +132,10 @@ mod tests {
 
     fn fetch_with_request(&self, _req: FetchRequest<'_>) -> Result<FetchedResource> {
       panic!("fetch_with_request should not be called")
+    }
+
+    fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+      panic!("fetch_http_request should not be called")
     }
   }
 
@@ -220,7 +208,7 @@ mod tests {
   #[test]
   fn response_body_json() {
     let fetcher = StaticFetcher {
-      resource: FetchedResource::new(br#"{"ok": true}"#.to_vec(), None),
+      resource: FetchedResource::new(br#"{\"ok\": true}"#.to_vec(), None),
     };
     let request = Request::new("GET", "https://example.com/a");
     let mut response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
@@ -232,18 +220,19 @@ mod tests {
   }
 
   #[test]
-  fn unsupported_method_errors_before_fetching() {
+  fn request_body_on_get_errors_before_fetching() {
     let fetcher = PanicFetcher;
-    let request = Request::new("POST", "https://example.com/a");
+    let mut request = Request::new("GET", "https://example.com/a");
+    request.body = Some(Body::new(b"x".to_vec()));
     let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect_err("expected error");
     assert!(matches!(err, Error::Other(_)));
   }
 
   #[test]
-  fn request_body_on_get_errors_before_fetching() {
+  fn request_body_on_head_errors_before_fetching() {
     let fetcher = PanicFetcher;
-    let mut request = Request::new("GET", "https://example.com/a");
+    let mut request = Request::new("HEAD", "https://example.com/a");
     request.body = Some(Body::new(b"x".to_vec()));
     let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect_err("expected error");
@@ -286,11 +275,11 @@ mod tests {
     resource.access_control_allow_origin = Some("https://client.example".to_string());
     let fetcher = StaticFetcher { resource };
 
-    let request = Request::new("GET", "https://other.example/res");
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Omit;
     let origin = origin_from_url("https://client.example/").expect("origin");
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
-      credentials_mode: FetchCredentialsMode::Omit,
       ..WebFetchExecutionContext::default()
     };
 
@@ -305,31 +294,33 @@ mod tests {
       resource: resource.clone(),
     };
 
-    let request = Request::new("GET", "https://other.example/res");
     let origin = origin_from_url("https://client.example/").expect("origin");
 
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Omit;
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
-      credentials_mode: FetchCredentialsMode::Omit,
       ..WebFetchExecutionContext::default()
     };
     execute_web_fetch(&fetcher, &request, ctx).expect("expected wildcard CORS pass");
 
+    request.credentials = RequestCredentials::SameOrigin;
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
-      credentials_mode: FetchCredentialsMode::SameOrigin,
       ..WebFetchExecutionContext::default()
     };
     execute_web_fetch(&fetcher, &request, ctx).expect("expected wildcard CORS pass");
 
     let fetcher = StaticFetcher { resource };
+    request.credentials = RequestCredentials::Include;
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
-      credentials_mode: FetchCredentialsMode::Include,
       ..WebFetchExecutionContext::default()
     };
     let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected wildcard CORS fail");
-    assert!(err.to_string().contains("Access-Control-Allow-Origin * is not allowed"));
+    assert!(err
+      .to_string()
+      .contains("Access-Control-Allow-Origin * is not allowed"));
   }
 
   #[test]
@@ -339,11 +330,11 @@ mod tests {
       Some("https://client.example, https://other.example".to_string());
     let fetcher = StaticFetcher { resource };
 
-    let request = Request::new("GET", "https://other.example/res");
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Omit;
     let origin = origin_from_url("https://client.example/").expect("origin");
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
-      credentials_mode: FetchCredentialsMode::Omit,
       ..WebFetchExecutionContext::default()
     };
 
@@ -359,11 +350,11 @@ mod tests {
     resource.access_control_allow_credentials = false;
     let fetcher = StaticFetcher { resource };
 
-    let request = Request::new("GET", "https://other.example/res");
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Include;
     let origin = origin_from_url("https://client.example/").expect("origin");
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
-      credentials_mode: FetchCredentialsMode::Include,
       ..WebFetchExecutionContext::default()
     };
 
@@ -375,52 +366,100 @@ mod tests {
   }
 
   #[test]
-  fn forwards_execution_context_to_fetch_request() {
-    struct ContextAssertingFetcher {
+  fn forwards_request_fields_and_execution_context_to_http_request() {
+    struct HttpRequestAssertingFetcher {
+      expected_method: &'static str,
+      expected_headers: Vec<(String, String)>,
+      expected_body: Option<Vec<u8>>,
       expected_destination: FetchDestination,
       expected_referrer_url: Option<&'static str>,
       expected_client_origin: DocumentOrigin,
-      expected_referrer_policy: crate::resource::ReferrerPolicy,
+      expected_referrer_policy: ReferrerPolicy,
       expected_credentials_mode: FetchCredentialsMode,
       resource: FetchedResource,
     }
 
-    impl ResourceFetcher for ContextAssertingFetcher {
+    impl ResourceFetcher for HttpRequestAssertingFetcher {
       fn fetch(&self, _url: &str) -> Result<FetchedResource> {
-        unreachable!("execute_web_fetch should call fetch_with_request")
+        unreachable!("execute_web_fetch should call fetch_http_request")
       }
 
-      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
-        assert_eq!(req.destination, self.expected_destination);
-        assert_eq!(req.referrer_url, self.expected_referrer_url);
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.method, self.expected_method);
+        assert_eq!(req.headers, self.expected_headers.as_slice());
+        assert_eq!(req.body, self.expected_body.as_deref());
+
+        assert_eq!(req.fetch.destination, self.expected_destination);
+        assert_eq!(req.fetch.referrer_url, self.expected_referrer_url);
         assert!(req
+          .fetch
           .client_origin
           .is_some_and(|origin| origin == &self.expected_client_origin));
-        assert_eq!(req.referrer_policy, self.expected_referrer_policy);
-        assert_eq!(req.credentials_mode, self.expected_credentials_mode);
+        assert_eq!(req.fetch.referrer_policy, self.expected_referrer_policy);
+        assert_eq!(req.fetch.credentials_mode, self.expected_credentials_mode);
+
         Ok(self.resource.clone())
       }
     }
 
     let origin = origin_from_url("https://example.com/").expect("origin");
-    let fetcher = ContextAssertingFetcher {
+    let fetcher = HttpRequestAssertingFetcher {
+      expected_method: "POST",
+      expected_headers: vec![
+        ("x-test".to_string(), "a".to_string()),
+        ("x-test".to_string(), "b".to_string()),
+        ("x-other".to_string(), "c".to_string()),
+      ],
+      expected_body: Some(b"hello".to_vec()),
       expected_destination: FetchDestination::Fetch,
       expected_referrer_url: Some("https://referrer.example/page"),
       expected_client_origin: origin.clone(),
-      expected_referrer_policy: crate::resource::ReferrerPolicy::NoReferrer,
+      expected_referrer_policy: ReferrerPolicy::NoReferrer,
       expected_credentials_mode: FetchCredentialsMode::Include,
       resource: FetchedResource::new(b"ok".to_vec(), None),
     };
 
-    let request = Request::new("GET", "https://example.com/a");
+    let mut request = Request::new("POST", "https://example.com/a");
+    request.headers.append("X-Test", "a").unwrap();
+    request.headers.append("x-test", "b").unwrap();
+    request.headers.append("X-Other", "c").unwrap();
+    request.credentials = RequestCredentials::Include;
+    request.referrer_policy = ReferrerPolicy::NoReferrer;
+    request.body = Some(Body::new(b"hello".to_vec()));
+
     let ctx = WebFetchExecutionContext {
       destination: FetchDestination::Fetch,
       referrer_url: Some("https://referrer.example/page"),
       client_origin: Some(&origin),
-      referrer_policy: crate::resource::ReferrerPolicy::NoReferrer,
-      credentials_mode: FetchCredentialsMode::Include,
     };
 
     execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+  }
+
+  #[test]
+  fn head_response_body_is_empty() {
+    struct HeadBytesFetcher;
+
+    impl ResourceFetcher for HeadBytesFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request")
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.method, "HEAD");
+        assert!(req.headers.is_empty());
+        assert!(req.body.is_none());
+        Ok(FetchedResource::new(b"should-be-ignored".to_vec(), None))
+      }
+    }
+
+    let fetcher = HeadBytesFetcher;
+    let request = Request::new("HEAD", "https://example.com/a");
+    let mut response =
+      execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+        .expect("expected response");
+
+    let body = response.body.as_mut().expect("expected body");
+    assert_eq!(body.consume_bytes().unwrap(), Vec::<u8>::new());
   }
 }

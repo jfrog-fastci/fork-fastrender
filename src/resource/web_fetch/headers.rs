@@ -206,6 +206,17 @@ impl Headers {
     Ok(())
   }
 
+  /// Return this header list as raw `(name, value)` pairs in insertion order.
+  ///
+  /// Duplicates are preserved (unlike [`Headers::sort_and_combine`]).
+  pub fn raw_pairs(&self) -> Vec<(String, String)> {
+    self
+      .header_list
+      .iter()
+      .map(|header| (header.name.as_str().to_string(), header.value.clone()))
+      .collect()
+  }
+
   /// Return this header list using Fetch's "header list sort and combine" algorithm.
   ///
   /// The returned list is suitable for deterministic iteration (`for..of`, `entries()`, etc.):
