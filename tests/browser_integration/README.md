@@ -111,6 +111,20 @@ the duration of the test:
 let _lock = crate::browser_integration::stage_listener_test_lock();
 ```
 
+## Test render delays (cancellation determinism)
+
+Some cancellation/timeout tests need to slow down render stages to make races deterministic.
+
+Prefer the *per-worker-thread* TLS delay helpers over the process-global env var:
+
+- `spawn_ui_worker_for_test(..., Some(ms))`
+- `spawn_browser_worker_for_test(Some(ms))`
+- `spawn_browser_render_thread_for_test(..., Some(ms))`
+
+Avoid mutating `FASTR_TEST_RENDER_DELAY_MS` from within these integration tests: the browser
+integration suite is compiled into a single test binary, so changing the env var can slow down
+unrelated tests running in the same process and cause flakiness under parallel execution.
+
 ## Timeouts and cleanup (avoid hangs)
 
 Rust tests have no global timeout by default. A hung test will stall CI indefinitely.

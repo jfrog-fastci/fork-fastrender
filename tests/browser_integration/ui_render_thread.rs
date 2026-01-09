@@ -6,7 +6,8 @@ use fastrender::render_control::StageHeartbeat;
 use fastrender::text::font_db::FontConfig;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{
-  spawn_browser_render_thread, NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi,
+  spawn_browser_render_thread, spawn_browser_render_thread_for_test, NavigationReason, PointerButton,
+  TabId, UiToWorker, WorkerToUi,
 };
 use super::support::{
   create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
@@ -16,21 +17,6 @@ use std::time::Duration;
 fn factory_for_tests() -> FastRenderFactory {
   let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
   FastRenderFactory::with_config(FastRenderPoolConfig::new().with_renderer_config(renderer)).unwrap()
-}
-
-struct TestRenderDelayGuard;
-
-impl TestRenderDelayGuard {
-  fn set(ms: Option<u64>) -> Self {
-    fastrender::render_control::set_test_render_delay_ms(ms);
-    Self
-  }
-}
-
-impl Drop for TestRenderDelayGuard {
-  fn drop(&mut self) {
-    fastrender::render_control::set_test_render_delay_ms(None);
-  }
 }
 
 #[test]
@@ -139,10 +125,11 @@ fn scroll_produces_scroll_update_and_frame() {
 #[test]
 fn navigation_cancellation_drops_stale_frame() {
   let _lock = super::stage_listener_test_lock();
-  let _delay = TestRenderDelayGuard::set(Some(1));
 
   let factory = factory_for_tests();
-  let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
+  // Slow down render stages on this worker thread to make cancellation deterministic without
+  // mutating the process-global `FASTR_TEST_RENDER_DELAY_MS` env var.
+  let (tx, rx, handle) = spawn_browser_render_thread_for_test(factory, Some(1)).unwrap();
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -174,9 +161,6 @@ fn navigation_cancellation_drops_stale_frame() {
         tx.send(navigate_msg(tab_id, second_url.clone(), NavigationReason::TypedUrl))
           .unwrap();
         sent_second = true;
-        // Once the cancellation signal is sent, disable the synthetic slowdown so we can complete
-        // the follow-up navigation quickly.
-        fastrender::render_control::set_test_render_delay_ms(None);
       }
       WorkerToUi::NavigationCommitted { url, .. } => {
         last_committed = Some(url);

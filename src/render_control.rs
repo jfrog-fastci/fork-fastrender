@@ -125,6 +125,15 @@ pub(crate) struct DeadlineStackGuard {
   previous: Vec<Option<RenderDeadline>>,
 }
 
+/// Guard that swaps the entire per-thread stage listener stack.
+///
+/// Like [`DeadlineStackGuard`], this is used to propagate an existing stage listener context into
+/// helper threads (e.g. the larger-stack layout thread) where the caller thread's TLS is not
+/// visible.
+pub(crate) struct StageListenerStackGuard {
+  previous: Vec<Option<StageListener>>,
+}
+
 /// Guard that installs an active stage hint for deadline attribution.
 pub struct StageGuard {
   previous: Option<RenderStage>,
@@ -448,11 +457,6 @@ impl DeadlineStackGuard {
     Self { previous }
   }
 }
-
-pub(crate) struct StageListenerStackGuard {
-  previous: Vec<Option<StageListener>>,
-}
-
 impl StageListenerStackGuard {
   pub(crate) fn install(next: Vec<Option<StageListener>>) -> Self {
     let previous = STAGE_LISTENER_STACK.with(|stack| {

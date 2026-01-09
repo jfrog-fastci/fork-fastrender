@@ -7,26 +7,9 @@ use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-struct TestRenderDelayGuard;
-
-impl TestRenderDelayGuard {
-  fn set(ms: Option<u64>) -> Self {
-    fastrender::render_control::set_test_render_delay_ms(ms);
-    Self
-  }
-}
-
-impl Drop for TestRenderDelayGuard {
-  fn drop(&mut self) {
-    fastrender::render_control::set_test_render_delay_ms(None);
-  }
-}
-
 #[test]
 fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
   let _lock = super::stage_listener_test_lock();
-  // Slow down render stages to make cancellation deterministic.
-  let _delay = TestRenderDelayGuard::set(Some(1));
 
   let site = support::TempSite::new();
 
@@ -68,7 +51,10 @@ fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
 
   let light_url = site.write("light.html", "<!doctype html><html><body>ok</body></html>");
 
-  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  // Slow down render stages on this worker thread to make cancellation deterministic without
+  // mutating the process-global `FASTR_TEST_RENDER_DELAY_MS` env var.
+  let worker =
+    fastrender::ui::spawn_browser_worker_for_test(Some(1)).expect("spawn browser worker");
   let tab_id = TabId::new();
   let cancel = CancelGens::new();
 

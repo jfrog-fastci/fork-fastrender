@@ -47,6 +47,21 @@ impl TabState {
 pub fn spawn_browser_render_thread(
   factory: FastRenderFactory,
 ) -> std::io::Result<(Sender<UiToWorker>, Receiver<WorkerToUi>, JoinHandle<()>)> {
+  spawn_browser_render_thread_inner(factory, None)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+pub fn spawn_browser_render_thread_for_test(
+  factory: FastRenderFactory,
+  test_render_delay_ms: Option<u64>,
+) -> std::io::Result<(Sender<UiToWorker>, Receiver<WorkerToUi>, JoinHandle<()>)> {
+  spawn_browser_render_thread_inner(factory, test_render_delay_ms)
+}
+
+fn spawn_browser_render_thread_inner(
+  factory: FastRenderFactory,
+  test_render_delay_ms: Option<u64>,
+) -> std::io::Result<(Sender<UiToWorker>, Receiver<WorkerToUi>, JoinHandle<()>)> {
   let (ui_tx, worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let (worker_tx, ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
 
@@ -54,6 +69,7 @@ pub fn spawn_browser_render_thread(
     .name("browser_render_worker".to_string())
     .stack_size(DEFAULT_RENDER_STACK_SIZE)
     .spawn(move || {
+      crate::render_control::set_test_render_delay_ms(test_render_delay_ms);
       let mut worker = BrowserRenderThread {
         factory,
         ui_rx: worker_rx,

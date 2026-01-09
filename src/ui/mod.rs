@@ -26,6 +26,8 @@ pub use messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 pub use render_thread::spawn_browser_render_thread;
+#[cfg(any(test, feature = "browser_ui"))]
+pub use render_thread::spawn_browser_render_thread_for_test;
 pub use ui_worker::UiWorker;
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the
@@ -38,6 +40,8 @@ pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
 
 pub use browser_tab_controller::BrowserTabController;
 pub use browser_thread::{spawn_browser_worker, BrowserWorkerHandle};
+#[cfg(any(test, feature = "browser_ui"))]
+pub use browser_thread::spawn_browser_worker_for_test;
 
 // `pixmap_texture` depends on the optional egui stack, so keep it behind the
 // `browser_ui` feature gate.

@@ -1744,8 +1744,23 @@ pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
 ///
 /// Keeping a named entrypoint allows the desktop `browser` binary to name its worker thread
 /// (`fastr-browser-ui-worker`), while preserving a stable default name for tests that don't care.
-pub fn spawn_browser_worker_with_name(name: impl Into<String>) -> crate::Result<BrowserWorkerHandle> {
-  let name = name.into();
+pub fn spawn_browser_worker_with_name(
+  name: impl Into<String>,
+) -> crate::Result<BrowserWorkerHandle> {
+  spawn_browser_worker_inner(name.into(), None)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+pub fn spawn_browser_worker_for_test(
+  test_render_delay_ms: Option<u64>,
+) -> crate::Result<BrowserWorkerHandle> {
+  spawn_browser_worker_inner("browser_worker".to_string(), test_render_delay_ms)
+}
+
+fn spawn_browser_worker_inner(
+  name: String,
+  test_render_delay_ms: Option<u64>,
+) -> crate::Result<BrowserWorkerHandle> {
   // The browser UI integration tests should not depend on system-installed fonts. Prefer the
   // bundled font set so navigation/scroll renders remain deterministic and don't stall on system
   // font database scans under CI.
@@ -1769,6 +1784,7 @@ pub fn spawn_browser_worker_with_name(name: impl Into<String>) -> crate::Result<
     renderer,
     worker_to_ui_tx,
     move |_render_worker| {
+      crate::render_control::set_test_render_delay_ms(test_render_delay_ms);
       let mut runtime = BrowserRuntime::new(
         ui_to_worker_rx,
         worker_to_ui_tx_for_thread,
