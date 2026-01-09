@@ -235,6 +235,44 @@ fn bigint_conversion_uses_to_bigint() {
 }
 
 #[test]
+fn bigint_conversion_parses_ecmascript_string_numeric_literals() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+  let ty = IdlType::BigInt;
+
+  for (input, expected) in [
+    ("0x10", JsBigInt::from_u128(16)),
+    ("0b101", JsBigInt::from_u128(5)),
+    ("0o10", JsBigInt::from_u128(8)),
+    ("\u{FEFF}123\u{FEFF}", JsBigInt::from_u128(123)),
+    ("-123", JsBigInt::from_u128(123).negate()),
+  ] {
+    let v = rt.alloc_string_value(input).unwrap();
+    let converted = convert_to_idl(&mut rt, v, &ty, &ctx).unwrap();
+    let ConvertedValue::Any(Value::BigInt(actual)) = converted else {
+      panic!("expected BigInt Any conversion, got {converted:?}");
+    };
+    assert_eq!(actual, expected, "input={input:?}");
+  }
+}
+
+#[test]
+fn bigint_conversion_rejects_signed_non_decimal_string_literals() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+  let ty = IdlType::BigInt;
+
+  for input in ["-0x10", "+0b101", "-0o10"] {
+    let v = rt.alloc_string_value(input).unwrap();
+    let err = convert_to_idl(&mut rt, v, &ty, &ctx).unwrap_err();
+    assert!(
+      error_to_string(&mut rt, err).starts_with("SyntaxError"),
+      "input={input:?}"
+    );
+  }
+}
+
+#[test]
 fn symbol_conversion_requires_symbol() {
   let mut rt = VmJsRuntime::new();
   let ctx = TypeContext::default();

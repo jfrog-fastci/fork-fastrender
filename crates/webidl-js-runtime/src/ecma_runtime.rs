@@ -12,6 +12,28 @@ use vm_js::{
 
 type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError>>;
 
+fn is_ecma_whitespace(c: char) -> bool {
+  // ECMA-262 WhiteSpace + LineTerminator code points (used by `TrimString` / `StringToNumber`).
+  matches!(
+    c,
+    '\u{0009}' // Tab
+      | '\u{000A}' // LF
+      | '\u{000B}' // VT
+      | '\u{000C}' // FF
+      | '\u{000D}' // CR
+      | '\u{0020}' // Space
+      | '\u{00A0}' // No-break space
+      | '\u{1680}' // Ogham space mark
+      | '\u{2000}'..='\u{200A}' // En quad..hair space
+      | '\u{2028}' // Line separator
+      | '\u{2029}' // Paragraph separator
+      | '\u{202F}' // Narrow no-break space
+      | '\u{205F}' // Medium mathematical space
+      | '\u{3000}' // Ideographic space
+      | '\u{FEFF}' // BOM
+  )
+}
+
 #[derive(Clone)]
 enum HostObjectKind {
   PlatformObject {
@@ -489,7 +511,7 @@ impl VmJsRuntime {
   fn to_number_from_string(&self, s: GcString) -> Result<f64, VmError> {
     let js = self.heap.get_string(s)?;
     let text = js.to_utf8_lossy();
-    let trimmed = text.trim();
+    let trimmed = text.trim_matches(is_ecma_whitespace);
     if trimmed.is_empty() {
       return Ok(0.0);
     }
@@ -559,7 +581,7 @@ impl VmJsRuntime {
   fn bigint_from_string(&mut self, s: GcString) -> Result<JsBigInt, VmError> {
     let js = self.heap.get_string(s)?;
     let text = js.to_utf8_lossy();
-    let trimmed = text.trim();
+    let trimmed = text.trim_matches(is_ecma_whitespace);
     if trimmed.is_empty() {
       return Ok(JsBigInt::zero());
     }
