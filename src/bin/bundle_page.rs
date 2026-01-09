@@ -26,6 +26,7 @@ use fastrender::resource::bundle::{
   BUNDLE_MANIFEST, BUNDLE_VERSION,
 };
 use fastrender::resource::{
+  compute_vary_key_for_request,
   ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
   offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, DocumentOrigin,
   FetchContextKind, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
@@ -109,48 +110,6 @@ fn credentials_mode_for_stylesheet_crossorigin(mode: CorsMode) -> FetchCredentia
     CorsMode::UseCredentials => FetchCredentialsMode::Include,
   }
 }
-
-fn compute_vary_key_for_recording(
-  fetcher: &dyn ResourceFetcher,
-  req: FetchRequest<'_>,
-  vary: Option<&str>,
-) -> Option<String> {
-  let Some(vary) = vary.map(trim_ascii_whitespace).filter(|v| !v.is_empty()) else {
-    return Some(String::new());
-  };
-  if vary == "*" {
-    return None;
-  }
-
-  let mut hasher = Sha256::new();
-  let mut saw_field = false;
-  for field in vary.split(',') {
-    let name = trim_ascii_whitespace(field);
-    if name.is_empty() {
-      continue;
-    }
-    saw_field = true;
-    let value = fetcher.request_header_value(req, name)?;
-    hasher.update(name.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(value.as_bytes());
-    hasher.update(b"\n");
-  }
-
-  if !saw_field {
-    return Some(String::new());
-  }
-
-  let digest: [u8; 32] = hasher.finalize().into();
-  const HEX: &[u8; 16] = b"0123456789abcdef";
-  let mut out = String::with_capacity(64);
-  for &b in digest.iter() {
-    out.push(HEX[(b >> 4) as usize] as char);
-    out.push(HEX[(b & 0x0f) as usize] as char);
-  }
-  Some(out)
-}
-
 #[derive(Parser, Debug)]
 #[command(
   name = "bundle_page",
@@ -744,7 +703,7 @@ impl ResourceFetcher for RecordingFetcher {
                   credentials_mode,
                 };
                 if let Some(vary_key) =
-                  compute_vary_key_for_recording(&*self.inner, request, Some(vary))
+                  compute_vary_key_for_request(&*self.inner, request, Some(vary))
                     .filter(|key| !key.is_empty())
                 {
                   let manifest_key = vary_partitioned_resource_key(&url, &vary_key);
@@ -785,7 +744,7 @@ impl ResourceFetcher for RecordingFetcher {
             credentials_mode,
           };
           if let Some(vary_key) =
-            compute_vary_key_for_recording(&*self.inner, request, Some(vary))
+            compute_vary_key_for_request(&*self.inner, request, Some(vary))
               .filter(|key| !key.is_empty())
           {
             let manifest_key = vary_partitioned_resource_key(req.url, &vary_key);
@@ -814,7 +773,7 @@ impl ResourceFetcher for RecordingFetcher {
             credentials_mode,
           };
           if let Some(vary_key) =
-            compute_vary_key_for_recording(&*self.inner, request, Some(vary))
+            compute_vary_key_for_request(&*self.inner, request, Some(vary))
               .filter(|key| !key.is_empty())
           {
             let manifest_key = vary_partitioned_resource_key(&url, &vary_key);
@@ -5141,6 +5100,94 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
       .expect("expected large image resource to be recorded");
     assert_eq!(res.content_type.as_deref(), Some("image/png"));
     assert_eq!(res.bytes, offline_placeholder_png_bytes().to_vec());
+
+    Ok(())
+  }
+
+  #[test]
+  fn recording_fetcher_vary_keys_match_library_helper() -> Result<()> {
+    #[derive(Clone)]
+    struct VaryKeyFetcher {
+      vary: String,
+      header_values: Vec<(String, String)>,
+    }
+
+    impl VaryKeyFetcher {
+      fn new(vary: &str, header_values: &[(&str, &str)]) -> Self {
+        Self {
+          vary: vary.to_string(),
+          header_values: header_values
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        }
+      }
+    }
+
+    impl ResourceFetcher for VaryKeyFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected RecordingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        let mut res =
+          FetchedResource::with_final_url(b"ok".to_vec(), Some("text/plain".to_string()), None);
+        res.status = Some(200);
+        res.final_url = Some(req.url.to_string());
+        res.vary = Some(self.vary.clone());
+        Ok(res)
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        self
+          .header_values
+          .iter()
+          .find_map(|(name, value)| name.eq_ignore_ascii_case(header_name).then(|| value.clone()))
+      }
+    }
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+      "0".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let cases: &[(&str, &[(&str, &str)])] = &[
+        ("origin", &[("origin", "https://origin.test")]),
+        (
+          "User-Agent, \tAccept-Language",
+          &[
+            ("user-agent", "UA/1.0"),
+            ("accept-language", "en-US,en;q=0.9"),
+          ],
+        ),
+      ];
+
+      for (idx, (vary, headers)) in cases.iter().enumerate() {
+        let url = format!("https://example.com/asset_{idx}.bin");
+        let inner = Arc::new(VaryKeyFetcher::new(vary, headers));
+        let recording = RecordingFetcher::new(inner.clone());
+        let req = FetchRequest::new(&url, FetchDestination::Other);
+
+        let expected =
+          compute_vary_key_for_request(inner.as_ref(), req, Some(vary)).expect("vary key");
+        assert!(
+          !expected.is_empty(),
+          "expected Vary key to be non-empty for {vary}"
+        );
+
+        recording
+          .fetch_with_request(req)
+          .expect("fetch with request should succeed");
+        let recorded = recording.snapshot();
+
+        let manifest_key = vary_partitioned_resource_key(&url, &expected);
+        assert!(
+          recorded.contains_key(&manifest_key),
+          "expected RecordingFetcher to record vary-partitioned manifest key {manifest_key}"
+        );
+      }
+    });
 
     Ok(())
   }

@@ -7579,8 +7579,8 @@ fn inflight_signature_for_request<F: ResourceFetcher>(
 ///
 /// Returns `None` when the response is uncacheable (`Vary: *`) or when the fetcher cannot
 /// determine the value of a required request header.
-fn compute_vary_key_for_request<F: ResourceFetcher>(
-  fetcher: &F,
+pub fn compute_vary_key_for_request(
+  fetcher: &dyn ResourceFetcher,
   req: FetchRequest<'_>,
   vary: Option<&str>,
 ) -> Option<String> {
