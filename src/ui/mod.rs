@@ -8,6 +8,9 @@ pub mod browser_worker;
 // `render_worker` is the *single* production UI worker implementation. The `browser` binary and
 // browser integration tests are expected to use it.
 //
+// `browser_worker` is a synchronous helper (no channels/thread) used by some unit/integration
+// tests; it is not the production worker loop.
+//
 // `worker` contains small render-thread utilities (stage heartbeat forwarding, thread builder), but
 // does **not** implement a separate UI worker loop.
 pub mod render_worker;

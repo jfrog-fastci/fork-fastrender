@@ -1,3 +1,13 @@
+//! Synchronous (non-threaded) browser worker helper.
+//!
+//! This module is **not** the production browser UI worker loop. The message-driven production
+//! implementation lives in [`crate::ui::render_worker`] and is used by the windowed `browser` app
+//! (`src/bin/browser.rs`).
+//!
+//! `BrowserWorker` is a small convenience helper mostly used by tests and utilities that want to
+//! perform a navigation + (optional) tick + render without spinning up a channel-driven worker
+//! thread.
+
 use crate::api::{BrowserDocument, FastRenderFactory, RenderDiagnostics};
 use crate::geometry::{Point, Size};
 use crate::html::find_document_title;
