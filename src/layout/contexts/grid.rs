@@ -819,6 +819,13 @@ impl GridFormattingContext {
     if !matches!(style.display, CssDisplay::Grid | CssDisplay::InlineGrid) {
       return Ok(false);
     }
+    // The simple-grid optimization treats a grid container as a block container in Taffy. This is
+    // only equivalent when CSS logical axes map to Taffy's fixed physical axes. In vertical writing
+    // modes, the block axis maps to physical X, so a block fallback would stack items vertically
+    // instead of along the block axis (physical X).
+    if !crate::style::inline_axis_is_horizontal(style.writing_mode) {
+      return Ok(false);
+    }
     if style.grid_row_subgrid || style.grid_column_subgrid {
       return Ok(false);
     }
@@ -2210,8 +2217,18 @@ impl GridFormattingContext {
     let has_subgrid = root_style.grid_row_subgrid || root_style.grid_column_subgrid;
 
     if !has_subgrid && !child_has_subgrid {
+      let has_positioned_children = box_node.children.iter().any(|child| {
+        matches!(
+          child.style.position,
+          crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+        )
+      });
       let root_axis_style = GridAxisStyle::from_style(root_style);
-      let child_fingerprint = grid_child_fingerprint(&in_flow_children, &mut deadline_counter)?;
+      let child_fingerprint = grid_child_fingerprint(
+        &in_flow_children,
+        has_positioned_children,
+        &mut deadline_counter,
+      )?;
       let root_style_fingerprint = taffy_grid_container_style_fingerprint(root_style);
       let cache_key = TaffyNodeCacheKey::new(
         TaffyAdapterKind::Grid,
@@ -2240,8 +2257,8 @@ impl GridFormattingContext {
             false,
           ))));
         }
-        let simple_grid =
-          self.is_simple_grid(root_style, &in_flow_children, &mut deadline_counter)?;
+        let simple_grid = !has_positioned_children
+          && self.is_simple_grid(root_style, &in_flow_children, &mut deadline_counter)?;
         let root_style = std::sync::Arc::new(SendSyncStyle(self.convert_style(
           root_style,
           None,
@@ -2389,8 +2406,20 @@ impl GridFormattingContext {
       include_children |= is_subgrid || has_subgrid_child;
     }
 
+    let has_positioned_children = if is_grid_container && is_root {
+      box_node.children.iter().any(|child| {
+        matches!(
+          child.style.position,
+          crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+        )
+      })
+    } else {
+      !positioned.is_empty()
+    };
+
     let simple_grid = include_children
       && is_root
+      && !has_positioned_children
       && self.is_simple_grid(style, &children_iter, deadline_counter)?;
     let mut taffy_style = self.convert_style(
       style,
@@ -4530,13 +4559,16 @@ impl GridFormattingContext {
         resolve_grid_line_range_from_style(x_start, x_end, x_raw, x_line_count, Some(x_line_names))
       {
         if let Some(col_offsets) = col_offsets.as_ref() {
-          if let Some((start, _)) = grid_area_for_item(col_offsets, start_line, end_line) {
+          if let Some((start, _)) = grid_area_for_positioned_item(col_offsets, start_line, end_line)
+          {
             pos.x = start - padding_origin.x;
           }
         } else if let Some(ctx) = x_ctx {
           let mapped_start = ctx.line_offset.saturating_add(start_line);
           let mapped_end = ctx.line_offset.saturating_add(end_line);
-          if let Some((start, _)) = grid_area_for_item(&ctx.offsets, mapped_start, mapped_end) {
+          if let Some((start, _)) =
+            grid_area_for_positioned_item(&ctx.offsets, mapped_start, mapped_end)
+          {
             pos.x = (start - ctx.node_offset) - padding_origin.x;
           }
         }
@@ -4590,13 +4622,16 @@ impl GridFormattingContext {
         resolve_grid_line_range_from_style(y_start, y_end, y_raw, y_line_count, Some(y_line_names))
       {
         if let Some(row_offsets) = row_offsets.as_ref() {
-          if let Some((start, _)) = grid_area_for_item(row_offsets, start_line, end_line) {
+          if let Some((start, _)) = grid_area_for_positioned_item(row_offsets, start_line, end_line)
+          {
             pos.y = start - padding_origin.y;
           }
         } else if let Some(ctx) = y_ctx {
           let mapped_start = ctx.line_offset.saturating_add(start_line);
           let mapped_end = ctx.line_offset.saturating_add(end_line);
-          if let Some((start, _)) = grid_area_for_item(&ctx.offsets, mapped_start, mapped_end) {
+          if let Some((start, _)) =
+            grid_area_for_positioned_item(&ctx.offsets, mapped_start, mapped_end)
+          {
             pos.y = (start - ctx.node_offset) - padding_origin.y;
           }
         }
@@ -6009,11 +6044,14 @@ impl GridFormattingContext {
     )?;
     if let Some(style_override) = style_override.as_deref() {
       let mut style_deadline_counter = 0usize;
-      let simple_grid = self.is_simple_grid(
-        style_override,
-        &in_flow_children,
-        &mut style_deadline_counter,
-      )?;
+      let has_positioned_children = box_node.children.iter().any(|child| {
+        matches!(
+          child.style.position,
+          crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+        )
+      });
+      let simple_grid = !has_positioned_children
+        && self.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
       let override_taffy_style = self.convert_style(style_override, None, None, simple_grid, true);
       taffy
         .set_style(root_id, override_taffy_style)
@@ -7073,11 +7111,17 @@ impl GridFormattingContext {
 
 fn grid_child_fingerprint(
   children: &[&BoxNode],
+  has_positioned_children: bool,
   deadline_counter: &mut usize,
 ) -> Result<u64, LayoutError> {
   use std::hash::Hash;
   use std::hash::Hasher;
   let mut h = FingerprintHasher::default();
+  // Whether the container has any out-of-flow positioned children impacts whether the grid can be
+  // safely represented as a block in Taffy (see `simple_grid`). Include this in the cache key so
+  // templates built for "simple" in-flow-only grids are not reused for grids that need track data
+  // for positioned static positioning.
+  has_positioned_children.hash(&mut h);
   children.len().hash(&mut h);
   for child in children {
     check_layout_deadline(deadline_counter)?;
@@ -7513,6 +7557,26 @@ fn grid_area_for_item(offsets: &[f32], start_line: u16, end_line: u16) -> Option
     return None;
   }
   Some((offsets[start_idx + 1], offsets[end_idx]))
+}
+
+fn grid_area_for_positioned_item(
+  offsets: &[f32],
+  start_line: u16,
+  end_line: u16,
+) -> Option<(f32, f32)> {
+  let start_idx = (start_line.saturating_sub(1) as usize).saturating_mul(2);
+  let end_idx = (end_line.saturating_sub(1) as usize).saturating_mul(2);
+  let last = offsets.last().copied()?;
+
+  // Absolutely positioned items can reference implicit grid lines beyond the tracks that were
+  // realized for in-flow items. Those extra implicit tracks do not participate in sizing, so treat
+  // any missing line offsets as zero-sized tracks at the end of the realized grid.
+  //
+  // This fallback is intentionally narrow: it only affects static-position resolution and preserves
+  // the stricter behavior of `grid_area_for_item` for in-flow grid processing.
+  let start = offsets.get(start_idx + 1).copied().unwrap_or(last);
+  let end = offsets.get(end_idx).copied().unwrap_or(last);
+  Some((start, end))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -8195,11 +8259,8 @@ impl FormattingContext for GridFormattingContext {
       // Patch the root style in-place so we can avoid deep-cloning box subtrees when sizing hints
       // are temporarily overridden (e.g. flex/grid intrinsic probes or final item sizing).
       let mut style_deadline_counter = 0usize;
-      let simple_grid = ctx.is_simple_grid(
-        style_override,
-        &in_flow_children,
-        &mut style_deadline_counter,
-      )?;
+      let simple_grid = positioned_children.is_empty()
+        && ctx.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
       let override_taffy_style = self.convert_style(style_override, None, None, simple_grid, true);
       taffy
         .set_style(root_id, override_taffy_style)
@@ -9031,7 +9092,9 @@ impl FormattingContext for GridFormattingContext {
               col_line_count,
               Some(x_line_names),
             ) {
-              if let Some((start, _)) = grid_area_for_item(&col_offsets, start_line, end_line) {
+              if let Some((start, _)) =
+                grid_area_for_positioned_item(&col_offsets, start_line, end_line)
+              {
                 pos.x = start - padding_origin.x;
               }
             }
@@ -9061,7 +9124,9 @@ impl FormattingContext for GridFormattingContext {
               row_line_count,
               Some(y_line_names),
             ) {
-              if let Some((start, _)) = grid_area_for_item(&row_offsets, start_line, end_line) {
+              if let Some((start, _)) =
+                grid_area_for_positioned_item(&row_offsets, start_line, end_line)
+              {
                 pos.y = start - padding_origin.y;
               }
             }
@@ -9724,11 +9789,14 @@ impl FormattingContext for GridFormattingContext {
     )?;
     if let Some(style_override) = style_override.as_deref() {
       let mut style_deadline_counter = 0usize;
-      let simple_grid = self.is_simple_grid(
-        style_override,
-        &in_flow_children,
-        &mut style_deadline_counter,
-      )?;
+      let has_positioned_children = box_node.children.iter().any(|child| {
+        matches!(
+          child.style.position,
+          crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+        )
+      });
+      let simple_grid = !has_positioned_children
+        && self.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
       let override_taffy_style = self.convert_style(style_override, None, None, simple_grid, true);
       taffy
         .set_style(root_id, override_taffy_style)
@@ -11423,7 +11491,7 @@ mod tests {
     let key_a = TaffyNodeCacheKey::new(
       TaffyAdapterKind::Grid,
       taffy_grid_container_style_fingerprint(container_a.style.as_ref()),
-      super::grid_child_fingerprint(&children_a, &mut deadline_counter).expect("fingerprint"),
+      super::grid_child_fingerprint(&children_a, false, &mut deadline_counter).expect("fingerprint"),
       gc.viewport_size,
     );
 
@@ -11456,7 +11524,7 @@ mod tests {
     let key_b = TaffyNodeCacheKey::new(
       TaffyAdapterKind::Grid,
       taffy_grid_container_style_fingerprint(container_b.style.as_ref()),
-      super::grid_child_fingerprint(&children_b, &mut deadline_counter).expect("fingerprint"),
+      super::grid_child_fingerprint(&children_b, false, &mut deadline_counter).expect("fingerprint"),
       gc.viewport_size,
     );
     assert_eq!(

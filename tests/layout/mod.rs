@@ -70,6 +70,7 @@ mod grid_percent_rows_indefinite_height;
 mod grid_percent_tracks_definite;
 mod grid_percent_tracks_indefinite_shrinkwrap;
 mod grid_self_start_self_end_alignment;
+mod grid_simple_grid_fast_path;
 mod grid_span_token_order;
 mod grid_track_sizing_intrinsics;
 mod grid_writing_mode_in_block;
