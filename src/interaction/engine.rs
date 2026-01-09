@@ -548,14 +548,14 @@ fn prev_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize>
   let Some(current) = current else {
     return focusables.last().copied();
   };
-  let Some(pos) = focusables.iter().position(|id| *id == current) else {
-    return focusables.last().copied();
-  };
-  if pos == 0 {
-    focusables.last().copied()
-  } else {
-    Some(focusables[pos - 1])
-  }
+  // `focusables` is in DOM pre-order (increasing node id). Find the last focusable element before
+  // the current focused node. If none exists, wrap to the last.
+  focusables
+    .iter()
+    .copied()
+    .rev()
+    .find(|id| *id < current)
+    .or_else(|| focusables.last().copied())
 }
 
 fn node_is_disabled(index: &DomIndexMut, node_id: usize) -> bool {
@@ -1791,7 +1791,6 @@ impl InteractionEngine {
     key: KeyAction,
   ) -> bool {
     self.modality = InputModality::Keyboard;
-
     if matches!(key, KeyAction::Tab | KeyAction::ShiftTab) {
       // Focus traversal (wraps at ends).
       let mut index = DomIndexMut::new(dom);

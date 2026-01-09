@@ -2403,6 +2403,120 @@ fn tab_key_traverses_focusable_elements_in_dom_order_and_wraps() {
 }
 
 #[test]
+fn shift_tab_key_traverses_focusable_elements_in_reverse_dom_order_and_wraps() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        // Not focusable (disabled).
+        el("input", vec![("id", "disabled_first"), ("disabled", "")], vec![]),
+        // 1: <a href>
+        el("a", vec![("id", "a1"), ("href", "/a1")], vec![]),
+        // Not focusable (no href).
+        el("a", vec![("id", "a_no_href")], vec![]),
+        el(
+          "div",
+          vec![("id", "container")],
+          vec![
+            // Not focusable.
+            el("span", vec![("id", "spacer")], vec![]),
+            // Not focusable (<input type=hidden>).
+            el("input", vec![("id", "hidden"), ("type", "hidden")], vec![]),
+            // 2: <input>
+            el("input", vec![("id", "i1")], vec![]),
+          ],
+        ),
+        // Not focusable (disabled).
+        el("button", vec![("id", "b_disabled"), ("disabled", "")], vec![]),
+        // 3: <button>
+        el("button", vec![("id", "b1")], vec![]),
+        // Not focusable (data-fastr-inert subtree).
+        el(
+          "div",
+          vec![("id", "data_inert"), ("data-fastr-inert", "true")],
+          vec![el("input", vec![("id", "i_inert2")], vec![])],
+        ),
+        // Not focusable (tabindex=-1).
+        el(
+          "a",
+          vec![("id", "a_skip"), ("href", "/skip"), ("tabindex", "-1")],
+          vec![],
+        ),
+        // Not focusable (inert subtree).
+        el(
+          "div",
+          vec![("id", "inert_container"), ("inert", "")],
+          vec![el("textarea", vec![("id", "ta_inert")], vec![])],
+        ),
+        // 4: <textarea>
+        el("textarea", vec![("id", "ta1")], vec![]),
+        // 5: <select>
+        el("select", vec![("id", "s1")], vec![]),
+        // 6: <a href>
+        el("a", vec![("id", "a2"), ("href", "/a2")], vec![]),
+      ],
+    )],
+  )]);
+
+  let mut engine = InteractionEngine::new();
+  let focusables = ["a1", "i1", "b1", "ta1", "s1", "a2"];
+  let mut prev: Option<&str> = None;
+
+  for expected in focusables
+    .iter()
+    .copied()
+    .rev()
+    .chain(std::iter::once(focusables[focusables.len() - 1]))
+  {
+    assert!(
+      engine.key_action(&mut dom, KeyAction::ShiftTab),
+      "shift+tab should move focus"
+    );
+    assert_eq!(
+      attr_value(&dom, expected, "data-fastr-focus").as_deref(),
+      Some("true"),
+      "{expected} should be focused"
+    );
+    assert_eq!(
+      attr_value(&dom, expected, "data-fastr-focus-visible").as_deref(),
+      Some("true"),
+      "{expected} should be focus-visible (keyboard modality)"
+    );
+
+    if let Some(prev_id) = prev {
+      assert!(
+        !has_attr(&dom, prev_id, "data-fastr-focus"),
+        "{prev_id} focus should be cleared"
+      );
+      assert!(
+        !has_attr(&dom, prev_id, "data-fastr-focus-visible"),
+        "{prev_id} focus-visible should be cleared"
+      );
+    }
+
+    for skipped in [
+      "disabled_first",
+      "a_no_href",
+      "hidden",
+      "b_disabled",
+      "i_inert2",
+      "a_skip",
+      "ta_inert",
+    ] {
+      assert!(
+        !has_attr(&dom, skipped, "data-fastr-focus"),
+        "{skipped} must be skipped by tab traversal"
+      );
+    }
+
+    prev = Some(expected);
+  }
+}
+
+#[test]
 fn listbox_select_click_sets_selected_option_and_focuses_select() {
   let mut dom = doc(vec![el(
     "html",
