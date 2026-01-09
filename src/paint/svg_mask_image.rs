@@ -366,4 +366,38 @@ mod tests {
     assert!(svg.contains(paint));
     assert!(svg.contains("clip-path=\"url(#clip)\""));
   }
+
+  #[test]
+  fn svg_clip_path_image_collects_url_refs_from_style_text() {
+    let clip = r##"<clipPath xmlns="http://www.w3.org/2000/svg" id="clip"><style>.x{fill:url(#paint)}</style><rect class="x" width="10" height="10"/></clipPath>"##;
+    let paint = r##"<linearGradient xmlns="http://www.w3.org/2000/svg" id="paint"><stop offset="0" stop-color="white"/></linearGradient>"##;
+    let defs = HashMap::from([
+      ("clip".to_string(), clip.to_string()),
+      ("paint".to_string(), paint.to_string()),
+    ]);
+
+    let svg = inline_svg_for_clip_path_id(&defs, "clip", 10, 10).expect("expected svg");
+    assert!(
+      svg.contains(paint),
+      "expected style url(#paint) reference to include paint def"
+    );
+  }
+
+  #[test]
+  fn svg_clip_path_image_avoids_emitting_nested_defs_twice() {
+    let clip = r##"<clipPath xmlns="http://www.w3.org/2000/svg" id="clip"><use href="#nested"/><g id="nested"><metadata>EXTRA</metadata></g></clipPath>"##;
+    let nested =
+      r##"<g xmlns="http://www.w3.org/2000/svg" id="nested"><metadata>EXTRA</metadata></g>"##;
+    let defs = HashMap::from([
+      ("clip".to_string(), clip.to_string()),
+      ("nested".to_string(), nested.to_string()),
+    ]);
+
+    let svg = inline_svg_for_clip_path_id(&defs, "clip", 10, 10).expect("expected svg");
+    assert_eq!(
+      svg.matches("EXTRA").count(),
+      1,
+      "expected nested def to only appear once in output: {svg}"
+    );
+  }
 }
