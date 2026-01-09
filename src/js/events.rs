@@ -50,11 +50,7 @@ struct EventWrapper {
 
 impl EventWrapper {
   fn intern_key(rt: &mut VmJsRuntime, name: &str) -> std::result::Result<PropertyKey, VmError> {
-    let v = rt.alloc_string_value(name)?;
-    let Value::String(s) = v else {
-      return Err(VmError::Unimplemented("alloc_string_value did not return a string"));
-    };
-    Ok(PropertyKey::String(s))
+    rt.property_key_from_str(name)
   }
 
   fn new(rt: &mut VmJsRuntime) -> std::result::Result<Self, VmError> {

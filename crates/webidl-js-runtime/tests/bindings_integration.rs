@@ -44,11 +44,7 @@ struct InstalledBindings {
 }
 
 fn pk(rt: &mut VmJsRuntime, name: &str) -> Result<PropertyKey, VmError> {
-  let v = rt.alloc_string_value(name)?;
-  let Value::String(s) = v else {
-    return Err(rt.throw_type_error("expected string for property key"));
-  };
-  Ok(PropertyKey::String(s))
+  rt.property_key_from_str(name)
 }
 
 fn value_to_string(rt: &VmJsRuntime, v: Value) -> Result<String, VmError> {
