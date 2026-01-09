@@ -440,16 +440,22 @@ impl App {
       .iter()
       .copied()
       .find(wgpu::TextureFormat::is_srgb)
-      .unwrap_or(surface_caps.formats[0]);
+      .or_else(|| surface_caps.formats.first().copied())
+      .ok_or("wgpu surface reports no supported texture formats")?;
 
     let present_mode = surface_caps
       .present_modes
       .iter()
       .copied()
       .find(|mode| *mode == wgpu::PresentMode::Fifo)
-      .unwrap_or(surface_caps.present_modes[0]);
+      .or_else(|| surface_caps.present_modes.first().copied())
+      .ok_or("wgpu surface reports no present modes")?;
 
-    let alpha_mode = surface_caps.alpha_modes[0];
+    let alpha_mode = surface_caps
+      .alpha_modes
+      .first()
+      .copied()
+      .ok_or("wgpu surface reports no alpha modes")?;
 
     let size = window.inner_size();
     let surface_config = wgpu::SurfaceConfiguration {
