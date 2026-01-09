@@ -817,8 +817,16 @@ fn parallel_block_children_respect_content_visibility_auto_in_descendants() {
 
   let serial_snapshot =
     snapshot_fragment_tree(&serial_engine.layout_tree(&box_tree).expect("serial layout"));
-  let parallel_snapshot =
-    snapshot_fragment_tree(&parallel_engine.layout_tree(&box_tree).expect("parallel layout"));
+  enable_layout_parallel_debug_counters(true);
+  reset_layout_parallel_debug_counters();
+  let parallel_snapshot = snapshot_fragment_tree(
+    &parallel_engine
+      .layout_tree(&box_tree)
+      .expect("parallel layout"),
+  );
+  let counters = layout_parallel_debug_counters();
+  enable_layout_parallel_debug_counters(false);
+  reset_layout_parallel_debug_counters();
 
   if let Some(diff) = diff_trees(&serial_snapshot, &parallel_snapshot) {
     panic!("serial vs parallel diff: {diff}");
@@ -836,6 +844,10 @@ fn parallel_block_children_respect_content_visibility_auto_in_descendants() {
   assert!(
     parallel_auto.children.is_empty(),
     "expected offscreen auto subtree to be skipped in parallel layout"
+  );
+  assert_eq!(
+    counters.work_items, 0,
+    "expected content-visibility:auto subtree to disable parallel block-child fan-out, counters={counters:?}"
   );
 }
 
