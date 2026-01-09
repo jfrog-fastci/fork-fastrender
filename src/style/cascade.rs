@@ -15959,6 +15959,16 @@ fn placeholder_is_shown(node: &DomNode) -> bool {
       return false;
     }
 
+    // Placeholder rendering depends on the control's current value, which is subject to HTML's
+    // per-input-type value sanitization algorithms (e.g. `<input type="number" value="abc">`
+    // sanitizes to the empty string). Keep this in sync with selector matching logic so
+    // `::placeholder` styles are computed whenever `:placeholder-shown` is true.
+    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number")) {
+      return crate::dom::input_number_value_string(node)
+        .unwrap_or_default()
+        .is_empty();
+    }
+
     return node.get_attribute_ref("value").unwrap_or("").is_empty();
   }
 
@@ -17765,6 +17775,34 @@ mod tests {
       .expect("expected textarea ::placeholder pseudo styles");
     assert_eq!(textarea_placeholder_styles.color, Rgba::rgb(40, 50, 60));
     assert_eq!(textarea_placeholder_styles.opacity, 0.6);
+  }
+
+  #[test]
+  fn placeholder_pseudo_styles_use_sanitized_number_values() {
+    // Number inputs sanitize invalid authored values to the empty string, so placeholder text (and
+    // its pseudo styles) should still be generated.
+    let number_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "number".to_string()),
+          ("placeholder".to_string(), "Quantity".to_string()),
+          ("value".to_string(), "abc".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&number_dom, &StyleSheet::new());
+    let placeholder_styles = styled
+      .placeholder_styles
+      .as_deref()
+      .expect("expected ::placeholder pseudo styles");
+    assert_eq!(
+      placeholder_styles.opacity, 0.6,
+      "UA placeholder defaults should apply even when the number value attribute is invalid"
+    );
   }
 
   #[test]
