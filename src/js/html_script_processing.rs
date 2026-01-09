@@ -32,6 +32,29 @@ trait InnerHostAccess<Host> {
   fn inner_mut(&mut self) -> &mut Host;
 }
 
+struct JsExecutionGuard {
+  depth: Rc<Cell<usize>>,
+}
+
+impl JsExecutionGuard {
+  fn enter(depth: &Rc<Cell<usize>>) -> Self {
+    let cur = depth.get();
+    depth.set(cur + 1);
+    Self {
+      depth: Rc::clone(depth),
+    }
+  }
+}
+
+impl Drop for JsExecutionGuard {
+  fn drop(&mut self) {
+    let cur = self.depth.get();
+    self
+      .depth
+      .set(cur.checked_sub(1).expect("js execution depth underflow"));
+  }
+}
+
 struct ParserHost<'a, Host> {
   inner: &'a mut Host,
   parser: &'a StreamingHtmlParser,
@@ -164,32 +187,6 @@ where
   }
 }
 
-/// RAII guard that increments a host-local "JS execution depth" counter.
-///
-/// HTML gates certain microtask checkpoints based on whether the **JavaScript execution context
-/// stack is empty**. Parsing can run inside an event-loop task (`TaskSource::DOMManipulation`), so
-/// `EventLoop::currently_running_task()` is not equivalent to the JS execution context stack.
-/// Track depth explicitly instead.
-struct JsExecutionGuard {
-  depth: Rc<Cell<usize>>,
-}
-
-impl JsExecutionGuard {
-  fn enter(depth: &Rc<Cell<usize>>) -> Self {
-    depth.set(depth.get().saturating_add(1));
-    Self {
-      depth: Rc::clone(depth),
-    }
-  }
-}
-
-impl Drop for JsExecutionGuard {
-  fn drop(&mut self) {
-    let current = self.depth.get();
-    self.depth.set(current.saturating_sub(1));
-  }
-}
-
 fn execute_now<Host, Runner, HostWrapper>(
   host: &mut HostWrapper,
   dom: &Document,
@@ -204,6 +201,12 @@ where
   Runner:
     Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
 {
+  // HTML `</script>` handling performs a microtask checkpoint *before* preparing/executing a
+  // parser-inserted script when the JS execution context stack is empty.
+  if js_execution_depth.get() == 0 {
+    event_loop.perform_microtask_checkpoint(host.inner_mut())?;
+  }
+
   let mut orchestrator = ScriptOrchestrator::new();
   let mut exec = ScriptRunnerExecutor {
     runner,
@@ -642,6 +645,67 @@ mod tests {
         "script:b".to_string(),
         "microtask:b".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn microtasks_checkpoint_before_parser_blocking_script_when_invoked_from_task() -> Result<()> {
+    // HTML performs a microtask checkpoint before preparing a parser-inserted script when the JS
+    // execution context stack is empty. This must be independent of whether parsing is happening
+    // inside an event loop task.
+    let mut dom = Document::new(selectors::context::QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom.append_child(dom.root(), script).expect("append_child");
+    let dom = Rc::new(RefCell::new(dom));
+
+    let js_execution_depth = Rc::new(Cell::new(0));
+    let runner = Rc::new(
+      |host: &mut Host,
+       _dom: &Document,
+       _script: NodeId,
+       _ty: ScriptType,
+       source: &str,
+       _event_loop: &mut EventLoop<Host>| {
+        host.log.push(format!("script:{source}"));
+        Ok(())
+      },
+    );
+
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_microtask(|host, _| {
+      host.log.push("microtask".to_string());
+      Ok(())
+    })?;
+
+    let dom_for_task = Rc::clone(&dom);
+    let runner = Rc::clone(&runner);
+    let js_execution_depth_for_task = Rc::clone(&js_execution_depth);
+    event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+      let dom_ref = dom_for_task.borrow();
+      let dom_for_host = Rc::clone(&dom_for_task);
+      let mut host_wrapper = RcDomHost {
+        inner: host,
+        dom: dom_for_host,
+      };
+      execute_now(
+        &mut host_wrapper,
+        &dom_ref,
+        script,
+        "a",
+        event_loop,
+        runner,
+        &js_execution_depth_for_task,
+      )?;
+      Ok(())
+    })?;
+
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(
+      host.log,
+      vec!["microtask".to_string(), "script:a".to_string()]
     );
     Ok(())
   }
