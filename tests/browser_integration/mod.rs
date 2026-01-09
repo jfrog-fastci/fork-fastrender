@@ -34,6 +34,7 @@ mod ui_worker_scroll_hit_test;
 mod ui_worker_anchor_scroll;
 mod ui_scrolling;
 mod ui_history_scroll_restore;
+mod ui_worker_stage_listener_scoping;
 mod ui_worker_shutdown;
 mod ui_worker_tab_resource_isolation;
 mod ui_worker_title;

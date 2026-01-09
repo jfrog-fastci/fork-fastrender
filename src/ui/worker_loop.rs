@@ -372,47 +372,37 @@ fn navigate_tab(
     tab_id,
     loading: true,
   });
-  let _stage_guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
 
   tab.scroll = ScrollState::default();
   tab.interaction = InteractionEngine::new();
 
-  let options = render_options_for_navigation(tab).with_cancel_callback(Some(prepare_cancel_cb.clone()));
+  enum NavigationOutcome {
+    Completed,
+    Cancelled,
+  }
 
-  let committed_url = if about_pages::is_about_url(&url) {
-    let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
-      about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
-    });
-    tab
-      .document
-      .set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
-    tab.document.set_document_url(Some(url.clone()));
-    if let Err(err) = tab.document.reset_with_html(&html, options) {
-      tab.document.set_cancel_callback(None);
-      if prepare_cancel_cb() {
-        return;
-      }
-      let err = err.to_string();
-      let _ = ui_tx.send(WorkerToUi::NavigationFailed {
-        tab_id,
-        url: url.clone(),
-        error: err.clone(),
+  let outcome = (|| {
+    // Forward render stage heartbeats for the duration of this navigation job only.
+    //
+    // The stage listener is global across the process, so it must be scoped to avoid leaking
+    // across jobs (and to prevent unrelated `record_stage` calls from being forwarded to the UI).
+    let _stage_guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
+
+    let options =
+      render_options_for_navigation(tab).with_cancel_callback(Some(prepare_cancel_cb.clone()));
+
+    let committed_url = if about_pages::is_about_url(&url) {
+      let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
+        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
       });
-      render_navigation_error_page(tab_id, tab, ui_tx, &err);
-      let _ = ui_tx.send(WorkerToUi::LoadingState {
-        tab_id,
-        loading: false,
-      });
-      return;
-    }
-    url.clone()
-  } else {
-    match tab.document.navigate_url_with_options(&url, options) {
-      Ok((committed, _base)) => committed,
-      Err(err) => {
+      tab
+        .document
+        .set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
+      tab.document.set_document_url(Some(url.clone()));
+      if let Err(err) = tab.document.reset_with_html(&html, options) {
         tab.document.set_cancel_callback(None);
         if prepare_cancel_cb() {
-          return;
+          return NavigationOutcome::Cancelled;
         }
         let err = err.to_string();
         let _ = ui_tx.send(WorkerToUi::NavigationFailed {
@@ -421,98 +411,114 @@ fn navigate_tab(
           error: err.clone(),
         });
         render_navigation_error_page(tab_id, tab, ui_tx, &err);
-        let _ = ui_tx.send(WorkerToUi::LoadingState {
-          tab_id,
-          loading: false,
-        });
-        return;
+        return NavigationOutcome::Completed;
       }
-    }
-  };
+      url.clone()
+    } else {
+      match tab.document.navigate_url_with_options(&url, options) {
+        Ok((committed, _base)) => committed,
+        Err(err) => {
+          tab.document.set_cancel_callback(None);
+          if prepare_cancel_cb() {
+            return NavigationOutcome::Cancelled;
+          }
+          let err = err.to_string();
+          let _ = ui_tx.send(WorkerToUi::NavigationFailed {
+            tab_id,
+            url: url.clone(),
+            error: err.clone(),
+          });
+          render_navigation_error_page(tab_id, tab, ui_tx, &err);
+          return NavigationOutcome::Completed;
+        }
+      }
+    };
 
-  tab.document.set_scroll_state(tab.scroll.clone());
+    tab.document.set_scroll_state(tab.scroll.clone());
 
-  if prepare_cancel_cb() {
-    tab.document.set_cancel_callback(None);
-    return;
-  }
-
-  let paint_snapshot = cancel_gens.snapshot_paint();
-  let paint_cancel_cb = paint_snapshot.cancel_callback_for_paint(cancel_gens);
-  let paint_deadline = RenderDeadline::new(None, Some(paint_cancel_cb.clone()));
-
-  let mut painted = match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
-    Ok(frame) => frame,
-    Err(err) => {
+    if prepare_cancel_cb() {
       tab.document.set_cancel_callback(None);
-      if paint_cancel_cb() {
-        return;
-      }
-      let err = err.to_string();
-      let _ = ui_tx.send(WorkerToUi::NavigationFailed {
-        tab_id,
-        url: committed_url.clone(),
-        error: err.clone(),
-      });
-      render_navigation_error_page(tab_id, tab, ui_tx, &err);
-      let _ = ui_tx.send(WorkerToUi::LoadingState {
-        tab_id,
-        loading: false,
-      });
-      return;
+      return NavigationOutcome::Cancelled;
     }
-  };
 
-  if let Some(fragment) = fragment_target.as_deref() {
-    if let Some(prepared) = tab.document.prepared() {
-      if let Some(point) = scroll_offset_for_fragment_target(
-        tab.document.dom(),
-        prepared.box_tree(),
-        prepared.fragment_tree(),
-        fragment,
-        viewport_size_css,
-      ) {
-        if point != painted.scroll_state.viewport {
-          tab.document.set_scroll_state(ScrollState::from_parts(
-            point,
-            painted.scroll_state.elements.clone(),
-          ));
-          match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
-            Ok(frame) => painted = frame,
-            Err(err) => {
-              let _ = ui_tx.send(WorkerToUi::DebugLog {
-                tab_id,
-                line: format!("paint failed after anchor scroll: {err}"),
-              });
+    let paint_snapshot = cancel_gens.snapshot_paint();
+    let paint_cancel_cb = paint_snapshot.cancel_callback_for_paint(cancel_gens);
+    let paint_deadline = RenderDeadline::new(None, Some(paint_cancel_cb.clone()));
+
+    let mut painted = match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
+      Ok(frame) => frame,
+      Err(err) => {
+        tab.document.set_cancel_callback(None);
+        if paint_cancel_cb() {
+          return NavigationOutcome::Cancelled;
+        }
+        let err = err.to_string();
+        let _ = ui_tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url: committed_url.clone(),
+          error: err.clone(),
+        });
+        render_navigation_error_page(tab_id, tab, ui_tx, &err);
+        return NavigationOutcome::Completed;
+      }
+    };
+
+    if let Some(fragment) = fragment_target.as_deref() {
+      if let Some(prepared) = tab.document.prepared() {
+        if let Some(point) = scroll_offset_for_fragment_target(
+          tab.document.dom(),
+          prepared.box_tree(),
+          prepared.fragment_tree(),
+          fragment,
+          viewport_size_css,
+        ) {
+          if point != painted.scroll_state.viewport {
+            tab.document.set_scroll_state(ScrollState::from_parts(
+              point,
+              painted.scroll_state.elements.clone(),
+            ));
+            match tab.document.render_frame_with_deadlines(Some(&paint_deadline)) {
+              Ok(frame) => painted = frame,
+              Err(err) => {
+                let _ = ui_tx.send(WorkerToUi::DebugLog {
+                  tab_id,
+                  line: format!("paint failed after anchor scroll: {err}"),
+                });
+              }
             }
           }
         }
       }
     }
+
+    tab.document.set_cancel_callback(None);
+    if paint_cancel_cb() {
+      return NavigationOutcome::Cancelled;
+    }
+
+    tab.url = Some(committed_url.clone());
+
+    let title = crate::html::title::find_document_title(tab.document.dom());
+    let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: committed_url,
+      title,
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
+
+    NavigationOutcome::Completed
+  })();
+
+  // LoadingState(false) is emitted after the job's stage listener guard has been dropped.
+  if matches!(outcome, NavigationOutcome::Completed) {
+    let _ = ui_tx.send(WorkerToUi::LoadingState {
+      tab_id,
+      loading: false,
+    });
   }
-
-  tab.document.set_cancel_callback(None);
-  if paint_cancel_cb() {
-    return;
-  }
-
-  tab.url = Some(committed_url.clone());
-
-  let title = crate::html::title::find_document_title(tab.document.dom());
-  let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
-    tab_id,
-    url: committed_url,
-    title,
-    can_go_back: false,
-    can_go_forward: false,
-  });
-
-  emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
-
-  let _ = ui_tx.send(WorkerToUi::LoadingState {
-    tab_id,
-    loading: false,
-  });
 }
 
 /// Spawns a headless UI worker loop used by the browser UI integration tests.
@@ -694,6 +700,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let previous_scroll = tab.scroll.clone();
         let current = previous_scroll.clone();
 
+        let _stage_guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
         let next = match pointer_css.and_then(sanitize_pointer) {
           None => {
             let mut viewport = current.viewport;
