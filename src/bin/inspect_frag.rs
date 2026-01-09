@@ -10,6 +10,8 @@ use fastrender::dom::DomNodeType;
 use fastrender::geometry::{Point, Rect};
 use fastrender::image_output::encode_image;
 use fastrender::pageset::{pageset_short_hash, pageset_stem};
+#[cfg(feature = "disk_cache")]
+use fastrender::HttpFetcher;
 #[cfg(not(feature = "disk_cache"))]
 use fastrender::resource::CachingFetcher;
 #[cfg(feature = "disk_cache")]
