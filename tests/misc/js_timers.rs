@@ -368,3 +368,38 @@ fn nested_timeouts_are_clamped_after_five_nesting_levels() -> Result<()> {
   assert_eq!(read_log(&host)?.len(), 7);
   Ok(())
 }
+
+#[test]
+fn microtasks_queued_from_timer_run_before_next_task() -> Result<()> {
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<JsVmHost>::with_clock(clock);
+  let mut host = JsVmHost::new(WebTime::default())?;
+
+  reset_log(&host)?;
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    host.exec_script(
+      event_loop,
+      r#"
+      setTimeout(() => {
+        __log.push("t1");
+        queueMicrotask(() => __log.push("m1"));
+      }, 0);
+      setTimeout(() => __log.push("t2"), 0);
+    "#,
+    )
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    read_log(&host)?,
+    vec![
+      serde_json::Value::String("t1".to_string()),
+      serde_json::Value::String("m1".to_string()),
+      serde_json::Value::String("t2".to_string()),
+    ]
+  );
+  Ok(())
+}
