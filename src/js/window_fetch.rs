@@ -1117,21 +1117,22 @@ fn request_ctor_construct(
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let mut request =
-    if let Some((other_env_id, other_request_id)) = request_info_from_value(scope, input) {
-      with_env_state(other_env_id, |state| {
-        state
-          .requests
-          .get(&other_request_id)
-          .cloned()
-          .ok_or(VmError::TypeError("Request: invalid backing request"))
-      })?
+  let mut request = if let Some((other_env_id, other_request_id)) =
+    request_info_from_value(scope, input)
+  {
+    with_env_state(other_env_id, |state| {
+      state
+        .requests
+        .get(&other_request_id)
+        .cloned()
+        .ok_or(VmError::TypeError("Request: invalid backing request"))
+    })?
   } else {
     let url = to_rust_string(scope.heap_mut(), input)?;
     CoreRequest::new("GET", url)
   };
-  if matches!(init, Value::Object(_)) {
-    let Value::Object(init_obj) = init else { unreachable!() };
+
+  if let Value::Object(init_obj) = init {
     let method_key = alloc_key(scope, "method")?;
     let method_val = vm.get(scope, init_obj, method_key)?;
     if !matches!(method_val, Value::Undefined | Value::Null) {

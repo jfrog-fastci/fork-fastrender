@@ -343,12 +343,11 @@ where
   F: ScriptFetcher,
   E: ScriptExecutor<HtmlLoadOrchestrator<F, E>>,
 {
-  fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut Document) -> R) -> R {
-    let dom = self
-      .finished_document
-      .as_mut()
-      .expect("HTML document lifecycle events require parsing to be complete");
-    f(dom)
+  fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut Document) -> R) -> Result<R> {
+    let dom = self.finished_document.as_mut().ok_or_else(|| {
+      Error::Other("cannot update document.readyState before parsing completes".to_string())
+    })?;
+    Ok(f(dom))
   }
 
   fn dispatch_lifecycle_event(

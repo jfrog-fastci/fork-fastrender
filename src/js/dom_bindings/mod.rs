@@ -292,7 +292,7 @@ impl DomJsRealm {
     let mut event = events_map
       .borrow_mut()
       .remove(&event_id)
-      .expect("event id must exist");
+      .ok_or_else(|| VmError::InvariantViolation("missing event id in events table"))?;
 
     struct ActiveEventGuard {
       active: ActiveEventMap,

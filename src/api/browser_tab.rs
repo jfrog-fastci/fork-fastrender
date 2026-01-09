@@ -528,9 +528,9 @@ impl DomHost for BrowserTabHost {
 }
 
 impl DocumentLifecycleHost for BrowserTabHost {
-  fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> R {
+  fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> Result<R> {
     let dom = self.document.dom_mut();
-    f(dom)
+    Ok(f(dom))
   }
 
   fn dispatch_lifecycle_event(

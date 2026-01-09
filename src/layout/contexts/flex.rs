@@ -11015,39 +11015,37 @@ impl FlexFormattingContext {
     // Taffy may pass `known_dimensions` derived from flex alignment/stretch rather than authored
     // sizing. For content-visibility placeholders we only treat a known dimension as authoritative
     // when it came from an explicit size/keyword on that axis.
-    let width = if known_dimensions.width.is_some()
-      && (style.width.is_some() || style.width_keyword.is_some())
-    {
-      known_dimensions.width.unwrap()
-    } else {
-      let base = constraints
-        .inline_percentage_base
-        .or_else(|| constraints.width())
-        .filter(|b| b.is_finite());
-      crate::layout::utils::resolve_contain_intrinsic_size_axis(
-        style.contain_intrinsic_width,
-        remembered_width,
-        base,
-        self.viewport_size,
-        style.font_size,
-        style.root_font_size,
-      )
+    let width = match known_dimensions.width {
+      Some(width) if style.width.is_some() || style.width_keyword.is_some() => width,
+      _ => {
+        let base = constraints
+          .inline_percentage_base
+          .or_else(|| constraints.width())
+          .filter(|b| b.is_finite());
+        crate::layout::utils::resolve_contain_intrinsic_size_axis(
+          style.contain_intrinsic_width,
+          remembered_width,
+          base,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+        )
+      }
     };
 
-    let height = if known_dimensions.height.is_some()
-      && (style.height.is_some() || style.height_keyword.is_some())
-    {
-      known_dimensions.height.unwrap()
-    } else {
-      let base = constraints.height().filter(|b| b.is_finite());
-      crate::layout::utils::resolve_contain_intrinsic_size_axis(
-        style.contain_intrinsic_height,
-        remembered_height,
-        base,
-        self.viewport_size,
-        style.font_size,
-        style.root_font_size,
-      )
+    let height = match known_dimensions.height {
+      Some(height) if style.height.is_some() || style.height_keyword.is_some() => height,
+      _ => {
+        let base = constraints.height().filter(|b| b.is_finite());
+        crate::layout::utils::resolve_contain_intrinsic_size_axis(
+          style.contain_intrinsic_height,
+          remembered_height,
+          base,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+        )
+      }
     };
 
     Size::new(sanitize(width), sanitize(height))

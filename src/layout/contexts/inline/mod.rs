@@ -12312,11 +12312,14 @@ impl InlineFormattingContext {
           fragment.logical_override = Some(logical.translate(offset));
         }
 
+        let Some((&target_index, parent_path)) = path.split_last() else {
+          merged_children.push(fragment);
+          return;
+        };
         let mut cursor: &mut Vec<FragmentNode> = merged_children;
-        for &index in &path[..path.len() - 1] {
+        for &index in parent_path {
           cursor = &mut *cursor[index].children_mut();
         }
-        let target_index = *path.last().unwrap();
         cursor[target_index].children_mut().push(fragment);
       }
 

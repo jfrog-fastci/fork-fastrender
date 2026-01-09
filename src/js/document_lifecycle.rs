@@ -15,7 +15,10 @@ pub trait DocumentLifecycleHost {
   ///
   /// This is modeled as a callback so hosts can use interior mutability (e.g. `Rc<RefCell<_>>`)
   /// without requiring unsafe lifetime tricks.
-  fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> R;
+  ///
+  /// Returns an error when the host cannot currently provide mutable access to the document (for
+  /// example, if the lifecycle is invoked before parsing completes).
+  fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> Result<R>;
 
   /// Dispatch a DOM event to `target`.
   ///
@@ -164,7 +167,7 @@ fn fire_dom_content_loaded<Host: DocumentLifecycleHost>(host: &mut Host) -> Resu
     } else {
       false
     }
-  });
+  })?;
 
   // Fire `readystatechange` whenever `document.readyState` changes.
   if ready_state_changed {
@@ -202,7 +205,7 @@ fn fire_load<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
     } else {
       false
     }
-  });
+  })?;
 
   if ready_state_changed {
     fire_ready_state_change(host)?;
@@ -295,8 +298,8 @@ mod tests {
   }
 
   impl DocumentLifecycleHost for Host {
-    fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> R {
-      f(&mut self.dom)
+    fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> Result<R> {
+      Ok(f(&mut self.dom))
     }
 
     fn dispatch_lifecycle_event(&mut self, target: EventTargetId, mut event: Event) -> Result<()> {
@@ -615,10 +618,10 @@ mod tests {
   }
 
   impl DocumentLifecycleHost for JsHost {
-    fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> R {
+    fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> Result<R> {
       let dom = self.realm.dom();
       let mut dom_ref = dom.borrow_mut();
-      f(&mut dom_ref)
+      Ok(f(&mut dom_ref))
     }
 
     fn dispatch_lifecycle_event(&mut self, target: EventTargetId, event: Event) -> Result<()> {

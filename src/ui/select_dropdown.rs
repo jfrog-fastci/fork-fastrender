@@ -81,7 +81,7 @@ pub fn next_enabled_option_item_index(control: &SelectControl, key: KeyAction) -
     }
     Home => first_enabled,
     End => last_enabled,
-    _ => unreachable!("guarded above"),
+    _ => return None,
   };
 
   // If we clamped and the anchor was already selected, treat as a no-op.

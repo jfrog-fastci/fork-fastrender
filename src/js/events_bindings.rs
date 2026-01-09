@@ -134,7 +134,9 @@ impl DomEventsContext {
     self.register_event_target(EventTargetId::Node(node_id), obj)?;
 
     let Value::Object(handle) = obj else {
-      unreachable!("alloc_object_value must return an object");
+      return Err(VmError::InvariantViolation(
+        "alloc_object_value returned non-object value",
+      ));
     };
     self
       .node_wrappers
