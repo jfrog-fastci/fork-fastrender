@@ -3,7 +3,7 @@ use fastrender::{
   DiagnosticsLevel, FastRender, FastRenderConfig, FontConfig, FragmentContent, FragmentNode, Point,
   Rect, RenderArtifactRequest, RenderOptions,
 };
-use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
 
 struct EnvVarGuard {
@@ -43,15 +43,6 @@ impl Drop for StageListenerGuard {
   }
 }
 
-static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-fn lock_test() -> std::sync::MutexGuard<'static, ()> {
-  TEST_LOCK
-    .get_or_init(|| Mutex::new(()))
-    .lock()
-    .expect("taffy perf diagnostics test lock poisoned")
-}
-
 fn find_text_fragment_bounds(fragment: &FragmentNode, offset: Point, needle: &str) -> Option<Rect> {
   let abs = Rect::from_xywh(
     fragment.bounds.x() + offset.x,
@@ -78,7 +69,7 @@ fn find_text_fragment_bounds(fragment: &FragmentNode, offset: Point, needle: &st
 
 #[test]
 fn taffy_perf_counters_reset_between_diagnostics_renders() {
-  let _lock = lock_test();
+  let _lock = super::global_test_lock();
   let _diag_env = EnvVarGuard::set("FASTR_DIAGNOSTICS_LEVEL", "none");
   let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
   let mut renderer = FastRender::with_config(config).expect("renderer");
@@ -166,7 +157,7 @@ fn taffy_perf_counters_reset_between_diagnostics_renders() {
 
 #[test]
 fn taffy_perf_counters_do_not_reset_between_layout_passes_in_one_render() {
-  let _lock = lock_test();
+  let _lock = super::global_test_lock();
   let _diag_env = EnvVarGuard::set("FASTR_DIAGNOSTICS_LEVEL", "none");
   let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
   let mut renderer = FastRender::with_config(config).expect("renderer");
@@ -248,7 +239,7 @@ fn taffy_perf_counters_do_not_reset_between_layout_passes_in_one_render() {
 
 #[test]
 fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
-  let _lock = lock_test();
+  let _lock = super::global_test_lock();
   let _diag_env = EnvVarGuard::set("FASTR_DIAGNOSTICS_LEVEL", "none");
   // Block one diagnostics render mid-pipeline to ensure another thread can attempt to start while
   // the global diagnostics session lock is held. This used to expose a bug where Taffy perf

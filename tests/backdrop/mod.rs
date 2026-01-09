@@ -1,8 +1,27 @@
-//! Backdrop filter-related test modules.
+//! Backdrop filter / Backdrop Root integration tests.
 //!
-//! Most backdrop regressions live under `tests/paint/` and are aggregated by `tests/paint_tests.rs`.
-//! This directory historically hosted backdrop-only tests; many have since been promoted to
-//! standalone `backdrop_root_*_test.rs` targets for faster iteration.
+//! These tests are included by the `paint_tests` integration-test harness (see `tests/paint_tests.rs`).
 //!
-//! Keep the module in place so the `tests/backdrop_tests.rs` harness remains a valid integration
-//! test crate even when it does not currently include additional modules.
+//! Historically some of these lived in their own `tests/*.rs` integration-test crates; keep them
+//! consolidated under this directory to avoid spawning dozens of separate test executables.
+
+mod backdrop_filter_clip_and_radius;
+mod backdrop_filter_determinism_regression;
+mod backdrop_filter_filter_interaction_test;
+mod backdrop_filter_mask_image_test;
+mod backdrop_filter_parallel_test;
+mod backdrop_filter_through_blend_isolation;
+mod backdrop_root_backdrop_filter_test;
+mod backdrop_root_clip_path_test;
+mod backdrop_root_demand_driven_layers_test;
+mod backdrop_root_filter_and_mask_test;
+mod backdrop_root_intermediate_layer_test;
+mod backdrop_root_matrix_test;
+mod backdrop_root_more_triggers_test;
+mod backdrop_root_nested_backdrop_filter_test;
+mod backdrop_root_non_trigger_stacking_contexts_test;
+mod backdrop_root_non_triggers_test;
+mod backdrop_root_semantics_test;
+mod backdrop_root_triggers_test;
+mod backdrop_root_will_change_test;
+mod trace_backdrop_stack_smoke_test;

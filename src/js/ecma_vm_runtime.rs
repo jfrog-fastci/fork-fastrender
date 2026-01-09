@@ -636,6 +636,40 @@ impl VmJobContext for FastRenderJobContext {
   }
 }
 
+struct HeapRootContext<'a> {
+  heap: &'a mut Heap,
+}
+
+impl VmJobContext for HeapRootContext<'_> {
+  fn call(
+    &mut self,
+    _host: &mut dyn VmHostHooks,
+    _callee: Value,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    Err(VmError::Unimplemented("HeapRootContext::call"))
+  }
+
+  fn construct(
+    &mut self,
+    _host: &mut dyn VmHostHooks,
+    _callee: Value,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> std::result::Result<Value, VmError> {
+    Err(VmError::Unimplemented("HeapRootContext::construct"))
+  }
+
+  fn add_root(&mut self, value: Value) -> std::result::Result<RootId, VmError> {
+    self.heap.add_root(value)
+  }
+
+  fn remove_root(&mut self, id: RootId) {
+    self.heap.remove_root(id);
+  }
+}
+
 // --- ScriptScheduler adapter ---
 
 impl<State: 'static> ScriptExecutor for EcmaVmRuntime<State> {

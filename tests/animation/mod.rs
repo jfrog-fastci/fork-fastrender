@@ -9,6 +9,13 @@ mod clip_path_shape_radius_keywords;
 mod range_length_offsets_tests;
 mod range_strict_tests;
 mod shorthand_reset_tests;
+mod time_sampling;
 mod time_precision_test;
+mod timeline_scope_tests;
 mod timeline_supports_test;
 mod clip_path_reference_box_percentages;
+
+// Consolidated from standalone transition/animation integration tests.
+mod browser_document_transition_state;
+mod transitions_dynamic_engine_test;
+mod transitions_dynamic_value_pair_discrete_test;

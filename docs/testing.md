@@ -4,23 +4,47 @@ FastRender's test suite is primarily Rust unit/integration tests plus a small se
 
 ## Test organization
 
-Tests are organized into **harness directories** to reduce compilation overhead. Each `tests/<category>/` directory is compiled as a single binary via a harness file at `tests/<category>_tests.rs`.
+Tests are organized into **harness directories** to reduce compilation overhead.
+Each `tests/<category>/` directory is pulled into one of the small number of integration-test
+crates at the root of `tests/`. Most categories have a dedicated `tests/<category>_tests.rs`
+harness; some small directories are included by an existing harness (e.g. `tests/backdrop/` is
+compiled by `tests/paint_tests.rs`).
 
-**Never create new top-level `tests/*.rs` files.** Add tests to the appropriate subdirectory:
+**Never create new top-level `tests/*.rs` files for individual tests.** Add tests to the
+appropriate subdirectory:
 
 - `tests/layout/` — layout algorithm tests
-- `tests/paint/` — painting and display list tests  
+- `tests/paint/` — painting and display list tests
+- `tests/backdrop/` — backdrop-filter / backdrop-root tests (split from `paint/`, compiled by
+  `paint_tests`)
 - `tests/style/` — CSS parsing and cascade tests
-- `tests/text/` — text shaping and font tests
+- `tests/resource/` — HTTP/cache/fetcher/referrer-policy tests
+- `tests/dom_integration/` — DOM2 / Web API integration tests
+- `tests/browser_integration/` — browser-mode integration tests
+- `tests/animation/` — animation/timeline tests
+- `tests/accessibility/` — accessibility tree tests
+- `tests/font/` / `tests/text/` — shaping/font/text tests
 - `tests/regression/` — bug fix regressions
 - `tests/misc/` — tests that don't fit elsewhere
+
+Special harnesses:
+
+- `tests/allocation_failure_tests.rs` + `tests/allocation_failure/` — allocation-failure tests
+  (requires a custom `#[global_allocator]`, so it must be its own test crate)
+- `tests/determinism_tests.rs` + `tests/determinism/` — determinism-focused integration tests
 
 See `AGENTS.md` for detailed test organization rules.
 
 ## Core tests
 
 - Run unit tests only (fast): `bash scripts/cargo_agent.sh test --quiet --lib`
-- Run a specific harness: `bash scripts/cargo_agent.sh test --quiet --test layout_tests`
+- Run a specific harness (recommended): `bash scripts/cargo_agent.sh test --quiet --test layout_tests`
+
+Note: `scripts/cargo_agent.sh test` caps `RUST_TEST_THREADS` on very large machines. Override with
+`FASTR_RUST_TEST_THREADS` / `RUST_TEST_THREADS` if you need a different setting.
+
+- Full suite (CI only; extremely expensive): `cargo test --all-features` (do **not** run this on
+  agent hosts; see `AGENTS.md`).
 
 ## Fonts
 

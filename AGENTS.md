@@ -64,6 +64,9 @@ See: `docs/resource-limits.md`
 **MANDATORY:**
 - **Always use `bash scripts/cargo_agent.sh`** for all cargo commands
 - **Always scope test runs**: `-p <crate>`, `--test <name>`, `--lib`, or `--bin <name>`
+  - Note: `scripts/cargo_agent.sh test` also caps `RUST_TEST_THREADS` on very large hosts to avoid
+    spawning hundreds of concurrent test threads. Override with `FASTR_RUST_TEST_THREADS` /
+    `RUST_TEST_THREADS` if needed.
 
 ```bash
 # CORRECT:
@@ -111,7 +114,12 @@ When uncertain, add the regression first, then implement the fix.
 
 ## Test organization (mandatory)
 
-**NEVER create loose `tests/*.rs` files.** Each `.rs` file directly in `tests/` becomes a separate binary that must be compiled and linked. With 300+ test files, this destroys build times.
+**NEVER create loose `tests/*.rs` files for individual tests.** Each `.rs` file directly in `tests/`
+becomes a
+separate integration-test binary that must be compiled and linked. This repo previously had
+~80+ standalone `tests/*.rs` binaries and made accidental `cargo test` runs extremely slow and
+memory-hungry. The suite is now consolidated into category harnesses (a few dozen top-level test
+crates); keep it that way.
 
 **Always add tests to an existing harness subdirectory:**
 
@@ -121,12 +129,19 @@ tests/
 ├── layout/              ← subdirectory (NOT auto-discovered)
 │   ├── mod.rs
 │   └── your_new_test.rs ← ADD YOUR TEST HERE
-├── paint_tests.rs
+├── allocation_failure_tests.rs ← special harness (custom global allocator)
+├── allocation_failure/
+│   ├── mod.rs
+│   └── ...
+├── paint_tests.rs      ← harness (includes `paint/` and `backdrop/`)
 ├── paint/
+├── backdrop/           ← modules included by `paint_tests.rs`
 ├── style_tests.rs
 ├── style/
 ├── regression_tests.rs
 ├── regression/
+├── determinism_tests.rs
+├── determinism/
 └── ...
 ```
 

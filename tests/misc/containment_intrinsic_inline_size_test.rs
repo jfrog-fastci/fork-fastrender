@@ -2,6 +2,7 @@ use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::contexts::inline::InlineFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
+use fastrender::style::types::BorderStyle;
 use fastrender::style::values::Length;
 use fastrender::{BoxNode, ComputedStyle};
 use std::sync::Arc;
@@ -22,6 +23,8 @@ fn contain_layout_style(display: Display) -> Arc<ComputedStyle> {
   style.padding_right = Length::px(12.0);
   style.border_left_width = Length::px(2.0);
   style.border_right_width = Length::px(3.0);
+  style.border_left_style = BorderStyle::Solid;
+  style.border_right_style = BorderStyle::Solid;
   Arc::new(style)
 }
 

@@ -62,9 +62,9 @@ fn conformance_doc_links_to_real_code_and_tests() {
     "src/text/justify.rs",
     "src/animation/mod.rs",
     "src/accessibility.rs",
-    "tests/dom_compatibility_test.rs",
+    "tests/dom_integration/compatibility_test.rs",
     "tests/tree/shadow_dom.rs",
-    "tests/css_loader_tests.rs",
+    "tests/css_integration/loader_tests.rs",
     "tests/style/has_selector_test.rs",
     "tests/style/layer_important_test.rs",
     "tests/style/media_test.rs",
@@ -91,8 +91,9 @@ fn conformance_doc_links_to_real_code_and_tests() {
     "tests/text/hyphenation_test.rs",
     "tests/text/justify_test.rs",
     "tests/animation_tests.rs",
-    "tests/accessibility_test.rs",
-    "tests/integration_test.rs",
+    "tests/accessibility/test.rs",
+    "tests/accessibility/name_computation.rs",
+    "tests/misc/integration_test.rs",
   ];
 
   for path in required_paths {

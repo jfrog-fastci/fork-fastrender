@@ -1,4 +1,5 @@
 use fastrender::api::{FastRender, FastRenderConfig};
+use fastrender::RenderOptions;
 use tiny_skia::Pixmap;
 
 fn bounding_box_for_color<F>(pixmap: &Pixmap, predicate: F) -> Option<(u32, u32, u32, u32)>
@@ -56,11 +57,15 @@ fn render_with_meta(meta_content: Option<&str>, width: u32, height: u32) -> Pixm
     "#
   );
 
-  renderer.render_html(&html, width, height).unwrap()
+  let prepared = renderer
+    .prepare_html(&html, RenderOptions::default().with_viewport(width, height))
+    .unwrap();
+  prepared.paint_default().unwrap()
 }
 
 #[test]
 fn meta_viewport_alters_layout_viewport_dimensions() {
+  let _lock = super::global_test_lock();
   let mut renderer =
     FastRender::with_config(FastRenderConfig::new().with_meta_viewport(true)).unwrap();
 
@@ -92,9 +97,15 @@ fn meta_viewport_alters_layout_viewport_dimensions() {
       .map(|content| format!(r#"<meta name="viewport" content="{content}">"#))
       .unwrap_or_default();
     let html = format!(r#"<html><head>{meta_tag}</head><body></body></html>"#);
-    let pixmap = renderer.render_html(&html, 800, 600).unwrap();
+    let prepared = renderer
+      .prepare_html(&html, RenderOptions::default().with_viewport(800, 600))
+      .unwrap();
+    let viewport = prepared.layout_viewport();
     assert_eq!(
-      (pixmap.width(), pixmap.height()),
+      (
+        viewport.width.round() as u32,
+        viewport.height.round() as u32,
+      ),
       expected,
       "{label} should resolve to the expected layout viewport"
     );
@@ -103,6 +114,7 @@ fn meta_viewport_alters_layout_viewport_dimensions() {
 
 #[test]
 fn meta_viewport_drives_vw_vh_and_media_queries() {
+  let _lock = super::global_test_lock();
   let cases = [
     ("narrow red", "width=320", (160, 300), (255, 0, 0, 255)),
     (

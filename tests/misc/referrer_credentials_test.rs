@@ -1,10 +1,34 @@
 use fastrender::resource::{FetchDestination, FetchRequest, HttpFetcher, ReferrerPolicy, ResourceFetcher};
+use std::ffi::OsString;
+
+struct EnvVarGuard {
+  key: &'static str,
+  previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+  fn set(key: &'static str, value: &str) -> Self {
+    let previous = std::env::var_os(key);
+    std::env::set_var(key, value);
+    Self { key, previous }
+  }
+}
+
+impl Drop for EnvVarGuard {
+  fn drop(&mut self) {
+    match self.previous.take() {
+      Some(value) => std::env::set_var(self.key, value),
+      None => std::env::remove_var(self.key),
+    }
+  }
+}
 
 #[test]
 fn referer_header_strips_url_credentials() {
+  let _lock = super::global_test_lock();
   // The `Referer` header should never include embedded URL credentials (`user:pass@`).
   // Ensure browser-like headers are enabled for deterministic header generation.
-  std::env::set_var("FASTR_HTTP_BROWSER_HEADERS", "1");
+  let _guard = EnvVarGuard::set("FASTR_HTTP_BROWSER_HEADERS", "1");
 
   let fetcher = HttpFetcher::new();
   for (referrer_url, expected) in [

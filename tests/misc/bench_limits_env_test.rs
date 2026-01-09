@@ -3,9 +3,6 @@
 mod bench_common;
 
 use std::ffi::OsString;
-use std::sync::Mutex;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct EnvGuard {
   name: &'static str,
@@ -32,7 +29,7 @@ impl Drop for EnvGuard {
 
 #[test]
 fn bench_limits_parse_env_and_apply_defaults() {
-  let _lock = ENV_LOCK.lock().unwrap();
+  let _lock = super::global_test_lock();
 
   let _verbose = EnvGuard::set("FASTR_BENCH_VERBOSE", "1");
   assert!(bench_common::bench_verbose());

@@ -1,8 +1,7 @@
-// Standalone harness for Shadow DOM unit tests.
+// Shadow DOM unit tests.
 //
-// Most tree-related tests live under `tests/tree/` and are aggregated by
-// `tests/tree_tests.rs`. Having a dedicated integration test crate allows
-// running `cargo test --test shadow_dom` for faster iteration on slotting logic.
+// This module is aggregated by the `tests/shadow_tests.rs` harness. The original test code lives
+// in `tests/tree/shadow_dom.rs`.
 
 #[path = "../tree/shadow_dom.rs"]
 mod shadow_dom;

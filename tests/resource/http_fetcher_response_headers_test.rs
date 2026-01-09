@@ -1,0 +1,119 @@
+use fastrender::resource::HttpFetcher;
+use fastrender::ResourceFetcher;
+use crate::test_support;
+
+use std::io;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpListener;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+use test_support::net::try_bind_localhost;
+
+const MAX_WAIT: Duration = Duration::from_secs(3);
+
+fn curl_available() -> bool {
+  Command::new("curl")
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map(|status| status.success())
+    .unwrap_or(false)
+}
+
+fn spawn_server(listener: TcpListener) -> thread::JoinHandle<()> {
+  thread::spawn(move || {
+    let _ = listener.set_nonblocking(true);
+    let start = Instant::now();
+    while start.elapsed() < MAX_WAIT {
+      match listener.accept() {
+        Ok((mut stream, _)) => {
+          let mut buf = Vec::new();
+          let mut tmp = [0u8; 1024];
+          loop {
+            match stream.read(&mut tmp) {
+              Ok(0) => break,
+              Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                  break;
+                }
+              }
+              Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+              }
+              Err(_) => break,
+            }
+          }
+
+          let body = b"ok";
+          let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Test: alpha\r\nX-Other: beta\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+          );
+          let _ = stream.write_all(response.as_bytes());
+          let _ = stream.write_all(body);
+          return;
+        }
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+          thread::sleep(Duration::from_millis(5));
+        }
+        Err(_) => break,
+      }
+    }
+  })
+}
+
+#[test]
+fn http_fetcher_captures_full_response_headers() {
+  if std::env::var("FASTR_HTTP_BACKEND")
+    .ok()
+    .is_some_and(|backend| backend.eq_ignore_ascii_case("curl"))
+    && !curl_available()
+  {
+    eprintln!(
+      "skipping http_fetcher_captures_full_response_headers: curl backend selected but curl is unavailable"
+    );
+    return;
+  }
+
+  let Some(listener) = try_bind_localhost("http_fetcher_captures_full_response_headers") else {
+    return;
+  };
+  let addr = listener.local_addr().unwrap();
+  let handle = spawn_server(listener);
+
+  let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+  let url = format!("http://{addr}/headers");
+  let res = fetcher.fetch(&url).expect("fetch");
+  handle.join().unwrap();
+
+  let raw = res
+    .response_headers
+    .as_ref()
+    .expect("expected response headers for http:// fetch");
+  assert!(
+    raw.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-test")),
+    "expected raw header list to include X-Test"
+  );
+  assert!(
+    raw.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-other")),
+    "expected raw header list to include X-Other"
+  );
+
+  // Case-insensitive header lookup via helper.
+  assert_eq!(res.header_values("x-TeSt"), vec!["alpha"]);
+  assert_eq!(res.header_values("X-OTHER"), vec!["beta"]);
+
+  // Duplicate headers should be preserved (notably Set-Cookie).
+  assert_eq!(res.header_values("set-cookie"), vec!["a=1", "b=2"]);
+  assert_eq!(
+    raw.iter()
+      .filter(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+      .count(),
+    2,
+    "expected raw header list to preserve duplicate Set-Cookie headers"
+  );
+}

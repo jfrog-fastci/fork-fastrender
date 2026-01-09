@@ -1,4 +1,4 @@
-use fastrender::resource::{HttpFetcher, HttpRetryPolicy};
+use fastrender::resource::{FetchContextKind, HttpFetcher, HttpRetryPolicy};
 use fastrender::ResourceFetcher;
 use crate::test_support;
 use std::io;
@@ -192,7 +192,7 @@ fn http_fetch_www_fallback_on_timeout() {
     });
   let url = format!("http://localhost:{port}/");
   let res = fetcher
-    .fetch(&url)
+    .fetch_with_context(FetchContextKind::Document, &url)
     .expect("fetch should succeed after www fallback");
   assert_eq!(res.bytes, b"www-ok");
   let final_url = res.final_url.expect("final url");

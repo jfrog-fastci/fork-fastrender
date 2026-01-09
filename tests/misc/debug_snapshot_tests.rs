@@ -1,0 +1,154 @@
+use fastrender::css::types::StyleSheet;
+use fastrender::debug::snapshot::{snapshot_dom, snapshot_pipeline, QuirksModeSnapshot};
+use fastrender::dom;
+use fastrender::geometry::Size;
+use fastrender::layout::engine::{LayoutConfig, LayoutEngine};
+use fastrender::paint::display_list_builder::DisplayListBuilder;
+use fastrender::style::cascade::apply_styles;
+use fastrender::style::display::{Display, FormattingContextType};
+use fastrender::text::font_db::FontConfig;
+use fastrender::text::font_loader::FontContext;
+use fastrender::tree::box_generation::generate_box_tree_with_anonymous_fixup;
+use fastrender::tree::box_tree::{BoxNode, BoxTree};
+use std::sync::Arc;
+
+#[test]
+fn pipeline_snapshot_matches_fixture() {
+  const STACK_SIZE: usize = 64 * 1024 * 1024;
+  let handle = std::thread::Builder::new()
+    .name("debug-snapshot-test".to_string())
+    .stack_size(STACK_SIZE)
+    .spawn(|| {
+      let html = r#"
+    <!doctype html>
+    <html>
+      <body style="margin: 0">
+        <div id="root" style="position: relative; z-index: 2; overflow: hidden; width: 120px; height: 60px; padding: 4px; margin: 8px; border: 2px solid rgb(10, 20, 30); background: rgb(200, 210, 220);">
+          <span class="child" style="display: inline-block; position: absolute; left: 6px; top: 10px; padding: 2px; border: 1px dashed rgb(50, 60, 70); color: rgb(5, 6, 7);">Hi</span>
+          <p style="margin: 2px 0 0 0;">Bye</p>
+        </div>
+      </body>
+    </html>
+  "#;
+
+      let dom = dom::parse_html(html).expect("parse html");
+      let stylesheet = StyleSheet::new();
+      let styled = apply_styles(&dom, &stylesheet);
+      let box_tree = generate_box_tree_with_anonymous_fixup(&styled).unwrap();
+
+      let font_context = FontContext::with_config(
+        FontConfig::new()
+          .with_system_fonts(false)
+          .with_bundled_fonts(true),
+      );
+      let engine = LayoutEngine::with_font_context(
+        LayoutConfig::for_viewport(Size::new(200.0, 200.0)),
+        font_context,
+      );
+      let fragment_tree = engine.layout_tree(&box_tree).expect("layout");
+
+      let mut display_list =
+        DisplayListBuilder::new().build_with_stacking_tree(&fragment_tree.root);
+      for extra in &fragment_tree.additional_fragments {
+        let extra_list = DisplayListBuilder::new().build_with_stacking_tree(extra);
+        display_list.append(extra_list);
+      }
+
+      let snapshot = snapshot_pipeline(&dom, &styled, &box_tree, &fragment_tree, &display_list);
+      let actual = serde_json::to_string_pretty(&snapshot).unwrap();
+      let expected = include_str!("../fixtures/snapshots/basic.json");
+
+      if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+          .join("tests/fixtures/snapshots/basic.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &actual).unwrap();
+      }
+ 
+      assert_eq!(actual, expected);
+    })
+    .expect("spawn snapshot test");
+
+  match handle.join() {
+    Ok(()) => {}
+    Err(panic) => std::panic::resume_unwind(panic),
+  }
+}
+
+#[test]
+fn dom_snapshot_records_no_quirks_for_doctype() {
+  let dom = dom::parse_html("<!doctype html><html><body></body></html>").expect("parse html");
+  let snapshot = snapshot_dom(&dom);
+  assert_eq!(snapshot.quirks_mode, QuirksModeSnapshot::NoQuirks);
+  let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+  assert_eq!(json["quirks_mode"], "no_quirks");
+}
+
+#[test]
+fn dom_snapshot_records_quirks_without_doctype() {
+  let dom = dom::parse_html("<html><body></body></html>").expect("parse html");
+  let snapshot = snapshot_dom(&dom);
+  assert_eq!(snapshot.quirks_mode, QuirksModeSnapshot::Quirks);
+  let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+  assert_eq!(json["quirks_mode"], "quirks");
+}
+
+#[test]
+fn box_tree_snapshot_includes_table_spans_from_metadata() {
+  let mut cell_style = fastrender::ComputedStyle::default();
+  cell_style.display = Display::TableCell;
+  let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+    .with_table_cell_spans(2, 3);
+
+  let mut col_style = fastrender::ComputedStyle::default();
+  col_style.display = Display::TableColumn;
+  let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![])
+    .with_table_column_span(4);
+
+  let root = BoxNode::new_block(
+    Arc::new(fastrender::ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![cell, col],
+  );
+  let tree = BoxTree::new(root);
+
+  let snapshot = fastrender::debug::snapshot::snapshot_box_tree(&tree);
+  let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+  let children = json["root"]["children"].as_array().expect("children array");
+  let cell_json = &children[0];
+  assert_eq!(cell_json["table_spans"]["colspan"], 2);
+  assert_eq!(cell_json["table_spans"]["rowspan"], 3);
+  assert!(
+    cell_json.get("debug").is_none(),
+    "debug field should be omitted"
+  );
+
+  let col_json = &children[1];
+  assert_eq!(col_json["table_spans"]["column_span"], 4);
+}
+
+#[test]
+fn box_tree_snapshot_includes_footnote_body() {
+  let call = BoxNode::new_inline(Arc::new(fastrender::ComputedStyle::default()), vec![]);
+  let mut call = call;
+  call.footnote_body = Some(Box::new(BoxNode::new_block(
+    Arc::new(fastrender::ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![],
+  )));
+  let tree = BoxTree::new(call);
+
+  let snapshot = fastrender::debug::snapshot::snapshot_box_tree(&tree);
+  let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+  let children = json["root"]["children"].as_array().expect("children array");
+  assert_eq!(
+    children.len(),
+    1,
+    "expected footnote_body to be included as a child in box tree snapshots"
+  );
+  assert_eq!(
+    children[0]["box_id"], 2,
+    "expected footnote body to have its own box id"
+  );
+}

@@ -27,10 +27,13 @@ fi
 #   FASTR_CARGO_LIMIT_AS     Address-space cap forwarded to run_limited (default: 64G)
 #   FASTR_XTASK_LIMIT_AS     Address-space cap for `cargo run -p xtask` (default: 96G)
 #   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
+#   FASTR_RUST_TEST_THREADS  Default `RUST_TEST_THREADS` for `cargo test` (default: min(nproc, 32))
 #
 # Notes:
-# - This wrapper intentionally DOES NOT set RUST_TEST_THREADS / RAYON_NUM_THREADS globally.
-#   Leave that to the caller when running tests that spawn threads.
+# - libtest defaults `RUST_TEST_THREADS` to the full CPU count. On multi-agent hosts with hundreds
+#   of cores, that can create massive runtime contention and flakiness (especially for tests that
+#   spin up local TCP servers). This wrapper sets a conservative default for `cargo test` unless
+#   you explicitly override it.
 
 usage() {
   cat <<'EOF'
@@ -48,6 +51,7 @@ Environment:
   FASTR_CARGO_LIMIT_AS     Address-space cap (default: 64G)
   FASTR_XTASK_LIMIT_AS     Address-space cap for `cargo run -p xtask` (default: 96G)
   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
+  FASTR_RUST_TEST_THREADS  Default RUST_TEST_THREADS for `cargo test` (default: min(nproc, 32))
 
 Notes:
   - This wrapper is intentionally simple:
@@ -202,6 +206,7 @@ mkdir -p "${lock_dir}"
 
 run_cargo() {
   local cargo_cmd=(cargo)
+  local subcommand=""
 
   # Cargo expects `-j/--jobs` to appear after the subcommand (`cargo test -j 1`, not `cargo -j 1 test`).
   # See: https://doc.rust-lang.org/cargo/commands/cargo.html
@@ -222,8 +227,17 @@ run_cargo() {
     fi
   fi
 
-  cargo_cmd+=("$1")
+  subcommand="$1"
+  cargo_cmd+=("${subcommand}")
   shift
+
+  if [[ "${subcommand}" == "test" && -z "${RUST_TEST_THREADS:-}" ]]; then
+    local rust_test_threads="${FASTR_RUST_TEST_THREADS:-}"
+    if [[ -z "${rust_test_threads}" ]]; then
+      rust_test_threads=$(( nproc < 32 ? nproc : 32 ))
+    fi
+    export RUST_TEST_THREADS="${rust_test_threads}"
+  fi
 
   if [[ -n "${jobs}" ]]; then
     cargo_cmd+=(-j "${jobs}")

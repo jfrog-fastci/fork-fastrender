@@ -6,7 +6,7 @@
 //!
 //! The test is `#[ignore]` by default because FastRender may temporarily diverge while the
 //! turbulence implementation evolves. Run it manually with:
-//! `cargo test --test svg_filter_turbulence_differential -- --ignored`
+//! `cargo test --test svg_integration_tests -- --ignored svg_filter_turbulence_differential_against_resvg`
 //!
 //! Debug knobs:
 //! - `FASTR_TURBULENCE_DIFF_SEED` (u32): RNG seed override.
@@ -420,7 +420,7 @@ fn compare_pixmaps(
   ];
 
   panic!(
-    "feTurbulence differential mismatch (tolerance<={tolerance})\n  case={case_idx} / {total_cases} (seed={seed})\n  max Δ={max_delta} at ({},{}) channel {} (resvg={} fast={})\n  pixel premul RGBA: resvg={resvg_px:?} fast={fast_px:?}\n  differing_channels={differing_channels} / {}\n  rerun:\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} FASTR_TURBULENCE_DIFF_TOL={tolerance} cargo test --test svg_filter_turbulence_differential -- --ignored\n  rerun (with artifacts):\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} FASTR_TURBULENCE_DIFF_TOL={tolerance} FASTR_TURBULENCE_DIFF_DUMP=1 cargo test --test svg_filter_turbulence_differential -- --ignored\n  params={case:?}{artifact_note}\n  svg=\n{svg}",
+    "feTurbulence differential mismatch (tolerance<={tolerance})\n  case={case_idx} / {total_cases} (seed={seed})\n  max Δ={max_delta} at ({},{}) channel {} (resvg={} fast={})\n  pixel premul RGBA: resvg={resvg_px:?} fast={fast_px:?}\n  differing_channels={differing_channels} / {}\n  rerun:\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} FASTR_TURBULENCE_DIFF_TOL={tolerance} cargo test --test svg_integration_tests -- --ignored svg_filter_turbulence_differential_against_resvg\n  rerun (with artifacts):\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} FASTR_TURBULENCE_DIFF_TOL={tolerance} FASTR_TURBULENCE_DIFF_DUMP=1 cargo test --test svg_integration_tests -- --ignored svg_filter_turbulence_differential_against_resvg\n  params={case:?}{artifact_note}\n  svg=\n{svg}",
     max_at.0,
     max_at.1,
     max_at.2,

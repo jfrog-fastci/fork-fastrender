@@ -8,4 +8,5 @@ mod form_submit;
 mod hit_test;
 mod fixed_in_scroller_hit_test;
 mod select_dom_mutation;
+mod scroll_hit_test;
 mod scroll_wheel;

@@ -22,21 +22,13 @@ mod test_public_api {
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::Arc;
-  use std::sync::{Mutex, OnceLock};
+  use std::sync::Mutex;
 
   fn deterministic_toggles() -> RuntimeToggles {
     let mut toggles = HashMap::new();
     // Avoid any display-list builder rayon fan-out so the suite stays fast and deterministic.
     toggles.insert("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string());
     RuntimeToggles::from_map(toggles)
-  }
-
-  fn stage_listener_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK
-      .get_or_init(|| Mutex::new(()))
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner())
   }
 
   struct StageListenerGuard;
@@ -563,7 +555,7 @@ mod test_public_api {
   #[test]
   fn test_render_paint_build_stage_emitted_once_for_display_list_backend() {
     // Stage listeners are global; serialise tests that install them.
-    let _lock = stage_listener_lock();
+    let _lock = crate::misc::global_test_lock();
 
     let paint_build_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let paint_rasterize_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));

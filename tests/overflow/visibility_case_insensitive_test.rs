@@ -1,8 +1,6 @@
-// Standalone integration test target for keyword case-insensitivity on `overflow` and
-// `visibility`.
+// Re-export the style keyword-case-insensitivity test into the `overflow_tests` harness.
 //
-// Run with:
-//   cargo test --test overflow_visibility_case_insensitive_test
-//
+// This file used to be a standalone `tests/*.rs` integration-test binary. Keeping it as a module
+// avoids spawning yet another test executable (see `AGENTS.md` / `docs/testing.md`).
 #[path = "../style/overflow_visibility_case_insensitive_test.rs"]
 mod overflow_visibility_case_insensitive_test;

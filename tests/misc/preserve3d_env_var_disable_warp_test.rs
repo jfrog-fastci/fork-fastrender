@@ -102,6 +102,7 @@ where
 
 #[test]
 fn preserve3d_disable_warp_env_forces_affine_approximation() {
+  let _lock = super::global_test_lock();
   // Force the warp path to be "available", then ensure the disable flag still wins. This matches
   // how the CLI/libraries consume FASTR_PRESERVE3D_* via RuntimeToggles sourced from env.
   let _warp_guard = EnvVarGuard::set("FASTR_PRESERVE3D_WARP", "1");

@@ -1,7 +1,6 @@
-// Standalone integration test target for font-style parsing/tokenization.
+// Re-export the style tokenization test into the `font_tests` harness.
 //
-// Run with:
-//   cargo test --test font_style_oblique_tokenization_test
-//
+// This file used to be a standalone `tests/*.rs` integration-test binary. Keeping it as a module
+// avoids spawning yet another test executable (see `AGENTS.md` / `docs/testing.md`).
 #[path = "../style/font_style_oblique_tokenization_test.rs"]
 mod font_style_oblique_tokenization_test;
