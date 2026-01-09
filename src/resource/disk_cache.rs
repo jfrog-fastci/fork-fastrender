@@ -610,7 +610,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
   }
 
   fn cache_key(&self, kind: FetchContextKind, url: &str) -> String {
-    self.cache_key_with_partition(kind, url, None, super::FetchCredentialsMode::Include)
+    self.cache_key_with_partition(kind, url, None, super::CacheCredentialsPartition::Include)
   }
 
   fn cache_key_with_partition(
@@ -618,7 +618,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) -> String {
     let mut hasher = Sha256::new();
     let namespace = self.disk_config.namespace.as_deref().unwrap_or("");
@@ -635,7 +635,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       hasher.update(b"\n");
     }
     hasher.update(b"cred:");
-    hasher.update(&[b'0' + credentials_mode.cache_id()]);
+    hasher.update(&[b'0' + credentials_partition.cache_id()]);
     hasher.update(b"\n");
     hasher.update(url.as_bytes());
     let digest = hasher.finalize();
@@ -731,7 +731,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       url,
       artifact,
       None,
-      super::FetchCredentialsMode::Include,
+      super::CacheCredentialsPartition::Include,
     )
   }
 
@@ -741,9 +741,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     url: &str,
     artifact: CacheArtifactKind,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) -> String {
-    let base = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let base = self.cache_key_with_partition(kind, url, origin_key, credentials_partition);
     match artifact {
       CacheArtifactKind::ImageProbeMetadata => {
         format!("{base}.{IMAGE_PROBE_METADATA_ARTIFACT_SUFFIX}")
@@ -763,9 +763,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     url: &str,
     request: FetchRequest<'_>,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) -> Option<u64> {
-    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_partition);
     let vary = self.read_vary_for_base_key(&base_key);
     let request = FetchRequest {
       url,
@@ -773,7 +773,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       referrer_url: request.referrer_url,
       client_origin: request.client_origin,
       referrer_policy: request.referrer_policy,
-      credentials_mode,
+      credentials_mode: request.credentials_mode,
     };
     let vary_key =
       super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())?;
@@ -849,13 +849,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) -> PathBuf {
     self.alias_path_for_key(&self.cache_key_with_partition(
       kind,
       url,
       origin_key,
-      credentials_mode,
+      credentials_partition,
     ))
   }
 
@@ -1116,7 +1116,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     url: &str,
     request: FetchRequest<'_>,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) -> Result<Option<(String, CachedSnapshot)>> {
     let mut disk_timer = super::start_disk_cache_diagnostics();
     let mut current = url.to_string();
@@ -1129,16 +1129,33 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         return Err(Error::Render(err));
       }
 
-      let base_key = self.cache_key_with_partition(kind, &current, origin_key, credentials_mode);
-      let vary = self.read_vary_for_base_key(&base_key);
       let request = FetchRequest {
         url: &current,
         destination: base_request.destination,
         referrer_url: base_request.referrer_url,
         client_origin: base_request.client_origin,
         referrer_policy: base_request.referrer_policy,
-        credentials_mode,
+        credentials_mode: base_request.credentials_mode,
       };
+      let credentials_partition_for_current = if current == url {
+        credentials_partition
+      } else {
+        super::CacheCredentialsPartition::for_request(&request)
+      };
+      let mut origin_key_owned = None::<String>;
+      let origin_key_for_current = if origin_key.is_some() && current != url {
+        origin_key_owned = super::cors_cache_partition_key(&request);
+        origin_key_owned.as_deref()
+      } else {
+        origin_key
+      };
+      let base_key = self.cache_key_with_partition(
+        kind,
+        &current,
+        origin_key_for_current,
+        credentials_partition_for_current,
+      );
+      let vary = self.read_vary_for_base_key(&base_key);
       let request_sig = super::inflight_signature_for_request(&self.memory.inner, request);
       let Some(vary_key) =
         super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
@@ -1146,7 +1163,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         // If we can't compute the vary key (e.g. unknown header values or Vary:*), treat as a miss
         // rather than risking a poisoned reuse.
         let Some(next) =
-          self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+          self.read_alias_target(
+            kind,
+            &current,
+            origin_key_for_current,
+            credentials_partition_for_current,
+            &request_sig,
+          )
         else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1154,7 +1177,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         };
 
         if hops >= MAX_ALIAS_HOPS || next == current {
-          self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+          self.remove_alias_for(
+            kind,
+            &current,
+            origin_key_for_current,
+            credentials_partition_for_current,
+          );
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Ok(None);
@@ -1179,7 +1207,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
               {
                 self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
-                self.remove_alias_for(kind, url, origin_key, credentials_mode);
+                self.remove_alias_for(kind, url, origin_key, credentials_partition);
                 super::record_disk_cache_miss();
                 super::finish_disk_cache_diagnostics(disk_timer.take());
                 return Ok(None);
@@ -1220,7 +1248,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                         self.remove_entry_files_best_effort_if_unlocked(
                           &key, &data_path, &meta_path,
                         );
-                        self.remove_alias_for(kind, url, origin_key, credentials_mode);
+                        self.remove_alias_for(kind, url, origin_key, credentials_partition);
                         super::record_disk_cache_miss();
                         super::finish_disk_cache_diagnostics(disk_timer.take());
                         return Ok(None);
@@ -1251,7 +1279,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       }
 
       let Some(next) =
-        self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+        self.read_alias_target(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+          &request_sig,
+        )
       else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1259,7 +1293,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       };
 
       if hops >= MAX_ALIAS_HOPS || next == current {
-        self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+        self.remove_alias_for(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+        );
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -1277,7 +1316,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     request: FetchRequest<'_>,
     max_bytes: usize,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) -> Result<Option<(String, FetchedResource)>> {
     let mut disk_timer = super::start_disk_cache_diagnostics();
     let mut current = url.to_string();
@@ -1290,22 +1329,45 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         return Err(Error::Render(err));
       }
 
-      let base_key = self.cache_key_with_partition(kind, &current, origin_key, credentials_mode);
-      let vary = self.read_vary_for_base_key(&base_key);
       let request = FetchRequest {
         url: &current,
         destination: base_request.destination,
         referrer_url: base_request.referrer_url,
         client_origin: base_request.client_origin,
         referrer_policy: base_request.referrer_policy,
-        credentials_mode,
+        credentials_mode: base_request.credentials_mode,
       };
+      let credentials_partition_for_current = if current == url {
+        credentials_partition
+      } else {
+        super::CacheCredentialsPartition::for_request(&request)
+      };
+      let mut origin_key_owned = None::<String>;
+      let origin_key_for_current = if origin_key.is_some() && current != url {
+        origin_key_owned = super::cors_cache_partition_key(&request);
+        origin_key_owned.as_deref()
+      } else {
+        origin_key
+      };
+      let base_key = self.cache_key_with_partition(
+        kind,
+        &current,
+        origin_key_for_current,
+        credentials_partition_for_current,
+      );
+      let vary = self.read_vary_for_base_key(&base_key);
       let request_sig = super::inflight_signature_for_request(&self.memory.inner, request);
       let Some(vary_key) =
         super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
       else {
         let Some(next) =
-          self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+          self.read_alias_target(
+            kind,
+            &current,
+            origin_key_for_current,
+            credentials_partition_for_current,
+            &request_sig,
+          )
         else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1313,7 +1375,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         };
 
         if hops >= MAX_ALIAS_HOPS || next == current {
-          self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+          self.remove_alias_for(
+            kind,
+            &current,
+            origin_key_for_current,
+            credentials_partition_for_current,
+          );
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Ok(None);
@@ -1343,7 +1410,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
             {
               self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
-              self.remove_alias_for(kind, url, origin_key, credentials_mode);
+              self.remove_alias_for(kind, url, origin_key, credentials_partition);
               super::record_disk_cache_miss();
               super::finish_disk_cache_diagnostics(disk_timer.take());
               return Ok(None);
@@ -1387,7 +1454,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                       || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
                     {
                       self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
-                      self.remove_alias_for(kind, url, origin_key, credentials_mode);
+                      self.remove_alias_for(kind, url, origin_key, credentials_partition);
                       super::record_disk_cache_miss();
                       super::finish_disk_cache_diagnostics(disk_timer.take());
                       return Ok(None);
@@ -1418,7 +1485,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       }
 
       let Some(next) =
-        self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+        self.read_alias_target(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+          &request_sig,
+        )
       else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1426,7 +1499,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       };
 
       if hops >= MAX_ALIAS_HOPS || next == current {
-        self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+        self.remove_alias_for(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+        );
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -1708,10 +1786,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
     request_sig: &str,
   ) -> Option<String> {
-    let alias_path = self.alias_path_with_partition(kind, url, origin_key, credentials_mode);
+    let alias_path = self.alias_path_with_partition(kind, url, origin_key, credentials_partition);
     read_path_prefix_with_deadline(
       &alias_path,
       DISK_META_READ_STAGE,
@@ -1728,12 +1806,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) {
     if self.disk_writeback_disabled() {
       return;
     }
-    let alias_path = self.alias_path_with_partition(kind, url, origin_key, credentials_mode);
+    let alias_path = self.alias_path_with_partition(kind, url, origin_key, credentials_partition);
     let _ = fs::remove_file(tmp_path(&alias_path));
     let _ = fs::remove_file(&alias_path);
   }
@@ -1744,7 +1822,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     alias: &str,
     canonical: &str,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
     request_sig: &str,
   ) {
     if alias == canonical || self.should_skip_disk(alias) || self.should_skip_disk(canonical) {
@@ -1754,7 +1832,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       return;
     }
 
-    let alias_path = self.alias_path_with_partition(kind, alias, origin_key, credentials_mode);
+    let alias_path = self.alias_path_with_partition(kind, alias, origin_key, credentials_partition);
     if let Some(parent) = alias_path.parent() {
       let _ = fs::create_dir_all(parent);
     }
@@ -1862,7 +1940,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     request: FetchRequest<'_>,
     snapshot: &CachedSnapshot,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) {
     if let Some(resource) = snapshot.as_resource() {
       self.persist_resource_with_partition(
@@ -1874,7 +1952,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         snapshot.last_modified.as_deref(),
         snapshot.http_cache.as_ref(),
         origin_key,
-        credentials_mode,
+        credentials_partition,
       );
     }
   }
@@ -1898,7 +1976,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       last_modified,
       http_cache,
       None,
-      super::FetchCredentialsMode::Include,
+      super::CacheCredentialsPartition::Include,
     );
   }
 
@@ -1912,7 +1990,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     last_modified: Option<&str>,
     http_cache: Option<&CachedHttpMetadata>,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) {
     if self.disk_writeback_disabled_for_len(resource.bytes.len()) {
       return;
@@ -1930,8 +2008,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       if super::vary_contains_star(vary)
         || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
       {
-        self.remove_alias_for(kind, url, origin_key, credentials_mode);
-        let key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+        self.remove_alias_for(kind, url, origin_key, credentials_partition);
+        let key = self.cache_key_with_partition(kind, url, origin_key, credentials_partition);
         let data_path = self.data_path_for_key(&key);
         let meta_path = self.meta_path_for_data(&data_path);
         self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
@@ -1939,9 +2017,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       }
     }
 
-    self.remove_alias_for(kind, url, origin_key, credentials_mode);
+    self.remove_alias_for(kind, url, origin_key, credentials_partition);
 
-    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_partition);
     if resource.vary.as_deref() == Some("*") {
       self.remove_entry_family_for_base_key(&base_key);
       return;
@@ -1952,7 +2030,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       referrer_url: request.referrer_url,
       client_origin: request.client_origin,
       referrer_policy: request.referrer_policy,
-      credentials_mode,
+      credentials_mode: request.credentials_mode,
     };
     let Some(vary_key) =
       super::compute_vary_key_for_request(&self.memory.inner, request, resource.vary.as_deref())
@@ -2110,7 +2188,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     request: FetchRequest<'_>,
     error: &ResourceError,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) {
     if self.disk_writeback_disabled_for_len(0) {
       return;
@@ -2122,9 +2200,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       return;
     }
 
-    self.remove_alias_for(kind, url, origin_key, credentials_mode);
+    self.remove_alias_for(kind, url, origin_key, credentials_partition);
 
-    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_partition);
     let existing_vary = self.read_vary_for_base_key(&base_key);
     if let Some(existing_vary) = existing_vary.as_deref() {
       // Avoid overwriting an existing vary bucket (e.g. from a successful response) with the
@@ -2140,7 +2218,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       referrer_url: request.referrer_url,
       client_origin: request.client_origin,
       referrer_policy: request.referrer_policy,
-      credentials_mode,
+      credentials_mode: request.credentials_mode,
     };
     let Some(vary_key) = super::compute_vary_key_for_request(
       &self.memory.inner,
@@ -2317,14 +2395,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) {
     if self.disk_writeback_disabled() {
       return;
     }
-    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_mode);
+    let base_key = self.cache_key_with_partition(kind, url, origin_key, credentials_partition);
     self.remove_entry_family_for_base_key(&base_key);
-    self.remove_alias_for(kind, url, origin_key, credentials_mode);
+    self.remove_alias_for(kind, url, origin_key, credentials_partition);
   }
 
   fn remove_artifact_for_url(
@@ -2333,12 +2411,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     url: &str,
     artifact: CacheArtifactKind,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) {
     if self.disk_writeback_disabled() {
       return;
     }
-    let base_key = self.artifact_key_with_partition(kind, url, artifact, origin_key, credentials_mode);
+    let base_key =
+      self.artifact_key_with_partition(kind, url, artifact, origin_key, credentials_partition);
     self.remove_entry_family_for_base_key(&base_key);
   }
 
@@ -2354,7 +2433,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     request: FetchRequest<'_>,
     artifact: CacheArtifactKind,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) -> Result<Option<(String, CachedSnapshot)>> {
     if let Some(policy) = &self.policy {
       policy.ensure_url_allowed(url)?;
@@ -2374,23 +2453,46 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         return Err(Error::Render(err));
       }
 
-      let base_key =
-        self.artifact_key_with_partition(kind, &current, artifact, origin_key, credentials_mode);
-      let vary = self.read_vary_for_base_key(&base_key);
       let request = FetchRequest {
         url: &current,
         destination: base_request.destination,
         referrer_url: base_request.referrer_url,
         client_origin: base_request.client_origin,
         referrer_policy: base_request.referrer_policy,
-        credentials_mode,
+        credentials_mode: base_request.credentials_mode,
       };
+      let credentials_partition_for_current = if current == url {
+        credentials_partition
+      } else {
+        super::CacheCredentialsPartition::for_request(&request)
+      };
+      let mut origin_key_owned = None::<String>;
+      let origin_key_for_current = if origin_key.is_some() && current != url {
+        origin_key_owned = super::cors_cache_partition_key(&request);
+        origin_key_owned.as_deref()
+      } else {
+        origin_key
+      };
+      let base_key = self.artifact_key_with_partition(
+        kind,
+        &current,
+        artifact,
+        origin_key_for_current,
+        credentials_partition_for_current,
+      );
+      let vary = self.read_vary_for_base_key(&base_key);
       let request_sig = super::inflight_signature_for_request(&self.memory.inner, request);
       let Some(vary_key) =
         super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
       else {
         let Some(next) =
-          self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+          self.read_alias_target(
+            kind,
+            &current,
+            origin_key_for_current,
+            credentials_partition_for_current,
+            &request_sig,
+          )
         else {
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -2398,7 +2500,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         };
 
         if hops >= MAX_ALIAS_HOPS || next == current {
-          self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+          self.remove_alias_for(
+            kind,
+            &current,
+            origin_key_for_current,
+            credentials_partition_for_current,
+          );
           super::record_disk_cache_miss();
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Ok(None);
@@ -2428,7 +2535,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
               {
                 self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
-                self.remove_alias_for(kind, url, origin_key, credentials_mode);
+                self.remove_alias_for(kind, url, origin_key, credentials_partition);
                 super::record_disk_cache_miss();
                 super::finish_disk_cache_diagnostics(disk_timer.take());
                 return Ok(None);
@@ -2470,7 +2577,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                         self.remove_entry_files_best_effort_if_unlocked(
                           &key, &data_path, &meta_path,
                         );
-                        self.remove_alias_for(kind, url, origin_key, credentials_mode);
+                        self.remove_alias_for(kind, url, origin_key, credentials_partition);
                         super::record_disk_cache_miss();
                         super::finish_disk_cache_diagnostics(disk_timer.take());
                         return Ok(None);
@@ -2497,7 +2604,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       }
 
       let Some(next) =
-        self.read_alias_target(kind, &current, origin_key, credentials_mode, &request_sig)
+        self.read_alias_target(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+          &request_sig,
+        )
       else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -2505,7 +2618,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       };
 
       if hops >= MAX_ALIAS_HOPS || next == current {
-        self.remove_alias_for(kind, &current, origin_key, credentials_mode);
+        self.remove_alias_for(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+        );
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -2525,7 +2643,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     bytes: &[u8],
     source: Option<&FetchedResource>,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) {
     if self.disk_writeback_disabled_for_len(bytes.len()) {
       return;
@@ -2537,7 +2655,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       return;
     }
 
-    self.remove_alias_for(kind, url, origin_key, credentials_mode);
+    self.remove_alias_for(kind, url, origin_key, credentials_partition);
 
     let mut resource = FetchedResource::new(
       bytes.to_vec(),
@@ -2557,20 +2675,34 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
 
     let canonical = self.canonical_url(url, resource.final_url.as_deref());
-    let base_key =
-      self.artifact_key_with_partition(kind, &canonical, artifact, origin_key, credentials_mode);
-    if resource.vary.as_deref() == Some("*") {
-      self.remove_entry_family_for_base_key(&base_key);
-      return;
-    }
     let canonical_request = FetchRequest {
       url: &canonical,
       destination: request.destination,
       referrer_url: request.referrer_url,
       client_origin: request.client_origin,
       referrer_policy: request.referrer_policy,
-      credentials_mode,
+      credentials_mode: request.credentials_mode,
     };
+    let canonical_credentials_partition = super::CacheCredentialsPartition::for_request(&canonical_request);
+    let mut canonical_origin_key_owned = None::<String>;
+    let canonical_origin_key = if origin_key.is_some() {
+      canonical_origin_key_owned = super::cors_cache_partition_key(&canonical_request);
+      canonical_origin_key_owned.as_deref()
+    } else {
+      origin_key
+    };
+
+    let base_key = self.artifact_key_with_partition(
+      kind,
+      &canonical,
+      artifact,
+      canonical_origin_key,
+      canonical_credentials_partition,
+    );
+    if resource.vary.as_deref() == Some("*") {
+      self.remove_entry_family_for_base_key(&base_key);
+      return;
+    }
     let Some(vary_key) = super::compute_vary_key_for_request(
       &self.memory.inner,
       canonical_request,
@@ -2591,7 +2723,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     // Best-effort: if the primary resource is not cached (e.g. probe performed via a network range
     // request that bypasses disk persistence), fall back to using `now` as the stored-at timestamp.
     let stored_at = self
-      .stored_at_for_cached_entry(kind, &canonical, canonical_request, origin_key, credentials_mode)
+      .stored_at_for_cached_entry(
+        kind,
+        &canonical,
+        canonical_request,
+        canonical_origin_key,
+        canonical_credentials_partition,
+      )
       .unwrap_or_else(now_seconds);
     let data_path = self.data_path_for_key(&key);
     if let Some(parent) = data_path.parent() {
@@ -2740,7 +2878,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           referrer_url: request.referrer_url,
           client_origin: request.client_origin,
           referrer_policy: request.referrer_policy,
-          credentials_mode,
+          credentials_mode: request.credentials_mode,
         },
       );
       self.persist_alias(
@@ -2748,7 +2886,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         url,
         &canonical,
         origin_key,
-        credentials_mode,
+        credentials_partition,
         &request_sig,
       );
     }
@@ -2770,8 +2908,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let origin_key = request_opt
       .as_ref()
       .and_then(|req| super::cors_cache_partition_key(req));
-    let key =
-      CacheKey::new_with_origin(kind, url.to_string(), origin_key, request.credentials_mode);
+    let key = CacheKey::new_with_origin(
+      kind,
+      url.to_string(),
+      origin_key,
+      super::CacheCredentialsPartition::for_request(&request),
+    );
 
     let mut disk_snapshot: Option<(String, CachedSnapshot)> = None;
     let mut cached = self.memory.cached_entry(&key, Some(request));
@@ -2785,7 +2927,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         url,
         request,
         key.origin_key.as_deref(),
-        key.credentials_mode,
+        key.credentials_partition,
       )?;
       if let Some((ref canonical, ref snapshot)) = disk_snapshot {
         // Only prime the in-memory cache for successful resources. Error snapshots are treated as
@@ -2828,7 +2970,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             url,
             canonical,
             key.origin_key.as_deref(),
-            key.credentials_mode,
+            key.credentials_partition,
             &request_sig,
           );
         }
@@ -2987,68 +3129,96 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
                   if disk_cacheable {
                     if let Some(snapshot) = self.memory.cached_entry(&canonical, Some(request)) {
-                      self.persist_snapshot(
+                        self.persist_snapshot(
+                          kind,
+                          &canonical.url,
+                          request,
+                          &snapshot,
+                          canonical.origin_key.as_deref(),
+                          canonical.credentials_partition,
+                        );
+                        if canonical.url != url {
+                          let request_sig =
+                            super::inflight_signature_for_request(&self.memory.inner, request);
+                          self.persist_alias(
+                            kind,
+                            url,
+                            &canonical.url,
+                            key.origin_key.as_deref(),
+                            key.credentials_partition,
+                            &request_sig,
+                          );
+                        }
+                      }
+                    } else {
+                      self.remove_entry_for_url(
                         kind,
                         &canonical.url,
-                        request,
-                        &snapshot,
                         canonical.origin_key.as_deref(),
-                        canonical.credentials_mode,
+                        canonical.credentials_partition,
                       );
                       if canonical.url != url {
-                        let request_sig =
-                          super::inflight_signature_for_request(&self.memory.inner, request);
-                        self.persist_alias(
+                        self.remove_alias_for(
                           kind,
                           url,
-                          &canonical.url,
-                          canonical.origin_key.as_deref(),
-                          canonical.credentials_mode,
-                          &request_sig,
+                          key.origin_key.as_deref(),
+                          key.credentials_partition,
                         );
                       }
                     }
-                  } else {
-                    self.remove_entry_for_url(
-                      kind,
-                      &canonical.url,
-                      canonical.origin_key.as_deref(),
-                      canonical.credentials_mode,
-                    );
-                    if canonical.url != url {
-                      self.remove_alias_for(
-                        kind,
-                        url,
-                        canonical.origin_key.as_deref(),
-                        canonical.credentials_mode,
-                      );
-                    }
-                  }
                 } else {
                   // If we can't compute the vary key (unknown request header values), treat as
                   // uncacheable to avoid poisoned reuse.
                   self.memory.remove_cached(&key, request);
+                  let canonical_credentials_partition =
+                    super::CacheCredentialsPartition::for_request(&canonical_request);
+                  let mut canonical_origin_key_owned = None::<String>;
+                  let canonical_origin_key = if key.origin_key.is_some() {
+                    canonical_origin_key_owned =
+                      super::cors_cache_partition_key(&canonical_request);
+                    canonical_origin_key_owned.as_deref()
+                  } else {
+                    None
+                  };
                   self.remove_entry_for_url(
                     kind,
                     &canonical_url,
-                    key.origin_key.as_deref(),
-                    key.credentials_mode,
+                    canonical_origin_key,
+                    canonical_credentials_partition,
                   );
                   if canonical_url != url {
-                    self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_mode);
+                    self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
                   }
                 }
               } else {
                 self.memory.remove_cached(&key, request);
                 let canonical = self.canonical_url(url, ok.final_url.as_deref());
+                let canonical_request = FetchRequest {
+                  url: &canonical,
+                  destination: request.destination,
+                  referrer_url: request.referrer_url,
+                  client_origin: request.client_origin,
+                  referrer_policy: request.referrer_policy,
+                  credentials_mode: request.credentials_mode,
+                };
+                let canonical_credentials_partition =
+                  super::CacheCredentialsPartition::for_request(&canonical_request);
+                let mut canonical_origin_key_owned = None::<String>;
+                let canonical_origin_key = if key.origin_key.is_some() {
+                  canonical_origin_key_owned =
+                    super::cors_cache_partition_key(&canonical_request);
+                  canonical_origin_key_owned.as_deref()
+                } else {
+                  None
+                };
                 self.remove_entry_for_url(
                   kind,
                   &canonical,
-                  key.origin_key.as_deref(),
-                  key.credentials_mode,
+                  canonical_origin_key,
+                  canonical_credentials_partition,
                 );
                 if canonical != url {
-                  self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_mode);
+                  self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
                 }
               }
             }
@@ -3174,7 +3344,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                         request,
                         &snapshot,
                         canonical.origin_key.as_deref(),
-                        canonical.credentials_mode,
+                        canonical.credentials_partition,
                       );
                       if canonical.url != url {
                         let request_sig =
@@ -3183,8 +3353,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                           kind,
                           url,
                           &canonical.url,
-                          canonical.origin_key.as_deref(),
-                          canonical.credentials_mode,
+                          key.origin_key.as_deref(),
+                          key.credentials_partition,
                           &request_sig,
                         );
                       }
@@ -3194,26 +3364,36 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                       kind,
                       &canonical.url,
                       canonical.origin_key.as_deref(),
-                      canonical.credentials_mode,
+                      canonical.credentials_partition,
                     );
                     if canonical.url != url {
                       self.remove_alias_for(
                         kind,
                         url,
-                        canonical.origin_key.as_deref(),
-                        canonical.credentials_mode,
+                        key.origin_key.as_deref(),
+                        key.credentials_partition,
                       );
                     }
                   }
                 } else {
+                  let canonical_credentials_partition =
+                    super::CacheCredentialsPartition::for_request(&canonical_request);
+                  let mut canonical_origin_key_owned = None::<String>;
+                  let canonical_origin_key = if key.origin_key.is_some() {
+                    canonical_origin_key_owned =
+                      super::cors_cache_partition_key(&canonical_request);
+                    canonical_origin_key_owned.as_deref()
+                  } else {
+                    None
+                  };
                   self.remove_entry_for_url(
                     kind,
                     &canonical_url,
-                    key.origin_key.as_deref(),
-                    key.credentials_mode,
+                    canonical_origin_key,
+                    canonical_credentials_partition,
                   );
                   if canonical_url != url {
-                    self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_mode);
+                    self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
                   }
                 }
               }
@@ -3298,7 +3478,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                       request,
                       &snapshot,
                       canonical.origin_key.as_deref(),
-                      canonical.credentials_mode,
+                      canonical.credentials_partition,
                     );
                   } else {
                     let http_cache = res
@@ -3314,7 +3494,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                       res.last_modified.as_deref(),
                       http_cache.as_ref(),
                       canonical.origin_key.as_deref(),
-                      canonical.credentials_mode,
+                      canonical.credentials_partition,
                     );
                   }
                   if canonical.url != url {
@@ -3324,8 +3504,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                       kind,
                       url,
                       &canonical.url,
-                      canonical.origin_key.as_deref(),
-                      canonical.credentials_mode,
+                      key.origin_key.as_deref(),
+                      key.credentials_partition,
                       &request_sig,
                     );
                   }
@@ -3334,27 +3514,37 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                     kind,
                     &canonical.url,
                     canonical.origin_key.as_deref(),
-                    canonical.credentials_mode,
+                    canonical.credentials_partition,
                   );
                   if canonical.url != url {
                     self.remove_alias_for(
                       kind,
                       url,
-                      canonical.origin_key.as_deref(),
-                      canonical.credentials_mode,
+                      key.origin_key.as_deref(),
+                      key.credentials_partition,
                     );
                   }
                 }
               } else {
                 self.memory.remove_cached(&key, request);
+                let canonical_credentials_partition =
+                  super::CacheCredentialsPartition::for_request(&canonical_request);
+                let mut canonical_origin_key_owned = None::<String>;
+                let canonical_origin_key = if key.origin_key.is_some() {
+                  canonical_origin_key_owned =
+                    super::cors_cache_partition_key(&canonical_request);
+                  canonical_origin_key_owned.as_deref()
+                } else {
+                  None
+                };
                 self.remove_entry_for_url(
                   kind,
                   &canonical_url,
-                  key.origin_key.as_deref(),
-                  key.credentials_mode,
+                  canonical_origin_key,
+                  canonical_credentials_partition,
                 );
                 if canonical_url != url {
-                  self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_mode);
+                  self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
                 }
               }
             } else if res
@@ -3366,14 +3556,32 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             {
               self.memory.remove_cached(&key, request);
               let canonical = self.canonical_url(url, res.final_url.as_deref());
+              let canonical_request = FetchRequest {
+                url: &canonical,
+                destination: request.destination,
+                referrer_url: request.referrer_url,
+                client_origin: request.client_origin,
+                referrer_policy: request.referrer_policy,
+                credentials_mode: request.credentials_mode,
+              };
+              let canonical_credentials_partition =
+                super::CacheCredentialsPartition::for_request(&canonical_request);
+              let mut canonical_origin_key_owned = None::<String>;
+              let canonical_origin_key = if key.origin_key.is_some() {
+                canonical_origin_key_owned =
+                  super::cors_cache_partition_key(&canonical_request);
+                canonical_origin_key_owned.as_deref()
+              } else {
+                None
+              };
               self.remove_entry_for_url(
                 kind,
                 &canonical,
-                key.origin_key.as_deref(),
-                key.credentials_mode,
+                canonical_origin_key,
+                canonical_credentials_partition,
               );
               if canonical != url {
-                self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_mode);
+                self.remove_alias_for(kind, url, key.origin_key.as_deref(), key.credentials_partition);
               }
             }
             super::record_cache_miss();
@@ -3446,7 +3654,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                   request,
                   resource_err,
                   key.origin_key.as_deref(),
-                  key.credentials_mode,
+                  key.credentials_partition,
                 );
               }
             }
@@ -3544,14 +3752,14 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     }
 
     let request = FetchRequest::new(url, kind.into());
-    let default_credentials_mode = request.credentials_mode;
+    let default_credentials_partition = super::CacheCredentialsPartition::for_request(&request);
     if let Some((_canonical, mut res)) = self.read_disk_entry_prefix(
       kind,
       url,
       request,
       max_bytes,
       None,
-      default_credentials_mode,
+      default_credentials_partition,
     )? {
       if res.bytes.len() > max_bytes {
         res.bytes.truncate(max_bytes);
@@ -3580,7 +3788,12 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     }
 
     let origin_key = super::cors_cache_partition_key(&req);
-    let key = CacheKey::new_with_origin(kind, url.to_string(), origin_key, req.credentials_mode);
+    let key = CacheKey::new_with_origin(
+      kind,
+      url.to_string(),
+      origin_key,
+      super::CacheCredentialsPartition::for_request(&req),
+    );
 
     if let Some(snapshot) = self.memory.cached_entry(&key, Some(req)) {
       let result = snapshot.value.as_result();
@@ -3602,7 +3815,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       req,
       max_bytes,
       key.origin_key.as_deref(),
-      key.credentials_mode,
+      key.credentials_partition,
     )? {
       if res.bytes.len() > max_bytes {
         res.bytes.truncate(max_bytes);
@@ -3623,7 +3836,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     artifact: CacheArtifactKind,
   ) -> Option<FetchedResource> {
     let request = FetchRequest::new(url, kind.into());
-    let default_credentials_mode = request.credentials_mode;
+    let default_credentials_partition = super::CacheCredentialsPartition::for_request(&request);
     let snapshot = self
       .read_disk_artifact(
         kind,
@@ -3631,7 +3844,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
         request,
         artifact,
         None,
-        default_credentials_mode,
+        default_credentials_partition,
       )
       .ok()
       .flatten();
@@ -3699,7 +3912,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
         req,
         artifact,
         origin_key.as_deref(),
-        req.credentials_mode,
+        super::CacheCredentialsPartition::for_request(&req),
       )
       .ok()
       .flatten();
@@ -3768,7 +3981,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     source: Option<&FetchedResource>,
   ) {
     let request = FetchRequest::new(url, kind.into());
-    let default_credentials_mode = request.credentials_mode;
+    let default_credentials_partition = super::CacheCredentialsPartition::for_request(&request);
     self.persist_artifact(
       kind,
       url,
@@ -3777,7 +3990,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       bytes,
       source,
       None,
-      default_credentials_mode,
+      default_credentials_partition,
     );
   }
 
@@ -3798,25 +4011,32 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       bytes,
       source,
       origin_key.as_deref(),
-      req.credentials_mode,
+      super::CacheCredentialsPartition::for_request(&req),
     );
   }
 
   fn remove_cache_artifact(&self, kind: FetchContextKind, url: &str, artifact: CacheArtifactKind) {
-    let default_credentials_mode = FetchRequest::new(url, kind.into()).credentials_mode;
+    let default_credentials_partition =
+      super::CacheCredentialsPartition::for_request(&FetchRequest::new(url, kind.into()));
     self.remove_artifact_for_url(
       kind,
       url,
       artifact,
       None,
-      default_credentials_mode,
+      default_credentials_partition,
     );
   }
 
   fn remove_cache_artifact_with_request(&self, req: FetchRequest<'_>, artifact: CacheArtifactKind) {
     let kind: FetchContextKind = req.destination.into();
     let origin_key = super::cors_cache_partition_key(&req);
-    self.remove_artifact_for_url(kind, req.url, artifact, origin_key.as_deref(), req.credentials_mode);
+    self.remove_artifact_for_url(
+      kind,
+      req.url,
+      artifact,
+      origin_key.as_deref(),
+      super::CacheCredentialsPartition::for_request(&req),
+    );
   }
 }
 
@@ -5222,6 +5442,136 @@ mod tests {
       assert_eq!(second_include.bytes, b"include");
       let second_omit = disk_again.fetch_with_request(req_omit).expect("disk omit");
       assert_eq!(second_omit.bytes, b"omit");
+    });
+  }
+
+  #[test]
+  fn disk_cache_shares_same_origin_entries_between_same_origin_and_include_credentials() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      #[derive(Clone)]
+      struct CountingFetcher {
+        calls: Arc<AtomicUsize>,
+      }
+
+      impl ResourceFetcher for CountingFetcher {
+        fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+          panic!("expected DiskCachingFetcher to use fetch_with_request()");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+          let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+          let mut res = FetchedResource::with_final_url(
+            format!("call-{n}").into_bytes(),
+            Some("font/woff2".to_string()),
+            Some(req.url.to_string()),
+          );
+          res.status = Some(200);
+          Ok(res)
+        }
+      }
+
+      let tmp = tempfile::tempdir().unwrap();
+      let calls = Arc::new(AtomicUsize::new(0));
+      let origin = super::super::origin_from_url("https://a.test/page").expect("origin");
+      let url = "https://a.test/font.woff2";
+      let req_same_origin = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin)
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+      let req_include = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin)
+        .with_credentials_mode(FetchCredentialsMode::Include);
+
+      let disk = DiskCachingFetcher::new(
+        CountingFetcher {
+          calls: Arc::clone(&calls),
+        },
+        tmp.path(),
+      );
+      let first = disk.fetch_with_request(req_same_origin).expect("seed fetch");
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "expected only one underlying fetch"
+      );
+
+      drop(disk);
+
+      let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+      let second = disk_again
+        .fetch_with_request(req_include)
+        .expect("disk cache hit");
+      assert_eq!(
+        second.bytes, first.bytes,
+        "expected include request to reuse same disk cache entry as same-origin credentials"
+      );
+    });
+  }
+
+  #[test]
+  fn disk_cache_shares_cross_origin_entries_between_same_origin_and_omit_credentials() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      #[derive(Clone)]
+      struct CountingFetcher {
+        calls: Arc<AtomicUsize>,
+      }
+
+      impl ResourceFetcher for CountingFetcher {
+        fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+          panic!("expected DiskCachingFetcher to use fetch_with_request()");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+          let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+          let mut res = FetchedResource::with_final_url(
+            format!("call-{n}").into_bytes(),
+            Some("font/woff2".to_string()),
+            Some(req.url.to_string()),
+          );
+          res.status = Some(200);
+          Ok(res)
+        }
+      }
+
+      let tmp = tempfile::tempdir().unwrap();
+      let calls = Arc::new(AtomicUsize::new(0));
+      let origin = super::super::origin_from_url("https://a.test/page").expect("origin");
+      let url = "https://static.example.com/font.woff2";
+      let req_same_origin = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin)
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+      let req_omit = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin)
+        .with_credentials_mode(FetchCredentialsMode::Omit);
+
+      let disk = DiskCachingFetcher::new(
+        CountingFetcher {
+          calls: Arc::clone(&calls),
+        },
+        tmp.path(),
+      );
+      let first = disk.fetch_with_request(req_same_origin).expect("seed fetch");
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "expected only one underlying fetch"
+      );
+
+      drop(disk);
+
+      let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+      let second = disk_again.fetch_with_request(req_omit).expect("disk cache hit");
+      assert_eq!(
+        second.bytes, first.bytes,
+        "expected omit request to reuse same disk cache entry as cross-origin same-origin credentials"
+      );
     });
   }
 
@@ -8050,9 +8400,9 @@ mod tests {
     fs::write(&data_path, b"tiny").unwrap();
 
     let request = FetchRequest::new(url, TEST_KIND.into());
-    let credentials_mode = request.credentials_mode;
+    let credentials_partition = super::super::CacheCredentialsPartition::for_request(&request);
     let snapshot = disk
-      .read_disk_entry(TEST_KIND, url, request, None, credentials_mode)
+      .read_disk_entry(TEST_KIND, url, request, None, credentials_partition)
       .expect("read_disk_entry");
     assert!(snapshot.is_none(), "corrupted entry should be discarded");
     assert!(!data_path.exists());
@@ -8087,9 +8437,9 @@ mod tests {
     fs::write(tmp_path(&meta_path), b"junk").unwrap();
 
     let request = FetchRequest::new(url, TEST_KIND.into());
-    let credentials_mode = request.credentials_mode;
+    let credentials_partition = super::super::CacheCredentialsPartition::for_request(&request);
     let (_, snapshot) = disk
-      .read_disk_entry(TEST_KIND, url, request, None, credentials_mode)
+      .read_disk_entry(TEST_KIND, url, request, None, credentials_partition)
       .expect("read_disk_entry")
       .expect("entry should be readable");
     let cached = snapshot
@@ -8139,9 +8489,9 @@ mod tests {
     }
 
     let request = FetchRequest::new(url, TEST_KIND.into());
-    let credentials_mode = request.credentials_mode;
+    let credentials_partition = super::super::CacheCredentialsPartition::for_request(&request);
     let (_, snapshot) = disk
-      .read_disk_entry(TEST_KIND, url, request, None, credentials_mode)
+      .read_disk_entry(TEST_KIND, url, request, None, credentials_partition)
       .expect("read_disk_entry")
       .expect("entry should be present after concurrent persists");
     let resource = snapshot
@@ -8892,10 +9242,10 @@ mod tests {
         .expect("write meta");
 
         let request = FetchRequest::new(url, kind.into());
-        let credentials_mode = request.credentials_mode;
+        let credentials_partition = super::super::CacheCredentialsPartition::for_request(&request);
         assert!(
           disk
-            .read_disk_entry(kind, url, request, None, credentials_mode)
+            .read_disk_entry(kind, url, request, None, credentials_partition)
             .expect("read disk")
             .is_none(),
           "expected stale error entry to be treated as cache miss"

@@ -155,7 +155,7 @@ pub fn build_http_fetcher(
 }
 
 #[cfg(feature = "disk_cache")]
-const DISK_CACHE_FETCH_PROFILE_NAMESPACE_MARKER: &str = "fetch-profile:contextual-v1";
+const DISK_CACHE_FETCH_PROFILE_NAMESPACE_MARKER: &str = "fetch-profile:contextual-v2";
 
 #[cfg(feature = "disk_cache")]
 fn browser_headers_enabled_from_env(raw: Option<&str>) -> bool {

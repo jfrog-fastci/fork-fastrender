@@ -7750,12 +7750,35 @@ pub fn compute_vary_key_for_request(
   Some(out)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CacheCredentialsPartition {
+  Omit,
+  Include,
+}
+
+impl CacheCredentialsPartition {
+  fn for_request(req: &FetchRequest<'_>) -> Self {
+    if cookies_allowed_for_request(req.credentials_mode, req.url, req.client_origin) {
+      Self::Include
+    } else {
+      Self::Omit
+    }
+  }
+
+  const fn cache_id(self) -> u8 {
+    match self {
+      Self::Omit => 0,
+      Self::Include => 1,
+    }
+  }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CacheKey {
   kind: FetchContextKind,
   url: String,
   origin_key: Option<String>,
-  credentials_mode: FetchCredentialsMode,
+  credentials_partition: CacheCredentialsPartition,
 }
 
 #[derive(Clone)]
@@ -7805,12 +7828,13 @@ impl InFlightKey {
 impl CacheKey {
   fn new(kind: FetchContextKind, url: impl Into<String>) -> Self {
     let url = url.into();
-    let credentials_mode = FetchRequest::new(&url, kind.into()).credentials_mode;
+    let request = FetchRequest::new(&url, kind.into());
+    let credentials_partition = CacheCredentialsPartition::for_request(&request);
     Self {
       kind,
       url,
       origin_key: None,
-      credentials_mode,
+      credentials_partition,
     }
   }
 
@@ -7818,13 +7842,13 @@ impl CacheKey {
     kind: FetchContextKind,
     url: impl Into<String>,
     origin_key: Option<String>,
-    credentials_mode: FetchCredentialsMode,
+    credentials_partition: CacheCredentialsPartition,
   ) -> Self {
     Self {
       kind,
       url: url.into(),
       origin_key,
-      credentials_mode,
+      credentials_partition,
     }
   }
 
@@ -7833,7 +7857,7 @@ impl CacheKey {
       kind: self.kind,
       url: url.into(),
       origin_key: self.origin_key.clone(),
-      credentials_mode: self.credentials_mode,
+      credentials_partition: self.credentials_partition,
     }
   }
 }
@@ -8286,13 +8310,6 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     final_url: Option<&str>,
   ) -> CacheKey {
     let canonical_url = self.canonical_url(&requested.url, final_url);
-    let canonical = requested.with_url(canonical_url.clone());
-
-    if self.config.max_bytes > 0 && entry.weight() > self.config.max_bytes {
-      return canonical;
-    }
-
-    let request_sig = inflight_signature_for_request(&self.inner, request);
     let canonical_request = FetchRequest {
       url: &canonical_url,
       destination: request.destination,
@@ -8301,6 +8318,22 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
       referrer_policy: request.referrer_policy,
       credentials_mode: request.credentials_mode,
     };
+    let canonical = CacheKey::new_with_origin(
+      requested.kind,
+      canonical_url.clone(),
+      if requested.origin_key.is_some() {
+        cors_cache_partition_key(&canonical_request)
+      } else {
+        None
+      },
+      CacheCredentialsPartition::for_request(&canonical_request),
+    );
+
+    if self.config.max_bytes > 0 && entry.weight() > self.config.max_bytes {
+      return canonical;
+    }
+
+    let request_sig = inflight_signature_for_request(&self.inner, request);
     let canonical_sig = inflight_signature_for_request(&self.inner, canonical_request);
 
     if let Ok(mut state) = self.state.lock() {
@@ -9016,7 +9049,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       kind,
       url.to_string(),
       cors_cache_partition_key(&req),
-      req.credentials_mode,
+      CacheCredentialsPartition::for_request(&req),
     );
     let cached = self.cached_entry(&key, Some(req));
     let plan = self.plan_cache_use(url, cached.clone(), None);
@@ -9372,7 +9405,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       kind,
       url.to_string(),
       cors_cache_partition_key(&req),
-      req.credentials_mode,
+      CacheCredentialsPartition::for_request(&req),
     );
     if let Some(snapshot) = self.cached_entry(&key, Some(req)) {
       if let CacheValue::Resource(mut res) = snapshot.value {
@@ -18445,6 +18478,108 @@ mod tests {
         "expected cache to be partitioned by credentials mode"
       );
     });
+  }
+
+  #[test]
+  fn caching_fetcher_shares_same_origin_entries_between_same_origin_and_include_credentials() {
+    #[derive(Clone)]
+    struct CountingFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for CountingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut res = FetchedResource::new(
+          format!("call-{n}").into_bytes(),
+          Some("text/plain".to_string()),
+        );
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(CountingFetcher {
+      calls: Arc::clone(&calls),
+    });
+
+    let origin = origin_from_url("https://a.test/page").expect("origin");
+    let url = "https://a.test/font.woff2";
+    let req_same_origin = FetchRequest::new(url, FetchDestination::Font)
+      .with_client_origin(&origin)
+      .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+    let req_include = FetchRequest::new(url, FetchDestination::Font)
+      .with_client_origin(&origin)
+      .with_credentials_mode(FetchCredentialsMode::Include);
+
+    let first = cache.fetch_with_request(req_same_origin).expect("same-origin fetch");
+    let second = cache.fetch_with_request(req_include).expect("include fetch");
+
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected same-origin and include credentials modes to share a cache entry for same-origin requests"
+    );
+    assert_eq!(
+      second.bytes, first.bytes,
+      "expected include fetch to reuse cached bytes"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_shares_cross_origin_entries_between_same_origin_and_omit_credentials() {
+    #[derive(Clone)]
+    struct CountingFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for CountingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut res = FetchedResource::new(
+          format!("call-{n}").into_bytes(),
+          Some("text/plain".to_string()),
+        );
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(CountingFetcher {
+      calls: Arc::clone(&calls),
+    });
+
+    let origin = origin_from_url("https://a.test/page").expect("origin");
+    let url = "https://static.example.com/font.woff2";
+    let req_same_origin = FetchRequest::new(url, FetchDestination::Font)
+      .with_client_origin(&origin)
+      .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+    let req_omit = FetchRequest::new(url, FetchDestination::Font)
+      .with_client_origin(&origin)
+      .with_credentials_mode(FetchCredentialsMode::Omit);
+
+    let first = cache.fetch_with_request(req_same_origin).expect("same-origin fetch");
+    let second = cache.fetch_with_request(req_omit).expect("omit fetch");
+
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected same-origin and omit credentials modes to share a cache entry for cross-origin requests"
+    );
+    assert_eq!(
+      second.bytes, first.bytes,
+      "expected omit fetch to reuse cached bytes"
+    );
   }
 
   #[derive(Clone, Debug)]

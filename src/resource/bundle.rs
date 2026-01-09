@@ -39,7 +39,7 @@ pub fn request_partitioned_resource_key(
 /// Synthetic manifest key used for request-partitioned resources keyed by the cache partition key.
 ///
 /// This is the preferred encoding for new bundles because it matches the cache partitioning logic
-/// (client origin + credentials mode) used by [`CachingFetcher`] / [`DiskCachingFetcher`].
+/// (client origin + credential inclusion) used by [`CachingFetcher`] / [`DiskCachingFetcher`].
 pub fn request_partitioned_resource_key_v2(
   kind: FetchContextKind,
   url: &str,
