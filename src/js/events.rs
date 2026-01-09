@@ -338,8 +338,8 @@ impl JsDomEvents {
 
     if self.registry.add_event_listener(target, type_, id, options) {
       if let Err(err) = self.ensure_listener_entry(id, callback) {
-        // Ensure the registry does not contain listeners that cannot be invoked due to resource
-        // limits.
+        // Roll back the registry insertion so we don't leave an uncallable listener behind when
+        // rooting fails due to resource limits.
         let _ = self
           .registry
           .remove_event_listener(target, type_, id, capture);

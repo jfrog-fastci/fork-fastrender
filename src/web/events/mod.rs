@@ -181,10 +181,35 @@ struct RegisteredListener {
   options: AddEventListenerOptions,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct EventListenerRegistry {
   next_record_id: Cell<u64>,
   listeners: RefCell<FxHashMap<EventTargetId, FxHashMap<String, Vec<RegisteredListener>>>>,
+}
+
+impl std::fmt::Debug for EventListenerRegistry {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let snapshot = self.listeners.try_borrow().ok().map(|listeners| {
+      let targets = listeners.len();
+      let event_types = listeners.values().map(|by_type| by_type.len()).sum::<usize>();
+      let listener_count = listeners
+        .values()
+        .flat_map(|by_type| by_type.values())
+        .map(|listeners| listeners.len())
+        .sum::<usize>();
+      (targets, event_types, listener_count)
+    });
+
+    let mut ds = f.debug_struct("EventListenerRegistry");
+    match snapshot {
+      Some((targets, event_types, listener_count)) => ds
+        .field("targets", &targets)
+        .field("event_types", &event_types)
+        .field("listeners", &listener_count)
+        .finish(),
+      None => ds.field("listeners", &"<borrowed>").finish_non_exhaustive(),
+    }
+  }
 }
 
 impl EventListenerRegistry {

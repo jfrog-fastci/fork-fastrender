@@ -921,3 +921,13 @@ fn detached_node_event_path_does_not_include_window() {
 
   assert_eq!(invoker.calls.as_slice(), &["node"]);
 }
+
+#[test]
+fn debug_does_not_borrow_listener_map() {
+  let registry = EventListenerRegistry::new();
+
+  // Hold a mutable borrow of the underlying listener map, then ensure Debug formatting does not
+  // panic (Debug must not borrow the RefCell).
+  let _guard = registry.listeners.borrow_mut();
+  let _formatted = format!("{registry:?}");
+}
