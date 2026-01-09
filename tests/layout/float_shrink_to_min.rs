@@ -145,3 +145,46 @@ fn float_auto_width_can_exceed_containing_block_when_intrinsic_min_exceeds_avail
     float_fragment.bounds.width()
   );
 }
+
+/// When a block does not establish a new BFC, it inherits the ancestor float context.
+/// Floats inside that block must still be positioned relative to the *block's* containing
+/// block width (not the ancestor's).
+#[test]
+fn inherited_float_context_is_scoped_to_containing_block_width() {
+  let root_style = Arc::new(ComputedStyle::default());
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.width = Some(Length::px(100.0));
+  let mut float_style = ComputedStyle::default();
+  float_style.float = Float::Right;
+  float_style.width = Some(Length::px(20.0));
+  float_style.height = Some(Length::px(10.0));
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Block,
+    vec![float_box],
+  );
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![inner]);
+
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 1000.0);
+  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+
+  // Find the float fragment (it may not be a direct child due to float reparenting).
+  fn find_float<'a>(node: &'a fastrender::tree::fragment_tree::FragmentNode) -> Option<&'a fastrender::tree::fragment_tree::FragmentNode> {
+    if let Some(style) = node.style.as_ref() {
+      if style.float == Float::Right && (node.bounds.width() - 20.0).abs() < 0.5 {
+        return Some(node);
+      }
+    }
+    node.children.iter().find_map(find_float)
+  }
+
+  let float_fragment = find_float(&fragment).expect("expected to find float fragment");
+  assert!(
+    (float_fragment.bounds.x() - 80.0).abs() < 0.5,
+    "expected nested float:right to align to 100px containing block (x≈80); got x={:.2}",
+    float_fragment.bounds.x()
+  );
+}

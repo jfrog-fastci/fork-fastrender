@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>float with clear:left must be placed below earlier left floats</title>
+<style>
+  body {
+    margin: 0;
+    background: #fff;
+    font-size: 0;
+    line-height: 0;
+  }
+
+  .a {
+    float: left;
+    width: 50px;
+    height: 10px;
+    background: #f00;
+  }
+
+  .b {
+    float: left;
+    clear: left;
+    width: 50px;
+    height: 10px;
+    background: #00f;
+  }
+</style>
+<div class="a"></div><div class="b"></div>
