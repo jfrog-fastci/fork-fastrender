@@ -19,14 +19,20 @@ enum HostObjectKind {
     opaque: u64,
   },
   Function(HostFn),
-  Error { name: &'static str },
+  Error {
+    name: &'static str,
+  },
   // Built-in internal-slot stubs (not yet provided by `vm-js`).
   #[allow(dead_code)]
-  ArrayBuffer { shared: bool },
+  ArrayBuffer {
+    shared: bool,
+  },
   #[allow(dead_code)]
   DataView,
   #[allow(dead_code)]
-  TypedArray { name: &'static str },
+  TypedArray {
+    name: &'static str,
+  },
 }
 
 /// A concrete [`WebIdlJsRuntime`] implementation backed by `ecma-rs`'s `vm-js` value types.
@@ -209,7 +215,11 @@ impl VmJsRuntime {
     self.property_key_from_str(s)
   }
 
-  fn internal_symbol(slot: &mut Option<GcSymbol>, heap: &mut Heap, key: GcString) -> Result<GcSymbol, VmError> {
+  fn internal_symbol(
+    slot: &mut Option<GcSymbol>,
+    heap: &mut Heap,
+    key: GcString,
+  ) -> Result<GcSymbol, VmError> {
     if let Some(sym) = *slot {
       return Ok(sym);
     }
@@ -351,7 +361,12 @@ impl VmJsRuntime {
     scope.define_property(obj, key, desc)
   }
 
-  fn define_hidden_slot(&mut self, obj: GcObject, sym: GcSymbol, value: Value) -> Result<(), VmError> {
+  fn define_hidden_slot(
+    &mut self,
+    obj: GcObject,
+    sym: GcSymbol,
+    value: Value,
+  ) -> Result<(), VmError> {
     let desc = PropertyDescriptor {
       enumerable: false,
       configurable: false,
@@ -421,9 +436,10 @@ impl VmJsRuntime {
       let mut scope = self.heap.scope();
       scope.alloc_object()?
     };
-    self
-      .host_objects
-      .insert(WeakGcObject::from(obj), HostObjectKind::Function(Rc::new(f)));
+    self.host_objects.insert(
+      WeakGcObject::from(obj),
+      HostObjectKind::Function(Rc::new(f)),
+    );
     Ok(Value::Object(obj))
   }
 
@@ -458,7 +474,12 @@ impl VmJsRuntime {
   /// This currently only supports host-defined function objects created via
   /// [`VmJsRuntime::alloc_function_value`]. It is sufficient for early host integration plumbing
   /// while the full `vm-js` interpreter is still under development.
-  pub fn call_function(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+  pub fn call_function(
+    &mut self,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
     <Self as JsRuntime>::call(self, callee, this, args)
   }
 
@@ -483,7 +504,10 @@ impl VmJsRuntime {
     } else {
       (1.0, trimmed)
     };
-    if let Some(rest) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+    if let Some(rest) = digits
+      .strip_prefix("0x")
+      .or_else(|| digits.strip_prefix("0X"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -492,7 +516,10 @@ impl VmJsRuntime {
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = digits.strip_prefix("0b").or_else(|| digits.strip_prefix("0B")) {
+    if let Some(rest) = digits
+      .strip_prefix("0b")
+      .or_else(|| digits.strip_prefix("0B"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -501,7 +528,10 @@ impl VmJsRuntime {
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = digits.strip_prefix("0o").or_else(|| digits.strip_prefix("0O")) {
+    if let Some(rest) = digits
+      .strip_prefix("0o")
+      .or_else(|| digits.strip_prefix("0O"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -555,27 +585,24 @@ impl VmJsRuntime {
       .host_objects
       .insert(WeakGcObject::from(obj), HostObjectKind::Error { name });
 
-    let _ = self.with_stack_roots(
-      [Value::Object(obj), Value::String(message_handle)],
-      |rt| {
-        let name_key = rt.property_key_from_str("name")?;
-        let name_value = rt.alloc_string("TypeError")?; // overwritten below when name != TypeError
-        let name_value = match name {
-          "TypeError" => name_value,
-          other => rt.alloc_string(other)?,
-        };
-        rt.define_data_property(Value::Object(obj), name_key, name_value, false)?;
+    let _ = self.with_stack_roots([Value::Object(obj), Value::String(message_handle)], |rt| {
+      let name_key = rt.property_key_from_str("name")?;
+      let name_value = rt.alloc_string("TypeError")?; // overwritten below when name != TypeError
+      let name_value = match name {
+        "TypeError" => name_value,
+        other => rt.alloc_string(other)?,
+      };
+      rt.define_data_property(Value::Object(obj), name_key, name_value, false)?;
 
-        let message_key = rt.property_key_from_str("message")?;
-        rt.define_data_property(
-          Value::Object(obj),
-          message_key,
-          Value::String(message_handle),
-          false,
-        )?;
-        Ok(())
-      },
-    );
+      let message_key = rt.property_key_from_str("message")?;
+      rt.define_data_property(
+        Value::Object(obj),
+        message_key,
+        Value::String(message_handle),
+        false,
+      )?;
+      Ok(())
+    });
 
     Value::Object(obj)
   }
@@ -761,7 +788,9 @@ impl JsRuntime for VmJsRuntime {
   }
 
   fn property_key_from_u32(&mut self, index: u32) -> Result<PropertyKey, VmError> {
-    Ok(PropertyKey::String(self.alloc_string_handle(&index.to_string())?))
+    Ok(PropertyKey::String(
+      self.alloc_string_handle(&index.to_string())?,
+    ))
   }
 
   fn property_key_is_symbol(&self, key: PropertyKey) -> bool {
@@ -775,9 +804,9 @@ impl JsRuntime for VmJsRuntime {
   fn property_key_to_js_string(&mut self, key: PropertyKey) -> Result<Value, VmError> {
     match key {
       PropertyKey::String(s) => Ok(Value::String(s)),
-      PropertyKey::Symbol(_) => Err(self.throw_type_error(
-        "Cannot convert a Symbol property key to a string",
-      )),
+      PropertyKey::Symbol(_) => {
+        Err(self.throw_type_error("Cannot convert a Symbol property key to a string"))
+      }
     }
   }
 
@@ -855,9 +884,9 @@ impl JsRuntime for VmJsRuntime {
 
   fn to_object(&mut self, value: Value) -> Result<Value, VmError> {
     match value {
-      Value::Undefined | Value::Null => Err(self.throw_type_error(
-        "ToObject: cannot convert null or undefined to object",
-      )),
+      Value::Undefined | Value::Null => {
+        Err(self.throw_type_error("ToObject: cannot convert null or undefined to object"))
+      }
       Value::Object(_) => Ok(value),
       Value::String(string_data) => Ok(self.alloc_string_object_from_handle(string_data)?),
       Value::Bool(boolean_data) => Ok(self.alloc_boolean_object_value(boolean_data)?),
@@ -900,7 +929,11 @@ impl JsRuntime for VmJsRuntime {
         if let Some(string_data) = self.string_object_data(obj)? {
           self.to_number_from_string(string_data)?
         } else if let Some(boolean_data) = self.boolean_object_data(obj)? {
-          if boolean_data { 1.0 } else { 0.0 }
+          if boolean_data {
+            1.0
+          } else {
+            0.0
+          }
         } else if let Some(number_data) = self.number_object_data(obj)? {
           number_data
         } else if let Some(symbol_data) = self.symbol_object_data(obj)? {
@@ -1334,7 +1367,8 @@ mod tests {
       .unwrap();
 
     let obj = rt.alloc_object_value().unwrap();
-    rt.define_data_property(obj, method_key, method, true).unwrap();
+    rt.define_data_property(obj, method_key, method, true)
+      .unwrap();
     let key = rt.property_key_from_str("m").unwrap();
     rt.define_accessor_property(obj, key, getter, Value::Undefined, true)
       .unwrap();

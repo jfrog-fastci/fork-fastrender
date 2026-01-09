@@ -7,7 +7,9 @@ use vm_js::{PropertyKey, RootId, Value, VmError};
 
 use crate::dom2;
 use crate::error::{Error, Result};
-use crate::js::webidl::{JsRuntime as WebIdlJsRuntime, VmJsRuntime, WebIdlJsRuntime as WebIdlHooks};
+use crate::js::webidl::{
+  JsRuntime as WebIdlJsRuntime, VmJsRuntime, WebIdlJsRuntime as WebIdlHooks,
+};
 use crate::web::events::{
   dispatch_event, AddEventListenerOptions, DomError as EventsDomError, Event, EventListenerInvoker,
   EventListenerRegistry, EventPhase, EventTargetId, ListenerId,
@@ -191,7 +193,12 @@ impl EventWrapper {
     let obj = rt.alloc_object_value()?;
     rt.set_prototype(obj, Some(self.prototype))?;
 
-    rt.define_data_property(obj, self.keys.event_id, Value::Number(event_id as f64), false)?;
+    rt.define_data_property(
+      obj,
+      self.keys.event_id,
+      Value::Number(event_id as f64),
+      false,
+    )?;
 
     let type_ = rt.alloc_string_value(&event.type_)?;
     rt.define_data_property(obj, self.keys.type_, type_, true)?;
@@ -429,7 +436,12 @@ impl JsDomEvents {
           .to_string(value)
           .ok()
           .and_then(|v| match v {
-            Value::String(s) => self.runtime.heap().get_string(s).ok().map(|s| s.to_utf8_lossy()),
+            Value::String(s) => self
+              .runtime
+              .heap()
+              .get_string(s)
+              .ok()
+              .map(|s| s.to_utf8_lossy()),
             _ => None,
           })
           .unwrap_or_else(|| "uncaught exception".to_string());
@@ -506,8 +518,8 @@ impl EventListenerInvoker for JsDomEvents {
     // the registry removes before invoking). This must run even if the callback throws.
     self.remove_listener_if_unused(listener_id);
 
-    call.map(|_| ()).map_err(|e| {
-      EventsDomError::new(self.vm_error_to_error(e).to_string())
-    })
+    call
+      .map(|_| ())
+      .map_err(|e| EventsDomError::new(self.vm_error_to_error(e).to_string()))
   }
 }

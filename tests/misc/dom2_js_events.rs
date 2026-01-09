@@ -100,10 +100,9 @@ struct ListenerKeys {
 }
 
 fn build_doc() -> (dom2::Document, dom2::NodeId, dom2::NodeId) {
-  let renderer_dom = fastrender::dom::parse_html(
-    "<!doctype html><div id=parent><span id=target></span></div>",
-  )
-  .unwrap();
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><div id=parent><span id=target></span></div>")
+      .unwrap();
   let mut doc = dom2::Document::from_renderer_dom(&renderer_dom);
   let parent = doc.query_selector("#parent", None).unwrap().unwrap();
   let target = doc.query_selector("#target", None).unwrap().unwrap();
@@ -312,7 +311,13 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
     AddEventListenerOptions::default(),
   )?;
 
-  let mut event = Event::new(type_, EventInit { bubbles: true, ..Default::default() });
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
 
   assert_eq!(
@@ -401,7 +406,13 @@ fn js_stop_propagation_is_observed_by_dispatch() -> Result<()> {
     AddEventListenerOptions::default(),
   )?;
 
-  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  let mut event = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
 
   assert_eq!(*log.borrow(), vec!["target-stop"]);
@@ -476,7 +487,13 @@ fn js_stop_immediate_propagation_skips_later_listeners_on_same_target() -> Resul
     AddEventListenerOptions::default(),
   )?;
 
-  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  let mut event = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
 
   assert_eq!(*log.borrow(), vec!["first"]);
@@ -529,10 +546,22 @@ fn js_once_listener_runs_only_once() -> Result<()> {
     },
   )?;
 
-  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  let mut event = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
 
-  let mut event2 = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  let mut event2 = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      ..Default::default()
+    },
+  );
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event2)?;
 
   assert_eq!(*log.borrow(), vec!["once"]);
@@ -650,7 +679,10 @@ fn js_prevent_default_sets_default_prevented_property() -> Result<()> {
   );
   let dispatch_ok = js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
 
-  assert!(!dispatch_ok, "dispatchEvent should return false when canceled");
+  assert!(
+    !dispatch_ok,
+    "dispatchEvent should return false when canceled"
+  );
   assert!(event.default_prevented);
   assert_eq!(*log.borrow(), vec!["listener"]);
   Ok(())

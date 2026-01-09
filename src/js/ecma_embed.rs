@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vm_js::{
-  format_stack_trace, Budget, GcObject, Heap, HeapLimits, InterruptHandle, RootId, Scope, SourceText,
-  StackFrame, TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
+  format_stack_trace, Budget, GcObject, Heap, HeapLimits, InterruptHandle, RootId, Scope,
+  SourceText, StackFrame, TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
 };
 
 const DEFAULT_HEAP_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -132,7 +132,10 @@ pub enum ScriptError {
   Syntax { message: String },
 
   #[error("JavaScript exception: {message}\n{stack_trace}")]
-  Exception { message: String, stack_trace: String },
+  Exception {
+    message: String,
+    stack_trace: String,
+  },
 
   #[error("JavaScript execution terminated: {reason}\n{stack_trace}")]
   Termination {
@@ -141,7 +144,10 @@ pub enum ScriptError {
   },
 
   #[error("JavaScript runtime error: {message}\n{stack_trace}")]
-  Runtime { message: String, stack_trace: String },
+  Runtime {
+    message: String,
+    stack_trace: String,
+  },
 }
 
 pub type HostFunction =
@@ -242,9 +248,7 @@ impl VmJsScriptRealm {
     override_budget: &ScriptBudgetOverride,
   ) -> Budget {
     let fuel = override_budget.fuel.or(self.options.default_fuel);
-    let mut wall_time = override_budget
-      .wall_time
-      .or(self.options.default_deadline);
+    let mut wall_time = override_budget.wall_time.or(self.options.default_deadline);
 
     // Ensure JS cannot exceed the active/root FastRender timeout.
     if let Some(deadline) = render_deadline {
@@ -306,10 +310,9 @@ impl ScriptRealm for VmJsScriptRealm {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = parse_with_options(source, opts)
-      .map_err(|err| ScriptError::Syntax {
-        message: err.to_string(),
-      })?;
+    let top = parse_with_options(source, opts).map_err(|err| ScriptError::Syntax {
+      message: err.to_string(),
+    })?;
 
     let source_text = SourceText::new(source_name, source);
 
@@ -475,14 +478,21 @@ impl Evaluator<'_> {
       Value::Bool(b) => Ok(ScriptValue::Bool(b)),
       Value::Number(n) => Ok(ScriptValue::Number(n)),
       Value::String(s) => Ok(ScriptValue::String(
-        heap.get_string(s).map_err(vm_error_to_runtime)?.to_utf8_lossy(),
+        heap
+          .get_string(s)
+          .map_err(vm_error_to_runtime)?
+          .to_utf8_lossy(),
       )),
       Value::Symbol(_) => Ok(ScriptValue::Symbol),
       Value::Object(_) => Ok(ScriptValue::Object),
     }
   }
 
-  fn script_value_to_value(&self, scope: &mut Scope<'_>, value: ScriptValue) -> Result<Value, ScriptError> {
+  fn script_value_to_value(
+    &self,
+    scope: &mut Scope<'_>,
+    value: ScriptValue,
+  ) -> Result<Value, ScriptError> {
     Ok(match value {
       ScriptValue::Undefined => Value::Undefined,
       ScriptValue::Null => Value::Null,
@@ -526,7 +536,11 @@ impl Evaluator<'_> {
     result
   }
 
-  fn exec_stmt(&mut self, scope: &mut Scope<'_>, stmt: &Node<Stmt>) -> Result<Option<Value>, ScriptError> {
+  fn exec_stmt(
+    &mut self,
+    scope: &mut Scope<'_>,
+    stmt: &Node<Stmt>,
+  ) -> Result<Option<Value>, ScriptError> {
     self.tick()?;
 
     match &*stmt.stx {
@@ -548,7 +562,11 @@ impl Evaluator<'_> {
     }
   }
 
-  fn exec_block(&mut self, scope: &mut Scope<'_>, block: &BlockStmt) -> Result<Option<Value>, ScriptError> {
+  fn exec_block(
+    &mut self,
+    scope: &mut Scope<'_>,
+    block: &BlockStmt,
+  ) -> Result<Option<Value>, ScriptError> {
     let mut last: Option<Value> = None;
     for stmt in &block.body {
       last = self.exec_stmt(scope, stmt)?;
@@ -579,7 +597,10 @@ impl Evaluator<'_> {
       .value_to_string(scope.heap_mut(), value)
       .map_err(vm_error_to_runtime)?;
     let stack_trace = self.stack_trace_at_loc(node.loc);
-    Ok(ScriptError::Exception { message, stack_trace })
+    Ok(ScriptError::Exception {
+      message,
+      stack_trace,
+    })
   }
 
   fn eval_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<Expr>) -> Result<Value, ScriptError> {
@@ -588,10 +609,12 @@ impl Evaluator<'_> {
       Expr::LitBool(node) => Ok(Value::Bool(node.stx.value)),
       Expr::LitNull(_) => Ok(Value::Null),
       Expr::LitStr(node) => self.eval_lit_str(scope, node),
-      Expr::Id(node) => self.eval_id(scope, &node.stx).map_err(|msg| ScriptError::Runtime {
-        message: msg,
-        stack_trace: self.stack_trace_at_loc(expr.loc),
-      }),
+      Expr::Id(node) => self
+        .eval_id(scope, &node.stx)
+        .map_err(|msg| ScriptError::Runtime {
+          message: msg,
+          stack_trace: self.stack_trace_at_loc(expr.loc),
+        }),
       Expr::Binary(node) => self.eval_binary(scope, expr, &node.stx),
       Expr::Call(node) => self.eval_call(scope, expr, &node.stx),
       _ => Err(ScriptError::Runtime {
@@ -688,7 +711,11 @@ impl Evaluator<'_> {
         stack_trace: self.stack_trace_at_loc(node.loc),
       });
     };
-    let Some(function_name) = self.host_functions.get(&obj).map(|entry| entry.name.clone()) else {
+    let Some(function_name) = self
+      .host_functions
+      .get(&obj)
+      .map(|entry| entry.name.clone())
+    else {
       return Err(ScriptError::Runtime {
         message: "value is not callable".to_string(),
         stack_trace: self.stack_trace_at_loc(node.loc),
@@ -726,19 +753,16 @@ impl Evaluator<'_> {
     }
 
     let frame = self.frame_at_loc(node.loc, Some(function_name));
-    self
-      .vm
-      .push_frame(frame)
-      .map_err(|err| match err {
-        VmError::Termination(term) => ScriptError::Termination {
-          reason: term.reason.into(),
-          stack_trace: format_stack_trace(&term.stack),
-        },
-        other => ScriptError::Runtime {
-          message: other.to_string(),
-          stack_trace: format_stack_trace(&self.vm.capture_stack()),
-        },
-      })?;
+    self.vm.push_frame(frame).map_err(|err| match err {
+      VmError::Termination(term) => ScriptError::Termination {
+        reason: term.reason.into(),
+        stack_trace: format_stack_trace(&term.stack),
+      },
+      other => ScriptError::Runtime {
+        message: other.to_string(),
+        stack_trace: format_stack_trace(&self.vm.capture_stack()),
+      },
+    })?;
 
     let result = {
       // Re-borrow after argument evaluation so we don't hold a mutable reference across
@@ -994,12 +1018,13 @@ mod tests {
     })
     .unwrap();
 
-    let err = realm
-      .eval_script("boom.js", "throw 'boom';")
-      .unwrap_err();
+    let err = realm.eval_script("boom.js", "throw 'boom';").unwrap_err();
 
     match err {
-      ScriptError::Exception { message, stack_trace } => {
+      ScriptError::Exception {
+        message,
+        stack_trace,
+      } => {
         assert_eq!(message, "boom");
         assert!(stack_trace.contains("boom.js"));
         assert!(stack_trace.contains("boom.js:1:1"));
