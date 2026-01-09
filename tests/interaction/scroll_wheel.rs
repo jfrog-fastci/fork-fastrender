@@ -42,7 +42,13 @@ fn wheel_scroll_chains_inner_to_outer_to_viewport() {
   let outer = block_with_id(
     1,
     Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
-    vec![inner],
+    // Ensure the outer scroller itself has scrollable overflow independent of the inner scroll
+    // container (nested scrollers clip their own overflow and should not inflate ancestor scroll
+    // ranges).
+    vec![
+      inner,
+      FragmentNode::new_block(Rect::from_xywh(0.0, 250.0, 100.0, 50.0), vec![]),
+    ],
     scroll_y_style(OverscrollBehavior::Auto),
   );
 
@@ -260,7 +266,12 @@ fn wheel_scroll_chains_to_parent_when_inner_at_limit() {
   let outer = block_with_id(
     1,
     Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
-    vec![inner],
+    vec![
+      inner,
+      // Ensure the outer scroller has its own scrollable overflow; the inner scroll container's
+      // overflow is clipped and should not inflate ancestor scroll ranges.
+      FragmentNode::new_block(Rect::from_xywh(0.0, 150.0, 100.0, 50.0), vec![]),
+    ],
     scroll_y_style(OverscrollBehavior::Auto),
   );
 
