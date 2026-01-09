@@ -538,13 +538,10 @@ pub fn spawn_ui_worker_for_test(
 }
 
 fn maybe_set_test_render_delay_ms(delay: Option<u64>) {
-  // `set_test_render_delay_ms` is only available for `browser_ui` builds and unit tests.
-  // Keep the headless UI worker loop compilable for core renderer builds that don't enable
-  // the desktop UI stack.
-  #[cfg(any(test, feature = "browser_ui"))]
+  // `render_control::set_test_render_delay_ms` is a no-op in non-UI optimized release builds.
+  // Keep it callable here so integration tests can inject deterministic render delays without
+  // requiring the heavyweight `browser_ui` feature.
   crate::render_control::set_test_render_delay_ms(delay);
-  #[cfg(not(any(test, feature = "browser_ui")))]
-  let _ = delay;
 }
 
 fn spawn_ui_worker_inner(
