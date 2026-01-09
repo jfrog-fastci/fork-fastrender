@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 // Default per-wait timeout used by helpers/tests that don't define their own.
 //
-// Rendering tests can be CPU-heavy and integration tests run in parallel by default; use a
-// reasonably generous timeout to avoid flakiness on busy CI hosts.
+// These integration tests do real rendering work and run in parallel by default, so allow some
+// slack to avoid flakes under CPU contention.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.

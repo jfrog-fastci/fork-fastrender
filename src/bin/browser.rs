@@ -185,6 +185,10 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
             tab_id,
             initial_url,
             ..
+          }
+          | UiToWorker::NewTab {
+            tab_id,
+            initial_url,
           } => {
             tabs.insert(
               tab_id,
@@ -609,6 +613,7 @@ impl App {
           tab.error = None;
           tab.stage = None;
           tab.pending_nav_url = Some(url.clone());
+          tab.title = None;
         }
         if self.browser_state.active_tab_id() == Some(tab_id) {
           if !self.browser_state.chrome.address_bar_editing {
@@ -1206,6 +1211,7 @@ impl App {
             }
           };
 
+          tab.stage = None;
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
           }
@@ -1217,6 +1223,7 @@ impl App {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
+
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
             tab.error = None;
@@ -1224,30 +1231,44 @@ impl App {
             tab.pending_nav_url = tab.current_url.clone();
           }
 
+          self.page_has_focus = false;
+
           let _ = self.ui_to_worker_tx.send(UiToWorker::Reload { tab_id });
         }
         ChromeAction::Back => {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.loading = true;
-            tab.error = None;
-            tab.stage = None;
-            tab.pending_nav_url = None;
+          let Some(tab) = self.browser_state.tab_mut(tab_id) else {
+            continue;
+          };
+          if !tab.can_go_back {
+            continue;
           }
+          tab.loading = true;
+          tab.error = None;
+          tab.stage = None;
+          tab.pending_nav_url = None;
+          self.page_has_focus = false;
+
           let _ = self.ui_to_worker_tx.send(UiToWorker::GoBack { tab_id });
         }
         ChromeAction::Forward => {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.loading = true;
-            tab.error = None;
-            tab.stage = None;
-            tab.pending_nav_url = None;
+          let Some(tab) = self.browser_state.tab_mut(tab_id) else {
+            continue;
+          };
+          if !tab.can_go_forward {
+            continue;
           }
+          tab.loading = true;
+          tab.error = None;
+          tab.stage = None;
+          tab.pending_nav_url = None;
+          self.page_has_focus = false;
+
           let _ = self.ui_to_worker_tx.send(UiToWorker::GoForward { tab_id });
         }
       }

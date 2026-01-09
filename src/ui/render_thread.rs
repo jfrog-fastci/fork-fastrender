@@ -98,6 +98,17 @@ impl BrowserRenderThread {
           self.navigate(tab_id, url, NavigationReason::TypedUrl);
         }
       }
+      UiToWorker::NewTab { tab_id, initial_url } => {
+        // `NewTab` is an optional protocol alias; treat it the same as `CreateTab` but create our
+        // own cancel generations.
+        self.tabs.insert(tab_id, TabState::new(CancelGens::new()));
+        if self.active_tab.is_none() {
+          self.active_tab = Some(tab_id);
+        }
+        if let Some(url) = initial_url {
+          self.navigate(tab_id, url, NavigationReason::TypedUrl);
+        }
+      }
       UiToWorker::CloseTab { tab_id } => {
         self.tabs.remove(&tab_id);
         if self.active_tab == Some(tab_id) {

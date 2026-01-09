@@ -142,7 +142,11 @@ impl FixtureHost {
   fn root_class(&self) -> Option<String> {
     fn read(doc: &Document) -> Option<String> {
       let root = doc.get_element_by_id("root")?;
-      doc.get_attribute(root, "class").map(|s| s.to_string())
+      doc
+        .get_attribute(root, "class")
+        .ok()
+        .flatten()
+        .map(|s| s.to_string())
     }
 
     match &*self.dom.borrow() {

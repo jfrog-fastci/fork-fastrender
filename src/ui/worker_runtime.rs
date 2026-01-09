@@ -98,7 +98,8 @@ impl BrowserWorkerRuntime {
         tab_id,
         initial_url,
         ..
-      } => {
+      }
+      | UiToWorker::NewTab { tab_id, initial_url } => {
         self.tabs.insert(tab_id, TabState::new());
         if self.active_tab.is_none() {
           self.active_tab = Some(tab_id);

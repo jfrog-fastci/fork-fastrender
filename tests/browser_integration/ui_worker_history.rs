@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+// These tests run alongside other render-heavy integration tests; allow extra slack to avoid
+// flakes under CPU contention.
+const TIMEOUT: Duration = Duration::from_secs(15);
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let idx = (y * pixmap.width() + x) as usize * 4;

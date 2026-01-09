@@ -164,7 +164,8 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         tab_id,
         initial_url,
         ..
-      } => {
+      }
+      | UiToWorker::NewTab { tab_id, initial_url } => {
         let entry = tabs.entry(tab_id).or_insert_with(TabState::new);
         entry.history = TabHistory::new();
         entry.document = None;
@@ -172,7 +173,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         entry.interaction = InteractionEngine::new();
 
         if let Some(url) = initial_url {
-          navigate_tab(tab_id, entry, url, NavigationReason::TypedUrl, &tx);
+          navigate_tab(tab_id, entry, url, NavigationReason::TypedUrl, None, &tx);
         }
       }
       UiToWorker::CloseTab { tab_id } => {
@@ -190,7 +191,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         tab
           .history
           .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
-        navigate_tab(tab_id, tab, url, reason, &tx);
+        navigate_tab(tab_id, tab, url, reason, None, &tx);
       }
       UiToWorker::GoBack { tab_id } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
@@ -210,8 +211,16 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
           });
           continue;
         };
+
         tab.scroll_state = ScrollState::with_viewport(Point::new(scroll_x, scroll_y));
-        navigate_tab(tab_id, tab, url, NavigationReason::BackForward, &tx);
+        navigate_tab(
+          tab_id,
+          tab,
+          url,
+          NavigationReason::BackForward,
+          Some((scroll_x, scroll_y)),
+          &tx,
+        );
       }
       UiToWorker::GoForward { tab_id } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
@@ -231,8 +240,16 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
           });
           continue;
         };
+
         tab.scroll_state = ScrollState::with_viewport(Point::new(scroll_x, scroll_y));
-        navigate_tab(tab_id, tab, url, NavigationReason::BackForward, &tx);
+        navigate_tab(
+          tab_id,
+          tab,
+          url,
+          NavigationReason::BackForward,
+          Some((scroll_x, scroll_y)),
+          &tx,
+        );
       }
       UiToWorker::Reload { tab_id } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
@@ -253,7 +270,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
           });
           continue;
         };
-        navigate_tab(tab_id, tab, url, NavigationReason::Reload, &tx);
+        navigate_tab(tab_id, tab, url, NavigationReason::Reload, None, &tx);
       }
       UiToWorker::ViewportChanged {
         tab_id,
@@ -395,7 +412,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
             tab
               .history
               .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
-            navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, &tx);
+            navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, None, &tx);
           }
           InteractionAction::OpenSelectDropdown {
             select_node_id,
@@ -446,7 +463,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
             tab
               .history
               .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
-            navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, &tx);
+            navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, None, &tx);
           }
           InteractionAction::OpenSelectDropdown {
             select_node_id,
@@ -495,6 +512,7 @@ fn navigate_tab(
   tab: &mut TabState,
   url: String,
   reason: NavigationReason,
+  restore_scroll: Option<(f32, f32)>,
   tx: &Sender<WorkerToUi>,
 ) {
   if let (Some(current), Some(doc)) = (tab.current_url.as_deref(), tab.document.as_mut()) {
@@ -574,6 +592,11 @@ fn navigate_tab(
     url: url.clone(),
   });
 
+  let push_history = matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick);
+  if push_history {
+    tab.history.push(url.clone());
+  }
+
   // New navigation resets interaction state. This avoids leaking focus/hover chain ids across DOM
   // trees.
   tab.interaction = InteractionEngine::new();
@@ -582,11 +605,15 @@ fn navigate_tab(
       tab.scroll_state = ScrollState::default();
     }
     NavigationReason::BackForward => {
-      // Preserve viewport scroll across history navigations, but clear element offsets since they
-      // belong to the old fragment tree.
       tab.scroll_state = ScrollState::with_viewport(tab.scroll_state.viewport);
+      if let Some((scroll_x, scroll_y)) = restore_scroll {
+        tab.scroll_state.viewport.x = if scroll_x.is_finite() { scroll_x.max(0.0) } else { 0.0 };
+        tab.scroll_state.viewport.y = if scroll_y.is_finite() { scroll_y.max(0.0) } else { 0.0 };
+      }
     }
-    NavigationReason::Reload => {}
+    NavigationReason::Reload => {
+      // Preserve scroll offsets on reload (matching typical browser behavior).
+    }
   }
 
   let options = RenderOptions::new()
@@ -671,17 +698,14 @@ fn navigate_tab(
   }
   tab.current_url = Some(final_url.clone());
 
+  // Update current history entry URL after redirects. For typed/link-click navigations, the entry
+  // was pushed above using the original URL.
+  tab.history.commit_navigation(&url, Some(&final_url));
   let title = tab
     .document
     .as_ref()
     .and_then(|doc| crate::html::title::find_document_title(doc.dom()));
 
-  // History bookkeeping (best-effort for MVP headless worker).
-  match reason {
-    NavigationReason::TypedUrl | NavigationReason::LinkClick => tab.history.push(final_url.clone()),
-    NavigationReason::BackForward | NavigationReason::Reload => {}
-  }
-  tab.history.commit_navigation(&url, Some(&final_url));
   if let Some(title) = title.clone() {
     tab.history.set_title(title);
   }

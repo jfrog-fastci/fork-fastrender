@@ -55,7 +55,8 @@ fn dropping_ui_receiver_does_not_panic_worker() {
   drop(ui_tx);
 
   let join = std::thread::spawn(move || join_handle.join());
-  // The worker may still be finishing navigation/render work; use a generous timeout to avoid
-  // flakes when tests run in parallel.
+  // Navigation work is synchronous inside the worker thread, and this test binary runs many render
+  // jobs in parallel by default. Allow extra time for the worker to finish its last navigation and
+  // observe channel shutdown under CPU contention.
   join_with_timeout(join, Duration::from_secs(20)).expect("worker thread should not panic");
 }

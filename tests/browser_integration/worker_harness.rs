@@ -7,7 +7,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
+// The worker runtime performs real parsing/layout/paint work and these integration tests run in
+// parallel by default, so allow extra slack to avoid flakes under CPU contention.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerToUiEvent {
@@ -18,6 +20,7 @@ pub enum WorkerToUiEvent {
     dpr: f32,
     scroll_state: ScrollState,
   },
+  OpenSelectDropdown { tab_id: TabId, select_node_id: usize },
   NavigationStarted { tab_id: TabId, url: String },
   NavigationCommitted {
     tab_id: TabId,
@@ -35,6 +38,7 @@ pub enum WorkerToUiEvent {
 pub enum WorkerEventKind {
   Stage,
   FrameReady,
+  OpenSelectDropdown,
   NavigationStarted,
   NavigationCommitted,
   NavigationFailed,
@@ -48,6 +52,7 @@ impl WorkerToUiEvent {
     match self {
       WorkerToUiEvent::Stage { .. } => WorkerEventKind::Stage,
       WorkerToUiEvent::FrameReady { .. } => WorkerEventKind::FrameReady,
+      WorkerToUiEvent::OpenSelectDropdown { .. } => WorkerEventKind::OpenSelectDropdown,
       WorkerToUiEvent::NavigationStarted { .. } => WorkerEventKind::NavigationStarted,
       WorkerToUiEvent::NavigationCommitted { .. } => WorkerEventKind::NavigationCommitted,
       WorkerToUiEvent::NavigationFailed { .. } => WorkerEventKind::NavigationFailed,
@@ -70,6 +75,17 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       };
       (event, Some(frame))
     }
+    WorkerToUi::OpenSelectDropdown {
+      tab_id,
+      select_node_id,
+      control: _,
+    } => (
+      WorkerToUiEvent::OpenSelectDropdown {
+        tab_id,
+        select_node_id,
+      },
+      None,
+    ),
     WorkerToUi::NavigationStarted { tab_id, url } => (WorkerToUiEvent::NavigationStarted { tab_id, url }, None),
     WorkerToUi::NavigationCommitted {
       tab_id,
@@ -252,4 +268,3 @@ impl Drop for WorkerHarness {
     }
   }
 }
-

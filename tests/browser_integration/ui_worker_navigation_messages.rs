@@ -9,7 +9,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // Worker startup + navigation + rendering can take a few seconds under load when integration tests
-// run in parallel on CI. Keep this timeout generous to avoid flakiness.
+// run in parallel on CI; keep this timeout generous to avoid flakiness.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (String, bool, bool) {

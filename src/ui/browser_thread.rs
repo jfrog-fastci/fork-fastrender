@@ -240,6 +240,13 @@ impl BrowserRuntime {
         let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
         self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
       }
+      UiToWorker::NewTab { tab_id, initial_url } => {
+        self.tabs.insert(tab_id, TabState::new(CancelGens::new()));
+        self.active_tab.get_or_insert(tab_id);
+
+        let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
+        self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+      }
       UiToWorker::CloseTab { tab_id } => {
         self.tabs.remove(&tab_id);
         if self.active_tab == Some(tab_id) {

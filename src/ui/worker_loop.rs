@@ -451,7 +451,8 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         tab_id,
         initial_url,
         ..
-      } => {
+      }
+      | UiToWorker::NewTab { tab_id, initial_url } => {
         let renderer = match FastRender::builder().build() {
           Ok(renderer) => renderer,
           Err(err) => {

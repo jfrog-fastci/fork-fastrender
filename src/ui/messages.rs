@@ -97,6 +97,13 @@ pub enum UiToWorker {
     initial_url: Option<String>,
     cancel: CancelGens,
   },
+  /// Optional alias for [`UiToWorker::CreateTab`].
+  ///
+  /// Kept for protocol flexibility as the browser UI evolves.
+  NewTab {
+    tab_id: TabId,
+    initial_url: Option<String>,
+  },
   CloseTab {
     tab_id: TabId,
   },
@@ -108,12 +115,15 @@ pub enum UiToWorker {
     url: String,
     reason: NavigationReason,
   },
+  /// Navigate to the previous history entry for this tab.
   GoBack {
     tab_id: TabId,
   },
+  /// Navigate to the next history entry for this tab.
   GoForward {
     tab_id: TabId,
   },
+  /// Reload the current history entry for this tab.
   Reload {
     tab_id: TabId,
   },

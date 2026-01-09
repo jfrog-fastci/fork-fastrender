@@ -598,8 +598,7 @@ impl Evaluator<'_> {
           }
         };
         let value = self.eval_expr(scope, &expr.right)?;
-        self
-          .env
+        self.env
           .set(scope.heap_mut(), name, value)
           .map_err(|err| ScriptError::Runtime {
             message: err.to_string(),
