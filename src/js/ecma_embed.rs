@@ -257,7 +257,7 @@ impl ScriptRealm for VmJsScriptRealm {
     source: &str,
     budget: ScriptBudgetOverride,
   ) -> Result<ScriptValue, ScriptError> {
-    // If a previous evaluation was interrupted, the VM interrupt token stays set until the host
+    // If a previous evaluation was interrupted, the VM interrupt flag stays set until the host
     // resets it. Without this, all subsequent evaluations would immediately terminate.
     self.interrupt_flag.store(false, Ordering::Relaxed);
 
