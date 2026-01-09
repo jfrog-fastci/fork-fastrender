@@ -222,10 +222,17 @@ fn stage_heartbeats_forwarded_from_worker_loop_for_navigation_and_repaints() {
     "expected stage heartbeats for worker loop tab, got none"
   );
 
-  // Stage forwarding must be scoped to each render job. Pointer moves trigger a repaint, and the
-  // worker should forward stage heartbeats for that paint without including navigation-specific
-  // fetch stages (e.g. ReadCache/FollowRedirects).
+  // Stage forwarding must be scoped to each render job: once the navigation completes, the global
+  // stage listener must be removed.
   while ui_rx.try_recv().is_ok() {}
+  record_stage(StageHeartbeat::DomParse);
+  assert!(
+    ui_rx.try_recv().is_err(),
+    "expected stage listener to be cleared after navigation job"
+  );
+
+  // Pointer moves that trigger a repaint should forward paint-stage heartbeats, and those
+  // heartbeats should also be scoped to that repaint job.
   ui_tx
     .send(UiToWorker::PointerMove {
       tab_id,
@@ -279,6 +286,14 @@ fn stage_heartbeats_forwarded_from_worker_loop_for_navigation_and_repaints() {
       StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects
     )),
     "unexpected fetch stage heartbeats during PointerMove repaint: {stages_after_input:?}"
+  );
+
+  // Drain any trailing paint heartbeats, then verify the listener has been removed.
+  while ui_rx.recv_timeout(std::time::Duration::from_millis(50)).is_ok() {}
+  record_stage(StageHeartbeat::DomParse);
+  assert!(
+    ui_rx.try_recv().is_err(),
+    "expected stage listener to be cleared after PointerMove repaint"
   );
 
   drop(ui_tx);
@@ -394,10 +409,17 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_for_navigation_and_repain
   ];
   assert_stage_order(&stages, &expected);
 
-  // Stage forwarding must be scoped to each render job. Scrolling triggers a repaint, and the
-  // worker should forward stage heartbeats for that paint without including navigation-specific
-  // fetch stages (e.g. ReadCache/FollowRedirects).
+  // Stage forwarding must be scoped to each render job: once the navigation completes, the global
+  // stage listener must be removed.
   while ui_rx.try_recv().is_ok() {}
+  record_stage(StageHeartbeat::DomParse);
+  assert!(
+    ui_rx.try_recv().is_err(),
+    "expected stage listener to be cleared after navigation job"
+  );
+
+  // Scrolling triggers a repaint. That repaint should forward paint-stage heartbeats, and those
+  // heartbeats should be scoped to the scroll repaint job.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
     .expect("Scroll");
@@ -449,6 +471,14 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_for_navigation_and_repain
       StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects
     )),
     "unexpected fetch stage heartbeats during scroll repaint: {stages_after_scroll:?}"
+  );
+
+  // Drain any trailing paint heartbeats, then verify the listener has been removed.
+  while ui_rx.recv_timeout(std::time::Duration::from_millis(50)).is_ok() {}
+  record_stage(StageHeartbeat::DomParse);
+  assert!(
+    ui_rx.try_recv().is_err(),
+    "expected stage listener to be cleared after scroll repaint"
   );
 
   drop(ui_tx);

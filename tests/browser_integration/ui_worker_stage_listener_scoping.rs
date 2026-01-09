@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
-use fastrender::render_control::StageHeartbeat;
+use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::spawn_ui_worker;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use std::sync::mpsc::Receiver;
@@ -93,9 +93,17 @@ fn stage_heartbeats_forwarded_for_scroll_repaint_after_navigation() {
   // Drain any pending messages (including stage heartbeats emitted during the navigation job).
   while ui_rx.try_recv().is_ok() {}
 
-  // Stage forwarding must be scoped to each render job. Scrolling triggers a repaint, and the
-  // worker should emit stage messages for that paint without including navigation-specific fetch
-  // stages (e.g. ReadCache/FollowRedirects).
+  // Stage forwarding must be scoped to each render job: once the navigation completes, the global
+  // stage listener must be removed.
+  record_stage(StageHeartbeat::DomParse);
+  assert!(
+    ui_rx.try_recv().is_err(),
+    "expected stage listener to be cleared after navigation job"
+  );
+
+  // Scrolling triggers a repaint. That repaint should forward paint-stage heartbeats (but not
+  // navigation-only fetch stages like ReadCache/FollowRedirects), and those heartbeats should be
+  // scoped to the scroll repaint job.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
     .expect("Scroll");
@@ -147,6 +155,14 @@ fn stage_heartbeats_forwarded_for_scroll_repaint_after_navigation() {
       StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects
     )),
     "unexpected fetch stage heartbeats during scroll repaint: {stages_after_scroll:?}"
+  );
+
+  // Drain any trailing paint heartbeats, then verify the listener has been removed.
+  while ui_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
+  record_stage(StageHeartbeat::DomParse);
+  assert!(
+    ui_rx.try_recv().is_err(),
+    "expected stage listener to be cleared after scroll repaint"
   );
 
   drop(ui_tx);
