@@ -140,7 +140,7 @@ pub(crate) fn collect_variations_for_face(
 
   // Clamp style-derived values to the matched @font-face descriptors when available.
   let wght_base = {
-    let base = font.weight.value() as f32;
+    let base = style.font_weight.to_u16() as f32;
     if let Some((min, max)) = font.face_settings.weight_range {
       base.clamp(min as f32, max as f32)
     } else {
@@ -151,7 +151,7 @@ pub(crate) fn collect_variations_for_face(
     if let Some((min, max)) = font.face_settings.stretch_range {
       style.font_stretch.to_percentage().clamp(min, max)
     } else {
-      font.stretch.to_percentage()
+      style.font_stretch.to_percentage()
     }
   };
 

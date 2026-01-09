@@ -1037,6 +1037,12 @@ impl Script {
   pub fn detect(c: char) -> Self {
     let cp = c as u32;
 
+    // Bidi format characters are default-ignorable and should not trigger script run splits, even
+    // when Unicode assigns them a concrete script (e.g. ALM is in the Arabic block).
+    if is_bidi_format_char(c) {
+      return Self::Common;
+    }
+
     // Combining marks should never trigger a script run split. Itemization will
     // treat them as inheriting the surrounding script, which keeps extended
     // grapheme clusters intact even when a mark lives in an "unexpected"
@@ -2414,9 +2420,15 @@ fn collect_opentype_features(style: &ComputedStyle) -> Vec<Feature> {
     push_toggle(&mut features, *b"hist", true);
   }
   if let Some(set) = alternates.stylistic {
-    if let Some(tag) = number_tag(b"ss", set) {
-      push_toggle(&mut features, tag, true);
-    }
+    // CSS Fonts 4 `stylistic(<feature-value-name>)` maps to `salt <feature-index>`.
+    let tag = Tag::from_bytes(b"salt");
+    features.retain(|f| f.tag != tag);
+    features.push(Feature {
+      tag,
+      value: set as u32,
+      start: 0,
+      end: u32::MAX,
+    });
   }
   for set in &alternates.stylesets {
     if let Some(tag) = number_tag(b"ss", *set) {
@@ -2435,12 +2447,21 @@ fn collect_opentype_features(style: &ComputedStyle) -> Vec<Feature> {
     }
   }
   if let Some(swash) = alternates.swash {
-    // CSS doesn't distinguish swash types; map to swsh.
-    let tag = Tag::from_bytes(b"swsh");
-    features.retain(|f| f.tag != tag);
+    // CSS Fonts 4 `swash(<feature-value-name>)` maps to both `swsh <feature-index>` and
+    // `cswh <feature-index>`.
+    let swsh_tag = Tag::from_bytes(b"swsh");
+    let cswh_tag = Tag::from_bytes(b"cswh");
+    features.retain(|f| f.tag != swsh_tag && f.tag != cswh_tag);
+    let value = swash as u32;
     features.push(Feature {
-      tag,
-      value: swash as u32,
+      tag: swsh_tag,
+      value,
+      start: 0,
+      end: u32::MAX,
+    });
+    features.push(Feature {
+      tag: cswh_tag,
+      value,
       start: 0,
       end: u32::MAX,
     });
@@ -2524,22 +2545,75 @@ fn trim_ascii_whitespace_html_css(value: &str) -> &str {
   value.trim_matches(is_ascii_whitespace_html_css)
 }
 
-/// Script fallback selection only distinguishes Japanese vs Korean vs everything else.
+/// Script fallback selection only distinguishes Japanese, Korean, and Traditional Chinese
+/// (Simplified Chinese + all other tags share the same fallback order).
 ///
 /// This helper uses HTML/CSS ASCII whitespace semantics so NBSP is not treated as ignorable.
 #[inline]
 fn language_signature_for_script_fallback(language: &str) -> u64 {
-  let primary = trim_ascii_whitespace_html_css(language)
+  let language = trim_ascii_whitespace_html_css(language);
+  let mut subtags = language
     .split(|ch| ch == '-' || ch == '_')
-    .next()
-    .unwrap_or_default();
+    .filter(|segment| !segment.is_empty())
+    .peekable();
+  let primary = subtags.next().unwrap_or_default();
+
   if primary.eq_ignore_ascii_case("ja") {
-    1
-  } else if primary.eq_ignore_ascii_case("ko") {
-    2
-  } else {
-    0
+    return 1;
   }
+  if primary.eq_ignore_ascii_case("ko") {
+    return 2;
+  }
+  if !primary.eq_ignore_ascii_case("zh") {
+    return 0;
+  }
+
+  // Keep logic in sync with `script_fallback::cjk_fallback_families`, but use ASCII whitespace
+  // trimming semantics (matching HTML/CSS language tag handling in other parts of the pipeline).
+  let mut extlang_count = 0usize;
+  while extlang_count < 3 {
+    let Some(&next) = subtags.peek() else { break };
+    if next.len() == 1 {
+      break;
+    }
+    if next.len() == 3 && next.chars().all(|ch| ch.is_ascii_alphabetic()) {
+      subtags.next();
+      extlang_count += 1;
+      continue;
+    }
+    break;
+  }
+
+  let script = match subtags.peek().copied() {
+    Some(subtag) if subtag.len() == 4 && subtag.chars().all(|ch| ch.is_ascii_alphabetic()) => {
+      subtags.next();
+      Some(subtag)
+    }
+    _ => None,
+  };
+
+  let region = match subtags.peek().copied() {
+    Some(subtag)
+      if (subtag.len() == 2 && subtag.chars().all(|ch| ch.is_ascii_alphabetic()))
+        || (subtag.len() == 3 && subtag.chars().all(|ch| ch.is_ascii_digit())) =>
+    {
+      subtags.next();
+      Some(subtag)
+    }
+    _ => None,
+  };
+
+  let use_traditional = match script {
+    Some(script) if script.eq_ignore_ascii_case("Hant") => true,
+    Some(script) if script.eq_ignore_ascii_case("Hans") => false,
+    _ => region.is_some_and(|region| {
+      region.eq_ignore_ascii_case("TW")
+        || region.eq_ignore_ascii_case("HK")
+        || region.eq_ignore_ascii_case("MO")
+    }),
+  };
+
+  if use_traditional { 3 } else { 0 }
 }
 
 fn resolve_opentype_language(style: &ComputedStyle, font: &LoadedFont) -> Option<HbLanguage> {
@@ -3433,10 +3507,18 @@ fn assign_fonts_internal(
           set.insert(descriptor);
         }
       }
-      // Only use the cluster cache for clusters that require coverage across multiple codepoints.
-      // This avoids hashing + caching for clusters that contain only non-rendering codepoints
-      // (e.g. variation selectors) in addition to a single renderable base.
-      let cluster_cache_key = if coverage_chars_all.len() > 1 {
+      // Only use the cluster cache when the full scalar sequence influences font selection.
+      //
+      // Most clusters with a single renderable base (e.g. variation selectors) can be cached by
+      // the base character alone. Emoji tag sequences are the notable exception: many distinct tag
+      // sequences share the same base (U+1F3F4), so caching solely by the base codepoint would
+      // conflate different flags and introduce fallback-cache churn.
+      let use_cluster_cache = if coverage_chars_all.len() > 1 {
+        true
+      } else {
+        cluster_text.chars().any(emoji::is_tag_character)
+      };
+      let cluster_cache_key = if use_cluster_cache {
         descriptor.map(|descriptor| ClusterFallbackCacheKey {
           descriptor,
           signature: cluster_signature(cluster_text),
@@ -3453,7 +3535,7 @@ fn assign_fonts_internal(
       let mut resolved: Option<Arc<LoadedFont>> = cached_cluster.clone().flatten();
       let mut skip_resolution = matches!(cached_cluster, Some(None));
 
-      if !skip_resolution && resolved.is_none() && coverage_chars_all.len() <= 1 {
+      if !skip_resolution && resolved.is_none() && !use_cluster_cache && coverage_chars_all.len() <= 1 {
         let char_cache_key = descriptor.map(|descriptor| GlyphFallbackCacheKey {
           descriptor,
           ch: base_char,
@@ -8639,6 +8721,10 @@ mod tests {
   fn non_ascii_whitespace_language_signature_for_script_fallback_does_not_trim_nbsp() {
     assert_eq!(language_signature_for_script_fallback("ja"), 1);
     assert_eq!(language_signature_for_script_fallback("ko"), 2);
+    assert_eq!(language_signature_for_script_fallback("zh"), 0);
+    assert_eq!(language_signature_for_script_fallback("zh-Hans"), 0);
+    assert_eq!(language_signature_for_script_fallback("zh-Hant"), 3);
+    assert_eq!(language_signature_for_script_fallback("zh-TW"), 3);
     assert_eq!(language_signature_for_script_fallback("\u{00A0}ja"), 0);
     assert_eq!(language_signature_for_script_fallback("ko\u{00A0}"), 0);
   }
@@ -10005,11 +10091,16 @@ mod tests {
       seen.insert(f.tag.to_bytes(), f.value);
     }
     assert_eq!(seen.get(b"hist"), Some(&1));
-    assert_eq!(seen.get(b"ss03"), Some(&1));
+    assert_eq!(seen.get(b"salt"), Some(&3));
+    assert!(
+      seen.get(b"ss03").is_none(),
+      "stylistic() should map to OpenType salt (not ssNN)"
+    );
     assert_eq!(seen.get(b"ss01"), Some(&1));
     assert_eq!(seen.get(b"ss02"), Some(&1));
     assert_eq!(seen.get(b"cv04"), Some(&1));
     assert_eq!(seen.get(b"swsh"), Some(&1));
+    assert_eq!(seen.get(b"cswh"), Some(&1));
     assert_eq!(seen.get(b"ornm"), Some(&2));
     assert_eq!(
       seen.get(b"nalt"),
