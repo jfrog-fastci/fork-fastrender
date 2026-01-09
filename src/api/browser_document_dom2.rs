@@ -21,6 +21,7 @@ pub struct BrowserDocumentDom2 {
   dom: crate::dom2::Document,
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
+  animation_state_store: crate::animation::AnimationStateStore,
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
@@ -44,6 +45,7 @@ impl BrowserDocumentDom2 {
       dom,
       options,
       prepared: None,
+      animation_state_store: crate::animation::AnimationStateStore::new(),
       // First frame needs a full pipeline run.
       style_dirty: true,
       layout_dirty: true,
@@ -71,6 +73,7 @@ impl BrowserDocumentDom2 {
     self.dom = crate::dom2::Document::from_renderer_dom(&document.dom);
     self.options = options;
     self.prepared = Some(document);
+    self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = true;
@@ -90,6 +93,7 @@ impl BrowserDocumentDom2 {
   pub fn set_animation_clock(&mut self, clock: Arc<dyn Clock>) {
     self.animation_clock = clock;
     self.animation_timeline_origin = None;
+    self.animation_state_store = crate::animation::AnimationStateStore::new();
   }
 
   /// Enables/disables real-time animation sampling based on this document's timeline.
@@ -100,9 +104,11 @@ impl BrowserDocumentDom2 {
     if enabled && !self.realtime_animations_enabled {
       self.realtime_animations_enabled = true;
       self.animation_timeline_origin = None;
+      self.animation_state_store = crate::animation::AnimationStateStore::new();
     } else if !enabled && self.realtime_animations_enabled {
       self.realtime_animations_enabled = false;
       self.animation_timeline_origin = None;
+      self.animation_state_store = crate::animation::AnimationStateStore::new();
     }
   }
 
@@ -288,12 +294,15 @@ impl BrowserDocumentDom2 {
       Point::new(self.options.scroll_x, self.options.scroll_y),
       self.options.element_scroll_offsets.clone(),
     );
-    let frame = prepared.paint_with_options_frame(PreparedPaintOptions {
-      scroll: Some(scroll_state),
-      viewport: None,
-      background: None,
-      animation_time,
-    })?;
+    let frame = prepared.paint_with_options_frame_with_animation_state_store(
+      PreparedPaintOptions {
+        scroll: Some(scroll_state),
+        viewport: None,
+        background: None,
+        animation_time,
+      },
+      &mut self.animation_state_store,
+    )?;
 
     // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
     // scroll snap/clamp). This must not mark the document dirty because the frame we just painted
@@ -566,6 +575,86 @@ mod tests {
     let pixmap_override = doc.render_frame()?;
     let c2 = pixmap_override.pixel(5, 5).expect("pixel 5,5");
     assert_rgb_close(c2, 0, 0);
+
+    Ok(())
+  }
+
+  fn pixel_gray(pixmap: &super::super::Pixmap) -> u8 {
+    let px = pixmap.pixel(0, 0).expect("pixel in bounds");
+    assert_eq!(px.alpha(), 255, "expected opaque pixel");
+    assert_eq!(px.red(), px.green(), "expected grayscale pixel");
+    assert_eq!(px.red(), px.blue(), "expected grayscale pixel");
+    px.red()
+  }
+
+  fn assert_pixel_gray_approx(pixmap: &super::super::Pixmap, expected: u8, tolerance: u8) {
+    let actual = pixel_gray(pixmap);
+    let delta = actual.abs_diff(expected);
+    assert!(
+      delta <= tolerance,
+      "expected gray ≈{expected}±{tolerance}, got {actual} (Δ={delta})"
+    );
+  }
+
+  #[test]
+  fn realtime_animations_pause_and_resume_across_frames() -> Result<()> {
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; background: white; }
+            #a { width: 1px; height: 1px; background: black; animation: fade 1s linear forwards; }
+            @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+          </style>
+        </head>
+        <body>
+          <div id="a"></div>
+        </body>
+      </html>
+    "#;
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(2, 2))?;
+
+    let clock = Arc::new(crate::js::clock::VirtualClock::new());
+    doc.set_animation_clock(clock.clone());
+    doc.set_realtime_animations_enabled(true);
+
+    // t=0ms: opacity=0 => background shines through.
+    let frame0 = doc.render_frame()?;
+    assert_eq!(pixel_gray(&frame0), 255);
+
+    // t=600ms: opacity=0.6 => ~40% white.
+    clock.advance(Duration::from_millis(600));
+    let frame600 = doc.render_frame()?;
+    assert_pixel_gray_approx(&frame600, 102, 4);
+
+    // Pause at t=600ms.
+    let node = crate::dom2::get_element_by_id(doc.dom(), "a").expect("#a element");
+    doc
+      .dom_mut()
+      .set_attribute(node, "style", "animation-play-state: paused;")
+      .expect("set_attribute");
+    let paused600 = doc.render_frame()?;
+    assert_pixel_gray_approx(&paused600, 102, 4);
+
+    // Advance time while paused; output should remain frozen.
+    clock.advance(Duration::from_millis(300));
+    let paused900 = doc.render_frame()?;
+    assert_pixel_gray_approx(&paused900, 102, 4);
+
+    // Resume at t=900ms (without advancing time).
+    let node = crate::dom2::get_element_by_id(doc.dom(), "a").expect("#a element");
+    doc
+      .dom_mut()
+      .set_attribute(node, "style", "animation-play-state: running;")
+      .expect("set_attribute");
+    let resumed900 = doc.render_frame()?;
+    assert_pixel_gray_approx(&resumed900, 102, 4);
+
+    // t=1000ms: animation should have progressed to 700ms of active time (0.7 opacity).
+    clock.advance(Duration::from_millis(100));
+    let frame1000 = doc.render_frame()?;
+    assert_pixel_gray_approx(&frame1000, 77, 5);
 
     Ok(())
   }
