@@ -12,6 +12,8 @@ use vm_js::{
   PropertyKey, PropertyKind, Value, VmError, WeakGcObject,
 };
 
+mod ecma_webidl;
+
 type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError>>;
 
 fn is_ecma_whitespace(c: char) -> bool {
