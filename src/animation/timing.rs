@@ -155,17 +155,21 @@ impl DocumentTimeline {
 /// Minimal state for WA1 "AnimationPlayer" timekeeping.
 #[derive(Debug, Clone)]
 pub struct AnimationTimingState {
+  timeline_time: TimeValue,
   start_time: TimeValue,
   hold_time: TimeValue,
   playback_rate: f64,
+  previous_current_time: TimeValue,
 }
 
 impl Default for AnimationTimingState {
   fn default() -> Self {
     Self {
+      timeline_time: TimeValue::UNRESOLVED,
       start_time: TimeValue::UNRESOLVED,
       hold_time: TimeValue::UNRESOLVED,
       playback_rate: 1.0,
+      previous_current_time: TimeValue::UNRESOLVED,
     }
   }
 }
@@ -173,6 +177,14 @@ impl Default for AnimationTimingState {
 impl AnimationTimingState {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  pub fn set_timeline_time(&mut self, timeline_time: TimeValue) {
+    self.timeline_time = timeline_time;
+  }
+
+  pub fn timeline_time(&self) -> TimeValue {
+    self.timeline_time
   }
 
   pub fn start_time(&self) -> TimeValue {
@@ -187,10 +199,17 @@ impl AnimationTimingState {
     self.playback_rate
   }
 
-  /// WA1: Calculating the current time of an animation (Overview.bs §2.4).
-  pub fn current_time_at_timeline_time(&self, timeline_time: TimeValue) -> TimeValue {
+  pub fn previous_current_time(&self) -> TimeValue {
+    self.previous_current_time
+  }
+
+  fn calculate_current_time_at_timeline_time(
+    &self,
+    timeline_time: TimeValue,
+    ignore_hold_time: bool,
+  ) -> TimeValue {
     // 1. If the hold time is resolved, return it.
-    if self.hold_time.is_resolved() {
+    if !ignore_hold_time && self.hold_time.is_resolved() {
       return self.hold_time;
     }
 
@@ -210,18 +229,33 @@ impl AnimationTimingState {
       .checked_mul_f64(self.playback_rate)
   }
 
+  fn calculate_current_time(&self, ignore_hold_time: bool) -> TimeValue {
+    self.calculate_current_time_at_timeline_time(self.timeline_time, ignore_hold_time)
+  }
+
+  fn timeline_is_active(&self) -> bool {
+    self.timeline_time.is_resolved()
+  }
+
+  /// WA1: Calculating the current time of an animation (Overview.bs §2.4).
+  pub fn current_time_at_timeline_time(&self, timeline_time: TimeValue) -> TimeValue {
+    self.calculate_current_time_at_timeline_time(timeline_time, /* ignore_hold_time */ false)
+  }
+
   pub fn current_time(&self, timeline: Option<&DocumentTimeline>) -> TimeValue {
     let timeline_time = timeline.map_or(TimeValue::UNRESOLVED, |t| t.current_time());
     self.current_time_at_timeline_time(timeline_time)
   }
 
   pub fn pause(&mut self, timeline_time: TimeValue) {
+    self.timeline_time = timeline_time;
     let current = self.current_time_at_timeline_time(timeline_time);
     self.hold_time = current;
     self.start_time = TimeValue::UNRESOLVED;
   }
 
   pub fn play(&mut self, timeline_time: TimeValue) {
+    self.timeline_time = timeline_time;
     // Resume from a resolved hold time.
     if self.hold_time.is_resolved() && self.playback_rate != 0.0 {
       if timeline_time.is_unresolved() {
@@ -249,6 +283,7 @@ impl AnimationTimingState {
   /// This updates either the hold time (paused/idle or inactive timeline) or
   /// the start time (playing) depending on the current state.
   pub fn set_current_time(&mut self, seek_time: TimeValue, timeline_time: TimeValue) {
+    self.timeline_time = timeline_time;
     // Treat invalid input as an unresolved seek.
     if seek_time.is_unresolved() {
       self.hold_time = TimeValue::UNRESOLVED;
@@ -283,6 +318,7 @@ impl AnimationTimingState {
   /// timelines (e.g. scroll-driven timelines), WA1 specifies additional
   /// machinery involving pending playback rates which is not implemented yet.
   pub fn set_playback_rate(&mut self, new_rate: f64, timeline_time: TimeValue, timeline_is_monotonic: bool) {
+    self.timeline_time = timeline_time;
     if !new_rate.is_finite() {
       return;
     }
@@ -302,6 +338,46 @@ impl AnimationTimingState {
       self.set_current_time(current, timeline_time);
     }
   }
+
+  /// WA1: Update an animation's finished state (timing-only).
+  ///
+  /// This corresponds to the "Update an animation's finished state" algorithm in WA1
+  /// (Overview.bs §2.8), limited to the hold-time clamping logic. Promise/job queue
+  /// and event dispatch are handled elsewhere.
+  pub fn update_finished_state(&mut self, associated_effect_end: f64, did_seek: bool) {
+    let unconstrained_current_time = if did_seek {
+      self.calculate_current_time(/* ignore_hold_time */ false)
+    } else {
+      self.calculate_current_time(/* ignore_hold_time */ true)
+    };
+
+    if unconstrained_current_time.is_resolved() && self.start_time.is_resolved() {
+      let unconstrained = unconstrained_current_time.as_millis().unwrap_or(0.0);
+
+      if self.playback_rate > 0.0 && unconstrained >= associated_effect_end {
+        self.hold_time = if did_seek {
+          TimeValue::resolved(unconstrained)
+        } else {
+          let prev = self
+            .previous_current_time
+            .as_millis()
+            .unwrap_or(associated_effect_end);
+          TimeValue::resolved(prev.max(associated_effect_end))
+        };
+      } else if self.playback_rate < 0.0 && unconstrained <= 0.0 {
+        self.hold_time = if did_seek {
+          TimeValue::resolved(unconstrained)
+        } else {
+          let prev = self.previous_current_time.as_millis().unwrap_or(0.0);
+          TimeValue::resolved(prev.min(0.0))
+        };
+      } else if self.playback_rate != 0.0 && self.timeline_is_active() {
+        self.hold_time = TimeValue::UNRESOLVED;
+      }
+    }
+
+    self.previous_current_time = self.calculate_current_time(/* ignore_hold_time */ false);
+  }
 }
 
 #[cfg(test)]
@@ -314,6 +390,7 @@ mod tests {
       start_time: TimeValue::resolved(0.0),
       hold_time: TimeValue::resolved(123.0),
       playback_rate: 1.0,
+      ..AnimationTimingState::new()
     };
 
     assert_eq!(
@@ -337,6 +414,7 @@ mod tests {
       start_time: TimeValue::resolved(10.0),
       hold_time: TimeValue::UNRESOLVED,
       playback_rate: 2.0,
+      ..AnimationTimingState::new()
     };
     assert_eq!(
       state.current_time_at_timeline_time(TimeValue::resolved(20.0)),
@@ -350,6 +428,7 @@ mod tests {
       start_time: TimeValue::resolved(0.0),
       hold_time: TimeValue::UNRESOLVED,
       playback_rate: 1.0,
+      ..AnimationTimingState::new()
     };
 
     // Playing at t=50 => currentTime=50.
@@ -389,6 +468,7 @@ mod tests {
       start_time: TimeValue::resolved(0.0),
       hold_time: TimeValue::UNRESOLVED,
       playback_rate: 1.0,
+      ..AnimationTimingState::new()
     };
 
     assert_eq!(
@@ -409,5 +489,75 @@ mod tests {
       state.current_time_at_timeline_time(TimeValue::resolved(60.0)),
       TimeValue::resolved(70.0)
     );
+  }
+
+  #[test]
+  fn finished_state_playback_rate_positive_crossing_end_clamps_to_end() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    state.set_timeline_time(TimeValue::resolved(12.0));
+
+    state.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ false);
+
+    assert_eq!(state.hold_time(), TimeValue::resolved(10.0));
+    assert_eq!(state.previous_current_time(), TimeValue::resolved(10.0));
+  }
+
+  #[test]
+  fn finished_state_playback_rate_negative_crossing_zero_clamps_to_zero() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(10.0),
+      playback_rate: -1.0,
+      ..AnimationTimingState::new()
+    };
+    state.set_timeline_time(TimeValue::resolved(12.0));
+
+    state.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ false);
+
+    assert_eq!(state.hold_time(), TimeValue::resolved(0.0));
+    assert_eq!(state.previous_current_time(), TimeValue::resolved(0.0));
+  }
+
+  #[test]
+  fn finished_state_did_seek_true_keeps_unconstrained_time_beyond_effect_end() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    state.set_timeline_time(TimeValue::resolved(12.0));
+
+    state.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ true);
+
+    assert_eq!(state.hold_time(), TimeValue::resolved(12.0));
+    assert_eq!(state.previous_current_time(), TimeValue::resolved(12.0));
+  }
+
+  #[test]
+  fn finished_state_uses_previous_current_time_when_crossing_boundary_without_seeking() {
+    let mut positive = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      playback_rate: 1.0,
+      previous_current_time: TimeValue::resolved(13.0),
+      ..AnimationTimingState::new()
+    };
+    positive.set_timeline_time(TimeValue::resolved(12.0));
+
+    positive.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ false);
+    assert_eq!(positive.hold_time(), TimeValue::resolved(13.0));
+
+    let mut negative = AnimationTimingState {
+      start_time: TimeValue::resolved(10.0),
+      playback_rate: -1.0,
+      previous_current_time: TimeValue::resolved(-5.0),
+      ..AnimationTimingState::new()
+    };
+    negative.set_timeline_time(TimeValue::resolved(12.0));
+
+    negative.update_finished_state(/* associated_effect_end */ 10.0, /* did_seek */ false);
+    assert_eq!(negative.hold_time(), TimeValue::resolved(-5.0));
   }
 }
