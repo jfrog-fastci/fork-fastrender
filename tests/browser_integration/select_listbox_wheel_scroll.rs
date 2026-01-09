@@ -1,8 +1,10 @@
-use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
-use fastrender::interaction::InteractionEngine;
-use fastrender::interaction::absolute_bounds_for_box_id;
-use fastrender::{BrowserDocument, BoxType, Overflow, Point, RenderOptions, Result};
 use super::support::deterministic_renderer;
+use fastrender::interaction::absolute_bounds_for_box_id;
+use fastrender::interaction::content_rect_for_border_rect;
+use fastrender::interaction::InteractionEngine;
+use fastrender::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
+use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
+use fastrender::{BrowserDocument, BoxType, Overflow, Point, RenderOptions, Result};
 
 fn find_listbox_select_box_id(box_tree: &fastrender::BoxTree) -> Option<usize> {
   let mut stack = vec![&box_tree.root];
@@ -95,7 +97,6 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
       <head>
         <style>
           html, body { margin: 0; padding: 0; }
-          select { border: 5px solid black; padding: 7px; line-height: 20px; font-size: 20px; }
         </style>
       </head>
       <body>
@@ -129,24 +130,40 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
 
   let select_rect =
     absolute_bounds_for_box_id(prepared.fragment_tree(), select_box_id).expect("select rect");
-  let row_height = 20.0_f32;
-  let border = 5.0_f32;
-  let padding = 7.0_f32;
-  let content_rect_y = select_rect.y() + border + padding;
-  let content_rect_x = select_rect.x() + border + padding;
+  let select_style = prepared
+    .fragment_tree()
+    .iter_fragments()
+    .find(|fragment| fragment.box_id() == Some(select_box_id))
+    .and_then(|fragment| fragment.get_style())
+    .expect("expected <select> fragment to have a computed style");
+
+  let viewport_size = prepared.fragment_tree().viewport_size();
+  let content_rect = content_rect_for_border_rect(select_rect, select_style, viewport_size);
+  let row_height = compute_line_height_with_metrics_viewport(select_style, None, Some(viewport_size));
+  assert!(
+    row_height.is_finite() && row_height > 0.0,
+    "expected non-zero row height"
+  );
 
   // Scroll by ~2 rows, then click within the top visible row. The click should select the
   // scrolled-to option, not the original first row.
-  doc.wheel_scroll_at_viewport_point(Point::new(5.0, 5.0), (0.0, row_height * 2.0))?;
+  let initial_viewport_scroll = doc.scroll_state().viewport;
+  let wheel_page_point = Point::new(content_rect.x() + 1.0, content_rect.y() + 1.0);
+  let wheel_viewport_point = Point::new(
+    wheel_page_point.x - initial_viewport_scroll.x,
+    wheel_page_point.y - initial_viewport_scroll.y,
+  );
+  doc.wheel_scroll_at_viewport_point(wheel_viewport_point, (0.0, row_height * 2.0))?;
   let scroll_state = doc.scroll_state();
   let scroll_y = scroll_state.element_offset(select_box_id).y;
   assert!(scroll_y > 0.0, "expected listbox select to scroll");
 
-  let click_viewport_point = Point::new(content_rect_x + 1.0, content_rect_y + row_height / 2.0);
-  let page_point = click_viewport_point.translate(scroll_state.viewport);
+  let page_point = Point::new(content_rect.x() + 1.0, content_rect.y() + row_height / 2.0);
+  let click_viewport_point =
+    Point::new(page_point.x - scroll_state.viewport.x, page_point.y - scroll_state.viewport.y);
 
   // Expected row index based on the same math as the select listbox painter.
-  let local_y = page_point.y - content_rect_y;
+  let local_y = page_point.y - content_rect.y();
   let expected_row_idx = ((local_y + scroll_y) / row_height).floor().max(0.0) as usize;
 
   let mut engine = InteractionEngine::new();

@@ -3,7 +3,6 @@ use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::geometry::Point;
 use crate::geometry::Rect;
-use crate::geometry::Size;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::scroll::ScrollState;
 use crate::style::ComputedStyle;
@@ -21,6 +20,7 @@ use url::form_urlencoded;
 use url::Url;
 
 use super::dom_mutation;
+use super::fragment_geometry::content_rect_for_border_rect;
 use super::hit_test::hit_test_dom;
 use super::image_maps;
 
@@ -784,95 +784,6 @@ fn fragment_rect_for_box_id_at_point(
   None
 }
 
-fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
-  Rect::from_xywh(
-    rect.x() + left,
-    rect.y() + top,
-    (rect.width() - left - right).max(0.0),
-    (rect.height() - top - bottom).max(0.0),
-  )
-}
-
-fn select_content_rect(border_rect: Rect, style: &ComputedStyle, viewport_size: Size) -> Rect {
-  let base = border_rect.width().max(0.0);
-  let viewport = if viewport_size.width.is_finite() && viewport_size.height.is_finite() {
-    (viewport_size.width, viewport_size.height)
-  } else {
-    (base, base)
-  };
-
-  let font_size = style.font_size;
-  let root_font_size = style.root_font_size;
-
-  // Mirror the painter's `background_rects` logic: border rect -> padding rect -> content rect.
-  let border_left = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.used_border_left_width(),
-    font_size,
-    root_font_size,
-    base,
-    Some(viewport),
-  );
-  let border_right = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.used_border_right_width(),
-    font_size,
-    root_font_size,
-    base,
-    Some(viewport),
-  );
-  let border_top = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.used_border_top_width(),
-    font_size,
-    root_font_size,
-    base,
-    Some(viewport),
-  );
-  let border_bottom = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.used_border_bottom_width(),
-    font_size,
-    root_font_size,
-    base,
-    Some(viewport),
-  );
-
-  let padding_left = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.padding_left,
-    font_size,
-    root_font_size,
-    base,
-    Some(viewport),
-  );
-  let padding_right = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.padding_right,
-    font_size,
-    root_font_size,
-    base,
-    Some(viewport),
-  );
-  let padding_top = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.padding_top,
-    font_size,
-    root_font_size,
-    base,
-    Some(viewport),
-  );
-  let padding_bottom = crate::paint::paint_bounds::resolve_length_for_paint(
-    &style.padding_bottom,
-    font_size,
-    root_font_size,
-    base,
-    Some(viewport),
-  );
-
-  let padding_rect = inset_rect(border_rect, border_left, border_top, border_right, border_bottom);
-  inset_rect(
-    padding_rect,
-    padding_left,
-    padding_top,
-    padding_right,
-    padding_bottom,
-  )
-}
-
 fn fragment_rect_for_box_id(fragment_tree: &FragmentTree, target_box_id: usize) -> Option<Rect> {
   struct Frame<'a> {
     node: &'a crate::tree::fragment_tree::FragmentNode,
@@ -978,7 +889,7 @@ fn apply_select_listbox_click(
   }
 
   let viewport_size = fragment_tree.viewport_size();
-  let content_rect = select_content_rect(select_rect, style, viewport_size);
+  let content_rect = content_rect_for_border_rect(select_rect, style, viewport_size);
 
   let row_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
   if row_height <= 0.0 || !row_height.is_finite() {
