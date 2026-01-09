@@ -209,55 +209,11 @@ fn discovers_sharedworker_tests_but_skips_them() {
 }
 
 #[test]
-#[cfg(feature = "quickjs")]
 fn runs_domparsing_innerhtml_outerhtml_test() {
-  let corpus_root = corpus_root();
-  let tests_root = tests_root();
-  let tests = discover_tests(&tests_root).expect("discover tests");
-  let test = tests
-    .iter()
-    .find(|t| t.id == "domparsing/innerhtml-outerhtml.window.js")
-    .expect("missing innerhtml-outerhtml.window.js");
-
-  let fs = WptFs::new(&corpus_root).expect("wpt fs");
-  let runner = Runner::new(
-    fs,
-    RunnerConfig {
-      backend: BackendSelection::QuickJs,
-      ..RunnerConfig::default()
-    },
-  );
-  let result = runner.run_test(test).expect("run test");
-  assert_eq!(result.outcome, RunOutcome::Pass);
-  let report = result
-    .wpt_report
-    .expect("innerhtml-outerhtml should include report payload");
-  assert_eq!(report.file_status, "pass");
+  assert_wpt_pass("domparsing/innerhtml-outerhtml.window.js");
 }
 
 #[test]
-#[cfg(feature = "quickjs")]
 fn runs_domparsing_documentfragment_test() {
-  let corpus_root = corpus_root();
-  let tests_root = tests_root();
-  let tests = discover_tests(&tests_root).expect("discover tests");
-  let test = tests
-    .iter()
-    .find(|t| t.id == "domparsing/documentfragment.window.js")
-    .expect("missing documentfragment.window.js");
-
-  let fs = WptFs::new(&corpus_root).expect("wpt fs");
-  let runner = Runner::new(
-    fs,
-    RunnerConfig {
-      backend: BackendSelection::QuickJs,
-      ..RunnerConfig::default()
-    },
-  );
-  let result = runner.run_test(test).expect("run test");
-  assert_eq!(result.outcome, RunOutcome::Pass);
-  let report = result
-    .wpt_report
-    .expect("documentfragment should include report payload");
-  assert_eq!(report.file_status, "pass");
+  assert_wpt_pass("domparsing/documentfragment.window.js");
 }

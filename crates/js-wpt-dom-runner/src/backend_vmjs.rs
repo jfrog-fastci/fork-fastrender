@@ -545,6 +545,13 @@ impl Default for DomNodeKind {
 struct DomNodeState {
   kind: DomNodeKind,
   tag_name: String,
+  /// Serialized character data for this node.
+  ///
+  /// The vm-js WPT runner currently models a minimal DOM that only needs to support the curated
+  /// offline tests. To avoid implementing full text node objects (which would require far more of
+  /// the JS object model, including live NodeList updates for text nodes), we store simple text
+  /// content directly on element nodes when their "children" are just text.
+  text_content: Option<String>,
   parent: Option<GcObject>,
   children: Vec<GcObject>,
   // Children appended to <template> go into an inert subtree and must not be traversed by selector
@@ -762,6 +769,7 @@ struct JsWptRuntime {
   events: HashMap<GcObject, EventState>,
   dom_nodes: HashMap<GcObject, DomNodeState>,
   dom_element_proto: Option<GcObject>,
+  document_fragment_proto: Option<GcObject>,
   document_body: Option<GcObject>,
   promises: HashMap<GcObject, PromiseState>,
   promise_jobs: HashMap<u64, PromiseJob>,
@@ -818,6 +826,7 @@ impl JsWptRuntime {
       events: HashMap::new(),
       dom_nodes: HashMap::new(),
       dom_element_proto: None,
+      document_fragment_proto: None,
       document_body: None,
       promises: HashMap::new(),
       promise_jobs: HashMap::new(),
@@ -921,7 +930,7 @@ impl JsWptRuntime {
       );
     }
 
-    // Node prototype (inherits EventTarget, adds DOM + selector APIs).
+    // Node prototype (inherits EventTarget, adds DOM tree mutation APIs).
     let node_proto = self.alloc_object()?;
     self
       .heap
@@ -931,10 +940,6 @@ impl JsWptRuntime {
     let has_child_nodes = self.alloc_native_function(native_node_has_child_nodes)?;
     let remove = self.alloc_native_function(native_node_remove)?;
     let remove_child = self.alloc_native_function(native_dom_remove_child)?;
-    let matches = self.alloc_native_function(native_dom_element_matches)?;
-    let closest = self.alloc_native_function(native_dom_element_closest)?;
-    let query_selector = self.alloc_native_function(native_dom_element_query_selector)?;
-    let query_selector_all = self.alloc_native_function(native_dom_element_query_selector_all)?;
     let append_child_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("appendChild")?)
@@ -955,6 +960,26 @@ impl JsWptRuntime {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("remove")?)
     };
+    self.define_data_prop(node_proto, append_child_key, Value::Object(append_child))?;
+    self.define_data_prop(node_proto, contains_key, Value::Object(contains))?;
+    self.define_data_prop(node_proto, has_child_nodes_key, Value::Object(has_child_nodes))?;
+    self.define_data_prop(node_proto, remove_key, Value::Object(remove))?;
+    self.define_data_prop(node_proto, remove_child_key, Value::Object(remove_child))?;
+    self.node_proto = Some(node_proto);
+
+    // Element prototype (inherits Node, adds selector + DOMParsing APIs).
+    let element_proto = self.alloc_object()?;
+    self.heap.object_set_prototype(element_proto, Some(node_proto))?;
+    let matches = self.alloc_native_function(native_dom_element_matches)?;
+    let closest = self.alloc_native_function(native_dom_element_closest)?;
+    let query_selector = self.alloc_native_function(native_dom_element_query_selector)?;
+    let query_selector_all = self.alloc_native_function(native_dom_element_query_selector_all)?;
+
+    let inner_get = self.alloc_native_function(native_dom_element_get_inner_html)?;
+    let inner_set = self.alloc_native_function(native_dom_element_set_inner_html)?;
+    let outer_get = self.alloc_native_function(native_dom_element_get_outer_html)?;
+    let outer_set = self.alloc_native_function(native_dom_element_set_outer_html)?;
+
     let matches_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("matches")?)
@@ -971,22 +996,43 @@ impl JsWptRuntime {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("querySelectorAll")?)
     };
+    self.define_data_prop(element_proto, matches_key, Value::Object(matches))?;
+    self.define_data_prop(element_proto, closest_key, Value::Object(closest))?;
+    self.define_data_prop(element_proto, query_selector_key, Value::Object(query_selector))?;
     self.define_data_prop(
-      node_proto,
+      element_proto,
       query_selector_all_key,
       Value::Object(query_selector_all),
     )?;
-    self.define_data_prop(node_proto, append_child_key, Value::Object(append_child))?;
-    self.define_data_prop(node_proto, contains_key, Value::Object(contains))?;
-    self.define_data_prop(node_proto, has_child_nodes_key, Value::Object(has_child_nodes))?;
-    self.define_data_prop(node_proto, remove_key, Value::Object(remove))?;
-    self.define_data_prop(node_proto, remove_child_key, Value::Object(remove_child))?;
-    self.define_data_prop(node_proto, matches_key, Value::Object(matches))?;
-    self.define_data_prop(node_proto, closest_key, Value::Object(closest))?;
-    self.define_data_prop(node_proto, query_selector_key, Value::Object(query_selector))?;
-    self.node_proto = Some(node_proto);
-    // Reuse the Node prototype for DOM elements created by the runner.
-    self.dom_element_proto = Some(node_proto);
+    let inner_html_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("innerHTML")?)
+    };
+    let outer_html_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("outerHTML")?)
+    };
+    self.define_accessor_prop(
+      element_proto,
+      inner_html_key,
+      Value::Object(inner_get),
+      Value::Object(inner_set),
+    )?;
+    self.define_accessor_prop(
+      element_proto,
+      outer_html_key,
+      Value::Object(outer_get),
+      Value::Object(outer_set),
+    )?;
+
+    self.dom_element_proto = Some(element_proto);
+
+    // DocumentFragment prototype (inherits Node, no extra APIs for now).
+    let document_fragment_proto = self.alloc_object()?;
+    self
+      .heap
+      .object_set_prototype(document_fragment_proto, Some(node_proto))?;
+    self.document_fragment_proto = Some(document_fragment_proto);
 
     // `document` object: Node + createElement + URL.
     let document = self.alloc_object()?;
@@ -1076,6 +1122,25 @@ impl JsWptRuntime {
     self.define_data_prop(document, body_key, Value::Object(body))?;
 
     self.env.set("document", Value::Object(document));
+
+    // Expose minimal DOM interface constructors required by the curated WPT corpus (notably
+    // `DocumentFragment` for `instanceof` checks).
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+
+    let element_ctor = self.alloc_native_function(native_illegal_dom_constructor)?;
+    self.define_data_prop(element_ctor, prototype_key, Value::Object(element_proto))?;
+    self.env.set("Element", Value::Object(element_ctor));
+
+    let fragment_ctor = self.alloc_native_function(native_illegal_dom_constructor)?;
+    self.define_data_prop(
+      fragment_ctor,
+      prototype_key,
+      Value::Object(document_fragment_proto),
+    )?;
+    self.env.set("DocumentFragment", Value::Object(fragment_ctor));
 
     // Expose `window.document` and `window.location` for harness code that expects them.
     let document_key = {
@@ -1287,6 +1352,23 @@ impl JsWptRuntime {
     Ok(())
   }
 
+  fn define_accessor_prop(
+    &mut self,
+    obj: GcObject,
+    key: PropertyKey,
+    get: Value,
+    set: Value,
+  ) -> Result<(), JsError> {
+    let desc = PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Accessor { get, set },
+    };
+    let mut scope = self.heap.scope();
+    scope.define_property(obj, key, desc)?;
+    Ok(())
+  }
+
   fn alloc_native_function(
     &mut self,
     f: fn(&mut JsWptRuntime, Value, &[Value]) -> Result<Value, JsError>,
@@ -1310,6 +1392,12 @@ impl JsWptRuntime {
     self
       .dom_element_proto
       .ok_or_else(|| JsError::Vm(VmError::Unimplemented("DOM Element prototype")))
+  }
+
+  fn document_fragment_proto(&self) -> Result<GcObject, JsError> {
+    self
+      .document_fragment_proto
+      .ok_or_else(|| JsError::Vm(VmError::Unimplemented("DOM DocumentFragment prototype")))
   }
 
   fn alloc_dom_element(&mut self, tag_name: &str) -> Result<GcObject, JsError> {
@@ -1347,6 +1435,7 @@ impl JsWptRuntime {
       DomNodeState {
         kind: DomNodeKind::Element,
         tag_name: tag_name.to_ascii_lowercase(),
+        text_content: None,
         parent: None,
         children: Vec::new(),
         template_content: Vec::new(),
@@ -1360,10 +1449,8 @@ impl JsWptRuntime {
 
   fn alloc_dom_document_fragment(&mut self) -> Result<GcObject, JsError> {
     let obj = self.alloc_object()?;
-    // DocumentFragment is a Node but not an Element. For this harness we use the shared Node
-    // prototype (same object as `dom_element_proto`) but omit element-specific properties like
-    // `tagName`.
-    let proto = self.node_proto.ok_or_else(|| JsError::Vm(VmError::Unimplemented("DOM Node prototype")))?;
+    // DocumentFragment is a Node but not an Element.
+    let proto = self.document_fragment_proto()?;
     self.heap.object_set_prototype(obj, Some(proto))?;
 
     // Like other DOM nodes, fragments participate in event dispatch paths, but they start detached.
@@ -1386,6 +1473,7 @@ impl JsWptRuntime {
       DomNodeState {
         kind: DomNodeKind::DocumentFragment,
         tag_name: String::new(),
+        text_content: None,
         parent: None,
         children: Vec::new(),
         template_content: Vec::new(),
@@ -2275,7 +2363,15 @@ impl JsWptRuntime {
     };
     match desc.kind {
       PropertyKind::Data { value, .. } => Ok(value),
-      PropertyKind::Accessor { .. } => Err(JsError::Vm(VmError::Unimplemented("accessor props"))),
+      PropertyKind::Accessor { get, .. } => {
+        if matches!(get, Value::Undefined) {
+          return Ok(Value::Undefined);
+        }
+        if !self.is_callable_value(get) {
+          return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+        }
+        self.call(get, Value::Object(obj), &[])
+      }
     }
   }
 
@@ -2293,7 +2389,15 @@ impl JsWptRuntime {
     };
     match desc.kind {
       PropertyKind::Data { value, .. } => Ok(value),
-      PropertyKind::Accessor { .. } => Err(JsError::Vm(VmError::Unimplemented("accessor props"))),
+      PropertyKind::Accessor { get, .. } => {
+        if matches!(get, Value::Undefined) {
+          return Ok(Value::Undefined);
+        }
+        if !self.is_callable_value(get) {
+          return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+        }
+        self.call(get, Value::Object(obj), &[])
+      }
     }
   }
 
@@ -2324,8 +2428,15 @@ impl JsWptRuntime {
         let value = match self.heap.get_property(obj, &key)? {
           Some(desc) => match desc.kind {
             PropertyKind::Data { value, .. } => value,
-            PropertyKind::Accessor { .. } => {
-              return Err(JsError::Vm(VmError::Unimplemented("accessor props")))
+            PropertyKind::Accessor { get, .. } => {
+              if matches!(get, Value::Undefined) {
+                Value::Undefined
+              } else {
+                if !self.is_callable_value(get) {
+                  return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+                }
+                self.call(get, Value::Object(obj), &[])?
+              }
             }
           },
           None => Value::Undefined,
@@ -2342,8 +2453,15 @@ impl JsWptRuntime {
         let value = match self.heap.get_property(obj, &key)? {
           Some(desc) => match desc.kind {
             PropertyKind::Data { value, .. } => value,
-            PropertyKind::Accessor { .. } => {
-              return Err(JsError::Vm(VmError::Unimplemented("accessor props")))
+            PropertyKind::Accessor { get, .. } => {
+              if matches!(get, Value::Undefined) {
+                Value::Undefined
+              } else {
+                if !self.is_callable_value(get) {
+                  return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+                }
+                self.call(get, Value::Object(obj), &[])?
+              }
             }
           },
           None => Value::Undefined,
@@ -2411,6 +2529,26 @@ impl JsWptRuntime {
       OperatorName::LogicalNot => {
         let arg = self.eval_expr(&expr.argument)?;
         Ok(Value::Bool(!to_boolean(&mut self.heap, arg)?))
+      }
+      OperatorName::Typeof => {
+        let arg = self.eval_expr(&expr.argument)?;
+        let typ = match arg {
+          Value::Undefined => "undefined",
+          Value::Null => "object",
+          Value::Bool(_) => "boolean",
+          Value::Number(_) => "number",
+          Value::BigInt(_) => "bigint",
+          Value::String(_) => "string",
+          Value::Symbol(_) => "symbol",
+          Value::Object(obj) => {
+            if self.callables.contains_key(&obj) {
+              "function"
+            } else {
+              "object"
+            }
+          }
+        };
+        self.alloc_string_value(typ)
       }
       OperatorName::New => self.eval_new(&expr.argument),
       _ => Err(JsError::Vm(VmError::Unimplemented("unary operator"))),
@@ -2506,6 +2644,63 @@ impl JsWptRuntime {
         let right = self.eval_expr(&expr.right)?;
         Ok(Value::Bool(!strict_equal(&mut self.heap, left, right)?))
       }
+      OperatorName::Instanceof => {
+        let left = self.eval_expr(&expr.left)?;
+        let right = self.eval_expr(&expr.right)?;
+
+        let Value::Object(ctor) = right else {
+          return Err(JsError::Vm(VmError::TypeError(
+            "right-hand side of 'instanceof' is not an object",
+          )));
+        };
+        if !self.callables.contains_key(&ctor) {
+          return Err(JsError::Vm(VmError::NotCallable));
+        }
+
+        // OrdinaryHasInstance: look up `ctor.prototype` and walk the prototype chain of `left`.
+        let prototype_key = {
+          let mut scope = self.heap.scope();
+          PropertyKey::from_string(scope.alloc_string("prototype")?)
+        };
+        let Some(desc) = self.heap.get_property(ctor, &prototype_key)? else {
+          return Err(JsError::Vm(VmError::TypeError(
+            "'instanceof' constructor has no prototype",
+          )));
+        };
+        let proto_value = match desc.kind {
+          PropertyKind::Data { value, .. } => value,
+          PropertyKind::Accessor { get, .. } => {
+            if matches!(get, Value::Undefined) {
+              Value::Undefined
+            } else {
+              if !self.is_callable_value(get) {
+                return Err(JsError::Vm(VmError::TypeError("accessor getter is not callable")));
+              }
+              self.call(get, Value::Object(ctor), &[])?
+            }
+          }
+        };
+        let Value::Object(expected_proto) = proto_value else {
+          return Err(JsError::Vm(VmError::TypeError(
+            "'instanceof' prototype is not an object",
+          )));
+        };
+
+        let Value::Object(obj) = left else {
+          // Per spec, primitives are never instances of object constructors.
+          return Ok(Value::Bool(false));
+        };
+
+        let mut current = Some(obj);
+        while let Some(cur) = current {
+          let proto = self.heap.object_prototype(cur)?;
+          if proto == Some(expected_proto) {
+            return Ok(Value::Bool(true));
+          }
+          current = proto;
+        }
+        Ok(Value::Bool(false))
+      }
       OperatorName::Assignment => {
         let value = self.eval_expr(&expr.right)?;
         self.assign_to(&expr.left, value)?;
@@ -2536,6 +2731,20 @@ impl JsWptRuntime {
           let mut scope = self.heap.scope();
           PropertyKey::from_string(scope.alloc_string(&member.stx.right)?)
         };
+        if let Some(desc) = self.heap.get_property(obj, &key)? {
+          if let PropertyKind::Accessor { set, .. } = desc.kind {
+            if matches!(set, Value::Undefined) {
+              // Non-strict mode: setting a property with no setter is a no-op.
+              return Ok(());
+            }
+            if !self.is_callable_value(set) {
+              return Err(JsError::Vm(VmError::TypeError("accessor setter is not callable")));
+            }
+            let _ = self.call(set, Value::Object(obj), &[value])?;
+            return Ok(());
+          }
+        }
+
         self.define_data_prop(obj, key, value)?;
         Ok(())
       }
@@ -2548,6 +2757,19 @@ impl JsWptRuntime {
         };
         let member_value = self.eval_expr(&member.stx.member)?;
         let key = self.value_to_property_key(member_value)?;
+        if let Some(desc) = self.heap.get_property(obj, &key)? {
+          if let PropertyKind::Accessor { set, .. } = desc.kind {
+            if matches!(set, Value::Undefined) {
+              return Ok(());
+            }
+            if !self.is_callable_value(set) {
+              return Err(JsError::Vm(VmError::TypeError("accessor setter is not callable")));
+            }
+            let _ = self.call(set, Value::Object(obj), &[value])?;
+            return Ok(());
+          }
+        }
+
         self.define_data_prop(obj, key, value)?;
         Ok(())
       }
@@ -3986,6 +4208,331 @@ fn dom_require_node(rt: &mut JsWptRuntime, value: Value, method: &str) -> Result
   Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
     "TypeError: {method} called on non-Node"
   ))?)))
+}
+
+fn native_illegal_dom_constructor(
+  rt: &mut JsWptRuntime,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+    "TypeError: Illegal constructor",
+  )?)))
+}
+
+fn dom_escape_text(out: &mut String, text: &str) {
+  for ch in text.chars() {
+    match ch {
+      '&' => out.push_str("&amp;"),
+      '<' => out.push_str("&lt;"),
+      '>' => out.push_str("&gt;"),
+      _ => out.push(ch),
+    }
+  }
+}
+
+fn dom_is_void_html_element(tag_name: &str) -> bool {
+  // https://html.spec.whatwg.org/#void-elements
+  matches!(
+    tag_name,
+    "area"
+      | "base"
+      | "br"
+      | "col"
+      | "embed"
+      | "hr"
+      | "img"
+      | "input"
+      | "link"
+      | "meta"
+      | "param"
+      | "source"
+      | "track"
+      | "wbr"
+  )
+}
+
+fn dom_element_children_for_serialization(state: &DomNodeState) -> &[GcObject] {
+  if state.tag_name == "template" {
+    &state.template_content
+  } else {
+    &state.children
+  }
+}
+
+fn dom_serialize_node(rt: &JsWptRuntime, node: GcObject, out: &mut String) -> Result<(), JsError> {
+  let Some(state) = rt.dom_nodes.get(&node) else {
+    return Ok(());
+  };
+
+  match state.kind {
+    DomNodeKind::DocumentFragment => {
+      for &child in dom_element_children_for_serialization(state) {
+        dom_serialize_node(rt, child, out)?;
+      }
+      Ok(())
+    }
+    DomNodeKind::Element => {
+      out.push('<');
+      out.push_str(&state.tag_name);
+      out.push('>');
+
+      if !dom_is_void_html_element(&state.tag_name) {
+        let children = dom_element_children_for_serialization(state);
+        if !children.is_empty() {
+          for &child in children {
+            dom_serialize_node(rt, child, out)?;
+          }
+        } else if let Some(text) = &state.text_content {
+          dom_escape_text(out, text);
+        }
+
+        out.push_str("</");
+        out.push_str(&state.tag_name);
+        out.push('>');
+      }
+      Ok(())
+    }
+  }
+}
+
+fn dom_parse_simple_element_list(html: &str) -> Result<Option<Vec<(String, String)>>, ()> {
+  if !html.as_bytes().contains(&b'<') {
+    return Ok(None);
+  }
+
+  let mut out = Vec::new();
+  let mut pos = 0usize;
+  while pos < html.len() {
+    if html.as_bytes()[pos] != b'<' {
+      return Ok(None);
+    }
+    // `<tag>`
+    let open_end_rel = html[pos..].find('>').ok_or(())?;
+    let open_end = pos + open_end_rel;
+    if open_end <= pos + 1 {
+      return Ok(None);
+    }
+    let tag = &html[pos + 1..open_end];
+    if tag.starts_with('/') {
+      return Ok(None);
+    }
+    if !tag.chars().all(|c| c.is_ascii_alphanumeric()) {
+      return Ok(None);
+    }
+    pos = open_end + 1;
+
+    // `</tag>`
+    let close_seq = format!("</{tag}>");
+    let close_rel = html[pos..].find(&close_seq).ok_or(())?;
+    let close_start = pos + close_rel;
+    let text = html[pos..close_start].to_string();
+    out.push((tag.to_ascii_lowercase(), text));
+    pos = close_start + close_seq.len();
+  }
+
+  Ok(Some(out))
+}
+
+fn native_dom_element_get_inner_html(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "innerHTML")?;
+  let Some(state) = rt.dom_nodes.get(&element) else {
+    return rt.alloc_string_value("");
+  };
+
+  let children = dom_element_children_for_serialization(state);
+  let mut out = String::new();
+  if !children.is_empty() {
+    for &child in children {
+      dom_serialize_node(rt, child, &mut out)?;
+    }
+  } else if let Some(text) = &state.text_content {
+    dom_escape_text(&mut out, text);
+  }
+  rt.alloc_string_value(&out)
+}
+
+fn dom_detach_children(rt: &mut JsWptRuntime, parent: GcObject) -> Result<(), JsError> {
+  let (children, template_children) = rt
+    .dom_nodes
+    .get(&parent)
+    .map(|s| (s.children.clone(), s.template_content.clone()))
+    .unwrap_or_default();
+  let parent_node_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("parentNode")?)
+  };
+
+  for child in children.into_iter().chain(template_children.into_iter()) {
+    if let Some(state) = rt.dom_nodes.get_mut(&child) {
+      state.parent = None;
+    }
+    if let Some(et) = rt.event_targets.get_mut(&child) {
+      et.parent = None;
+    }
+    rt.define_data_prop(child, parent_node_key, Value::Null)?;
+  }
+
+  if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+    state.children.clear();
+    state.template_content.clear();
+    state.text_content = None;
+  }
+  rt.update_dom_child_nodes(parent)?;
+  Ok(())
+}
+
+fn native_dom_element_set_inner_html(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "innerHTML")?;
+  let html = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+  dom_detach_children(rt, element)?;
+
+  let parsed = dom_parse_simple_element_list(&html).unwrap_or(None);
+  let parent_tag = rt
+    .dom_nodes
+    .get(&element)
+    .map(|s| s.tag_name.clone())
+    .unwrap_or_default();
+  let parent_is_template = parent_tag == "template";
+  let parent_node_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("parentNode")?)
+  };
+
+  if let Some(items) = parsed {
+    for (tag, text) in items {
+      let node = rt.alloc_dom_element(&tag)?;
+      if let Some(state) = rt.dom_nodes.get_mut(&node) {
+        state.text_content = if text.is_empty() { None } else { Some(text) };
+        state.parent = Some(element);
+      }
+      if let Some(et) = rt.event_targets.get_mut(&node) {
+        et.parent = Some(element);
+      }
+      rt.define_data_prop(node, parent_node_key, Value::Object(element))?;
+      if let Some(parent_state) = rt.dom_nodes.get_mut(&element) {
+        if parent_is_template {
+          parent_state.template_content.push(node);
+        } else {
+          parent_state.children.push(node);
+        }
+      }
+    }
+  } else if let Some(parent_state) = rt.dom_nodes.get_mut(&element) {
+    parent_state.text_content = if html.is_empty() { None } else { Some(html) };
+  }
+
+  rt.update_dom_child_nodes(element)?;
+  Ok(Value::Undefined)
+}
+
+fn native_dom_element_get_outer_html(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "outerHTML")?;
+  let mut out = String::new();
+  dom_serialize_node(rt, element, &mut out)?;
+  rt.alloc_string_value(&out)
+}
+
+fn native_dom_element_set_outer_html(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "outerHTML")?;
+  let html = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+  let parent = rt.dom_nodes.get(&element).and_then(|s| s.parent);
+  let Some(parent) = parent else {
+    // Spec: if the element has no parent, setting outerHTML is a no-op.
+    return Ok(Value::Undefined);
+  };
+
+  let parent_tag = rt
+    .dom_nodes
+    .get(&parent)
+    .map(|s| s.tag_name.clone())
+    .unwrap_or_default();
+  let parent_is_template = parent_tag == "template";
+
+  let parsed = dom_parse_simple_element_list(&html).unwrap_or(None);
+  let mut new_nodes = Vec::<GcObject>::new();
+  if let Some(items) = parsed {
+    for (tag, text) in items {
+      let node = rt.alloc_dom_element(&tag)?;
+      if let Some(state) = rt.dom_nodes.get_mut(&node) {
+        state.text_content = if text.is_empty() { None } else { Some(text) };
+      }
+      new_nodes.push(node);
+    }
+  } else {
+    // Minimal harness: ignore unsupported outerHTML fragments that are not element lists.
+    new_nodes.clear();
+  }
+
+  // Detach the replaced element.
+  if let Some(state) = rt.dom_nodes.get_mut(&element) {
+    state.parent = None;
+  }
+  if let Some(et) = rt.event_targets.get_mut(&element) {
+    et.parent = None;
+  }
+  let parent_node_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("parentNode")?)
+  };
+  rt.define_data_prop(element, parent_node_key, Value::Null)?;
+
+  // Replace in parent's child list.
+  let replacement_idx = rt
+    .dom_nodes
+    .get(&parent)
+    .and_then(|s| {
+      let list = if parent_is_template {
+        &s.template_content
+      } else {
+        &s.children
+      };
+      list.iter().position(|&id| id == element)
+    })
+    .ok_or_else(|| JsError::Vm(VmError::TypeError("outerHTML target is not a child of its parent")))?;
+
+  if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+    let list = if parent_is_template {
+      &mut state.template_content
+    } else {
+      &mut state.children
+    };
+    list.splice(
+      replacement_idx..replacement_idx + 1,
+      new_nodes.iter().copied(),
+    );
+  }
+
+  for &node in &new_nodes {
+    if let Some(state) = rt.dom_nodes.get_mut(&node) {
+      state.parent = Some(parent);
+    }
+    if let Some(et) = rt.event_targets.get_mut(&node) {
+      et.parent = Some(parent);
+    }
+    rt.define_data_prop(node, parent_node_key, Value::Object(parent))?;
+  }
+
+  rt.update_dom_child_nodes(parent)?;
+  Ok(Value::Undefined)
 }
 
 fn native_dom_element_matches(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
