@@ -296,7 +296,7 @@ fn console_log_native(
   Ok(Value::Undefined)
 }
 
-  fn init_window_globals(
+fn init_window_globals(
   vm: &mut Vm,
   heap: &mut Heap,
   realm: &Realm,

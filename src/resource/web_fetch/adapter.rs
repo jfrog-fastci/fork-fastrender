@@ -5,6 +5,7 @@ use crate::resource::{
   origin_from_url, validate_cors_allow_origin, CorsMode, DocumentOrigin, FetchCredentialsMode,
   FetchDestination, FetchRequest, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
+use crate::url_normalize::{normalize_http_url_for_resolution, normalize_url_reference_for_resolution};
 use url::Url;
 
 use super::{
@@ -79,18 +80,46 @@ fn resolve_request_url<'a>(
   client_origin: Option<&DocumentOrigin>,
   storage: &'a mut Option<String>,
 ) -> Option<&'a str> {
+  let normalized_candidate = normalize_http_url_for_resolution(candidate);
   if Url::parse(candidate).is_ok() {
     return Some(candidate);
   }
-
-  if let Some(base) = base_url.and_then(|u| Url::parse(u).ok()) {
-    if let Ok(joined) = base.join(candidate) {
-      *storage = Some(joined.to_string());
+  if normalized_candidate.as_ref() != candidate {
+    if Url::parse(normalized_candidate.as_ref()).is_ok() {
+      *storage = Some(normalized_candidate.into_owned());
       return storage.as_deref();
     }
   }
 
+  let normalized_ref = normalize_url_reference_for_resolution(candidate);
+
+  if let Some(raw_base) = base_url {
+    let normalized_base = normalize_http_url_for_resolution(raw_base);
+    let base = Url::parse(normalized_base.as_ref())
+      .or_else(|_| Url::parse(raw_base))
+      .ok();
+
+    if let Some(base) = base {
+      if normalized_ref.as_ref() != candidate {
+        if let Ok(joined) = base.join(normalized_ref.as_ref()) {
+          *storage = Some(joined.to_string());
+          return storage.as_deref();
+        }
+      }
+      if let Ok(joined) = base.join(candidate) {
+        *storage = Some(joined.to_string());
+        return storage.as_deref();
+      }
+    }
+  }
+
   if let Some(origin) = client_origin.and_then(url_base_for_origin) {
+    if normalized_ref.as_ref() != candidate {
+      if let Ok(joined) = origin.join(normalized_ref.as_ref()) {
+        *storage = Some(joined.to_string());
+        return storage.as_deref();
+      }
+    }
     if let Ok(joined) = origin.join(candidate) {
       *storage = Some(joined.to_string());
       return storage.as_deref();
@@ -1357,6 +1386,42 @@ mod tests {
     let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
     assert_eq!(response.r#type, ResponseType::Opaque);
     assert_eq!(response.url, "");
+  }
+
+  #[test]
+  fn web_fetch_resolves_relative_url_against_tolerant_referrer_url() {
+    struct UrlAssertingFetcher;
+
+    impl ResourceFetcher for UrlAssertingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.url, "https://example.com/dir/sub");
+        Ok(FetchedResource::new(b"ok".to_vec(), None))
+      }
+
+      fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+        panic!("fetch_http_request should not be called for cacheable GET requests");
+      }
+    }
+
+    // The referrer URL contains characters (`|`) that `url::Url::parse` rejects, but browsers
+    // percent-encode them during URL resolution. We normalize such referrers so relative request
+    // URLs still resolve against the full path instead of falling back to the origin root.
+    let fetcher = UrlAssertingFetcher;
+    let origin = origin_from_url("https://example.com/").expect("origin");
+    let mut request = Request::new("GET", "sub");
+    request.mode = RequestMode::SameOrigin;
+    let ctx = WebFetchExecutionContext {
+      referrer_url: Some("https://example.com/dir/page?x=1|2"),
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.r#type, ResponseType::Basic);
+    assert_eq!(response.url, "https://example.com/dir/sub");
   }
 
   #[test]
