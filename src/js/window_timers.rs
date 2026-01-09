@@ -127,12 +127,8 @@ fn normalize_timer_id(heap: &Heap, value: Value) -> TimerId {
 }
 
 fn is_callable(scope: &Scope<'_>, value: Value) -> bool {
-  // `vm-js` does not currently expose a public "IsCallable" query.
-  //
-  // For now, treat non-object values as non-callable and allow object values through (they will
-  // still error with `VmError::NotCallable` if invoked and not a function object).
-  let _ = scope;
-  matches!(value, Value::Object(_))
+  // Prefer the engine's brand check: only `HeapObject::Function` values are callable.
+  scope.heap().is_callable(value).unwrap_or(false)
 }
 
 fn get_timer_registry(scope: &mut Scope<'_>, global: vm_js::GcObject) -> Result<vm_js::GcObject, VmError> {
@@ -740,6 +736,39 @@ mod tests {
     }
 
     Ok(Value::Undefined)
+  }
+
+  #[test]
+  fn set_timeout_rejects_non_callable_callback() -> Result<(), VmError> {
+    let mut host = Host::new();
+
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    install_window_timers_bindings::<Host>(vm, realm, heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global));
+
+    let set_timeout = get_prop(&mut scope, global, "setTimeout");
+    let not_a_function = scope.alloc_object()?;
+    scope.push_root(Value::Object(not_a_function));
+
+    let err = vm.call(
+      &mut scope,
+      set_timeout,
+      Value::Object(global),
+      &[Value::Object(not_a_function), Value::Number(0.0)],
+    );
+
+    let Err(VmError::Throw(Value::String(msg))) = err else {
+      panic!("expected setTimeout to throw a TypeError for non-callable callback");
+    };
+    assert_eq!(
+      scope.heap().get_string(msg)?.to_utf8_lossy(),
+      "TypeError: setTimeout callback is not callable"
+    );
+
+    Ok(())
   }
 
   #[test]
