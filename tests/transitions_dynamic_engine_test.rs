@@ -160,6 +160,94 @@ fn class_flip_triggers_transition_opacity() -> Result<()> {
 }
 
 #[test]
+fn transition_delay_positive_holds_start_value_until_delay_elapses() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box { width: 100px; height: 100px; background: black; opacity: 0; transition: opacity 1000ms linear 500ms; }
+      #box.b { opacity: 1; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  doc.render_frame()?;
+  assert!(set_class(&mut doc, "box", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let eps = 1e-3;
+  let cases = [(250.0, 0.0), (750.0, 0.25), (1500.0, 1.0)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < eps,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
+fn transition_delay_negative_starts_partway_through() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box { width: 100px; height: 100px; background: black; opacity: 0; transition: opacity 1000ms linear -500ms; }
+      #box.b { opacity: 1; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  doc.render_frame()?;
+  assert!(set_class(&mut doc, "box", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let eps = 1e-3;
+  let cases = [(0.0, 0.5), (250.0, 0.75), (500.0, 1.0)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < eps,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
 fn transition_reverses_with_shortened_duration() -> Result<()> {
   ensure_test_env();
 
