@@ -220,6 +220,27 @@ fn inline_svg_root_opacity_is_not_double_applied() {
 }
 
 #[test]
+fn inline_svg_root_fill_defaults_unstyled_shapes_to_current_color() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block;color:rgb(0,128,0)}</style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20"></rect>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
+      assert_eq!(pixel(&pixmap, 10, 10), [0, 128, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_root_fill_presentation_attribute_is_not_overridden() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
