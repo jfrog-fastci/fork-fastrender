@@ -1841,12 +1841,13 @@ impl FontDatabase {
 
     // The offline fixture evidence loop diffs FastRender output against headless Chrome baselines.
     // In CI those FastRender renders use bundled fonts for determinism, but Chrome uses system
-    // fonts. The bundled Noto Latin faces have notably taller ascent/descent than Chrome's default
-    // Linux sans/serif fonts, causing large vertical drift on text-heavy pages (e.g. lite.cnn.com).
+    // fonts. Some bundled fallback faces ship with line metrics that differ substantially from
+    // Chrome's default Linux sans/serif fonts, causing large vertical drift on pages that rely on
+    // `line-height: normal` (e.g. lite.cnn.com, microsoft.com).
     //
-    // CSS Fonts 4 provides `size-adjust`/`ascent-override`/`descent-override` descriptors to align
-    // fallback font metrics. Apply a small built-in override to the bundled Noto Latin families so
-    // `line-height: normal` behaves closer to Chrome when no web fonts are available.
+    // CSS Fonts 4 provides `size-adjust`/`ascent-override`/`descent-override`/`line-gap-override`
+    // descriptors to align fallback font metrics. Apply small built-in overrides to bundled Latin
+    // fallbacks so `line-height: normal` behaves closer to Chrome when fixtures omit webfonts.
     let mut face_metrics_overrides = FontFaceMetricsOverrides::default();
     if Arc::ptr_eq(&self.db, &shared_bundled_fontdb()) {
       match family.as_str() {
@@ -1854,6 +1855,13 @@ impl FontDatabase {
           face_metrics_overrides.ascent_override = Some(0.875);
           face_metrics_overrides.descent_override = Some(0.25);
           face_metrics_overrides.line_gap_override = Some(0.0);
+        }
+        "STIX Two Math" => {
+          // STIX Two Math provides good Times-like glyph metrics for serif fallback, but ships with
+          // a relatively large line gap (~0.25em) that makes `line-height: normal` taller than
+          // Chrome's typical serif fallback defaults. Reduce the line gap to a more typical ~0.125em
+          // to keep offline fixture renders closer to Chrome without changing text widths/wrapping.
+          face_metrics_overrides.line_gap_override = Some(0.125);
         }
         _ => {}
       }
@@ -2883,6 +2891,32 @@ mod tests {
       // Normal line height is usually >= font size
       assert!(normal_lh >= 14.0 && normal_lh < 32.0);
     }
+  }
+
+  #[test]
+  fn bundled_stix_two_math_overrides_line_gap() {
+    let db = FontDatabase::shared_bundled();
+    let id = db
+      .query("STIX Two Math", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("Expected bundled STIX Two Math");
+    let font = db.load_font(id).expect("Load bundled STIX Two Math");
+
+    assert_eq!(font.face_metrics_overrides.line_gap_override, Some(0.125));
+
+    let ctx = crate::text::font_loader::FontContext::empty();
+    let scaled = ctx
+      .get_scaled_metrics(&font, 16.0)
+      .expect("Scaled metrics should apply metric overrides");
+    assert!(
+      (scaled.line_gap - 2.0).abs() < 1e-3,
+      "expected 2px line gap at 16px, got {}",
+      scaled.line_gap
+    );
+    assert!(
+      (scaled.line_height - 18.0).abs() < 1e-3,
+      "expected 18px line height at 16px, got {}",
+      scaled.line_height
+    );
   }
 
   #[test]
