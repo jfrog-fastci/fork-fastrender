@@ -2,6 +2,7 @@ use fastrender::dom::enumerate_dom_ids;
 use fastrender::dom::DomNode;
 use fastrender::dom::DomNodeType;
 use fastrender::dom::HTML_NAMESPACE;
+use fastrender::dom::ShadowRootMode;
 use fastrender::geometry::Point;
 use fastrender::geometry::Rect;
 use fastrender::interaction::InteractionAction;
@@ -1682,6 +1683,174 @@ fn submit_click_uses_form_attr_idref_owner() {
       href: "https://example.com/search?q=abc".to_string()
     }
   );
+}
+
+#[test]
+fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el(
+          "template",
+          vec![("id", "tmpl")],
+          vec![el(
+            "form",
+            vec![("id", "f"), ("action", "/search")],
+            vec![el(
+              "input",
+              vec![("id", "q"), ("name", "q"), ("value", "abc")],
+              vec![],
+            )],
+          )],
+        ),
+        el(
+          "input",
+          vec![("id", "submit"), ("type", "submit"), ("form", "f")],
+          vec![],
+        ),
+      ],
+    )],
+  )]);
+ 
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+ 
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+ 
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+ 
+  let (_changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+ 
+  // The only matching `id="f"` is inside an inert `<template>` subtree, so no form owner is found
+  // and no navigation occurs.
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged {
+      node_id: Some(submit_dom_id)
+    }
+  );
+  assert_eq!(attr_value(&dom, "f", "data-fastr-user-validity"), None);
+}
+
+#[test]
+fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el(
+          "form",
+          vec![("id", "f"), ("action", "/search")],
+          vec![el(
+            "input",
+            vec![("id", "q"), ("name", "q"), ("value", "light")],
+            vec![],
+          )],
+        ),
+        el(
+          "div",
+          vec![("id", "host")],
+          vec![DomNode {
+            node_type: DomNodeType::ShadowRoot {
+              mode: ShadowRootMode::Open,
+              delegates_focus: false,
+            },
+            children: vec![el(
+              "input",
+              vec![("id", "submit"), ("type", "submit"), ("form", "f")],
+              vec![],
+            )],
+          }],
+        ),
+      ],
+    )],
+  )]);
+ 
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+ 
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+ 
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+ 
+  let (_changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+ 
+  // `form="f"` should not cross the shadow root boundary, so the light DOM `<form id="f">` should
+  // not be flagged as user-validity.
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged {
+      node_id: Some(submit_dom_id)
+    }
+  );
+  assert_eq!(
+    attr_value(&dom, "submit", "data-fastr-user-validity").as_deref(),
+    Some("true")
+  );
+  assert_eq!(attr_value(&dom, "f", "data-fastr-user-validity"), None);
 }
 
 #[test]

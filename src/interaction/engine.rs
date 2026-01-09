@@ -1005,6 +1005,19 @@ fn tree_root_boundary_id(index: &DomIndexMut, mut node_id: usize) -> Option<usiz
   None
 }
 
+fn node_or_ancestor_is_template(index: &DomIndexMut, mut node_id: usize) -> bool {
+  while node_id != 0 {
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+    if node.template_contents_are_inert() {
+      return true;
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  false
+}
+
 fn find_element_by_id_attr_in_tree(
   index: &DomIndexMut,
   tree_root_id: usize,
@@ -1015,6 +1028,9 @@ fn find_element_by_id_attr_in_tree(
       continue;
     };
     if !node.is_element() {
+      continue;
+    }
+    if node_or_ancestor_is_template(index, node_id) {
       continue;
     }
     if node.get_attribute_ref("id") != Some(html_id) {

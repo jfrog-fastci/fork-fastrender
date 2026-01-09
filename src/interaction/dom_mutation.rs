@@ -189,6 +189,52 @@ fn is_form_element(node: &DomNode) -> bool {
     .is_some_and(|t| t.eq_ignore_ascii_case("form") && is_html_element(node))
 }
 
+fn tree_root_boundary_id(index: &mut DomIndex, mut node_id: usize) -> Option<usize> {
+  while node_id != 0 {
+    let is_boundary = index
+      .with_node_mut(node_id, |node| {
+        matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. })
+      })
+      .unwrap_or(false);
+    if is_boundary {
+      return Some(node_id);
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  None
+}
+
+fn node_or_ancestor_is_template(index: &mut DomIndex, mut node_id: usize) -> bool {
+  while node_id != 0 {
+    let is_template = index
+      .with_node_mut(node_id, |node| node.is_template_element())
+      .unwrap_or(false);
+    if is_template {
+      return true;
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  false
+}
+
+fn find_element_by_id_attr_in_tree(index: &mut DomIndex, tree_root_id: usize, html_id: &str) -> Option<usize> {
+  for node_id in 1..=index.len() {
+    let matches_id = index
+      .with_node_mut(node_id, |node| node.is_element() && node.get_attribute_ref("id") == Some(html_id))
+      .unwrap_or(false);
+    if !matches_id {
+      continue;
+    }
+    if node_or_ancestor_is_template(index, node_id) {
+      continue;
+    }
+    if tree_root_boundary_id(index, node_id) == Some(tree_root_id) {
+      return Some(node_id);
+    }
+  }
+  None
+}
+
 pub fn mark_form_user_validity(root: &mut DomNode, control_node_id: usize) -> bool {
   let mut index = DomIndex::build(root);
 
@@ -206,12 +252,14 @@ pub fn mark_form_user_validity(root: &mut DomNode, control_node_id: usize) -> bo
   let mut form_owner_id = None;
 
   if let Some(form_attr) = form_attr.as_deref() {
-    if let Some(id) = index.id_by_element_id.get(form_attr).copied() {
-      if index
-        .with_node_mut(id, |node| is_form_element(node))
-        .unwrap_or(false)
-      {
-        form_owner_id = Some(id);
+    if let Some(tree_root_id) = tree_root_boundary_id(&mut index, control_node_id) {
+      if let Some(id) = find_element_by_id_attr_in_tree(&mut index, tree_root_id, form_attr) {
+        if index
+          .with_node_mut(id, |node| is_form_element(node))
+          .unwrap_or(false)
+        {
+          form_owner_id = Some(id);
+        }
       }
     }
   }
@@ -221,6 +269,14 @@ pub fn mark_form_user_validity(root: &mut DomNode, control_node_id: usize) -> bo
     while current != 0 {
       current = *index.parent.get(current).unwrap_or(&0);
       if current == 0 {
+        break;
+      }
+      let reached_boundary = index
+        .with_node_mut(current, |node| {
+          matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. })
+        })
+        .unwrap_or(false);
+      if reached_boundary {
         break;
       }
       if index
