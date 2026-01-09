@@ -94,18 +94,19 @@ pub fn parse_html_fragment(
   let convert_timer = super::dom_parse_diagnostics_timer();
   let mut deadline_counter = 0usize;
   let mut converted: Vec<DomNode> = Vec::new();
+  // `html5ever::parse_fragment` inserts parsed nodes as children of a synthetic context element.
+  // Extract that element's children rather than returning the context wrapper itself.
+  //
   // Clone handles out so we don't hold a RefCell borrow over conversion.
   let handles: Vec<Handle> = fragment_children_from_rcdom(&dom);
   converted.reserve(handles.len());
   for handle in handles {
-    if let Some(node) =
-      super::convert_handle_to_node(
-        &handle,
-        document_quirks,
-        options.scripting_enabled,
-        &mut deadline_counter,
-      )?
-    {
+    if let Some(node) = super::convert_handle_to_node(
+      &handle,
+      document_quirks,
+      options.scripting_enabled,
+      &mut deadline_counter,
+    )? {
       converted.push(node);
     }
   }
@@ -368,6 +369,61 @@ mod tests {
     match &span.children[0].node_type {
       DomNodeType::Text { content } => assert_eq!(content, "in"),
       other => panic!("expected span text child, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parse_fragment_with_scripting_disabled_parses_noscript_children_as_dom() {
+    let nodes = parse_html_fragment(
+      "<noscript><p>fallback</p></noscript>",
+      "div",
+      HTML_NAMESPACE,
+      DomParseOptions::with_scripting_enabled(false),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+    assert_eq!(nodes.len(), 1);
+
+    let noscript = &nodes[0];
+    match &noscript.node_type {
+      DomNodeType::Element { tag_name, .. } => assert_eq!(tag_name, "noscript"),
+      other => panic!("expected noscript element, got {other:?}"),
+    }
+
+    assert!(
+      noscript.children.iter().any(|child| {
+        matches!(&child.node_type, DomNodeType::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("p"))
+      }),
+      "<noscript> should parse its contents as normal DOM when scripting is disabled"
+    );
+  }
+
+  #[test]
+  fn parse_fragment_with_scripting_enabled_parses_noscript_children_as_text() {
+    let nodes = parse_html_fragment(
+      "<noscript><p>fallback</p></noscript>",
+      "div",
+      HTML_NAMESPACE,
+      DomParseOptions::with_scripting_enabled(true),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+    assert_eq!(nodes.len(), 1);
+
+    let noscript = &nodes[0];
+    assert_eq!(
+      noscript.children.len(),
+      1,
+      "<noscript> should have a single text child when scripting is enabled"
+    );
+    match &noscript.children[0].node_type {
+      DomNodeType::Text { content } => {
+        assert!(
+          content.contains("<p>fallback</p>"),
+          "noscript text should contain raw HTML: {content:?}"
+        );
+      }
+      other => panic!("expected noscript child to be text, got {other:?}"),
     }
   }
 
