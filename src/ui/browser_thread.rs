@@ -873,14 +873,8 @@ impl BrowserRuntime {
         });
 
         let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
-        let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
-          tab_id,
-          select_node_id,
-          control: control.clone(),
-          anchor_css: cursor_anchor_css,
-        });
-
-        let anchor_css = anchor_css.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+        let anchor_css = anchor_css
+          .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
         let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
           tab_id,
@@ -1041,14 +1035,6 @@ impl BrowserRuntime {
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
-          let cursor_anchor_css = anchor_css;
-          let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
-            tab_id,
-            select_node_id,
-            control: control.clone(),
-            anchor_css: cursor_anchor_css,
-          });
-
           let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
             tab_id,
             select_node_id,
