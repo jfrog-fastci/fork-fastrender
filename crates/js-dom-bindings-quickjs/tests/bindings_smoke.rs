@@ -232,3 +232,40 @@ fn document_head_and_body_getters_work() {
     assert_eq!(outcome, "ok", "document.head/body JS threw: {outcome}");
   });
 }
+
+#[test]
+fn node_remove_detaches_from_dom() {
+  let dom = make_dom(r#"<!doctype html><html><body><div id="x"><span id="y"></span></div></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r#"
+        (() => {
+          const y = document.getElementById("y");
+          if (!y) return "missing";
+          y.remove();
+
+          // Calling remove on a detached node should be a no-op.
+          const detached = document.createElement("div");
+          detached.remove();
+
+          const afterLookup = document.getElementById("y");
+          const afterLookupOk = afterLookup == null;
+          const yParentOk = y.parentNode == null;
+          const detachedParentOk = detached.parentNode == null;
+          return [afterLookupOk, yParentOk, detachedParentOk].join(",");
+        })()
+      "#,
+      )
+      .unwrap();
+    assert_eq!(outcome, "true,true,true");
+  });
+
+  let doc = dom.borrow();
+  assert!(doc.get_element_by_id("y").is_none());
+}

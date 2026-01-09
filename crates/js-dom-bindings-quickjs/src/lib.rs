@@ -189,6 +189,18 @@ impl Node {
     self.state.wrap_node(ctx, child.node_id)
   }
 
+  #[qjs(rename = "remove")]
+  fn remove<'js>(&self, ctx: Ctx<'js>) -> JsResult<()> {
+    let mut dom = self.state.dom.borrow_mut();
+    let Some(parent) = dom.parent_node(self.node_id) else {
+      return Ok(());
+    };
+    dom
+      .remove_child(parent, self.node_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?;
+    Ok(())
+  }
+
   #[qjs(rename = "replaceChild")]
   fn replace_child<'js>(
     &self,

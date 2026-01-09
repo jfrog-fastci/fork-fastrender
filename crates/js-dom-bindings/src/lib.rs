@@ -217,6 +217,23 @@ where
   )?;
 
   globals.set(
+    "__fastrender_dom_get_parent_node",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |node: u32| {
+        let node_id = NodeId::from_index(node as usize);
+        let parent = dom.borrow().with_dom(|dom| {
+          if node_id.index() >= dom.nodes_len() {
+            return None;
+          }
+          dom.parent_node(node_id).map(|id| id.index() as u32)
+        });
+        Ok::<Option<u32>, rquickjs::Error>(parent)
+      }
+    })?,
+  )?;
+
+  globals.set(
     "__fastrender_dom_query_selector",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
@@ -662,12 +679,49 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return child;
   };
 
-  // DOM `ChildNode.remove()` is widely used by real sites (and is trivial to model on top of our
-  // existing `removeChild` binding).
+  // DOM `ChildNode.remove()`: detach this node from its parent if connected.
+  //
+  // This is widely used by real sites. Our minimal binding layer does not maintain parent pointers
+  // for nodes that existed in the initial DOM snapshot, so we fall back to querying the host for
+  // the current parent when needed.
   Node.prototype.remove = function () {
-    if (this.parentNode && typeof this.parentNode.removeChild === "function") {
-      this.parentNode.removeChild(this);
+    if (this.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
     }
+
+    // Fast path: if our JS-side parent pointer exists, delegate to `removeChild` so we keep the
+    // JS-side `childNodes` cache consistent.
+    var jsParent = this.parentNode;
+    if (
+      jsParent &&
+      (typeof jsParent === "object" || typeof jsParent === "function") &&
+      jsParent.__node_id != null &&
+      typeof jsParent.removeChild === "function"
+    ) {
+      jsParent.removeChild(this);
+      return;
+    }
+
+    var parentId = g.__fastrender_dom_get_parent_node(this.__node_id);
+    if (parentId == null) {
+      // Disconnected; clear any stale JS-side parent pointers.
+      if (jsParent && Array.isArray(jsParent.childNodes)) {
+        var idx = jsParent.childNodes.indexOf(this);
+        if (idx >= 0) jsParent.childNodes.splice(idx, 1);
+      }
+      this.parentNode = null;
+      return;
+    }
+
+    g.__fastrender_dom_remove_child(parentId, this.__node_id);
+
+    // Best-effort: update JS-side `childNodes` for the parent wrapper if it exists.
+    var parentObj = nodeById.get(parentId);
+    if (parentObj && Array.isArray(parentObj.childNodes)) {
+      var idx = parentObj.childNodes.indexOf(this);
+      if (idx >= 0) parentObj.childNodes.splice(idx, 1);
+    }
+    this.parentNode = null;
   };
 
   try {
@@ -1733,6 +1787,44 @@ const DOM_BINDINGS_SHIM: &str = r##"
       })
       .map_err(|e| Error::Other(e.to_string()))?;
     assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn node_remove_detaches_from_dom() -> Result<()> {
+    let renderer_dom = fastrender::dom::parse_html(
+      "<!doctype html><html><body><div id=parent><span id=child></span></div></body></html>",
+    )?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            const child = document.getElementById("child");
+            if (!child) return false;
+            child.remove();
+
+            // Removing an already-detached node is a no-op.
+            const detached = document.createElement("div");
+            detached.remove();
+
+            return document.getElementById("child") === null && detached.parentNode === null;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok, "expected remove() to detach nodes");
+
+    assert!(
+      dom.borrow().dom.get_element_by_id("child").is_none(),
+      "expected removed element to be absent from the DOM tree"
+    );
+
     Ok(())
   }
 
