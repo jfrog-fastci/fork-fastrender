@@ -2771,6 +2771,7 @@ fn generate_boxes_for_styled_into(
     styled: &'a StyledNode,
     state: FrameState,
     entered_counter_scope: bool,
+    counter_containment_snapshot: Option<CounterManager>,
     in_footnote: bool,
     composed_children: Option<ComposedChildren<'a>>,
     child_idx: usize,
@@ -2784,6 +2785,7 @@ fn generate_boxes_for_styled_into(
         styled,
         state: FrameState::Enter,
         entered_counter_scope: false,
+        counter_containment_snapshot: None,
         in_footnote,
         composed_children: None,
         child_idx: 0,
@@ -2873,6 +2875,16 @@ fn generate_boxes_for_styled_into(
           .last()
           .map(|frame| frame.in_footnote)
           .unwrap_or(false);
+
+        // CSS Containment: `contain: style` (including implied style containment from
+        // `content-visibility:auto|hidden`) must prevent counter-like effects from escaping the
+        // contained subtree. Snapshot counter state on entry and restore it after leaving.
+        if styled.styles.containment.style {
+          let snapshot = counters.clone();
+          if let Some(frame) = stack.last_mut() {
+            frame.counter_containment_snapshot = Some(snapshot);
+          }
+        }
         counters.enter_scope();
         apply_counter_properties_from_style(styled, counters, in_footnote, options.enable_footnote_floats);
         if let Some(frame) = stack.last_mut() {
@@ -2887,8 +2899,11 @@ fn generate_boxes_for_styled_into(
                 || class_attr.contains("ad__slot")
                 || class_attr.contains("should-hold-space"))
             {
+              let frame = stack.pop().expect("frame exists");
               counters.leave_scope();
-              stack.pop();
+              if let Some(snapshot) = frame.counter_containment_snapshot {
+                *counters = snapshot;
+              }
               continue;
             }
           }
@@ -2896,8 +2911,11 @@ fn generate_boxes_for_styled_into(
 
         // display:none suppresses box generation entirely.
         if styled.styles.display == Display::None {
+          let frame = stack.pop().expect("frame exists");
           counters.leave_scope();
-          stack.pop();
+          if let Some(snapshot) = frame.counter_containment_snapshot {
+            *counters = snapshot;
+          }
           continue;
         }
 
@@ -2906,8 +2924,11 @@ fn generate_boxes_for_styled_into(
         // newline character that could be collapsed to a space).
         if let Some(tag) = styled.node.tag_name() {
           if tag.eq_ignore_ascii_case("br") {
+            let frame = stack.pop().expect("frame exists");
             counters.leave_scope();
-            stack.pop();
+            if let Some(snapshot) = frame.counter_containment_snapshot {
+              *counters = snapshot;
+            }
             let mut box_node = BoxNode::new_line_break(Arc::clone(&styled.styles));
             box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
             let box_node = attach_debug_info(box_node, styled);
@@ -2925,8 +2946,11 @@ fn generate_boxes_for_styled_into(
             let dom_subtree = dom_subtree_from_styled(styled);
             let math_root = crate::math::parse_mathml(&dom_subtree)
               .unwrap_or_else(|| crate::math::MathNode::Row(Vec::new()));
+            let frame = stack.pop().expect("frame exists");
             counters.leave_scope();
-            stack.pop();
+            if let Some(snapshot) = frame.counter_containment_snapshot {
+              *counters = snapshot;
+            }
             let box_node = BoxNode::new_replaced(
               Arc::clone(&styled.styles),
               ReplacedType::Math(MathReplaced {
@@ -2950,8 +2974,11 @@ fn generate_boxes_for_styled_into(
 
         // Form controls render as replaced elements with intrinsic sizing and native painting.
         if let Some(form_control) = create_form_control_replaced(styled) {
+          let frame = stack.pop().expect("frame exists");
           counters.leave_scope();
-          stack.pop();
+          if let Some(snapshot) = frame.counter_containment_snapshot {
+            *counters = snapshot;
+          }
           let box_node = BoxNode::new_replaced(
             Arc::clone(&styled.styles),
             ReplacedType::FormControl(form_control),
@@ -2975,8 +3002,11 @@ fn generate_boxes_for_styled_into(
             || tag.eq_ignore_ascii_case("option")
             || tag.eq_ignore_ascii_case("optgroup")
           {
+            let frame = stack.pop().expect("frame exists");
             counters.leave_scope();
-            stack.pop();
+            if let Some(snapshot) = frame.counter_containment_snapshot {
+              *counters = snapshot;
+            }
             continue;
           }
 
@@ -2994,8 +3024,11 @@ fn generate_boxes_for_styled_into(
               picture_sources_for_img,
               site_compat,
             ) {
+              let frame = stack.pop().expect("frame exists");
               counters.leave_scope();
-              stack.pop();
+              if let Some(snapshot) = frame.counter_containment_snapshot {
+                *counters = snapshot;
+              }
               let mut box_node = box_node;
               box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
               let box_node = attach_debug_info(box_node, styled);
@@ -3117,6 +3150,7 @@ fn generate_boxes_for_styled_into(
         let in_footnote = frame.in_footnote;
         let styled = frame.styled;
         let mut children = frame.children;
+        let counter_containment_snapshot = frame.counter_containment_snapshot;
         if let Some(after_styles) = &styled.after_styles {
           let after_start = clone_starting_style(&styled.starting_styles.after);
           if let Some(after_box) =
@@ -3129,6 +3163,9 @@ fn generate_boxes_for_styled_into(
         // display: contents contributes its children directly.
         if styled.styles.display == Display::Contents {
           counters.leave_scope();
+          if let Some(snapshot) = counter_containment_snapshot {
+            *counters = snapshot;
+          }
           if let Some(backdrop_box) = create_backdrop_box(styled) {
             if let Some(parent) = stack.last_mut() {
               parent.children.push(backdrop_box);
@@ -3248,6 +3285,9 @@ fn generate_boxes_for_styled_into(
           call_box.footnote_body = Some(Box::new(body_box));
 
           counters.leave_scope();
+          if let Some(snapshot) = counter_containment_snapshot {
+            *counters = snapshot;
+          }
           if let Some(parent) = stack.last_mut() {
             parent.children.push(call_box);
           } else {
@@ -3257,6 +3297,9 @@ fn generate_boxes_for_styled_into(
         }
 
         counters.leave_scope();
+        if let Some(snapshot) = counter_containment_snapshot {
+          *counters = snapshot;
+        }
         let box_node = attach_debug_info(box_node, styled);
         if let Some(parent) = stack.last_mut() {
           if let Some(backdrop_box) = create_backdrop_box(styled) {
@@ -3466,6 +3509,7 @@ fn create_pseudo_element_box(
     return None;
   }
 
+  let counter_containment_snapshot = styles.containment.style.then(|| counters.clone());
   counters.enter_scope();
   styles.counters.apply_to(counters);
 
@@ -3667,6 +3711,9 @@ fn create_pseudo_element_box(
   pseudo_box.starting_style = starting_style;
 
   counters.leave_scope();
+  if let Some(snapshot) = counter_containment_snapshot {
+    *counters = snapshot;
+  }
   Some(pseudo_box)
 }
 
@@ -3697,6 +3744,7 @@ fn create_marker_box(styled: &StyledNode, counters: &mut CounterManager) -> Opti
     return None;
   }
 
+  let counter_containment_snapshot = marker_style.containment.style.then(|| counters.clone());
   counters.enter_scope();
   marker_style.counters.apply_to(counters);
 
@@ -3713,6 +3761,9 @@ fn create_marker_box(styled: &StyledNode, counters: &mut CounterManager) -> Opti
   node.styled_node_id = Some(styled.node_id);
   node.starting_style = clone_starting_style(&styled.starting_styles.marker);
   counters.leave_scope();
+  if let Some(snapshot) = counter_containment_snapshot {
+    *counters = snapshot;
+  }
   Some(node)
 }
 

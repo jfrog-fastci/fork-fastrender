@@ -1597,6 +1597,7 @@ fn collect_running_elements_for_page(
     -root_start,
     root_block_size,
     axes,
+    false,
     &mut occurrences,
   );
 
@@ -1844,32 +1845,40 @@ fn collect_running_element_occurrences(
   abs_start: f32,
   parent_block_size: f32,
   axes: FragmentAxes,
+  in_style_containment: bool,
   out: &mut HashMap<String, Vec<(f32, FragmentNode)>>,
 ) {
   let logical_bounds = node.logical_bounds();
   let start = axes.abs_block_start(&logical_bounds, abs_start, parent_block_size);
   let node_block_size = axes.block_size(&logical_bounds);
-
-  if let FragmentContent::RunningAnchor { name, snapshot } = &node.content {
-    out
-      .entry(name.to_string())
-      .or_default()
-      .push((start, (**snapshot).clone()));
-  } else if node.content.is_block() || node.content.is_inline() || node.content.is_replaced() {
-    if let Some(name) = node
+  let in_style_containment = in_style_containment
+    || node
       .style
       .as_deref()
-      .and_then(|style| style.running_position.as_ref())
-    {
+      .is_some_and(|style| style.containment.style);
+
+  if !in_style_containment {
+    if let FragmentContent::RunningAnchor { name, snapshot } = &node.content {
       out
-        .entry(name.clone())
+        .entry(name.to_string())
         .or_default()
-        .push((start, node.clone()));
+        .push((start, (**snapshot).clone()));
+    } else if node.content.is_block() || node.content.is_inline() || node.content.is_replaced() {
+      if let Some(name) = node
+        .style
+        .as_deref()
+        .and_then(|style| style.running_position.as_ref())
+      {
+        out
+          .entry(name.clone())
+          .or_default()
+          .push((start, node.clone()));
+      }
     }
   }
 
   for child in node.children.iter() {
-    collect_running_element_occurrences(child, start, node_block_size, axes, out);
+    collect_running_element_occurrences(child, start, node_block_size, axes, in_style_containment, out);
   }
 }
 

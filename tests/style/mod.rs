@@ -76,6 +76,7 @@ mod shadow_slotted_specificity_test;
 mod shadow_slotted_test;
 mod sizing_keywords_test;
 mod string_set_test;
+mod style_containment_counters_test;
 mod styled_node_shallow_dom_clone;
 mod user_validity_pseudo_test;
 mod supports_rule_test;

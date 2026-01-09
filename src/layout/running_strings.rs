@@ -5,6 +5,25 @@ use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+fn box_is_in_style_containment(
+  mut box_id: usize,
+  styles_by_id: &HashMap<usize, Arc<crate::style::ComputedStyle>>,
+  parent_by_id: &HashMap<usize, usize>,
+) -> bool {
+  loop {
+    if styles_by_id
+      .get(&box_id)
+      .is_some_and(|style| style.containment.style)
+    {
+      return true;
+    }
+    let Some(parent) = parent_by_id.get(&box_id).copied() else {
+      return false;
+    };
+    box_id = parent;
+  }
+}
+
 /// A single string-set assignment event, positioned on the block axis.
 #[derive(Debug, Clone)]
 pub struct StringSetEvent {
@@ -133,11 +152,20 @@ fn collect_string_set_events_inner(
   }
 
   if let Some(assignments) = assignments {
+    let in_style_containment = assignments_box_id
+      .map(|box_id| box_is_in_style_containment(box_id, styles_by_id, parent_by_id))
+      .unwrap_or_else(|| {
+        node
+          .style
+          .as_deref()
+          .is_some_and(|style| style.containment.style)
+      });
+
     let should_emit = assignments_box_id
       .map(|box_id| seen_boxes.insert(box_id))
       .unwrap_or(true);
 
-    if should_emit {
+    if should_emit && !in_style_containment {
       for StringSetAssignment { name, value } in assignments {
         let resolved = resolve_string_set_value(node, value, assignments_box_id, box_text);
         out.push(StringSetEvent {

@@ -904,9 +904,9 @@ fn margin_box_content_is_positioned_in_margins() {
 #[test]
 fn running_header_carries_forward() {
   let html = r#"
-    <html>
-      <head>
-        <style>
+     <html>
+       <head>
+         <style>
           @page {
             size: 200px 200px;
             margin: 20px;
@@ -938,6 +938,59 @@ fn running_header_carries_forward() {
   assert!(
     margin_boxes_contain_text(page2, "Chapter Title"),
     "page 2 should carry forward running header"
+  );
+}
+
+#[test]
+fn running_element_inside_style_containment_does_not_affect_margin_boxes() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 20px;
+            @top-center { content: element(header); }
+          }
+          body { margin: 0; }
+          h1 { margin: 0; font-size: 16px; line-height: 16px; }
+
+          #outside { position: running(header); }
+          #contained {
+            contain: style;
+            break-before: page;
+          }
+          #contained h1 { position: running(header); }
+        </style>
+      </head>
+      <body>
+        <h1 id="outside">Outside</h1>
+        <div style="height: 40px"></div>
+        <div id="contained">
+          <h1>Inside</h1>
+          <div style="height: 40px"></div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2, "expected at least two pages");
+  assert!(
+    margin_boxes_contain_text(page_roots[0], "Outside"),
+    "first page header should use the outside running element"
+  );
+  assert!(
+    margin_boxes_contain_text(page_roots[1], "Outside"),
+    "style-contained subtree must not update the running element outside"
+  );
+  assert!(
+    !margin_boxes_contain_text(page_roots[1], "Inside"),
+    "style-contained subtree must not expose its running element"
   );
 }
 
@@ -1232,6 +1285,59 @@ fn header_repeats_across_pages() {
         .expect("page header in margin box");
     assert!(header_pos.1 < content_y);
   }
+}
+
+#[test]
+fn string_set_inside_style_containment_does_not_affect_margin_boxes() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 20px;
+            @top-center { content: string(header); }
+          }
+          body { margin: 0; }
+          h1 { margin: 0; font-size: 16px; line-height: 16px; }
+
+          #outside { string-set: header content(); }
+          #contained {
+            contain: style;
+            break-before: page;
+          }
+          #contained h1 { string-set: header content(); }
+        </style>
+      </head>
+      <body>
+        <h1 id="outside">Outside</h1>
+        <div style="height: 40px"></div>
+        <div id="contained">
+          <h1>Inside</h1>
+          <div style="height: 40px"></div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+  assert!(page_roots.len() >= 2, "expected at least two pages");
+
+  assert!(
+    margin_boxes_contain_text(page_roots[0], "Outside"),
+    "first page header should use the outside string-set assignment"
+  );
+  assert!(
+    margin_boxes_contain_text(page_roots[1], "Outside"),
+    "style-contained subtree must not update the running string outside"
+  );
+  assert!(
+    !margin_boxes_contain_text(page_roots[1], "Inside"),
+    "style-contained subtree must not expose its string-set assignment"
+  );
 }
 
 #[test]
