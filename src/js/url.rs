@@ -776,6 +776,23 @@ mod tests {
   }
 
   #[test]
+  fn url_search_and_hash_setters_percent_encode_spaces() {
+    let url = Url::parse("https://example.com/path#frag", None).unwrap();
+    let params = url.search_params();
+
+    url.set_search("?q=a b");
+    // WHATWG URL search setter uses the query state parser, which percent-encodes spaces as %20 (not
+    // `+`, which is specific to x-www-form-urlencoded serialization).
+    assert_eq!(url.search(), "?q=a%20b");
+    assert_eq!(url.href(), "https://example.com/path?q=a%20b#frag");
+    assert_eq!(params.get("q"), Some("a b".to_string()));
+
+    url.set_hash("#h a");
+    assert_eq!(url.hash(), "#h%20a");
+    assert_eq!(url.href(), "https://example.com/path?q=a%20b#h%20a");
+  }
+
+  #[test]
   fn url_searchparams_is_same_object() {
     let url = Url::parse("https://example.com/?a=b", None).unwrap();
     let a = url.search_params();
