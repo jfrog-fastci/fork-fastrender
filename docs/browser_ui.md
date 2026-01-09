@@ -45,42 +45,44 @@ See [env-vars.md](env-vars.md) for details.
 
 | Shortcut | Action |
 |---|---|
-| Ctrl+L | Focus address bar (select all) |
-| Ctrl+T | New tab |
-| Ctrl+W | Close active tab (no-op if only one tab) |
-| Ctrl+Tab | Next tab |
-| Ctrl+Shift+Tab | Previous tab |
+| Ctrl/Cmd+L | Focus address bar (select all) |
+| Ctrl/Cmd+T | New tab |
+| Ctrl/Cmd+W | Close active tab (no-op if only one tab) |
+| Ctrl/Cmd+Tab | Next tab |
+| Ctrl/Cmd+Shift+Tab | Previous tab |
 | Alt+Left | Back |
 | Alt+Right | Forward |
-| Ctrl+R / F5 | Reload |
+| Ctrl/Cmd+R / F5 | Reload |
 | Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
 
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
-  - Spawns the browser worker thread via [`spawn_browser_worker`](../src/ui/browser_thread.rs), which
-    handles navigation/scroll/input and produces `WorkerToUi` updates.
+  - Spawns the main message-driven UI worker thread via
+    [`spawn_ui_worker`](../src/ui/worker.rs) (large stack), which handles navigation/history,
+    scrolling, and DOM interaction and produces `WorkerToUi` updates.
   - Renders a small egui popup for `<select>` dropdowns driven by `WorkerToUi::OpenSelectDropdown`.
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
   [`src/ui/`](../src/ui/)
   - UI state model (`BrowserAppState`/tabs/chrome): [`src/ui/browser_app.rs`](../src/ui/browser_app.rs)
-  - egui chrome widgets (tabs row, nav buttons, address bar): [`src/ui/chrome.rs`](../src/ui/chrome.rs)
+  - Chrome action types + a reusable egui chrome UI helper: [`src/ui/chrome.rs`](../src/ui/chrome.rs)
+    - The windowed `browser` app currently renders its chrome widgets inline in
+      [`src/bin/browser.rs`](../src/bin/browser.rs) (see `App::render_chrome_ui`), but reuses the
+      `ChromeAction` type.
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
-    - Used by the browser worker ([`src/ui/browser_thread.rs`](../src/ui/browser_thread.rs)), the
-      headless worker loops (e.g. [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)), and the
-      synchronous `BrowserWorker` helper (used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode).
+    - Used by the windowed UI worker ([`src/ui/worker.rs`](../src/ui/worker.rs)), the headless worker
+      loops (e.g. [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)), and the synchronous
+      `BrowserWorker` helper (used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
-  - Headless UI worker loop (`spawn_ui_worker`) that implements navigation + scroll + pointer +
-    basic non-JS form interactions: [`src/ui/worker.rs`](../src/ui/worker.rs)
+  - Message-driven UI worker loop used by the windowed app (and some integration tests):
+    [`src/ui/worker.rs`](../src/ui/worker.rs)
     - Exercised by `tests/browser_integration/ui_worker_fragment_navigation.rs`,
-      `tests/browser_integration/ui_worker_navigation_messages.rs`,
-      `tests/browser_integration/ui_worker_hover_active.rs`, and
-      `tests/browser_integration/ui_select_listbox_click.rs`.
+      `tests/browser_integration/ui_worker_navigation_messages.rs`, etc.
   - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
     - Used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode.
   - Headless UI worker loop used by scroll-wheel integration tests (including overflow container
@@ -115,9 +117,8 @@ browser-style behaviors over time:
 - keep the UI responsive under slow network/layout,
 - route results to the correct tab via `tab_id`.
 
-Cancellation and stale-frame dropping are wired into the browser worker thread via generation
-counters (`CancelGens`) plus `RenderDeadline` cancel callbacks, so rapid navigations/scroll events can
-cooperatively stop stale work.
+The codebase includes cancellation helpers (generation counters + cooperative cancel callbacks), but
+not all worker implementations are fully cancellation-aware yet.
 
 ### UI thread vs render worker thread
 
@@ -125,8 +126,8 @@ The browser UI should run rendering on a dedicated large-stack thread:
 
 - Render recursion can be deep on real pages; see
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
-- The windowed `browser` app uses [`spawn_browser_worker`](../src/ui/browser_thread.rs), which
-  spawns the render worker via `std::thread::Builder` and configures the stack size.
+- The windowed `browser` app spawns its worker via [`spawn_ui_worker`](../src/ui/worker.rs), which
+  uses `std::thread::Builder` and configures the stack size.
 - Headless UI worker loops used by integration tests also use dedicated large-stack threads (see
   [`spawn_render_worker_thread`](../src/ui/worker.rs) and the `DEFAULT_RENDER_STACK_SIZE` usage in
   [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)).
@@ -158,13 +159,12 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
 - `Stage { tab_id, stage }` — coarse progress heartbeats forwarded from the renderer
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
-  - When available, the windowed UI shows the latest stage heartbeat for the active tab in the
-    top chrome while loading.
+  - Can be surfaced by chrome UIs while loading (e.g. [`src/ui/chrome.rs`](../src/ui/chrome.rs)).
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
 Note: not all worker implementations emit every message variant. For example, the windowed UI’s
-browser worker emits `FrameReady`, `OpenSelectDropdown`, and navigation events and forwards `Stage`
-heartbeats from the renderer.
+worker loop emits `FrameReady`, `OpenSelectDropdown`, and navigation events. Stage heartbeats are
+only sent when a stage listener is installed by the worker.
 
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
