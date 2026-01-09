@@ -87,6 +87,7 @@ impl BrowserAppState {
     self.tabs.iter().position(|tab| tab.id == tab_id)
   }
 
+  #[cfg(test)]
   fn tab(&self, tab_id: TabId) -> Option<&TabState> {
     let idx = self.tab_index(tab_id)?;
     self.tabs.get(idx)

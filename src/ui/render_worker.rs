@@ -221,7 +221,7 @@ fn select_anchor_css(
 
 #[derive(Debug, Clone, Copy)]
 enum SelectRow {
-  OptGroupLabel { disabled: bool },
+  OptGroupLabel,
   Option { node_id: usize, disabled: bool },
 }
 
@@ -289,9 +289,7 @@ fn collect_select_rows(
     };
 
     if tag.eq_ignore_ascii_case("optgroup") {
-      let disabled = node.get_attribute_ref("disabled").is_some()
-        || has_disabled_optgroup_ancestor(index, id, select_id);
-      rows.push(SelectRow::OptGroupLabel { disabled });
+      rows.push(SelectRow::OptGroupLabel);
       continue;
     }
 

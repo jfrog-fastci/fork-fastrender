@@ -124,6 +124,7 @@ pub fn selected_choice(select_node_id: usize, control: &SelectControl) -> Option
 struct OpenSelectDropdown {
   select_node_id: usize,
   control: SelectControl,
+  #[cfg_attr(not(feature = "browser_ui"), allow(dead_code))]
   anchor: Option<Rect>,
 }
 
