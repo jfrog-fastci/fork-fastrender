@@ -474,6 +474,7 @@ pub enum MathNode {
 pub enum MathFragment {
   Glyph { origin: Point, run: ShapedRun },
   Rule(Rect),
+  Line { from: Point, to: Point, width: f32 },
   StrokeRect { rect: Rect, radius: f32, width: f32 },
 }
 
@@ -519,6 +520,11 @@ impl MathFragment {
         run,
       },
       MathFragment::Rule(rect) => MathFragment::Rule(rect.translate(offset)),
+      MathFragment::Line { from, to, width } => MathFragment::Line {
+        from: from.translate(offset),
+        to: to.translate(offset),
+        width,
+      },
       MathFragment::StrokeRect {
         rect,
         radius,
@@ -3378,21 +3384,16 @@ impl MathLayoutContext {
           stroke,
           height,
         ))),
-        MencloseNotation::UpDiagonalStrike | MencloseNotation::DownDiagonalStrike => {
-          // Approximate diagonal strikes with intersecting horizontal/vertical marks.
-          fragments.push(MathFragment::Rule(Rect::from_xywh(
-            0.0,
-            height / 2.0 - stroke * 0.5,
-            width,
-            stroke,
-          )));
-          fragments.push(MathFragment::Rule(Rect::from_xywh(
-            width / 2.0 - stroke * 0.5,
-            0.0,
-            stroke,
-            height,
-          )));
-        }
+        MencloseNotation::UpDiagonalStrike => fragments.push(MathFragment::Line {
+          from: Point::new(0.0, height),
+          to: Point::new(width, 0.0),
+          width: stroke,
+        }),
+        MencloseNotation::DownDiagonalStrike => fragments.push(MathFragment::Line {
+          from: Point::new(0.0, 0.0),
+          to: Point::new(width, height),
+          width: stroke,
+        }),
         MencloseNotation::LongDiv => {
           fragments.push(MathFragment::Rule(Rect::from_xywh(0.0, 0.0, width, stroke)));
           fragments.push(MathFragment::Rule(Rect::from_xywh(

@@ -239,6 +239,23 @@ fn math_constructs_match_golden() {
 }
 
 #[test]
+fn math_menclose_diagonal_strike_matches_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_menclose_diagonal_strike"))
+      .expect("load math_menclose_diagonal_strike");
+    let png = renderer
+      .render_to_png(&html, 420, 200)
+      .expect("render menclose diagonal strike");
+    compare_golden(
+      "math_menclose_diagonal_strike",
+      &png,
+      &CompareConfig::lenient(),
+    );
+  });
+}
+
+#[test]
 fn math_table_alignment_matches_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();

@@ -7378,6 +7378,41 @@ impl Painter {
                 .pixmap
                 .fill_rect(rect, &paint, Transform::identity(), clip_mask);
             }
+            MathFragment::Line { from, to, width } => {
+              let start = Point::new(
+                content_rect.x() + from.x * scale_x,
+                content_rect.y() + from.y * scale_y,
+              );
+              let end = Point::new(
+                content_rect.x() + to.x * scale_x,
+                content_rect.y() + to.y * scale_y,
+              );
+              let dx = end.x - start.x;
+              let dy = end.y - start.y;
+              let len = (dx * dx + dy * dy).sqrt();
+              let uniform = ((scale_x + scale_y) * 0.5).max(0.0);
+              let thickness = *width * uniform;
+              if !(len.is_finite() && len > 0.0 && thickness.is_finite() && thickness > 0.0) {
+                continue;
+              }
+              let angle = dy.atan2(dx);
+              let cos = angle.cos();
+              let sin = angle.sin();
+
+              let start_x = start.x * self.scale;
+              let start_y = start.y * self.scale;
+              let len = len * self.scale;
+              let thickness = thickness * self.scale;
+              let Some(rect) = SkiaRect::from_xywh(0.0, -thickness * 0.5, len, thickness) else {
+                continue;
+              };
+              let transform = Transform::from_row(cos, sin, -sin, cos, start_x, start_y);
+
+              let mut paint = Paint::default();
+              paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+              paint.anti_alias = true;
+              self.pixmap.fill_rect(rect, &paint, transform, clip_mask);
+            }
             MathFragment::StrokeRect {
               rect: stroke_rect,
               radius,

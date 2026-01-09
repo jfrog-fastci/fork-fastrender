@@ -96,6 +96,7 @@ use crate::paint::display_list::TextEmphasis;
 use crate::paint::display_list::TextItem;
 use crate::paint::display_list::TextShadowItem;
 use crate::paint::display_list::Transform3D;
+use crate::paint::display_list::TransformItem;
 use crate::paint::display_list_renderer::{PaintParallelism, PaintParallelismMode};
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::iframe::{render_iframe_src, render_iframe_srcdoc};
@@ -5657,6 +5658,32 @@ impl DisplayListBuilder {
                     rect: scaled_rect,
                     color,
                   }));
+                }
+                MathFragment::Line { from, to, width } => {
+                  let start = Point::new(
+                    content_rect.x() + from.x * scale_x,
+                    content_rect.y() + from.y * scale_y,
+                  );
+                  let end = Point::new(
+                    content_rect.x() + to.x * scale_x,
+                    content_rect.y() + to.y * scale_y,
+                  );
+                  let dx = end.x - start.x;
+                  let dy = end.y - start.y;
+                  let len = (dx * dx + dy * dy).sqrt();
+                  let uniform = ((scale_x + scale_y) * 0.5).max(0.0);
+                  let thickness = width * uniform;
+                  if len.is_finite() && len > 0.0 && thickness.is_finite() && thickness > 0.0 {
+                    let angle = dy.atan2(dx);
+                    let transform = Transform3D::translate(start.x, start.y, 0.0)
+                      .multiply(&Transform3D::rotate_z(angle));
+                    self.list.push(DisplayItem::PushTransform(TransformItem { transform }));
+                    self.list.push(DisplayItem::FillRect(FillRectItem {
+                      rect: Rect::from_xywh(0.0, -thickness * 0.5, len, thickness),
+                      color,
+                    }));
+                    self.list.push(DisplayItem::PopTransform);
+                  }
                 }
                 MathFragment::StrokeRect {
                   rect: stroke_rect,
