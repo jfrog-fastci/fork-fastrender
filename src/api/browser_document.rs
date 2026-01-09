@@ -3,6 +3,8 @@ use crate::error::{Error, RenderError, Result};
 use crate::geometry::{Point, Size};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
+use crate::tree::box_tree::BoxTree;
+use crate::tree::fragment_tree::FragmentTree;
 
 use super::{
   resolve_viewport, LayoutDocumentOptions, PreparedDocument, PreparedPaintOptions, RenderOptions,
@@ -165,6 +167,35 @@ impl BrowserDocument {
       self.invalidate_all();
     }
     changed
+  }
+
+  /// Mutates the DOM tree while granting access to the cached layout artifacts.
+  ///
+  /// This is primarily intended for UI interaction/hit-testing layers that need to consult the
+  /// last computed layout (box + fragment trees) while mutating the live DOM.
+  ///
+  /// The closure returns `(changed, output)` where `changed` indicates whether the DOM mutation
+  /// should invalidate cached style/layout/paint state.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when the document has no cached layout yet (i.e. `render_frame()` has not
+  /// been called). Call `render_frame()` first to populate the layout cache.
+  pub fn mutate_dom_with_layout_artifacts<F, R>(&mut self, f: F) -> Result<R>
+  where
+    F: FnOnce(&mut DomNode, &BoxTree, &FragmentTree) -> (bool, R),
+  {
+    let Some(prepared) = self.prepared.as_ref() else {
+      return Err(Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocument has no cached layout; call render_frame() first".to_string(),
+      }));
+    };
+
+    let (changed, out) = f(&mut self.dom, prepared.box_tree(), prepared.fragment_tree());
+    if changed {
+      self.invalidate_all();
+    }
+    Ok(out)
   }
 
   /// Updates the viewport size (in CSS px), marking layout+paint dirty.

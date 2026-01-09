@@ -16,3 +16,4 @@ pub(crate) fn stage_listener_test_lock() -> std::sync::MutexGuard<'static, ()> {
   static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
   LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+mod ui_worker_interaction;
