@@ -23,8 +23,8 @@ use super::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use super::{DomHost, ScriptExecutionLog};
 use super::ScriptType;
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::cell::RefCell;
 use std::rc::Rc;
 
 trait InnerHostAccess<Host> {
@@ -164,6 +164,32 @@ where
   }
 }
 
+/// RAII guard that increments a host-local "JS execution depth" counter.
+///
+/// HTML gates certain microtask checkpoints based on whether the **JavaScript execution context
+/// stack is empty**. Parsing can run inside an event-loop task (`TaskSource::DOMManipulation`), so
+/// `EventLoop::currently_running_task()` is not equivalent to the JS execution context stack.
+/// Track depth explicitly instead.
+struct JsExecutionGuard {
+  depth: Rc<Cell<usize>>,
+}
+
+impl JsExecutionGuard {
+  fn enter(depth: &Rc<Cell<usize>>) -> Self {
+    depth.set(depth.get().saturating_add(1));
+    Self {
+      depth: Rc::clone(depth),
+    }
+  }
+}
+
+impl Drop for JsExecutionGuard {
+  fn drop(&mut self) {
+    let current = self.depth.get();
+    self.depth.set(current.saturating_sub(1));
+  }
+}
+
 fn execute_now<Host, Runner, HostWrapper>(
   host: &mut HostWrapper,
   dom: &Document,
@@ -171,21 +197,13 @@ fn execute_now<Host, Runner, HostWrapper>(
   source_text: &str,
   event_loop: &mut EventLoop<Host>,
   runner: Rc<Runner>,
+  js_execution_depth: &Rc<Cell<usize>>,
 ) -> Result<()>
 where
   HostWrapper: CurrentScriptHost + DomHost + InnerHostAccess<Host>,
   Runner:
     Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
 {
-  // HTML `</script>` handling performs a microtask checkpoint *before* preparing/executing a
-  // parser-inserted script when the JS execution context stack is empty.
-  //
-  // In this MVP, we approximate "JS execution context stack is empty" by checking whether the
-  // event loop is currently executing a task/microtask.
-  if event_loop.currently_running_task().is_none() {
-    event_loop.perform_microtask_checkpoint(host.inner_mut())?;
-  }
-
   let mut orchestrator = ScriptOrchestrator::new();
   let mut exec = ScriptRunnerExecutor {
     runner,
@@ -193,9 +211,17 @@ where
     source_text,
     dom,
   };
-  orchestrator.execute_script_element(host, script, ScriptType::Classic, &mut exec)?;
-  // HTML: a microtask checkpoint is performed after script execution.
-  event_loop.perform_microtask_checkpoint(host.inner_mut())?;
+  {
+    let _guard = JsExecutionGuard::enter(js_execution_depth);
+    orchestrator.execute_script_element(host, script, ScriptType::Classic, &mut exec)?;
+  }
+
+  // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
+  // execution context stack is empty. Nested (re-entrant) script execution must not drain
+  // microtasks until the outermost script returns.
+  if js_execution_depth.get() == 0 {
+    event_loop.perform_microtask_checkpoint(host.inner_mut())?;
+  }
   Ok(())
 }
 
@@ -208,6 +234,7 @@ fn apply_actions<Host, HostWrapper, Loader, Runner>(
   queued_task_scripts: &mut Vec<(NodeId, String)>,
   event_loop: &mut EventLoop<Host>,
   runner: &Rc<Runner>,
+  js_execution_depth: &Rc<Cell<usize>>,
   actions: Vec<ScriptSchedulerAction<NodeId>>,
 ) -> Result<()>
 where
@@ -239,6 +266,7 @@ where
           &source_text,
           event_loop,
           Rc::clone(runner),
+          js_execution_depth,
         )?;
       }
       ScriptSchedulerAction::QueueTask {
@@ -264,6 +292,7 @@ where
         queued_task_scripts,
         event_loop,
         runner,
+        js_execution_depth,
         actions,
       )?;
     } else {
@@ -288,6 +317,7 @@ fn poll_fetch_completions<Host, HostWrapper, Loader, Runner>(
   queued_task_scripts: &mut Vec<(NodeId, String)>,
   event_loop: &mut EventLoop<Host>,
   runner: &Rc<Runner>,
+  js_execution_depth: &Rc<Cell<usize>>,
 ) -> Result<()>
 where
   HostWrapper: CurrentScriptHost + DomHost + InnerHostAccess<Host>,
@@ -311,6 +341,7 @@ where
       queued_task_scripts,
       event_loop,
       runner,
+      js_execution_depth,
       actions,
     )?;
   }
@@ -349,6 +380,7 @@ where
   let mut scheduler = ScriptScheduler::<NodeId>::new();
   let mut pending_fetches: HashMap<Loader::Handle, ScriptId> = HashMap::new();
   let mut queued_task_scripts: Vec<(NodeId, String)> = Vec::new();
+  let js_execution_depth = Rc::new(Cell::new(0));
 
   let document = loop {
     match parser.pump() {
@@ -356,6 +388,12 @@ where
         script,
         base_url_at_this_point,
       } => {
+        // HTML `</script>` handling performs a microtask checkpoint *before* preparing the script,
+        // but only when the JS execution context stack is empty.
+        if js_execution_depth.get() == 0 {
+          event_loop.perform_microtask_checkpoint(host)?;
+        }
+
         let doc = parser.document();
         let base_tracker = BaseUrlTracker::new(base_url_at_this_point.as_deref());
         let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker);
@@ -374,6 +412,7 @@ where
           &mut queued_task_scripts,
           event_loop,
           &runner,
+          &js_execution_depth,
           discovered.actions,
         )?;
       }
@@ -405,6 +444,7 @@ where
       &mut queued_task_scripts,
       event_loop,
       &runner,
+      &js_execution_depth,
       actions,
     )?;
 
@@ -418,6 +458,7 @@ where
       &mut queued_task_scripts,
       event_loop,
       &runner,
+      &js_execution_depth,
     )?;
   }
 
@@ -426,6 +467,7 @@ where
   for (node_id, source_text) in queued_task_scripts.drain(..) {
     let dom = Rc::clone(&dom_rc);
     let runner = Rc::clone(&runner);
+    let js_execution_depth = Rc::clone(&js_execution_depth);
     event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
       let dom_for_host = Rc::clone(&dom);
       let dom_ref = dom.borrow();
@@ -440,6 +482,7 @@ where
         source_text: &source_text,
         dom: &dom_ref,
       };
+      let _guard = JsExecutionGuard::enter(&js_execution_depth);
       orchestrator.execute_script_element(&mut host_wrapper, node_id, ScriptType::Classic, &mut exec)?;
       Ok(())
     })?;
@@ -481,6 +524,7 @@ mod tests {
     handle_by_url: HashMap<String, usize>,
     completion_queue: Vec<(usize, String)>,
     completions_built: bool,
+    call_log: Option<Rc<RefCell<Vec<String>>>>,
   }
 
   impl ManualLoader {
@@ -495,6 +539,11 @@ mod tests {
       self.completion_plan = urls.iter().map(|u| (*u).to_string()).collect();
       self
     }
+
+    fn with_call_log(mut self, log: Rc<RefCell<Vec<String>>>) -> Self {
+      self.call_log = Some(log);
+      self
+    }
   }
 
   impl ScriptLoader for ManualLoader {
@@ -502,6 +551,10 @@ mod tests {
 
     fn load_blocking(&mut self, url: &str) -> Result<String> {
       self.started.push(url.to_string());
+      if let Some(log) = &self.call_log {
+        log.borrow_mut()
+          .push(format!("load_blocking:{url}"));
+      }
       self
         .sources
         .get(url)
@@ -511,6 +564,10 @@ mod tests {
 
     fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
       self.started.push(url.to_string());
+      if let Some(log) = &self.call_log {
+        log.borrow_mut()
+          .push(format!("start_load:{url}"));
+      }
       let handle = self.next_handle;
       self.next_handle += 1;
       self.handle_by_url.insert(url.to_string(), handle);
@@ -674,6 +731,52 @@ mod tests {
         "microtask:d2".to_string(),
         "script:a1".to_string(),
         "microtask:a1".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn microtasks_run_before_starting_blocking_external_script_fetch_at_script_end_boundary() -> Result<()> {
+    let html = "<!doctype html><script src=\"https://example.com/a.js\"></script>";
+    let call_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut loader = ManualLoader::default()
+      .with_sources(&[("https://example.com/a.js", "ext-a")])
+      .with_call_log(Rc::clone(&call_log));
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    // Queue a microtask *before* parsing begins. HTML requires it to run at the `</script>`
+    // boundary *before* the external script is prepared (and thus before the blocking fetch
+    // starts).
+    let call_log_for_microtask = Rc::clone(&call_log);
+    event_loop.queue_microtask(move |_host, _event_loop| {
+      call_log_for_microtask
+        .borrow_mut()
+        .push("microtask".to_string());
+      Ok(())
+    })?;
+
+    let (_doc, outcome) = parse_html_with_classic_script_processing(
+      html,
+      None,
+      &mut host,
+      &mut event_loop,
+      &mut loader,
+      RunLimits::unbounded(),
+      |host, _dom, _script, _ty, source, _event_loop| {
+        host.log.push(format!("script:{source}"));
+        Ok(())
+      },
+    )?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+    assert_eq!(host.log, vec!["script:ext-a".to_string()]);
+
+    assert_eq!(
+      &*call_log.borrow(),
+      &[
+        "microtask".to_string(),
+        "load_blocking:https://example.com/a.js".to_string(),
       ]
     );
     Ok(())
