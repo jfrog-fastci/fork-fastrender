@@ -1848,10 +1848,15 @@ fn native_console_log(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Re
 
 fn native_set_timeout(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
-  let delay_ms = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
-    Value::Number(n) => n.max(0.0) as u64,
-    _ => 0,
-  };
+  let delay_value = args.get(1).copied().unwrap_or(Value::Number(0.0));
+  let mut delay = rt.heap.to_number(delay_value)?;
+  if !delay.is_finite() {
+    delay = 0.0;
+  }
+  if delay < 0.0 {
+    delay = 0.0;
+  }
+  let delay_ms = delay.trunc() as u64;
 
   let Value::Object(obj) = callback else {
     return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
@@ -1876,10 +1881,15 @@ fn native_set_timeout(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Re
 
 fn native_set_interval(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
-  let interval_ms = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
-    Value::Number(n) => n.max(0.0) as u64,
-    _ => 0,
-  };
+  let interval_value = args.get(1).copied().unwrap_or(Value::Number(0.0));
+  let mut interval = rt.heap.to_number(interval_value)?;
+  if !interval.is_finite() {
+    interval = 0.0;
+  }
+  if interval < 0.0 {
+    interval = 0.0;
+  }
+  let interval_ms = interval.trunc() as u64;
 
   let Value::Object(obj) = callback else {
     return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
@@ -1903,10 +1913,12 @@ fn native_set_interval(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> R
 }
 
 fn native_clear_timeout(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
-  let id = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
-    Value::Number(n) => n as i32,
-    _ => 0,
-  };
+  let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
+  let mut id = rt.heap.to_number(id_value)?;
+  if !id.is_finite() {
+    id = 0.0;
+  }
+  let id = id.trunc() as i32;
   rt.event_loop.clear_timeout(id);
   Ok(Value::Undefined)
 }
@@ -2550,6 +2562,10 @@ fn native_wpt_report(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Res
 mod tests {
   use super::*;
 
+  fn noop_native(_rt: &mut JsWptRuntime, _this: Value, _args: &[Value]) -> Result<Value, JsError> {
+    Ok(Value::Undefined)
+  }
+
   #[test]
   fn value_to_property_key_supports_bigint() {
     let mut rt = JsWptRuntime::new("https://example.com/");
@@ -2591,5 +2607,36 @@ mod tests {
     );
     // ECMAScript `ToString(-0)` is `"0"`.
     assert_eq!(rt.value_to_string_lossy(Value::Number(-0.0)), "0");
+  }
+
+  #[test]
+  fn set_timeout_delay_uses_tonumber_and_treats_infinity_as_zero() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let cb = rt.alloc_native_function(noop_native).expect("alloc callback");
+    native_set_timeout(
+      &mut rt,
+      Value::Undefined,
+      &[Value::Object(cb), Value::Number(f64::INFINITY)],
+    )
+    .expect("setTimeout should accept Infinity delay");
+
+    // Infinity should be treated like 0 in WebIDL long conversion, making the timer immediately due.
+    rt.event_loop.enqueue_due_timers();
+    assert!(rt.event_loop.pop_next_task().is_some());
+  }
+
+  #[test]
+  fn set_timeout_delay_throws_on_bigint() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let cb = rt.alloc_native_function(noop_native).expect("alloc callback");
+    let err = native_set_timeout(
+      &mut rt,
+      Value::Undefined,
+      &[Value::Object(cb), Value::BigInt(vm_js::JsBigInt::from_u128(1))],
+    )
+    .unwrap_err();
+    assert!(matches!(err, JsError::Vm(VmError::TypeError(_))));
   }
 }
