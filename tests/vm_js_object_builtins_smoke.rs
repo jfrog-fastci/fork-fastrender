@@ -14,6 +14,16 @@ struct TestRealm {
   realm: Realm,
 }
 
+fn return_two_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Number(2.0))
+}
+
 impl TestRealm {
   fn new() -> Result<Self, VmError> {
     let mut vm = Vm::new(VmOptions::default());
@@ -35,7 +45,7 @@ fn get_own_data_property(
   name: &str,
 ) -> Result<Option<Value>, VmError> {
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(obj));
+  scope.push_root(Value::Object(obj))?;
   let key = PropertyKey::from_string(scope.alloc_string(name)?);
   scope.heap().object_get_own_data_property_value(obj, &key)
 }
@@ -47,8 +57,8 @@ fn define_enumerable_data_property(
   value: Value,
 ) -> Result<(), VmError> {
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(obj));
-  scope.push_root(value);
+  scope.push_root(Value::Object(obj))?;
+  scope.push_root(value)?;
   let key = PropertyKey::from_string(scope.alloc_string(name)?);
   let desc = PropertyDescriptor {
     enumerable: true,
@@ -93,11 +103,11 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   };
 
   let o = scope.alloc_object()?;
-  scope.push_root(Value::Object(o));
+  scope.push_root(Value::Object(o))?;
 
   // { value: 1 }
   let desc = scope.alloc_object()?;
-  scope.push_root(Value::Object(desc));
+  scope.push_root(Value::Object(desc))?;
   define_enumerable_data_property(&mut scope, desc, "value", Value::Number(1.0))?;
 
   let x = scope.alloc_string("x")?;
@@ -130,7 +140,7 @@ fn object_builtins_smoke() -> Result<(), VmError> {
 
   // { y: 2 }
   let p = scope.alloc_object()?;
-  scope.push_root(Value::Object(p));
+  scope.push_root(Value::Object(p))?;
   define_enumerable_data_property(&mut scope, p, "y", Value::Number(2.0))?;
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
 
@@ -144,7 +154,7 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   let Value::Object(created) = created else {
     panic!("Object.create should return an object");
   };
-  scope.push_root(Value::Object(created));
+  scope.push_root(Value::Object(created))?;
 
   // Inherited property lookup via prototype chain.
   let desc = scope
@@ -173,7 +183,7 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   };
 
   let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj));
+  scope.push_root(Value::Object(obj))?;
   define_enumerable_data_property(&mut scope, obj, "a", Value::Number(1.0))?;
   define_enumerable_data_property(&mut scope, obj, "b", Value::Number(2.0))?;
 
@@ -205,11 +215,29 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   };
 
   let target = scope.alloc_object()?;
-  scope.push_root(Value::Object(target));
+  scope.push_root(Value::Object(target))?;
   let source = scope.alloc_object()?;
-  scope.push_root(Value::Object(source));
+  scope.push_root(Value::Object(source))?;
   define_enumerable_data_property(&mut scope, source, "a", Value::Number(1.0))?;
-  define_enumerable_data_property(&mut scope, source, "b", Value::Number(2.0))?;
+
+  // Enumerable accessor property: ensure `Object.assign` invokes getters (`Get` semantics).
+  let getter_id = rt.vm.register_native_call(return_two_native)?;
+  let getter_name = scope.alloc_string("")?;
+  let getter = scope.alloc_native_function(getter_id, None, getter_name, 0)?;
+  scope.push_root(Value::Object(getter))?;
+  let key_b = PropertyKey::from_string(scope.alloc_string("b")?);
+  scope.define_property(
+    source,
+    key_b,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(getter),
+        set: Value::Undefined,
+      },
+    },
+  )?;
 
   let args = [Value::Object(target), Value::Object(source)];
   let out = rt.vm.call(
@@ -228,6 +256,39 @@ fn object_builtins_smoke() -> Result<(), VmError> {
     Some(Value::Number(2.0))
   );
 
+  // Assigning onto a non-writable target property should throw (failed `Set`).
+  let ro_target = scope.alloc_object()?;
+  scope.push_root(Value::Object(ro_target))?;
+  let ro_source = scope.alloc_object()?;
+  scope.push_root(Value::Object(ro_source))?;
+
+  let key_x = PropertyKey::from_string(scope.alloc_string("x")?);
+  scope.define_property(
+    ro_target,
+    key_x,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Number(1.0),
+        writable: false,
+      },
+    },
+  )?;
+  define_enumerable_data_property(&mut scope, ro_source, "x", Value::Number(2.0))?;
+
+  let args = [Value::Object(ro_target), Value::Object(ro_source)];
+  let err = rt
+    .vm
+    .call(
+      &mut scope,
+      Value::Object(assign),
+      Value::Object(object),
+      &args,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::TypeError(_)));
+
   // Object.setPrototypeOf
   let set_proto = get_own_data_property(&mut scope, object, "setPrototypeOf")?
     .expect("Object.setPrototypeOf should exist");
@@ -236,7 +297,7 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   };
 
   let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj));
+  scope.push_root(Value::Object(obj))?;
   let args = [Value::Object(obj), Value::Object(p)];
   let out = rt.vm.call(
     &mut scope,
