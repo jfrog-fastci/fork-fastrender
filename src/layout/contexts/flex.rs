@@ -1464,7 +1464,10 @@ impl FormattingContext for FlexFormattingContext {
                             .map(|ptr| {
                                 let box_ptr: *const BoxNode = **ptr;
                                 let box_node = unsafe { &*box_ptr };
-                                !height_depends_on_available_height(&box_node.style)
+                                !height_depends_on_available_height(
+                                  &box_node.style,
+                                  container_main_axis_is_horizontal,
+                                )
                             })
                             .unwrap_or(false);
                     let (key, snapped_known_dimensions, snapped_avail) =
@@ -4612,7 +4615,10 @@ impl FormattingContext for FlexFormattingContext {
   }
 }
 
-fn height_depends_on_available_height(style: &ComputedStyle) -> bool {
+fn height_depends_on_available_height(
+  style: &ComputedStyle,
+  container_main_axis_is_horizontal: bool,
+) -> bool {
   let height_depends = style.height.as_ref().is_some_and(Length::has_percentage)
     || style
       .height_keyword
@@ -4631,8 +4637,11 @@ fn height_depends_on_available_height(style: &ComputedStyle) -> bool {
     || style
       .max_height_keyword
       .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
-  let flex_basis_depends =
-    matches!(style.flex_basis, FlexBasis::Length(len) if len.has_percentage());
+  // Percentage flex-basis depends on the flex container's *main* axis. When the container is
+  // row-like (horizontal main axis), a percentage flex-basis should not force our measurement cache
+  // keys to include the available height.
+  let flex_basis_depends = !container_main_axis_is_horizontal
+    && matches!(style.flex_basis, FlexBasis::Length(len) if len.has_percentage());
 
   height_depends || min_depends || max_depends || flex_basis_depends
 }
@@ -13200,6 +13209,21 @@ mod tests {
       false,
     );
     assert_eq!(key_a.0, key_c.0);
+  }
+
+  #[test]
+  fn height_depends_on_available_height_ignores_percent_flex_basis_for_row_flex_containers() {
+    let mut style = ComputedStyle::default();
+    style.flex_basis = FlexBasis::Length(Length::percent(0.0));
+
+    assert!(
+      !super::height_depends_on_available_height(&style, true),
+      "row-like flex containers should not treat percentage flex-basis as a height dependency"
+    );
+    assert!(
+      super::height_depends_on_available_height(&style, false),
+      "column-like flex containers should treat percentage flex-basis as a height dependency"
+    );
   }
 
   #[test]

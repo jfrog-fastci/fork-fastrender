@@ -106,6 +106,31 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use width::compute_block_width;
 
+#[cfg(test)]
+thread_local! {
+  static OVERFLOW_AUTO_CHILD_LAYOUT_PASSES: std::cell::Cell<usize> =
+    const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_overflow_auto_child_layout_passes() {
+  OVERFLOW_AUTO_CHILD_LAYOUT_PASSES.with(|cell| cell.set(0));
+}
+
+#[cfg(test)]
+fn overflow_auto_child_layout_passes() -> usize {
+  OVERFLOW_AUTO_CHILD_LAYOUT_PASSES.with(|cell| cell.get())
+}
+
+#[cfg(test)]
+fn record_overflow_auto_child_layout_pass() {
+  OVERFLOW_AUTO_CHILD_LAYOUT_PASSES.with(|cell| cell.set(cell.get() + 1));
+}
+
+#[cfg(not(test))]
+#[inline]
+fn record_overflow_auto_child_layout_pass() {}
+
 fn is_ascii_whitespace_char(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
 }
@@ -2206,6 +2231,7 @@ impl BlockFormattingContext {
     let style_override = crate::layout::style_override::style_override_for(child.id);
     let base_style = style_override.unwrap_or_else(|| child.style.clone());
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
+    let mut external_float_ctx = external_float_ctx;
     if gutter <= 0.0
       || (!matches!(base_style.overflow_x, Overflow::Auto)
         && !matches!(base_style.overflow_y, Overflow::Auto))
@@ -2256,6 +2282,7 @@ impl BlockFormattingContext {
       }
 
       let mut scratch_float = float_ctx_snapshot.clone();
+      record_overflow_auto_child_layout_pass();
       let fragment = if overridden && child.id != 0 {
         crate::layout::style_override::with_style_override(child.id, override_style.clone(), || {
           crate::layout::auto_scrollbars::with_bypass(child, || {
@@ -2324,7 +2351,10 @@ impl BlockFormattingContext {
         && overflow_y;
 
       if need_x == force_x && need_y == force_y {
-        break;
+        if let (Some(dest), Some(updated)) = (external_float_ctx.as_deref_mut(), scratch_float) {
+          *dest = updated;
+        }
+        return Ok(fragment);
       }
       force_x = need_x;
       force_y = need_y;
@@ -2350,6 +2380,7 @@ impl BlockFormattingContext {
         final_overridden = true;
       }
     }
+    record_overflow_auto_child_layout_pass();
     if final_overridden && child.id != 0 {
       crate::layout::style_override::with_style_override(child.id, final_style.clone(), || {
         crate::layout::auto_scrollbars::with_bypass(child, || {
@@ -9306,6 +9337,45 @@ mod tests {
     let fragment = fc.layout(&node, &constraints).unwrap();
 
     assert!((fragment.bounds.height() - 8.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn overflow_auto_child_skips_final_pass_when_scrollbars_not_needed() {
+    reset_overflow_auto_child_layout_passes();
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.overflow_y = Overflow::Auto;
+    child_style.height = Some(Length::px(50.0));
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    inner_style.height = Some(Length::px(10.0));
+
+    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+    let child = BoxNode::new_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![inner],
+    );
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![child],
+    );
+
+    let fc = BlockFormattingContext::new();
+    let constraints = LayoutConstraints::definite_width(200.0);
+    fc.layout(&parent, &constraints).unwrap();
+
+    assert_eq!(
+      overflow_auto_child_layout_passes(),
+      1,
+      "expected a single convergence layout pass for overflow:auto blocks with no overflow"
+    );
   }
 
   #[test]
