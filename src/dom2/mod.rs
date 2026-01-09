@@ -3,7 +3,6 @@ use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use crate::web::events;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DomException;
-use crate::web::events;
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;

@@ -1809,22 +1809,28 @@ impl TableStructure {
     let mut row_max_heights: Vec<Option<SpecifiedHeight>> = Vec::new();
     let mut row_visibilities: Vec<Visibility> = Vec::new();
     let mut row_vertical_aligns: Vec<Option<VerticalAlign>> = Vec::new();
-    let mut row_span_remaining: Vec<usize> = Vec::new();
-    let mut occupied_columns: Vec<bool> = Vec::new();
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum RowGroupKind {
       Head,
       Body,
       Foot,
     }
-    let mut header_rows: Vec<usize> = Vec::new();
-    let mut body_rows: Vec<usize> = Vec::new();
-    let mut footer_rows: Vec<usize> = Vec::new();
     let mut seen_header_group = false;
     let mut seen_footer_group = false;
 
-    // Collect all cells first
-    let mut cell_data: Vec<(usize, usize, usize, usize, usize, bool)> = Vec::new(); // (source_row, col, rowspan, colspan, box_idx, percent_sensitive)
+    #[derive(Debug)]
+    struct RowRun {
+      kind: RowGroupKind,
+      /// Source-order row indices included in this row group/run.
+      rows: Vec<usize>,
+    }
+
+    // Row boxes in source order, matching the `source_row` stored on `CellInfo` and used by
+    // `collect_source_rows`.
+    let mut source_rows: Vec<&BoxNode> = Vec::new();
+    // Row runs in source order: each explicit row group or consecutive sequence of direct-child
+    // rows becomes its own run so `rowspan=0` can span to the end of the *current* row group.
+    let mut row_runs: Vec<RowRun> = Vec::new();
 
     // Track explicit columns from <col>/<colgroup> to honor Tables spec that the number of columns
     // is the maximum of col elements and the actual grid.
@@ -1897,18 +1903,11 @@ impl TableStructure {
           } else {
             None
           };
-          let group_row_count = child
-            .children
-            .iter()
-            .filter(|row_child| {
-              matches!(
-                Self::get_table_element_type(row_child),
-                TableElementType::Row
-              )
-            })
-            .count();
-          let group_end = current_row + group_row_count;
-          // Process rows within the group
+          let mut run = RowRun {
+            kind,
+            rows: Vec::new(),
+          };
+          // Collect rows within the group (source order).
           for row_child in &child.children {
             if matches!(
               Self::get_table_element_type(row_child),
@@ -1944,23 +1943,13 @@ impl TableStructure {
               row_min_heights.push(min_h);
               row_max_heights.push(max_h);
               row_vertical_aligns.push(row_vertical_align);
-              match kind {
-                RowGroupKind::Head => header_rows.push(current_row),
-                RowGroupKind::Foot => footer_rows.push(current_row),
-                RowGroupKind::Body => body_rows.push(current_row),
-              }
-              Self::process_row(
-                row_child,
-                current_row,
-                !matches!(row_visibility, Visibility::Collapse),
-                group_end,
-                &mut row_span_remaining,
-                &mut occupied_columns,
-                &mut max_cols,
-                &mut cell_data,
-              );
+              source_rows.push(row_child);
+              run.rows.push(current_row);
               current_row += 1;
             }
+          }
+          if !run.rows.is_empty() {
+            row_runs.push(run);
           }
           child_idx += 1;
         }
@@ -1974,7 +1963,10 @@ impl TableStructure {
           {
             run_len += 1;
           }
-          let run_end = current_row + run_len;
+          let mut run = RowRun {
+            kind: RowGroupKind::Body,
+            rows: Vec::with_capacity(run_len),
+          };
           for offset in 0..run_len {
             let row = table_children[child_idx + offset];
             let spec_height = Self::length_to_specified_height_opt(
@@ -2002,18 +1994,12 @@ impl TableStructure {
             row_heights.push(spec_height);
             row_min_heights.push(min_h);
             row_max_heights.push(max_h);
-            body_rows.push(current_row);
-            Self::process_row(
-              row,
-              current_row,
-              !matches!(row.style.visibility, Visibility::Collapse),
-              run_end,
-              &mut row_span_remaining,
-              &mut occupied_columns,
-              &mut max_cols,
-              &mut cell_data,
-            );
+            source_rows.push(row);
+            run.rows.push(current_row);
             current_row += 1;
+          }
+          if !run.rows.is_empty() {
+            row_runs.push(run);
           }
           child_idx += run_len;
         }
@@ -2023,16 +2009,75 @@ impl TableStructure {
       }
     }
 
-    // Reorder rows to honor header/footer placement: headers first, then bodies, then footers (each in DOM order).
+    // Reorder row runs to honor header/footer placement: the first header group is displayed first,
+    // and the first footer group is displayed last, regardless of DOM order.
+    //
+    // This ordering affects both visual placement *and* grid assignment (row/column indices).
+    // In particular, rowspans from a footer group must not occupy slots in body rows above it if
+    // the footer appears earlier in DOM order.
+    let head_run_idx = row_runs
+      .iter()
+      .position(|run| run.kind == RowGroupKind::Head);
+    let foot_run_idx = row_runs
+      .iter()
+      .position(|run| run.kind == RowGroupKind::Foot);
+    let mut ordered_runs: Vec<&RowRun> = Vec::with_capacity(row_runs.len());
+    if let Some(idx) = head_run_idx {
+      ordered_runs.push(&row_runs[idx]);
+    }
+    for (idx, run) in row_runs.iter().enumerate() {
+      if Some(idx) == head_run_idx || Some(idx) == foot_run_idx {
+        continue;
+      }
+      ordered_runs.push(run);
+    }
+    if let Some(idx) = foot_run_idx {
+      ordered_runs.push(&row_runs[idx]);
+    }
+
     let mut row_order: Vec<usize> = Vec::with_capacity(current_row);
-    row_order.extend(header_rows);
-    row_order.extend(body_rows);
-    row_order.extend(footer_rows);
+    for run in &ordered_runs {
+      row_order.extend(run.rows.iter().copied());
+    }
     // Store mapping so row order influences grid mapping and painting while source indices remain DOM-ordered.
     let mut row_index_map = vec![0usize; current_row];
     for (new_idx, old_idx) in row_order.iter().enumerate() {
       row_index_map[*old_idx] = new_idx;
     }
+
+    // Collect all cells in display row order so rowspan/colspan occupancy matches the visual row
+    // ordering (header first, then bodies, then footer).
+    let mut cell_data: Vec<(usize, usize, usize, usize, usize, bool)> = Vec::new(); // (source_row, col, rowspan, colspan, box_idx, percent_sensitive)
+    let mut row_span_remaining: Vec<usize> = Vec::new();
+    let mut occupied_columns: Vec<bool> = Vec::new();
+    let mut next_display_row = 0usize;
+    for run in &ordered_runs {
+      let run_end = next_display_row + run.rows.len();
+      for &source_row in &run.rows {
+        let row = *source_rows
+          .get(source_row)
+          .expect("row index must be in bounds");
+        let row_visibility = *row_visibilities
+          .get(source_row)
+          .unwrap_or(&Visibility::Visible);
+        Self::process_row(
+          row,
+          next_display_row,
+          source_row,
+          !matches!(row_visibility, Visibility::Collapse),
+          run_end,
+          &mut row_span_remaining,
+          &mut occupied_columns,
+          &mut max_cols,
+          &mut cell_data,
+        );
+        next_display_row += 1;
+      }
+    }
+    debug_assert_eq!(
+      next_display_row, current_row,
+      "expected to process every row in display order"
+    );
 
     let reorder_vec = |vec: &mut Vec<Option<SpecifiedHeight>>| {
       let mut reordered = Vec::with_capacity(vec.len());
@@ -2479,6 +2524,7 @@ impl TableStructure {
   fn process_row(
     row: &BoxNode,
     row_idx: usize,
+    source_row: usize,
     row_visible: bool,
     row_group_end: usize,
     row_span_remaining: &mut Vec<usize>,
@@ -2534,7 +2580,7 @@ impl TableStructure {
         };
 
         cell_data.push((
-          row_idx,
+          source_row,
           start_col,
           rowspan,
           colspan,
