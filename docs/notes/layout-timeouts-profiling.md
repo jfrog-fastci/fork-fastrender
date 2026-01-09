@@ -16,10 +16,12 @@ Warm caches (HTML + disk cache) for the chosen pages:
 ```bash
 # `fetch_pages` only caches HTML; it does not require the `disk_cache` feature.
 bash scripts/cargo_agent.sh build --release --bin fetch_pages
-scripts/run_limited.sh --as 64G -- target/release/fetch_pages --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
+bash scripts/run_limited.sh --as 64G -- \
+  target/release/fetch_pages --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
 
 bash scripts/cargo_agent.sh build --release --features disk_cache --bin prefetch_assets
-scripts/run_limited.sh --as 64G -- target/release/prefetch_assets --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
+bash scripts/run_limited.sh --as 64G -- \
+  target/release/prefetch_assets --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
 ```
 
 Build a symbolized `pageset_progress` binary suitable for profiling:

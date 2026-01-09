@@ -41,8 +41,10 @@ for the test profile (debug symbols can make large test binaries significantly m
 link):
 
 ```bash
-CARGO_PROFILE_TEST_DEBUG=0 bash scripts/run_limited.sh --as 12G --cpu 60 -- \
-  bash scripts/cargo_agent.sh test -j 1 --quiet --lib
+# Ensure cargo_agent doesn't attempt to raise RLIMIT_AS above the outer cap.
+CARGO_PROFILE_TEST_DEBUG=0 FASTR_CARGO_LIMIT_AS=12G \
+  bash scripts/run_limited.sh --as 12G --cpu 60 -- \
+  bash scripts/cargo_agent.sh test -j 1 --quiet -p fastrender --lib
 ```
 
 You can also set defaults via environment variables:
@@ -59,15 +61,15 @@ If `prlimit` is available (usually via `util-linux`), it can cap address-space:
 ```bash
 # Note: `prlimit` expects raw byte counts; size suffixes (e.g. 64G) are not universally supported.
 prlimit --as=$((64 * 1024 * 1024 * 1024)) --rss=$((64 * 1024 * 1024 * 1024)) -- \
-  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
+  bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 Notes:
 - `--as` (virtual address space) is the most reliable “hard memory ceiling”.
 - `--rss` is not reliably enforced on all kernels; treat it as advisory.
-- Cap `cargo` itself if you are running “bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run”; `cargo` spawns child processes and inherits limits.
+- Cap `cargo` itself if you are running `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run`; `cargo` spawns child processes and inherits limits.
   - Some `prlimit` builds do not accept human suffixes reliably (e.g. `--as=64G`). Prefer raw byte
-    counts or use `scripts/run_limited.sh`, which converts suffixes to bytes automatically.
+    counts or use `bash scripts/run_limited.sh`, which converts suffixes to bytes automatically.
 
 ### B. `ulimit`
 
@@ -86,7 +88,7 @@ If systemd is available:
 
 ```bash
 systemd-run --user -p MemoryMax=64G -- \
-  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
+  bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 This is the most robust approach for multi-agent environments.
@@ -115,7 +117,8 @@ Examples:
 
 ```bash
 # 64 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 8 GiB RSS
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run \
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run \
   --mem-limit-mb 65536 \
   --stage-mem-budget-mb 8192
 ```

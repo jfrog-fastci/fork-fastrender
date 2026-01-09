@@ -7,7 +7,7 @@ requires multiple layers of limits that work together:
 
 When running renderer binaries, use:
 
-- `scripts/run_limited.sh --as 64G …`
+- `bash scripts/run_limited.sh --as 64G …`
 
 This applies an address-space (`RLIMIT_AS`) cap, acting as a last-resort safety net against runaway
 allocations (including ones outside the JS subsystem).
@@ -60,4 +60,3 @@ In a robust embedding:
 4. VM instruction/heap/stack limits ensure `while(true){}` cannot hang inside the VM.
 
 No single layer is sufficient by itself.
-

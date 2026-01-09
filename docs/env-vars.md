@@ -52,7 +52,7 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 
 ## Browser UI (`browser` binary)
 
-These are consumed by the experimental desktop browser UI (`browser` binary; see [browser_ui.md](browser_ui.md)).
+These are consumed by the experimental desktop browser UI (`browser` binary; see [browser_ui.md](browser_ui.md); run with `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --features browser_ui --bin browser`).
 
 - `FASTR_BROWSER_MEM_LIMIT_MB=<MiB>` – best-effort address-space (virtual memory) limit for the `browser` process.
   - Set to `0`, empty, or unset to disable.

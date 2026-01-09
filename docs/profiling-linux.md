@@ -7,7 +7,8 @@ This doc is about **getting actionable profiles quickly** for FastRender’s Rus
 - **Update pageset scoreboard** (safe timeouts/panic containment):
 
 ```bash
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 - Convenience wrappers (see `scripts/`):
@@ -28,7 +29,8 @@ CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none \
 
 # Terminal-only friendly: save to file, don't auto-open a browser.
 samply record --save-only --no-open -o target/pageset/profiles/example.profile.json.gz -- \
-  scripts/run_limited.sh --as 64G -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+  bash scripts/run_limited.sh --as 64G -- \
+  target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 
 # View later (on a machine with a browser):
 samply load target/pageset/profiles/example.profile.json.gz
@@ -81,7 +83,8 @@ Record a profile:
 
 ```bash
 samply record --save-only --no-open -o target/pageset/profiles/example.profile.json.gz -- \
-  scripts/run_limited.sh --as 64G -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+  bash scripts/run_limited.sh --as 64G -- \
+  target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 ```
 
 Open it later (on a machine with a browser):
@@ -118,14 +121,16 @@ Samply uses the Firefox Profiler UI. Use it to find:
 Quick counters:
 
 ```bash
-perf stat -d -d -- scripts/run_limited.sh --as 64G -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+perf stat -d -d -- bash scripts/run_limited.sh --as 64G -- \
+  target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 ```
 
 Sampled CPU profile (DWARF call stacks):
 
 ```bash
 perf record -F 99 --call-graph dwarf -- \
-  scripts/run_limited.sh --as 64G -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+  bash scripts/run_limited.sh --as 64G -- \
+  target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 perf report
 ```
 
@@ -145,6 +150,7 @@ Run (builds + records + generates a flamegraph):
 
 ```bash
 CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none \
+  bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh flamegraph --bin pageset_progress -- run --jobs 1 --pages example.com --timeout 5
 ```
 
@@ -155,7 +161,8 @@ FastRender can emit Chrome-trace JSON. This is great when you need **stage attri
 - **One-off trace**: run a trace rerender via `pageset_progress`:
 
 ```bash
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5 --trace-failures
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5 --trace-failures
 ```
 
 - **Inspect**: open the trace in either:
@@ -174,7 +181,8 @@ When performance issues look like “lots of allocations / big peak RSS”, use:
 Example with heaptrack:
 
 ```bash
-scripts/run_limited.sh --as 64G -- heaptrack target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+bash scripts/run_limited.sh --as 64G -- \
+  heaptrack target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 ```
 
 ## 4. What to do with profiles (workflow)

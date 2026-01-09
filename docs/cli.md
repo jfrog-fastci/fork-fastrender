@@ -34,7 +34,7 @@ These are optional wrappers for the most common loops:
   - When reusing existing FastRender renders (`--no-fastrender` / `--diff-only`), xtask validates per-fixture metadata to prevent stale diffs; pass `--allow-stale-fastrender-renders` to override.
   - Core flags mirror `bash scripts/cargo_agent.sh xtask fixture-chrome-diff` (run `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --help` for details; the wrapper forwards through newer selection flags like `--from-progress` / `--all-fixtures`).
   - Legacy `--chrome-out-dir` / `--fastr-out-dir` / `--report-html` / `--report-json` flags are still accepted but must match the `<out>/chrome` / `<out>/fastrender` / `<out>/report.*` layout.
-- Run any command under a hard memory cap (uses `prlimit` when available): `scripts/run_limited.sh --as 64G -- <command...>`
+- Run any command under a hard memory cap (uses `prlimit` when available): `bash scripts/run_limited.sh --as 64G -- <command...>`
 - Profile one page with samply (saves profile + prints summary): `scripts/profile_samply.sh <stem|--from-progress ...>` (builds `pageset_progress` with `disk_cache`)
 - Profile one page with perf: `scripts/profile_perf.sh <stem|--from-progress ...>` (builds `pageset_progress` with `disk_cache`)
 - Summarize a saved samply profile: `scripts/samply_summary.py <profile.json.gz>`
@@ -70,7 +70,7 @@ Example (re-fetch HTML for one page with an explicit backend + browser headers):
 
 ```bash
 FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
-  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages -- --refresh --pages tesco.com
+  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages -- --refresh --pages tesco.com
 ```
 
 ## `bash scripts/cargo_agent.sh xtask`
@@ -109,7 +109,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - `--ignore-alpha`, `--max-diff-percent`, `--max-perceptual-distance`, `--sort-by`, and `--shard` are forwarded to `diff_renders` (defaults match the historical `--max-diff-percent=0` behavior).
   - Use `--fail-on-differences` to exit non-zero when the report contains diffs/missing/error entries.
   - Use `--no-build` to reuse an existing `target/release/diff_renders` binary (skips `bash scripts/cargo_agent.sh build`).
- - Chrome baseline screenshots for offline fixtures (local-only; not committed): `bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures`
+  - Chrome baseline screenshots for offline fixtures (local-only; not committed): `bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures`
   - Disables CSS animations/transitions by default for deterministic baselines; pass `--allow-animations` to opt out.
   - Forces a light color scheme + white background by default to avoid platform dark-mode/background differences; pass `--allow-dark-mode` to opt out.
   - Chrome-vs-FastRender diff report for offline fixtures (deterministic; offline): `bash scripts/cargo_agent.sh xtask fixture-chrome-diff`
@@ -147,7 +147,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 
 - Purpose: fetch a curated set of real pages and cache HTML under `fetches/html/` (and metadata alongside).
 - Entry: `src/bin/fetch_pages.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages -- --help`
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
 - Note: `fetch_pages` only caches HTML; it does not use the disk-backed subresource cache (`--cache-dir` is a flag on `prefetch_assets`/`pageset_progress` and pageset wrappers).
 - Cached metadata sidecars: `fetches/html/<stem>.html.meta` stores response metadata (key/value pairs like `content-type`, `status`, `url`, and `referrer-policy`) that downstream tools use when replaying cached HTML.
@@ -160,7 +160,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 
 - Purpose: warm the subresource cache (`fetches/assets/`) by prefetching linked stylesheets and their `@import` chains (plus referenced fonts) for the cached pages under `fetches/html/`. Optional flags can also prefetch additional HTML-linked subresources (images, iframes, embeds, icons, video posters). This makes subsequent pageset renders more repeatable and reduces time spent fetching during `pageset_progress`.
 - Entry: `src/bin/prefetch_assets.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin prefetch_assets -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin prefetch_assets -- --help`
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
 - Requires the `disk_cache` cargo feature (otherwise it only supports `--capabilities` and exits with an error) so warmed cache entries persist across processes.
 - Tooling: `prefetch_assets --capabilities` (alias `--print-capabilities-json`) prints stable JSON describing which optional knobs are supported. When `disk_cache` is unavailable it reports `disk_cache_feature=false` and all optional flags false; pageset wrappers use this instead of grepping the repo source tree.
@@ -191,12 +191,12 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 
 - Purpose: audit (and optionally clean) the disk-backed subresource cache directory (defaults to `fetches/assets/`) for common pageset poisoning cases such as cached 4xx/5xx responses or HTML responses stored for URLs that look like static subresources (CSS/images/fonts).
 - Entry: `src/bin/disk_cache_audit.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit -- --help`
 - Typical usage:
-  - Audit: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit --`
-  - JSON output (stable keys): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit -- --json`
-  - Cleanup: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit -- --delete-http-errors --delete-html-subresources --delete-error-entries`
-  - Match non-default cache directory: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit -- --cache-dir <dir>`
+  - Audit: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit --`
+  - JSON output (stable keys): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit -- --json`
+  - Cleanup: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit -- --delete-http-errors --delete-html-subresources --delete-error-entries`
+  - Match non-default cache directory: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin disk_cache_audit -- --cache-dir <dir>`
 
 ## `render_pages`
 
@@ -216,16 +216,16 @@ report at `target/chrome_vs_fastrender/report.html` by default.
 scripts/install_chrome_baseline_deps_ubuntu.sh
 
 # 1) Ensure cached HTML exists:
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages
 
 # 2) Screenshot with Chrome/Chromium (JS disabled by default; injects <base href=...> from *.html.meta):
 scripts/chrome_baseline.sh
 
 # 3) Render FastRender output:
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages
 
 # 4) Diff the two directories:
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin diff_renders -- \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin diff_renders -- \
   --before fetches/chrome_renders \
   --after fetches/renders \
   --json target/chrome_vs_fastrender/report.json \
@@ -246,7 +246,7 @@ Notes:
 - Passing page stems that are not present under `fetches/html/*.html` is an error (run `fetch_pages` first).
 - `scripts/chrome_baseline.sh` supports `--shard <index>/<total>` (0-based) for deterministic sharding of the baseline capture set.
 - Entry: `src/bin/render_pages.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages -- --help`
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
 - Accepts `--shard <index>/<total>` to render a slice of the cached pages in a stable order.
 - `--pages` (and positional filters) use the same canonical stems as `fetch_pages` (strip scheme + leading `www.`). Cached filenames are normalized when matching filters so `www.`/non-`www` variants map consistently.
@@ -283,8 +283,8 @@ You can also run the pieces independently (mostly useful when iterating on one s
 
 ```bash
 bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures --out-dir target/fixture_chrome_diff/chrome --fixtures grid_news
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- --fixtures grid_news --out-dir target/fixture_chrome_diff/fastrender
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin diff_renders -- \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- --fixtures grid_news --out-dir target/fixture_chrome_diff/fastrender
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin diff_renders -- \
   --before target/fixture_chrome_diff/chrome \
   --after target/fixture_chrome_diff/fastrender \
   --json target/fixture_chrome_diff/report.json \
@@ -296,7 +296,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 ## `render_fixtures`
 
 - Purpose: render offline page fixtures (under `tests/pages/fixtures/`) to PNGs for deterministic debugging and Chrome-vs-FastRender diff reports.
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- --help`
 - Defaults: fixed, deterministic viewport/DPR (1040x1240 @ 1.0) unless overridden.
 - Offline policy: fixtures are rendered **without network access**; only `file://` and `data:` subresources are allowed.
 - Fixture completeness: any blocked `http(s)://` subresource (network access) is treated as a fixture failure so captures stay self-contained/offline. Other fetch errors are reported in `<fixture>.log` (and in `diagnostics.json` when `--write-snapshot` is enabled).
@@ -391,11 +391,11 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 ## `css_coverage`
 
 - Purpose: scan fixture HTML/CSS (and optional cached pages) for CSS property usage and classify coverage gaps (unknown and vendor-prefixed properties, plus sampled rejected values for known properties).
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin css_coverage -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin css_coverage -- --help`
 - Typical usage:
-  - Scan pageset fixtures: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin css_coverage`
-  - Include cached HTML pages too: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin css_coverage -- --fetches-html fetches/html`
-  - Emit JSON: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin css_coverage -- --json > target/css_coverage.json`
+  - Scan pageset fixtures: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin css_coverage`
+  - Include cached HTML pages too: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin css_coverage -- --fetches-html fetches/html`
+  - Emit JSON: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin css_coverage -- --json > target/css_coverage.json`
 - Core flags:
   - Roots: `--fixtures <dir>` (default `tests/pages/fixtures`), optional `--fetches-html <dir>`
   - Report knobs: `--top <n>`, `--sample-values <n>`, `--json`
@@ -403,7 +403,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 ## `font_coverage`
 
 - Purpose: audit which Unicode codepoints in some input text have no glyph in the selected font set.
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin font_coverage -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin font_coverage -- --help`
 - Inputs:
   - Direct text: `--text "..."`
   - HTML file (extracts visible text nodes): `--html-file <path>`
@@ -415,7 +415,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 ## `bundled_font_coverage`
 
 - Purpose: scan cached pageset HTML (`fetches/html/*.html`) and report which Unicode codepoints are not covered by the bundled font set.
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundled_font_coverage -- --pageset`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundled_font_coverage -- --pageset`
 - Useful for data-driven bundled font subset decisions; see [`docs/notes/bundled-fonts.md`](notes/bundled-fonts.md).
 - Core flags:
   - Page selection: `--pageset`, `--pages <csv>` (URLs or cache stems)
@@ -426,7 +426,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 
 - Purpose: fetch one URL (or read one `file://` target) and render to a PNG.
 - Entry: `src/bin/fetch_and_render.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- --help`
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
 - Disk cache directory: `--cache-dir <dir>` overrides the disk-backed subresource cache location (defaults to `fetches/assets/`; only has an effect when built with `--features disk_cache`).
 - Security defaults mirror the library: `file://` subresources are blocked for HTTP(S) documents. Use `--allow-file-from-http` to override during local testing, `--block-mixed-content` to forbid HTTP under HTTPS, and `--same-origin-subresources` (plus optional `--allow-subresource-origin`) to block cross-origin CSS/images/fonts when rendering untrusted pages. This flag does not block cross-origin iframe/embed document navigation.
@@ -437,15 +437,15 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Purpose: capture a page (HTML + subresources) into a self-contained bundle and replay it offline.
 - Entry: `src/bin/bundle_page.rs`
 - Run:
-  - Fetch: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out <bundle_dir|.tar>`
+  - Fetch: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out <bundle_dir|.tar>`
     - HTTP fetch tuning: `bundle_page fetch` honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
     - For pages that crash or time out during capture, add `--no-render` (alias `--crawl`) to discover subresources by parsing HTML + CSS instead of rendering.
     - Use `--fetch-timeout-secs <secs>` to bound per-request network time when crawling large pages.
-  - Cache (offline, from pageset caches): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- cache <stem> --out <bundle_dir|.tar>`
+  - Cache (offline, from pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- cache <stem> --out <bundle_dir|.tar>`
     - Reads HTML from `fetches/html/<stem>.html` (+ `.html.meta`) and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` (alias `--cache-dir`); this should match the `--cache-dir` used when warming/running the pageset).
     - Fails if a discovered subresource is missing from the cache; pass `--allow-missing` to insert empty placeholders.
     - The disk cache key namespace depends on request headers. If you warmed `fetches/assets/` with non-default values (e.g. `pageset_progress --user-agent ... --accept-language ...`, or `FASTR_HTTP_BROWSER_HEADERS=0`), pass matching `bundle_page cache --user-agent ... --accept-language ...` (and the same env var) so cache capture hits the correct entries.
-  - Render: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render <bundle> --out <png>`
+  - Render: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render <bundle> --out <png>`
     - `bundle_page render` is offline and ignores `FASTR_HTTP_*` env vars (it uses the bundle contents only).
 - Security: `--same-origin-subresources` (plus optional `--allow-subresource-origin`) applies both when capturing and replaying bundles to keep cross-origin assets out of offline artifacts. It does not block cross-origin iframe/embed document navigation.
 - Convert bundles to offline fixtures for the `pages_regression` harness: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`. All HTML/CSS references are rewritten to hashed files under `assets/`, and the importer fails if any network URLs would remain.
@@ -454,11 +454,11 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 
 - Purpose: import a subset of Web Platform Tests from a local WPT checkout into `tests/wpt/tests/` for the offline WPT harness.
 - Entry: `src/bin/import_wpt.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin import_wpt -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin import_wpt -- --help`
 - Typical usage:
 
   ```bash
-  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin import_wpt -- \
+  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin import_wpt -- \
     --wpt-root /path/to/wpt \
     --suite css/css-text/white-space \
     --out tests/wpt/tests
@@ -479,14 +479,14 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 
 - Purpose: inspect fragment output (and related style/layout state) for a single input.
 - Entry: `src/bin/inspect_frag.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin inspect_frag -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin inspect_frag -- --help`
 - `--dump-json <dir>` writes deterministic snapshots of each pipeline stage (`dom.json`, `composed_dom.json`, `styled.json`, `box_tree.json`, `fragment_tree.json`, `display_list.json`). Pair with `--filter-selector` / `--filter-id` to focus on a subtree.
 - `--dump-snapshot` prints a combined pipeline snapshot JSON to stdout (and exits).
 - `--render-overlay <png>` renders the page with optional overlays for fragment bounds, box ids, stacking contexts, and scroll containers.
 - Pagination/debugging: set `FASTR_FRAGMENTATION_PAGE_HEIGHT=<css px>` (and optional `FASTR_FRAGMENTATION_GAP=<css px>`) to paginate layout during inspection. The fixture at `tests/fixtures/inspect_frag_two_pages.html` forces two pages via `@page` and `break-after: page`:
 
   ```bash
-  FASTR_FRAGMENTATION_PAGE_HEIGHT=200 scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin inspect_frag -- tests/fixtures/inspect_frag_two_pages.html
+  FASTR_FRAGMENTATION_PAGE_HEIGHT=200 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin inspect_frag -- tests/fixtures/inspect_frag_two_pages.html
   ```
 
   Searching for `"Second page"` should show hits on `[root 1]`.
@@ -495,12 +495,17 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 
 - Purpose: compare two render outputs (directories or PNG files) and summarize pixel + perceptual diffs.
 - Entry: `src/bin/diff_renders.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin diff_renders -- --before <dir|file.png> --after <dir|file.png>`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin diff_renders -- --before <dir|file.png> --after <dir|file.png>`
 - Matching: directory inputs are walked recursively and paired by relative path (minus the `.png` extension). This allows diffing nested render trees (for example fixture render outputs or pageset dump layouts) without flattening them first.
 - Outputs: `diff_report.json` and `diff_report.html` plus diff PNGs under `<html_stem>_files/diffs/` next to the HTML report (e.g. `diff_report_files/diffs/...`).
 - Tuning: `--tolerance`, `--max-diff-percent`, and `--max-perceptual-distance` accept the same values as the fixture harness (`FIXTURE_TOLERANCE`, `FIXTURE_MAX_DIFFERENT_PERCENT`, `FIXTURE_MAX_PERCEPTUAL_DISTANCE`, and `FIXTURE_FUZZY` env vars are honored when flags are omitted). Use `--ignore-alpha` (or set `FIXTURE_IGNORE_ALPHA=1`) to ignore alpha differences. Use `--sort-by perceptual` to rank diffs by SSIM-derived distance.
 - Supports deterministic sharding with `--shard <index>/<total>` to split large sets across workers.
-- Exit codes: `diff_renders` exits with code 1 when any diff/missing/error entries are present. When running via `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run`, Cargo will print a `process didn't exit successfully` wrapper message—this is expected. Use `bash scripts/cargo_agent.sh xtask diff-renders` (or run the built binary directly) if you want cleaner output while still keeping the report; pass `bash scripts/cargo_agent.sh xtask diff-renders --fail-on-differences` to preserve the non-zero exit code while still keeping the report.
+- Exit codes: `diff_renders` exits with code 1 when any diff/missing/error entries are present. When running via
+  `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run`, Cargo will print a
+  `process didn't exit successfully` wrapper message—this is expected.
+  Use `bash scripts/cargo_agent.sh xtask diff-renders` (or run the built binary directly) if you want cleaner
+  output while still keeping the report; pass `bash scripts/cargo_agent.sh xtask diff-renders --fail-on-differences`
+  to preserve the non-zero exit code while still keeping the report.
 
 ## `compare_diff_reports`
 
@@ -509,7 +514,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Run:
 
   ```bash
-  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
+  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
     --baseline target/fixture_chrome_diff_before/report.json \
     --new target/fixture_chrome_diff_after/report.json \
     --json target/fixture_chrome_diff_delta/report.json \
@@ -530,7 +535,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 
 - Purpose: compare pipeline snapshots (`*.snapshot.json`) and highlight stage-level deltas that explain pixel diffs.
 - Entry: `src/bin/diff_snapshots.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin diff_snapshots -- --before <dir|file> --after <dir|file>`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin diff_snapshots -- --before <dir|file> --after <dir|file>`
 - Matching:
   - Directory inputs support both the render-pages layout (`<stem>.snapshot.json`) and directory-based snapshots (`<stem>/snapshot.json` produced by `pageset_progress --dump-*` and `render_fixtures --write-snapshot` / `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --write-snapshot`).
   - Entries are paired by stem (the `<stem>` part of the filename/directory). For directory snapshots, `render.png` is linked when present; otherwise the tool looks for `<stem>.png` next to the `<stem>/` directory (fixture outputs) and finally `<stem>/<stem>.png` (legacy).
@@ -540,7 +545,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 
 - Purpose: emit the computed accessibility tree for a document as JSON (without painting).
 - Entry: `src/bin/dump_a11y.rs`
-- Run: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- --help`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- --help`
 
 ## Offline / cached captures
 
@@ -570,8 +575,8 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Purpose: **update the committed pageset scoreboard** under `progress/pages/*.json`.
 - Entry: `src/bin/pageset_progress.rs`
 - Run:
-  - Help: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --help`
-  - Typical: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5`
+  - Help: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --help`
+  - Typical: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5`
   - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
   - Compatibility (opt-in only): `--compat-profile site` enables site-specific hacks and
     `--dom-compat compat` applies DOM class flips. Defaults stay spec-only; `bash scripts/cargo_agent.sh xtask
@@ -581,15 +586,15 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   `--font-dir <path>` to load fonts from a specific directory without hitting host fonts.
 - Accuracy (optional): pass `--accuracy --baseline=chrome` to compute pixel-diff metrics against the baseline PNGs and store the result under `progress.accuracy`.
   - Use `--accuracy-require-clean` to skip pages that are `status=ok` but still have known subresource failures (`failure_stage` set, fetch errors, bot mitigation blocks). Skipped pages keep `accuracy` unset and get an `auto_notes` line like `Accuracy skipped: ok-with-failures`.
-- Sync: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- sync [--prune] [--html-dir fetches/html --progress-dir progress/pages]` bootstraps one JSON per pageset URL without needing any caches. `--prune` removes stale progress files for URLs no longer in the list. Stems are collision-aware (`example.com--deadbeef` when needed) to keep cache and progress filenames unique.
-- Migrate: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- migrate [--html-dir fetches/html --progress-dir progress/pages]` rewrites existing progress JSON without fetching or rendering. It applies legacy schema migrations (notably splitting mixed legacy `notes` into durable `notes` + machine `auto_notes`) and reserializes deterministically using the runner's canonical formatter.
+- Sync: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- sync [--prune] [--html-dir fetches/html --progress-dir progress/pages]` bootstraps one JSON per pageset URL without needing any caches. `--prune` removes stale progress files for URLs no longer in the list. Stems are collision-aware (`example.com--deadbeef` when needed) to keep cache and progress filenames unique.
+- Migrate: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- migrate [--html-dir fetches/html --progress-dir progress/pages]` rewrites existing progress JSON without fetching or rendering. It applies legacy schema migrations (notably splitting mixed legacy `notes` into durable `notes` + machine `auto_notes`) and reserializes deterministically using the runner's canonical formatter.
 - Progress filenames use the cache stem from `pageset_stem` (strip scheme + leading `www.` plus a deterministic hash suffix on collisions); `--pages` filters accept the URL, canonical stem, or cache stem. If you have older `fetches/html` entries with `www.` prefixes in the filename, re-run `fetch_pages` so progress filenames line up.
   - For temporary/test runs, `FASTR_PAGESET_URLS="https://a.com,https://b.com"` overrides the built-in pageset everywhere.
 - Triage reruns (reuse existing `progress/pages/*.json` instead of typing stems):
   - `--from-progress <dir>` enables selection from saved progress files (default intersection of filters, use `--union` to OR them).
   - Filters: `--only-failures`, `--only-status timeout,panic,error`, `--slow-ms <ms> [--slow-ok-only]`, `--hotspot css|cascade|box_tree|layout|paint|...`, `--top-slowest <n>`.
   - The deterministic stem list is printed before running; if nothing matches, the command exits cleanly without touching caches.
-- Report: `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- report`
+- Report: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- report`
   `[--progress-dir progress/pages --top 10 --fail-on-bad --compare <other> --fail-on-regression --regression-threshold-percent 10 --fail-on-slow-ok-ms <ms> --fail-on-stage-sum-exceeds-total]`
   - Prints status counts, slowest pages, and hotspot histograms for the saved progress files.
   - With `--compare`, also prints status transitions plus the top regressions/improvements by `total_ms`.
@@ -603,7 +608,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - Example:
 
     ```bash
-    scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- report \
+    bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- report \
       --progress-dir progress/pages \
       --fail-on-stage-sum-exceeds-total
     ```

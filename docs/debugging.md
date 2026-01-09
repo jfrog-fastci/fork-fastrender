@@ -94,14 +94,17 @@ Use `--viewport`, `--dpr`, and `--media screen|print` to align FastRender, overl
 Dump the first 400 paint commands:
 
 ```bash
-FASTR_DUMP_COMMANDS=400 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages -- --pages news.ycombinator.com
+FASTR_DUMP_COMMANDS=400 \
+  bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin render_pages -- --pages news.ycombinator.com
 ```
 
 Log timings + fragment bounds for a single render:
 
 ```bash
 FASTR_RENDER_TIMINGS=1 FASTR_LOG_FRAG_BOUNDS=1 \
-  bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png --timeout 20
+  bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png --timeout 20
 ```
 
 ## Chrome/Perfetto traces from `pageset_progress`

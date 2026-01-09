@@ -20,7 +20,7 @@ This runs `cargo metadata --locked` and inspects the resolved dependency graph.
 
 - Default (no flag): traverses dependencies starting from the `fastrender` crate.
 - `--workspace`: traverses dependencies starting from **all workspace members**.
-  - CI runs workspace-wide because `cargo test --all-features` at the workspace root compiles
+  - CI runs workspace-wide because `bash scripts/cargo_agent.sh test --all-features` at the workspace root compiles
     everything, not just the core renderer crate.
 
 ## Feature sets
@@ -33,7 +33,7 @@ This runs `cargo metadata --locked` and inspects the resolved dependency graph.
 When `openssl-sys` is found, the lint prints the dependency chain(s) that pulled it in
 (`name@version -> ... -> openssl-sys@version`).
 
-For deeper inspection, `cargo tree` is usually enough:
+For deeper inspection, `bash scripts/cargo_agent.sh tree` is usually enough:
 
 ```bash
 # Show all reverse-dependency paths that reach openssl-sys:

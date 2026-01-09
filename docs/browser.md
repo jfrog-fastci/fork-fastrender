@@ -110,5 +110,6 @@ opens but nothing renders, check for:
 For panics, use:
 
 ```bash
-RUST_BACKTRACE=1 scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --features browser_ui --bin browser
+RUST_BACKTRACE=1 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 ```

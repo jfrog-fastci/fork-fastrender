@@ -18,7 +18,7 @@ Use the `xtask` wrapper for common local loops:
 - Cached-pages Chrome-vs-FastRender evidence report (best-effort): `scripts/chrome_vs_fastrender.sh --pages example.com` (writes `target/chrome_vs_fastrender/report.html` by default)
 
 Safety note: helper scripts in `scripts/` already run Cargo via `bash scripts/cargo_agent.sh` (which enforces
-resource limits via `scripts/run_limited.sh`).
+resource limits via `bash scripts/run_limited.sh`).
 
 `bash scripts/cargo_agent.sh xtask --help` and per-subcommand help describe available flags and defaults.
 
@@ -51,8 +51,8 @@ scripts/pageset.sh
 
 FastRender’s real-page loop is:
 
-1. Fetch pages (network): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages`
-2. Render cached pages (HTML from cache; subresources fetched/cached as needed): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages`
+1. Fetch pages (network): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages`
+2. Render cached pages (HTML from cache; subresources fetched/cached as needed): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages`
 3. Inspect outputs under `fetches/renders/` (PNGs + per-page logs + `_summary.log`)
 
 For large runs, both `fetch_pages` and `render_pages` accept `--shard <index>/<total>` to process a deterministic slice of the page list (0-based shard indices).
@@ -64,20 +64,20 @@ Cache layout:
 
 ## Render a single page
 
-- `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png`
+- `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png`
 
 `fetch_and_render` supports `file://…` inputs for local repros. Run with `--help` for the full flag list.
 
 ## Capture and replay a self-contained bundle
 
 - Fetch and bundle (captures HTML + subresources + metadata):  
-  `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir`
+  `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir`
 - When full rendering crashes or times out, you can still capture a best-effort offline bundle by
   crawling HTML + CSS for subresources (no layout/paint):  
-  `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir --no-render`
+  `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir --no-render`
   - Optional: bound per-request fetch time with `--fetch-timeout-secs <secs>`.
 - Render strictly from the bundle without touching the network:  
-  `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render capture_dir --out output.png`
+  `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render capture_dir --out output.png`
 
 Bundles are deterministic directories or `.tar` archives containing:
 - Raw document bytes with content-type and final URL
@@ -102,6 +102,6 @@ with the visual viewport used for `device-*` media features.
 
 The `inspect_frag` binary is the main “what happened?” tool:
 
-- `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin inspect_frag -- file:///abs/path/to/file.html`
+- `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin inspect_frag -- file:///abs/path/to/file.html`
 
 It is designed for inspecting fragments and style/layout decisions on a single input.

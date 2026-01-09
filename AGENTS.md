@@ -43,7 +43,8 @@ FastRender runs on hostile inputs. Any run can go pathological. **Always enforce
 For anything that executes the renderer (pages, fixtures, benches, fuzz, etc.), run under OS caps:
 
 ```bash
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- <args...>
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- <args...>
 ```
 
 Prefer in-process guardrails when a CLI supports them (e.g. `--mem-limit-mb`, stage budgets), but **OS caps are still required**.

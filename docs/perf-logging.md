@@ -83,7 +83,7 @@ Outputs are written under `target/criterion/<bench>/new/estimates.json` and do n
 Use the helper to flag regressions between two Criterion output trees:
 
 ```
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
   -- --baseline ../baseline/target/criterion --new target/criterion \
   --regression-threshold 0.05 --metric median
 ```
@@ -95,7 +95,7 @@ scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --b
 Nightly at 06:00 UTC (and on `workflow_dispatch`), `.github/workflows/perf.yml` runs the pipeline benchmarks with `bash scripts/cargo_agent.sh bench --bench perf_regressions --locked -- --noplot`, uploads `target/criterion` as the `criterion-output` artifact, and downloads the most recent successful artifact from `main`. It then runs:
 
 ```
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
   -- --baseline baseline/target/criterion --new target/criterion \
   --regression-threshold 0.05 --metric median
 ```
@@ -109,7 +109,7 @@ The comparison output is attached to the job summary, and regressions over 5% fa
 3. Compare against your local run with the same thresholds CI uses:
 
 ```
-scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
   -- --baseline baseline/target/criterion --new target/criterion \
   --regression-threshold 0.05 --metric median
 ```

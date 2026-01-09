@@ -8,7 +8,7 @@ AGENTS.md is the law. These rules are not suggestions. Violating them destroys h
 
 **MANDATORY (no exceptions):**
 - Use `bash scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
-- Use `scripts/run_limited.sh --as 64G` when executing ANY renderer binary
+- Use `bash scripts/run_limited.sh --as 64G` when executing ANY renderer binary
 - Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
 
 **FORBIDDEN — will destroy the host:**
@@ -134,7 +134,7 @@ Cargo commands inside the submodule.
 Example pattern:
 
 ```bash
-scripts/run_limited.sh --as 64G -- bash -lc 'cd engines/ecma-rs && bash ../../scripts/cargo_agent.sh test -p parse-js'
+bash scripts/run_limited.sh --as 64G -- bash -lc 'cd engines/ecma-rs && bash ../../scripts/cargo_agent.sh test -p parse-js'
 ```
 
 For builds/tests, avoid multi-agent cargo stampedes (same principle as FastRender):

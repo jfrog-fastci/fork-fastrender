@@ -37,14 +37,14 @@ See `AGENTS.md` for detailed test organization rules.
 
 ## Core tests
 
-- Run unit tests only (fast): `bash scripts/cargo_agent.sh test --quiet --lib`
-- Run a specific harness (recommended): `bash scripts/cargo_agent.sh test --quiet --test layout_tests`
+- Run unit tests only (fast): `bash scripts/cargo_agent.sh test --quiet -p fastrender --lib`
+- Run all `fastrender` tests: `bash scripts/cargo_agent.sh test --quiet -p fastrender` (compiles ~40 test binaries)
+- Run a specific harness (recommended): `bash scripts/cargo_agent.sh test --quiet -p fastrender --test layout_tests`
 
 Note: `scripts/cargo_agent.sh test` caps `RUST_TEST_THREADS` on very large machines. Override with
 `FASTR_RUST_TEST_THREADS` / `RUST_TEST_THREADS` if you need a different setting.
 
-- Full suite (CI only; extremely expensive): `cargo test --all-features` (do **not** run this on
-  agent hosts; see `AGENTS.md`).
+- Full suite (CI only; extremely expensive): `bash scripts/cargo_agent.sh test --all-features` (do **not** run this on agent hosts; see `AGENTS.md`).
 
 ## Fonts
 
@@ -59,7 +59,7 @@ deterministic across platforms. Set `FASTR_USE_BUNDLED_FONTS=1` locally to match
 
 ## Style regression harness
 
-- Run: `bash scripts/cargo_agent.sh test --quiet --test style_tests`
+- Run: `bash scripts/cargo_agent.sh test --quiet -p fastrender --test style_tests`
 
 This harness covers targeted style/cascade/layout regressions.
 
@@ -67,9 +67,9 @@ This harness covers targeted style/cascade/layout regressions.
 
 `tests/fixtures_test.rs` renders HTML fixtures under `tests/fixtures/html/` and writes/reads golden PNGs under `tests/fixtures/golden/`.
 
-- Run fixtures: `bash scripts/cargo_agent.sh test fixtures`
-- (Re)generate goldens: `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test fixtures`
-- To refresh a single fixture (faster): `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test test_fixture_<name> -- --exact`
+- Run fixtures: `bash scripts/cargo_agent.sh test -p fastrender --test fixtures_test`
+- (Re)generate goldens: `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test fixtures_test`
+- To refresh a single fixture (faster): `UPDATE_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test fixtures_test test_fixture_<name> -- --exact`
 
 Rendered output is compared pixel-by-pixel against the checked-in PNG goldens. Failures write artifacts under `target/fixtures_diffs/<fixture>_{actual,expected,diff}.png` for debugging.
 
@@ -85,8 +85,8 @@ New columns/transform/form fixtures ship with checked-in goldens; keep these up 
 
 ## Offline page regression suite
 
-- Run: `bash scripts/cargo_agent.sh test pages_regression`
-- Refresh goldens: `UPDATE_PAGES_GOLDEN=1 bash scripts/cargo_agent.sh test pages_regression`
+- Run: `bash scripts/cargo_agent.sh test -p fastrender --test regression_tests pages_regression_suite`
+- Refresh goldens: `UPDATE_PAGES_GOLDEN=1 bash scripts/cargo_agent.sh test -p fastrender --test regression_tests pages_regression_suite`
 
 This suite renders a curated set of realistic pages under `tests/pages/fixtures/` (flex/grid/table, multicol, pagination, masks/filters, SVG, writing modes, form controls, plus a positioned-child regression) and compares them against goldens in `tests/pages/golden/`.
 
@@ -142,7 +142,8 @@ bash scripts/cargo_agent.sh xtask fixture-chrome-diff
 scripts/chrome_vs_fastrender_fixtures.sh
 
 # 1) Render the offline fixture(s) with FastRender (offline; bundled fonts):
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- --out-dir target/fixture_chrome_diff/fastrender
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin render_fixtures -- --out-dir target/fixture_chrome_diff/fastrender
 
 # 2) Produce local Chrome baseline PNGs for those fixture(s):
 bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures --out-dir target/fixture_chrome_diff/chrome
@@ -156,7 +157,8 @@ bash scripts/cargo_agent.sh xtask fixture-chrome-diff
 bash scripts/cargo_agent.sh xtask sync-progress-accuracy --report target/fixture_chrome_diff/report.json
 
 # `pageset_progress report --rank-accuracy` now reflects the deterministic fixture diffs.
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- report --rank-accuracy
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin pageset_progress -- report --rank-accuracy
 ```
 
 Preferred workflow for refreshing the committed accuracy telemetry:
@@ -196,7 +198,8 @@ When diagnosing paint nondeterminism (often scheduling-dependent under high para
 - In-process repeat/shuffle harness (captures raw `Pixmap::data()` bytes; can save per-variant PNGs):
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- \
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin render_fixtures -- \
   --fixtures preserve_3d_stack --jobs 8 \
   --repeat 10 --shuffle --fail-on-nondeterminism --save-variants
 ```
@@ -225,7 +228,8 @@ bash scripts/cargo_agent.sh xtask fixture-chrome-diff --out-dir target/fixture_c
 bash scripts/cargo_agent.sh xtask fixture-chrome-diff --out-dir target/fixture_chrome_diff_after
 
 # Summarize deltas (improvements/regressions) between the two reports:
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
   --baseline target/fixture_chrome_diff_before/report.json \
   --new target/fixture_chrome_diff_after/report.json \
   --json target/fixture_chrome_diff_delta/report.json \
@@ -249,7 +253,8 @@ scripts/chrome_vs_fastrender.sh --out-dir target/chrome_vs_fastrender_before --p
 scripts/chrome_vs_fastrender.sh --out-dir target/chrome_vs_fastrender_after --pages example.com
 
 # Summarize deltas between the two runs:
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin compare_diff_reports -- \
   --baseline target/chrome_vs_fastrender_before/report.json \
   --new target/chrome_vs_fastrender_after/report.json \
   --json target/chrome_vs_fastrender_delta/report.json \
@@ -272,7 +277,7 @@ Use `bundle_page` to capture a page once, then convert that bundle into a determ
 
 1. Capture a bundle:
    - Online (network): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out /tmp/capture.tar` (or a directory path)
-       - If a page crashes or times out during capture, add `--no-render` to crawl HTML + CSS for subresources without doing a full render.
+        - If a page crashes or times out during capture, add `--no-render` to crawl HTML + CSS for subresources without doing a full render.
    - Offline (from warmed pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features disk_cache --bin bundle_page -- cache <stem> --out /tmp/capture.tar`
         - Reads HTML from `fetches/html/<stem>.html` and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` / `--cache-dir`).
 2. Import: `bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/capture.tar <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`
@@ -310,7 +315,7 @@ When working on JavaScript parsing (via the `engines/ecma-rs` submodule), the re
 
 There is a self-contained WPT-style runner under `tests/wpt/` for local “render and compare” tests. It does not talk to upstream WPT and never fetches from the network.
 
-- Run: `bash scripts/cargo_agent.sh xtask test wpt` (or `bash scripts/cargo_agent.sh test --quiet wpt_local_suite_passes -- --exact`)
+- Run: `bash scripts/cargo_agent.sh xtask test wpt` (or `bash scripts/cargo_agent.sh test --quiet -p fastrender --test wpt_test wpt_local_suite_passes -- --exact`)
 - Each rendered document is given a per-document `file://` base URL (the test HTML path for the test render, and the reference HTML path for the reference render) so relative resources like `support/*.css`, images, and fonts resolve reliably regardless of the current working directory.
 - `WptRunnerBuilder::build()` defaults to an offline renderer (`ResourcePolicy` with `http/https` disabled). Advanced callers can still inject a custom renderer via `.renderer(...)`.
 
@@ -349,7 +354,8 @@ Use `import_wpt` to bring small slices of upstream WPT into `tests/wpt/tests/` w
 A tiny synthetic WPT-like tree lives under `tests/wpt/_import_testdata/` and is exercised in CI. You can sanity check the importer locally via:
 
 ```
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --bin import_wpt -- \
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --bin import_wpt -- \
   --wpt-root tests/wpt/_import_testdata/wpt \
   --suite css/simple \
   --out /tmp/fastrender-wpt-import \
