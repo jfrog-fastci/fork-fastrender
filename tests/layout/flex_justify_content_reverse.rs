@@ -109,6 +109,62 @@ fn justify_content_flex_start_row_reverse_is_not_double_inverted() {
 }
 
 #[test]
+fn row_reverse_nowrap_does_not_trigger_monotonicity_fallback() {
+  // Regression test: flex items in `row-reverse` naturally have decreasing x positions in source
+  // order. Our monotonicity fallback must not treat that as an error (otherwise later items get
+  // pushed outside the container).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::RowReverse;
+  container_style.justify_content = JustifyContent::SpaceBetween;
+  container_style.width = Some(Length::px(340.0));
+  container_style.height = Some(Length::px(100.0));
+
+  let mut first_style = ComputedStyle::default();
+  first_style.display = Display::Block;
+  first_style.width = Some(Length::px(75.0));
+  first_style.height = Some(Length::px(75.0));
+  first_style.flex_shrink = 0.0;
+  let mut first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  first.id = 1;
+
+  let mut second_style = ComputedStyle::default();
+  second_style.display = Display::Block;
+  second_style.width = Some(Length::px(249.0));
+  second_style.height = Some(Length::px(75.0));
+  second_style.flex_grow = 1.0;
+  let mut second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  second.id = 2;
+
+  let mut container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![first, second],
+  );
+  container.id = 100;
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(340.0, 100.0))
+    .expect("layout succeeds");
+
+  let first = find_child_by_id(&fragment, 1).unwrap_or_else(|| panic!("missing first child"));
+  let second = find_child_by_id(&fragment, 2).unwrap_or_else(|| panic!("missing second child"));
+
+  assert!(
+    (second.bounds.x() - 0.0).abs() < 1e-3,
+    "expected second item to remain at x=0 for row-reverse space-between (got x={})",
+    second.bounds.x()
+  );
+  assert!(
+    (first.bounds.max_x() - fragment.bounds.width()).abs() < 1e-3,
+    "expected first item to align to the right edge (got max_x={}, container_w={})",
+    first.bounds.max_x(),
+    fragment.bounds.width()
+  );
+}
+
+#[test]
 fn justify_content_flex_start_rtl_row_is_not_double_inverted() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;

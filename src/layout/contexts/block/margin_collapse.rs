@@ -350,6 +350,15 @@ pub fn collapse_margins(margin1: f32, margin2: f32) -> f32 {
 /// - height is auto or zero
 /// - No padding or border
 pub fn is_margin_collapsible_through(style: &ComputedStyle) -> bool {
+  // CSS 2.1 defines an "empty" block as having no in-flow content, no block-axis padding/border,
+  // and `height:auto`/`min-height:0`, which in that spec implies a used height of 0.
+  //
+  // Modern CSS adds `aspect-ratio`, which can give a box a non-zero used size even when
+  // `height:auto` and there is no in-flow content (the common "aspect-ratio placeholder" pattern).
+  // Such boxes must not be treated as collapsible-through.
+  if !matches!(style.aspect_ratio, crate::style::types::AspectRatio::Auto) {
+    return false;
+  }
   let (block_start, block_end) = block_axis_sides(style);
   if style.used_border_width(block_start).to_px() > 0.0
     || style.used_border_width(block_end).to_px() > 0.0

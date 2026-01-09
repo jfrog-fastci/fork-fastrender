@@ -938,7 +938,6 @@ fn init_window_globals(
 
   let console_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(console_obj))?;
-
   let log_call_id = vm.register_native_call(console_log_native)?;
   let log_name = scope.alloc_string("log")?;
   scope.push_root(Value::String(log_name))?;

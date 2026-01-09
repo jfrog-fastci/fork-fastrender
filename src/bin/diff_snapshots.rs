@@ -1689,7 +1689,15 @@ fn truncate(input: &str, max: usize) -> String {
   if input.len() <= max {
     input.to_string()
   } else {
-    format!("{}…", &input[..max])
+    let mut end = max.min(input.len());
+    while end > 0 && !input.is_char_boundary(end) {
+      end -= 1;
+    }
+    if end == 0 {
+      "…".to_string()
+    } else {
+      format!("{}…", &input[..end])
+    }
   }
 }
 
@@ -1706,7 +1714,7 @@ fn cmp_f32(a: f32, b: f32) -> Ordering {
 
 #[cfg(test)]
 mod tests {
-  use super::describe_dom_node;
+  use super::{describe_dom_node, truncate};
   use fastrender::debug::snapshot::{AttributeSnapshot, DomNodeKindSnapshot, DomNodeSnapshot};
 
   #[test]
@@ -1725,5 +1733,13 @@ mod tests {
       children: Vec::new(),
     };
     assert_eq!(describe_dom_node(&node), format!("div.a{nbsp}b"));
+  }
+
+  #[test]
+  fn truncate_is_utf8_safe() {
+    // Curly apostrophe is a 3-byte UTF-8 sequence; slicing at an arbitrary byte boundary must not
+    // panic.
+    let input = "hello\u{2019}world";
+    assert_eq!(truncate(input, 6), "hello…");
   }
 }

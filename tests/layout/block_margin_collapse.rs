@@ -6,7 +6,7 @@ use fastrender::layout::contexts::factory::FormattingContextFactory;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::float::{Clear, Float};
-use fastrender::style::types::{BorderStyle, LineHeight, Overflow, WritingMode};
+use fastrender::style::types::{AspectRatio, BorderStyle, LineHeight, Overflow, WritingMode};
 use fastrender::style::values::Length;
 use fastrender::{BoxNode, BoxTree, ComputedStyle, FormattingContext};
 
@@ -689,6 +689,49 @@ fn mixed_signs_collapse_across_three_or_more_adjoining_margins() {
     b_fragment.bounds.y() - a_fragment.bounds.max_y(),
     10.0,
     "expected mixed-sign collapse across multiple adjoining margins to use largest positive + most negative",
+  );
+}
+
+#[test]
+fn aspect_ratio_prevents_collapse_through_empty_blocks() {
+  // A common modern pattern uses `aspect-ratio` on an otherwise-empty element to reserve space for
+  // absolutely positioned content (e.g. images). Even though `height:auto` and there is no in-flow
+  // content, the used height is non-zero, so margins must not collapse *through* the box.
+  //
+  // If we incorrectly treat this box as "collapsible-through", the block formatting context can
+  // remain in the "at start" state and the next in-flow child may be positioned as if it were the
+  // first child, dropping sibling margin collapsing.
+  let mut a_style = block_style_with_height(None);
+  a_style.aspect_ratio = AspectRatio::Ratio(1.0);
+  a_style.margin_bottom = Some(Length::px(30.0));
+  let a = BoxNode::new_block(Arc::new(a_style), FormattingContextType::Block, vec![]);
+
+  let b = block_with_height_and_margins(10.0, -10.0, 0.0);
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![a, b],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let a_fragment = &fragment.children[0];
+  let b_fragment = &fragment.children[1];
+
+  assert_approx(
+    a_fragment.bounds.height(),
+    100.0,
+    "expected aspect-ratio to produce a non-zero used height",
+  );
+  assert_approx(
+    b_fragment.bounds.y() - a_fragment.bounds.max_y(),
+    20.0,
+    "expected sibling margins to collapse (30 + -10 = 20) instead of collapsing through the aspect-ratio box",
   );
 }
 

@@ -6064,9 +6064,7 @@ impl DisplayListBuilder {
           // For CSS `background-image` / masks, treating those as transparent is correct. For
           // replaced elements we generally want to treat placeholder images as "missing" so we can
           // fall back to UA-defined missing-content behavior (alt text for `<img>`, iframe-ish
-          // fallback for `<embed>`/`<object>`, etc.). Note that we intentionally avoid flood-filling
-          // missing `<img>` boxes (see `emit_replaced_placeholder`) because browsers paint only a
-          // small broken-image icon, and large opaque placeholders dominate fixture diffs.
+          // fallback for `<embed>`/`<object>`, etc.).
           let reject_placeholder_image = matches!(
             replaced_type,
             ReplacedType::Image { .. } | ReplacedType::Embed { .. } | ReplacedType::Object { .. }
@@ -9971,20 +9969,10 @@ impl DisplayListBuilder {
     fragment: &FragmentNode,
     rect: Rect,
   ) {
-    // Replaced fallback rendering is UA-defined and varies between browsers; we only want to emit
-    // a placeholder when it is unlikely to obscure real content.
+    // Replaced fallback rendering is UA-defined and varies between browsers.
     //
-    // Chrome does not flood-fill the element box for missing `<img>` content; instead it paints a
-    // small broken-image icon (and possibly alt text). Large opaque placeholders dominate fixture
-    // diffs when the upstream capture missed some images, and they can incorrectly cover whatever
-    // sits behind the element.
-    //
-    // Similarly, Chrome (and friends) do not draw a UA placeholder for `<video>` when there is no
-    // poster and no video frame available. Keeping this transparent is important for real pages
-    // (e.g. when a thumbnail image sits behind the video element until it loads).
-    //
-    // Likewise, `<canvas>` is transparent when nothing has been drawn (and we don't execute JS),
-    // so a placeholder would incorrectly obscure background content.
+    // For `<video>` with no poster/frame and `<canvas>` with no drawn content, browsers keep the
+    // element transparent. Painting a placeholder would incorrectly obscure background content.
     if matches!(
       replaced_type,
       ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
@@ -15129,6 +15117,46 @@ mod tests {
         .iter()
         .any(|item| matches!(item, DisplayItem::Image(_))),
       "background image should decode via base URL"
+    );
+  }
+
+  #[test]
+  fn background_svg_rasterizes_at_tile_size() {
+    let svg = "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22300%22%20height=%22150%22%3E%3Crect%20width=%22100%25%22%20height=%22100%25%22%20fill=%22red%22/%3E%3C/svg%3E";
+
+    let mut style = ComputedStyle::default();
+    style.background_color = Rgba::TRANSPARENT;
+    style.set_background_layers(vec![BackgroundLayer {
+      image: Some(BackgroundImage::Url(svg.into())),
+      size: BackgroundSize::Explicit(
+        BackgroundSizeComponent::Length(Length::px(20.0)),
+        BackgroundSizeComponent::Length(Length::px(20.0)),
+      ),
+      repeat: BackgroundRepeat::no_repeat(),
+      ..BackgroundLayer::default()
+    }]);
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let list = DisplayListBuilder::with_image_cache(ImageCache::new()).build(&fragment);
+    let image_data = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(&img.image),
+        DisplayItem::ImagePattern(pattern) => Some(&pattern.image),
+        _ => None,
+      })
+      .expect("background image should emit an image item");
+
+    assert_eq!(
+      (image_data.width, image_data.height),
+      (20, 20),
+      "SVG background images should rasterize at the resolved tile size"
     );
   }
 

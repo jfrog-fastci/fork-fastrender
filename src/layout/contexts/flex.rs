@@ -10426,22 +10426,21 @@ impl FlexFormattingContext {
       }
     }
 
-    // Only apply the "fix up non-monotonic main-axis positions" fallback for single-line (nowrap)
-    // flex containers.
+    // Only apply the non-monotonic main-axis fallback for single-line (nowrap) flex containers.
     //
     // Wrapped flex containers intentionally reset their main-axis cursor at line breaks; treating
     // that as an error destroys Taffy's line placement (including `align-content` offsets).
     //
     // Note: main-axis "monotonicity" depends on the effective axis direction. For `row-reverse` /
     // `column-reverse` (or RTL/vertical writing modes), valid layouts naturally produce decreasing
-    // physical coordinates along the main axis.
+    // physical coordinates along the main axis, so the check must respect `main_grows_positive`.
     if !children.is_empty() && matches!(box_node.style.flex_wrap, FlexWrap::NoWrap) {
       let eps = 0.1;
       if main_axis_is_horizontal {
         // Taffy can legitimately return equal main-axis offsets for adjacent 0px items. Detect
         // overlap/backtracking using each child's main-axis interval rather than requiring
         // strictly monotonic start coordinates.
-        let mut violates_monotonicity = false;
+        let mut non_monotonic = false;
         let mut prev_min = children[0].bounds.x();
         let mut prev_max = children[0].bounds.max_x();
         for child in children.iter().skip(1) {
@@ -10452,22 +10451,22 @@ impl FlexFormattingContext {
             || !prev_min.is_finite()
             || !prev_max.is_finite()
           {
-            violates_monotonicity = true;
+            non_monotonic = true;
             break;
           }
           if main_grows_positive {
             if min < prev_max - eps {
-              violates_monotonicity = true;
+              non_monotonic = true;
               break;
             }
           } else if max > prev_min + eps {
-            violates_monotonicity = true;
+            non_monotonic = true;
             break;
           }
           prev_min = min;
           prev_max = max;
         }
-        if violates_monotonicity {
+        if non_monotonic {
           if main_grows_positive {
             let mut cursor = children[0].bounds.x();
             for child in &mut children {
@@ -10486,7 +10485,7 @@ impl FlexFormattingContext {
           }
         }
       } else {
-        let mut violates_monotonicity = false;
+        let mut non_monotonic = false;
         let mut prev_min = children[0].bounds.y();
         let mut prev_max = children[0].bounds.max_y();
         for child in children.iter().skip(1) {
@@ -10497,22 +10496,22 @@ impl FlexFormattingContext {
             || !prev_min.is_finite()
             || !prev_max.is_finite()
           {
-            violates_monotonicity = true;
+            non_monotonic = true;
             break;
           }
           if main_grows_positive {
             if min < prev_max - eps {
-              violates_monotonicity = true;
+              non_monotonic = true;
               break;
             }
           } else if max > prev_min + eps {
-            violates_monotonicity = true;
+            non_monotonic = true;
             break;
           }
           prev_min = min;
           prev_max = max;
         }
-        if violates_monotonicity {
+        if non_monotonic {
           if main_grows_positive {
             let mut cursor = children[0].bounds.y();
             for child in &mut children {
@@ -10520,6 +10519,7 @@ impl FlexFormattingContext {
               cursor += child.bounds.height();
             }
           } else {
+            // Place items bottom-to-top, keeping the first item's bottom edge fixed.
             let mut cursor = children[0].bounds.max_y();
             for child in &mut children {
               cursor -= child.bounds.height();

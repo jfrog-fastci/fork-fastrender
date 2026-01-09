@@ -6164,7 +6164,55 @@ impl FormattingContext for BlockFormattingContext {
       ));
       // `compute_replaced_size` returns the used content-box size and already accounts for min/max
       // constraints while interpreting `box-sizing`. Avoid reapplying min/max clamps here.
-      let used_size = compute_replaced_size(style, replaced_box, percentage_base, self.viewport_size);
+      //
+      // When we're performing intrinsic/indefinite probes, percentage-based width constraints behave
+      // as `auto` (CSS Sizing). Use the `style_for_width` variant that strips percentage
+      // width/min/max hints so `max-width: 100%` doesn't incorrectly clamp replaced elements to 0
+      // when the containing block inline size is unknown (e.g. intrinsic block-size probes for
+      // absolutely positioned replaced elements).
+      let used_size =
+        compute_replaced_size(style_for_width, replaced_box, percentage_base, self.viewport_size);
+      {
+        let toggles = crate::debug::runtime::runtime_toggles();
+        if toggles.truthy("FASTR_LOG_REPLACED_SIZES") {
+          let matches_filter = toggles
+            .usize_list("FASTR_LOG_REPLACED_SIZE_IDS")
+            .map(|ids| ids.contains(&box_node.id))
+            .unwrap_or(true);
+          if matches_filter {
+            let selector = box_node
+              .debug_info
+              .as_ref()
+              .map(|d| d.to_selector())
+              .unwrap_or_else(|| "<anon>".to_string());
+            eprintln!(
+              "[replaced-size] id={} selector={} replaced={:?} intrinsic_size={:?} intrinsic_ratio={:?} no_intrinsic_ratio={} style_width={:?} style_height={:?} style_min_w={:?} style_max_w={:?} sizing_width={:?} sizing_height={:?} sizing_min_w={:?} sizing_max_w={:?} min_h={:?} max_h={:?} width_kw={:?} height_kw={:?} aspect_ratio={:?} percentage_base={:?} used_size=({:.2},{:.2})",
+              box_node.id,
+              selector,
+              replaced_box.replaced_type,
+              replaced_box.intrinsic_size,
+              replaced_box.aspect_ratio,
+              replaced_box.no_intrinsic_ratio,
+              style.width,
+              style.height,
+              style.min_width,
+              style.max_width,
+              style_for_width.width,
+              style_for_width.height,
+              style_for_width.min_width,
+              style_for_width.max_width,
+              style.min_height,
+              style.max_height,
+              style.width_keyword,
+              style.height_keyword,
+              style.aspect_ratio,
+              percentage_base,
+              used_size.width,
+              used_size.height
+            );
+          }
+        }
+      }
       if log_skinny && containing_width <= 1.0 {
         let selector = box_node
           .debug_info
