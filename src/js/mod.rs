@@ -47,6 +47,7 @@ pub mod bindings;
 pub mod window_realm;
 pub mod dom_bindings;
 pub mod events_bindings;
+pub mod window;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
@@ -84,6 +85,7 @@ pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_bindings::install_url_bindings;
 pub use window_timers::install_window_timers_bindings;
 pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
+pub use window::{WindowHost, WindowHostState};
 pub use vm_host::JsVmHost;
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
 

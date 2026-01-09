@@ -1,7 +1,6 @@
 use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
 use fastrender::js::{
-  CurrentScriptHost, DocumentHostState, DomHost, ScriptBlockExecutor, ScriptOrchestrator, ScriptType,
-  WindowRealm, WindowRealmConfig,
+  ScriptBlockExecutor, ScriptOrchestrator, ScriptType, WindowHostState, WindowRealm, WindowRealmConfig,
 };
 use fastrender::{Error, Result};
 use vm_js::{Heap, PropertyKey, Scope, Value, Vm, VmError};
@@ -69,7 +68,7 @@ fn window_self_and_document_url_are_exposed() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
   let global = realm.global_object();
-  let (vm, heap) = realm.vm_and_heap_mut();
+  let (_vm, heap) = realm.vm_and_heap_mut();
   let mut scope = heap.scope();
 
   let window = get_data_prop(&mut scope, global, "window");
@@ -89,48 +88,22 @@ fn window_self_and_document_url_are_exposed() -> Result<()> {
 
 #[test]
 fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
-  struct Host {
-    doc: DocumentHostState,
-    realm: WindowRealm,
-  }
-
-  impl DomHost for Host {
-    fn with_dom<R, F>(&self, f: F) -> R
-    where
-      F: FnOnce(&Dom2Document) -> R,
-    {
-      self.doc.with_dom(f)
-    }
-
-    fn mutate_dom<R, F>(&mut self, f: F) -> R
-    where
-      F: FnOnce(&mut Dom2Document) -> (R, bool),
-    {
-      self.doc.mutate_dom(f)
-    }
-  }
-
-  impl CurrentScriptHost for Host {
-    fn current_script_state(&self) -> &fastrender::js::CurrentScriptStateHandle {
-      self.doc.current_script_state()
-    }
-  }
-
   #[derive(Default)]
   struct RecordingExecutor {
     observed: Vec<usize>,
   }
 
-  impl ScriptBlockExecutor<Host> for RecordingExecutor {
+  impl ScriptBlockExecutor<WindowHostState> for RecordingExecutor {
     fn execute_script(
       &mut self,
-      host: &mut Host,
+      host: &mut WindowHostState,
       _orchestrator: &mut ScriptOrchestrator,
       _script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
-      let global = host.realm.global_object();
-      let (vm, heap) = host.realm.vm_and_heap_mut();
+      let realm = host.window_mut();
+      let global = realm.global_object();
+      let (vm, heap) = realm.vm_and_heap_mut();
       let document_obj = {
         let mut scope = heap.scope();
         let Value::Object(doc) = get_data_prop(&mut scope, global, "document") else {
@@ -151,22 +124,18 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><script></script><script></script>")?;
-  let mut doc = DocumentHostState::from_renderer_dom(&renderer_dom);
-  let scripts = find_script_elements(doc.dom());
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let scripts = find_script_elements(host.dom());
   assert_eq!(scripts.len(), 2);
 
-  let current_script_state = doc.current_script_state().clone();
-  let config = WindowRealmConfig::new("https://example.com/").with_current_script_state(current_script_state);
-  let realm = WindowRealm::new(config).map_err(|e| Error::Other(e.to_string()))?;
-
-  let mut host = Host { doc, realm };
   let mut orchestrator = ScriptOrchestrator::new();
   let mut executor = RecordingExecutor::default();
 
   // Outside execution, currentScript should be null.
   {
-    let global = host.realm.global_object();
-    let (vm, heap) = host.realm.vm_and_heap_mut();
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (vm, heap) = realm.vm_and_heap_mut();
     let document_obj = {
       let mut scope = heap.scope();
       let Value::Object(doc) = get_data_prop(&mut scope, global, "document") else {
@@ -185,8 +154,9 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
     &mut executor,
   )?;
   {
-    let global = host.realm.global_object();
-    let (vm, heap) = host.realm.vm_and_heap_mut();
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (vm, heap) = realm.vm_and_heap_mut();
     let document_obj = {
       let mut scope = heap.scope();
       let Value::Object(doc) = get_data_prop(&mut scope, global, "document") else {
@@ -205,8 +175,9 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
     &mut executor,
   )?;
   {
-    let global = host.realm.global_object();
-    let (vm, heap) = host.realm.vm_and_heap_mut();
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (vm, heap) = realm.vm_and_heap_mut();
     let document_obj = {
       let mut scope = heap.scope();
       let Value::Object(doc) = get_data_prop(&mut scope, global, "document") else {
@@ -259,4 +230,3 @@ fn location_href_setter_errors_deterministically() -> Result<()> {
   );
   Ok(())
 }
-
