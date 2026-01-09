@@ -2228,11 +2228,7 @@ pub(crate) fn clip_node(
   // that legitimately occupy space even when their children do not.
   let float_inflated_by_overflow =
     node_bbox_flow_end > node_flow_end + BREAK_EPSILON || node_bbox_flow_start + BREAK_EPSILON < node_flow_start;
-  if style.float.is_floating()
-    && axis.block_positive
-    && !node.children.is_empty()
-    && float_inflated_by_overflow
-  {
+  if style.float.is_floating() && !node.children.is_empty() && float_inflated_by_overflow {
     // Use the children that survived clipping to find the actual block-axis extent of this float
     // fragment. `cloned.bounds` is based on the intersection of the float's (potentially expanded)
     // logical bounding box with the fragmentainer window, which can include trailing blank space.
@@ -2253,7 +2249,15 @@ pub(crate) fn clip_node(
 
     if max_flow_end + BREAK_EPSILON < original_block_size {
       let block_start = axis.block_start(&cloned.bounds);
-      cloned.bounds = axis.update_block_components(cloned.bounds, block_start, max_flow_end);
+      // `bounds` stores the physical block-start coordinate (left/top). For reversed block
+      // progression (`block_positive = false`), keep the physical block-end edge fixed when
+      // shrinking so the fragment remains anchored to the same flow start.
+      let new_block_start = if axis.block_positive {
+        block_start
+      } else {
+        block_start + (original_block_size - max_flow_end)
+      };
+      cloned.bounds = axis.update_block_components(cloned.bounds, new_block_start, max_flow_end);
       // Update slice metadata so background painting and other consumers see the trimmed extent.
       let slice_offset = cloned.slice_info.slice_offset;
       let slice_end_offset = slice_offset + max_flow_end;
@@ -4377,6 +4381,7 @@ fn default_style() -> &'static ComputedStyle {
 mod tests {
   use super::*;
   use crate::layout::axis::FragmentAxes;
+  use crate::style::float::Float;
   use crate::tree::fragment_tree::{GridFragmentationInfo, GridTrackRanges};
   use std::sync::Arc;
   use std::time::{Duration, Instant};
@@ -4578,6 +4583,88 @@ mod tests {
         .count(),
       1,
       "expected the forced break to align to the end edge of the first column track (flow pos 30), got {boundaries:?}"
+    );
+  }
+
+  #[test]
+  fn float_parallel_flow_trimming_keeps_physical_block_end_fixed_in_block_negative_writing_mode() {
+    // Regression: trimming blank space inserted by forced breaks inside floats must preserve the
+    // physical block-end edge when block progression is reversed (e.g. `writing-mode: vertical-rl`).
+    //
+    // In block-negative modes, the flow start edge is the *physical end* (right edge for the X block
+    // axis). When we shrink a clipped float fragment based on the children that actually painted in
+    // that fragmentainer, we need to shift the physical block-start so the end edge remains fixed.
+    let axes = FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr);
+    let axis = axis_from_fragment_axes(axes);
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.writing_mode = WritingMode::VerticalRl;
+    float_style.float = Float::Left;
+    let float_style = Arc::new(float_style);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.writing_mode = WritingMode::VerticalRl;
+    let child_style = Arc::new(child_style);
+
+    // Synthetic float:
+    // - Border box spans 250px in the block axis.
+    // - Descendant overflow (simulating a forced break shift) extends an additional 190px, for a
+    //   total logical bounding box of 440px.
+    //
+    // Clip the float to the "middle page" fragmentainer slice [200, 400]. Only 10px of actual
+    // content overlaps this slice; the remaining 190px is blank space inserted by the forced break.
+    // Trimming should shrink to 10px while keeping the physical end edge anchored.
+    let part1 = FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 0.0, 210.0, 10.0),
+      vec![],
+      Arc::clone(&child_style),
+    );
+    // This fragment sits after an injected forced break shift (flow position 400..440), so it
+    // contributes to the float's logical bounding box but is outside the middle slice.
+    let part2 = FragmentNode::new_block_styled(
+      Rect::from_xywh(-190.0, 0.0, 40.0, 10.0),
+      vec![],
+      child_style,
+    );
+
+    let mut float = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 250.0, 10.0),
+      vec![part1, part2],
+      float_style,
+    );
+    // `FragmentNode::new_*` initialises slice metadata for the Y block axis; overwrite to match the
+    // X fragmentation axis used by `writing-mode: vertical-rl`.
+    float.slice_info = FragmentSliceInfo::single(250.0);
+
+    let clipped = clip_node(
+      &float,
+      &axis,
+      200.0,
+      400.0,
+      0.0,
+      200.0,
+      400.0,
+      axis.block_size(&float.bounds),
+      1,
+      3,
+      FragmentationContext::Page,
+      200.0,
+      axes,
+    )
+    .unwrap()
+    .expect("expected float to overlap the clipped fragmentainer slice");
+
+    assert!(
+      (clipped.bounds.width() - 10.0).abs() < 0.01,
+      "expected trimmed float fragment to shrink to the painted extent (10px), got {:?}",
+      clipped.bounds
+    );
+    assert!(
+      (clipped.bounds.x() - 190.0).abs() < 0.01,
+      "expected trimmed float fragment to remain anchored to the physical block-end edge (x≈190), got {:?}",
+      clipped.bounds
     );
   }
 
