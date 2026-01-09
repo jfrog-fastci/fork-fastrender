@@ -132,6 +132,7 @@ Existing modules:
   `src/bin/browser.rs` via the `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` hook.
 - `browser_binary_headless_smoke.rs` (`browser_ui`, linux): spawns `browser` in
   `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` mode and asserts the `HEADLESS_SMOKE_OK` marker is printed.
+  (Task 76)
 - `ui_render_worker_thread_builder_test.rs` (`browser_ui`): asserts the UI render worker thread is
   spawned via `std::thread::Builder` (name + large stack size).
 - `ui_worker_*` (`browser_ui`): headless UI↔worker protocol tests using `spawn_ui_worker(...)`.
