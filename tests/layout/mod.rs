@@ -44,6 +44,7 @@ mod flex_justify_content_reverse;
 mod flex_justify_content_start_end;
 mod flex_positioned_relayout;
 mod flex_fragmentation_row_lines;
+mod flex_fragmentation_order_and_oof;
 mod flex_wrap_alignment;
 mod flex_wrap_reverse_cross_alignment;
 mod flex_wrap_writing_mode;
