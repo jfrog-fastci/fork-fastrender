@@ -404,7 +404,11 @@ impl ClassicScriptPipelineState {
       event_loop,
     };
     if let Some(doc) = self.document.as_ref() {
-      let document = doc.clone();
+      let mut document = doc.clone();
+      // Scripts should observe declarative Shadow DOM once it has been parsed. Promote any
+      // `<template shadowroot=...>` nodes in the snapshot we hand to the script executor (do not
+      // mutate the in-progress html5ever tree builder state).
+      document.attach_shadow_roots();
       host.mutate_dom(|dom| {
         *dom = document;
         ((), true)
@@ -412,7 +416,8 @@ impl ClassicScriptPipelineState {
       orchestrator.execute_script_element(host, script_node_id, script_type, &mut exec)?;
     } else {
       let dom = self.parser.document();
-      let document = Document::clone(&dom);
+      let mut document = Document::clone(&dom);
+      document.attach_shadow_roots();
       host.mutate_dom(|dom| {
         *dom = document;
         ((), true)
@@ -441,12 +446,13 @@ impl ClassicScriptPipelineState {
       .get(&script_id)
       .unwrap_or(&ScriptType::Classic);
 
-    let document = if let Some(doc) = self.document.as_ref() {
+    let mut document = if let Some(doc) = self.document.as_ref() {
       doc.clone()
     } else {
       let dom = self.parser.document();
       Document::clone(&dom)
     };
+    document.attach_shadow_roots();
     let orchestrator = Rc::clone(&self.orchestrator);
     let js_execution_depth = Rc::clone(&self.js_execution_depth);
     event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
@@ -1009,6 +1015,42 @@ mod tests {
     p.finish_input()?;
     p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(p.state.borrow().parsing_finished());
+    Ok(())
+  }
+
+  #[test]
+  fn async_script_observes_declarative_shadow_roots_parsed_before_execution() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new_with_parse_budget(
+      Some("https://ex/doc.html"),
+      ParseBudget::new(1),
+    );
+    p.feed_str(r#"<script async src="/a.js"></script>"#)?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(host.started_fetches.len(), 1);
+    let async_id = host.started_fetches[0].0;
+
+    // Parse a declarative shadow root after discovering the async script (but before the async
+    // fetch completes).
+    p.feed_str(r#"<div id=host><template shadowroot=open><span>shadow</span></template></div>"#)?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    host.assert_dom_state_on_execute = Some(Box::new(|dom| {
+      let host_id = dom.get_element_by_id("host").expect("missing #host");
+      let first_child = *dom
+        .node(host_id)
+        .children
+        .first()
+        .expect("expected #host to have a child node");
+      assert!(
+        matches!(dom.node(first_child).kind, NodeKind::ShadowRoot { .. }),
+        "expected declarative shadow root to be attached before async script execution"
+      );
+    }));
+
+    p.queue_fetch_completion(async_id, "A_JS".to_string())?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(host.log, vec!["A_JS".to_string(), "mA_JS".to_string()]);
     Ok(())
   }
 
