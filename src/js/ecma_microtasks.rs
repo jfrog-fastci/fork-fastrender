@@ -15,6 +15,8 @@
 use crate::error::Error;
 
 use super::event_loop::EventLoop;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Trait for event-loop hosts that embed a `vm-js` VM + heap.
 ///
@@ -121,9 +123,8 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       return;
     }
 
-    let job_cell: std::rc::Rc<std::cell::RefCell<Option<vm_js::Job>>> =
-      std::rc::Rc::new(std::cell::RefCell::new(Some(job)));
-    let job_cell_for_closure = std::rc::Rc::clone(&job_cell);
+    let job_cell: Rc<RefCell<Option<vm_js::Job>>> = Rc::new(RefCell::new(Some(job)));
+    let job_cell_for_closure = Rc::clone(&job_cell);
 
     let result = self.event_loop.queue_microtask(move |host, event_loop| {
       // Promise jobs can enqueue additional Promise jobs (e.g. thenable chains). Provide a fresh

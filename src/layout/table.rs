@@ -6690,66 +6690,132 @@ impl FormattingContext for TableFormattingContext {
     // this in fixed mode, so at this point `col_widths` should already fill `available_content`
     // unless all columns hit authored max-width caps.
 
-    // If the table width is explicitly specified and columns don't fill the available content
-    // width, expand flexible columns.
-    if specified_width.is_some()
-      && mode == DistributionMode::Auto
-      && available_content.is_finite()
-      && !col_widths.is_empty()
-    {
+    // Auto layout normally sizes columns to their intrinsic max-content widths when the available
+    // width is larger than the max-content sum. That is correct for `width:auto` shrink-to-fit
+    // tables, but when the table's *used* border-box width is definite and larger (e.g. a flex/grid
+    // item stretch, a specified width, or a min-width clamp), the columns must expand to fill the
+    // used width so the grid and fragment bounds agree.
+    if mode == DistributionMode::Auto && !col_widths.is_empty() {
       let current: f32 = col_widths.iter().sum();
-      if available_content > current + 0.01 {
+      let current_border_box = current + spacing + edge_consumption;
+      let target_border_box = match table_width {
+        Some(w) => w,
+        None => clamp_to_min_max(current_border_box, min_width, max_width),
+      };
+      let target_columns_sum = (target_border_box - spacing - edge_consumption).max(0.0);
+
+      if target_columns_sum.is_finite() && target_columns_sum > current + 0.01 {
+        let extra = target_columns_sum - current;
+
+        // Prefer truly flexible columns (no fixed width, no percentage). If none exist, distribute
+        // across all columns.
         let flex_indices: Vec<usize> = column_constraints
           .iter()
           .enumerate()
           .filter(|(_, c)| c.is_flexible && c.fixed_width.is_none() && c.percentage.is_none())
           .map(|(i, _)| i)
           .collect();
-        let indices = if flex_indices.is_empty() {
+        let indices: Vec<usize> = if flex_indices.is_empty() {
           (0..col_widths.len()).collect()
         } else {
           flex_indices
         };
-        let extra = available_content - current;
-        let mut finite_total = 0.0;
-        let mut infinite_indices = Vec::new();
-        for &idx in &indices {
-          let flex = column_constraints
-            .get(idx)
-            .map(|c| c.flexibility_range())
-            .unwrap_or(0.0);
-          if flex.is_finite() {
-            finite_total += flex;
-          } else {
-            infinite_indices.push(idx);
+
+        // Distribute slack while respecting authored max-width caps (`has_max_cap`). Intrinsic
+        // max-content widths are treated as preferences, not hard caps.
+        let mut active: Vec<(usize, Option<f32>)> = Vec::with_capacity(indices.len());
+        for idx in indices {
+          if idx >= col_widths.len() || idx >= column_constraints.len() {
+            continue;
           }
+          let col = &column_constraints[idx];
+          let cap = if col.has_max_cap && col.max_width.is_finite() {
+            Some(col.max_width.max(col.min_width))
+          } else {
+            None
+          };
+          active.push((idx, cap));
         }
 
-        if !infinite_indices.is_empty() {
-          let share = extra / infinite_indices.len() as f32;
-          for idx in infinite_indices {
-            if let Some(col) = col_widths.get_mut(idx) {
-              *col += share;
-            }
+        let epsilon = 0.01;
+        let mut remaining = extra;
+        while remaining > epsilon && !active.is_empty() {
+          // Drop saturated capped columns.
+          active.retain(|(idx, cap)| match cap {
+            Some(limit) => col_widths.get(*idx).copied().unwrap_or(0.0) + epsilon < *limit,
+            None => true,
+          });
+          if active.is_empty() {
+            break;
           }
-        } else if finite_total > 0.0 {
-          for idx in indices {
+
+          let mut finite_total = 0.0;
+          let mut infinite = Vec::new();
+          for (idx, _) in &active {
             let flex = column_constraints
-              .get(idx)
+              .get(*idx)
               .map(|c| c.flexibility_range())
               .unwrap_or(0.0);
-            let weight = flex / finite_total;
-            if let Some(col) = col_widths.get_mut(idx) {
-              *col += extra * weight;
+            if flex.is_infinite() {
+              infinite.push(*idx);
+            } else if flex.is_finite() && flex > 0.0 {
+              finite_total += flex;
             }
           }
-        } else {
-          let share = extra / indices.len() as f32;
-          for idx in indices {
-            if let Some(col) = col_widths.get_mut(idx) {
-              *col += share;
+
+          let mut distributed = 0.0;
+          if !infinite.is_empty() {
+            let share = remaining / infinite.len() as f32;
+            for idx in infinite {
+              let cap = active
+                .iter()
+                .find(|(active_idx, _)| *active_idx == idx)
+                .and_then(|(_, cap)| *cap);
+              let headroom = cap
+                .map(|limit| (limit - col_widths[idx]).max(0.0))
+                .unwrap_or(f32::INFINITY);
+              let add = share.min(headroom);
+              if add.is_finite() && add > 0.0 {
+                col_widths[idx] += add;
+                distributed += add;
+              }
+            }
+          } else if finite_total > 0.0 {
+            for (idx, cap) in &active {
+              let flex = column_constraints
+                .get(*idx)
+                .map(|c| c.flexibility_range())
+                .unwrap_or(0.0);
+              if !(flex.is_finite() && flex > 0.0) {
+                continue;
+              }
+              let mut add = remaining * (flex / finite_total);
+              if let Some(limit) = cap {
+                add = add.min((*limit - col_widths[*idx]).max(0.0));
+              }
+              if add.is_finite() && add > 0.0 {
+                col_widths[*idx] += add;
+                distributed += add;
+              }
+            }
+          } else {
+            let share = remaining / active.len() as f32;
+            for (idx, cap) in &active {
+              let mut add = share;
+              if let Some(limit) = cap {
+                add = add.min((*limit - col_widths[*idx]).max(0.0));
+              }
+              if add.is_finite() && add > 0.0 {
+                col_widths[*idx] += add;
+                distributed += add;
+              }
             }
           }
+
+          if distributed <= epsilon {
+            break;
+          }
+          remaining = (remaining - distributed).max(0.0);
         }
       }
     }
