@@ -84,6 +84,29 @@ fn inline_svg_applies_document_css_and_current_color() {
 }
 
 #[test]
+fn inline_svg_currentcolor_resolves_after_color_even_when_color_declared_later() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" style="fill: currentColor; color: rgb(255,0,0)" />
+      </svg>
+      "#;
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(pixel(&pixmap, 10, 10), [255, 0, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_respects_display_none_when_document_css_injection_disabled_display_list_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

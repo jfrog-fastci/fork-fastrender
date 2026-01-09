@@ -1366,18 +1366,35 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   };
 
-  let mut push_color_or_none = |out: &mut String, value: ColorOrNone| match value {
-    ColorOrNone::None => out.push_str("none"),
-    ColorOrNone::Color(color) => {
-      let _ = write!(
-        out,
-        "rgba({},{},{},{:.3})",
-        color.r,
-        color.g,
-        color.b,
-        color.a.clamp(0.0, 1.0)
-      );
+  let mut push_color_or_none = |out: &mut String, value: ColorOrNone, current_color: Rgba| {
+    match value {
+      ColorOrNone::None => out.push_str("none"),
+      ColorOrNone::Color(color) => {
+        let _ = write!(
+          out,
+          "rgba({},{},{},{:.3})",
+          color.r,
+          color.g,
+          color.b,
+          color.a.clamp(0.0, 1.0)
+        );
+      }
+      ColorOrNone::CurrentColor => {
+        let _ = write!(
+          out,
+          "rgba({},{},{},{:.3})",
+          current_color.r,
+          current_color.g,
+          current_color.b,
+          current_color.a.clamp(0.0, 1.0)
+        );
+      }
     }
+  };
+
+  let effective_color_or_none = |value: ColorOrNone, current_color: Rgba| match value {
+    ColorOrNone::CurrentColor => ColorOrNone::Color(current_color),
+    other => other,
   };
 
   let mut push_length_or_number = |out: &mut String, value: LengthOrNumber| match value {
@@ -1390,18 +1407,24 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
   };
 
   if let Some(fill) = style.svg_fill {
-    if parent.and_then(|p| p.svg_fill) != Some(fill) {
+    let effective = effective_color_or_none(fill, style.color);
+    let parent_effective =
+      parent.and_then(|p| p.svg_fill.map(|value| effective_color_or_none(value, p.color)));
+    if parent_effective != Some(effective) {
       start_decl(&mut out, &mut any);
       out.push_str("fill: ");
-      push_color_or_none(&mut out, fill);
+      push_color_or_none(&mut out, effective, style.color);
     }
   }
 
   if let Some(stroke) = style.svg_stroke {
-    if parent.and_then(|p| p.svg_stroke) != Some(stroke) {
+    let effective = effective_color_or_none(stroke, style.color);
+    let parent_effective =
+      parent.and_then(|p| p.svg_stroke.map(|value| effective_color_or_none(value, p.color)));
+    if parent_effective != Some(effective) {
       start_decl(&mut out, &mut any);
       out.push_str("stroke: ");
-      push_color_or_none(&mut out, stroke);
+      push_color_or_none(&mut out, effective, style.color);
     }
   }
 

@@ -840,6 +840,12 @@ impl Default for AccentColor {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ColorOrNone {
   Color(Rgba),
+  /// The `currentColor` keyword.
+  ///
+  /// This is resolved later using the element's computed `color` property. Keeping this
+  /// representation avoids order-dependence when `fill`/`stroke` and `color` are declared in the
+  /// same rule/style attribute.
+  CurrentColor,
   None,
 }
 

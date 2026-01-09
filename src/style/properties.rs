@@ -8322,6 +8322,10 @@ fn apply_declaration_with_base_internal_with_order(
   let resolve_svg_color_or_none = |value: &PropertyValue| -> Option<ColorOrNone> {
     match value {
       PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(ColorOrNone::None),
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
+        Some(ColorOrNone::CurrentColor)
+      }
+      PropertyValue::Color(color) if color.is_current_color() => Some(ColorOrNone::CurrentColor),
       _ => {
         if let Some(rgba) = resolve_color_value(value) {
           return Some(ColorOrNone::Color(rgba));
@@ -21759,7 +21763,7 @@ mod tests {
       16.0,
       16.0,
     );
-    assert_eq!(style.svg_stroke, Some(ColorOrNone::Color(Rgba::BLUE)));
+    assert_eq!(style.svg_stroke, Some(ColorOrNone::CurrentColor));
 
     let stroke_width = parse_property_value("stroke-width", "4").expect("stroke-width");
     apply_declaration(
