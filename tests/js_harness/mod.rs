@@ -1,8 +1,9 @@
 use fastrender::dom::DomNode;
 use fastrender::dom2::{Document, NodeId};
+use fastrender::js::dom_integration::prepare_dynamic_script_on_insertion;
 use fastrender::js::{
-  EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementSpec, ScriptExecutor, ScriptLoader,
-  VirtualClock,
+  ClassicScriptScheduler, CurrentScriptStateHandle, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome,
+  ScriptElementSpec, ScriptExecutor, ScriptLoader, ScriptOrchestrator, VirtualClock,
 };
 use fastrender::{Error, Result};
 use rquickjs::{Context, Function, Object, Runtime};
@@ -137,6 +138,9 @@ const JS_BOOTSTRAP: &str = r##"
   Object.defineProperty(document, "body", {
     get: function () { return document.querySelector("body"); }
   });
+  Object.defineProperty(document, "currentScript", {
+    get: function () { return wrap(g.__fastrender_dom_current_script()); }
+  });
 
   g.document = document;
 
@@ -226,7 +230,10 @@ pub struct HostState {
   node_handles: Vec<NodeId>,
   microtask_id: i32,
   log: Vec<String>,
+  script_scheduler: ClassicScriptScheduler<HostState>,
   loader: ScriptLoaderState,
+  current_script_state: CurrentScriptStateHandle,
+  orchestrator: ScriptOrchestrator,
   document_url: String,
   js_ctx: Context,
   js_rt: Runtime,
@@ -399,7 +406,7 @@ impl HostState {
         globals.set(
           "__fastrender_dom_append_child",
           Function::new(ctx.clone(), |parent: u32, child: u32| {
-            with_env_mut(|host, _event_loop| {
+            with_env_mut(|host, event_loop| {
               let parent = host
                 .resolve_node_handle(parent)
                 .expect("invalid parent node handle");
@@ -410,6 +417,11 @@ impl HostState {
                 .dom
                 .append_child(parent, child)
                 .expect("appendChild failed");
+
+              let mut scheduler = std::mem::take(&mut host.script_scheduler);
+              prepare_dynamic_script_on_insertion(host, &mut scheduler, event_loop, child)
+                .expect("prepare_dynamic_script_on_insertion failed");
+              host.script_scheduler = scheduler;
             })
           })?,
         )?;
@@ -447,6 +459,16 @@ impl HostState {
           )?,
         )?;
 
+        globals.set(
+          "__fastrender_dom_current_script",
+          Function::new(ctx.clone(), || -> rquickjs::Result<u32> {
+            with_env_mut(|host, _event_loop| {
+              let node = host.current_script_state.borrow().current_script;
+              Ok(node.map(|id| host.alloc_node_handle(id)).unwrap_or(0))
+            })
+          })?,
+        )?;
+
         ctx.eval::<(), _>(JS_BOOTSTRAP)?;
         Ok(())
       })
@@ -468,6 +490,23 @@ impl HostState {
       .ok_or_else(|| Error::Other(format!("no registered script source for url={url}")))?;
     self.loader.completed.push_back((handle, src));
     Ok(())
+  }
+}
+
+impl DomHost for HostState {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&Document) -> R,
+  {
+    f(&self.dom)
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut Document) -> (R, bool),
+  {
+    let (result, _changed) = f(&mut self.dom);
+    result
   }
 }
 
@@ -502,11 +541,25 @@ impl ScriptExecutor for HostState {
   fn execute_classic_script(
     &mut self,
     script_text: &str,
-    _spec: &ScriptElementSpec,
+    spec: &ScriptElementSpec,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     let host_ptr: *mut HostState = self;
     let loop_ptr: *mut EventLoop<HostState> = event_loop;
+    if let Some(script_node) = spec.node_id {
+      let mut orchestrator = std::mem::take(&mut self.orchestrator);
+      let state = self.current_script_state.clone();
+      let script_type = spec.script_type;
+      let result = {
+        let dom = &self.dom;
+        orchestrator.execute_with_current_script_state(&state, dom, script_node, script_type, || {
+          js_eval(host_ptr, loop_ptr, script_text)
+        })
+      };
+      self.orchestrator = orchestrator;
+      return result;
+    }
+
     js_eval(host_ptr, loop_ptr, script_text)
   }
 }
@@ -533,7 +586,10 @@ impl Harness {
       node_handles: Vec::new(),
       microtask_id: -1,
       log: Vec::new(),
+      script_scheduler: ClassicScriptScheduler::new(),
       loader: ScriptLoaderState::default(),
+      current_script_state: CurrentScriptStateHandle::default(),
+      orchestrator: ScriptOrchestrator::new(),
       document_url: document_url.to_string(),
       js_ctx,
       js_rt,
@@ -616,9 +672,14 @@ impl Harness {
   }
 
   pub fn complete_external_script(&mut self, url: &str) -> Result<()> {
-    self.host.complete_external_script(url)
+    self.host.complete_external_script(url)?;
+    let mut scheduler = std::mem::take(&mut self.host.script_scheduler);
+    scheduler.poll(&mut self.host, &mut self.event_loop)?;
+    self.host.script_scheduler = scheduler;
+    Ok(())
   }
 }
 
 mod smoke;
+mod dynamic_scripts;
 mod timers;

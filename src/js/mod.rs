@@ -19,6 +19,7 @@
 pub mod dom_scripts;
 pub mod dom_host;
 pub mod dom2_bindings;
+pub mod dom_integration;
 pub mod clock;
 pub mod dom_bindings_context;
 pub mod events;
@@ -151,6 +152,12 @@ pub struct ScriptElementSpec {
   /// When building specs during HTML parsing, this should be `true`. Best-effort DOM scans may set
   /// this to `true` as a default, but dynamically inserted scripts should use `false`.
   pub parser_inserted: bool,
+  /// `dom2` node ID for the `<script>` element, if known.
+  ///
+  /// This is used for `Document.currentScript` bookkeeping during execution. For post-parse DOM
+  /// scans (`dom_scripts`) and legacy DOM-based parser paths that don't have a `dom2::NodeId`
+  /// available, this will be `None`.
+  pub node_id: Option<crate::dom2::NodeId>,
   /// The script type (classic/module/importmap/unknown) derived from element attributes.
   pub script_type: ScriptType,
 }

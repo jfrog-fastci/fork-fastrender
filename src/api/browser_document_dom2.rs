@@ -748,7 +748,7 @@ mod tests {
     assert_pixel_gray_approx(&frame600, 102, 4);
 
     // Pause at t=600ms.
-    let node = crate::dom2::get_element_by_id(doc.dom(), "a").expect("#a element");
+    let node = doc.dom().get_element_by_id("a").expect("#a element");
     doc
       .dom_mut()
       .set_attribute(node, "style", "animation-play-state: paused;")
@@ -762,7 +762,7 @@ mod tests {
     assert_pixel_gray_approx(&paused900, 102, 4);
 
     // Resume at t=900ms (without advancing time).
-    let node = crate::dom2::get_element_by_id(doc.dom(), "a").expect("#a element");
+    let node = doc.dom().get_element_by_id("a").expect("#a element");
     doc
       .dom_mut()
       .set_attribute(node, "style", "animation-play-state: running;")

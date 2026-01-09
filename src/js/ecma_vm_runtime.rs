@@ -1135,6 +1135,7 @@ mod tests {
       async_attr: false,
       defer_attr: false,
       parser_inserted: true,
+      node_id: None,
       script_type: ScriptType::Classic,
     }
   }

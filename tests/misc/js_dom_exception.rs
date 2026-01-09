@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use webidl_js_runtime::runtime::JsRuntime as _;
 use vm_js::{PropertyKey, Value, VmError};
+use webidl_js_runtime::JsRuntime as _;
 
 fn prop_key(rt: &mut VmJsRuntime, s: &str) -> PropertyKey {
   let v = rt.alloc_string_value(s).expect("alloc string");

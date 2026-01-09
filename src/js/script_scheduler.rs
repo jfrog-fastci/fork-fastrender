@@ -756,6 +756,7 @@ mod tests {
       async_attr: false,
       defer_attr: false,
       parser_inserted: true,
+      node_id: None,
       script_type: ScriptType::Classic,
     }
   }
@@ -769,6 +770,7 @@ mod tests {
       async_attr,
       defer_attr,
       parser_inserted: true,
+      node_id: None,
       script_type: ScriptType::Classic,
     }
   }
@@ -793,6 +795,7 @@ mod tests {
         async_attr: false,
         defer_attr: true,
         parser_inserted: false,
+        node_id: None,
         script_type: ScriptType::Classic,
       },
     )?;
@@ -822,6 +825,7 @@ mod tests {
         async_attr: true,
         defer_attr: true,
         parser_inserted: true,
+        node_id: None,
         script_type: ScriptType::Classic,
       },
     )?;
@@ -869,6 +873,7 @@ mod tests {
         async_attr: false,
         defer_attr: false,
         parser_inserted: true,
+        node_id: None,
         script_type: ScriptType::Classic,
       },
     )?;
@@ -1080,6 +1085,7 @@ mod state_machine_tests {
       async_attr: false,
       defer_attr: false,
       parser_inserted: true,
+      node_id: None,
       script_type: ScriptType::Classic,
     }
   }
@@ -1093,6 +1099,7 @@ mod state_machine_tests {
       async_attr,
       defer_attr,
       parser_inserted: true,
+      node_id: None,
       script_type: ScriptType::Classic,
     }
   }
@@ -1106,6 +1113,7 @@ mod state_machine_tests {
       async_attr,
       defer_attr,
       parser_inserted: false,
+      node_id: None,
       script_type: ScriptType::Classic,
     }
   }
@@ -1119,6 +1127,7 @@ mod state_machine_tests {
       async_attr: false,
       defer_attr: false,
       parser_inserted: false,
+      node_id: None,
       script_type: ScriptType::Classic,
     }
   }
@@ -1310,6 +1319,7 @@ mod state_machine_tests {
       async_attr: false,
       defer_attr: false,
       parser_inserted: true,
+      node_id: None,
       script_type: ScriptType::Classic,
     })?;
 

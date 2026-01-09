@@ -164,6 +164,51 @@ impl ScriptOrchestrator {
     Self
   }
 
+  /// Execute a script element while performing `Document.currentScript` bookkeeping using an
+  /// explicit [`CurrentScriptStateHandle`] handle.
+  ///
+  /// This is a lower-level variant of [`ScriptOrchestrator::execute_script_element`] that avoids
+  /// requiring a host type implementing [`CurrentScriptHost`]. It exists primarily so embeddings
+  /// can keep the live `dom2::Document` and the `currentScript` state in separate structs without
+  /// running afoul of Rust's borrow checker.
+  ///
+  /// Callers provide a closure that is invoked while `current_script_state.borrow().current_script`
+  /// has been updated for the duration of execution. The state borrow is not held across the call,
+  /// so JS bindings can observe `document.currentScript` during execution.
+  pub fn execute_with_current_script_state(
+    &mut self,
+    current_script_state: &CurrentScriptStateHandle,
+    dom: &Document,
+    script: NodeId,
+    script_type: ScriptType,
+    f: impl FnOnce() -> Result<()>,
+  ) -> Result<()> {
+    // HTML: "prepare a script" early-outs when the script element is not connected.
+    if !dom.is_connected_for_scripting(script) {
+      return Ok(());
+    }
+
+    let new_current_script = match script_type {
+      ScriptType::Classic => (!node_root_is_shadow_root(dom, script)).then_some(script),
+      ScriptType::Module => None,
+      ScriptType::ImportMap | ScriptType::Unknown => None,
+    };
+
+    current_script_state
+      .borrow_mut()
+      .push(new_current_script)?;
+    let result = f();
+    let pop_result = current_script_state.borrow_mut().pop();
+    match (result, pop_result) {
+      (Ok(()), Ok(())) => Ok(()),
+      (Err(err), Ok(())) => Err(err),
+      (Ok(()), Err(pop_err)) => Err(pop_err),
+      (Err(err), Err(pop_err)) => Err(Error::Other(format!(
+        "script execution failed ({err}); additionally failed to restore Document.currentScript ({pop_err})"
+      ))),
+    }
+  }
+
   /// Execute a script element while performing `Document.currentScript` bookkeeping.
   ///
   /// - For classic scripts in the document tree, `current_script` is set to `script` for the

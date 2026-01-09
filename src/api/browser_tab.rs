@@ -206,6 +206,7 @@ impl BrowserTabHost {
                 async_attr,
                 defer_attr,
                 parser_inserted: true,
+                node_id: Some(id),
                 script_type,
               },
             ));

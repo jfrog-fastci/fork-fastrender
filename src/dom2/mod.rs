@@ -23,20 +23,6 @@ mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
 
-/// Convenience helper mirroring `Document.getElementById`.
-///
-/// This is intentionally a very small utility used by integration tests and early JS plumbing.
-pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
-  doc.get_element_by_id(id)
-}
-
-/// Convenience helper for attribute reflection.
-///
-/// Returns `false` on invalid node types or when the attribute value is unchanged.
-pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) -> bool {
-  doc.set_attribute(node, name, value).unwrap_or(false)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
 

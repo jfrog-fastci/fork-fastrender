@@ -270,6 +270,7 @@ impl ClassicScriptPipelineState {
         async_attr: false,
         defer_attr: false,
         parser_inserted: true,
+        node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
       };
     };
@@ -286,6 +287,7 @@ impl ClassicScriptPipelineState {
         async_attr: false,
         defer_attr: false,
         parser_inserted: true,
+        node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
       };
     }
@@ -300,6 +302,7 @@ impl ClassicScriptPipelineState {
         async_attr: false,
         defer_attr: false,
         parser_inserted: true,
+        node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
       };
     }
@@ -337,6 +340,7 @@ impl ClassicScriptPipelineState {
       async_attr,
       defer_attr,
       parser_inserted: true,
+      node_id: Some(script_node_id),
       script_type,
     }
   }

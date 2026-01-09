@@ -38,6 +38,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       async_attr: false,
       defer_attr: false,
       parser_inserted: true,
+      node_id: Some(script),
       script_type: ScriptType::Unknown,
     };
   };
@@ -54,6 +55,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       async_attr: false,
       defer_attr: false,
       parser_inserted: true,
+      node_id: Some(script),
       script_type: ScriptType::Unknown,
     };
   }
@@ -72,6 +74,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       async_attr: false,
       defer_attr: false,
       parser_inserted: true,
+      node_id: Some(script),
       script_type: ScriptType::Unknown,
     };
   }
@@ -98,6 +101,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     async_attr,
     defer_attr,
     parser_inserted: true,
+    node_id: Some(script),
     script_type: determine_script_type_dom2(doc, script),
   }
 }

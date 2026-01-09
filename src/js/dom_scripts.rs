@@ -92,6 +92,7 @@ pub fn extract_script_elements(
           // Best-effort: treat DOM-parsed scripts as parser-inserted (matching the common case and
           // enabling scheduler tests). This is not reliable for dynamically inserted scripts.
           parser_inserted: true,
+          node_id: None,
           script_type: determine_script_type(node),
         });
       }

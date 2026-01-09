@@ -45,6 +45,7 @@ pub fn build_parser_inserted_script_element_spec(
     async_attr,
     defer_attr,
     parser_inserted: true,
+    node_id: None,
     script_type: determine_script_type(script),
   }
 }
