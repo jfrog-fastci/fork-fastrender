@@ -57,8 +57,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_title("FastRender")
     .build(&event_loop)?;
 
-  let worker = fastrender::ui::worker::spawn_ui_worker("fastr-browser-ui-worker")?;
-  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) = worker.into_parts();
+  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
+    fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
 
   let mut app = pollster::block_on(App::new(
     window,
@@ -198,7 +198,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
-  use std::collections::HashMap;
   use std::sync::mpsc;
   use std::time::{Duration, Instant};
 
@@ -217,108 +216,8 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   const VIEWPORT_CSS: (u32, u32) = (200, 120);
   const DPR: f32 = 1.0;
   const TIMEOUT: Duration = Duration::from_secs(20);
-
-  #[derive(Debug, Clone, Copy)]
-  struct TabState {
-    viewport_css: (u32, u32),
-    dpr: f32,
-  }
-
-  let (ui_to_worker_tx, ui_to_worker_rx) = mpsc::channel::<UiToWorker>();
-  let (worker_to_ui_tx, worker_to_ui_rx) = mpsc::channel::<WorkerToUi>();
-
-  // Run the render pipeline on a dedicated thread, mirroring the real UI architecture.
-  let handle = std::thread::Builder::new()
-    .name("fastr-browser-headless-smoke-worker".to_string())
-    .stack_size(fastrender::system::DEFAULT_RENDER_STACK_SIZE)
-    .spawn(move || -> Result<(), String> {
-      let factory = fastrender::api::FastRenderFactory::new().map_err(|e| e.to_string())?;
-      let mut worker = fastrender::ui::browser_worker::BrowserWorker::new(factory, worker_to_ui_tx);
-      let mut tabs: HashMap<TabId, TabState> = HashMap::new();
-
-      for msg in ui_to_worker_rx {
-        match msg {
-          UiToWorker::CreateTab {
-            tab_id,
-            initial_url,
-            ..
-          }
-          | UiToWorker::NewTab {
-            tab_id,
-            initial_url,
-          } => {
-            tabs.insert(
-              tab_id,
-              TabState {
-                viewport_css: VIEWPORT_CSS,
-                dpr: DPR,
-              },
-            );
-            if let Some(url) = initial_url {
-              let state = tabs.get(&tab_id).copied().unwrap_or(TabState {
-                viewport_css: VIEWPORT_CSS,
-                dpr: DPR,
-              });
-              let options = fastrender::RenderOptions::new()
-                .with_viewport(state.viewport_css.0, state.viewport_css.1)
-                .with_device_pixel_ratio(state.dpr)
-                .with_fit_canvas_to_content(false);
-              worker
-                .navigate(tab_id, &url, options)
-                .map_err(|e| e.to_string())?;
-            }
-          }
-          UiToWorker::ViewportChanged {
-            tab_id,
-            viewport_css,
-            dpr,
-          } => {
-            tabs
-              .entry(tab_id)
-              .and_modify(|state| {
-                state.viewport_css = viewport_css;
-                state.dpr = dpr;
-              })
-              .or_insert(TabState { viewport_css, dpr });
-            worker.viewport_changed(tab_id, viewport_css, dpr);
-          }
-          UiToWorker::Navigate { tab_id, url, .. } => {
-            let state = tabs.get(&tab_id).copied().unwrap_or(TabState {
-              viewport_css: VIEWPORT_CSS,
-              dpr: DPR,
-            });
-            let options = fastrender::RenderOptions::new()
-              .with_viewport(state.viewport_css.0, state.viewport_css.1)
-              .with_device_pixel_ratio(state.dpr)
-              .with_fit_canvas_to_content(false);
-            worker
-              .navigate(tab_id, &url, options)
-              .map_err(|e| e.to_string())?;
-          }
-          UiToWorker::CloseTab { tab_id } => {
-            tabs.remove(&tab_id);
-          }
-          UiToWorker::Tick { tab_id } => {
-            let _ = worker.tick(tab_id);
-          }
-          UiToWorker::SetActiveTab { .. }
-          | UiToWorker::GoBack { .. }
-          | UiToWorker::GoForward { .. }
-          | UiToWorker::Reload { .. }
-          | UiToWorker::Scroll { .. }
-          | UiToWorker::PointerMove { .. }
-          | UiToWorker::PointerDown { .. }
-          | UiToWorker::PointerUp { .. }
-          | UiToWorker::TextInput { .. }
-          | UiToWorker::KeyAction { .. }
-          | UiToWorker::RequestRepaint { .. } => {
-            // Not needed for the smoke test.
-          }
-        }
-      }
-
-      Ok(())
-    })?;
+  let (ui_to_worker_tx, worker_to_ui_rx, handle) =
+    fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
 
   let tab_id = TabId::new();
   ui_to_worker_tx.send(UiToWorker::CreateTab {
@@ -389,13 +288,8 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   match handle.join() {
-    Ok(Ok(())) => {}
-    Ok(Err(err)) => {
-      return Err(format!("headless smoke worker failed: {err}").into());
-    }
-    Err(_) => {
-      return Err("headless smoke worker panicked".into());
-    }
+    Ok(()) => {}
+    Err(_) => return Err("headless smoke worker panicked".into()),
   }
 
   println!(

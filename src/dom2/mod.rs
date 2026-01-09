@@ -117,11 +117,31 @@ pub struct Node {
   pub mathml_annotation_xml_integration_point: bool,
 }
 
-#[derive(Debug, Clone)]
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
   events: events::EventListenerRegistry,
+}
+
+impl Clone for Document {
+  fn clone(&self) -> Self {
+    Self {
+      nodes: self.nodes.clone(),
+      root: self.root,
+      // Cloning a DOM tree should not implicitly clone active event listeners. Start with an empty
+      // registry so callers can snapshot structure without inheriting the old event graph.
+      events: events::EventListenerRegistry::new(),
+    }
+  }
+}
+
+impl std::fmt::Debug for Document {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("Document")
+      .field("nodes", &self.nodes)
+      .field("root", &self.root)
+      .finish()
+  }
 }
 
 #[derive(Debug, Clone)]

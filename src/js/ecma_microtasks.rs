@@ -249,10 +249,6 @@ mod tests {
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
       }
-
-      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
-        (&mut self.vm, &mut self.heap)
-      }
     }
 
     let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
@@ -318,10 +314,6 @@ mod tests {
     impl VmJsEngineHost for Host {
       fn vm_js_heap(&self) -> &vm_js::Heap {
         &self.heap
-      }
-
-      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
-        (&mut self.vm, &mut self.heap)
       }
 
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
@@ -420,10 +412,6 @@ mod tests {
     impl VmJsEngineHost for Host {
       fn vm_js_heap(&self) -> &vm_js::Heap {
         &self.heap
-      }
-
-      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
-        (&mut self.vm, &mut self.heap)
       }
 
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {

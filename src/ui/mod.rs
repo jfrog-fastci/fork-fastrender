@@ -59,6 +59,7 @@ pub use browser_app::{BrowserAppState, BrowserTabState, ChromeState, LatestFrame
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, ChromeAction};
 pub use tab_engine::TabEngine;
+pub use browser_thread::spawn_browser_ui_worker;
 
 pub use crate::select_dropdown as select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};

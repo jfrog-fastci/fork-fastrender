@@ -1337,3 +1337,19 @@ pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
     join,
   })
 }
+
+/// Spawn the production browser UI worker with a std::io-compatible API.
+///
+/// The desktop `browser` binary is written around `std::io::Result`, so this wrapper converts
+/// FastRender's internal `Error` into an `io::Error` and returns the raw channel endpoints.
+pub fn spawn_browser_ui_worker(
+  _name: impl Into<String>,
+) -> std::io::Result<(
+  std::sync::mpsc::Sender<UiToWorker>,
+  std::sync::mpsc::Receiver<WorkerToUi>,
+  std::thread::JoinHandle<()>,
+)> {
+  let handle = spawn_browser_worker()
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+  Ok((handle.tx, handle.rx, handle.join))
+}
