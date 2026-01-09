@@ -210,3 +210,231 @@ fn time_based_transform_animation_samples_at_multiple_timestamps() {
   assert_eq!(pixel(&pixmap_settled, 12, 2), (255, 0, 0, 255));
 }
 
+#[test]
+fn time_based_animation_steps_timing_function_is_sampled() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation: fade 1000ms steps(2, end) forwards;
+      }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  let pixmap_before_step = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(450.0),
+    )
+    .expect("paint before step");
+  assert_eq!(pixel(&pixmap_before_step, 5, 5), (0, 0, 0, 255));
+
+  let pixmap_step = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(500.0),
+    )
+    .expect("paint at step");
+  let (r, g, b, a) = pixel(&pixmap_step, 5, 5);
+  assert!(
+    (120..=135).contains(&r),
+    "expected first step (~0.5) at 500ms, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+
+  let pixmap_late_step = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(950.0),
+    )
+    .expect("paint late step");
+  let (r, g, b, a) = pixel(&pixmap_late_step, 5, 5);
+  assert!(
+    (120..=135).contains(&r),
+    "expected still on first step (~0.5) before 1000ms, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+
+  let pixmap_end = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(1000.0),
+    )
+    .expect("paint at end");
+  assert_eq!(pixel(&pixmap_end, 5, 5), (255, 0, 0, 255));
+}
+
+#[test]
+fn time_based_animation_ease_timing_function_is_non_linear() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation: fade 1000ms ease forwards;
+      }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  let pixmap_mid = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(500.0),
+    )
+    .expect("paint at 500ms");
+  let (r, g, b, a) = pixel(&pixmap_mid, 5, 5);
+  assert!(
+    (200..=210).contains(&r),
+    "expected eased progress (~0.802) at 500ms, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+}
+
+#[test]
+fn multiple_time_based_animations_apply_in_list_order() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation:
+          fade1 1000ms linear forwards,
+          fade2 1000ms linear forwards;
+      }
+      @keyframes fade1 { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes fade2 { from { opacity: 0; } to { opacity: 0.5; } }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  let pixmap_mid = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(500.0),
+    )
+    .expect("paint at 500ms");
+  let (r, g, b, a) = pixel(&pixmap_mid, 5, 5);
+  assert!(
+    (60..=70).contains(&r),
+    "expected second animation (0.25) to win at 500ms, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+
+  let pixmap_end = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(1000.0),
+    )
+    .expect("paint at 1000ms");
+  let (r, g, b, a) = pixel(&pixmap_end, 5, 5);
+  assert!(
+    (120..=135).contains(&r),
+    "expected second animation (0.5) to win at 1000ms, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+
+  // In deterministic "settled" mode, both forwards animations apply and the later one wins.
+  let pixmap_settled = prepared
+    .paint_with_options(PreparedPaintOptions::new().with_background(bg))
+    .expect("paint settled");
+  let (r, g, b, a) = pixel(&pixmap_settled, 5, 5);
+  assert!(
+    (120..=135).contains(&r),
+    "expected settled to match second animation end (0.5), got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+}
+
+#[test]
+fn animation_composition_add_adds_transforms() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(50, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #box {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation:
+          a1 1000ms linear forwards,
+          a2 1000ms linear forwards;
+        animation-composition: replace, add;
+      }
+      @keyframes a1 { from { transform: translateX(0px); } to { transform: translateX(10px); } }
+      @keyframes a2 { from { transform: translateX(0px); } to { transform: translateX(20px); } }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  let pixmap_mid = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(500.0),
+    )
+    .expect("paint at 500ms");
+  // At 500ms: a1 => +5px, a2 => +10px, add => +15px total.
+  assert_eq!(pixel(&pixmap_mid, 12, 2), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap_mid, 17, 2), (255, 0, 0, 255));
+
+  let pixmap_end = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(1000.0),
+    )
+    .expect("paint at 1000ms");
+  // At 1000ms: a1 => +10px, a2 => +20px, add => +30px total.
+  assert_eq!(pixel(&pixmap_end, 22, 2), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap_end, 32, 2), (255, 0, 0, 255));
+
+  // Settled mode should match the end state (30px total).
+  let pixmap_settled = prepared
+    .paint_with_options(PreparedPaintOptions::new().with_background(bg))
+    .expect("paint settled");
+  assert_eq!(pixel(&pixmap_settled, 32, 2), (255, 0, 0, 255));
+}
