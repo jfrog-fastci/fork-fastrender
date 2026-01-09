@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use fastrender::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
+use fastrender::interaction::scroll_wheel::{
+  apply_wheel_scroll, apply_wheel_scroll_at_point, ScrollWheelInput,
+};
 use fastrender::scroll::ScrollState;
 use fastrender::style::types::{Overflow, OverscrollBehavior};
 use fastrender::style::ComputedStyle;
@@ -13,8 +15,18 @@ fn scroll_y_style(overscroll: OverscrollBehavior) -> Arc<ComputedStyle> {
   Arc::new(style)
 }
 
-fn block_with_id(id: usize, bounds: Rect, children: Vec<FragmentNode>, style: Arc<ComputedStyle>) -> FragmentNode {
-  FragmentNode::new_with_style(bounds, FragmentContent::Block { box_id: Some(id) }, children, style)
+fn block_with_id(
+  id: usize,
+  bounds: Rect,
+  children: Vec<FragmentNode>,
+  style: Arc<ComputedStyle>,
+) -> FragmentNode {
+  FragmentNode::new_with_style(
+    bounds,
+    FragmentContent::Block { box_id: Some(id) },
+    children,
+    style,
+  )
 }
 
 #[test]
@@ -36,7 +48,8 @@ fn wheel_scroll_chains_inner_to_outer_to_viewport() {
 
   // Give the viewport a larger scrollable area so leftover delta can propagate all the way out.
   let tail = FragmentNode::new_block(Rect::from_xywh(0.0, 400.0, 100.0, 100.0), vec![]);
-  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![outer, tail]);
+  let root =
+    FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![outer, tail]);
   let fragment_tree = FragmentTree::new(root);
 
   let next = apply_wheel_scroll_at_point(
@@ -51,8 +64,16 @@ fn wheel_scroll_chains_inner_to_outer_to_viewport() {
   );
 
   assert_eq!(next.element_offset(2), Point::new(0.0, 200.0), "inner clamps first");
-  assert_eq!(next.element_offset(1), Point::new(0.0, 200.0), "outer receives leftover");
-  assert_eq!(next.viewport, Point::new(0.0, 300.0), "viewport receives remaining delta");
+  assert_eq!(
+    next.element_offset(1),
+    Point::new(0.0, 200.0),
+    "outer receives leftover"
+  );
+  assert_eq!(
+    next.viewport,
+    Point::new(0.0, 300.0),
+    "viewport receives remaining delta"
+  );
 }
 
 #[test]
@@ -170,6 +191,22 @@ fn wheel_scroll_falls_back_to_viewport_when_hit_test_misses() {
 }
 
 #[test]
+fn wheel_scroll_entrypoint_uses_fragment_tree_viewport_size() {
+  let tail = FragmentNode::new_block(Rect::from_xywh(0.0, 400.0, 100.0, 100.0), vec![]);
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![tail]);
+  let fragment_tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
+
+  let next = apply_wheel_scroll(
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(500.0, 500.0),
+    Point::new(0.0, 350.0),
+  );
+
+  assert_eq!(next.viewport, Point::new(0.0, 350.0));
+}
+
+#[test]
 fn wheel_scroll_handles_additional_fragment_roots_without_promoting_to_viewport() {
   // Document root sits below a fixed header represented as an additional fragment root.
   let doc_content = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 400.0), vec![]);
@@ -213,4 +250,3 @@ fn wheel_scroll_handles_additional_fragment_roots_without_promoting_to_viewport(
     "leftover delta scrolls the document root viewport"
   );
 }
-

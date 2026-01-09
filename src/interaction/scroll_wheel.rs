@@ -16,6 +16,24 @@ fn sanitize_delta(delta: f32) -> f32 {
   if delta.is_finite() { delta } else { 0.0 }
 }
 
+pub fn apply_wheel_scroll(
+  fragment_tree: &FragmentTree,
+  scroll_state: &ScrollState,
+  page_point: Point,
+  delta: Point,
+) -> ScrollState {
+  apply_wheel_scroll_at_point(
+    fragment_tree,
+    scroll_state,
+    fragment_tree.viewport_size(),
+    page_point,
+    ScrollWheelInput {
+      delta_x: delta.x,
+      delta_y: delta.y,
+    },
+  )
+}
+
 /// Computes the vertical scroll overflow height for listbox `<select>` controls.
 ///
 /// Listbox selects are painted from their `SelectControl` model (not from laid-out `<option>`
@@ -85,18 +103,7 @@ pub fn apply_wheel_scroll_at_point(
   page_point: Point,
   input: ScrollWheelInput,
 ) -> ScrollState {
-  let delta = Point::new(
-    if input.delta_x.is_finite() {
-      input.delta_x
-    } else {
-      0.0
-    },
-    if input.delta_y.is_finite() {
-      input.delta_y
-    } else {
-      0.0
-    },
-  );
+  let delta = Point::new(sanitize_delta(input.delta_x), sanitize_delta(input.delta_y));
 
   if delta.x == 0.0 && delta.y == 0.0 {
     return scroll_state.clone();
