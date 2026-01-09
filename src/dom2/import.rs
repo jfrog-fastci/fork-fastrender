@@ -76,6 +76,47 @@ fn import_subtree(doc: &mut Document, parent: NodeId, root: &DomNode) -> NodeId 
   root_id
 }
 
+/// Import a renderer [`DomNode`] subtree into an existing `dom2` [`Document`], attaching it as a
+/// child of an arbitrary `dom2` parent node.
+///
+/// This is used by DOM mutation APIs (e.g. `innerHTML`) that parse renderer DOM fragments and need
+/// to import them under a temporary `DocumentFragment`.
+pub fn import_domnode_into_parent(doc: &mut Document, parent: NodeId, root: &DomNode) -> NodeId {
+  match &root.node_type {
+    DomNodeType::Document { .. } => {
+      // Import each document child directly under `parent`. Returning `parent` avoids exposing an
+      // extra synthetic wrapper node that does not exist in `dom2`.
+      for child in &root.children {
+        import_subtree(doc, parent, child);
+      }
+      parent
+    }
+    _ => import_subtree(doc, parent, root),
+  }
+}
+
+/// Import multiple renderer DOM nodes under a single `dom2` parent.
+pub fn import_domnodes_into_parent(
+  doc: &mut Document,
+  parent: NodeId,
+  nodes: &[DomNode],
+) -> Vec<NodeId> {
+  let mut imported: Vec<NodeId> = Vec::new();
+  for node in nodes {
+    match &node.node_type {
+      DomNodeType::Document { .. } => {
+        for child in &node.children {
+          imported.push(import_subtree(doc, parent, child));
+        }
+      }
+      _ => {
+        imported.push(import_subtree(doc, parent, node));
+      }
+    }
+  }
+  imported
+}
+
 /// Import an immutable renderer [`DomNode`] tree into a fresh `dom2` [`Document`].
 ///
 /// This enables incremental adoption of the spec-ish mutable DOM by starting from the renderer's

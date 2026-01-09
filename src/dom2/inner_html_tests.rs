@@ -1,8 +1,7 @@
 use crate::dom::parse_html;
 use crate::dom::HTML_NAMESPACE;
-use crate::web::dom::DomException;
 
-use super::{Document, NodeId, NodeKind};
+use super::{Document, DomError, NodeId, NodeKind};
 
 fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
   doc
@@ -135,8 +134,8 @@ fn outer_html_setter_throws_when_parent_is_document() {
     .set_outer_html(html, "<html><body>nope</body></html>")
     .expect_err("expected outerHTML on document child to error");
   assert!(
-    matches!(err, DomException::NoModificationAllowedError { .. }),
-    "expected NoModificationAllowedError, got {err:?}"
+    matches!(err, DomError::NoModificationAllowedError),
+    "expected NoModificationAllowedError, got {err:?}",
   );
 }
 

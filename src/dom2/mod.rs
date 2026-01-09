@@ -22,7 +22,7 @@ mod js_shims;
 mod mutation;
 mod shadow_dom;
 mod style_attr;
-mod inner_html;
+mod html;
 mod dom_parsing;
 mod serialization;
 mod traversal;
@@ -1437,6 +1437,8 @@ mod wbr_tests;
 mod html5ever_sink_tests;
 #[cfg(test)]
 mod inner_html_tests;
+#[cfg(test)]
+mod html_tests;
 
 #[cfg(test)]
 mod helper_tests {

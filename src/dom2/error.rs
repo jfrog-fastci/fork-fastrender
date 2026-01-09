@@ -12,6 +12,8 @@ pub enum DomError {
   NotFoundError,
   #[error("InvalidNodeType")]
   InvalidNodeType,
+  #[error("NoModificationAllowedError")]
+  NoModificationAllowedError,
   #[error("SyntaxError")]
   SyntaxError,
 }
@@ -22,6 +24,7 @@ impl DomError {
       Self::HierarchyRequestError => "HierarchyRequestError",
       Self::NotFoundError => "NotFoundError",
       Self::InvalidNodeType => "InvalidNodeType",
+      Self::NoModificationAllowedError => "NoModificationAllowedError",
       Self::SyntaxError => "SyntaxError",
     }
   }

@@ -24,6 +24,12 @@ fn is_void_html_element(tag_name: &str) -> bool {
     || tag_name.eq_ignore_ascii_case("wbr")
 }
 
+fn is_rawtext_element(tag_name: &str, namespace: &str) -> bool {
+  // Minimal raw text support: preserve JS/CSS text when serializing `<script>`/`<style>`.
+  is_html_namespace(namespace)
+    && (tag_name.eq_ignore_ascii_case("script") || tag_name.eq_ignore_ascii_case("style"))
+}
+
 fn push_lowercase_ascii(out: &mut String, value: &str) {
   if value.bytes().any(|b| b.is_ascii_uppercase()) {
     out.push_str(&value.to_ascii_lowercase());
@@ -37,6 +43,7 @@ fn escape_text(out: &mut String, value: &str) {
     match ch {
       '&' => out.push_str("&amp;"),
       '<' => out.push_str("&lt;"),
+      '>' => out.push_str("&gt;"),
       _ => out.push(ch),
     }
   }
@@ -47,12 +54,13 @@ fn escape_attr_value(out: &mut String, value: &str) {
     match ch {
       '&' => out.push_str("&amp;"),
       '"' => out.push_str("&quot;"),
+      '<' => out.push_str("&lt;"),
       _ => out.push(ch),
     }
   }
 }
 
-fn serialize_element_start_tag(
+fn serialize_start_tag(
   out: &mut String,
   tag_name: &str,
   namespace: &str,
@@ -68,12 +76,8 @@ fn serialize_element_start_tag(
     out.push_str(tag_name);
   }
 
-  let mut attrs: Vec<&(String, String)> = attributes.iter().collect();
-  attrs.sort_by(|(a_name, a_val), (b_name, b_val)| match a_name.cmp(b_name) {
-    std::cmp::Ordering::Equal => a_val.cmp(b_val),
-    other => other,
-  });
-  for (name, value) in attrs {
+  // Preserve stored attribute order for deterministic output.
+  for (name, value) in attributes {
     out.push(' ');
     if is_html {
       push_lowercase_ascii(out, name);
@@ -89,7 +93,7 @@ fn serialize_element_start_tag(
   is_void
 }
 
-fn serialize_element_end_tag(out: &mut String, tag_name: &str, namespace: &str) {
+fn serialize_end_tag(out: &mut String, tag_name: &str, namespace: &str) {
   let is_html = is_html_namespace(namespace);
   out.push_str("</");
   if is_html {
@@ -100,86 +104,152 @@ fn serialize_element_end_tag(out: &mut String, tag_name: &str, namespace: &str) 
   out.push('>');
 }
 
-pub(super) fn serialize_node(doc: &Document, root: NodeId, out: &mut String) {
-  let mut stack: Vec<(NodeId, bool)> = vec![(root, false)];
+enum Frame {
+  Enter {
+    node: NodeId,
+    parent_rawtext: bool,
+  },
+  ExitElement {
+    node: NodeId,
+  },
+}
 
-  while let Some((id, exiting)) = stack.pop() {
-    let Some(node) = doc.nodes.get(id.index()) else {
-      continue;
-    };
+fn serialize_nodes(
+  doc: &Document,
+  nodes: impl DoubleEndedIterator<Item = NodeId>,
+  parent_rawtext: bool,
+  out: &mut String,
+) {
+  let mut stack: Vec<Frame> = Vec::new();
+  for node in nodes.rev() {
+    stack.push(Frame::Enter {
+      node,
+      parent_rawtext,
+    });
+  }
 
-    match &node.kind {
-      NodeKind::Text { content } => {
-        if !exiting {
-          escape_text(out, content);
-        }
-      }
-
-      NodeKind::Element {
-        tag_name,
-        namespace,
-        attributes,
-      } => {
-        let is_void = is_html_namespace(namespace) && is_void_html_element(tag_name);
-        if !exiting {
-          let wrote_void = serialize_element_start_tag(out, tag_name, namespace, attributes);
-          if wrote_void {
-            continue;
-          }
-
-          stack.push((id, true));
-          for &child in node.children.iter().rev() {
-            // Shadow roots are stored as element children for renderer traversal, but they are not
-            // part of the light DOM tree and must not appear in Element.innerHTML/outerHTML output.
-            if matches!(
-              doc.nodes.get(child.index()).map(|n| &n.kind),
-              Some(NodeKind::ShadowRoot { .. })
-            ) {
+  while let Some(frame) = stack.pop() {
+    match frame {
+      Frame::ExitElement { node } => {
+        let Some(node) = doc.nodes.get(node.index()) else {
+          continue;
+        };
+        match &node.kind {
+          NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } => {
+            if is_html_namespace(namespace) && is_void_html_element(tag_name) {
               continue;
             }
-            stack.push((child, false));
+            serialize_end_tag(out, tag_name, namespace);
           }
-        } else {
-          if is_void {
-            continue;
+          NodeKind::Slot { namespace, .. } => {
+            serialize_end_tag(out, "slot", namespace);
           }
-          serialize_element_end_tag(out, tag_name, namespace);
+          _ => {}
         }
       }
 
-      NodeKind::Slot {
-        namespace,
-        attributes,
-        ..
+      Frame::Enter {
+        node: node_id,
+        parent_rawtext,
       } => {
-        // Serialize slots as elements.
-        let is_void = is_html_namespace(namespace) && is_void_html_element("slot");
-        if !exiting {
-          let wrote_void = serialize_element_start_tag(out, "slot", namespace, attributes);
-          if wrote_void {
-            continue;
+        let Some(node) = doc.nodes.get(node_id.index()) else {
+          continue;
+        };
+
+        match &node.kind {
+          NodeKind::Text { content } => {
+            if parent_rawtext {
+              out.push_str(content);
+            } else {
+              escape_text(out, content);
+            }
           }
 
-          stack.push((id, true));
-          for &child in node.children.iter().rev() {
-            if matches!(
-              doc.nodes.get(child.index()).map(|n| &n.kind),
-              Some(NodeKind::ShadowRoot { .. })
-            ) {
+          NodeKind::Element {
+            tag_name,
+            namespace,
+            attributes,
+          } => {
+            let wrote_void = serialize_start_tag(out, tag_name, namespace, attributes);
+            if wrote_void {
               continue;
             }
-            stack.push((child, false));
+
+            stack.push(Frame::ExitElement { node: node_id });
+
+            let rawtext = is_rawtext_element(tag_name, namespace);
+            for &child in node.children.iter().rev() {
+              let Some(child_node) = doc.nodes.get(child.index()) else {
+                continue;
+              };
+              if child_node.parent != Some(node_id) {
+                continue;
+              }
+              // Shadow roots are stored as element children for renderer traversal, but they are not
+              // part of the light DOM tree and must not appear in `innerHTML`/`outerHTML` output.
+              if matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+                continue;
+              }
+              stack.push(Frame::Enter {
+                node: child,
+                parent_rawtext: rawtext,
+              });
+            }
           }
-        } else {
-          if is_void {
-            continue;
+
+          NodeKind::Slot {
+            namespace,
+            attributes,
+            ..
+          } => {
+            let wrote_void = serialize_start_tag(out, "slot", namespace, attributes);
+            if wrote_void {
+              continue;
+            }
+
+            stack.push(Frame::ExitElement { node: node_id });
+
+            for &child in node.children.iter().rev() {
+              let Some(child_node) = doc.nodes.get(child.index()) else {
+                continue;
+              };
+              if child_node.parent != Some(node_id) {
+                continue;
+              }
+              if matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+                continue;
+              }
+              stack.push(Frame::Enter {
+                node: child,
+                parent_rawtext: false,
+              });
+            }
           }
-          serialize_element_end_tag(out, "slot", namespace);
+
+          NodeKind::Document { .. } | NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
+            // Serialize container-like nodes as fragments (their children, without wrapper markup).
+            for &child in node.children.iter().rev() {
+              let Some(child_node) = doc.nodes.get(child.index()) else {
+                continue;
+              };
+              if child_node.parent != Some(node_id) {
+                continue;
+              }
+              stack.push(Frame::Enter {
+                node: child,
+                parent_rawtext,
+              });
+            }
+          }
+
+          // Other node kinds are currently ignored by our HTML serialization.
+          _ => {}
         }
       }
-
-      // Intentionally ignore unsupported node kinds (document, shadow root, etc.).
-      _ => {}
     }
   }
 }
@@ -189,22 +259,31 @@ pub(super) fn serialize_children(doc: &Document, parent: NodeId) -> String {
     return String::new();
   };
 
+  let rawtext = match &node.kind {
+    NodeKind::Element {
+      tag_name, namespace, ..
+    } => is_rawtext_element(tag_name, namespace),
+    NodeKind::Slot { namespace, .. } => is_rawtext_element("slot", namespace),
+    _ => false,
+  };
+
   let mut out = String::new();
-  for &child in &node.children {
-    // Skip ShadowRoot nodes stored for renderer traversal; they are not part of the light DOM.
-    if matches!(
-      doc.nodes.get(child.index()).map(|n| &n.kind),
-      Some(NodeKind::ShadowRoot { .. })
-    ) {
-      continue;
+  let children = node.children.iter().copied().filter(|&child| {
+    let Some(child_node) = doc.nodes.get(child.index()) else {
+      return false;
+    };
+    if child_node.parent != Some(parent) {
+      return false;
     }
-    serialize_node(doc, child, &mut out);
-  }
+    !matches!(child_node.kind, NodeKind::ShadowRoot { .. })
+  });
+  serialize_nodes(doc, children, rawtext, &mut out);
   out
 }
 
 pub(super) fn serialize_outer(doc: &Document, node: NodeId) -> String {
   let mut out = String::new();
-  serialize_node(doc, node, &mut out);
+  serialize_nodes(doc, std::iter::once(node), false, &mut out);
   out
 }
+

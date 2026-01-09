@@ -1011,7 +1011,7 @@ impl Node {
     let dom = self.state.dom.borrow();
     dom
       .get_inner_html(self.node_id)
-      .map_err(|e| dom_exception_to_js(&ctx, e))
+      .map_err(|e| dom_error_to_js(&ctx, e))
   }
 
   #[qjs(set, rename = "innerHTML")]
@@ -1024,7 +1024,7 @@ impl Node {
       .dom
       .borrow_mut()
       .set_inner_html(self.node_id, &html)
-      .map_err(|e| dom_exception_to_js(&ctx, e))?;
+      .map_err(|e| dom_error_to_js(&ctx, e))?;
 
     self
       .state
@@ -1038,7 +1038,7 @@ impl Node {
     let dom = self.state.dom.borrow();
     dom
       .get_outer_html(self.node_id)
-      .map_err(|e| dom_exception_to_js(&ctx, e))
+      .map_err(|e| dom_error_to_js(&ctx, e))
   }
 
   #[qjs(set, rename = "outerHTML")]
@@ -1052,7 +1052,7 @@ impl Node {
       .dom
       .borrow_mut()
       .set_outer_html(self.node_id, &html)
-      .map_err(|e| dom_exception_to_js(&ctx, e))?;
+      .map_err(|e| dom_error_to_js(&ctx, e))?;
 
     if let Some(parent) = parent {
       self
@@ -1299,7 +1299,10 @@ fn throw_syntax_dom_exception<'js>(ctx: &Ctx<'js>, message: &str) -> rquickjs::E
 
 fn dom_error_to_js<'js>(ctx: &Ctx<'js>, err: DomError) -> rquickjs::Error {
   match err {
-    DomError::HierarchyRequestError | DomError::NotFoundError | DomError::InvalidNodeType => {
+    DomError::HierarchyRequestError
+    | DomError::NotFoundError
+    | DomError::InvalidNodeType
+    | DomError::NoModificationAllowedError => {
       let name = err.code();
       throw_dom_exception(ctx, name, name)
     }
