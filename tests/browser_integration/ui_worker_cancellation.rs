@@ -1,6 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg};
+use super::support::{
+  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg, TestRenderDelayGuard,
+};
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::scroll::ScrollState;
@@ -10,21 +12,6 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 const MAX_WAIT: Duration = Duration::from_secs(15);
-
-struct TestRenderDelayGuard;
-
-impl TestRenderDelayGuard {
-  fn set(ms: Option<u64>) -> Self {
-    fastrender::render_control::set_test_render_delay_ms(ms);
-    Self
-  }
-}
-
-impl Drop for TestRenderDelayGuard {
-  fn drop(&mut self) {
-    fastrender::render_control::set_test_render_delay_ms(None);
-  }
-}
 
 fn pixmap_is_uniform_rgba(pixmap: &tiny_skia::Pixmap) -> bool {
   let data = pixmap.data();

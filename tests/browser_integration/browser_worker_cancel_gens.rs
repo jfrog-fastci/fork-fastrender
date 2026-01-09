@@ -52,7 +52,7 @@ fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
   let light_url = site.write("light.html", "<!doctype html><html><body>ok</body></html>");
 
   // Slow down render stages on this worker thread to make cancellation deterministic without
-  // mutating the process-global `FASTR_TEST_RENDER_DELAY_MS` env var.
+  // mutating the process-global render-delay environment variable.
   let worker =
     fastrender::ui::spawn_browser_worker_for_test(Some(1)).expect("spawn browser worker");
   let tab_id = TabId::new();

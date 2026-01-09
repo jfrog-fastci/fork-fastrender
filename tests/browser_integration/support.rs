@@ -21,6 +21,26 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.
 const RECV_SLICE: Duration = Duration::from_millis(25);
 
+/// RAII helper for scoping the global test render delay override.
+///
+/// `render_control::set_test_render_delay_ms` affects the whole process, so integration tests
+/// should scope it as tightly as possible and serialize execution (see `stage_listener_test_lock`).
+#[must_use]
+pub struct TestRenderDelayGuard;
+
+impl TestRenderDelayGuard {
+  pub fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
+  }
+}
+
+impl Drop for TestRenderDelayGuard {
+  fn drop(&mut self) {
+    fastrender::render_control::set_test_render_delay_ms(None);
+  }
+}
+
 /// Pre-initialize bundled font metadata for browser UI integration tests.
 ///
 /// The first bundled-font render can be expensive (parsing/loading many fonts). When this work

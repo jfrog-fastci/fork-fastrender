@@ -122,9 +122,10 @@ Prefer the *per-worker-thread* TLS delay helpers over the process-global env var
 - `spawn_browser_worker_for_test(Some(ms))`
 - `spawn_browser_render_thread_for_test(..., Some(ms))`
 
-Avoid mutating `FASTR_TEST_RENDER_DELAY_MS` from within these integration tests: the browser
-integration suite is compiled into a single test binary, so changing the env var can slow down
-unrelated tests running in the same process and cause flakiness under parallel execution.
+Avoid mutating the legacy render-delay environment variable from within these integration tests:
+the browser integration suite is compiled into a single test binary, so changing a process env var
+can slow down unrelated tests running in the same process and cause flakiness under parallel
+execution.
 
 ## Timeouts and cleanup (avoid hangs)
 

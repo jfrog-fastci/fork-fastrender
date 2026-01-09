@@ -7,25 +7,10 @@ use std::time::{Duration, Instant};
 
 const MAX_WAIT: Duration = Duration::from_secs(15);
 
-struct TestRenderDelayGuard;
-
-impl TestRenderDelayGuard {
-  fn set(ms: Option<u64>) -> Self {
-    fastrender::render_control::set_test_render_delay_ms(ms);
-    Self
-  }
-}
-
-impl Drop for TestRenderDelayGuard {
-  fn drop(&mut self) {
-    fastrender::render_control::set_test_render_delay_ms(None);
-  }
-}
-
 #[test]
 fn navigation_cancellation_drops_stale_frame_and_is_silent() {
   let _lock = super::stage_listener_test_lock();
-  let _delay = TestRenderDelayGuard::set(Some(1));
+  let _delay = support::TestRenderDelayGuard::set(Some(1));
 
   let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
   let tab_id = TabId::new();
@@ -239,7 +224,7 @@ fn rapid_scroll_cancels_stale_paint() {
   // Enable an artificial render delay for the scroll paints only. This keeps the initial navigation
   // fast (so we don't flake on the first frame) while ensuring the scroll paint is slow enough that
   // we can deterministically cancel it after receiving a stage heartbeat.
-  let delay_guard = TestRenderDelayGuard::set(Some(1));
+  let delay_guard = support::TestRenderDelayGuard::set(Some(1));
 
   worker
     .tx

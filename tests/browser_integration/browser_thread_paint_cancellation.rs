@@ -13,27 +13,12 @@ use std::time::{Duration, Instant};
 // stages, so keep this generous to avoid flakes while still bounding the test.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-struct TestRenderDelayGuard;
-
-impl TestRenderDelayGuard {
-  fn set(ms: Option<u64>) -> Self {
-    fastrender::render_control::set_test_render_delay_ms(ms);
-    Self
-  }
-}
-
-impl Drop for TestRenderDelayGuard {
-  fn drop(&mut self) {
-    fastrender::render_control::set_test_render_delay_ms(None);
-  }
-}
-
 #[test]
 fn paint_cancellation_during_navigation_does_not_surface_error_page() {
   let _lock = super::stage_listener_test_lock();
   // Keep renders fast enough to complete within CI timeouts. This test relies on the heavy DOM to
   // keep paints in-flight long enough for cancellation.
-  let _delay = TestRenderDelayGuard::set(Some(0));
+  let _delay = support::TestRenderDelayGuard::set(Some(0));
 
   let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
 

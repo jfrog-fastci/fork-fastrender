@@ -144,7 +144,7 @@ fn navigation_cancellation_drops_stale_frame() {
 
   let factory = factory_for_tests();
   // Slow down render stages on this worker thread to make cancellation deterministic without
-  // mutating the process-global `FASTR_TEST_RENDER_DELAY_MS` env var.
+  // mutating the process-global render-delay environment variable.
   let (tx, rx, handle) = spawn_browser_render_thread_for_test(factory, Some(1)).unwrap();
 
   let tab_id = TabId(1);
