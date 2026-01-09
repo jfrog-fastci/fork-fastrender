@@ -583,45 +583,62 @@ fn navigate_tab(
     .with_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y)
     .with_element_scroll_offsets(tab.scroll_state.elements.clone());
 
-  let mut renderer = match FastRender::new() {
-    Ok(renderer) => renderer,
-    Err(err) => {
-      let _ = tx.send(WorkerToUi::NavigationFailed {
-        tab_id,
-        url,
-        error: err.to_string(),
-      });
-      return;
+  let final_url = if let Some(doc) = tab.document.as_mut() {
+    match doc.navigate_url(&url, options) {
+      Ok(report) => report.final_url.clone().unwrap_or_else(|| url.clone()),
+      Err(err) => {
+        let _ = tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url,
+          error: err.to_string(),
+        });
+        return;
+      }
     }
+  } else {
+    let mut renderer = match FastRender::new() {
+      Ok(renderer) => renderer,
+      Err(err) => {
+        let _ = tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url,
+          error: err.to_string(),
+        });
+        return;
+      }
+    };
+
+    let report = match renderer.prepare_url(&url, options.clone()) {
+      Ok(report) => report,
+      Err(err) => {
+        let _ = tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url,
+          error: err.to_string(),
+        });
+        return;
+      }
+    };
+
+    let final_url = report.final_url.clone().unwrap_or_else(|| url.clone());
+    let doc = match BrowserDocument::from_prepared(renderer, report.document, options) {
+      Ok(doc) => doc,
+      Err(err) => {
+        let _ = tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url,
+          error: err.to_string(),
+        });
+        return;
+      }
+    };
+    tab.document = Some(doc);
+    final_url
   };
 
-  let report = match renderer.prepare_url(&url, options.clone()) {
-    Ok(report) => report,
-    Err(err) => {
-      let _ = tx.send(WorkerToUi::NavigationFailed {
-        tab_id,
-        url,
-        error: err.to_string(),
-      });
-      return;
-    }
+  let Some(doc) = tab.document.as_mut() else {
+    return;
   };
-
-  let final_url = report.final_url.clone().unwrap_or_else(|| url.clone());
-
-  let doc = match BrowserDocument::from_prepared(renderer, report.document, options) {
-    Ok(doc) => doc,
-    Err(err) => {
-      let _ = tx.send(WorkerToUi::NavigationFailed {
-        tab_id,
-        url,
-        error: err.to_string(),
-      });
-      return;
-    }
-  };
-
-  let mut doc = doc;
   doc.set_scroll_state(tab.scroll_state.clone());
   if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
     if let Some(fragment) = url_fragment(&final_url) {
@@ -641,10 +658,6 @@ fn navigate_tab(
     }
   }
   tab.current_url = Some(final_url.clone());
-  tab.document = Some(doc);
-  if let Some(doc) = tab.document.as_mut() {
-    doc.set_scroll_state(tab.scroll_state.clone());
-  }
 
   let title = tab
     .document

@@ -273,11 +273,55 @@ impl BrowserRenderThread {
       .with_cancel_callback(Some(prepare_cancel_cb));
 
     let mut final_url = requested_url.clone();
-    let mut base_url: Option<String> = None;
+    // Filled once the navigation has either committed or produced an error page.
+    let base_url: Option<String>;
     let mut navigation_error: Option<String> = None;
-    let mut doc_result: Result<BrowserDocument, Error> = Err(Error::Render(RenderError::InvalidParameters {
-      message: "navigation did not start".to_string(),
-    }));
+
+    // Ensure we have a long-lived per-tab `BrowserDocument` so we can keep the internal renderer
+    // (and its caches/fetcher) across navigations.
+    if tab.document.is_none() {
+      let renderer = match self.factory.build_renderer() {
+        Ok(renderer) => renderer,
+        Err(err) => {
+          let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
+            tab_id,
+            url: requested_url.clone(),
+            error: err.to_string(),
+          });
+          tab.loading = false;
+          let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+            tab_id,
+            loading: false,
+          });
+          return;
+        }
+      };
+
+      let init_options = RenderOptions::default()
+        .with_viewport(viewport_css.0, viewport_css.1)
+        .with_device_pixel_ratio(dpr);
+      let document = match BrowserDocument::new(renderer, "<!doctype html><html></html>", init_options) {
+        Ok(doc) => doc,
+        Err(err) => {
+          let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
+            tab_id,
+            url: requested_url.clone(),
+            error: err.to_string(),
+          });
+          tab.loading = false;
+          let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+            tab_id,
+            loading: false,
+          });
+          return;
+        }
+      };
+      tab.document = Some(document);
+    }
+
+    let Some(document) = tab.document.as_mut() else {
+      return;
+    };
 
     if about_pages::is_about_url(&requested_url) {
       let html = about_pages::html_for_about_url(&requested_url).unwrap_or_else(|| {
@@ -285,82 +329,12 @@ impl BrowserRenderThread {
       });
       base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
 
-      match self.factory.build_renderer() {
-        Ok(mut renderer) => {
-          renderer.set_base_url(about_pages::ABOUT_BASE_URL);
-          options.cancel_callback = None;
-          match BrowserDocument::new(renderer, &html, options.clone()) {
-            Ok(mut doc) => {
-              doc.set_navigation_urls(Some(requested_url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
-              doc_result = Ok(doc);
-            }
-            Err(err) => {
-              navigation_error = Some(err.to_string());
-              doc_result = Err(err);
-            }
-          }
-        }
-        Err(err) => {
-          navigation_error = Some(err.to_string());
-          doc_result = Err(err);
-        }
-      }
-    } else {
-      let _stage_guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-      match self.factory.build_renderer() {
-        Ok(mut renderer) => match renderer.prepare_url(&requested_url, options.clone()) {
-          Ok(report) => {
-            final_url = report.final_url.clone().unwrap_or_else(|| requested_url.clone());
-            base_url = report
-              .base_url
-              .clone()
-              .or_else(|| report.final_url.clone())
-              .or_else(|| Some(final_url.clone()));
-            // Clear the per-navigation cancel callback before storing in the live document; each
-            // render installs a fresh snapshot.
-            options.cancel_callback = None;
-            doc_result = BrowserDocument::from_prepared(renderer, report.document, options.clone());
-          }
-          Err(err) => {
-            if is_cancel_timeout(&err) {
-              // Navigation was cancelled by a newer request. Leave state updates to the latest
-              // navigation.
-              return;
-            }
-            navigation_error = Some(err.to_string());
-            let html = about_pages::error_page_html("Navigation failed", &err.to_string());
-            base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
-
-            options.cancel_callback = None;
-            match BrowserDocument::new(renderer, &html, options.clone()) {
-              Ok(mut doc) => {
-                doc.set_navigation_urls(Some(requested_url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
-                doc_result = Ok(doc);
-              }
-              Err(err2) => {
-                doc_result = Err(err2);
-              }
-            }
-          }
-        },
-        Err(err) => {
-          navigation_error = Some(err.to_string());
-          doc_result = Err(err);
-        }
-      }
-    }
-
-    let mut document = match doc_result {
-      Ok(doc) => doc,
-      Err(err) => {
-        if is_cancel_timeout(&err) {
-          return;
-        }
-        let error_line = navigation_error.unwrap_or_else(|| err.to_string());
+      options.cancel_callback = None;
+      if let Err(err) = document.reset_with_html(&html, options.clone()) {
         let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
           tab_id,
           url: requested_url.clone(),
-          error: error_line,
+          error: err.to_string(),
         });
         tab.loading = false;
         let _ = self.ui_tx.send(WorkerToUi::LoadingState {
@@ -369,7 +343,56 @@ impl BrowserRenderThread {
         });
         return;
       }
-    };
+      document.set_navigation_urls(Some(requested_url.clone()), base_url.clone());
+      document.set_document_url_without_invalidation(Some(requested_url.clone()));
+    } else {
+      let _stage_guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+
+      match document.navigate_url(&requested_url, options.clone()) {
+        Ok(report) => {
+          final_url = report.final_url.clone().unwrap_or_else(|| requested_url.clone());
+          base_url = report
+            .base_url
+            .clone()
+            .or_else(|| report.final_url.clone())
+            .or_else(|| Some(final_url.clone()));
+          // Clear the per-navigation cancel callback before leaving the document live; each
+          // repaint installs a fresh snapshot.
+          document.set_cancel_callback(None);
+        }
+        Err(err) => {
+          if is_cancel_timeout(&err) {
+            // Navigation was cancelled by a newer request. Leave state updates to the latest
+            // navigation.
+            return;
+          }
+
+          navigation_error = Some(err.to_string());
+          let html = about_pages::error_page_html("Navigation failed", &err.to_string());
+          base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
+
+          options.cancel_callback = None;
+          if let Err(err2) = document.reset_with_html(&html, options.clone()) {
+            let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
+              tab_id,
+              url: requested_url.clone(),
+              error: err2.to_string(),
+            });
+            tab.loading = false;
+            let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+              tab_id,
+              loading: false,
+            });
+            return;
+          }
+          document.set_navigation_urls(
+            Some(requested_url.clone()),
+            Some(about_pages::ABOUT_BASE_URL.to_string()),
+          );
+          document.set_document_url_without_invalidation(Some(requested_url.clone()));
+        }
+      }
+    }
 
     if let Some(entry) = tab
       .history
@@ -387,7 +410,6 @@ impl BrowserRenderThread {
     tab.base_url = base_url.clone();
     tab.title = title.clone();
     tab.interaction = InteractionEngine::new();
-    tab.document = Some(document);
 
     let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
       tab_id,

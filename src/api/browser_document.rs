@@ -164,12 +164,23 @@ impl BrowserDocument {
     url: &str,
     options: RenderOptions,
   ) -> Result<BrowserNavigationReport> {
+    // `prepare_url` updates the renderer's URL hints early (before doing layout). If it errors
+    // (e.g. cancellation), restore the previous hints so callers that keep this `BrowserDocument`
+    // alive continue to resolve resources/links against the currently committed document.
+    let prev_document_url = self.renderer.document_url.clone();
+    let prev_base_url = self.renderer.base_url.clone();
     let super::PreparedDocumentReport {
       document,
       diagnostics,
       final_url,
       base_url,
-    } = self.renderer.prepare_url(url, options.clone())?;
+    } = match self.renderer.prepare_url(url, options.clone()) {
+      Ok(report) => report,
+      Err(err) => {
+        self.set_navigation_urls(prev_document_url, prev_base_url);
+        return Err(err);
+      }
+    };
 
     // Keep the renderer's URL hints consistent with the navigation result. (This is typically a
     // no-op because `prepare_url` already updates the hints, but it ensures callers that manually
@@ -239,7 +250,18 @@ impl BrowserDocument {
     url: &str,
     options: RenderOptions,
   ) -> Result<(String, String)> {
-    let report = self.renderer.prepare_url(url, options.clone())?;
+    // `prepare_url` updates the renderer's URL hints early (before doing layout). If it errors
+    // (e.g. cancellation), restore the previous hints so the existing document continues to have
+    // consistent origin/base semantics.
+    let prev_document_url = self.renderer.document_url.clone();
+    let prev_base_url = self.renderer.base_url.clone();
+    let report = match self.renderer.prepare_url(url, options.clone()) {
+      Ok(report) => report,
+      Err(err) => {
+        self.set_navigation_urls(prev_document_url, prev_base_url);
+        return Err(err);
+      }
+    };
 
     let committed_url = report.final_url.clone().unwrap_or_else(|| url.to_string());
     let base_url = report
@@ -1088,6 +1110,58 @@ mod tests {
     assert_eq!(report.final_url.as_deref(), Some(file_url.as_str()));
     assert_eq!(report.base_url.as_deref(), Some(file_url.as_str()));
     assert_eq!(document.document_url(), Some(file_url.as_str()));
+    Ok(())
+  }
+
+  #[test]
+  fn navigate_url_restores_navigation_urls_on_cancel() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let file_path = temp_dir.path().join("index.html");
+    std::fs::write(
+      &file_path,
+      "<!doctype html><html><head><title>Cancelled</title></head><body>hello</body></html>",
+    )?;
+    let file_url = url::Url::from_file_path(&file_path)
+      .expect("file url")
+      .to_string();
+
+    let renderer = renderer_for_tests();
+    let mut document = BrowserDocument::new(
+      renderer,
+      "<!doctype html><html><head><title>Old</title></head><body>old</body></html>",
+      RenderOptions::new().with_viewport(64, 64),
+    )?;
+    document.set_document_url_without_invalidation(Some("https://example.com/doc".to_string()));
+    document.set_navigation_urls(
+      Some("https://example.com/doc".to_string()),
+      Some("https://example.com/base/".to_string()),
+    );
+
+    let cancel: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
+    let options = RenderOptions::new()
+      .with_viewport(64, 64)
+      .with_cancel_callback(Some(cancel));
+    let err = match document.navigate_url(&file_url, options) {
+      Ok(_) => panic!("expected navigation to be cancelled"),
+      Err(err) => err,
+    };
+    assert!(
+      matches!(err, Error::Render(RenderError::Timeout { .. })),
+      "expected timeout/cancel error; got {err:?}"
+    );
+
+    // Cancellation must not perturb the currently committed URL hints. These are used for
+    // resolving relative resource/link URLs and should remain stable for long-lived documents.
+    assert_eq!(document.base_url(), Some("https://example.com/base/"));
+    assert_eq!(document.document_url(), Some("https://example.com/doc"));
+    assert_eq!(
+      document.renderer.document_url.as_deref(),
+      Some("https://example.com/doc")
+    );
+    assert_eq!(
+      document.renderer.base_url.as_deref(),
+      Some("https://example.com/base/")
+    );
     Ok(())
   }
 

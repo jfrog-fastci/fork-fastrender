@@ -63,12 +63,25 @@ impl BrowserDocumentDom2 {
     url: &str,
     options: RenderOptions,
   ) -> Result<super::BrowserNavigationReport> {
+    let prev_document_url = self.renderer.document_url.clone();
+    let prev_base_url = self.renderer.base_url.clone();
     let super::PreparedDocumentReport {
       document,
       diagnostics,
       final_url,
       base_url,
-    } = self.renderer.prepare_url(url, options.clone())?;
+    } = match self.renderer.prepare_url(url, options.clone()) {
+      Ok(report) => report,
+      Err(err) => {
+        // Restore URL hints so cancellation/errors don't perturb the currently committed document.
+        self.renderer.document_url = prev_document_url;
+        match prev_base_url {
+          Some(url) => self.renderer.set_base_url(url),
+          None => self.renderer.clear_base_url(),
+        }
+        return Err(err);
+      }
+    };
 
     self.dom = crate::dom2::Document::from_renderer_dom(&document.dom);
     self.options = options;
