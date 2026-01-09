@@ -456,6 +456,9 @@ impl TransitionState {
             TransitionRecord::extract_value(&existing.to_style, name, &cmp_ctx)
           {
             if existing_target == after_value {
+              // CSS Transitions 1: transition parameters are captured at start; changes to
+              // `transition-*` properties do not affect running transitions. As long as the target
+              // value is unchanged, keep the existing transition running.
               continue;
             }
           }
