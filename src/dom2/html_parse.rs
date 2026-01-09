@@ -10,6 +10,8 @@ use super::Document;
 /// driving the `dom2` html5ever `TreeSink` (see [`crate::dom2::Dom2TreeSink`]).
 ///
 /// Notes:
+/// - Declarative shadow DOM templates (`<template shadowroot=...>`) are promoted as a
+///   post-processing step once parsing completes, mirroring `crate::dom::attach_shadow_roots`.
 /// - Script execution is not performed. When the underlying parser yields at `<script>` boundaries,
 ///   those yields are ignored and parsing continues.
 /// - `options.scripting_enabled` controls html5ever parsing semantics (not execution); it primarily

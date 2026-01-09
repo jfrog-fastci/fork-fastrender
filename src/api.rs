@@ -8808,6 +8808,8 @@ impl FastRender {
   ///
   /// Notes:
   /// - Script execution is not performed; `<script>` boundaries are ignored and parsing continues.
+  /// - Declarative shadow DOM templates (`<template shadowroot=...>`) are promoted as a
+  ///   post-processing step once parsing completes, mirroring `parse_html`/`dom::attach_shadow_roots`.
   /// - Scripting semantics (affecting `<noscript>` parsing) follow this renderer's configuration
   ///   and runtime overrides (e.g. `FASTR_SCRIPTING`). For direct control, use
   ///   [`crate::dom2::parse_html_with_options`].

@@ -128,7 +128,15 @@ impl StreamingHtmlParser {
         }
       }
       Html5everPump::NeedMoreInput => StreamingParserYield::NeedMoreInput,
-      Html5everPump::Finished(document) => StreamingParserYield::Finished { document },
+      Html5everPump::Finished(mut document) => {
+        // Ensure declarative shadow roots are attached for the final DOM snapshot.
+        //
+        // The parser also performs best-effort promotion before executing connected scripts (see the
+        // `Script` arm above), but additional shadowroot templates may appear after the final script
+        // yield (or in documents with no scripts at all).
+        document.attach_shadow_roots();
+        StreamingParserYield::Finished { document }
+      }
     }
   }
 

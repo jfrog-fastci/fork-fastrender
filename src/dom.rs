@@ -2193,11 +2193,10 @@ impl<R: io::Read> io::Read for DeadlineCheckedRead<R> {
   }
 }
 
-/// Parse HTML with explicit parsing options (e.g., DOM compatibility mode).
-pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<DomNode> {
+fn parse_html_to_domnode(html: &str, scripting_enabled: bool) -> Result<(DomNode, usize)> {
   let opts = ParseOpts {
     tree_builder: TreeBuilderOpts {
-      scripting_enabled: options.scripting_enabled,
+      scripting_enabled,
       ..Default::default()
     },
     ..Default::default()
@@ -2256,18 +2255,21 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
 
   let convert_timer = dom_parse_diagnostics_timer();
   let mut deadline_counter = 0usize;
-  let mut root = convert_document_handle_to_root(
-    &dom.document,
-    quirks_mode,
-    options.scripting_enabled,
-    &mut deadline_counter,
-  )?;
+  let root =
+    convert_document_handle_to_root(&dom.document, quirks_mode, scripting_enabled, &mut deadline_counter)?;
   if let Some(start) = convert_timer {
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     with_dom_parse_diagnostics(|diag| {
       diag.convert_ms += elapsed_ms;
     });
   }
+
+  Ok((root, deadline_counter))
+}
+
+/// Parse HTML with explicit parsing options (e.g., DOM compatibility mode).
+pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<DomNode> {
+  let (mut root, mut deadline_counter) = parse_html_to_domnode(html, options.scripting_enabled)?;
 
   let shadow_attach_timer = dom_parse_diagnostics_timer();
   attach_shadow_roots(&mut root, &mut deadline_counter)?;
