@@ -1,11 +1,52 @@
 use crate::geometry::Point;
+use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::scroll::ScrollState;
 use crate::style::types::Overflow;
+use crate::tree::box_tree::{FormControlKind, ReplacedType as BoxReplacedType};
+use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentTree;
 
 pub struct ScrollWheelInput {
   pub delta_x: f32,
   pub delta_y: f32,
+}
+
+/// Computes the vertical scroll overflow height for listbox `<select>` controls.
+///
+/// Listbox selects are painted from their `SelectControl` model (not from laid-out `<option>`
+/// fragments), so layout does not produce a meaningful `scroll_overflow` size. Wheel scrolling
+/// needs an approximate scroll range, so we mirror the painter's `row_height * total_rows` logic.
+fn select_listbox_scroll_overflow_height(
+  fragment_tree: &FragmentTree,
+  fragment: &crate::tree::fragment_tree::FragmentNode,
+  style: &crate::style::ComputedStyle,
+) -> Option<f32> {
+  let FragmentContent::Replaced { replaced_type, .. } = &fragment.content else {
+    return None;
+  };
+  let BoxReplacedType::FormControl(control) = replaced_type else {
+    return None;
+  };
+  let FormControlKind::Select(select) = &control.control else {
+    return None;
+  };
+  if !(select.multiple || select.size > 1) {
+    return None;
+  }
+
+  let row_height =
+    compute_line_height_with_metrics_viewport(style, None, Some(fragment_tree.viewport_size()));
+  if row_height <= 0.0 || !row_height.is_finite() {
+    return None;
+  }
+
+  let total_rows = select.items.len();
+  let content_height = row_height * total_rows as f32;
+  if content_height.is_finite() {
+    Some(content_height.max(0.0))
+  } else {
+    None
+  }
 }
 
 pub fn apply_wheel_scroll_at_point(
@@ -35,7 +76,12 @@ pub fn apply_wheel_scroll_at_point(
     }
 
     let viewport = fragment.bounds.size;
-    let content = fragment.scroll_overflow.size;
+    let mut content = fragment.scroll_overflow.size;
+    if let Some(listbox_height) =
+      select_listbox_scroll_overflow_height(fragment_tree, fragment, style)
+    {
+      content.height = listbox_height;
+    }
     let max_scroll_x = (content.width - viewport.width).max(0.0);
     let max_scroll_y = (content.height - viewport.height).max(0.0);
 

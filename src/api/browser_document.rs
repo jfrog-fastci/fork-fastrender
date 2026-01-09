@@ -374,6 +374,39 @@ impl BrowserDocument {
     )
   }
 
+  /// Applies a scroll wheel delta at a point in viewport coordinates.
+  ///
+  /// This updates element scroll container offsets (e.g. `<select size>` listboxes) using the
+  /// cached layout's fragment tree. Viewport scrolling is intentionally not handled here.
+  pub fn wheel_scroll_at_viewport_point(
+    &mut self,
+    viewport_point_css: crate::geometry::Point,
+    delta_css: (f32, f32),
+  ) -> crate::Result<bool> {
+    let prepared = self.prepared.as_ref().ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocument has no cached layout; call render_frame() first".to_string(),
+      })
+    })?;
+
+    let current_scroll_state = self.scroll_state();
+    let page_point_css = viewport_point_css.translate(current_scroll_state.viewport);
+    let (delta_x, delta_y) = delta_css;
+    let next = crate::interaction::scroll_wheel::apply_wheel_scroll_at_point(
+      prepared.fragment_tree(),
+      &current_scroll_state,
+      page_point_css,
+      crate::interaction::scroll_wheel::ScrollWheelInput { delta_x, delta_y },
+    );
+
+    if next != current_scroll_state {
+      self.set_scroll_state(next);
+      Ok(true)
+    } else {
+      Ok(false)
+    }
+  }
+
   /// Renders a new frame if anything has been invalidated since the last successful frame.
   ///
   /// Returns `Ok(None)` when no dirty flags are set.
