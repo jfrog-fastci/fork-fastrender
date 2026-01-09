@@ -13,6 +13,7 @@ use crate::dom2;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use thiserror::Error;
+use vm_js::Value as JsValue;
 
 #[derive(Debug, Error)]
 pub enum DomError {
@@ -49,6 +50,26 @@ impl Default for EventInit {
       bubbles: false,
       cancelable: false,
       composed: false,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomEventInit {
+  pub bubbles: bool,
+  pub cancelable: bool,
+  pub composed: bool,
+  pub detail: JsValue,
+}
+
+impl Default for CustomEventInit {
+  fn default() -> Self {
+    Self {
+      bubbles: false,
+      cancelable: false,
+      composed: false,
+      // Web spec default is `null`.
+      detail: JsValue::Null,
     }
   }
 }
@@ -159,6 +180,10 @@ pub struct Event {
   /// This is populated by [`dispatch_event`] and reused by `Event.composedPath()`.
   pub path: Vec<EventPathEntry>,
   pub is_trusted: bool,
+  /// `CustomEvent.detail` payload.
+  ///
+  /// For non-`CustomEvent` events, this remains `None`.
+  pub detail: Option<JsValue>,
   in_passive_listener: bool,
 }
 
@@ -179,7 +204,64 @@ impl Event {
       path: Vec::new(),
       // Only user agent-dispatched events are trusted; all synthetic events are not.
       is_trusted: false,
+      detail: None,
       in_passive_listener: false,
+    }
+  }
+
+  pub fn new_custom_event(type_: impl Into<String>, init: CustomEventInit) -> Self {
+    let mut event = Self::new(
+      type_,
+      EventInit {
+        bubbles: init.bubbles,
+        cancelable: init.cancelable,
+        composed: init.composed,
+      },
+    );
+    event.detail = Some(init.detail);
+    event
+  }
+
+  /// Legacy event initializer (`Event.prototype.initEvent`).
+  ///
+  /// This is intentionally minimal; it exists primarily for compatibility with legacy scripts.
+  pub fn init_event(&mut self, type_: impl Into<String>, bubbles: bool, cancelable: bool) {
+    self.type_ = type_.into();
+    self.bubbles = bubbles;
+    self.cancelable = cancelable;
+    // `initEvent` does not expose `composed`; default to `false`.
+    self.composed = false;
+
+    // Reset state per the DOM "initialize an event" algorithm.
+    self.default_prevented = false;
+    self.propagation_stopped = false;
+    self.immediate_propagation_stopped = false;
+    self.target = None;
+    self.current_target = None;
+    self.event_phase = EventPhase::None;
+  }
+
+  /// Legacy CustomEvent initializer (`CustomEvent.prototype.initCustomEvent`).
+  ///
+  /// This is intentionally minimal; it exists primarily for compatibility with legacy scripts.
+  pub fn init_custom_event(
+    &mut self,
+    type_: impl Into<String>,
+    bubbles: bool,
+    cancelable: bool,
+    detail: JsValue,
+  ) {
+    self.init_event(type_, bubbles, cancelable);
+    self.detail = Some(detail);
+  }
+
+  /// `eventPhase` as the JS-visible numeric constant (0..=3).
+  pub fn event_phase_numeric(&self) -> u16 {
+    match self.event_phase {
+      EventPhase::None => 0,
+      EventPhase::Capturing => 1,
+      EventPhase::AtTarget => 2,
+      EventPhase::Bubbling => 3,
     }
   }
 

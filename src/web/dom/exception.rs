@@ -10,6 +10,8 @@ pub enum DomException {
   SyntaxError { message: String },
   #[error("NoModificationAllowedError: {message}")]
   NoModificationAllowedError { message: String },
+  #[error("NotSupportedError: {message}")]
+  NotSupportedError { message: String },
 }
 
 impl DomException {
@@ -21,6 +23,12 @@ impl DomException {
 
   pub fn no_modification_allowed_error(message: impl Into<String>) -> Self {
     Self::NoModificationAllowedError {
+      message: message.into(),
+    }
+  }
+
+  pub fn not_supported_error(message: impl Into<String>) -> Self {
+    Self::NotSupportedError {
       message: message.into(),
     }
   }

@@ -230,6 +230,26 @@ pub struct RendererDomSnapshot {
 }
 
 impl Document {
+  /// Legacy DOM Events factory (`Document.prototype.createEvent`).
+  ///
+  /// This is exposed primarily for compatibility with legacy scripts that still use
+  /// `createEvent/initEvent/initCustomEvent`.
+  pub fn create_event(&self, interface_name: &str) -> Result<web_events::Event, DomException> {
+    let name = interface_name.trim();
+    if name.eq_ignore_ascii_case("Event") {
+      return Ok(web_events::Event::new("", web_events::EventInit::default()));
+    }
+    if name.eq_ignore_ascii_case("CustomEvent") {
+      return Ok(web_events::Event::new_custom_event(
+        "",
+        web_events::CustomEventInit::default(),
+      ));
+    }
+    Err(DomException::not_supported_error(format!(
+      "Unsupported event interface: {name}"
+    )))
+  }
+
   /// Clone the document including the active event listener registry.
   ///
   /// `Document`'s `Clone` implementation intentionally resets the listener registry so callers can

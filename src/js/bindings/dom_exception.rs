@@ -113,6 +113,7 @@ impl DomExceptionClass {
       DomException::NoModificationAllowedError { message } => {
         self.new_instance(rt, message, "NoModificationAllowedError")
       }
+      DomException::NotSupportedError { message } => self.new_instance(rt, message, "NotSupportedError"),
     }
   }
 }

@@ -3,8 +3,10 @@
 use super::*;
 use crate::dom::{parse_html, DomNode, DomNodeType};
 use crate::dom2::{Document, NodeId, NodeKind};
+use crate::web::dom::DomException;
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
+use vm_js::Value as JsValue;
 
 #[test]
 fn listener_id_new_roundtrips_through_get() {
@@ -1367,5 +1369,109 @@ fn document_node_id_normalizes_to_document() {
   )
   .unwrap();
 
+  assert_eq!(invoker.calls.as_slice(), &["document_listener"]);
+}
+
+#[test]
+fn document_create_event_and_init_event_do_not_crash() {
+  let doc = Document::new(QuirksMode::NoQuirks);
+  let mut e = doc.create_event("Event").expect("createEvent(Event)");
+  assert_eq!(e.type_, "");
+  assert!(!e.bubbles);
+  assert!(!e.cancelable);
+  assert_eq!(e.detail, None);
+
+  e.init_event("x", true, true);
+  assert_eq!(e.type_, "x");
+  assert!(e.bubbles);
+  assert!(e.cancelable);
+}
+
+#[test]
+fn document_create_event_and_init_custom_event_set_detail() {
+  let doc = Document::new(QuirksMode::NoQuirks);
+  let mut ce = doc
+    .create_event("CustomEvent")
+    .expect("createEvent(CustomEvent)");
+
+  assert_eq!(ce.detail, Some(JsValue::Null));
+
+  ce.init_custom_event("x", true, true, JsValue::Number(123.0));
+  assert_eq!(ce.type_, "x");
+  assert!(ce.bubbles);
+  assert!(ce.cancelable);
+  assert_eq!(ce.detail, Some(JsValue::Number(123.0)));
+}
+
+#[test]
+fn custom_event_constructor_sets_detail() {
+  let ce = Event::new_custom_event(
+    "x",
+    CustomEventInit {
+      detail: JsValue::Number(1.0),
+      ..Default::default()
+    },
+  );
+  assert_eq!(ce.type_, "x");
+  assert_eq!(ce.detail, Some(JsValue::Number(1.0)));
+}
+
+#[test]
+fn create_event_rejects_unsupported_interfaces_with_not_supported_error() {
+  let doc = Document::new(QuirksMode::NoQuirks);
+  let err = doc
+    .create_event("KeyboardEvent")
+    .expect_err("unsupported createEvent should error");
+  assert!(
+    matches!(err, DomException::NotSupportedError { .. }),
+    "expected NotSupportedError, got {err:?}"
+  );
+}
+
+#[test]
+fn dispatch_event_returns_false_if_prevent_default_called() {
+  let doc = Document::new(QuirksMode::NoQuirks);
+  let registry = EventListenerRegistry::new();
+
+  let listener_id = ListenerId::new(1);
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    "x",
+    listener_id,
+    AddEventListenerOptions::default(),
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Document,
+    [(
+      listener_id,
+      Behavior {
+        label: "document_listener",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Document,
+        action: Action::PreventDefault,
+      },
+    )],
+  );
+
+  let mut event = Event::new(
+    "x",
+    EventInit {
+      cancelable: true,
+      ..Default::default()
+    },
+  );
+
+  let ok = dispatch_event(
+    EventTargetId::Document,
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+  assert!(!ok, "dispatchEvent should return false when canceled");
+  assert!(event.default_prevented);
   assert_eq!(invoker.calls.as_slice(), &["document_listener"]);
 }

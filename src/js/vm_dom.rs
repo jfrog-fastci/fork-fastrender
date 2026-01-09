@@ -552,6 +552,9 @@ fn throw_web_dom_exception<'a, T>(
     DomException::NoModificationAllowedError { message } => {
       throw_dom_exception(scope, host, "NoModificationAllowedError", &message)
     }
+    DomException::NotSupportedError { message } => {
+      throw_dom_exception(scope, host, "NotSupportedError", &message)
+    }
   }
 }
 
